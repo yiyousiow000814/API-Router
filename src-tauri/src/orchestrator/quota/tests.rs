@@ -1567,6 +1567,52 @@ mod tests {
     }
 
     #[test]
+    fn shared_provider_fingerprint_ignores_local_shared_provider_id() {
+        let tmp_a = tempfile::tempdir().expect("tempdir a");
+        let tmp_b = tempfile::tempdir().expect("tempdir b");
+        let secrets_a = SecretStore::new(tmp_a.path().join("secrets.json"));
+        let secrets_b = SecretStore::new(tmp_b.path().join("secrets.json"));
+        let cfg = AppConfig {
+            listen: crate::orchestrator::config::ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 4000,
+            },
+            routing: crate::orchestrator::config::RoutingConfig {
+                preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 1,
+                failure_threshold: 1,
+                cooldown_seconds: 600,
+                request_timeout_seconds: 5,
+            },
+            providers: std::collections::BTreeMap::from([(
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url: "https://quota.example/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some("https://quota.example".to_string()),
+                    group: None,
+                    disabled: false,
+                    api_key: String::new(),
+                },
+            )]),
+            provider_order: vec!["p1".to_string()],
+        };
+        secrets_a.set_provider_key("p1", "sk-same").unwrap();
+        secrets_b.set_provider_key("p1", "sk-same").unwrap();
+        secrets_a.set_provider_shared_id("p1", "sp_node_a").unwrap();
+        secrets_b.set_provider_shared_id("p1", "sp_node_b").unwrap();
+
+        let a = shared_provider_fingerprint(&cfg, &secrets_a, "p1").expect("fingerprint a");
+        let b = shared_provider_fingerprint(&cfg, &secrets_b, "p1").expect("fingerprint b");
+
+        assert_eq!(a, b);
+    }
+
+    #[test]
     fn as_f64_strips_commas_and_percent() {
         let v = serde_json::json!("14,993");
         assert_eq!(as_f64(Some(&v)).unwrap_or(0.0), 14993.0);

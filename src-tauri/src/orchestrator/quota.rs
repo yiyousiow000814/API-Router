@@ -534,18 +534,13 @@ pub fn shared_provider_fingerprint(
         let shared_base = candidate_quota_bases(provider).first()?.clone();
         usage_shared_key(&shared_base, &provider_key, &usage_token, &usage_login)
     };
-    let shared_provider_id = secrets
-        .get_provider_shared_id(provider_name)
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| provider_name.trim().to_ascii_lowercase());
     let auth_component = shared_key
         .auth_key
         .as_deref()
         .map(stable_shared_fingerprint_component)
         .unwrap_or_else(|| "anon".to_string());
     Some(format!(
-        "{}|{}|{}",
-        shared_provider_id.trim().to_ascii_lowercase(),
+        "{}|{}",
         shared_key.base_key.trim().to_ascii_lowercase(),
         auth_component
     ))

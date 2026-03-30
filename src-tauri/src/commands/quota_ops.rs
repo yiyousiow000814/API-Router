@@ -519,6 +519,40 @@ pub(crate) async fn refresh_quota(
     if !state.gateway.cfg.read().providers.contains_key(&provider) {
         return Err(format!("unknown provider: {provider}"));
     }
+    if let Some(owner) = crate::orchestrator::quota::shared_quota_owner_for_provider(
+        &state.gateway,
+        &state.lan_sync,
+        &provider,
+    ) {
+        if !owner.local_is_owner {
+            let cfg = state.gateway.cfg.read().clone();
+            let fingerprint = crate::orchestrator::quota::shared_provider_fingerprint(
+                &cfg,
+                &state.gateway.secrets,
+                &provider,
+            )
+            .ok_or_else(|| "shared quota fingerprint unavailable".to_string())?;
+            state.lan_sync.request_remote_quota_refresh(
+                &state.gateway,
+                &owner.owner_node_id,
+                &fingerprint,
+            )?;
+            state.gateway.store.add_event(
+                &provider,
+                "info",
+                "usage.refresh_forwarded",
+                &format!(
+                    "Usage refresh forwarded to {} ({})",
+                    owner.owner_node_name, owner.owner_node_id
+                ),
+                serde_json::json!({
+                    "owner_node_id": owner.owner_node_id,
+                    "owner_node_name": owner.owner_node_name,
+                }),
+            );
+            return Ok(());
+        }
+    }
     crate::orchestrator::quota::clear_usage_refresh_gate_for_provider(&state.gateway, &provider);
     let snap = crate::orchestrator::quota::refresh_quota_for_provider_with_lan_owner(
         &state.gateway,

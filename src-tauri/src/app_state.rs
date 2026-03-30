@@ -112,6 +112,7 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
     // Ensure a local gateway auth token exists so Codex can authenticate to the localhost base_url.
     // This token is not an upstream provider key; it only protects the local gateway.
     let _ = secrets.ensure_gateway_token();
+    let _ = secrets.ensure_lan_trust_secret();
 
     // Normalize: older config.toml may contain `api_key = ""` fields. We keep `api_key` only for
     // one-time migration; new config writes omit empty api_key to avoid confusion.

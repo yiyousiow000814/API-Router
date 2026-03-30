@@ -1,13 +1,21 @@
 use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use base64::Engine;
+use chacha20poly1305::aead::{Aead, Payload};
+use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce};
+use flate2::read::ZlibDecoder;
+use flate2::write::ZlibEncoder;
+use flate2::Compression;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::orchestrator::config::AppConfig;
@@ -22,12 +30,15 @@ const LAN_USAGE_SYNC_LOOP_INTERVAL_MS: u64 = 1_500;
 const LAN_USAGE_SYNC_BATCH_LIMIT: usize = 32;
 const LAN_EDIT_SYNC_LOOP_INTERVAL_MS: u64 = 1_500;
 const LAN_EDIT_SYNC_BATCH_LIMIT: usize = 32;
-const LAN_HEARTBEAT_CAPABILITIES: [&str; 5] = [
+const LAN_PACKET_SOFT_LIMIT_BYTES: usize = 8 * 1024;
+const LAN_SOCKET_RETRY_MS: u64 = 2_000;
+const LAN_HEARTBEAT_CAPABILITIES: [&str; 6] = [
     "heartbeat_v1",
     "status_v1",
     "usage_sync_v1",
     "edit_sync_v1",
     "config_source_v1",
+    "quota_refresh_v1",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -149,6 +160,13 @@ struct LanEditSyncBatchPacket {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct LanQuotaRefreshRequestPacket {
+    version: u8,
+    node_id: String,
+    shared_provider_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum LanSyncPacket {
     Heartbeat(LanHeartbeatPacket),
@@ -157,6 +175,22 @@ enum LanSyncPacket {
     UsageSyncBatch(LanUsageSyncBatchPacket),
     EditSyncRequest(LanEditSyncRequestPacket),
     EditSyncBatch(LanEditSyncBatchPacket),
+    QuotaRefreshRequest(LanQuotaRefreshRequestPacket),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LanProtectedPacket {
+    version: u8,
+    sender_node_id: String,
+    nonce_b64: String,
+    ciphertext_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "wire_kind", rename_all = "snake_case")]
+enum LanWirePacket {
+    Heartbeat(LanHeartbeatPacket),
+    Protected(LanProtectedPacket),
 }
 
 #[derive(Clone)]
@@ -165,6 +199,7 @@ pub struct LanSyncRuntime {
     local_provider_fingerprints: Arc<RwLock<Vec<String>>>,
     peers: Arc<RwLock<HashMap<String, LanPeerRuntime>>>,
     started: Arc<AtomicBool>,
+    last_peer_prune_unix_ms: Arc<AtomicU64>,
 }
 
 impl LanSyncRuntime {
@@ -174,6 +209,7 @@ impl LanSyncRuntime {
             local_provider_fingerprints: Arc::new(RwLock::new(Vec::new())),
             peers: Arc::new(RwLock::new(HashMap::new())),
             started: Arc::new(AtomicBool::new(false)),
+            last_peer_prune_unix_ms: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -309,26 +345,74 @@ impl LanSyncRuntime {
     }
 
     fn collect_live_peers(&self, now: u64) -> Vec<LanPeerSnapshot> {
-        let mut peers = self.peers.write();
-        peers.retain(|_, peer| !peer_is_stale(peer.last_heartbeat_unix_ms, now));
-        let mut out = peers
-            .values()
-            .map(|peer| LanPeerSnapshot {
-                node_id: peer.node_id.clone(),
-                node_name: peer.node_name.clone(),
-                listen_addr: peer.listen_addr.clone(),
-                last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
-                capabilities: peer.capabilities.clone(),
-                provider_fingerprints: peer.provider_fingerprints.clone(),
-                followed_source_node_id: peer.followed_source_node_id.clone(),
-            })
-            .collect::<Vec<_>>();
+        let should_prune = now.saturating_sub(self.last_peer_prune_unix_ms.load(Ordering::Relaxed))
+            >= LAN_PEER_STALE_AFTER_MS / 2;
+        let mut out = if should_prune {
+            let mut peers = self.peers.write();
+            peers.retain(|_, peer| !peer_is_stale(peer.last_heartbeat_unix_ms, now));
+            self.last_peer_prune_unix_ms.store(now, Ordering::Relaxed);
+            peers
+                .values()
+                .map(|peer| LanPeerSnapshot {
+                    node_id: peer.node_id.clone(),
+                    node_name: peer.node_name.clone(),
+                    listen_addr: peer.listen_addr.clone(),
+                    last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
+                    capabilities: peer.capabilities.clone(),
+                    provider_fingerprints: peer.provider_fingerprints.clone(),
+                    followed_source_node_id: peer.followed_source_node_id.clone(),
+                })
+                .collect::<Vec<_>>()
+        } else {
+            self.peers
+                .read()
+                .values()
+                .filter(|peer| !peer_is_stale(peer.last_heartbeat_unix_ms, now))
+                .map(|peer| LanPeerSnapshot {
+                    node_id: peer.node_id.clone(),
+                    node_name: peer.node_name.clone(),
+                    listen_addr: peer.listen_addr.clone(),
+                    last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
+                    capabilities: peer.capabilities.clone(),
+                    provider_fingerprints: peer.provider_fingerprints.clone(),
+                    followed_source_node_id: peer.followed_source_node_id.clone(),
+                })
+                .collect::<Vec<_>>()
+        };
         out.sort_by(|a, b| {
             b.last_heartbeat_unix_ms
                 .cmp(&a.last_heartbeat_unix_ms)
                 .then_with(|| a.node_name.cmp(&b.node_name))
         });
         out
+    }
+
+    fn live_peer_by_node_id(&self, node_id: &str) -> Option<LanPeerSnapshot> {
+        self.collect_live_peers(unix_ms())
+            .into_iter()
+            .find(|peer| peer.node_id == node_id)
+    }
+
+    pub fn request_remote_quota_refresh(
+        &self,
+        gateway: &crate::orchestrator::gateway::GatewayState,
+        owner_node_id: &str,
+        shared_provider_fingerprint: &str,
+    ) -> Result<(), String> {
+        let peer = self
+            .live_peer_by_node_id(owner_node_id)
+            .ok_or_else(|| format!("quota owner is not reachable on LAN: {owner_node_id}"))?;
+        let addr = peer_sync_addr(&peer)
+            .ok_or_else(|| format!("quota owner has no valid LAN address: {owner_node_id}"))?;
+        send_packet_to_addr(
+            gateway,
+            addr,
+            &LanSyncPacket::QuotaRefreshRequest(LanQuotaRefreshRequestPacket {
+                version: 1,
+                node_id: self.local_node.node_id.clone(),
+                shared_provider_fingerprint: shared_provider_fingerprint.trim().to_string(),
+            }),
+        )
     }
 
     pub fn local_node_id(&self) -> String {
@@ -338,6 +422,228 @@ impl LanSyncRuntime {
     pub fn local_node_name(&self) -> String {
         self.local_node.node_name.clone()
     }
+}
+
+fn lan_send_socket_state() -> &'static parking_lot::Mutex<Option<Arc<UdpSocket>>> {
+    static STATE: OnceLock<parking_lot::Mutex<Option<Arc<UdpSocket>>>> = OnceLock::new();
+    STATE.get_or_init(|| parking_lot::Mutex::new(None))
+}
+
+fn shared_lan_send_socket() -> Result<Arc<UdpSocket>, String> {
+    let state = lan_send_socket_state();
+    {
+        let guard = state.lock();
+        if let Some(socket) = guard.as_ref() {
+            return Ok(socket.clone());
+        }
+    }
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+        .map_err(|err| format!("lan send socket bind failed: {err}"))?;
+    socket
+        .set_broadcast(true)
+        .map_err(|err| format!("lan send socket broadcast enable failed: {err}"))?;
+    let socket = Arc::new(socket);
+    let mut guard = state.lock();
+    *guard = Some(socket.clone());
+    Ok(socket)
+}
+
+fn current_lan_trust_secret(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+) -> Result<String, String> {
+    gateway
+        .secrets
+        .get_lan_trust_secret()
+        .or_else(|| gateway.secrets.ensure_lan_trust_secret().ok())
+        .ok_or_else(|| "missing lan trust secret".to_string())
+}
+
+fn lan_cipher(secret: &str) -> ChaCha20Poly1305 {
+    let digest = Sha256::digest(secret.trim().as_bytes());
+    ChaCha20Poly1305::new(&digest)
+}
+
+fn compress_lan_payload(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(bytes).map_err(|err| err.to_string())?;
+    encoder.finish().map_err(|err| err.to_string())
+}
+
+fn decompress_lan_payload(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let mut decoder = ZlibDecoder::new(bytes);
+    let mut out = Vec::new();
+    decoder
+        .read_to_end(&mut out)
+        .map_err(|err| err.to_string())?;
+    Ok(out)
+}
+
+fn serialize_wire_packet(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    packet: &LanSyncPacket,
+) -> Result<Vec<u8>, String> {
+    match packet {
+        LanSyncPacket::Heartbeat(inner) => {
+            serde_json::to_vec(&LanWirePacket::Heartbeat(inner.clone()))
+                .map_err(|err| err.to_string())
+        }
+        _ => {
+            let secret = current_lan_trust_secret(gateway)?;
+            let plaintext = serde_json::to_vec(packet).map_err(|err| err.to_string())?;
+            let compressed = compress_lan_payload(&plaintext)?;
+            let mut nonce_bytes = [0u8; 12];
+            for byte in &mut nonce_bytes {
+                *byte = fastrand::u8(..);
+            }
+            let sender_node_id = gateway
+                .secrets
+                .get_lan_node_identity()
+                .map(|node| node.node_id)
+                .unwrap_or_default();
+            let ciphertext = lan_cipher(&secret)
+                .encrypt(
+                    Nonce::from_slice(&nonce_bytes),
+                    Payload {
+                        msg: &compressed,
+                        aad: sender_node_id.as_bytes(),
+                    },
+                )
+                .map_err(|_| "failed to encrypt LAN packet".to_string())?;
+            serde_json::to_vec(&LanWirePacket::Protected(LanProtectedPacket {
+                version: 1,
+                sender_node_id,
+                nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce_bytes),
+                ciphertext_b64: base64::engine::general_purpose::STANDARD.encode(ciphertext),
+            }))
+            .map_err(|err| err.to_string())
+        }
+    }
+}
+
+fn deserialize_wire_packet(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    bytes: &[u8],
+) -> Option<LanSyncPacket> {
+    let wire = serde_json::from_slice::<LanWirePacket>(bytes).ok()?;
+    match wire {
+        LanWirePacket::Heartbeat(packet) => Some(LanSyncPacket::Heartbeat(packet)),
+        LanWirePacket::Protected(packet) => {
+            let secret = current_lan_trust_secret(gateway).ok()?;
+            let nonce = base64::engine::general_purpose::STANDARD
+                .decode(packet.nonce_b64.as_bytes())
+                .ok()?;
+            let ciphertext = base64::engine::general_purpose::STANDARD
+                .decode(packet.ciphertext_b64.as_bytes())
+                .ok()?;
+            let plaintext = lan_cipher(&secret)
+                .decrypt(
+                    Nonce::from_slice(&nonce),
+                    Payload {
+                        msg: &ciphertext,
+                        aad: packet.sender_node_id.as_bytes(),
+                    },
+                )
+                .ok()?;
+            let decompressed = decompress_lan_payload(&plaintext).ok()?;
+            serde_json::from_slice::<LanSyncPacket>(&decompressed).ok()
+        }
+    }
+}
+
+fn packet_encoded_size(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    packet: &LanSyncPacket,
+) -> usize {
+    serialize_wire_packet(gateway, packet)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
+}
+
+fn trim_usage_rows_to_fit(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    node_id: &str,
+    rows: &[crate::orchestrator::store::UsageRequestSyncRow],
+    has_more: bool,
+) -> (Vec<crate::orchestrator::store::UsageRequestSyncRow>, bool) {
+    let mut end = rows.len();
+    while end > 0 {
+        let limited = rows[..end].to_vec();
+        let packet = LanSyncPacket::UsageSyncBatch(LanUsageSyncBatchPacket {
+            version: 1,
+            node_id: node_id.to_string(),
+            rows: limited.clone(),
+            has_more: has_more || end < rows.len(),
+        });
+        if packet_encoded_size(gateway, &packet) <= LAN_PACKET_SOFT_LIMIT_BYTES {
+            return (limited, has_more || end < rows.len());
+        }
+        end -= 1;
+    }
+    (Vec::new(), has_more || !rows.is_empty())
+}
+
+fn trim_edit_events_to_fit(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    node_id: &str,
+    events: &[crate::orchestrator::store::LanEditSyncEvent],
+    has_more: bool,
+) -> (Vec<crate::orchestrator::store::LanEditSyncEvent>, bool) {
+    let mut end = events.len();
+    while end > 0 {
+        let limited = events[..end].to_vec();
+        let packet = LanSyncPacket::EditSyncBatch(LanEditSyncBatchPacket {
+            version: 1,
+            node_id: node_id.to_string(),
+            events: limited.clone(),
+            has_more: has_more || end < events.len(),
+        });
+        if packet_encoded_size(gateway, &packet) <= LAN_PACKET_SOFT_LIMIT_BYTES {
+            return (limited, has_more || end < events.len());
+        }
+        end -= 1;
+    }
+    (Vec::new(), has_more || !events.is_empty())
+}
+
+fn send_wire_bytes(addr: SocketAddr, bytes: &[u8]) -> Result<(), String> {
+    shared_lan_send_socket()?
+        .send_to(bytes, addr)
+        .map(|_| ())
+        .map_err(|err| format!("lan send failed: {err}"))
+}
+
+fn send_packet_to_addr(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    addr: SocketAddr,
+    packet: &LanSyncPacket,
+) -> Result<(), String> {
+    let bytes = serialize_wire_packet(gateway, packet)?;
+    if bytes.len() > LAN_PACKET_SOFT_LIMIT_BYTES {
+        return Err(format!(
+            "LAN packet exceeds soft limit: {} bytes",
+            bytes.len()
+        ));
+    }
+    send_wire_bytes(addr, &bytes)
+}
+
+fn broadcast_shared_health_packet(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    packet: &LanSharedHealthPacket,
+) {
+    let target = SocketAddr::from((Ipv4Addr::BROADCAST, LAN_DISCOVERY_PORT));
+    let _ = send_packet_to_addr(
+        gateway,
+        target,
+        &LanSyncPacket::SharedHealth(packet.clone()),
+    );
+}
+
+fn send_heartbeat_broadcast(packet: &LanHeartbeatPacket) -> Result<(), String> {
+    let target = SocketAddr::from((Ipv4Addr::BROADCAST, LAN_DISCOVERY_PORT));
+    let bytes = serde_json::to_vec(&LanWirePacket::Heartbeat(packet.clone()))
+        .map_err(|err| err.to_string())?;
+    send_wire_bytes(target, &bytes)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1197,67 +1503,64 @@ fn run_listener(
     gateway: crate::orchestrator::gateway::GatewayState,
     config_path: std::path::PathBuf,
 ) {
-    let socket = match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, LAN_DISCOVERY_PORT)) {
-        Ok(socket) => socket,
-        Err(err) => {
-            log::warn!(
-                "lan sync listener bind failed on {}: {err}",
-                LAN_DISCOVERY_PORT
-            );
-            return;
-        }
-    };
-    let _ = socket.set_read_timeout(Some(Duration::from_millis(1_500)));
-    let mut buf = [0_u8; 64 * 1024];
     loop {
-        match socket.recv_from(&mut buf) {
-            Ok((len, source)) => {
-                let Ok(packet) = serde_json::from_slice::<LanSyncPacket>(&buf[..len]) else {
-                    continue;
-                };
-                match packet {
-                    LanSyncPacket::Heartbeat(packet) => runtime.note_peer_heartbeat(packet, source),
-                    LanSyncPacket::SharedHealth(packet) => {
-                        apply_shared_health_packet(&runtime, &gateway, packet);
-                    }
-                    LanSyncPacket::UsageSyncRequest(packet) => {
-                        handle_usage_sync_request(&runtime, &gateway, source, packet);
-                    }
-                    LanSyncPacket::UsageSyncBatch(packet) => {
-                        apply_usage_sync_batch(&runtime, &gateway, packet);
-                    }
-                    LanSyncPacket::EditSyncRequest(packet) => {
-                        handle_edit_sync_request(&runtime, &gateway, source, packet);
-                    }
-                    LanSyncPacket::EditSyncBatch(packet) => {
-                        apply_edit_sync_batch(&runtime, &gateway, &config_path, packet);
+        let socket = match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, LAN_DISCOVERY_PORT)) {
+            Ok(socket) => socket,
+            Err(err) => {
+                log::warn!(
+                    "lan sync listener bind failed on {}: {err}",
+                    LAN_DISCOVERY_PORT
+                );
+                std::thread::sleep(Duration::from_millis(LAN_SOCKET_RETRY_MS));
+                continue;
+            }
+        };
+        let _ = socket.set_read_timeout(Some(Duration::from_millis(1_500)));
+        let mut buf = [0_u8; 64 * 1024];
+        loop {
+            match socket.recv_from(&mut buf) {
+                Ok((len, source)) => {
+                    let Some(packet) = deserialize_wire_packet(&gateway, &buf[..len]) else {
+                        continue;
+                    };
+                    match packet {
+                        LanSyncPacket::Heartbeat(packet) => {
+                            runtime.note_peer_heartbeat(packet, source)
+                        }
+                        LanSyncPacket::SharedHealth(packet) => {
+                            apply_shared_health_packet(&runtime, &gateway, packet);
+                        }
+                        LanSyncPacket::UsageSyncRequest(packet) => {
+                            handle_usage_sync_request(&runtime, &gateway, source, packet);
+                        }
+                        LanSyncPacket::UsageSyncBatch(packet) => {
+                            apply_usage_sync_batch(&runtime, &gateway, packet);
+                        }
+                        LanSyncPacket::EditSyncRequest(packet) => {
+                            handle_edit_sync_request(&runtime, &gateway, source, packet);
+                        }
+                        LanSyncPacket::EditSyncBatch(packet) => {
+                            apply_edit_sync_batch(&runtime, &gateway, &config_path, packet);
+                        }
+                        LanSyncPacket::QuotaRefreshRequest(packet) => {
+                            handle_quota_refresh_request(&runtime, &gateway, packet);
+                        }
                     }
                 }
-            }
-            Err(err)
-                if err.kind() == std::io::ErrorKind::WouldBlock
-                    || err.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(err) => {
-                log::warn!("lan sync listener recv failed: {err}");
-                std::thread::sleep(Duration::from_millis(750));
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::WouldBlock
+                        || err.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(err) => {
+                    log::warn!("lan sync listener recv failed: {err}");
+                    break;
+                }
             }
         }
+        std::thread::sleep(Duration::from_millis(750));
     }
 }
 
 fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::GatewayState) {
-    let socket = match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) {
-        Ok(socket) => socket,
-        Err(err) => {
-            log::warn!("lan sync sender bind failed: {err}");
-            return;
-        }
-    };
-    if let Err(err) = socket.set_broadcast(true) {
-        log::warn!("lan sync sender failed to enable broadcast: {err}");
-        return;
-    }
-    let target = SocketAddr::from((Ipv4Addr::BROADCAST, LAN_DISCOVERY_PORT));
     loop {
         let cfg_snapshot = gateway.cfg.read().clone();
         let provider_fingerprints = build_provider_fingerprints(&cfg_snapshot, &gateway.secrets);
@@ -1275,8 +1578,12 @@ fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::Ga
             provider_fingerprints,
             followed_source_node_id: gateway.secrets.get_followed_config_source_node_id(),
         });
-        if let Ok(bytes) = serde_json::to_vec(&packet) {
-            let _ = socket.send_to(&bytes, target);
+        if let LanSyncPacket::Heartbeat(ref heartbeat) = packet {
+            if let Err(err) = send_heartbeat_broadcast(heartbeat) {
+                log::warn!("lan sync sender heartbeat failed: {err}");
+                std::thread::sleep(Duration::from_millis(LAN_SOCKET_RETRY_MS));
+                continue;
+            }
         }
         std::thread::sleep(Duration::from_millis(LAN_HEARTBEAT_INTERVAL_MS));
     }
@@ -1340,31 +1647,6 @@ fn apply_shared_health_packet(
                 "cooldown_until_unix_ms": shared.cooldown_until_unix_ms,
             }),
         );
-    }
-}
-
-fn broadcast_shared_health_packet(packet: &LanSharedHealthPacket) {
-    let socket = match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) {
-        Ok(socket) => socket,
-        Err(_) => return,
-    };
-    if socket.set_broadcast(true).is_err() {
-        return;
-    }
-    let target = SocketAddr::from((Ipv4Addr::BROADCAST, LAN_DISCOVERY_PORT));
-    let payload = LanSyncPacket::SharedHealth(packet.clone());
-    if let Ok(bytes) = serde_json::to_vec(&payload) {
-        let _ = socket.send_to(&bytes, target);
-    }
-}
-
-fn send_packet_to_addr(addr: SocketAddr, packet: &LanSyncPacket) {
-    let socket = match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) {
-        Ok(socket) => socket,
-        Err(_) => return,
-    };
-    if let Ok(bytes) = serde_json::to_vec(packet) {
-        let _ = socket.send_to(&bytes, addr);
     }
 }
 
@@ -1452,7 +1734,13 @@ fn handle_usage_sync_request(
         Some(packet.after_id.as_str()),
         packet.limit.clamp(1, LAN_USAGE_SYNC_BATCH_LIMIT),
     );
-    send_packet_to_addr(
+    let (rows, has_more) =
+        trim_usage_rows_to_fit(gateway, &runtime.local_node.node_id, &rows, has_more);
+    if rows.is_empty() {
+        return;
+    }
+    let _ = send_packet_to_addr(
+        gateway,
         SocketAddr::from((source.ip(), LAN_DISCOVERY_PORT)),
         &LanSyncPacket::UsageSyncBatch(LanUsageSyncBatchPacket {
             version: 1,
@@ -1513,7 +1801,13 @@ fn handle_edit_sync_request(
         Some(packet.after_event_id.as_str()),
         packet.limit.clamp(1, LAN_EDIT_SYNC_BATCH_LIMIT),
     );
-    send_packet_to_addr(
+    let (events, has_more) =
+        trim_edit_events_to_fit(gateway, &runtime.local_node.node_id, &events, has_more);
+    if events.is_empty() {
+        return;
+    }
+    let _ = send_packet_to_addr(
+        gateway,
         SocketAddr::from((source.ip(), LAN_DISCOVERY_PORT)),
         &LanSyncPacket::EditSyncBatch(LanEditSyncBatchPacket {
             version: 1,
@@ -1522,6 +1816,69 @@ fn handle_edit_sync_request(
             has_more,
         }),
     );
+}
+
+fn handle_quota_refresh_request(
+    runtime: &LanSyncRuntime,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    packet: LanQuotaRefreshRequestPacket,
+) {
+    if packet.node_id.trim().is_empty() || packet.node_id == runtime.local_node.node_id {
+        return;
+    }
+    let fingerprint = packet.shared_provider_fingerprint.trim();
+    if fingerprint.is_empty() {
+        return;
+    }
+    let Some(owner) = runtime.quota_owner_for_fingerprint(fingerprint) else {
+        return;
+    };
+    if !owner.local_is_owner {
+        return;
+    }
+    let cfg = gateway.cfg.read().clone();
+    let Some(provider_name) = cfg.providers.keys().find(|provider_name| {
+        crate::orchestrator::quota::shared_provider_fingerprint(
+            &cfg,
+            &gateway.secrets,
+            provider_name,
+        )
+        .as_deref()
+            == Some(fingerprint)
+    }) else {
+        return;
+    };
+    let provider_name = provider_name.clone();
+    let gateway = gateway.clone();
+    let runtime = runtime.clone();
+    tauri::async_runtime::spawn(async move {
+        match crate::orchestrator::quota::refresh_quota_shared(&gateway, &runtime, &provider_name)
+            .await
+        {
+            Ok(group) => gateway.store.add_event(
+                "gateway",
+                "info",
+                "lan.quota_refresh_forwarded_succeeded",
+                &format!(
+                    "remote quota refresh request succeeded for {} provider(s)",
+                    group.len()
+                ),
+                serde_json::json!({
+                    "provider": provider_name,
+                    "providers": group,
+                }),
+            ),
+            Err(err) => gateway.store.add_event(
+                "gateway",
+                "warning",
+                "lan.quota_refresh_forwarded_failed",
+                &format!("remote quota refresh request failed: {err}"),
+                serde_json::json!({
+                    "provider": provider_name,
+                }),
+            ),
+        }
+    });
 }
 
 fn apply_edit_sync_batch(
@@ -1593,7 +1950,8 @@ fn run_usage_sync_loop(
             };
             let (after_ingested_at_unix_ms, after_id) =
                 load_usage_sync_cursor(&gateway, &peer.node_id);
-            send_packet_to_addr(
+            let _ = send_packet_to_addr(
+                &gateway,
                 addr,
                 &LanSyncPacket::UsageSyncRequest(LanUsageSyncRequestPacket {
                     version: 1,
@@ -1626,7 +1984,8 @@ fn run_edit_sync_loop(
                 continue;
             };
             let (after_lamport_ts, after_event_id) = load_edit_sync_cursor(&gateway, &peer.node_id);
-            send_packet_to_addr(
+            let _ = send_packet_to_addr(
+                &gateway,
                 addr,
                 &LanSyncPacket::EditSyncRequest(LanEditSyncRequestPacket {
                     version: 1,
@@ -1718,20 +2077,23 @@ fn run_shared_health_loop(
                 continue;
             }
             last_broadcasted.insert(fingerprint.clone(), signature);
-            broadcast_shared_health_packet(&LanSharedHealthPacket {
-                version: 1,
-                node_id: runtime.local_node.node_id.clone(),
-                node_name: runtime.local_node.node_name.clone(),
-                sent_at_unix_ms: shared.updated_at_unix_ms,
-                shared_provider_fingerprint: fingerprint.clone(),
-                status: shared.status.clone(),
-                consecutive_failures: shared.consecutive_failures,
-                cooldown_until_unix_ms: shared.cooldown_until_unix_ms,
-                last_error: shared.last_error.clone(),
-                last_ok_at_unix_ms: shared.last_ok_at_unix_ms,
-                last_fail_at_unix_ms: shared.last_fail_at_unix_ms,
-                shared_probe_required: shared.shared_probe_required,
-            });
+            broadcast_shared_health_packet(
+                &gateway,
+                &LanSharedHealthPacket {
+                    version: 1,
+                    node_id: runtime.local_node.node_id.clone(),
+                    node_name: runtime.local_node.node_name.clone(),
+                    sent_at_unix_ms: shared.updated_at_unix_ms,
+                    shared_provider_fingerprint: fingerprint.clone(),
+                    status: shared.status.clone(),
+                    consecutive_failures: shared.consecutive_failures,
+                    cooldown_until_unix_ms: shared.cooldown_until_unix_ms,
+                    last_error: shared.last_error.clone(),
+                    last_ok_at_unix_ms: shared.last_ok_at_unix_ms,
+                    last_fail_at_unix_ms: shared.last_fail_at_unix_ms,
+                    shared_probe_required: shared.shared_probe_required,
+                },
+            );
         }
 
         for provider_name in cfg.providers.keys() {
@@ -1861,8 +2223,10 @@ fn build_provider_fingerprints(cfg: &AppConfig, secrets: &SecretStore) -> Vec<St
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_lan_edit_event, incoming_event_is_newer, note_entity_version, peer_is_stale,
-        sanitize_node_name, LanNodeIdentity, LanSyncRuntime, LAN_PEER_STALE_AFTER_MS,
+        apply_lan_edit_event, deserialize_wire_packet, incoming_event_is_newer,
+        note_entity_version, peer_is_stale, sanitize_node_name, serialize_wire_packet,
+        LanHeartbeatPacket, LanNodeIdentity, LanSyncPacket, LanSyncRuntime,
+        LAN_PEER_STALE_AFTER_MS,
     };
 
     fn build_test_state() -> (tempfile::TempDir, crate::app_state::AppState) {
@@ -1932,6 +2296,70 @@ mod tests {
             .expect("fingerprint c");
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn protected_packets_require_matching_lan_trust_secret() {
+        let (_tmp_a, state_a) = build_test_state();
+        let (_tmp_b, state_b) = build_test_state();
+        state_a
+            .secrets
+            .ensure_lan_trust_secret()
+            .expect("trust secret a");
+        state_b
+            .secrets
+            .ensure_lan_trust_secret()
+            .expect("trust secret b");
+
+        let protected = serialize_wire_packet(
+            &state_a.gateway,
+            &LanSyncPacket::SharedHealth(super::LanSharedHealthPacket {
+                version: 1,
+                node_id: state_a.lan_sync.local_node_id(),
+                node_name: state_a.lan_sync.local_node_name(),
+                sent_at_unix_ms: 1,
+                shared_provider_fingerprint: "fp-1".to_string(),
+                status: "cooldown".to_string(),
+                consecutive_failures: 3,
+                cooldown_until_unix_ms: 10,
+                last_error: "http 500".to_string(),
+                last_ok_at_unix_ms: 0,
+                last_fail_at_unix_ms: 1,
+                shared_probe_required: true,
+            }),
+        )
+        .expect("serialize protected");
+
+        let packet_a = deserialize_wire_packet(&state_a.gateway, &protected);
+        let packet_b = deserialize_wire_packet(&state_b.gateway, &protected);
+
+        assert!(matches!(packet_a, Some(LanSyncPacket::SharedHealth(_))));
+        assert!(packet_b.is_none());
+    }
+
+    #[test]
+    fn heartbeat_packets_remain_plain_discovery_messages() {
+        let (_tmp, state) = build_test_state();
+        let bytes = serialize_wire_packet(
+            &state.gateway,
+            &LanSyncPacket::Heartbeat(LanHeartbeatPacket {
+                version: 1,
+                node_id: "node-x".to_string(),
+                node_name: "Desk".to_string(),
+                listen_port: 4000,
+                sent_at_unix_ms: 1,
+                capabilities: vec!["heartbeat_v1".to_string()],
+                provider_fingerprints: vec![],
+                followed_source_node_id: None,
+            }),
+        )
+        .expect("serialize heartbeat");
+
+        let decoded = deserialize_wire_packet(&state.gateway, &bytes);
+
+        assert!(matches!(decoded, Some(LanSyncPacket::Heartbeat(_))));
+        let raw = String::from_utf8(bytes).expect("utf8");
+        assert!(raw.contains("\"wire_kind\":\"heartbeat\""));
     }
 
     #[test]
