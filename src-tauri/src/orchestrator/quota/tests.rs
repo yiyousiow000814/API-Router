@@ -652,6 +652,24 @@ mod tests {
     }
 
     #[test]
+    fn explicit_usage_endpoint_url_ignores_invalid_explicit_url_for_aigateway() {
+        let provider = ProviderConfig {
+            display_name: "AI Gateway".to_string(),
+            base_url: "https://aigateway.chat/v1".to_string(),
+            group: None,
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: Some("not-a-url".to_string()),
+            api_key: String::new(),
+        };
+
+        assert_eq!(
+            explicit_usage_endpoint_url(&provider).as_deref(),
+            Some("https://aigateway.chat/v1/usage")
+        );
+    }
+
+    #[test]
     fn explicit_usage_endpoint_payload_reads_aigateway_usage_shape() {
         let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
         let payload = serde_json::json!({

@@ -82,15 +82,16 @@ fn explicit_usage_endpoint_url(provider: &ProviderConfig) -> Option<String> {
     if let Some(raw) = provider.usage_base_url.as_deref() {
         let raw = raw.trim();
         if !raw.is_empty() {
-            let parsed = reqwest::Url::parse(raw).ok()?;
-            let path = parsed.path().trim_end_matches('/');
-            if !(path.is_empty() || path == "/") {
-                let normalized = path.to_ascii_lowercase();
-                if !matches!(
-                    normalized.as_str(),
-                    "/v1" | "/api" | "/web/api/v1" | "/user/api/v1" | "/backend"
-                ) {
-                    return Some(raw.trim_end_matches('/').to_string());
+            if let Ok(parsed) = reqwest::Url::parse(raw) {
+                let path = parsed.path().trim_end_matches('/');
+                if !(path.is_empty() || path == "/") {
+                    let normalized = path.to_ascii_lowercase();
+                    if !matches!(
+                        normalized.as_str(),
+                        "/v1" | "/api" | "/web/api/v1" | "/user/api/v1" | "/backend"
+                    ) {
+                        return Some(raw.trim_end_matches('/').to_string());
+                    }
                 }
             }
         }

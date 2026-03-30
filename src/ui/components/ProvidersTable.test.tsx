@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { ProvidersTable } from './ProvidersTable'
 import type { Config, Status, UsageStatistics } from '../types'
+import { fmtWhen } from '../utils/format'
 
 function buildStatus(): Status {
   return {
@@ -291,6 +292,8 @@ describe('ProvidersTable', () => {
   })
 
   it('shows aigateway daily usage and date-only expiry', () => {
+    const packageExpiresAtUnixMs = Date.parse('2026-04-02T14:02:27.679+08:00')
+    const expectedDateOnly = fmtWhen(packageExpiresAtUnixMs).split(' ')[0]
     const status = buildStatus()
     status.providers = {
       aigateway: {
@@ -315,7 +318,7 @@ describe('ProvidersTable', () => {
         weekly_budget_usd: null,
         monthly_spent_usd: null,
         monthly_budget_usd: null,
-        package_expires_at_unix_ms: Date.parse('2026-04-02T14:02:27.679+08:00'),
+        package_expires_at_unix_ms: packageExpiresAtUnixMs,
         last_error: '',
       },
     }
@@ -331,7 +334,9 @@ describe('ProvidersTable', () => {
     )
 
     expect(html).toContain('daily: $0 / $200')
-    expect(html).toContain('ends: 02-04-2026')
+    expect(html).toContain(`title="package ends: ${fmtWhen(packageExpiresAtUnixMs)}"`)
+    expect(html).toContain(`ends: ${expectedDateOnly}`)
+    expect(html).toContain(`>${`ends: ${expectedDateOnly}`}<`)
   })
 
   it('hides balance-only snapshots from the usage preview', () => {
