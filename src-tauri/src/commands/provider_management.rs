@@ -431,6 +431,23 @@ fn set_followed_config_source_impl(
     Ok(())
 }
 
+fn ensure_copy_source_is_current_and_trusted(
+    state: &app_state::AppState,
+    source_node_id: &str,
+) -> Result<(), String> {
+    let cfg = state.gateway.cfg.read().clone();
+    let lan_snapshot = state.lan_sync.snapshot(cfg.listen.port, &cfg, &state.secrets);
+    let peer = lan_snapshot
+        .peers
+        .iter()
+        .find(|peer| peer.node_id == source_node_id)
+        .ok_or_else(|| format!("unknown or offline config source: {source_node_id}"))?;
+    if !peer.trusted || !state.secrets.is_lan_node_trusted(source_node_id) {
+        return Err("config source is not trusted; pair this device first".to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) fn clear_followed_config_source(
     state: tauri::State<'_, app_state::AppState>,
@@ -444,11 +461,20 @@ pub(crate) fn copy_provider_from_config_source(
     source_node_id: String,
     shared_provider_id: String,
 ) -> Result<CopyProviderFromConfigSourceResult, String> {
+    copy_provider_from_config_source_impl(&state, &source_node_id, &shared_provider_id)
+}
+
+fn copy_provider_from_config_source_impl(
+    state: &app_state::AppState,
+    source_node_id: &str,
+    shared_provider_id: &str,
+) -> Result<CopyProviderFromConfigSourceResult, String> {
     let source_node_id = source_node_id.trim();
     let shared_provider_id = shared_provider_id.trim();
     if source_node_id.is_empty() || shared_provider_id.is_empty() {
         return Err("source_node_id and shared_provider_id are required".to_string());
     }
+    ensure_copy_source_is_current_and_trusted(state, source_node_id)?;
     let record = state
         .gateway
         .store
@@ -460,12 +486,12 @@ pub(crate) fn copy_provider_from_config_source(
     let payload: crate::lan_sync::ProviderDefinitionSnapshotPayload =
         serde_json::from_value(record.snapshot).map_err(|err| err.to_string())?;
     let mut local_state =
-        if let Some(snapshot) = crate::lan_sync::load_local_provider_state_snapshot(&state)? {
+        if let Some(snapshot) = crate::lan_sync::load_local_provider_state_snapshot(state)? {
             snapshot
         } else {
-            current_local_provider_state_snapshot(&state)
+            current_local_provider_state_snapshot(state)
         };
-    let mut local_copy_state_snapshot = crate::lan_sync::load_local_provider_copy_state(&state)?;
+    let mut local_copy_state_snapshot = crate::lan_sync::load_local_provider_copy_state(state)?;
     let remote_cfg = crate::orchestrator::config::ProviderConfig {
         display_name: if payload.display_name.trim().is_empty() {
             payload.name.clone()
@@ -498,7 +524,31 @@ pub(crate) fn copy_provider_from_config_source(
         LocalCopyState::Copied
     };
     let target_name = if let Some(name) = existing_match {
-        name
+        let mut changed = false;
+        if local_copy_state_snapshot
+            .copied_shared_provider_ids
+            .remove(shared_provider_id)
+        {
+            changed = true;
+        }
+        if local_provider_definitions_are_locked(state) && changed {
+            crate::lan_sync::write_local_provider_copy_state(state, &local_copy_state_snapshot)?;
+        }
+        state.gateway.store.add_event(
+            "gateway",
+            "info",
+            "config.provider_linked_from_source",
+            "provider linked from config source",
+            serde_json::json!({
+                "source_node_id": source_node_id,
+                "shared_provider_id": shared_provider_id,
+                "target_name": name,
+            }),
+        );
+        return Ok(CopyProviderFromConfigSourceResult {
+            target_name: name,
+            local_copy_state,
+        });
     } else if local_state.providers.contains_key(&payload.name) {
         next_copy_name(&local_state.providers, &payload.name)
     } else {
@@ -574,9 +624,9 @@ pub(crate) fn copy_provider_from_config_source(
         }
     }
 
-    if local_provider_definitions_are_locked(&state) {
-        crate::lan_sync::write_local_provider_state_snapshot(&state, &local_state)?;
-        crate::lan_sync::write_local_provider_copy_state(&state, &local_copy_state_snapshot)?;
+    if local_provider_definitions_are_locked(state) {
+        crate::lan_sync::write_local_provider_state_snapshot(state, &local_state)?;
+        crate::lan_sync::write_local_provider_copy_state(state, &local_copy_state_snapshot)?;
     } else {
         {
             let mut cfg = state.gateway.cfg.write();
@@ -1396,6 +1446,8 @@ fn delete_provider_impl(
         next_preferred
     };
 
+    // Keep the tombstone write before secrets.delete_provider(name), otherwise the original
+    // shared provider id is gone and LAN peers may receive a tombstone under the wrong entity id.
     // If the deleted provider was manually locked, return to auto.
     {
         let mut mo = state.gateway.router.manual_override.write();
@@ -1712,9 +1764,9 @@ pub(crate) fn clear_provider_key(
 mod provider_management_tests {
     use super::{
         clear_followed_config_source_impl, clear_session_preferred_provider_impl,
-        current_local_provider_state_snapshot,
+        copy_provider_from_config_source_impl, current_local_provider_state_snapshot,
         delete_provider_impl, ensure_local_provider_definitions_editable,
-        next_preferred_after_delete, provider_definition_patch_payload,
+        next_preferred_after_delete, provider_definition_patch_payload, LocalCopyState,
         rename_observed_session_routes_provider_refs, set_followed_config_source_impl,
         set_manual_override_impl, set_provider_group_impl, set_route_mode_impl,
         set_providers_group_impl, set_session_preferred_provider_impl, upsert_provider_impl,
@@ -1774,6 +1826,31 @@ mod provider_management_tests {
             .into_iter()
             .find(|event| event.get("code").and_then(|v| v.as_str()) == Some(code))
             .expect("event by code")
+    }
+
+    fn seed_remote_provider_snapshot(
+        state: &AppState,
+        source_node_id: &str,
+        shared_provider_id: &str,
+        payload: crate::lan_sync::ProviderDefinitionSnapshotPayload,
+    ) {
+        state
+            .gateway
+            .store
+            .upsert_lan_provider_definition_snapshot(
+                &crate::orchestrator::store::LanProviderDefinitionSnapshotRecord {
+                    source_node_id: source_node_id.to_string(),
+                    source_node_name: "Remote Node".to_string(),
+                    shared_provider_id: shared_provider_id.to_string(),
+                    provider_name: payload.name.clone(),
+                    deleted: false,
+                    snapshot: serde_json::to_value(payload).expect("snapshot payload"),
+                    updated_at_unix_ms: 1,
+                    lamport_ts: 1,
+                    revision_event_id: format!("rev_{shared_provider_id}"),
+                },
+            )
+            .expect("upsert remote snapshot");
     }
 
     #[test]
@@ -1981,6 +2058,102 @@ mod provider_management_tests {
             Err("config source is not trusted; pair this device first".to_string())
         );
         assert_eq!(state.secrets.get_followed_config_source_node_id(), None);
+    }
+
+    #[test]
+    fn copy_provider_from_config_source_requires_trusted_online_peer() {
+        let (_tmp, state) = build_test_state();
+        let source_node_id = "node-remote";
+        let shared_provider_id = "shared-remote-1";
+        seed_remote_provider_snapshot(
+            &state,
+            source_node_id,
+            shared_provider_id,
+            crate::lan_sync::ProviderDefinitionSnapshotPayload {
+                name: "remote_provider".to_string(),
+                display_name: "Remote Provider".to_string(),
+                base_url: "https://remote.example/v1".to_string(),
+                key: Some("sk-remote".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let result = copy_provider_from_config_source_impl(&state, source_node_id, shared_provider_id);
+
+        assert_eq!(
+            result.expect_err("copy should reject offline source"),
+            "unknown or offline config source: node-remote".to_string()
+        );
+        assert!(!state.gateway.cfg.read().providers.contains_key("remote_provider"));
+
+        state
+            .lan_sync
+            .seed_test_peer(source_node_id, "Remote Node", None);
+        let result = copy_provider_from_config_source_impl(&state, source_node_id, shared_provider_id);
+        assert_eq!(
+            result.expect_err("copy should reject untrusted source"),
+            "config source is not trusted; pair this device first".to_string()
+        );
+    }
+
+    #[test]
+    fn copy_provider_from_config_source_linked_does_not_overwrite_local_provider() {
+        let (_tmp, state) = build_test_state();
+        let source_node_id = "node-remote";
+        let shared_provider_id = "shared-remote-2";
+        state
+            .lan_sync
+            .seed_test_peer(source_node_id, "Remote Node", None);
+        state
+            .secrets
+            .set_lan_node_trusted(source_node_id, true)
+            .expect("trust remote node");
+        {
+            let mut cfg = state.gateway.cfg.write();
+            let provider = cfg.providers.get_mut("provider_1").expect("provider_1");
+            provider.display_name = "Local Provider".to_string();
+            provider.base_url = "https://local.example/v1".to_string();
+            provider.group = Some("local-group".to_string());
+        }
+        state
+            .secrets
+            .set_provider_key("provider_1", "sk-same")
+            .expect("set local key");
+        seed_remote_provider_snapshot(
+            &state,
+            source_node_id,
+            shared_provider_id,
+            crate::lan_sync::ProviderDefinitionSnapshotPayload {
+                name: "remote_provider".to_string(),
+                display_name: "Remote Provider".to_string(),
+                base_url: "https://remote.example/v1".to_string(),
+                group: Some("remote-group".to_string()),
+                key: Some("sk-same".to_string()),
+                account_email: Some("remote@example.com".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let result = copy_provider_from_config_source_impl(&state, source_node_id, shared_provider_id)
+            .expect("link existing provider");
+
+        assert_eq!(result.target_name, "provider_1");
+        assert_eq!(result.local_copy_state, LocalCopyState::Linked);
+        let cfg = state.gateway.cfg.read();
+        let provider = cfg.providers.get("provider_1").expect("provider_1");
+        assert_eq!(provider.display_name, "Local Provider");
+        assert_eq!(provider.base_url, "https://local.example/v1");
+        assert_eq!(provider.group.as_deref(), Some("local-group"));
+        drop(cfg);
+        assert_eq!(
+            state
+                .secrets
+                .export_provider_state_bundle()
+                .provider_account_emails
+                .get("provider_1")
+                .map(String::as_str),
+            None
+        );
     }
 
     #[test]

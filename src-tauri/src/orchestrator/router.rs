@@ -395,7 +395,7 @@ impl RouterState {
                 h.consecutive_failures = 0;
                 h.state = HealthState::Unhealthy;
                 h.cooldown_from_transient_warnings = true;
-                h.shared_probe_required = true;
+                h.shared_probe_required = false;
                 h.last_error = err.to_string();
                 h.last_fail_at_unix_ms = now_ms;
                 h.cooldown_until_unix_ms = now_ms
@@ -660,6 +660,28 @@ mod tests {
         let health = snapshot.get(provider).expect("provider health snapshot");
         assert_eq!(health.status, "cooldown");
         assert_eq!(health.cooldown_until_unix_ms, 3_000 + 600_000);
+    }
+
+    #[test]
+    fn transient_warning_cooldown_recovers_after_expiry_on_success() {
+        let mut cfg = AppConfig::default_config();
+        cfg.routing.failure_threshold = 10;
+        let provider = "official";
+        let router = RouterState::new(&cfg, 0);
+
+        router.mark_transient_warning(provider, &cfg, "warn-1", 1_000);
+        router.mark_transient_warning(provider, &cfg, "warn-2", 2_000);
+        router.mark_transient_warning(provider, &cfg, "warn-3", 3_000);
+
+        let after_expiry = 3_000 + cfg.routing.effective_cooldown_seconds() * 1000 + 1;
+        let expired = router.snapshot(after_expiry);
+        let health = expired.get(provider).expect("provider health snapshot");
+        assert_eq!(health.status, "unhealthy");
+
+        router.mark_success(provider, after_expiry + 1);
+        let recovered = router.snapshot(after_expiry + 1);
+        let health = recovered.get(provider).expect("provider health snapshot");
+        assert_eq!(health.status, "healthy");
     }
 
     #[test]
