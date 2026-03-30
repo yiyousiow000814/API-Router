@@ -1,4 +1,5 @@
 import type { Config } from '../types'
+import { deriveLocalCopyState, nextCopiedProviderName, normalizedProviderKey } from './configSourceCopy'
 
 export const DEV_PREVIEW_REMOTE_PROVIDERS: Record<string, Config['providers']> = {
   'node-desk-b': {
@@ -61,23 +62,6 @@ function sourceFollowAllowed(source: NonNullable<Config['config_source']>['sourc
   return Boolean(source.trusted) && !source.follow_blocked_reason
 }
 
-export function nextCopiedProviderName(providers: Config['providers'], baseName: string): string {
-  const trimmed = baseName.trim()
-  const first = trimmed ? `${trimmed} [copy]` : '[copy]'
-  if (!providers[first]) return first
-  let index = 2
-  while (true) {
-    const candidate = trimmed ? `${trimmed} [copy ${index}]` : `[copy ${index}]`
-    if (!providers[candidate]) return candidate
-    index += 1
-  }
-}
-
-export function normalizedProviderKey(keyPreview?: string | null): string | null {
-  const normalized = keyPreview?.trim() ?? ''
-  return normalized ? normalized : null
-}
-
 export function getDevPreviewSourceProviders(
   nodeId: string,
   localSnapshot: Config,
@@ -109,7 +93,6 @@ export function buildDevPreviewFollowConfig(
       const remoteName = `${source.node_name.toLowerCase().replace(/\s+/g, '_')}_${index + 1}`
       const sharedProviderId = `${nodeId}:${name}`
       const providerKey = normalizedProviderKey(provider.key_preview)
-      const linkedByKey = providerKey ? localSnapshotKeys.has(providerKey) : false
       return [
         remoteName,
         {
@@ -119,11 +102,12 @@ export function buildDevPreviewFollowConfig(
           editable: false,
           source_node_id: nodeId,
           shared_provider_id: sharedProviderId,
-          local_copy_state: localSharedIds.has(sharedProviderId)
-            ? ('copied' as const)
-            : linkedByKey
-              ? ('linked' as const)
-              : null,
+          local_copy_state: deriveLocalCopyState({
+            sharedProviderId,
+            providerKey,
+            copiedSharedProviderIds: localSharedIds,
+            localSnapshotKeys,
+          }),
         },
       ]
     }),
@@ -168,5 +152,85 @@ export function updateDevPreviewPairState(
         source.node_id === nodeId ? updater({ ...source }) : source,
       ),
     },
+  }
+}
+
+export function copyDevPreviewBorrowedProvider(args: {
+  activeConfig: Config
+  localBase: Config
+  sourceNodeId: string
+  sharedProviderId: string
+  sourceProviders?: Config['providers']
+}): {
+  nextLocalConfig: Config
+  nextFollowConfig: Config
+  targetName: string
+  localCopyState: 'copied' | 'linked'
+} | null {
+  const { activeConfig, localBase, sourceNodeId, sharedProviderId, sourceProviders } = args
+  const borrowedEntry = Object.entries(activeConfig.providers ?? {}).find(
+    ([, provider]) =>
+      provider.borrowed &&
+      provider.source_node_id === sourceNodeId &&
+      provider.shared_provider_id === sharedProviderId,
+  )
+  if (!borrowedEntry) {
+    return null
+  }
+  const [borrowedName, borrowedProvider] = borrowedEntry
+  const nextLocalProviders = { ...localBase.providers }
+  const borrowedKey = normalizedProviderKey(borrowedProvider.key_preview)
+  const existingMatch = borrowedKey
+    ? Object.entries(nextLocalProviders).find(([name, provider]) => {
+        if (name === borrowedName) return false
+        return normalizedProviderKey(provider.key_preview) === borrowedKey
+      })?.[0] ?? null
+    : null
+  const targetName = existingMatch
+    ? existingMatch
+    : nextLocalProviders[borrowedName]
+      ? nextCopiedProviderName(Object.keys(nextLocalProviders), borrowedName)
+      : borrowedName
+  const localCopyState = existingMatch ? ('linked' as const) : ('copied' as const)
+  nextLocalProviders[targetName] = {
+    ...borrowedProvider,
+    display_name: targetName,
+    borrowed: false,
+    editable: true,
+    source_node_id: null,
+    local_copy_state: null,
+  }
+  const nextLocalOrder = localBase.provider_order?.includes(targetName)
+    ? (localBase.provider_order ?? [])
+    : [...(localBase.provider_order ?? []), targetName]
+  const nextLocalConfig = {
+    ...localBase,
+    providers: nextLocalProviders,
+    provider_order: nextLocalOrder,
+  }
+  const followedNodeId = activeConfig.config_source?.followed_node_id
+  const nextFollowConfig = followedNodeId
+    ? buildDevPreviewFollowConfig(
+        activeConfig,
+        followedNodeId,
+        nextLocalConfig,
+        sourceProviders,
+      )
+    : activeConfig
+  return {
+    nextLocalConfig,
+    nextFollowConfig: {
+      ...nextFollowConfig,
+      providers: Object.fromEntries(
+        Object.entries(nextFollowConfig.providers).map(([name, provider]) => [
+          name,
+          provider.source_node_id === sourceNodeId && provider.shared_provider_id === sharedProviderId
+            ? { ...provider, local_copy_state: localCopyState }
+            : provider,
+        ]),
+      ),
+    },
+    targetName,
+    localCopyState,
   }
 }

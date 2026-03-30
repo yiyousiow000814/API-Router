@@ -63,9 +63,8 @@ import {
 } from './components/UsageStatisticsPanel'
 import {
   buildDevPreviewFollowConfig,
+  copyDevPreviewBorrowedProvider,
   getDevPreviewSourceProviders,
-  nextCopiedProviderName,
-  normalizedProviderKey,
   updateDevPreviewPairState,
 } from './utils/devPreviewConfigSource'
 
@@ -1256,75 +1255,32 @@ export default function App() {
       if (isDevPreview) {
         const activeConfig = config
         const localBase = devPreviewLocalConfigRef.current ?? activeConfig ?? devConfig
-        const borrowedEntry = Object.entries(activeConfig?.providers ?? {}).find(
-          ([, provider]) =>
-            provider.borrowed &&
-            provider.source_node_id === sourceNodeId &&
-            provider.shared_provider_id === sharedProviderId,
-        )
-        if (!borrowedEntry) {
+        if (!activeConfig) {
           flashToast('Borrowed provider not found [TEST]', 'error')
           return
         }
-        const [borrowedName, borrowedProvider] = borrowedEntry
-        const nextLocalProviders = { ...localBase.providers }
-        const borrowedKey = normalizedProviderKey(borrowedProvider.key_preview)
-        const existingMatch = borrowedKey
-          ? Object.entries(nextLocalProviders).find(([name, provider]) => {
-              if (name === borrowedName) return false
-              return normalizedProviderKey(provider.key_preview) === borrowedKey
-            })?.[0] ?? null
-          : null
-        const targetName = existingMatch
-          ? existingMatch
-          : nextLocalProviders[borrowedName]
-            ? nextCopiedProviderName(nextLocalProviders, borrowedName)
-            : borrowedName
-        const localCopyState = existingMatch ? ('linked' as const) : ('copied' as const)
-        nextLocalProviders[targetName] = {
-          ...borrowedProvider,
-          display_name: targetName,
-          borrowed: false,
-          editable: true,
-          source_node_id: null,
-          local_copy_state: null,
+        const sourceProviders =
+          devPreviewFollowSourceProvidersRef.current ?? getDevPreviewSourceProviders(sourceNodeId, localBase)
+        const copied = copyDevPreviewBorrowedProvider({
+          activeConfig,
+          localBase,
+          sourceNodeId,
+          sharedProviderId,
+          sourceProviders,
+        })
+        if (!copied) {
+          flashToast('Borrowed provider not found [TEST]', 'error')
+          return
         }
-        const nextLocalOrder = localBase.provider_order?.includes(targetName)
-          ? (localBase.provider_order ?? [])
-          : [...(localBase.provider_order ?? []), targetName]
-        const nextLocalConfig = {
-          ...localBase,
-          providers: nextLocalProviders,
-          provider_order: nextLocalOrder,
-        }
-        devPreviewLocalConfigRef.current = nextLocalConfig
+        devPreviewLocalConfigRef.current = copied.nextLocalConfig
         setConfig((prev) => {
           if (!prev || prev.config_source?.mode !== 'follow') return prev
-          const followedNodeId = prev.config_source?.followed_node_id
-          const rebuilt = followedNodeId
-            ? buildDevPreviewFollowConfig(
-                prev,
-                followedNodeId,
-                nextLocalConfig,
-                devPreviewFollowSourceProvidersRef.current ?? undefined,
-              )
-            : prev
-          return {
-            ...rebuilt,
-            providers: Object.fromEntries(
-              Object.entries(rebuilt.providers).map(([name, provider]) => [
-                name,
-                provider.source_node_id === sourceNodeId && provider.shared_provider_id === sharedProviderId
-                  ? { ...provider, local_copy_state: localCopyState }
-                  : provider,
-              ]),
-            ),
-          }
+          return copied.nextFollowConfig
         })
         flashToast(
-          localCopyState === 'linked'
-            ? `Linked provider [TEST]: ${targetName}`
-            : `Copied provider [TEST]: ${targetName}`,
+          copied.localCopyState === 'linked'
+            ? `Linked provider [TEST]: ${copied.targetName}`
+            : `Copied provider [TEST]: ${copied.targetName}`,
         )
         return
       }
