@@ -379,16 +379,7 @@ pub(crate) fn set_followed_config_source(
 pub(crate) fn clear_followed_config_source(
     state: tauri::State<'_, app_state::AppState>,
 ) -> Result<(), String> {
-    crate::lan_sync::restore_local_provider_state(&state)?;
-    state.secrets.set_followed_config_source_node_id(None)?;
-    state.gateway.store.add_event(
-        "gateway",
-        "info",
-        "config.followed_source_cleared",
-        "followed config source cleared",
-        serde_json::Value::Null,
-    );
-    Ok(())
+    clear_followed_config_source_impl(&state)
 }
 
 #[tauri::command]
@@ -1360,8 +1351,6 @@ fn delete_provider_impl(
             *mo = None;
         }
     }
-    let _ = state.secrets.delete_provider(name);
-    persist_config_for_app_state(state).map_err(|e| e.to_string())?;
     if let Err(err) = crate::lan_sync::record_provider_definition_tombstone(state, name) {
         state.gateway.store.add_event(
             name,
@@ -1371,8 +1360,35 @@ fn delete_provider_impl(
             serde_json::Value::Null,
         );
     }
+    let _ = state.secrets.delete_provider(name);
+    persist_config_for_app_state(state).map_err(|e| e.to_string())?;
     let _ = clear_observed_session_routes_for_provider(state, name);
     Ok(next_preferred)
+}
+
+fn clear_followed_config_source_impl(state: &app_state::AppState) -> Result<(), String> {
+    let had_snapshot = crate::lan_sync::load_local_provider_state_snapshot(state)?.is_some();
+    if had_snapshot {
+        crate::lan_sync::restore_local_provider_state(state)?;
+    }
+    state.secrets.set_followed_config_source_node_id(None)?;
+    if !had_snapshot {
+        state.gateway.store.add_event(
+            "gateway",
+            "warn",
+            "config.followed_source_snapshot_missing",
+            "followed config source cleared without saved local snapshot",
+            serde_json::Value::Null,
+        );
+    }
+    state.gateway.store.add_event(
+        "gateway",
+        "info",
+        "config.followed_source_cleared",
+        "followed config source cleared",
+        serde_json::Value::Null,
+    );
+    Ok(())
 }
 
 fn next_preferred_after_delete(
@@ -1643,7 +1659,8 @@ pub(crate) fn clear_provider_key(
 #[cfg(test)]
 mod provider_management_tests {
     use super::{
-        clear_session_preferred_provider_impl, current_local_provider_state_snapshot,
+        clear_followed_config_source_impl, clear_session_preferred_provider_impl,
+        current_local_provider_state_snapshot,
         delete_provider_impl, ensure_local_provider_definitions_editable,
         next_preferred_after_delete, provider_definition_patch_payload, set_manual_override_impl,
         rename_observed_session_routes_provider_refs, set_provider_group_impl, set_route_mode_impl,
@@ -1855,6 +1872,46 @@ mod provider_management_tests {
         assert_eq!(after_events.len(), before_events.len());
         assert_eq!(after_tombstones, before_tombstones);
         assert!(state.gateway.cfg.read().providers.contains_key("provider_1"));
+    }
+
+    #[test]
+    fn delete_provider_impl_records_tombstone_with_original_shared_provider_id() {
+        let (_tmp, state) = build_test_state();
+        let original_shared_id = state
+            .secrets
+            .get_provider_shared_id("provider_1")
+            .expect("provider_1 shared id");
+
+        delete_provider_impl(&state, "provider_1").expect("delete provider");
+
+        let (events, _has_more) = state.gateway.store.list_lan_edit_events_batch(0, None, 50);
+        let tombstone = events
+            .iter()
+            .find(|event| {
+                event.entity_type == "provider_definition"
+                    && event.op == "tombstone"
+                    && event.payload.get("name").and_then(|value| value.as_str()) == Some("provider_1")
+            })
+            .expect("provider tombstone");
+
+        assert_eq!(tombstone.entity_id, original_shared_id);
+    }
+
+    #[test]
+    fn clear_followed_config_source_impl_falls_back_when_snapshot_is_missing() {
+        let (_tmp, state) = build_test_state();
+        state
+            .secrets
+            .set_followed_config_source_node_id(Some("node-remote"))
+            .expect("set followed source");
+
+        clear_followed_config_source_impl(&state).expect("clear followed source");
+
+        assert_eq!(state.secrets.get_followed_config_source_node_id(), None);
+        let warning = latest_event_by_code(&state, "config.followed_source_snapshot_missing");
+        assert_eq!(warning["level"].as_str(), Some("warn"));
+        let cleared = latest_event_by_code(&state, "config.followed_source_cleared");
+        assert_eq!(cleared["level"].as_str(), Some("info"));
     }
 
     #[test]
