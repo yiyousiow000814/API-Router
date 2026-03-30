@@ -106,6 +106,9 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
         .store
         .get_codex_account_snapshot()
         .unwrap_or(serde_json::json!({"ok": false}));
+    let lan_sync = state
+        .lan_sync
+        .snapshot(cfg.listen.port, &cfg, &state.secrets);
 
     let client_sessions = {
         // Best-effort: discover running Codex processes configured to use this router, even before
@@ -322,7 +325,8 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
       "ledgers": ledgers,
       "last_activity_unix_ms": last_activity,
       "codex_account": codex_account,
-      "client_sessions": client_sessions
+      "client_sessions": client_sessions,
+      "lan_sync": lan_sync
     })
 }
 

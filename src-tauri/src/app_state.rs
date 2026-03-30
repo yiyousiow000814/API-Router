@@ -35,6 +35,7 @@ pub struct AppState {
     pub config_path: PathBuf,
     pub gateway: GatewayState,
     pub secrets: SecretStore,
+    pub lan_sync: crate::lan_sync::LanSyncRuntime,
 }
 
 pub fn run_startup_gateway_token_sync(state: &AppState) {
@@ -173,10 +174,14 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
         client_sessions: Arc::new(RwLock::new(HashMap::new())),
     };
+    let lan_node = secrets
+        .ensure_lan_node_identity(&crate::lan_sync::default_node_name())
+        .map_err(anyhow::Error::msg)?;
     let app_state = AppState {
         config_path,
         gateway,
         secrets,
+        lan_sync: crate::lan_sync::LanSyncRuntime::new(lan_node),
     };
 
     Ok(app_state)

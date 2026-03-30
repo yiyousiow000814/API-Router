@@ -84,6 +84,27 @@ export type Status = {
     unlimited?: boolean | null
     error?: string
   }
+  lan_sync?: {
+    enabled: boolean
+    discovery_port: number
+    heartbeat_interval_ms: number
+    peer_stale_after_ms: number
+    local_node: {
+      node_id: string
+      node_name: string
+      listen_addr?: string | null
+      capabilities: string[]
+      provider_fingerprints: string[]
+    }
+    peers: Array<{
+      node_id: string
+      node_name: string
+      listen_addr: string
+      last_heartbeat_unix_ms: number
+      capabilities: string[]
+      provider_fingerprints: string[]
+    }>
+  }
 }
 
 export type CodexSwapStatus = {

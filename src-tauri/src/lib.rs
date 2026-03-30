@@ -5,6 +5,7 @@ mod codex_home_env;
 mod codex_wsl_bridge;
 mod commands;
 mod constants;
+mod lan_sync;
 mod orchestrator;
 mod platform;
 mod provider_switchboard;
@@ -461,6 +462,11 @@ pub fn run() {
                 }
             }
             app.manage(state);
+            if !is_ui_tauri {
+                let st = app.state::<app_state::AppState>();
+                st.lan_sync
+                    .start_background(st.gateway.cfg.clone(), st.secrets.clone());
+            }
             if !is_ui_tauri {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {

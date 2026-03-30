@@ -25,6 +25,10 @@ struct SecretsFile {
     provider_pricing: BTreeMap<String, ProviderPricingOverride>,
     #[serde(default)]
     provider_quota_hard_cap: BTreeMap<String, ProviderQuotaHardCapOverride>,
+    #[serde(default)]
+    lan_node_id: Option<String>,
+    #[serde(default)]
+    lan_node_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -809,6 +813,32 @@ impl SecretStore {
         self.persist(&data)
     }
 
+    pub fn ensure_lan_node_identity(
+        &self,
+        default_node_name: &str,
+    ) -> Result<crate::lan_sync::LanNodeIdentity, String> {
+        let mut data = self.inner.lock();
+        let node_id = data
+            .lan_node_id
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| format!("node_{}", Uuid::new_v4().simple()));
+        let node_name = crate::lan_sync::sanitize_node_name(
+            data.lan_node_name
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(default_node_name),
+        );
+        let changed = data.lan_node_id.as_deref() != Some(node_id.as_str())
+            || data.lan_node_name.as_deref() != Some(node_name.as_str());
+        data.lan_node_id = Some(node_id.clone());
+        data.lan_node_name = Some(node_name.clone());
+        if changed {
+            self.persist(&data)?;
+        }
+        Ok(crate::lan_sync::LanNodeIdentity { node_id, node_name })
+    }
+
     pub fn rotate_gateway_token(&self) -> Result<String, String> {
         let t = Self::new_gateway_token();
         self.set_gateway_token(&t)?;
@@ -827,6 +857,26 @@ mod tests {
         ProviderPricingPeriod, ProviderQuotaHardCapConfig, SecretStore, UsageLoginConfig,
     };
     use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn lan_node_identity_persists_across_reload() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = SecretStore::new(path.clone());
+
+        let first = store
+            .ensure_lan_node_identity("Desk-Node")
+            .expect("ensure lan node identity");
+        assert!(first.node_id.starts_with("node_"));
+        assert_eq!(first.node_name, "Desk-Node");
+
+        let reloaded = SecretStore::new(path);
+        let second = reloaded
+            .ensure_lan_node_identity("Other Name")
+            .expect("reload lan node identity");
+        assert_eq!(second.node_id, first.node_id);
+        assert_eq!(second.node_name, first.node_name);
+    }
 
     #[test]
     fn provider_account_email_roundtrip_and_rename() {
