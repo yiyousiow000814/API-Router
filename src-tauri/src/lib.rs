@@ -464,8 +464,7 @@ pub fn run() {
             app.manage(state);
             if !is_ui_tauri {
                 let st = app.state::<app_state::AppState>();
-                st.lan_sync
-                    .start_background(st.gateway.cfg.clone(), st.secrets.clone());
+                st.lan_sync.start_background(st.gateway.clone());
             }
             if !is_ui_tauri {
                 let app_handle = app.handle().clone();
