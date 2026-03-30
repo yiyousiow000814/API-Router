@@ -283,6 +283,7 @@ impl SecretStore {
 
     pub fn replace_provider_state_bundle(&self, bundle: ProviderStateBundle) -> Result<(), String> {
         let mut data = self.inner.lock();
+        let previous = data.clone();
         data.providers = bundle.providers;
         data.provider_key_storage_modes = bundle.provider_key_storage_modes;
         data.provider_account_emails = bundle.provider_account_emails;
@@ -292,7 +293,11 @@ impl SecretStore {
         data.provider_pricing = bundle.provider_pricing;
         data.provider_quota_hard_cap = bundle.provider_quota_hard_cap;
         data.provider_shared_ids = bundle.provider_shared_ids;
-        self.persist(&data)
+        if let Err(err) = self.persist(&data) {
+            *data = previous;
+            return Err(err);
+        }
+        Ok(())
     }
 
     pub fn get_provider_key_storage_mode(&self, provider: &str) -> String {
@@ -1085,8 +1090,10 @@ impl SecretStore {
 mod tests {
     use super::{
         pricing_per_request_amount_at, resolve_provider_pricing_config, ProviderPricingConfig,
-        ProviderPricingPeriod, ProviderQuotaHardCapConfig, SecretStore, UsageLoginConfig,
+        ProviderPricingPeriod, ProviderQuotaHardCapConfig, ProviderStateBundle, SecretStore,
+        UsageLoginConfig,
     };
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Barrier};
 
     #[test]
@@ -1263,6 +1270,30 @@ mod tests {
             ProviderQuotaHardCapConfig::default(),
             "in-memory state should remain unchanged when persist fails"
         );
+    }
+
+    #[test]
+    fn replace_provider_state_bundle_does_not_mutate_memory_when_persist_fails() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = SecretStore::new(tmp.path().to_path_buf());
+        {
+            let mut data = store.inner.lock();
+            data.providers
+                .insert("p1".to_string(), "sk-before".to_string());
+        }
+
+        let err = store
+            .replace_provider_state_bundle(ProviderStateBundle {
+                providers: BTreeMap::from([("p2".to_string(), "sk-after".to_string())]),
+                ..ProviderStateBundle::default()
+            })
+            .expect_err("persist should fail on directory path");
+        assert!(
+            !err.trim().is_empty(),
+            "persist failure should bubble an error"
+        );
+        assert_eq!(store.get_provider_key("p1").as_deref(), Some("sk-before"));
+        assert_eq!(store.get_provider_key("p2"), None);
     }
 
     #[test]

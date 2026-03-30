@@ -712,6 +712,20 @@ fn lan_cipher(secret: &str) -> ChaCha20Poly1305 {
     ChaCha20Poly1305::new(&digest)
 }
 
+fn random_nonce_bytes() -> Result<[u8; 12], String> {
+    let random = Uuid::new_v4();
+    let mut nonce_bytes = [0u8; 12];
+    nonce_bytes.copy_from_slice(&random.as_bytes()[..12]);
+    Ok(nonce_bytes)
+}
+
+fn checked_nonce(slice: &[u8]) -> Option<Nonce> {
+    if slice.len() != 12 {
+        return None;
+    }
+    Some(Nonce::clone_from_slice(slice))
+}
+
 fn compress_lan_payload(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
     encoder.write_all(bytes).map_err(|err| err.to_string())?;
@@ -740,10 +754,7 @@ fn serialize_wire_packet(
             let secret = current_lan_trust_secret(gateway)?;
             let plaintext = serde_json::to_vec(packet).map_err(|err| err.to_string())?;
             let compressed = compress_lan_payload(&plaintext)?;
-            let mut nonce_bytes = [0u8; 12];
-            for byte in &mut nonce_bytes {
-                *byte = fastrand::u8(..);
-            }
+            let nonce_bytes = random_nonce_bytes()?;
             let sender_node_id = gateway
                 .secrets
                 .get_lan_node_identity()
@@ -786,7 +797,7 @@ fn deserialize_wire_packet(
                 .ok()?;
             let plaintext = lan_cipher(&secret)
                 .decrypt(
-                    Nonce::from_slice(&nonce),
+                    &checked_nonce(&nonce)?,
                     Payload {
                         msg: &ciphertext,
                         aad: packet.sender_node_id.as_bytes(),
@@ -813,10 +824,7 @@ fn encrypt_pair_bundle(
     pin_code: &str,
     payload: &[u8],
 ) -> Result<(String, String), String> {
-    let mut nonce_bytes = [0u8; 12];
-    for byte in &mut nonce_bytes {
-        *byte = fastrand::u8(..);
-    }
+    let nonce_bytes = random_nonce_bytes()?;
     let ciphertext = pair_cipher(request_id, pin_code)
         .encrypt(Nonce::from_slice(&nonce_bytes), payload)
         .map_err(|_| "failed to encrypt pair trust bundle".to_string())?;
@@ -839,7 +847,7 @@ fn decrypt_pair_bundle(
         .decode(ciphertext_b64.as_bytes())
         .ok()?;
     pair_cipher(request_id, pin_code)
-        .decrypt(Nonce::from_slice(&nonce), ciphertext.as_ref())
+        .decrypt(&checked_nonce(&nonce)?, ciphertext.as_ref())
         .ok()
 }
 
@@ -1303,12 +1311,29 @@ pub fn apply_followed_provider_state(
     source_node_id: &str,
 ) -> Result<(), String> {
     let (next_cfg, next_bundle) = build_followed_provider_state(gateway, source_node_id)?;
+    let previous_cfg = gateway.cfg.read().clone();
+    let previous_bundle = gateway.secrets.export_provider_state_bundle();
     gateway.secrets.replace_provider_state_bundle(next_bundle)?;
     {
         let mut cfg = gateway.cfg.write();
         *cfg = next_cfg.clone();
     }
-    persist_gateway_config(gateway, config_path)?;
+    if let Err(err) = persist_gateway_config(gateway, config_path) {
+        gateway
+            .secrets
+            .replace_provider_state_bundle(previous_bundle)
+            .map_err(|rollback_err| {
+                format!(
+                    "{err}; rollback failed while restoring provider state bundle: {rollback_err}"
+                )
+            })?;
+        {
+            let mut cfg = gateway.cfg.write();
+            *cfg = previous_cfg.clone();
+        }
+        gateway.router.sync_with_config(&previous_cfg, unix_ms());
+        return Err(err);
+    }
     gateway.router.sync_with_config(&next_cfg, unix_ms());
     Ok(())
 }
@@ -2744,11 +2769,12 @@ fn build_provider_fingerprints(cfg: &AppConfig, secrets: &SecretStore) -> Vec<St
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_lan_edit_event, deserialize_wire_packet, incoming_event_is_newer,
-        note_entity_version, peer_is_stale, sanitize_node_name, serialize_wire_packet,
-        LanHeartbeatPacket, LanNodeIdentity, LanSyncPacket, LanSyncRuntime,
+        apply_followed_provider_state, apply_lan_edit_event, deserialize_wire_packet,
+        incoming_event_is_newer, note_entity_version, peer_is_stale, sanitize_node_name,
+        serialize_wire_packet, LanHeartbeatPacket, LanNodeIdentity, LanSyncPacket, LanSyncRuntime,
         LAN_PEER_STALE_AFTER_MS,
     };
+    use base64::Engine;
 
     fn build_test_state() -> (tempfile::TempDir, crate::app_state::AppState) {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -2881,6 +2907,94 @@ mod tests {
         assert!(matches!(decoded, Some(LanSyncPacket::Heartbeat(_))));
         let raw = String::from_utf8(bytes).expect("utf8");
         assert!(raw.contains("\"wire_kind\":\"heartbeat\""));
+    }
+
+    #[test]
+    fn malformed_protected_packet_nonce_is_rejected_without_panic() {
+        let (_tmp, state) = build_test_state();
+        let bytes = serde_json::to_vec(&super::LanWirePacket::Protected(
+            super::LanProtectedPacket {
+                version: 1,
+                sender_node_id: state.lan_sync.local_node_id(),
+                nonce_b64: base64::engine::general_purpose::STANDARD.encode([7u8]),
+                ciphertext_b64: base64::engine::general_purpose::STANDARD.encode([1u8, 2u8, 3u8]),
+            },
+        ))
+        .expect("serialize malformed packet");
+
+        let decoded = deserialize_wire_packet(&state.gateway, &bytes);
+
+        assert!(decoded.is_none());
+    }
+
+    #[test]
+    fn apply_followed_provider_state_rolls_back_memory_when_persist_fails() {
+        let (_tmp, state) = build_test_state();
+        let shared_provider_id = state
+            .secrets
+            .ensure_provider_shared_id("provider_1")
+            .expect("shared id");
+        let event = crate::orchestrator::store::LanEditSyncEvent {
+            event_id: "edit_follow_remote_provider".to_string(),
+            node_id: "node-remote".to_string(),
+            node_name: "remote".to_string(),
+            created_at_unix_ms: 1,
+            lamport_ts: 1,
+            entity_type: "provider_definition".to_string(),
+            entity_id: shared_provider_id,
+            op: "patch".to_string(),
+            payload: serde_json::json!({
+                "name": "remote-provider",
+                "display_name": "Remote Provider",
+                "base_url": "https://remote.example/v1",
+                "key": "sk-remote",
+                "key_storage": "auth_json",
+            }),
+        };
+        apply_lan_edit_event(&state.gateway, &state.config_path, &event)
+            .expect("seed remote snapshot");
+        state
+            .gateway
+            .secrets
+            .set_provider_key("provider_1", "sk-local")
+            .expect("seed local provider key");
+        let previous_cfg = state.gateway.cfg.read().clone();
+        let previous_bundle = state.gateway.secrets.export_provider_state_bundle();
+        let bad_path = state
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("persist-fail-dir");
+        std::fs::create_dir_all(&bad_path).expect("create bad path");
+
+        let err = apply_followed_provider_state(&state.gateway, &bad_path, "node-remote")
+            .expect_err("persist should fail");
+
+        assert!(!err.trim().is_empty());
+        let current_cfg = state.gateway.cfg.read();
+        assert_eq!(
+            current_cfg.providers.keys().cloned().collect::<Vec<_>>(),
+            previous_cfg.providers.keys().cloned().collect::<Vec<_>>()
+        );
+        assert_eq!(current_cfg.provider_order, previous_cfg.provider_order);
+        assert_eq!(
+            current_cfg.routing.preferred_provider,
+            previous_cfg.routing.preferred_provider
+        );
+        assert_eq!(
+            current_cfg.routing.session_preferred_providers,
+            previous_cfg.routing.session_preferred_providers
+        );
+        let current_bundle = state.gateway.secrets.export_provider_state_bundle();
+        assert_eq!(current_bundle.providers, previous_bundle.providers);
+        assert_eq!(
+            current_bundle.provider_key_storage_modes,
+            previous_bundle.provider_key_storage_modes
+        );
+        assert_eq!(
+            current_bundle.provider_shared_ids,
+            previous_bundle.provider_shared_ids
+        );
     }
 
     #[test]
