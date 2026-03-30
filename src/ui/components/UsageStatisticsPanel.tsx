@@ -251,6 +251,7 @@ export function buildUsageRequestsQueryKey(input: {
   hours: number
   fromUnixMs: number | null
   toUnixMs: number | null
+  nodes?: string[] | null
   providers: string[] | null
   models: string[] | null
   origins: string[] | null
@@ -261,6 +262,7 @@ export function buildUsageRequestsQueryKey(input: {
     hours: number
     from_unix_ms: number | null
     to_unix_ms: number | null
+    nodes: string[]
     providers: string[]
     models: string[]
     origins: string[]
@@ -270,6 +272,7 @@ export function buildUsageRequestsQueryKey(input: {
     hours: input.hours,
     from_unix_ms: input.fromUnixMs,
     to_unix_ms: input.toUnixMs,
+    nodes: input.nodes ?? [],
     providers: input.providers ?? [],
     models: input.models ?? [],
     origins: input.origins ?? [],
@@ -284,6 +287,7 @@ export const USAGE_REQUESTS_CANONICAL_QUERY_KEY = buildUsageRequestsQueryKey({
   hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
   fromUnixMs: null,
   toUnixMs: null,
+  nodes: null,
   providers: null,
   models: null,
   origins: null,
@@ -323,6 +327,7 @@ export function buildUsageRequestEntriesArgs(input: {
   hours: number
   fromUnixMs: number | null
   toUnixMs: number | null
+  nodes?: string[] | null
   providers: string[] | null
   models: string[] | null
   origins: string[] | null
@@ -334,6 +339,7 @@ export function buildUsageRequestEntriesArgs(input: {
     hours: input.hours,
     fromUnixMs: input.fromUnixMs,
     toUnixMs: input.toUnixMs,
+    nodes: input.nodes,
     providers: input.providers,
     models: input.models,
     origins: input.origins,
@@ -347,6 +353,7 @@ function buildUsageRequestSummaryArgs(input: {
   hours: number
   fromUnixMs: number | null
   toUnixMs: number | null
+  nodes?: string[] | null
   providers: string[] | null
   models: string[] | null
   origins: string[] | null
@@ -356,6 +363,7 @@ function buildUsageRequestSummaryArgs(input: {
     hours: input.hours,
     fromUnixMs: input.fromUnixMs,
     toUnixMs: input.toUnixMs,
+    nodes: input.nodes,
     providers: input.providers,
     models: input.models,
     origins: input.origins,
@@ -1152,6 +1160,10 @@ type Props = {
   usageWindowHours: number
   setUsageWindowHours: (hours: number) => void
   usageStatisticsLoading: boolean
+  usageFilterNodes: string[]
+  setUsageFilterNodes: (nodes: string[]) => void
+  usageNodeFilterOptions: string[]
+  toggleUsageNodeFilter: (nodeName: string) => void
   usageFilterProviders: string[]
   setUsageFilterProviders: (providers: string[]) => void
   usageProviderFilterOptions: string[]
@@ -1226,6 +1238,10 @@ export function UsageStatisticsPanel({
   usageWindowHours,
   setUsageWindowHours,
   usageStatisticsLoading,
+  usageFilterNodes,
+  setUsageFilterNodes,
+  usageNodeFilterOptions,
+  toggleUsageNodeFilter,
   usageFilterProviders,
   setUsageFilterProviders,
   usageProviderFilterOptions,
@@ -1423,6 +1439,10 @@ export function UsageStatisticsPanel({
     () => (useGlobalRequestFilters && usageFilterProviders.length ? usageFilterProviders : null),
     [useGlobalRequestFilters, usageFilterProviders],
   )
+  const requestFetchNodes = useMemo(
+    () => (useGlobalRequestFilters && usageFilterNodes.length ? usageFilterNodes : null),
+    [useGlobalRequestFilters, usageFilterNodes],
+  )
   const requestFetchModels = useMemo(
     () => (useGlobalRequestFilters && usageFilterModels.length ? usageFilterModels : null),
     [useGlobalRequestFilters, usageFilterModels],
@@ -1451,6 +1471,7 @@ export function UsageStatisticsPanel({
         hours: requestFetchHours,
         fromUnixMs: requestFetchFromUnixMs,
         toUnixMs: requestFetchToUnixMs,
+        nodes: requestFetchNodes,
         providers: requestFetchProviders,
         models: requestFetchModels,
         origins: requestFetchOrigins,
@@ -1461,6 +1482,7 @@ export function UsageStatisticsPanel({
       requestFetchFromUnixMs,
       requestFetchHours,
       requestFetchModels,
+      requestFetchNodes,
       requestFetchOrigins,
       requestFetchProviders,
       requestFetchSessions,
@@ -1485,6 +1507,7 @@ export function UsageStatisticsPanel({
   const hasStrictRequestQuery = hasExplicitRequestFilters
   const hasImpossibleRequestFilters =
     (requestFetchProviders !== null && requestFetchProviders.length === 0) ||
+    (requestFetchNodes !== null && requestFetchNodes.length === 0) ||
     (requestFetchModels !== null && requestFetchModels.length === 0) ||
     (requestFetchOrigins !== null && requestFetchOrigins.length === 0) ||
     (usageRequestMultiFilters.node !== null && usageRequestMultiFilters.node.length === 0) ||
@@ -1697,6 +1720,7 @@ export function UsageStatisticsPanel({
             hours: requestFetchHours,
             fromUnixMs: requestFetchFromUnixMs,
             toUnixMs: requestFetchToUnixMs,
+            nodes: requestFetchNodes,
             providers: requestFetchProviders,
             models: requestFetchModels,
             origins: requestFetchOrigins,
@@ -1756,6 +1780,7 @@ export function UsageStatisticsPanel({
     [
       requestFetchHours,
       requestFetchFromUnixMs,
+      requestFetchNodes,
       requestFetchProviders,
       requestFetchModels,
       requestFetchOrigins,
@@ -1801,6 +1826,7 @@ export function UsageStatisticsPanel({
           hours: requestFetchHours,
           fromUnixMs: summaryFetchFromUnixMs,
           toUnixMs: summaryFetchToUnixMs,
+          nodes: requestFetchNodes,
           providers: requestFetchProviders,
           models: requestFetchModels,
           origins: requestFetchOrigins,
@@ -1818,6 +1844,7 @@ export function UsageStatisticsPanel({
     isRequestsTab,
     requestFetchHours,
     requestFetchFromUnixMs,
+    requestFetchNodes,
     requestFetchModels,
     requestFetchOrigins,
     requestFetchProviders,
@@ -1839,6 +1866,7 @@ export function UsageStatisticsPanel({
             hours: requestFetchHours,
             fromUnixMs: requestFetchFromUnixMs,
             toUnixMs: requestFetchToUnixMs,
+            nodes: requestFetchNodes,
             providers: requestFetchProviders,
             models: requestFetchModels,
             origins: requestFetchOrigins,
@@ -1908,6 +1936,7 @@ export function UsageStatisticsPanel({
     [
       requestFetchFromUnixMs,
       requestFetchHours,
+      requestFetchNodes,
       requestFetchModels,
       requestFetchOrigins,
       requestFetchProviders,
@@ -1937,6 +1966,7 @@ export function UsageStatisticsPanel({
           hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
           fromUnixMs: null,
           toUnixMs: null,
+          nodes: null,
           providers: null,
           models: null,
           origins: null,
@@ -2009,6 +2039,7 @@ export function UsageStatisticsPanel({
                 hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
                 fromUnixMs: null,
                 toUnixMs: null,
+                nodes: null,
                 providers: null,
                 models: null,
                 origins: [origin],
@@ -2039,6 +2070,7 @@ export function UsageStatisticsPanel({
               hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
               fromUnixMs: null,
               toUnixMs: null,
+              nodes: null,
               providers: null,
               models: null,
               origins: null,
@@ -2140,6 +2172,7 @@ export function UsageStatisticsPanel({
                 hours: USAGE_REQUEST_GRAPH_FETCH_HOURS,
                 fromUnixMs: null,
                 toUnixMs: null,
+                nodes: null,
                 providers: [provider],
                 models: null,
                 origins: null,
@@ -2532,6 +2565,7 @@ export function UsageStatisticsPanel({
           hours: requestFetchHours,
           fromUnixMs: requestFetchFromUnixMs,
           toUnixMs: requestFetchToUnixMs,
+          nodes: requestFetchNodes,
           providers: requestFetchProviders,
           models: requestFetchModels,
           origins: requestFetchOrigins,
@@ -2567,6 +2601,7 @@ export function UsageStatisticsPanel({
   }, [
     requestFetchHours,
     requestFetchFromUnixMs,
+    requestFetchNodes,
     requestFetchModels,
     requestFetchOrigins,
     requestFetchProviders,
@@ -3559,6 +3594,10 @@ export function UsageStatisticsPanel({
             usageWindowHours={usageWindowHours}
             setUsageWindowHours={setUsageWindowHours}
             usageStatisticsLoading={usageStatisticsLoading}
+            usageFilterNodes={usageFilterNodes}
+            setUsageFilterNodes={setUsageFilterNodes}
+            usageNodeFilterOptions={usageNodeFilterOptions}
+            toggleUsageNodeFilter={toggleUsageNodeFilter}
             usageFilterProviders={usageFilterProviders}
             setUsageFilterProviders={setUsageFilterProviders}
             usageProviderFilterDisplayOptions={usageProviderFilterDisplayOptions}

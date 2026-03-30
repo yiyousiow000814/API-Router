@@ -82,6 +82,7 @@ pub(crate) fn get_spend_history(
                 since,
                 None,
                 None,
+                &[],
                 &provider_only,
                 &[],
                 &[],

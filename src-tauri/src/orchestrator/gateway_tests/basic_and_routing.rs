@@ -2181,6 +2181,7 @@ fn decide_provider_balanced_auto_prefers_higher_quota_for_heavy_session_when_loa
         &[],
         &[],
         &[],
+        &[],
         &sessions,
     );
     assert!(usage_count >= 20, "expected heavy session history");

@@ -184,11 +184,13 @@ export type UsageStatistics = {
   generated_at_unix_ms: number
   window_hours: number
   filter?: {
+    nodes?: string[] | null
     providers?: string[] | null
     models?: string[] | null
     origins?: string[] | null
   }
   catalog?: {
+    nodes?: string[]
     providers: string[]
     models: string[]
     origins?: string[]

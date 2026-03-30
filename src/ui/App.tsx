@@ -227,6 +227,7 @@ export default function App() {
   const [providerGroupManagerFocusProvider, setProviderGroupManagerFocusProvider] = useState<string | null>(null)
   const [usageStatistics, setUsageStatistics] = useState<UsageStatistics | null>(null)
   const [usageWindowHours, setUsageWindowHours] = useState<number>(24)
+  const [usageFilterNodes, setUsageFilterNodes] = useState<string[]>([])
   const [usageFilterProviders, setUsageFilterProviders] = useState<string[]>([])
   const [usageFilterModels, setUsageFilterModels] = useState<string[]>([])
   const [usageFilterOrigins, setUsageFilterOrigins] = useState<string[]>([])
@@ -963,6 +964,7 @@ export default function App() {
   } = useUsageOpsBridge({
     isDevPreview,
     usageWindowHours,
+    usageFilterNodes,
     usageFilterProviders,
     usageFilterModels,
     usageFilterOrigins,
@@ -1040,13 +1042,13 @@ export default function App() {
   const {
     providerGroupLabelByName, linkedProvidersForApiKey, switchboardProviderCards, switchboardModeLabel,
     switchboardModelProviderLabel, switchboardTargetDirsLabel, usageSummary, usageByProvider, usageTotalInputTokens,
-    usageTotalOutputTokens, usageAvgTokensPerRequest, usageTopModel, usageProviderFilterOptions,
+    usageTotalOutputTokens, usageAvgTokensPerRequest, usageTopModel, usageNodeFilterOptions, usageProviderFilterOptions,
     usageProviderFilterDisplayOptions, usageModelFilterOptions,
     usageOriginFilterOptions,
     usageProviderDisplayGroups, usagePricedRequestCount, usageDedupedTotalUsedUsd, usagePricedCoveragePct,
     usageActiveWindowHours, usageAvgRequestsPerHour, usageAvgTokensPerHour, usageWindowLabel,
     usageProviderTotalsAndAverages, usagePricingProviderNames, usagePricingGroups, usageScheduleProviderOptions,
-    usageAnomalies, toggleUsageProviderFilterDisplayOption, toggleUsageModelFilter, toggleUsageOriginFilter, usageChart, showUsageChartHover,
+    usageAnomalies, toggleUsageProviderFilterDisplayOption, toggleUsageModelFilter, toggleUsageNodeFilter, toggleUsageOriginFilter, usageChart, showUsageChartHover,
   } = useDashboardDerivations({
     config,
     orderedConfigProviders,
@@ -1058,6 +1060,8 @@ export default function App() {
     fmtUsd,
     pctOf,
     usageStatistics,
+    usageFilterNodes,
+    setUsageFilterNodes,
     usageFilterProviders,
     setUsageFilterProviders,
     usageFilterModels,
@@ -1072,6 +1076,8 @@ export default function App() {
     providerGroupLabelByName,
     usageScheduleSaveState,
     usageScheduleSaveError,
+    setUsageFilterNodes,
+    usageNodeFilterOptions,
     setUsageFilterProviders,
     usageProviderFilterOptions,
     setUsageFilterModels,
@@ -1130,6 +1136,7 @@ export default function App() {
     activePage,
     refreshUsageStatistics,
     usageWindowHours,
+    usageFilterNodes,
     usageFilterProviders,
     usageFilterModels,
     usageFilterOrigins,
@@ -1291,6 +1298,10 @@ export default function App() {
                 usageWindowHours,
                 setUsageWindowHours,
                 usageStatisticsLoading,
+                usageFilterNodes,
+                setUsageFilterNodes,
+                usageNodeFilterOptions,
+                toggleUsageNodeFilter,
                 usageFilterProviders,
                 setUsageFilterProviders,
                 usageProviderFilterOptions,

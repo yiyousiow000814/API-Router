@@ -28,6 +28,7 @@ type Params = {
   activePage: 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log' | 'web_codex'
   refreshUsageStatistics: (options?: { silent?: boolean }) => Promise<void>
   usageWindowHours: number
+  usageFilterNodes: string[]
   usageFilterProviders: string[]
   usageFilterModels: string[]
   usageFilterOrigins: string[]
@@ -86,6 +87,7 @@ export function useAppUsageEffects(params: Params) {
     activePage,
     refreshUsageStatistics,
     usageWindowHours,
+    usageFilterNodes,
     usageFilterProviders,
     usageFilterModels,
     usageFilterOrigins,
@@ -141,7 +143,7 @@ export function useAppUsageEffects(params: Params) {
     void refreshUsageStatistics({ silent: enteringUsagePage })
     const t = window.setInterval(() => void refreshUsageStatistics({ silent: true }), refreshMs)
     return () => window.clearInterval(t)
-  }, [activePage, usageWindowHours, usageFilterProviders, usageFilterModels, usageFilterOrigins, refreshUsageStatistics])
+  }, [activePage, usageWindowHours, usageFilterNodes, usageFilterProviders, usageFilterModels, usageFilterOrigins, refreshUsageStatistics])
 
   useEffect(() => {
     previousActivePageRef.current = activePage

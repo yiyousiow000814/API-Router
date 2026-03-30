@@ -427,9 +427,9 @@ mod tests {
         }
 
         let (page1, has_more1) =
-            store.list_usage_requests_page(0, None, None, &[], &[], &[], &[], 1, 0);
+            store.list_usage_requests_page(0, None, None, &[], &[], &[], &[], &[], 1, 0);
         let (page2, has_more2) =
-            store.list_usage_requests_page(0, None, None, &[], &[], &[], &[], 1, 1);
+            store.list_usage_requests_page(0, None, None, &[], &[], &[], &[], &[], 1, 1);
         assert_eq!(page1.len(), 1);
         assert_eq!(page2.len(), 1);
         assert!(has_more1);
@@ -618,6 +618,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
             50,
             0,
         );
@@ -670,6 +671,7 @@ mod tests {
                 &[],
                 &[],
                 &[],
+                &[],
             );
         assert_eq!(requests, 3);
         assert_eq!(input, 300);
@@ -716,7 +718,7 @@ mod tests {
 
         let since = (newer - 3_600_000) as u64;
         let (rows, has_more) =
-            store.list_usage_requests_page(since, None, None, &[], &[], &[], &[], 50, 0);
+            store.list_usage_requests_page(since, None, None, &[], &[], &[], &[], &[], 50, 0);
         assert!(!has_more);
         assert_eq!(rows.len(), 1);
         assert_eq!(
@@ -728,7 +730,7 @@ mod tests {
         );
 
         let (requests, input, output, total, cache_create, cache_read) = store
-            .summarize_usage_requests(since, None, None, &[], &[], &[], &[]);
+            .summarize_usage_requests(since, None, None, &[], &[], &[], &[], &[]);
         assert_eq!(requests, 1);
         assert_eq!(input, 20);
         assert_eq!(output, 2);
@@ -810,5 +812,73 @@ mod tests {
         assert_eq!(rows_b.len(), 300);
         assert!(rows_b.iter().any(|row| row.get("node_name").and_then(|v| v.as_str()) == Some("Desk A")));
         assert!(rows_b.iter().any(|row| row.get("node_name").and_then(|v| v.as_str()) == Some("Desk B")));
+    }
+
+    #[test]
+    fn usage_request_queries_support_node_filter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        let rows = [
+            ("node-a-1", "Desk A", "session-a", 110_i64),
+            ("node-a-2", "Desk A", "session-b", 220_i64),
+            ("node-b-1", "Desk B", "session-c", 330_i64),
+        ];
+        {
+            let conn = store.events_db.lock();
+            for (idx, (node_id, node_name, session_id, total_tokens)) in rows.iter().enumerate() {
+                conn.execute(
+                    "INSERT INTO usage_requests(
+                        id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, session_id, node_id, node_name,
+                        input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                     ) VALUES(?1, ?2, ?2, 'official', '-', 'gpt-5.2-codex', 'windows', ?3, ?4, ?5, ?6, 0, ?6, 0, 0)",
+                    rusqlite::params![
+                        format!("row-{idx}"),
+                        50_000_i64 + idx as i64,
+                        session_id,
+                        node_id,
+                        node_name,
+                        total_tokens,
+                    ],
+                )
+                .unwrap();
+            }
+        }
+
+        let (desk_a_rows, has_more) = store.list_usage_requests_page(
+            0,
+            None,
+            None,
+            &["Desk A".to_string()],
+            &[],
+            &[],
+            &[],
+            &[],
+            50,
+            0,
+        );
+        assert!(!has_more);
+        assert_eq!(desk_a_rows.len(), 2);
+        assert!(desk_a_rows
+            .iter()
+            .all(|row| row.get("node_name").and_then(|v| v.as_str()) == Some("Desk A")));
+
+        let (requests, input, output, total, cache_create, cache_read) = store
+            .summarize_usage_requests(
+                0,
+                None,
+                None,
+                &["Desk B".to_string()],
+                &[],
+                &[],
+                &[],
+                &[],
+            );
+        assert_eq!(requests, 1);
+        assert_eq!(input, 330);
+        assert_eq!(output, 0);
+        assert_eq!(total, 330);
+        assert_eq!(cache_create, 0);
+        assert_eq!(cache_read, 0);
     }
 }

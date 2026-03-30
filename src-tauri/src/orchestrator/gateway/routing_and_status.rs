@@ -342,6 +342,7 @@ fn session_demand_ratio_for_balancing(st: &GatewayState, session_key: &str, now_
         &[],
         &[],
         &[],
+        &[],
         &sessions,
     );
     session_demand_ratio_from_usage(request_count, total_tokens)

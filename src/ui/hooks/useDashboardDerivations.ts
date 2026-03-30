@@ -36,6 +36,8 @@ type Params = {
   fmtUsd: (value: number | null | undefined) => string
   pctOf: (part?: number | null, total?: number | null) => number | null
   usageStatistics: UsageStatistics | null
+  usageFilterNodes: string[]
+  setUsageFilterNodes: Dispatch<SetStateAction<string[]>>
   usageFilterProviders: string[]
   setUsageFilterProviders: Dispatch<SetStateAction<string[]>>
   usageFilterModels: string[]
@@ -66,6 +68,7 @@ export function useDashboardDerivations(params: Params) {
     fmtUsd,
     pctOf,
     usageStatistics,
+    setUsageFilterNodes,
     setUsageFilterProviders,
     setUsageFilterModels,
     setUsageFilterOrigins,
@@ -134,7 +137,12 @@ export function useDashboardDerivations(params: Params) {
   const usageTopModel = usageByModel[0] ?? null
   const usageCatalogProviders = usageStatistics?.catalog?.providers ?? []
   const usageCatalogModels = usageStatistics?.catalog?.models ?? []
+  const usageCatalogNodes = usageStatistics?.catalog?.nodes ?? []
   const usageCatalogOrigins = usageStatistics?.catalog?.origins ?? []
+  const usageNodeFilterOptions = useMemo(
+    () => [...usageCatalogNodes].sort((a, b) => a.localeCompare(b)),
+    [usageCatalogNodes],
+  )
   const usageProviderFilterOptions = useMemo(
     () => buildUsageProviderFilterOptions(usageCatalogProviders),
     [usageCatalogProviders],
@@ -258,6 +266,11 @@ export function useDashboardDerivations(params: Params) {
       prev.includes(name) ? prev.filter((v) => v !== name) : [name],
     )
   }, [setUsageFilterOrigins])
+  const toggleUsageNodeFilter = useCallback((name: string) => {
+    setUsageFilterNodes((prev: string[]) =>
+      prev.includes(name) ? prev.filter((v) => v !== name) : [name],
+    )
+  }, [setUsageFilterNodes])
 
   const usageChart = useMemo(
     () => buildUsageChartModel(usageTimeline, usageMaxTimelineRequests, usageMaxTimelineTokens),
@@ -310,6 +323,7 @@ export function useDashboardDerivations(params: Params) {
     usageProviderFilterOptions,
     usageProviderFilterDisplayOptions,
     usageModelFilterOptions,
+    usageNodeFilterOptions,
     usageOriginFilterOptions,
     usageProviderDisplayGroups,
     usagePricedRequestCount,
@@ -326,6 +340,7 @@ export function useDashboardDerivations(params: Params) {
     usageAnomalies,
     toggleUsageProviderFilterDisplayOption,
     toggleUsageModelFilter,
+    toggleUsageNodeFilter,
     toggleUsageOriginFilter,
     usageChart,
     showUsageChartHover,

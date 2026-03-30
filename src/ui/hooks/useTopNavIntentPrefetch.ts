@@ -254,10 +254,11 @@ export function useTopNavIntentPrefetch({
     usageRequestsIntentPrefetchInFlightRef.current = true
     const useSyntheticRevision = import.meta.env.DEV || readTestFlagFromLocation()
     const requestQueryKey = useSyntheticRevision
-      ? buildUsageRequestsQueryKey({
+        ? buildUsageRequestsQueryKey({
           hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
           fromUnixMs: null,
           toUnixMs: null,
+          nodes: null,
           providers: null,
           models: null,
           origins: null,
@@ -277,6 +278,7 @@ export function useTopNavIntentPrefetch({
               hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
               fromUnixMs: null,
               toUnixMs: null,
+              nodes: null,
               providers: null,
               models: null,
               origins: null,
@@ -326,6 +328,7 @@ export function useTopNavIntentPrefetch({
                       hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
                       fromUnixMs: null,
                       toUnixMs: null,
+                      nodes: null,
                       providers: [provider],
                       models: null,
                       origins: null,

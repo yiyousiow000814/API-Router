@@ -1910,6 +1910,7 @@ impl Store {
         since_unix_ms: u64,
         from_unix_ms: Option<u64>,
         to_unix_ms: Option<u64>,
+        nodes: &[String],
         providers: &[String],
         models: &[String],
         origins: &[String],
@@ -1946,6 +1947,15 @@ impl Store {
             for provider in providers {
                 params.push(rusqlite::types::Value::Text(
                     provider.trim().to_ascii_lowercase(),
+                ));
+            }
+        }
+        if !nodes.is_empty() {
+            let placeholders = vec!["?"; nodes.len()].join(", ");
+            sql.push_str(&format!(" AND lower(CASE WHEN trim(node_name) = '' THEN 'Local' ELSE node_name END) IN ({placeholders})"));
+            for node in nodes {
+                params.push(rusqlite::types::Value::Text(
+                    node.trim().to_ascii_lowercase(),
                 ));
             }
         }
@@ -2025,6 +2035,7 @@ impl Store {
         since_unix_ms: u64,
         from_unix_ms: Option<u64>,
         to_unix_ms: Option<u64>,
+        nodes: &[String],
         providers: &[String],
         models: &[String],
         origins: &[String],
@@ -2062,6 +2073,15 @@ impl Store {
             for provider in providers {
                 params.push(rusqlite::types::Value::Text(
                     provider.trim().to_ascii_lowercase(),
+                ));
+            }
+        }
+        if !nodes.is_empty() {
+            let placeholders = vec!["?"; nodes.len()].join(", ");
+            sql.push_str(&format!(" AND lower(CASE WHEN trim(node_name) = '' THEN 'Local' ELSE node_name END) IN ({placeholders})"));
+            for node in nodes {
+                params.push(rusqlite::types::Value::Text(
+                    node.trim().to_ascii_lowercase(),
                 ));
             }
         }

@@ -27,6 +27,7 @@ type UsageScheduleCurrencyMenuState = {
 type Params = {
   isDevPreview: boolean
   usageWindowHours: number
+  usageFilterNodes: string[]
   usageFilterProviders: string[]
   usageFilterModels: string[]
   usageFilterOrigins: string[]
@@ -73,6 +74,7 @@ export function useUsageOpsBridge(params: Params) {
   const {
     isDevPreview,
     usageWindowHours,
+    usageFilterNodes,
     usageFilterProviders,
     usageFilterModels,
     usageFilterOrigins,
@@ -147,6 +149,7 @@ export function useUsageOpsBridge(params: Params) {
         buildDevUsageStatistics({
           now: Date.now(),
           usageWindowHours,
+          usageFilterNodes,
           usageFilterProviders,
           usageFilterModels,
           usageFilterOrigins,
@@ -159,6 +162,7 @@ export function useUsageOpsBridge(params: Params) {
     try {
       const res = await invoke<UsageStatistics>('get_usage_statistics', {
         hours: usageWindowHours,
+        nodes: usageFilterNodes.length ? usageFilterNodes : null,
         providers: usageFilterProviders.length ? usageFilterProviders : null,
         models: usageFilterModels.length ? usageFilterModels : null,
         origins: usageFilterOrigins.length ? usageFilterOrigins : null,
@@ -174,6 +178,7 @@ export function useUsageOpsBridge(params: Params) {
     config,
     setUsageStatistics,
     usageWindowHours,
+    usageFilterNodes,
     usageFilterProviders,
     usageFilterModels,
     usageFilterOrigins,

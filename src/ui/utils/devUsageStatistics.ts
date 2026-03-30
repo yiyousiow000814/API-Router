@@ -3,12 +3,15 @@ import type { Config, UsageStatistics } from '../types'
 export function buildDevUsageStatistics(params: {
   now: number
   usageWindowHours: number
+  usageFilterNodes?: string[]
   usageFilterProviders: string[]
   usageFilterModels: string[]
   usageFilterOrigins: string[]
   config?: Config | null
 }): UsageStatistics {
-  const { now, usageWindowHours, usageFilterProviders, usageFilterModels, usageFilterOrigins, config = null } = params
+  const { now, usageWindowHours, usageFilterNodes = [], usageFilterProviders, usageFilterModels, usageFilterOrigins, config = null } = params
+  const normalizedNodeFilters = usageFilterNodes.map((node) => node.trim().toLowerCase()).filter(Boolean)
+  const includeNode = (nodeName: string) => normalizedNodeFilters.length === 0 || normalizedNodeFilters.includes(nodeName.trim().toLowerCase())
   const normalizedProviderFilters = usageFilterProviders.map((provider) => provider.trim().toLowerCase()).filter(Boolean)
   const includeProvider =
     normalizedProviderFilters.length === 0
@@ -165,6 +168,7 @@ export function buildDevUsageStatistics(params: {
     const wslTokens = Math.max(1, totalTokens - windowsTokens)
     return [
       {
+        node_name: 'Local',
         provider: providerName,
         api_key_ref: apiKeyRef,
         origin: 'windows',
@@ -176,6 +180,7 @@ export function buildDevUsageStatistics(params: {
         pricing_source: 'manual_per_request',
       },
       {
+        node_name: 'Desk B',
         provider: providerName,
         api_key_ref: apiKeyRef,
         origin: 'wsl2',
@@ -190,6 +195,7 @@ export function buildDevUsageStatistics(params: {
   })
 
   const byProvider = providerRowsRaw
+    .filter((row) => includeNode(row.node_name))
     .filter((row) => includeOrigin(row.origin))
     .filter((row) => includeProvider(row.provider))
 
@@ -204,11 +210,13 @@ export function buildDevUsageStatistics(params: {
     generated_at_unix_ms: now,
     window_hours: usageWindowHours,
     filter: {
+      nodes: usageFilterNodes,
       providers: usageFilterProviders,
       models: usageFilterModels,
       origins: usageFilterOrigins,
     },
     catalog: {
+      nodes: ['Desk B', 'Local'],
       providers: orderedProviderNames,
       models: ['gpt-5.x', 'gpt-4.1'],
       origins: ['windows', 'wsl2'],

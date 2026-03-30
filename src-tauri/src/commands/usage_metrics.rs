@@ -31,6 +31,24 @@ fn normalize_usage_origin_filter(origins: Option<Vec<String>>) -> BTreeSet<Strin
         .collect()
 }
 
+fn usage_node_label(node_name: Option<&str>) -> String {
+    let trimmed = node_name.map(str::trim).unwrap_or_default();
+    if trimmed.is_empty() {
+        "Local".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn normalize_usage_node_filter(nodes: Option<Vec<String>>) -> BTreeSet<String> {
+    nodes
+        .unwrap_or_default()
+        .into_iter()
+        .map(|raw| raw.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
 fn list_usage_requests_for_statistics(
     store: &crate::orchestrator::store::Store,
 ) -> Vec<Value> {
@@ -49,6 +67,7 @@ pub(crate) fn get_usage_request_entries(
     hours: Option<u64>,
     from_unix_ms: Option<u64>,
     to_unix_ms: Option<u64>,
+    nodes: Option<Vec<String>>,
     providers: Option<Vec<String>>,
     models: Option<Vec<String>>,
     origins: Option<Vec<String>>,
@@ -72,6 +91,7 @@ pub(crate) fn get_usage_request_entries(
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
+    let node_filter: BTreeSet<String> = normalize_usage_node_filter(nodes);
     let origin_filter = normalize_usage_origin_filter(origins);
     let session_filter: BTreeSet<String> = sessions
         .unwrap_or_default()
@@ -79,6 +99,7 @@ pub(crate) fn get_usage_request_entries(
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
+    let has_node_filter = !node_filter.is_empty();
     let has_provider_filter = !provider_filter.is_empty();
     let has_model_filter = !model_filter.is_empty();
     let has_origin_filter = !origin_filter.is_empty();
@@ -98,6 +119,11 @@ pub(crate) fn get_usage_request_entries(
         }
     }
 
+    let node_filter_list: Vec<String> = if has_node_filter {
+        node_filter.iter().cloned().collect()
+    } else {
+        Vec::new()
+    };
     let provider_filter_list: Vec<String> = if has_provider_filter {
         provider_filter.iter().cloned().collect()
     } else {
@@ -122,6 +148,7 @@ pub(crate) fn get_usage_request_entries(
         since_unix_ms,
         range_from,
         range_to,
+        &node_filter_list,
         &provider_filter_list,
         &model_filter_list,
         &origin_filter_list,
@@ -145,6 +172,7 @@ pub(crate) fn get_usage_request_summary(
     hours: Option<u64>,
     from_unix_ms: Option<u64>,
     to_unix_ms: Option<u64>,
+    nodes: Option<Vec<String>>,
     providers: Option<Vec<String>>,
     models: Option<Vec<String>>,
     origins: Option<Vec<String>>,
@@ -166,6 +194,7 @@ pub(crate) fn get_usage_request_summary(
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
+    let node_filter = normalize_usage_node_filter(nodes);
     let origin_filter = normalize_usage_origin_filter(origins);
     let session_filter: BTreeSet<String> = sessions
         .unwrap_or_default()
@@ -173,6 +202,7 @@ pub(crate) fn get_usage_request_summary(
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
+    let node_filter_list: Vec<String> = node_filter.iter().cloned().collect();
     let provider_filter_list: Vec<String> = provider_filter.iter().cloned().collect();
     let model_filter_list: Vec<String> = model_filter.iter().cloned().collect();
     let origin_filter_list: Vec<String> = origin_filter.iter().cloned().collect();
@@ -183,6 +213,7 @@ pub(crate) fn get_usage_request_summary(
             since_unix_ms,
             from_unix_ms,
             to_unix_ms,
+            &node_filter_list,
             &provider_filter_list,
             &model_filter_list,
             &origin_filter_list,
@@ -289,6 +320,7 @@ pub(crate) fn get_usage_request_daily_totals(
 pub(crate) fn get_usage_statistics(
     state: tauri::State<'_, app_state::AppState>,
     hours: Option<u64>,
+    nodes: Option<Vec<String>>,
     providers: Option<Vec<String>>,
     models: Option<Vec<String>>,
     origins: Option<Vec<String>>,
@@ -353,7 +385,9 @@ pub(crate) fn get_usage_statistics(
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
+    let node_filter = normalize_usage_node_filter(nodes);
     let origin_filter = normalize_usage_origin_filter(origins);
+    let has_node_filter = !node_filter.is_empty();
     let has_provider_filter = !provider_filter.is_empty();
     let has_model_filter = !model_filter.is_empty();
     let has_origin_filter = !origin_filter.is_empty();
@@ -375,6 +409,7 @@ pub(crate) fn get_usage_statistics(
     let mut catalog_providers: BTreeSet<String> = BTreeSet::new();
     let mut catalog_models: BTreeSet<String> = BTreeSet::new();
     let mut catalog_origins: BTreeSet<String> = BTreeSet::new();
+    let mut catalog_nodes: BTreeSet<String> = BTreeSet::new();
     let mut timeline: BTreeMap<u64, (u64, u64, u64, u64)> = BTreeMap::new();
     let mut filtered: Vec<UsageRow> = Vec::new();
     let last_24h_unix_ms = now.saturating_sub(24 * 60 * 60 * 1000);
@@ -407,9 +442,11 @@ pub(crate) fn get_usage_statistics(
             .unwrap_or("unknown")
             .to_string();
         let origin = normalize_usage_origin(rec.get("origin").and_then(|v| v.as_str()));
+        let node_name = usage_node_label(rec.get("node_name").and_then(|v| v.as_str()));
         let provider_lc = provider.to_ascii_lowercase();
         let model_lc = model.to_ascii_lowercase();
         let origin_lc = origin.to_ascii_lowercase();
+        let node_lc = node_name.to_ascii_lowercase();
         let input_tokens = rec
             .get("input_tokens")
             .and_then(|v| v.as_u64())
@@ -437,6 +474,7 @@ pub(crate) fn get_usage_statistics(
         let provider_matches = !has_provider_filter || provider_filter.contains(&provider_lc);
         let model_matches = !has_model_filter || model_filter.contains(&model_lc);
         let origin_matches = !has_origin_filter || origin_filter.contains(&origin_lc);
+        let node_matches = !has_node_filter || node_filter.contains(&node_lc);
         if provider_matches {
             if let Some(day_key) = local_day_key_from_unix_ms(ts) {
                 provider_req_by_day_all_from_req
@@ -450,16 +488,19 @@ pub(crate) fn get_usage_statistics(
         if ts < since_unix_ms {
             continue;
         }
-        if model_matches && origin_matches {
+        if model_matches && origin_matches && node_matches {
             catalog_providers.insert(provider.clone());
         }
-        if provider_matches && origin_matches {
+        if provider_matches && origin_matches && node_matches {
             catalog_models.insert(model.clone());
         }
-        if provider_matches && model_matches {
+        if provider_matches && model_matches && node_matches {
             catalog_origins.insert(origin.clone());
         }
-        if !provider_matches || !model_matches || !origin_matches {
+        if provider_matches && model_matches && origin_matches {
+            catalog_nodes.insert(node_name.clone());
+        }
+        if !provider_matches || !model_matches || !origin_matches || !node_matches {
             continue;
         }
         let api_key_ref = rec
@@ -1090,11 +1131,17 @@ pub(crate) fn get_usage_statistics(
     } else {
         Value::Null
     };
+    let filter_nodes_json = if has_node_filter {
+        serde_json::json!(node_filter.into_iter().collect::<Vec<_>>())
+    } else {
+        Value::Null
+    };
     let filter_origins_json = if has_origin_filter {
         serde_json::json!(origin_filter.into_iter().collect::<Vec<_>>())
     } else {
         Value::Null
     };
+    let catalog_node_values: Vec<String> = catalog_nodes.into_iter().collect();
     let catalog_provider_values: Vec<String> = catalog_providers.into_iter().collect();
     let catalog_model_values: Vec<String> = catalog_models.into_iter().collect();
     let catalog_origin_values: Vec<String> = catalog_origins.into_iter().collect();
@@ -1104,11 +1151,13 @@ pub(crate) fn get_usage_statistics(
       "generated_at_unix_ms": now,
       "window_hours": window_hours,
       "filter": {
+        "nodes": filter_nodes_json,
         "providers": filter_providers_json,
         "models": filter_models_json,
         "origins": filter_origins_json
       },
       "catalog": {
+        "nodes": catalog_node_values,
         "providers": catalog_provider_values,
         "models": catalog_model_values,
         "origins": catalog_origin_values
