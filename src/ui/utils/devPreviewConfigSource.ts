@@ -56,6 +56,11 @@ function cloneProviderMap(providers: Config['providers']): Config['providers'] {
   return Object.fromEntries(Object.entries(providers).map(([name, provider]) => [name, { ...provider }]))
 }
 
+function sourceFollowAllowed(source: NonNullable<Config['config_source']>['sources'][number]): boolean {
+  if (source.kind !== 'peer') return false
+  return Boolean(source.trusted) && !source.follow_blocked_reason
+}
+
 export function nextCopiedProviderName(providers: Config['providers'], baseName: string): string {
   const trimmed = baseName.trim()
   const first = trimmed ? `${trimmed} [copy]` : '[copy]'
@@ -141,7 +146,27 @@ export function buildDevPreviewFollowConfig(
         config.config_source?.sources.map((entry) => ({
           ...entry,
           active: entry.node_id === nodeId,
+          follow_allowed: entry.node_id === nodeId ? sourceFollowAllowed(entry) : entry.follow_allowed,
         })) ?? [],
+    },
+  }
+}
+
+export function updateDevPreviewPairState(
+  config: Config,
+  nodeId: string,
+  updater: (
+    source: NonNullable<Config['config_source']>['sources'][number],
+  ) => NonNullable<Config['config_source']>['sources'][number],
+): Config {
+  if (!config.config_source) return config
+  return {
+    ...config,
+    config_source: {
+      ...config.config_source,
+      sources: config.config_source.sources.map((source) =>
+        source.node_id === nodeId ? updater({ ...source }) : source,
+      ),
     },
   }
 }

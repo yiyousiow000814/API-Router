@@ -32,6 +32,9 @@ const LAN_EDIT_SYNC_LOOP_INTERVAL_MS: u64 = 1_500;
 const LAN_EDIT_SYNC_BATCH_LIMIT: usize = 32;
 const LAN_PACKET_SOFT_LIMIT_BYTES: usize = 8 * 1024;
 const LAN_SOCKET_RETRY_MS: u64 = 2_000;
+const LAN_PAIR_REQUEST_TTL_MS: u64 = 5 * 60 * 1000;
+const LAN_PAIR_REQUEST_THROTTLE_MS: u64 = 60 * 1000;
+const LAN_PAIR_APPROVAL_TTL_MS: u64 = 5 * 60 * 1000;
 const LAN_HEARTBEAT_CAPABILITIES: [&str; 6] = [
     "heartbeat_v1",
     "status_v1",
@@ -65,6 +68,9 @@ pub struct LanPeerSnapshot {
     pub capabilities: Vec<String>,
     pub provider_fingerprints: Vec<String>,
     pub followed_source_node_id: Option<String>,
+    pub trusted: bool,
+    pub pair_state: Option<String>,
+    pub pair_request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -94,6 +100,29 @@ struct LanPeerRuntime {
     capabilities: Vec<String>,
     provider_fingerprints: Vec<String>,
     followed_source_node_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct LanPendingPairRequest {
+    request_id: String,
+    requester_node_id: String,
+    requested_at_unix_ms: u64,
+    requester_addr: SocketAddr,
+}
+
+#[derive(Debug, Clone)]
+struct LanOutboundPairRequest {
+    request_id: String,
+    requested_at_unix_ms: u64,
+    approval_ready: bool,
+}
+
+#[derive(Debug, Clone)]
+struct LanPairApprovalState {
+    requester_node_id: String,
+    requester_addr: SocketAddr,
+    pin_code: String,
+    created_at_unix_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,6 +196,43 @@ struct LanQuotaRefreshRequestPacket {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct LanPairRequestPacket {
+    version: u8,
+    request_id: String,
+    node_id: String,
+    node_name: String,
+    sent_at_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LanPairApprovalReadyPacket {
+    version: u8,
+    request_id: String,
+    node_id: String,
+    node_name: String,
+    sent_at_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LanPairPinSubmitPacket {
+    version: u8,
+    request_id: String,
+    node_id: String,
+    pin_code: String,
+    sent_at_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LanPairTrustBundlePacket {
+    version: u8,
+    request_id: String,
+    node_id: String,
+    nonce_b64: String,
+    ciphertext_b64: String,
+    sent_at_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum LanSyncPacket {
     Heartbeat(LanHeartbeatPacket),
@@ -191,6 +257,10 @@ struct LanProtectedPacket {
 enum LanWirePacket {
     Heartbeat(LanHeartbeatPacket),
     Protected(LanProtectedPacket),
+    PairRequest(LanPairRequestPacket),
+    PairApprovalReady(LanPairApprovalReadyPacket),
+    PairPinSubmit(LanPairPinSubmitPacket),
+    PairTrustBundle(LanPairTrustBundlePacket),
 }
 
 #[derive(Clone)]
@@ -198,6 +268,10 @@ pub struct LanSyncRuntime {
     local_node: LanNodeIdentity,
     local_provider_fingerprints: Arc<RwLock<Vec<String>>>,
     peers: Arc<RwLock<HashMap<String, LanPeerRuntime>>>,
+    inbound_pair_requests: Arc<RwLock<HashMap<String, LanPendingPairRequest>>>,
+    outbound_pair_requests: Arc<RwLock<HashMap<String, LanOutboundPairRequest>>>,
+    pair_approvals: Arc<RwLock<HashMap<String, LanPairApprovalState>>>,
+    pending_trust_bundle_pins: Arc<RwLock<HashMap<String, String>>>,
     started: Arc<AtomicBool>,
     last_peer_prune_unix_ms: Arc<AtomicU64>,
 }
@@ -208,6 +282,10 @@ impl LanSyncRuntime {
             local_node,
             local_provider_fingerprints: Arc::new(RwLock::new(Vec::new())),
             peers: Arc::new(RwLock::new(HashMap::new())),
+            inbound_pair_requests: Arc::new(RwLock::new(HashMap::new())),
+            outbound_pair_requests: Arc::new(RwLock::new(HashMap::new())),
+            pair_approvals: Arc::new(RwLock::new(HashMap::new())),
+            pending_trust_bundle_pins: Arc::new(RwLock::new(HashMap::new())),
             started: Arc::new(AtomicBool::new(false)),
             last_peer_prune_unix_ms: Arc::new(AtomicU64::new(0)),
         }
@@ -303,7 +381,27 @@ impl LanSyncRuntime {
         cfg: &AppConfig,
         secrets: &SecretStore,
     ) -> LanSyncStatusSnapshot {
-        let peers = self.collect_live_peers(unix_ms());
+        let now = unix_ms();
+        self.prune_pair_state(now);
+        let trusted_node_ids = secrets.trusted_lan_node_ids();
+        let inbound_requests = self.inbound_pair_requests.read().clone();
+        let outbound_requests = self.outbound_pair_requests.read().clone();
+        let peers = self
+            .collect_live_peers(now)
+            .into_iter()
+            .map(|mut peer| {
+                peer.trusted = trusted_node_ids.contains(&peer.node_id);
+                peer.pair_state = peer_pair_state(
+                    &peer.node_id,
+                    &trusted_node_ids,
+                    &inbound_requests,
+                    &outbound_requests,
+                );
+                peer.pair_request_id =
+                    peer_pair_request_id(&peer.node_id, &inbound_requests, &outbound_requests);
+                peer
+            })
+            .collect();
         let local_provider_fingerprints = build_provider_fingerprints(cfg, secrets);
         *self.local_provider_fingerprints.write() = local_provider_fingerprints.clone();
         LanSyncStatusSnapshot {
@@ -361,6 +459,9 @@ impl LanSyncRuntime {
                     capabilities: peer.capabilities.clone(),
                     provider_fingerprints: peer.provider_fingerprints.clone(),
                     followed_source_node_id: peer.followed_source_node_id.clone(),
+                    trusted: false,
+                    pair_state: None,
+                    pair_request_id: None,
                 })
                 .collect::<Vec<_>>()
         } else {
@@ -376,6 +477,9 @@ impl LanSyncRuntime {
                     capabilities: peer.capabilities.clone(),
                     provider_fingerprints: peer.provider_fingerprints.clone(),
                     followed_source_node_id: peer.followed_source_node_id.clone(),
+                    trusted: false,
+                    pair_state: None,
+                    pair_request_id: None,
                 })
                 .collect::<Vec<_>>()
         };
@@ -391,6 +495,151 @@ impl LanSyncRuntime {
         self.collect_live_peers(unix_ms())
             .into_iter()
             .find(|peer| peer.node_id == node_id)
+    }
+
+    pub fn request_pair(
+        &self,
+        gateway: &crate::orchestrator::gateway::GatewayState,
+        node_id: &str,
+    ) -> Result<String, String> {
+        let normalized = node_id.trim();
+        if normalized.is_empty() {
+            return Err("node_id is required".to_string());
+        }
+        if gateway.secrets.is_lan_node_trusted(normalized) {
+            return Err("peer is already trusted".to_string());
+        }
+        let now = unix_ms();
+        self.prune_pair_state(now);
+        if let Some(existing) = self.outbound_pair_requests.read().get(normalized).cloned() {
+            if now.saturating_sub(existing.requested_at_unix_ms) < LAN_PAIR_REQUEST_THROTTLE_MS {
+                return Ok(existing.request_id);
+            }
+        }
+        let peer = self
+            .live_peer_by_node_id(normalized)
+            .ok_or_else(|| format!("unknown or offline peer: {normalized}"))?;
+        let request_id = format!("pair_{}", Uuid::new_v4().simple());
+        self.outbound_pair_requests.write().insert(
+            normalized.to_string(),
+            LanOutboundPairRequest {
+                request_id: request_id.clone(),
+                requested_at_unix_ms: now,
+                approval_ready: false,
+            },
+        );
+        let addr = peer_sync_addr(&peer)
+            .ok_or_else(|| format!("peer has no valid LAN address: {normalized}"))?;
+        send_wire_packet(
+            addr,
+            &LanWirePacket::PairRequest(LanPairRequestPacket {
+                version: 1,
+                request_id: request_id.clone(),
+                node_id: self.local_node.node_id.clone(),
+                node_name: self.local_node.node_name.clone(),
+                sent_at_unix_ms: now,
+            }),
+        )?;
+        Ok(request_id)
+    }
+
+    pub fn approve_pair(&self, request_id: &str) -> Result<String, String> {
+        let normalized = request_id.trim();
+        if normalized.is_empty() {
+            return Err("request_id is required".to_string());
+        }
+        let now = unix_ms();
+        self.prune_pair_state(now);
+        let request = self
+            .inbound_pair_requests
+            .read()
+            .values()
+            .find(|entry| entry.request_id == normalized)
+            .cloned()
+            .ok_or_else(|| format!("unknown pair request: {normalized}"))?;
+        let pin_code = format!("{:06}", fastrand::u32(0..1_000_000));
+        self.pair_approvals.write().insert(
+            normalized.to_string(),
+            LanPairApprovalState {
+                requester_node_id: request.requester_node_id,
+                requester_addr: request.requester_addr,
+                pin_code: pin_code.clone(),
+                created_at_unix_ms: now,
+            },
+        );
+        send_wire_packet(
+            request.requester_addr,
+            &LanWirePacket::PairApprovalReady(LanPairApprovalReadyPacket {
+                version: 1,
+                request_id: normalized.to_string(),
+                node_id: self.local_node.node_id.clone(),
+                node_name: self.local_node.node_name.clone(),
+                sent_at_unix_ms: now,
+            }),
+        )?;
+        Ok(pin_code)
+    }
+
+    pub fn submit_pair_pin(
+        &self,
+        node_id: &str,
+        request_id: &str,
+        pin_code: &str,
+    ) -> Result<(), String> {
+        let normalized_node_id = node_id.trim();
+        let normalized_request_id = request_id.trim();
+        let normalized_pin = pin_code.trim();
+        if normalized_node_id.is_empty()
+            || normalized_request_id.is_empty()
+            || normalized_pin.is_empty()
+        {
+            return Err("node_id, request_id and pin_code are required".to_string());
+        }
+        let now = unix_ms();
+        self.prune_pair_state(now);
+        let outbound = self
+            .outbound_pair_requests
+            .read()
+            .get(normalized_node_id)
+            .cloned()
+            .ok_or_else(|| "no outbound pair request for that peer".to_string())?;
+        if outbound.request_id != normalized_request_id {
+            return Err("pair request id does not match latest outbound request".to_string());
+        }
+        if !outbound.approval_ready {
+            return Err("pair approval is not ready yet".to_string());
+        }
+        let peer = self
+            .live_peer_by_node_id(normalized_node_id)
+            .ok_or_else(|| format!("unknown or offline peer: {normalized_node_id}"))?;
+        let addr = peer_sync_addr(&peer)
+            .ok_or_else(|| format!("peer has no valid LAN address: {normalized_node_id}"))?;
+        self.pending_trust_bundle_pins.write().insert(
+            normalized_request_id.to_string(),
+            normalized_pin.to_string(),
+        );
+        send_wire_packet(
+            addr,
+            &LanWirePacket::PairPinSubmit(LanPairPinSubmitPacket {
+                version: 1,
+                request_id: normalized_request_id.to_string(),
+                node_id: self.local_node.node_id.clone(),
+                pin_code: normalized_pin.to_string(),
+                sent_at_unix_ms: now,
+            }),
+        )
+    }
+
+    fn prune_pair_state(&self, now: u64) {
+        self.inbound_pair_requests.write().retain(|_, entry| {
+            now.saturating_sub(entry.requested_at_unix_ms) <= LAN_PAIR_REQUEST_TTL_MS
+        });
+        self.outbound_pair_requests.write().retain(|_, entry| {
+            now.saturating_sub(entry.requested_at_unix_ms) <= LAN_PAIR_REQUEST_TTL_MS
+        });
+        self.pair_approvals.write().retain(|_, entry| {
+            now.saturating_sub(entry.created_at_unix_ms) <= LAN_PAIR_APPROVAL_TTL_MS
+        });
     }
 
     pub fn request_remote_quota_refresh(
@@ -547,7 +796,51 @@ fn deserialize_wire_packet(
             let decompressed = decompress_lan_payload(&plaintext).ok()?;
             serde_json::from_slice::<LanSyncPacket>(&decompressed).ok()
         }
+        LanWirePacket::PairRequest(_)
+        | LanWirePacket::PairApprovalReady(_)
+        | LanWirePacket::PairPinSubmit(_)
+        | LanWirePacket::PairTrustBundle(_) => None,
     }
+}
+
+fn pair_cipher(request_id: &str, pin_code: &str) -> ChaCha20Poly1305 {
+    let digest = Sha256::digest(format!("lan-pair:{request_id}:{}", pin_code.trim()).as_bytes());
+    ChaCha20Poly1305::new(&digest)
+}
+
+fn encrypt_pair_bundle(
+    request_id: &str,
+    pin_code: &str,
+    payload: &[u8],
+) -> Result<(String, String), String> {
+    let mut nonce_bytes = [0u8; 12];
+    for byte in &mut nonce_bytes {
+        *byte = fastrand::u8(..);
+    }
+    let ciphertext = pair_cipher(request_id, pin_code)
+        .encrypt(Nonce::from_slice(&nonce_bytes), payload)
+        .map_err(|_| "failed to encrypt pair trust bundle".to_string())?;
+    Ok((
+        base64::engine::general_purpose::STANDARD.encode(nonce_bytes),
+        base64::engine::general_purpose::STANDARD.encode(ciphertext),
+    ))
+}
+
+fn decrypt_pair_bundle(
+    request_id: &str,
+    pin_code: &str,
+    nonce_b64: &str,
+    ciphertext_b64: &str,
+) -> Option<Vec<u8>> {
+    let nonce = base64::engine::general_purpose::STANDARD
+        .decode(nonce_b64.as_bytes())
+        .ok()?;
+    let ciphertext = base64::engine::general_purpose::STANDARD
+        .decode(ciphertext_b64.as_bytes())
+        .ok()?;
+    pair_cipher(request_id, pin_code)
+        .decrypt(Nonce::from_slice(&nonce), ciphertext.as_ref())
+        .ok()
 }
 
 fn packet_encoded_size(
@@ -610,6 +903,17 @@ fn send_wire_bytes(addr: SocketAddr, bytes: &[u8]) -> Result<(), String> {
         .send_to(bytes, addr)
         .map(|_| ())
         .map_err(|err| format!("lan send failed: {err}"))
+}
+
+fn send_wire_packet(addr: SocketAddr, packet: &LanWirePacket) -> Result<(), String> {
+    let bytes = serde_json::to_vec(packet).map_err(|err| err.to_string())?;
+    if bytes.len() > LAN_PACKET_SOFT_LIMIT_BYTES {
+        return Err(format!(
+            "LAN wire packet exceeds soft limit: {} bytes",
+            bytes.len()
+        ));
+    }
+    send_wire_bytes(addr, &bytes)
 }
 
 fn send_packet_to_addr(
@@ -1520,30 +1824,58 @@ fn run_listener(
         loop {
             match socket.recv_from(&mut buf) {
                 Ok((len, source)) => {
-                    let Some(packet) = deserialize_wire_packet(&gateway, &buf[..len]) else {
+                    let Ok(wire_packet) = serde_json::from_slice::<LanWirePacket>(&buf[..len])
+                    else {
                         continue;
                     };
-                    match packet {
-                        LanSyncPacket::Heartbeat(packet) => {
+                    match wire_packet {
+                        LanWirePacket::Heartbeat(packet) => {
                             runtime.note_peer_heartbeat(packet, source)
                         }
-                        LanSyncPacket::SharedHealth(packet) => {
-                            apply_shared_health_packet(&runtime, &gateway, packet);
+                        LanWirePacket::Protected(packet) => {
+                            let Some(decoded) = deserialize_wire_packet(
+                                &gateway,
+                                &serde_json::to_vec(&LanWirePacket::Protected(packet))
+                                    .ok()
+                                    .unwrap_or_default(),
+                            ) else {
+                                continue;
+                            };
+                            match decoded {
+                                LanSyncPacket::Heartbeat(packet) => {
+                                    runtime.note_peer_heartbeat(packet, source)
+                                }
+                                LanSyncPacket::SharedHealth(packet) => {
+                                    apply_shared_health_packet(&runtime, &gateway, packet);
+                                }
+                                LanSyncPacket::UsageSyncRequest(packet) => {
+                                    handle_usage_sync_request(&runtime, &gateway, source, packet);
+                                }
+                                LanSyncPacket::UsageSyncBatch(packet) => {
+                                    apply_usage_sync_batch(&runtime, &gateway, packet);
+                                }
+                                LanSyncPacket::EditSyncRequest(packet) => {
+                                    handle_edit_sync_request(&runtime, &gateway, source, packet);
+                                }
+                                LanSyncPacket::EditSyncBatch(packet) => {
+                                    apply_edit_sync_batch(&runtime, &gateway, &config_path, packet);
+                                }
+                                LanSyncPacket::QuotaRefreshRequest(packet) => {
+                                    handle_quota_refresh_request(&runtime, &gateway, packet);
+                                }
+                            }
                         }
-                        LanSyncPacket::UsageSyncRequest(packet) => {
-                            handle_usage_sync_request(&runtime, &gateway, source, packet);
+                        LanWirePacket::PairRequest(packet) => {
+                            handle_pair_request(&runtime, &gateway, source, packet);
                         }
-                        LanSyncPacket::UsageSyncBatch(packet) => {
-                            apply_usage_sync_batch(&runtime, &gateway, packet);
+                        LanWirePacket::PairApprovalReady(packet) => {
+                            handle_pair_approval_ready(&runtime, packet);
                         }
-                        LanSyncPacket::EditSyncRequest(packet) => {
-                            handle_edit_sync_request(&runtime, &gateway, source, packet);
+                        LanWirePacket::PairPinSubmit(packet) => {
+                            handle_pair_pin_submit(&runtime, &gateway, source, packet);
                         }
-                        LanSyncPacket::EditSyncBatch(packet) => {
-                            apply_edit_sync_batch(&runtime, &gateway, &config_path, packet);
-                        }
-                        LanSyncPacket::QuotaRefreshRequest(packet) => {
-                            handle_quota_refresh_request(&runtime, &gateway, packet);
+                        LanWirePacket::PairTrustBundle(packet) => {
+                            handle_pair_trust_bundle(&runtime, &gateway, packet);
                         }
                     }
                 }
@@ -1650,10 +1982,199 @@ fn apply_shared_health_packet(
     }
 }
 
+fn handle_pair_request(
+    runtime: &LanSyncRuntime,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    source: SocketAddr,
+    packet: LanPairRequestPacket,
+) {
+    let normalized_node_id = packet.node_id.trim();
+    if normalized_node_id.is_empty() || normalized_node_id == runtime.local_node.node_id {
+        return;
+    }
+    if gateway.secrets.is_lan_node_trusted(normalized_node_id) {
+        return;
+    }
+    let now = unix_ms();
+    runtime.prune_pair_state(now);
+    let mut requests = runtime.inbound_pair_requests.write();
+    if let Some(existing) = requests.get(normalized_node_id) {
+        if now.saturating_sub(existing.requested_at_unix_ms) < LAN_PAIR_REQUEST_THROTTLE_MS {
+            return;
+        }
+    }
+    requests.insert(
+        normalized_node_id.to_string(),
+        LanPendingPairRequest {
+            request_id: packet.request_id,
+            requester_node_id: normalized_node_id.to_string(),
+            requested_at_unix_ms: now,
+            requester_addr: source,
+        },
+    );
+}
+
+fn handle_pair_approval_ready(runtime: &LanSyncRuntime, packet: LanPairApprovalReadyPacket) {
+    let normalized_node_id = packet.node_id.trim();
+    if normalized_node_id.is_empty() {
+        return;
+    }
+    let mut outbound = runtime.outbound_pair_requests.write();
+    let Some(request) = outbound.get_mut(normalized_node_id) else {
+        return;
+    };
+    if request.request_id != packet.request_id {
+        return;
+    }
+    request.approval_ready = true;
+}
+
+fn handle_pair_pin_submit(
+    runtime: &LanSyncRuntime,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    _source: SocketAddr,
+    packet: LanPairPinSubmitPacket,
+) {
+    let normalized_node_id = packet.node_id.trim();
+    if normalized_node_id.is_empty() {
+        return;
+    }
+    let Some(approval) = runtime
+        .pair_approvals
+        .read()
+        .get(packet.request_id.as_str())
+        .cloned()
+    else {
+        return;
+    };
+    if approval.requester_node_id != normalized_node_id
+        || approval.pin_code != packet.pin_code.trim()
+    {
+        return;
+    }
+    let trust_secret = match gateway.secrets.ensure_lan_trust_secret() {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let payload = serde_json::json!({
+        "lan_trust_secret": trust_secret,
+        "trusted_node_id": runtime.local_node.node_id,
+    });
+    let Ok(payload_bytes) = serde_json::to_vec(&payload) else {
+        return;
+    };
+    let Ok((nonce_b64, ciphertext_b64)) =
+        encrypt_pair_bundle(&packet.request_id, &approval.pin_code, &payload_bytes)
+    else {
+        return;
+    };
+    let _ = gateway
+        .secrets
+        .set_lan_node_trusted(&approval.requester_node_id, true);
+    runtime
+        .inbound_pair_requests
+        .write()
+        .remove(&approval.requester_node_id);
+    runtime
+        .pair_approvals
+        .write()
+        .remove(packet.request_id.as_str());
+    let _ = send_wire_packet(
+        approval.requester_addr,
+        &LanWirePacket::PairTrustBundle(LanPairTrustBundlePacket {
+            version: 1,
+            request_id: packet.request_id,
+            node_id: runtime.local_node.node_id.clone(),
+            nonce_b64,
+            ciphertext_b64,
+            sent_at_unix_ms: unix_ms(),
+        }),
+    );
+}
+
+fn handle_pair_trust_bundle(
+    runtime: &LanSyncRuntime,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    packet: LanPairTrustBundlePacket,
+) {
+    let Some(pin_code) = runtime
+        .pending_trust_bundle_pins
+        .write()
+        .remove(packet.request_id.as_str())
+    else {
+        return;
+    };
+    let Some(plaintext) = decrypt_pair_bundle(
+        &packet.request_id,
+        &pin_code,
+        &packet.nonce_b64,
+        &packet.ciphertext_b64,
+    ) else {
+        return;
+    };
+    let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&plaintext) else {
+        return;
+    };
+    let Some(trust_secret) = payload
+        .get("lan_trust_secret")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    let trusted_node_id = payload
+        .get("trusted_node_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or(packet.node_id.as_str());
+    let _ = gateway.secrets.set_lan_trust_secret(trust_secret);
+    let _ = gateway.secrets.set_lan_node_trusted(trusted_node_id, true);
+    runtime
+        .outbound_pair_requests
+        .write()
+        .remove(packet.node_id.as_str());
+}
+
 fn peer_sync_addr(peer: &LanPeerSnapshot) -> Option<SocketAddr> {
     let host = peer.listen_addr.split(':').next()?.trim();
     let ip: Ipv4Addr = host.parse().ok()?;
     Some(SocketAddr::from((ip, LAN_DISCOVERY_PORT)))
+}
+
+fn peer_pair_state(
+    node_id: &str,
+    trusted_node_ids: &std::collections::BTreeSet<String>,
+    inbound_requests: &HashMap<String, LanPendingPairRequest>,
+    outbound_requests: &HashMap<String, LanOutboundPairRequest>,
+) -> Option<String> {
+    if trusted_node_ids.contains(node_id) {
+        return Some("trusted".to_string());
+    }
+    if inbound_requests.contains_key(node_id) {
+        return Some("incoming_request".to_string());
+    }
+    outbound_requests.get(node_id).map(|entry| {
+        if entry.approval_ready {
+            "pin_required".to_string()
+        } else {
+            "requested".to_string()
+        }
+    })
+}
+
+fn peer_pair_request_id(
+    node_id: &str,
+    inbound_requests: &HashMap<String, LanPendingPairRequest>,
+    outbound_requests: &HashMap<String, LanOutboundPairRequest>,
+) -> Option<String> {
+    inbound_requests
+        .get(node_id)
+        .map(|entry| entry.request_id.clone())
+        .or_else(|| {
+            outbound_requests
+                .get(node_id)
+                .map(|entry| entry.request_id.clone())
+        })
 }
 
 fn usage_sync_cursor_key(peer_node_id: &str) -> String {

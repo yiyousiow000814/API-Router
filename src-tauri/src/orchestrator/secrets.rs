@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -35,6 +35,8 @@ struct SecretsFile {
     lan_follow_source_node_id: Option<String>,
     #[serde(default)]
     lan_trust_secret: Option<String>,
+    #[serde(default)]
+    lan_trusted_node_ids: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -988,12 +990,6 @@ impl SecretStore {
             .lan_trust_secret
             .clone()
             .filter(|value| !value.trim().is_empty())
-            .or_else(|| {
-                data.providers
-                    .get(GATEWAY_TOKEN_KEY)
-                    .cloned()
-                    .filter(|value| !value.trim().is_empty())
-            })
             .unwrap_or_else(|| format!("lan_{}", Uuid::new_v4().simple()));
         let changed = data.lan_trust_secret.as_deref() != Some(trust_secret.as_str());
         data.lan_trust_secret = Some(trust_secret.clone());
@@ -1001,6 +997,16 @@ impl SecretStore {
             self.persist(&data)?;
         }
         Ok(trust_secret)
+    }
+
+    pub fn set_lan_trust_secret(&self, trust_secret: &str) -> Result<(), String> {
+        let normalized = trust_secret.trim();
+        if normalized.is_empty() {
+            return Err("lan trust secret is required".to_string());
+        }
+        let mut data = self.inner.lock();
+        data.lan_trust_secret = Some(normalized.to_string());
+        self.persist(&data)
     }
 
     pub fn get_lan_node_identity(&self) -> Option<crate::lan_sync::LanNodeIdentity> {
@@ -1016,6 +1022,32 @@ impl SecretStore {
             .map(crate::lan_sync::sanitize_node_name)
             .unwrap_or_else(|| "api-router-node".to_string());
         Some(crate::lan_sync::LanNodeIdentity { node_id, node_name })
+    }
+
+    pub fn is_lan_node_trusted(&self, node_id: &str) -> bool {
+        let normalized = node_id.trim();
+        !normalized.is_empty() && self.inner.lock().lan_trusted_node_ids.contains(normalized)
+    }
+
+    pub fn trusted_lan_node_ids(&self) -> BTreeSet<String> {
+        self.inner.lock().lan_trusted_node_ids.clone()
+    }
+
+    pub fn set_lan_node_trusted(&self, node_id: &str, trusted: bool) -> Result<bool, String> {
+        let normalized = node_id.trim();
+        if normalized.is_empty() {
+            return Ok(false);
+        }
+        let mut data = self.inner.lock();
+        let changed = if trusted {
+            data.lan_trusted_node_ids.insert(normalized.to_string())
+        } else {
+            data.lan_trusted_node_ids.remove(normalized)
+        };
+        if changed {
+            self.persist(&data)?;
+        }
+        Ok(changed)
     }
 
     pub fn get_followed_config_source_node_id(&self) -> Option<String> {
@@ -1098,18 +1130,15 @@ mod tests {
     }
 
     #[test]
-    fn lan_trust_secret_defaults_from_gateway_token_and_persists() {
+    fn lan_trust_secret_is_independent_and_persists() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("secrets.json");
         let store = SecretStore::new(path.clone());
-        store
-            .set_gateway_token("ao_test_gateway")
-            .expect("set gateway token");
 
         let first = store
             .ensure_lan_trust_secret()
             .expect("ensure trust secret");
-        assert_eq!(first, "ao_test_gateway");
+        assert!(first.starts_with("lan_"));
 
         let reloaded = SecretStore::new(path);
         let second = reloaded

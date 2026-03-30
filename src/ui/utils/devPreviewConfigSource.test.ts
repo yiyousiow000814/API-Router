@@ -3,6 +3,7 @@ import type { Config } from '../types'
 import {
   buildDevPreviewFollowConfig,
   getDevPreviewSourceProviders,
+  updateDevPreviewPairState,
 } from './devPreviewConfigSource'
 
 function buildConfig(): Config {
@@ -47,6 +48,9 @@ function buildConfig(): Config {
           node_id: 'node-local',
           node_name: 'Local',
           active: true,
+          trusted: true,
+          pair_state: 'trusted',
+          pair_request_id: null,
           follow_allowed: false,
           follow_blocked_reason: null,
           using_count: 1,
@@ -56,6 +60,9 @@ function buildConfig(): Config {
           node_id: 'node-desk-b',
           node_name: 'Desk B',
           active: false,
+          trusted: false,
+          pair_state: null,
+          pair_request_id: null,
           follow_allowed: true,
           follow_blocked_reason: null,
           using_count: 0,
@@ -90,5 +97,24 @@ describe('dev preview config source helpers', () => {
     expect(followedConfig.providers.desk_b_1?.local_copy_state).toBeNull()
     expect(followedConfig.providers.desk_b_2?.local_copy_state).toBe('linked')
     expect(followedConfig.providers.desk_b_3?.local_copy_state).toBeNull()
+  })
+
+  it('updates dev preview pair state for a peer without mutating others', () => {
+    const config = buildConfig()
+
+    const updated = updateDevPreviewPairState(config, 'node-desk-b', (source) => ({
+      ...source,
+      trusted: false,
+      pair_state: 'pin_required',
+      pair_request_id: 'pair_123',
+      follow_allowed: false,
+      follow_blocked_reason: 'pair this device before following its config',
+    }))
+
+    const deskB = updated.config_source?.sources.find((entry) => entry.node_id === 'node-desk-b')
+    const local = updated.config_source?.sources.find((entry) => entry.node_id === 'node-local')
+    expect(deskB?.pair_state).toBe('pin_required')
+    expect(deskB?.pair_request_id).toBe('pair_123')
+    expect(local?.pair_state).toBe('trusted')
   })
 })

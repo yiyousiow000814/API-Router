@@ -42,6 +42,9 @@ struct ConfigSourceSnapshot {
     node_id: String,
     node_name: String,
     active: bool,
+    trusted: bool,
+    pair_state: Option<String>,
+    pair_request_id: Option<String>,
     follow_allowed: bool,
     follow_blocked_reason: Option<String>,
     using_count: usize,
@@ -290,6 +293,9 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
         node_id: lan_snapshot.local_node.node_id.clone(),
         node_name: lan_snapshot.local_node.node_name.clone(),
         active: followed_source_node_id.is_none(),
+        trusted: true,
+        pair_state: Some("trusted".to_string()),
+        pair_request_id: None,
         follow_allowed: false,
         follow_blocked_reason: None,
         using_count: 1 + local_followers,
@@ -299,11 +305,21 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
         node_id: peer.node_id.clone(),
         node_name: peer.node_name.clone(),
         active: followed_source_node_id.as_deref() == Some(peer.node_id.as_str()),
-        follow_allowed: peer.followed_source_node_id.as_deref()
-            != Some(lan_snapshot.local_node.node_id.as_str()),
-        follow_blocked_reason: (peer.followed_source_node_id.as_deref()
-            == Some(lan_snapshot.local_node.node_id.as_str()))
-            .then(|| "that node is already following this local node".to_string()),
+        trusted: peer.trusted,
+        pair_state: peer.pair_state.clone(),
+        pair_request_id: peer.pair_request_id.clone(),
+        follow_allowed: peer.trusted
+            && peer.followed_source_node_id.as_deref()
+                != Some(lan_snapshot.local_node.node_id.as_str()),
+        follow_blocked_reason: if !peer.trusted {
+            Some("pair this device before following its config".to_string())
+        } else if peer.followed_source_node_id.as_deref()
+            == Some(lan_snapshot.local_node.node_id.as_str())
+        {
+            Some("that node is already following this local node".to_string())
+        } else {
+            None
+        },
         using_count: usize::from(
             followed_source_node_id.as_deref() == Some(peer.node_id.as_str())
         ) + lan_snapshot
@@ -325,6 +341,34 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
         "sources": config_sources,
       }
     })
+}
+
+#[tauri::command]
+pub(crate) fn request_lan_pair(
+    state: tauri::State<'_, app_state::AppState>,
+    node_id: String,
+) -> Result<String, String> {
+    state.lan_sync.request_pair(&state.gateway, &node_id)
+}
+
+#[tauri::command]
+pub(crate) fn approve_lan_pair(
+    state: tauri::State<'_, app_state::AppState>,
+    request_id: String,
+) -> Result<String, String> {
+    state.lan_sync.approve_pair(&request_id)
+}
+
+#[tauri::command]
+pub(crate) fn submit_lan_pair_pin(
+    state: tauri::State<'_, app_state::AppState>,
+    node_id: String,
+    request_id: String,
+    pin_code: String,
+) -> Result<(), String> {
+    state
+        .lan_sync
+        .submit_pair_pin(&node_id, &request_id, &pin_code)
 }
 
 #[tauri::command]

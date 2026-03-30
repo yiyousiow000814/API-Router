@@ -66,6 +66,7 @@ import {
   getDevPreviewSourceProviders,
   nextCopiedProviderName,
   normalizedProviderKey,
+  updateDevPreviewPairState,
 } from './utils/devPreviewConfigSource'
 
 const AppModals = lazy(async () => {
@@ -1178,6 +1179,78 @@ export default function App() {
       flashToast(String(e), 'error')
     }
   }
+  async function requestLanPair(nodeId: string): Promise<string | null> {
+    try {
+      if (isDevPreview) {
+        const requestId = `pair_${nodeId}`
+        setConfig((prev) => {
+          if (!prev) return prev
+          return updateDevPreviewPairState(prev, nodeId, (source) => ({
+            ...source,
+            trusted: false,
+            pair_state: 'pin_required',
+            pair_request_id: requestId,
+            follow_allowed: false,
+            follow_blocked_reason: 'pair this device before following its config',
+          }))
+        })
+        return requestId
+      }
+      const requestId = await invoke<string>('request_lan_pair', { nodeId })
+      await refreshConfig()
+      return requestId
+    } catch (e) {
+      flashToast(String(e), 'error')
+      return null
+    }
+  }
+  async function approveLanPair(requestId: string): Promise<string | null> {
+    try {
+      if (isDevPreview) {
+        const nodeId = config?.config_source?.sources.find((entry) => entry.pair_request_id === requestId)?.node_id ?? ''
+        if (!nodeId) {
+          flashToast('Pair request not found [TEST]', 'error')
+          return null
+        }
+        setConfig((prev) => {
+          if (!prev) return prev
+          return updateDevPreviewPairState(prev, nodeId, (source) => ({
+            ...source,
+            trusted: false,
+            pair_state: 'pin_required',
+            pair_request_id: requestId,
+            follow_allowed: false,
+            follow_blocked_reason: 'pair this device before following its config',
+          }))
+        })
+        return '123456'
+      }
+      const pinCode = await invoke<string>('approve_lan_pair', { requestId })
+      await refreshConfig()
+      return pinCode
+    } catch (e) {
+      flashToast(String(e), 'error')
+      return null
+    }
+  }
+  async function submitLanPairPin(nodeId: string, requestId: string, pinCode: string) {
+    if (isDevPreview) {
+      setConfig((prev) => {
+        if (!prev) return prev
+        return updateDevPreviewPairState(prev, nodeId, (source) => ({
+          ...source,
+          trusted: true,
+          pair_state: 'trusted',
+          pair_request_id: null,
+          follow_allowed: true,
+          follow_blocked_reason: null,
+        }))
+      })
+      return
+    }
+    await invoke('submit_lan_pair_pin', { nodeId, requestId, pinCode })
+    await refreshConfig()
+  }
   async function copyProviderFromConfigSource(sourceNodeId: string, sharedProviderId: string) {
     try {
       if (isDevPreview) {
@@ -1580,6 +1653,9 @@ export default function App() {
             addProvider={addProvider}
             followConfigSource={followConfigSource}
             clearFollowedConfigSource={clearFollowedConfigSource}
+            requestLanPair={requestLanPair}
+            approveLanPair={approveLanPair}
+            submitLanPairPin={submitLanPairPin}
             openProviderGroupManager={openProviderGroupManager}
             setConfigModalOpen={setConfigModalOpen}
             rawConfigModalOpen={rawConfigModalOpen}

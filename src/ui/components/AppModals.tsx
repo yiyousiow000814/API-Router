@@ -100,6 +100,9 @@ type Props = {
   addProvider: () => Promise<void>
   followConfigSource: (nodeId: string) => Promise<void>
   clearFollowedConfigSource: () => Promise<void>
+  requestLanPair: (nodeId: string) => Promise<string | null>
+  approveLanPair: (requestId: string) => Promise<string | null>
+  submitLanPairPin: (nodeId: string, requestId: string, pinCode: string) => Promise<void>
   openProviderGroupManager: (provider?: string) => void
   setConfigModalOpen: Dispatch<SetStateAction<boolean>>
   rawConfigModalOpen: boolean
@@ -281,6 +284,9 @@ export function AppModals(props: Props) {
     addProvider,
     followConfigSource,
     clearFollowedConfigSource,
+    requestLanPair,
+    approveLanPair,
+    submitLanPairPin,
     openProviderGroupManager,
     setConfigModalOpen,
     rawConfigModalOpen,
@@ -590,6 +596,9 @@ requires_openai_auth = true`}
         onAddProvider={() => void addProvider()}
         onFollowSource={(nodeId) => void followConfigSource(nodeId)}
         onClearFollowSource={() => void clearFollowedConfigSource()}
+        onRequestPair={requestLanPair}
+        onApprovePair={approveLanPair}
+        onSubmitPairPin={(nodeId, requestId, pinCode) => void submitLanPairPin(nodeId, requestId, pinCode)}
         onOpenGroupManager={() => openProviderGroupManager()}
         onClose={() => setConfigModalOpen(false)}
         providerListRef={providerListRef}

@@ -190,6 +190,9 @@ export type Config = {
       node_id: string
       node_name: string
       active: boolean
+      trusted?: boolean
+      pair_state?: 'trusted' | 'incoming_request' | 'requested' | 'pin_required' | null
+      pair_request_id?: string | null
       follow_allowed: boolean
       follow_blocked_reason?: string | null
       using_count: number

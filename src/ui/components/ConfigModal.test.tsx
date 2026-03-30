@@ -58,6 +58,9 @@ describe('ConfigModal', () => {
         onAddProvider={() => undefined}
         onFollowSource={() => undefined}
         onClearFollowSource={() => undefined}
+        onRequestPair={() => undefined}
+        onApprovePair={() => undefined}
+        onSubmitPairPin={() => undefined}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}
         providerListRef={{ current: null }}
@@ -91,6 +94,9 @@ describe('ConfigModal', () => {
         onAddProvider={() => undefined}
         onFollowSource={() => undefined}
         onClearFollowSource={() => undefined}
+        onRequestPair={() => undefined}
+        onApprovePair={() => undefined}
+        onSubmitPairPin={() => undefined}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}
         providerListRef={{ current: null }}
@@ -149,6 +155,9 @@ describe('ConfigModal', () => {
         onAddProvider={() => undefined}
         onFollowSource={() => undefined}
         onClearFollowSource={() => undefined}
+        onRequestPair={() => undefined}
+        onApprovePair={() => undefined}
+        onSubmitPairPin={() => undefined}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}
         providerListRef={{ current: null }}
