@@ -1,6 +1,7 @@
 use chrono::{Datelike, Local, TimeZone};
 use parking_lot::Mutex;
 use rusqlite::{params, params_from_iter, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -24,6 +25,15 @@ struct UsageTokenIncrements {
     cache_read_input_tokens: u64,
 }
 
+#[derive(Clone, Copy)]
+pub struct UsageRequestContext<'a> {
+    pub api_key_ref: Option<&'a str>,
+    pub origin: &'a str,
+    pub session_id: Option<&'a str>,
+    pub node_id: Option<&'a str>,
+    pub node_name: Option<&'a str>,
+}
+
 type UsageRequestSqlRow = (
     String,
     i64,
@@ -38,6 +48,25 @@ type UsageRequestSqlRow = (
     i64,
     i64,
 );
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UsageRequestSyncRow {
+    pub id: String,
+    pub unix_ms: u64,
+    pub ingested_at_unix_ms: u64,
+    pub provider: String,
+    pub api_key_ref: String,
+    pub model: String,
+    pub origin: String,
+    pub session_id: String,
+    pub node_id: String,
+    pub node_name: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cache_read_input_tokens: u64,
+}
 
 #[derive(Clone, Debug)]
 pub struct SessionRouteAssignment {
@@ -214,11 +243,14 @@ impl Store {
             CREATE TABLE IF NOT EXISTS usage_requests(
               id TEXT PRIMARY KEY,
               unix_ms INTEGER NOT NULL,
+              ingested_at_unix_ms INTEGER NOT NULL DEFAULT 0,
               provider TEXT NOT NULL,
               api_key_ref TEXT NOT NULL,
               model TEXT NOT NULL,
               origin TEXT NOT NULL,
               session_id TEXT NOT NULL,
+              node_id TEXT NOT NULL DEFAULT '',
+              node_name TEXT NOT NULL DEFAULT '',
               input_tokens INTEGER NOT NULL,
               output_tokens INTEGER NOT NULL,
               total_tokens INTEGER NOT NULL,
@@ -226,9 +258,13 @@ impl Store {
               cache_read_input_tokens INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_usage_requests_unix_ms ON usage_requests(unix_ms DESC);
+            CREATE INDEX IF NOT EXISTS idx_usage_requests_ingested_at_id
+              ON usage_requests(ingested_at_unix_ms ASC, id ASC);
             CREATE INDEX IF NOT EXISTS idx_usage_requests_provider ON usage_requests(provider);
             CREATE INDEX IF NOT EXISTS idx_usage_requests_model ON usage_requests(model);
             CREATE INDEX IF NOT EXISTS idx_usage_requests_origin ON usage_requests(origin);
+            CREATE INDEX IF NOT EXISTS idx_usage_requests_node_name_lc
+              ON usage_requests(lower(node_name));
             CREATE INDEX IF NOT EXISTS idx_usage_requests_provider_lc ON usage_requests(lower(provider));
             CREATE INDEX IF NOT EXISTS idx_usage_requests_model_lc ON usage_requests(lower(model));
             CREATE INDEX IF NOT EXISTS idx_usage_requests_origin_lc ON usage_requests(lower(origin));
@@ -382,11 +418,54 @@ impl Store {
              ON CONFLICT(key) DO NOTHING",
             [Self::USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY],
         )?;
+        Self::ensure_usage_request_columns(&conn)?;
         drop(conn);
         self.migrate_legacy_events_from_sled_if_needed()?;
         self.migrate_usage_requests_from_sled_if_needed()?;
         self.backfill_usage_request_daily_index_if_needed()?;
         self.rebuild_event_day_counts_index_if_needed()?;
+        Ok(())
+    }
+
+    fn ensure_usage_request_columns(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+        let mut columns = std::collections::BTreeSet::new();
+        let mut stmt = conn.prepare("PRAGMA table_info(usage_requests)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        for column in rows.flatten() {
+            columns.insert(column);
+        }
+        if !columns.contains("ingested_at_unix_ms") {
+            conn.execute(
+                "ALTER TABLE usage_requests ADD COLUMN ingested_at_unix_ms INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE usage_requests SET ingested_at_unix_ms = unix_ms WHERE ingested_at_unix_ms = 0",
+                [],
+            )?;
+        }
+        if !columns.contains("node_id") {
+            conn.execute(
+                "ALTER TABLE usage_requests ADD COLUMN node_id TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        if !columns.contains("node_name") {
+            conn.execute(
+                "ALTER TABLE usage_requests ADD COLUMN node_name TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_usage_requests_ingested_at_id
+             ON usage_requests(ingested_at_unix_ms ASC, id ASC)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_usage_requests_node_name_lc
+             ON usage_requests(lower(node_name))",
+            [],
+        )?;
         Ok(())
     }
 
@@ -427,23 +506,29 @@ impl Store {
     }
 
     fn legacy_sqlite_merge_done(&self) -> anyhow::Result<bool> {
-        let conn = self.events_db.lock();
-        let value: Option<String> = conn
-            .query_row(
-                "SELECT value FROM event_meta WHERE key=?1",
-                [Self::EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let value = self.get_event_meta(Self::EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY)?;
         Ok(value.as_deref() == Some("1"))
     }
 
     fn mark_legacy_sqlite_merge_done(&self) -> anyhow::Result<()> {
+        self.set_event_meta(Self::EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY, "1")
+    }
+
+    pub fn get_event_meta(&self, key: &str) -> anyhow::Result<Option<String>> {
+        let conn = self.events_db.lock();
+        conn.query_row("SELECT value FROM event_meta WHERE key=?1", [key], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(Into::into)
+    }
+
+    pub fn set_event_meta(&self, key: &str, value: &str) -> anyhow::Result<()> {
         let conn = self.events_db.lock();
         conn.execute(
-            "INSERT INTO event_meta(key, value) VALUES(?1, '1')
-             ON CONFLICT(key) DO UPDATE SET value='1'",
-            [Self::EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY],
+            "INSERT INTO event_meta(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![key, value],
         )?;
         Ok(())
     }
@@ -1011,10 +1096,10 @@ impl Store {
         {
             tx.execute(
                 "INSERT OR IGNORE INTO usage_requests(
-                    id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                    id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, session_id, node_id, node_name,
                     input_tokens, output_tokens, total_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 ) VALUES(?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, '', '', ?8, ?9, ?10, ?11, ?12)",
                 params![
                     id,
                     unix_ms,
@@ -1079,17 +1164,13 @@ impl Store {
         &self,
         provider: &str,
         response_obj: &Value,
-        api_key_ref: Option<&str>,
-        origin: &str,
-        session_id: Option<&str>,
+        context: UsageRequestContext<'_>,
     ) {
         self.record_success_with_model(
             provider,
             response_obj,
-            api_key_ref,
+            context,
             None,
-            origin,
-            session_id,
         );
     }
 
@@ -1097,10 +1178,8 @@ impl Store {
         &self,
         provider: &str,
         response_obj: &Value,
-        api_key_ref: Option<&str>,
+        context: UsageRequestContext<'_>,
         model_override: Option<&str>,
-        origin: &str,
-        session_id: Option<&str>,
     ) {
         let (
             input_tokens,
@@ -1131,9 +1210,7 @@ impl Store {
             provider,
             &Self::model_for_usage(response_obj, model_override),
             increments,
-            api_key_ref,
-            origin,
-            session_id,
+            context,
         );
     }
 
@@ -1656,7 +1733,7 @@ impl Store {
         let mut out: Vec<Value> = Vec::with_capacity(limit.min(1024));
         let conn = self.events_db.lock();
         let Ok(mut stmt) = conn.prepare(
-            "SELECT provider, api_key_ref, model, origin, session_id, unix_ms,
+            "SELECT id, provider, api_key_ref, model, origin, session_id, unix_ms, node_id, node_name,
                     input_tokens, output_tokens, total_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens
              FROM usage_requests
@@ -1667,17 +1744,20 @@ impl Store {
         };
         let Ok(rows) = stmt.query_map([limit as i64], |row| {
             Ok(serde_json::json!({
-                "provider": row.get::<_, String>(0)?,
-                "api_key_ref": row.get::<_, String>(1)?,
-                "model": row.get::<_, String>(2)?,
-                "origin": row.get::<_, String>(3)?,
-                "session_id": row.get::<_, String>(4)?,
-                "unix_ms": u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
-                "input_tokens": u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
-                "output_tokens": u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
-                "total_tokens": u64::try_from(row.get::<_, i64>(8)?).unwrap_or(0),
-                "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
-                "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+                "id": row.get::<_, String>(0)?,
+                "provider": row.get::<_, String>(1)?,
+                "api_key_ref": row.get::<_, String>(2)?,
+                "model": row.get::<_, String>(3)?,
+                "origin": row.get::<_, String>(4)?,
+                "session_id": row.get::<_, String>(5)?,
+                "unix_ms": u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
+                "node_id": row.get::<_, String>(7)?,
+                "node_name": row.get::<_, String>(8)?,
+                "input_tokens": u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
+                "output_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+                "total_tokens": u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+                "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
+                "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
             }))
         }) else {
             return out;
@@ -1686,6 +1766,142 @@ impl Store {
             out.push(row);
         }
         out
+    }
+
+    pub fn backfill_usage_request_node_identity(&self, node_id: &str, node_name: &str) -> usize {
+        let trimmed_node_id = node_id.trim();
+        let trimmed_node_name = node_name.trim();
+        if trimmed_node_id.is_empty() || trimmed_node_name.is_empty() {
+            return 0;
+        }
+        let conn = self.events_db.lock();
+        conn.execute(
+            "UPDATE usage_requests
+             SET node_id = ?1, node_name = ?2
+             WHERE trim(node_id) = '' OR trim(node_name) = ''",
+            params![trimmed_node_id, trimmed_node_name],
+        )
+        .unwrap_or(0)
+    }
+
+    pub fn list_usage_request_sync_batch(
+        &self,
+        after_ingested_at_unix_ms: u64,
+        after_id: Option<&str>,
+        limit: usize,
+    ) -> (Vec<UsageRequestSyncRow>, bool) {
+        let mut out = Vec::with_capacity(limit.min(128));
+        let after_ingested_i64 = i64::try_from(after_ingested_at_unix_ms).unwrap_or(i64::MAX);
+        let after_id = after_id.unwrap_or_default().trim();
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT
+                id,
+                unix_ms,
+                ingested_at_unix_ms,
+                provider,
+                api_key_ref,
+                model,
+                origin,
+                session_id,
+                node_id,
+                node_name,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                cache_creation_input_tokens,
+                cache_read_input_tokens
+             FROM usage_requests
+             WHERE ingested_at_unix_ms > ?1
+                OR (ingested_at_unix_ms = ?1 AND id > ?2)
+             ORDER BY ingested_at_unix_ms ASC, id ASC
+             LIMIT ?3",
+        ) else {
+            return (out, false);
+        };
+        let fetch_limit = limit.saturating_add(1);
+        let Ok(rows) = stmt.query_map(
+            params![
+                after_ingested_i64,
+                after_id,
+                i64::try_from(fetch_limit).unwrap_or(i64::MAX)
+            ],
+            |row| {
+                Ok(UsageRequestSyncRow {
+                    id: row.get::<_, String>(0)?,
+                    unix_ms: u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+                    ingested_at_unix_ms: u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                    provider: row.get::<_, String>(3)?,
+                    api_key_ref: row.get::<_, String>(4)?,
+                    model: row.get::<_, String>(5)?,
+                    origin: row.get::<_, String>(6)?,
+                    session_id: row.get::<_, String>(7)?,
+                    node_id: row.get::<_, String>(8)?,
+                    node_name: row.get::<_, String>(9)?,
+                    input_tokens: u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+                    output_tokens: u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+                    total_tokens: u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
+                    cache_creation_input_tokens: u64::try_from(row.get::<_, i64>(13)?)
+                        .unwrap_or(0),
+                    cache_read_input_tokens: u64::try_from(row.get::<_, i64>(14)?).unwrap_or(0),
+                })
+            },
+        ) else {
+            return (out, false);
+        };
+        for row in rows.flatten() {
+            out.push(row);
+        }
+        let has_more = out.len() > limit;
+        if has_more {
+            out.truncate(limit);
+        }
+        (out, has_more)
+    }
+
+    pub fn upsert_usage_request_sync_rows(&self, rows: &[UsageRequestSyncRow]) -> usize {
+        if rows.is_empty() {
+            return 0;
+        }
+        let mut conn = self.events_db.lock();
+        let Ok(tx) = conn.transaction() else {
+            return 0;
+        };
+        let mut inserted = 0usize;
+        for row in rows {
+            let Ok(changed) = tx.execute(
+                "INSERT OR IGNORE INTO usage_requests(
+                    id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, session_id,
+                    node_id, node_name, input_tokens, output_tokens, total_tokens,
+                    cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                params![
+                    row.id,
+                    i64::try_from(row.unix_ms).unwrap_or(i64::MAX),
+                    i64::try_from(row.ingested_at_unix_ms).unwrap_or(i64::MAX),
+                    row.provider,
+                    row.api_key_ref,
+                    row.model,
+                    row.origin,
+                    row.session_id,
+                    row.node_id,
+                    row.node_name,
+                    i64::try_from(row.input_tokens).unwrap_or(i64::MAX),
+                    i64::try_from(row.output_tokens).unwrap_or(i64::MAX),
+                    i64::try_from(row.total_tokens).unwrap_or(i64::MAX),
+                    i64::try_from(row.cache_creation_input_tokens).unwrap_or(i64::MAX),
+                    i64::try_from(row.cache_read_input_tokens).unwrap_or(i64::MAX),
+                ],
+            ) else {
+                let _ = tx.rollback();
+                return inserted;
+            };
+            inserted = inserted.saturating_add(changed);
+        }
+        if tx.commit().is_err() {
+            return 0;
+        }
+        inserted
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1702,7 +1918,7 @@ impl Store {
         offset: usize,
     ) -> (Vec<Value>, bool) {
         let mut sql = String::from(
-            "SELECT provider, api_key_ref, model, origin, session_id, unix_ms,
+            "SELECT id, provider, api_key_ref, model, origin, session_id, unix_ms, node_id, node_name,
                     input_tokens, output_tokens, total_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens
              FROM usage_requests
@@ -1775,17 +1991,20 @@ impl Store {
         };
         let Ok(rows) = stmt.query_map(params_from_iter(params.iter()), |row| {
             Ok(serde_json::json!({
-                "provider": row.get::<_, String>(0)?,
-                "api_key_ref": row.get::<_, String>(1)?,
-                "model": row.get::<_, String>(2)?,
-                "origin": row.get::<_, String>(3)?,
-                "session_id": row.get::<_, String>(4)?,
-                "unix_ms": u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
-                "input_tokens": u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
-                "output_tokens": u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
-                "total_tokens": u64::try_from(row.get::<_, i64>(8)?).unwrap_or(0),
-                "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
-                "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+                "id": row.get::<_, String>(0)?,
+                "provider": row.get::<_, String>(1)?,
+                "api_key_ref": row.get::<_, String>(2)?,
+                "model": row.get::<_, String>(3)?,
+                "origin": row.get::<_, String>(4)?,
+                "session_id": row.get::<_, String>(5)?,
+                "unix_ms": u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
+                "node_id": row.get::<_, String>(7)?,
+                "node_name": row.get::<_, String>(8)?,
+                "input_tokens": u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
+                "output_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+                "total_tokens": u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+                "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
+                "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
             }))
         }) else {
             return (out, false);

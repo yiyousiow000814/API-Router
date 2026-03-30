@@ -78,6 +78,16 @@ pub fn run_startup_usage_key_ref_backfill(state: &AppState) -> usize {
     state.gateway.store.backfill_api_key_ref_fields(&key_refs)
 }
 
+pub fn run_startup_usage_request_node_backfill(state: &AppState) -> usize {
+    let Some(node) = state.secrets.get_lan_node_identity() else {
+        return 0;
+    };
+    state
+        .gateway
+        .store
+        .backfill_usage_request_node_identity(&node.node_id, &node.node_name)
+}
+
 pub fn load_or_init_config(path: &PathBuf) -> anyhow::Result<AppConfig> {
     if path.exists() {
         let txt = std::fs::read_to_string(path)?;

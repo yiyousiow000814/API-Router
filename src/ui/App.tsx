@@ -351,12 +351,15 @@ export default function App() {
         jumpToEventLogError?: ((payload?: { provider: string; unixMs: number; message: string }) => boolean) | undefined
         primeRequestsPrefetchCache?: ((payload: {
           rows: Array<{
+            id: string
             provider: string
             api_key_ref: string
             model: string
             origin: string
             session_id: string
             unix_ms: number
+            node_id: string
+            node_name: string
             input_tokens: number
             output_tokens: number
             total_tokens: number

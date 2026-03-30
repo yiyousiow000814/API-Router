@@ -258,6 +258,8 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
                     crate::constants::USAGE_ORIGIN_WSL2
                 };
                 let session_id = format!("test-session-{}", (i % 9) + 1);
+                let local_node_id = state.lan_sync.local_node_id();
+                let local_node_name = state.lan_sync.local_node_name();
                 state.gateway.store.record_success_with_model(
                     provider,
                     &json!({
@@ -271,10 +273,14 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
                             "cache_read_input_tokens": cache_read,
                         }
                     }),
-                    Some("test"),
+                    crate::orchestrator::store::UsageRequestContext {
+                        api_key_ref: Some("test"),
+                        origin,
+                        session_id: Some(session_id.as_str()),
+                        node_id: Some(local_node_id.as_str()),
+                        node_name: Some(local_node_name.as_str()),
+                    },
                     None,
-                    origin,
-                    Some(session_id.as_str()),
                 );
             }
         };
@@ -475,6 +481,18 @@ pub fn run() {
                     let detail = format!("updated_rows={updated}");
                     write_app_startup_diag(
                         "usage_key_ref_backfill",
+                        started.elapsed().as_millis(),
+                        Some(&detail),
+                    );
+                });
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let st = app_handle.state::<app_state::AppState>();
+                    let started = Instant::now();
+                    let updated = app_state::run_startup_usage_request_node_backfill(&st);
+                    let detail = format!("updated_rows={updated}");
+                    write_app_startup_diag(
+                        "usage_request_node_backfill",
                         started.elapsed().as_millis(),
                         Some(&detail),
                     );

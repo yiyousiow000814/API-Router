@@ -27,12 +27,15 @@ type UsageSummary = UsageStatistics['summary']
 type UsageProviderRow = UsageSummary['by_provider'][number]
 type UsageDetailsTab = 'analytics' | 'requests'
 type UsageRequestEntry = {
+  id?: string
   provider: string
   api_key_ref: string
   model: string
   origin: string
   session_id: string
   unix_ms: number
+  node_id?: string
+  node_name?: string
   input_tokens: number
   output_tokens: number
   total_tokens: number
@@ -115,42 +118,33 @@ type UsageRequestRenderedLineSeries = UsageRequestLineSeries & {
 }
 const usageRequestRowIdentity = (row: UsageRequestEntry) =>
   [
-    row.unix_ms,
-    row.provider,
-    row.api_key_ref,
-    row.model,
-    row.origin,
-    row.session_id,
-    row.input_tokens,
-    row.output_tokens,
-    row.total_tokens,
-    row.cache_creation_input_tokens,
-    row.cache_read_input_tokens,
+    row.id ?? `${row.unix_ms}|${row.provider}|${row.session_id}|${row.total_tokens}`,
+    row.node_id ?? 'node-local',
   ].join('|')
 type UsageRequestColumnFilterKey =
   | 'time'
+  | 'node'
   | 'provider'
   | 'model'
   | 'input'
   | 'output'
-  | 'cacheCreate'
   | 'cacheRead'
   | 'origin'
   | 'session'
-type UsageRequestMultiFilterKey = 'provider' | 'model' | 'origin' | 'session'
+type UsageRequestMultiFilterKey = 'node' | 'provider' | 'model' | 'origin' | 'session'
 const USAGE_REQUEST_COLUMN_FILTERS: Array<{
   key: UsageRequestColumnFilterKey
   label: string
   filterable: boolean
 }> = [
   { key: 'time', label: 'Time', filterable: true },
+  { key: 'node', label: 'Node', filterable: true },
   { key: 'provider', label: 'Provider', filterable: true },
   { key: 'model', label: 'Model', filterable: true },
   { key: 'origin', label: 'Origin', filterable: true },
   { key: 'session', label: 'Session', filterable: true },
   { key: 'input', label: 'Input', filterable: false },
   { key: 'output', label: 'Output', filterable: false },
-  { key: 'cacheCreate', label: 'Cache Create', filterable: false },
   { key: 'cacheRead', label: 'Cache Read', filterable: false },
 ]
 const USAGE_REQUEST_PAGE_SIZE = 200
@@ -1081,12 +1075,15 @@ function buildUsageRequestTestRows(
         generatedAt,
       )
       rows.push({
+        id: `synthetic-${providerName}-${sessionId}-${idx}`,
         provider: providerName,
         api_key_ref: providerMeta.apiKeyRef,
         model: providerMeta.model || model.model,
         origin,
         session_id: sessionId,
         unix_ms: unixMs,
+        node_id: 'node-local',
+        node_name: 'Local',
         input_tokens: input,
         output_tokens: output,
         total_tokens: total,
@@ -1284,12 +1281,14 @@ export function UsageStatisticsPanel({
 }: Props) {
   const [usageRequestTimeFilter, setUsageRequestTimeFilter] = useState('')
   const [usageRequestMultiFilters, setUsageRequestMultiFilters] = useState<Record<UsageRequestMultiFilterKey, string[] | null>>({
+    node: null,
     provider: null,
     model: null,
     origin: null,
     session: null,
   })
   const [usageRequestFilterSearch, setUsageRequestFilterSearch] = useState<Record<UsageRequestMultiFilterKey, string>>({
+    node: '',
     provider: '',
     model: '',
     origin: '',
@@ -1478,6 +1477,7 @@ export function UsageStatisticsPanel({
   )
   const hasExplicitRequestFilters =
     hasExplicitTimeFilter ||
+    usageRequestMultiFilters.node !== null ||
     usageRequestMultiFilters.provider !== null ||
     usageRequestMultiFilters.model !== null ||
     usageRequestMultiFilters.origin !== null ||
@@ -1487,6 +1487,7 @@ export function UsageStatisticsPanel({
     (requestFetchProviders !== null && requestFetchProviders.length === 0) ||
     (requestFetchModels !== null && requestFetchModels.length === 0) ||
     (requestFetchOrigins !== null && requestFetchOrigins.length === 0) ||
+    (usageRequestMultiFilters.node !== null && usageRequestMultiFilters.node.length === 0) ||
     (usageRequestMultiFilters.provider !== null && usageRequestMultiFilters.provider.length === 0) ||
     (usageRequestMultiFilters.model !== null && usageRequestMultiFilters.model.length === 0) ||
     (usageRequestMultiFilters.origin !== null && usageRequestMultiFilters.origin.length === 0) ||
@@ -3156,17 +3157,20 @@ export function UsageStatisticsPanel({
   ])
 
   const usageRequestFilterOptions = useMemo(() => {
+    const nodes = new Set<string>()
     const providers = new Set<string>()
     const models = new Set<string>()
     const origins = new Set<string>()
     const sessions = new Set<string>()
     for (const row of timeScopedUsageRequestRows) {
+      nodes.add(row.node_name || 'Local')
       providers.add(row.provider)
       models.add(row.model)
       origins.add(row.origin)
       sessions.add(row.session_id)
     }
     return {
+      node: [...nodes].sort((a, b) => a.localeCompare(b)),
       provider: [...providers].sort((a, b) => a.localeCompare(b)),
       model: [...models].sort((a, b) => a.localeCompare(b)),
       origin: [...origins].sort((a, b) => a.localeCompare(b)),
@@ -3187,6 +3191,7 @@ export function UsageStatisticsPanel({
   useEffect(() => {
     if (!isRequestsTab) return
     setUsageRequestMultiFilters((prev) => ({
+      node: prev.node == null ? null : prev.node.filter((item) => usageRequestFilterOptions.node.includes(item)),
       provider:
         prev.provider == null
           ? null
@@ -3219,6 +3224,7 @@ export function UsageStatisticsPanel({
     const contains = (text: string) => timeNeedle.length === 0 || text.toLowerCase().includes(timeNeedle)
     const providerFilterSet =
       usageRequestMultiFilters.provider == null ? null : new Set(usageRequestMultiFilters.provider)
+    const nodeFilterSet = usageRequestMultiFilters.node == null ? null : new Set(usageRequestMultiFilters.node)
     const modelFilterSet =
       usageRequestMultiFilters.model == null ? null : new Set(usageRequestMultiFilters.model)
     const originFilterSet =
@@ -3233,6 +3239,7 @@ export function UsageStatisticsPanel({
       } else if (!contains(fmtWhen(row.unix_ms))) {
         return false
       }
+      if (nodeFilterSet && !nodeFilterSet.has(row.node_name || 'Local')) return false
       if (providerFilterSet && !providerFilterSet.has(row.provider)) return false
       if (modelFilterSet && !modelFilterSet.has(row.model)) return false
       if (originFilterSet && !originFilterSet.has(row.origin)) return false
@@ -3932,6 +3939,13 @@ export function UsageStatisticsPanel({
                           ? usageRequestTimeFilter.trim().length > 0
                             ? 1
                             : 0
+                          : column.key === 'node'
+                            ? filteredSelectionCount(
+                                usageRequestMultiFilters.node == null
+                                  ? usageRequestFilterOptions.node.length
+                                  : usageRequestMultiFilters.node.length,
+                                usageRequestFilterOptions.node.length,
+                              )
                           : column.key === 'provider'
                             ? Math.max(
                                   filteredSelectionCount(
@@ -4247,13 +4261,17 @@ export function UsageStatisticsPanel({
                           )
                         }
                         const options =
-                          activeUsageRequestFilterMenu.key === 'model'
+                          activeUsageRequestFilterMenu.key === 'node'
+                            ? usageRequestFilterOptions.node
+                            : activeUsageRequestFilterMenu.key === 'model'
                               ? usageRequestFilterOptions.model
                               : activeUsageRequestFilterMenu.key === 'origin'
                                 ? usageRequestFilterOptions.origin
                                 : usageRequestFilterOptions.session
                         const searchNeedle = (
-                          activeUsageRequestFilterMenu.key === 'model'
+                          activeUsageRequestFilterMenu.key === 'node'
+                            ? usageRequestFilterSearch.node
+                            : activeUsageRequestFilterMenu.key === 'model'
                               ? usageRequestFilterSearch.model
                               : activeUsageRequestFilterMenu.key === 'origin'
                                 ? usageRequestFilterSearch.origin
@@ -4368,12 +4386,12 @@ export function UsageStatisticsPanel({
                   <colgroup>
                     <col className="aoUsageReqColTime" />
                     <col className="aoUsageReqColProvider" />
+                    <col className="aoUsageReqColProvider" />
                     <col className="aoUsageReqColModel" />
                     <col className="aoUsageReqColOrigin" />
                     <col className="aoUsageReqColSession" />
                     <col className="aoUsageReqColInput" />
                     <col className="aoUsageReqColOutput" />
-                    <col className="aoUsageReqColCacheCreate" />
                     <col className="aoUsageReqColCacheRead" />
                   </colgroup>
                   <tbody>
@@ -4391,6 +4409,7 @@ export function UsageStatisticsPanel({
                       tableRowsForDisplay.map((row) => (
                         <tr key={usageRequestRowIdentity(row)}>
                           <td>{fmtWhen(row.unix_ms)}</td>
+                          <td className="aoUsageRequestsMono">{row.node_name || 'Local'}</td>
                           <td className="aoUsageRequestsMono">{resolveRequestProviderName(row.provider)}</td>
                           <td className="aoUsageRequestsMono">{row.model}</td>
                           <td>
@@ -4418,7 +4437,6 @@ export function UsageStatisticsPanel({
                           </td>
                           <td>{row.input_tokens.toLocaleString()}</td>
                           <td>{row.output_tokens.toLocaleString()}</td>
-                          <td>{row.cache_creation_input_tokens.toLocaleString()}</td>
                           <td>{row.cache_read_input_tokens.toLocaleString()}</td>
                         </tr>
                       ))

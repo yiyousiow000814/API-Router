@@ -869,6 +869,21 @@ impl SecretStore {
         Ok(crate::lan_sync::LanNodeIdentity { node_id, node_name })
     }
 
+    pub fn get_lan_node_identity(&self) -> Option<crate::lan_sync::LanNodeIdentity> {
+        let data = self.inner.lock();
+        let node_id = data
+            .lan_node_id
+            .clone()
+            .filter(|value| !value.trim().is_empty())?;
+        let node_name = data
+            .lan_node_name
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(crate::lan_sync::sanitize_node_name)
+            .unwrap_or_else(|| "api-router-node".to_string());
+        Some(crate::lan_sync::LanNodeIdentity { node_id, node_name })
+    }
+
     pub fn rotate_gateway_token(&self) -> Result<String, String> {
         let t = Self::new_gateway_token();
         self.set_gateway_token(&t)?;

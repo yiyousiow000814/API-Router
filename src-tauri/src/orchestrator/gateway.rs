@@ -1374,14 +1374,19 @@ async fn responses(
                         );
                     }
                     let api_key_ref = api_key_ref_from_raw(api_key.as_deref());
+                    let local_node = st.secrets.get_lan_node_identity();
 
                     // Persist the exchange so we can keep continuity if provider changes later.
                     st.store.record_success(
                         &provider_name,
                         &response_obj,
-                        Some(&api_key_ref),
-                        request_origin,
-                        Some(session_key.as_str()),
+                        crate::orchestrator::store::UsageRequestContext {
+                            api_key_ref: Some(&api_key_ref),
+                            origin: request_origin,
+                            session_id: Some(session_key.as_str()),
+                            node_id: local_node.as_ref().map(|value| value.node_id.as_str()),
+                            node_name: local_node.as_ref().map(|value| value.node_name.as_str()),
+                        },
                     );
 
                     // Avoid spamming the event log for routine successful requests; only surface

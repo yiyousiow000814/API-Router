@@ -15,7 +15,9 @@ pub const LAN_DISCOVERY_PORT: u16 = 38455;
 pub const LAN_HEARTBEAT_INTERVAL_MS: u64 = 2_000;
 pub const LAN_PEER_STALE_AFTER_MS: u64 = 7_000;
 const LAN_SHARED_HEALTH_LOOP_INTERVAL_MS: u64 = 900;
-const LAN_HEARTBEAT_CAPABILITIES: [&str; 2] = ["heartbeat_v1", "status_v1"];
+const LAN_USAGE_SYNC_LOOP_INTERVAL_MS: u64 = 1_500;
+const LAN_USAGE_SYNC_BATCH_LIMIT: usize = 32;
+const LAN_HEARTBEAT_CAPABILITIES: [&str; 3] = ["heartbeat_v1", "status_v1", "usage_sync_v1"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LanNodeIdentity {
@@ -98,10 +100,29 @@ struct LanSharedHealthPacket {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct LanUsageSyncRequestPacket {
+    version: u8,
+    node_id: String,
+    after_ingested_at_unix_ms: u64,
+    after_id: String,
+    limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LanUsageSyncBatchPacket {
+    version: u8,
+    node_id: String,
+    rows: Vec<crate::orchestrator::store::UsageRequestSyncRow>,
+    has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum LanSyncPacket {
     Heartbeat(LanHeartbeatPacket),
     SharedHealth(LanSharedHealthPacket),
+    UsageSyncRequest(LanUsageSyncRequestPacket),
+    UsageSyncBatch(LanUsageSyncBatchPacket),
 }
 
 #[derive(Clone)]
@@ -142,9 +163,17 @@ impl LanSyncRuntime {
             .ok();
 
         let shared_health_runtime = self.clone();
+        let shared_health_gateway = gateway.clone();
         std::thread::Builder::new()
             .name("lan-sync-shared-health".to_string())
-            .spawn(move || run_shared_health_loop(shared_health_runtime, gateway))
+            .spawn(move || run_shared_health_loop(shared_health_runtime, shared_health_gateway))
+            .ok();
+
+        let usage_sync_runtime = self.clone();
+        let usage_sync_gateway = gateway.clone();
+        std::thread::Builder::new()
+            .name("lan-sync-usage-sync".to_string())
+            .spawn(move || run_usage_sync_loop(usage_sync_runtime, usage_sync_gateway))
             .ok();
     }
 
@@ -253,6 +282,14 @@ impl LanSyncRuntime {
         });
         out
     }
+
+    pub fn local_node_id(&self) -> String {
+        self.local_node.node_id.clone()
+    }
+
+    pub fn local_node_name(&self) -> String {
+        self.local_node.node_name.clone()
+    }
 }
 
 pub fn default_node_name() -> String {
@@ -310,6 +347,12 @@ fn run_listener(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::
                     LanSyncPacket::Heartbeat(packet) => runtime.note_peer_heartbeat(packet, source),
                     LanSyncPacket::SharedHealth(packet) => {
                         apply_shared_health_packet(&runtime, &gateway, packet);
+                    }
+                    LanSyncPacket::UsageSyncRequest(packet) => {
+                        handle_usage_sync_request(&runtime, &gateway, source, packet);
+                    }
+                    LanSyncPacket::UsageSyncBatch(packet) => {
+                        apply_usage_sync_batch(&runtime, &gateway, packet);
                     }
                 }
             }
@@ -433,6 +476,142 @@ fn broadcast_shared_health_packet(packet: &LanSharedHealthPacket) {
     let payload = LanSyncPacket::SharedHealth(packet.clone());
     if let Ok(bytes) = serde_json::to_vec(&payload) {
         let _ = socket.send_to(&bytes, target);
+    }
+}
+
+fn send_packet_to_addr(addr: SocketAddr, packet: &LanSyncPacket) {
+    let socket = match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) {
+        Ok(socket) => socket,
+        Err(_) => return,
+    };
+    if let Ok(bytes) = serde_json::to_vec(packet) {
+        let _ = socket.send_to(&bytes, addr);
+    }
+}
+
+fn peer_sync_addr(peer: &LanPeerSnapshot) -> Option<SocketAddr> {
+    let host = peer.listen_addr.split(':').next()?.trim();
+    let ip: Ipv4Addr = host.parse().ok()?;
+    Some(SocketAddr::from((ip, LAN_DISCOVERY_PORT)))
+}
+
+fn usage_sync_cursor_key(peer_node_id: &str) -> String {
+    format!("lan_usage_sync_cursor:{peer_node_id}")
+}
+
+fn load_usage_sync_cursor(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    peer_node_id: &str,
+) -> (u64, String) {
+    let Ok(Some(value)) = gateway.store.get_event_meta(&usage_sync_cursor_key(peer_node_id)) else {
+        return (0, String::new());
+    };
+    let Some((left, right)) = value.split_once('|') else {
+        return (0, String::new());
+    };
+    (left.trim().parse::<u64>().unwrap_or(0), right.to_string())
+}
+
+fn save_usage_sync_cursor(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    peer_node_id: &str,
+    after_ingested_at_unix_ms: u64,
+    after_id: &str,
+) {
+    let _ = gateway.store.set_event_meta(
+        &usage_sync_cursor_key(peer_node_id),
+        &format!("{after_ingested_at_unix_ms}|{after_id}"),
+    );
+}
+
+fn handle_usage_sync_request(
+    runtime: &LanSyncRuntime,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    source: SocketAddr,
+    packet: LanUsageSyncRequestPacket,
+) {
+    if packet.node_id.trim().is_empty() || packet.node_id == runtime.local_node.node_id {
+        return;
+    }
+    let (rows, has_more) = gateway.store.list_usage_request_sync_batch(
+        packet.after_ingested_at_unix_ms,
+        Some(packet.after_id.as_str()),
+        packet.limit.clamp(1, LAN_USAGE_SYNC_BATCH_LIMIT),
+    );
+    send_packet_to_addr(
+        SocketAddr::from((source.ip(), LAN_DISCOVERY_PORT)),
+        &LanSyncPacket::UsageSyncBatch(LanUsageSyncBatchPacket {
+            version: 1,
+            node_id: runtime.local_node.node_id.clone(),
+            rows,
+            has_more,
+        }),
+    );
+}
+
+fn apply_usage_sync_batch(
+    runtime: &LanSyncRuntime,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    packet: LanUsageSyncBatchPacket,
+) {
+    if packet.node_id.trim().is_empty() || packet.node_id == runtime.local_node.node_id {
+        return;
+    }
+    if packet.rows.is_empty() {
+        return;
+    }
+    let inserted = gateway.store.upsert_usage_request_sync_rows(&packet.rows);
+    if let Some(last_row) = packet.rows.last() {
+        save_usage_sync_cursor(
+            gateway,
+            &packet.node_id,
+            last_row.ingested_at_unix_ms,
+            &last_row.id,
+        );
+    }
+    if inserted > 0 {
+        gateway.store.add_event(
+            "gateway",
+            "info",
+            "lan.usage_sync_applied",
+            &format!("applied {inserted} synced request row(s)"),
+            serde_json::json!({
+                "source_node_id": packet.node_id,
+                "received_rows": packet.rows.len(),
+                "inserted_rows": inserted,
+                "has_more": packet.has_more,
+            }),
+        );
+    }
+}
+
+fn run_usage_sync_loop(
+    runtime: LanSyncRuntime,
+    gateway: crate::orchestrator::gateway::GatewayState,
+) {
+    loop {
+        let peers = runtime.collect_live_peers(unix_ms());
+        for peer in peers {
+            if !peer.capabilities.iter().any(|value| value == "usage_sync_v1") {
+                continue;
+            }
+            let Some(addr) = peer_sync_addr(&peer) else {
+                continue;
+            };
+            let (after_ingested_at_unix_ms, after_id) =
+                load_usage_sync_cursor(&gateway, &peer.node_id);
+            send_packet_to_addr(
+                addr,
+                &LanSyncPacket::UsageSyncRequest(LanUsageSyncRequestPacket {
+                    version: 1,
+                    node_id: runtime.local_node.node_id.clone(),
+                    after_ingested_at_unix_ms,
+                    after_id,
+                    limit: LAN_USAGE_SYNC_BATCH_LIMIT,
+                }),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(LAN_USAGE_SYNC_LOOP_INTERVAL_MS));
     }
 }
 

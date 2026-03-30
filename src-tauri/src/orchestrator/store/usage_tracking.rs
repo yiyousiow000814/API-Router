@@ -216,37 +216,48 @@ impl Store {
         provider: &str,
         model: &str,
         increments: UsageTokenIncrements,
-        api_key_ref: Option<&str>,
-        origin: &str,
-        session_id: Option<&str>,
+        context: UsageRequestContext<'_>,
     ) {
-        let origin = match origin.trim().to_ascii_lowercase().as_str() {
+        let origin = match context.origin.trim().to_ascii_lowercase().as_str() {
             crate::constants::USAGE_ORIGIN_WINDOWS => crate::constants::USAGE_ORIGIN_WINDOWS,
             crate::constants::USAGE_ORIGIN_WSL2 => crate::constants::USAGE_ORIGIN_WSL2,
             _ => crate::constants::USAGE_ORIGIN_UNKNOWN,
         };
         let ts = unix_ms();
         let id = uuid::Uuid::new_v4().to_string();
-        let session_id = session_id
+        let session_id = context
+            .session_id
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .unwrap_or("-");
+        let node_id = context
+            .node_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("");
+        let node_name = context
+            .node_name
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("");
         if let Ok(ts_i64) = i64::try_from(ts) {
             let conn = self.events_db.lock();
             let _ = conn.execute(
                 "INSERT INTO usage_requests(
-                    id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                    id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, session_id, node_id, node_name,
                     input_tokens, output_tokens, total_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 ) VALUES(?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     id,
                     ts_i64,
                     provider,
-                    api_key_ref.unwrap_or("-"),
+                    context.api_key_ref.unwrap_or("-"),
                     model,
                     origin,
                     session_id,
+                    node_id,
+                    node_name,
                     i64::try_from(increments.input_tokens).unwrap_or(i64::MAX),
                     i64::try_from(increments.output_tokens).unwrap_or(i64::MAX),
                     i64::try_from(increments.total_tokens).unwrap_or(i64::MAX),
@@ -352,9 +363,13 @@ mod tests {
                 cache_creation_input_tokens: 0,
                 cache_read_input_tokens: 0,
             },
-            Some("key-1"),
-            crate::constants::USAGE_ORIGIN_WINDOWS,
-            Some("session-1"),
+            UsageRequestContext {
+                api_key_ref: Some("key-1"),
+                origin: crate::constants::USAGE_ORIGIN_WINDOWS,
+                session_id: Some("session-1"),
+                node_id: Some("node-a"),
+                node_name: Some("Desk A"),
+            },
         );
 
         let providers = store.list_usage_history_providers();

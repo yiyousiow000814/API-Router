@@ -2162,10 +2162,14 @@ fn decide_provider_balanced_auto_prefers_higher_quota_for_heavy_session_when_loa
                     "total_tokens": 16_000
                 }
             }),
-            Some("-"),
+            crate::orchestrator::store::UsageRequestContext {
+                api_key_ref: Some("-"),
+                origin: crate::constants::USAGE_ORIGIN_WINDOWS,
+                session_id: Some("session-heavy-headroom"),
+                node_id: Some("node-test"),
+                node_name: Some("Desk Test"),
+            },
             None,
-            crate::constants::USAGE_ORIGIN_WINDOWS,
-            Some("session-heavy-headroom"),
         );
     }
     let usage_since = unix_ms().saturating_sub(2 * 60 * 60 * 1000);
@@ -2320,10 +2324,14 @@ fn decide_provider_balanced_auto_heavy_session_prefers_lower_per_request_cost() 
                     "total_tokens": 15_000
                 }
             }),
-            Some("-"),
+            crate::orchestrator::store::UsageRequestContext {
+                api_key_ref: Some("-"),
+                origin: crate::constants::USAGE_ORIGIN_WINDOWS,
+                session_id: Some("session-heavy-cost"),
+                node_id: Some("node-test"),
+                node_name: Some("Desk Test"),
+            },
             None,
-            crate::constants::USAGE_ORIGIN_WINDOWS,
-            Some("session-heavy-cost"),
         );
     }
 
@@ -2450,10 +2458,14 @@ fn decide_provider_balanced_auto_no_longer_hard_prioritizes_load_pressure() {
                     "total_tokens": 16_000
                 }
             }),
-            Some("-"),
+            crate::orchestrator::store::UsageRequestContext {
+                api_key_ref: Some("-"),
+                origin: crate::constants::USAGE_ORIGIN_WINDOWS,
+                session_id: Some("session-heavy-pressure"),
+                node_id: Some("node-test"),
+                node_name: Some("Desk Test"),
+            },
             None,
-            crate::constants::USAGE_ORIGIN_WINDOWS,
-            Some("session-heavy-pressure"),
         );
     }
 

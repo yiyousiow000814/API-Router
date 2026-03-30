@@ -736,4 +736,79 @@ mod tests {
         assert_eq!(cache_create, 0);
         assert_eq!(cache_read, 0);
     }
+
+    #[test]
+    fn usage_request_sync_batch_uses_ingested_cursor_for_late_backfill() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        {
+            let conn = store.events_db.lock();
+            conn.execute(
+                "INSERT INTO usage_requests(
+                    id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, session_id, node_id, node_name,
+                    input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES(?1, ?2, ?3, 'official', '-', 'gpt-5.2-codex', 'windows', 's-old', 'node-a', 'Desk A', 10, 1, 11, 0, 0)",
+                rusqlite::params!["row-old", 1_000_i64, 1_000_i64],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO usage_requests(
+                    id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, session_id, node_id, node_name,
+                    input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES(?1, ?2, ?3, 'official', '-', 'gpt-5.2-codex', 'windows', 's-late', 'node-b', 'Desk B', 20, 2, 22, 0, 0)",
+                rusqlite::params!["row-late", 500_i64, 2_000_i64],
+            )
+            .unwrap();
+        }
+
+        let (rows, has_more) = store.list_usage_request_sync_batch(1_000, Some("row-old"), 10);
+        assert!(!has_more);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "row-late");
+        assert_eq!(rows[0].unix_ms, 500);
+    }
+
+    #[test]
+    fn usage_request_sync_upsert_converges_union_without_duplicates() {
+        let tmp_a = tempfile::tempdir().unwrap();
+        let store_a = Store::open(tmp_a.path()).unwrap();
+        let tmp_b = tempfile::tempdir().unwrap();
+        let store_b = Store::open(tmp_b.path()).unwrap();
+
+        let mut rows = Vec::new();
+        for i in 0..300u64 {
+            rows.push(UsageRequestSyncRow {
+                id: format!("row-{i:03}"),
+                unix_ms: 10_000 + i,
+                ingested_at_unix_ms: 20_000 + i,
+                provider: "official".to_string(),
+                api_key_ref: "-".to_string(),
+                model: "gpt-5.2-codex".to_string(),
+                origin: if i % 2 == 0 { "windows" } else { "wsl2" }.to_string(),
+                session_id: format!("session-{i:03}"),
+                node_id: if i % 2 == 0 { "node-a" } else { "node-b" }.to_string(),
+                node_name: if i % 2 == 0 { "Desk A" } else { "Desk B" }.to_string(),
+                input_tokens: 100 + i,
+                output_tokens: 10,
+                total_tokens: 110 + i,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            });
+        }
+
+        assert_eq!(store_a.upsert_usage_request_sync_rows(&rows), 300);
+        assert_eq!(store_b.upsert_usage_request_sync_rows(&rows[..200]), 200);
+
+        let (missing_rows, has_more) = store_a.list_usage_request_sync_batch(20_199, Some("row-199"), 200);
+        assert!(!has_more);
+        assert_eq!(missing_rows.len(), 100);
+        assert_eq!(store_b.upsert_usage_request_sync_rows(&missing_rows), 100);
+        assert_eq!(store_b.upsert_usage_request_sync_rows(&missing_rows), 0);
+
+        let rows_b = store_b.list_usage_requests(400);
+        assert_eq!(rows_b.len(), 300);
+        assert!(rows_b.iter().any(|row| row.get("node_name").and_then(|v| v.as_str()) == Some("Desk A")));
+        assert!(rows_b.iter().any(|row| row.get("node_name").and_then(|v| v.as_str()) == Some("Desk B")));
+    }
 }

@@ -32,12 +32,15 @@ type Params = {
 }
 
 type UsageRequestEntry = {
+  id?: string
   provider: string
   api_key_ref: string
   model: string
   origin: string
   session_id: string
   unix_ms: number
+  node_id?: string
+  node_name?: string
   input_tokens: number
   output_tokens: number
   total_tokens: number
@@ -191,12 +194,15 @@ function buildSyntheticUsageRequestRows(limit: number, clientSessions?: Status['
     const cacheCreate = i % 7 === 0 ? 100_000 + Math.floor(rand() * 900_000) : 0
     const cacheRead = i % 4 === 0 ? 100_000 + Math.floor(rand() * 900_000) : 0
     rows.push({
+      id: `prefetch-${i}`,
       provider,
       api_key_ref: '-',
       model: models[0],
       origin,
       session_id: chosenSession.sessionId,
       unix_ms: now - Math.floor(rand() * windowMs),
+      node_id: 'node-local',
+      node_name: 'Local',
       input_tokens: input,
       output_tokens: output,
       total_tokens: total,
