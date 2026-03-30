@@ -98,6 +98,8 @@ type Props = {
   setNewProviderKey: Dispatch<SetStateAction<string>>
   setNewProviderKeyStorage: Dispatch<SetStateAction<'auth_json' | 'config_toml_experimental_bearer_token'>>
   addProvider: () => Promise<void>
+  followConfigSource: (nodeId: string) => Promise<void>
+  clearFollowedConfigSource: () => Promise<void>
   openProviderGroupManager: (provider?: string) => void
   setConfigModalOpen: Dispatch<SetStateAction<boolean>>
   rawConfigModalOpen: boolean
@@ -277,6 +279,8 @@ export function AppModals(props: Props) {
     setNewProviderKey,
     setNewProviderKeyStorage,
     addProvider,
+    followConfigSource,
+    clearFollowedConfigSource,
     openProviderGroupManager,
     setConfigModalOpen,
     rawConfigModalOpen,
@@ -584,6 +588,8 @@ requires_openai_auth = true`}
         setNewProviderKey={setNewProviderKey}
         setNewProviderKeyStorage={setNewProviderKeyStorage}
         onAddProvider={() => void addProvider()}
+        onFollowSource={(nodeId) => void followConfigSource(nodeId)}
+        onClearFollowSource={() => void clearFollowedConfigSource()}
         onOpenGroupManager={() => openProviderGroupManager()}
         onClose={() => setConfigModalOpen(false)}
         providerListRef={providerListRef}

@@ -31,10 +31,12 @@ struct SecretsFile {
     lan_node_id: Option<String>,
     #[serde(default)]
     lan_node_name: Option<String>,
+    #[serde(default)]
+    lan_follow_source_node_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ProviderPricingOverride {
+pub struct ProviderPricingOverride {
     mode: String,
     amount_usd: f64,
     #[serde(default)]
@@ -46,9 +48,22 @@ struct ProviderPricingOverride {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct UsageLoginSecret {
-    username: String,
-    password: String,
+pub struct UsageLoginSecret {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProviderStateBundle {
+    pub providers: BTreeMap<String, String>,
+    pub provider_key_storage_modes: BTreeMap<String, String>,
+    pub provider_account_emails: BTreeMap<String, String>,
+    pub usage_tokens: BTreeMap<String, String>,
+    pub usage_logins: BTreeMap<String, UsageLoginSecret>,
+    pub usage_proxy_pools: BTreeMap<String, Vec<String>>,
+    pub provider_pricing: BTreeMap<String, ProviderPricingOverride>,
+    pub provider_quota_hard_cap: BTreeMap<String, ProviderQuotaHardCapOverride>,
+    pub provider_shared_ids: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,7 +77,7 @@ fn default_hard_cap_enabled() -> bool {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-struct ProviderQuotaHardCapOverride {
+pub struct ProviderQuotaHardCapOverride {
     #[serde(default = "default_hard_cap_enabled")]
     daily: bool,
     #[serde(default = "default_hard_cap_enabled")]
@@ -100,7 +115,7 @@ pub struct ProviderPricingPeriod {
     pub ended_at_unix_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderPricingConfig {
     pub mode: String,
     pub amount_usd: f64,
@@ -245,6 +260,35 @@ impl SecretStore {
 
     pub fn get_provider_key(&self, provider: &str) -> Option<String> {
         self.inner.lock().providers.get(provider).cloned()
+    }
+
+    pub fn export_provider_state_bundle(&self) -> ProviderStateBundle {
+        let data = self.inner.lock();
+        ProviderStateBundle {
+            providers: data.providers.clone(),
+            provider_key_storage_modes: data.provider_key_storage_modes.clone(),
+            provider_account_emails: data.provider_account_emails.clone(),
+            usage_tokens: data.usage_tokens.clone(),
+            usage_logins: data.usage_logins.clone(),
+            usage_proxy_pools: data.usage_proxy_pools.clone(),
+            provider_pricing: data.provider_pricing.clone(),
+            provider_quota_hard_cap: data.provider_quota_hard_cap.clone(),
+            provider_shared_ids: data.provider_shared_ids.clone(),
+        }
+    }
+
+    pub fn replace_provider_state_bundle(&self, bundle: ProviderStateBundle) -> Result<(), String> {
+        let mut data = self.inner.lock();
+        data.providers = bundle.providers;
+        data.provider_key_storage_modes = bundle.provider_key_storage_modes;
+        data.provider_account_emails = bundle.provider_account_emails;
+        data.usage_tokens = bundle.usage_tokens;
+        data.usage_logins = bundle.usage_logins;
+        data.usage_proxy_pools = bundle.usage_proxy_pools;
+        data.provider_pricing = bundle.provider_pricing;
+        data.provider_quota_hard_cap = bundle.provider_quota_hard_cap;
+        data.provider_shared_ids = bundle.provider_shared_ids;
+        self.persist(&data)
     }
 
     pub fn get_provider_key_storage_mode(&self, provider: &str) -> String {
@@ -427,6 +471,35 @@ impl SecretStore {
         Ok(shared_id)
     }
 
+    pub fn set_provider_shared_id(&self, provider: &str, shared_id: &str) -> Result<(), String> {
+        let normalized_provider = provider.trim();
+        let normalized_shared_id = shared_id.trim();
+        if normalized_provider.is_empty() {
+            return Err("provider is required".to_string());
+        }
+        if normalized_shared_id.is_empty() {
+            return Err("shared_id is required".to_string());
+        }
+        let mut data = self.inner.lock();
+        data.provider_shared_ids.insert(
+            normalized_provider.to_string(),
+            normalized_shared_id.to_string(),
+        );
+        self.persist(&data)
+    }
+
+    pub fn find_provider_by_shared_id(&self, shared_id: &str) -> Option<String> {
+        let normalized = shared_id.trim();
+        if normalized.is_empty() {
+            return None;
+        }
+        self.inner
+            .lock()
+            .provider_shared_ids
+            .iter()
+            .find_map(|(provider, value)| (value == normalized).then(|| provider.clone()))
+    }
+
     pub fn rename_provider(&self, old: &str, new: &str) -> Result<(), String> {
         if old == new {
             return Ok(());
@@ -533,12 +606,6 @@ impl SecretStore {
         self.persist(&next)?;
         *data = next;
         Ok(hard_cap)
-    }
-
-    pub fn clear_provider_quota_hard_cap(&self, provider: &str) -> Result<(), String> {
-        let mut data = self.inner.lock();
-        data.provider_quota_hard_cap.remove(provider);
-        self.persist(&data)
     }
 
     pub fn list_provider_pricing(&self) -> BTreeMap<String, ProviderPricingConfig> {
@@ -785,6 +852,32 @@ impl SecretStore {
         self.persist(&data)
     }
 
+    pub fn replace_provider_pricing_config(
+        &self,
+        provider: &str,
+        pricing: Option<ProviderPricingConfig>,
+    ) -> Result<(), String> {
+        let mut data = self.inner.lock();
+        match pricing {
+            Some(pricing) => {
+                data.provider_pricing.insert(
+                    provider.to_string(),
+                    ProviderPricingOverride {
+                        mode: pricing.mode,
+                        amount_usd: pricing.amount_usd,
+                        periods: pricing.periods,
+                        gap_fill_mode: pricing.gap_fill_mode,
+                        gap_fill_amount_usd: pricing.gap_fill_amount_usd,
+                    },
+                );
+            }
+            None => {
+                data.provider_pricing.remove(provider);
+            }
+        }
+        self.persist(&data)
+    }
+
     pub fn set_provider_gap_fill(
         &self,
         provider: &str,
@@ -817,9 +910,17 @@ impl SecretStore {
         self.persist(&data)
     }
 
-    pub fn clear_provider_pricing(&self, provider: &str) -> Result<(), String> {
+    pub fn delete_provider(&self, provider: &str) -> Result<(), String> {
         let mut data = self.inner.lock();
+        data.providers.remove(provider);
+        data.provider_key_storage_modes.remove(provider);
+        data.provider_account_emails.remove(provider);
+        data.usage_tokens.remove(provider);
+        data.usage_logins.remove(provider);
+        data.usage_proxy_pools.remove(provider);
         data.provider_pricing.remove(provider);
+        data.provider_quota_hard_cap.remove(provider);
+        data.provider_shared_ids.remove(provider);
         self.persist(&data)
     }
 
@@ -882,6 +983,26 @@ impl SecretStore {
             .map(crate::lan_sync::sanitize_node_name)
             .unwrap_or_else(|| "api-router-node".to_string());
         Some(crate::lan_sync::LanNodeIdentity { node_id, node_name })
+    }
+
+    pub fn get_followed_config_source_node_id(&self) -> Option<String> {
+        self.inner
+            .lock()
+            .lan_follow_source_node_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+    }
+
+    pub fn set_followed_config_source_node_id(&self, node_id: Option<&str>) -> Result<(), String> {
+        let normalized = node_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+        let mut data = self.inner.lock();
+        data.lan_follow_source_node_id = normalized;
+        self.persist(&data)
     }
 
     pub fn rotate_gateway_token(&self) -> Result<String, String> {

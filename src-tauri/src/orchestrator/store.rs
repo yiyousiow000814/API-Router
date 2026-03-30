@@ -68,6 +68,32 @@ pub struct UsageRequestSyncRow {
     pub cache_read_input_tokens: u64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LanEditSyncEvent {
+    pub event_id: String,
+    pub node_id: String,
+    pub node_name: String,
+    pub created_at_unix_ms: u64,
+    pub lamport_ts: u64,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub op: String,
+    pub payload: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LanProviderDefinitionSnapshotRecord {
+    pub source_node_id: String,
+    pub source_node_name: String,
+    pub shared_provider_id: String,
+    pub provider_name: String,
+    pub deleted: bool,
+    pub snapshot: Value,
+    pub updated_at_unix_ms: u64,
+    pub lamport_ts: u64,
+    pub revision_event_id: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct SessionRouteAssignment {
     pub session_id: String,
@@ -273,6 +299,33 @@ impl Store {
               ON usage_requests(lower(provider), unix_ms DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_usage_requests_origin_lc_unix_ms_id
               ON usage_requests(lower(origin), unix_ms DESC, id DESC);
+            CREATE TABLE IF NOT EXISTS lan_edit_events(
+              event_id TEXT PRIMARY KEY,
+              node_id TEXT NOT NULL,
+              node_name TEXT NOT NULL,
+              created_at_unix_ms INTEGER NOT NULL,
+              lamport_ts INTEGER NOT NULL,
+              entity_type TEXT NOT NULL,
+              entity_id TEXT NOT NULL,
+              op TEXT NOT NULL,
+              payload_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_lan_edit_events_lamport_event
+              ON lan_edit_events(lamport_ts ASC, event_id ASC);
+            CREATE TABLE IF NOT EXISTS lan_provider_definition_snapshots(
+              source_node_id TEXT NOT NULL,
+              source_node_name TEXT NOT NULL,
+              shared_provider_id TEXT NOT NULL,
+              provider_name TEXT NOT NULL,
+              deleted INTEGER NOT NULL,
+              snapshot_json TEXT NOT NULL,
+              updated_at_unix_ms INTEGER NOT NULL,
+              lamport_ts INTEGER NOT NULL,
+              revision_event_id TEXT NOT NULL,
+              PRIMARY KEY(source_node_id, shared_provider_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_lan_provider_definition_snapshots_source
+              ON lan_provider_definition_snapshots(source_node_id, deleted, provider_name);
             CREATE TABLE IF NOT EXISTS usage_request_day_provider_totals(
               day_key TEXT NOT NULL,
               provider TEXT NOT NULL,
@@ -407,6 +460,11 @@ impl Store {
                  ON CONFLICT(key) DO UPDATE SET value='0'",
                 [Self::USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY],
             )?;
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES('lan_edit_lamport_clock', '0')
+                 ON CONFLICT(key) DO UPDATE SET value='0'",
+                [],
+            )?;
         }
         conn.execute(
             "INSERT INTO event_meta(key, value) VALUES(?1, '0')
@@ -417,6 +475,11 @@ impl Store {
             "INSERT INTO event_meta(key, value) VALUES(?1, '0')
              ON CONFLICT(key) DO NOTHING",
             [Self::USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY],
+        )?;
+        conn.execute(
+            "INSERT INTO event_meta(key, value) VALUES('lan_edit_lamport_clock', '0')
+             ON CONFLICT(key) DO NOTHING",
+            [],
         )?;
         Self::ensure_usage_request_columns(&conn)?;
         drop(conn);
@@ -531,6 +594,265 @@ impl Store {
             params![key, value],
         )?;
         Ok(())
+    }
+
+    pub fn delete_event_meta(&self, key: &str) -> anyhow::Result<()> {
+        let conn = self.events_db.lock();
+        conn.execute("DELETE FROM event_meta WHERE key = ?1", [key])?;
+        Ok(())
+    }
+
+    pub fn next_lan_edit_lamport_ts(&self, observed_remote: Option<u64>) -> u64 {
+        let conn = self.events_db.lock();
+        let current = conn
+            .query_row(
+                "SELECT value FROM event_meta WHERE key='lan_edit_lamport_clock'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let next = current.max(observed_remote.unwrap_or(0)).saturating_add(1);
+        let _ = conn.execute(
+            "INSERT INTO event_meta(key, value) VALUES('lan_edit_lamport_clock', ?1)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [next.to_string()],
+        );
+        next
+    }
+
+    pub fn note_lan_edit_lamport_ts(&self, observed_remote: u64) {
+        let conn = self.events_db.lock();
+        let current = conn
+            .query_row(
+                "SELECT value FROM event_meta WHERE key='lan_edit_lamport_clock'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        if observed_remote <= current {
+            return;
+        }
+        let _ = conn.execute(
+            "INSERT INTO event_meta(key, value) VALUES('lan_edit_lamport_clock', ?1)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [observed_remote.to_string()],
+        );
+    }
+
+    pub fn insert_lan_edit_event(&self, event: &LanEditSyncEvent) -> bool {
+        let payload_json =
+            serde_json::to_string(&event.payload).unwrap_or_else(|_| "null".to_string());
+        let conn = self.events_db.lock();
+        conn.execute(
+            "INSERT OR IGNORE INTO lan_edit_events(
+                event_id, node_id, node_name, created_at_unix_ms, lamport_ts,
+                entity_type, entity_id, op, payload_json
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                event.event_id,
+                event.node_id,
+                event.node_name,
+                i64::try_from(event.created_at_unix_ms).unwrap_or(i64::MAX),
+                i64::try_from(event.lamport_ts).unwrap_or(i64::MAX),
+                event.entity_type,
+                event.entity_id,
+                event.op,
+                payload_json,
+            ],
+        )
+        .unwrap_or(0)
+            > 0
+    }
+
+    pub fn list_lan_edit_events_batch(
+        &self,
+        after_lamport_ts: u64,
+        after_event_id: Option<&str>,
+        limit: usize,
+    ) -> (Vec<LanEditSyncEvent>, bool) {
+        let mut out = Vec::with_capacity(limit.min(128));
+        let after_lamport_i64 = i64::try_from(after_lamport_ts).unwrap_or(i64::MAX);
+        let after_event_id = after_event_id.unwrap_or_default().trim();
+        let fetch_limit = limit.saturating_add(1);
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT
+                event_id,
+                node_id,
+                node_name,
+                created_at_unix_ms,
+                lamport_ts,
+                entity_type,
+                entity_id,
+                op,
+                payload_json
+             FROM lan_edit_events
+             WHERE lamport_ts > ?1
+                OR (lamport_ts = ?1 AND event_id > ?2)
+             ORDER BY lamport_ts ASC, event_id ASC
+             LIMIT ?3",
+        ) else {
+            return (out, false);
+        };
+        let Ok(rows) = stmt.query_map(
+            params![
+                after_lamport_i64,
+                after_event_id,
+                i64::try_from(fetch_limit).unwrap_or(i64::MAX)
+            ],
+            |row| {
+                let payload_json = row.get::<_, String>(8)?;
+                Ok(LanEditSyncEvent {
+                    event_id: row.get::<_, String>(0)?,
+                    node_id: row.get::<_, String>(1)?,
+                    node_name: row.get::<_, String>(2)?,
+                    created_at_unix_ms: u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
+                    lamport_ts: u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+                    entity_type: row.get::<_, String>(5)?,
+                    entity_id: row.get::<_, String>(6)?,
+                    op: row.get::<_, String>(7)?,
+                    payload: serde_json::from_str(&payload_json).unwrap_or(Value::Null),
+                })
+            },
+        ) else {
+            return (out, false);
+        };
+        for row in rows.flatten() {
+            out.push(row);
+        }
+        let has_more = out.len() > limit;
+        if has_more {
+            out.truncate(limit);
+        }
+        (out, has_more)
+    }
+
+    pub fn get_lan_provider_definition_snapshot(
+        &self,
+        source_node_id: &str,
+        shared_provider_id: &str,
+    ) -> Option<LanProviderDefinitionSnapshotRecord> {
+        let conn = self.events_db.lock();
+        conn.query_row(
+            "SELECT
+                source_node_id,
+                source_node_name,
+                shared_provider_id,
+                provider_name,
+                deleted,
+                snapshot_json,
+                updated_at_unix_ms,
+                lamport_ts,
+                revision_event_id
+             FROM lan_provider_definition_snapshots
+             WHERE source_node_id = ?1 AND shared_provider_id = ?2",
+            params![source_node_id.trim(), shared_provider_id.trim()],
+            |row| {
+                let snapshot_json = row.get::<_, String>(5)?;
+                Ok(LanProviderDefinitionSnapshotRecord {
+                    source_node_id: row.get::<_, String>(0)?,
+                    source_node_name: row.get::<_, String>(1)?,
+                    shared_provider_id: row.get::<_, String>(2)?,
+                    provider_name: row.get::<_, String>(3)?,
+                    deleted: row.get::<_, i64>(4)? != 0,
+                    snapshot: serde_json::from_str(&snapshot_json).unwrap_or(Value::Null),
+                    updated_at_unix_ms: u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
+                    lamport_ts: u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                    revision_event_id: row.get::<_, String>(8)?,
+                })
+            },
+        )
+        .optional()
+        .ok()
+        .flatten()
+    }
+
+    pub fn upsert_lan_provider_definition_snapshot(
+        &self,
+        record: &LanProviderDefinitionSnapshotRecord,
+    ) -> Result<(), String> {
+        let snapshot_json =
+            serde_json::to_string(&record.snapshot).unwrap_or_else(|_| "null".to_string());
+        let conn = self.events_db.lock();
+        conn.execute(
+            "INSERT INTO lan_provider_definition_snapshots(
+                source_node_id,
+                source_node_name,
+                shared_provider_id,
+                provider_name,
+                deleted,
+                snapshot_json,
+                updated_at_unix_ms,
+                lamport_ts,
+                revision_event_id
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(source_node_id, shared_provider_id) DO UPDATE SET
+                source_node_name = excluded.source_node_name,
+                provider_name = excluded.provider_name,
+                deleted = excluded.deleted,
+                snapshot_json = excluded.snapshot_json,
+                updated_at_unix_ms = excluded.updated_at_unix_ms,
+                lamport_ts = excluded.lamport_ts,
+                revision_event_id = excluded.revision_event_id",
+            params![
+                record.source_node_id,
+                record.source_node_name,
+                record.shared_provider_id,
+                record.provider_name,
+                if record.deleted { 1_i64 } else { 0_i64 },
+                snapshot_json,
+                i64::try_from(record.updated_at_unix_ms).unwrap_or(i64::MAX),
+                i64::try_from(record.lamport_ts).unwrap_or(i64::MAX),
+                record.revision_event_id,
+            ],
+        )
+        .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    pub fn list_lan_provider_definition_snapshots(
+        &self,
+        source_node_id: &str,
+    ) -> Vec<LanProviderDefinitionSnapshotRecord> {
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT
+                source_node_id,
+                source_node_name,
+                shared_provider_id,
+                provider_name,
+                deleted,
+                snapshot_json,
+                updated_at_unix_ms,
+                lamport_ts,
+                revision_event_id
+             FROM lan_provider_definition_snapshots
+             WHERE source_node_id = ?1 AND deleted = 0
+             ORDER BY lower(provider_name) ASC, shared_provider_id ASC",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map([source_node_id.trim()], |row| {
+            let snapshot_json = row.get::<_, String>(5)?;
+            Ok(LanProviderDefinitionSnapshotRecord {
+                source_node_id: row.get::<_, String>(0)?,
+                source_node_name: row.get::<_, String>(1)?,
+                shared_provider_id: row.get::<_, String>(2)?,
+                provider_name: row.get::<_, String>(3)?,
+                deleted: row.get::<_, i64>(4)? != 0,
+                snapshot: serde_json::from_str(&snapshot_json).unwrap_or(Value::Null),
+                updated_at_unix_ms: u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
+                lamport_ts: u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                revision_event_id: row.get::<_, String>(8)?,
+            })
+        }) else {
+            return Vec::new();
+        };
+        rows.flatten().collect()
     }
 
     fn merge_legacy_events_sqlite(&self, legacy_path: &Path) -> anyhow::Result<()> {
@@ -1166,12 +1488,7 @@ impl Store {
         response_obj: &Value,
         context: UsageRequestContext<'_>,
     ) {
-        self.record_success_with_model(
-            provider,
-            response_obj,
-            context,
-            None,
-        );
+        self.record_success_with_model(provider, response_obj, context, None);
     }
 
     pub fn record_success_with_model(
@@ -1841,8 +2158,7 @@ impl Store {
                     input_tokens: u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
                     output_tokens: u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
                     total_tokens: u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
-                    cache_creation_input_tokens: u64::try_from(row.get::<_, i64>(13)?)
-                        .unwrap_or(0),
+                    cache_creation_input_tokens: u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
                     cache_read_input_tokens: u64::try_from(row.get::<_, i64>(14)?).unwrap_or(0),
                 })
             },

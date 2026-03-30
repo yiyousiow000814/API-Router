@@ -196,6 +196,7 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         secrets,
         lan_sync: crate::lan_sync::LanSyncRuntime::new(lan_node),
     };
+    let _ = crate::lan_sync::ensure_local_edit_seed_state(&app_state);
 
     Ok(app_state)
 }

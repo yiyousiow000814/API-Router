@@ -361,6 +361,17 @@ pub(crate) fn set_spend_history_entry(
             .gateway
             .store
             .remove_spend_manual_day(&provider, &day_key);
+        if let Err(err) =
+            crate::lan_sync::record_spend_manual_day(&state, &provider, &day_key, None, None)
+        {
+            state.gateway.store.add_event(
+                &provider,
+                "error",
+                "lan.edit_sync_record_failed",
+                &format!("failed to record spend manual clear for LAN sync: {err}"),
+                serde_json::json!({ "day_key": day_key }),
+            );
+        }
         state.gateway.store.add_event(
             &provider,
             "info",
@@ -382,6 +393,21 @@ pub(crate) fn set_spend_history_entry(
         .gateway
         .store
         .put_spend_manual_day(&provider, &day_key, &row);
+    if let Err(err) = crate::lan_sync::record_spend_manual_day(
+        &state,
+        &provider,
+        &day_key,
+        total_used_usd,
+        usd_per_req,
+    ) {
+        state.gateway.store.add_event(
+            &provider,
+            "error",
+            "lan.edit_sync_record_failed",
+            &format!("failed to record spend manual update for LAN sync: {err}"),
+            serde_json::json!({ "day_key": day_key }),
+        );
+    }
     state.gateway.store.add_event(
         &provider,
         "info",

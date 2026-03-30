@@ -470,7 +470,8 @@ pub fn run() {
             app.manage(state);
             if !is_ui_tauri {
                 let st = app.state::<app_state::AppState>();
-                st.lan_sync.start_background(st.gateway.clone());
+                st.lan_sync
+                    .start_background(st.gateway.clone(), st.config_path.clone());
             }
             if !is_ui_tauri {
                 let app_handle = app.handle().clone();
@@ -619,6 +620,9 @@ pub fn run() {
             commands::get_event_log_daily_stats,
             commands::set_manual_override,
             commands::get_config,
+            commands::set_followed_config_source,
+            commands::clear_followed_config_source,
+            commands::copy_provider_from_config_source,
             commands::get_gateway_token_preview,
             commands::get_gateway_token,
             commands::rotate_gateway_token,

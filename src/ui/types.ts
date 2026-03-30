@@ -174,9 +174,26 @@ export type Config = {
       key_storage?: 'auth_json' | 'config_toml_experimental_bearer_token'
       has_usage_token?: boolean
       has_usage_login?: boolean
+      borrowed?: boolean
+      editable?: boolean
+      source_node_id?: string | null
+      shared_provider_id?: string | null
     }
   >
   provider_order?: string[]
+  config_source?: {
+    mode: 'local' | 'follow'
+    followed_node_id?: string | null
+    sources: Array<{
+      kind: 'local' | 'peer'
+      node_id: string
+      node_name: string
+      active: boolean
+      follow_allowed: boolean
+      follow_blocked_reason?: string | null
+      using_count: number
+    }>
+  }
 }
 
 export type UsageStatistics = {

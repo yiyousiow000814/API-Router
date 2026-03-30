@@ -1119,6 +1119,39 @@ export default function App() {
     refreshConfig,
     flashToast,
   })
+  async function followConfigSource(nodeId: string) {
+    try {
+      await invoke('set_followed_config_source', { nodeId })
+      flashToast(`Following config source: ${nodeId}`)
+      await refreshStatus()
+      await refreshConfig()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
+  }
+  async function clearFollowedConfigSource() {
+    try {
+      await invoke('clear_followed_config_source')
+      flashToast('Returned to local config source')
+      await refreshStatus()
+      await refreshConfig()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
+  }
+  async function copyProviderFromConfigSource(sourceNodeId: string, sharedProviderId: string) {
+    try {
+      const copiedName = await invoke<string>('copy_provider_from_config_source', {
+        sourceNodeId,
+        sharedProviderId,
+      })
+      flashToast(`Copied provider: ${copiedName}`)
+      await refreshStatus()
+      await refreshConfig()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
+  }
   useAppPolling({
     activePage,
     isDevPreview,
@@ -1199,6 +1232,7 @@ export default function App() {
     openProviderGroupManager,
     setProviderDisabled,
     deleteProvider,
+    copyProviderFromConfigSource,
     openKeyModal,
     openProviderBaseUrlModal,
     clearKey,
@@ -1407,6 +1441,8 @@ export default function App() {
             setNewProviderKey={setNewProviderKey}
             setNewProviderKeyStorage={setNewProviderKeyStorage}
             addProvider={addProvider}
+            followConfigSource={followConfigSource}
+            clearFollowedConfigSource={clearFollowedConfigSource}
             openProviderGroupManager={openProviderGroupManager}
             setConfigModalOpen={setConfigModalOpen}
             rawConfigModalOpen={rawConfigModalOpen}

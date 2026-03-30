@@ -22,6 +22,21 @@ function buildConfig(): Config {
       },
     },
     provider_order: ['p1'],
+    config_source: {
+      mode: 'local',
+      followed_node_id: null,
+      sources: [
+        {
+          kind: 'local',
+          node_id: 'node-local',
+          node_name: 'Desk',
+          active: true,
+          follow_allowed: false,
+          follow_blocked_reason: null,
+          using_count: 1,
+        },
+      ],
+    },
   }
 }
 
@@ -41,6 +56,8 @@ describe('ConfigModal', () => {
         setNewProviderKey={() => undefined}
         setNewProviderKeyStorage={() => undefined}
         onAddProvider={() => undefined}
+        onFollowSource={() => undefined}
+        onClearFollowSource={() => undefined}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}
         providerListRef={{ current: null }}
@@ -72,6 +89,8 @@ describe('ConfigModal', () => {
         setNewProviderKey={() => undefined}
         setNewProviderKeyStorage={() => undefined}
         onAddProvider={() => undefined}
+        onFollowSource={() => undefined}
+        onClearFollowSource={() => undefined}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}
         providerListRef={{ current: null }}

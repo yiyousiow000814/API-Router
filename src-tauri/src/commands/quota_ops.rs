@@ -633,6 +633,19 @@ pub(crate) fn set_usage_token(
         return Err(format!("unknown provider: {provider}"));
     }
     state.secrets.set_usage_token(&provider, &token)?;
+    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
+        &state,
+        &provider,
+        serde_json::json!({ "usage_token": token }),
+    ) {
+        state.gateway.store.add_event(
+            &provider,
+            "error",
+            "lan.edit_sync_record_failed",
+            &format!("failed to record usage token update for LAN sync: {err}"),
+            serde_json::Value::Null,
+        );
+    }
     state.gateway.store.add_event(
         &provider,
         "info",
@@ -652,6 +665,19 @@ pub(crate) fn clear_usage_token(
         return Err(format!("unknown provider: {provider}"));
     }
     state.secrets.clear_usage_token(&provider)?;
+    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
+        &state,
+        &provider,
+        serde_json::json!({ "usage_token": serde_json::Value::Null }),
+    ) {
+        state.gateway.store.add_event(
+            &provider,
+            "error",
+            "lan.edit_sync_record_failed",
+            &format!("failed to record usage token clear for LAN sync: {err}"),
+            serde_json::Value::Null,
+        );
+    }
     state.gateway.store.add_event(
         &provider,
         "info",
@@ -707,6 +733,23 @@ pub(crate) fn set_usage_auth(
             .secrets
             .set_usage_login(&provider, &normalized_username, &password)?;
     }
+    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
+        &state,
+        &provider,
+        serde_json::json!({
+            "usage_token": if normalized_token.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(normalized_token.clone()) },
+            "usage_login_username": if normalized_username.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(normalized_username.clone()) },
+            "usage_login_password": if normalized_username.is_empty() || password.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(password.clone()) },
+        }),
+    ) {
+        state.gateway.store.add_event(
+            &provider,
+            "error",
+            "lan.edit_sync_record_failed",
+            &format!("failed to record usage auth update for LAN sync: {err}"),
+            serde_json::Value::Null,
+        );
+    }
     state.gateway.store.add_event(
         &provider,
         "info",
@@ -730,6 +773,23 @@ pub(crate) fn clear_usage_auth(
     }
     state.secrets.clear_usage_token(&provider)?;
     state.secrets.clear_usage_login(&provider)?;
+    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
+        &state,
+        &provider,
+        serde_json::json!({
+            "usage_token": serde_json::Value::Null,
+            "usage_login_username": serde_json::Value::Null,
+            "usage_login_password": serde_json::Value::Null,
+        }),
+    ) {
+        state.gateway.store.add_event(
+            &provider,
+            "error",
+            "lan.edit_sync_record_failed",
+            &format!("failed to record usage auth clear for LAN sync: {err}"),
+            serde_json::Value::Null,
+        );
+    }
     state.gateway.store.add_event(
         &provider,
         "info",
@@ -768,10 +828,23 @@ pub(crate) fn set_usage_base_url(
     {
         let mut cfg = state.gateway.cfg.write();
         if let Some(p) = cfg.providers.get_mut(&provider) {
-            p.usage_base_url = Some(u);
+            p.usage_base_url = Some(u.clone());
         }
     }
     persist_config(&state).map_err(|e| e.to_string())?;
+    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
+        &state,
+        &provider,
+        serde_json::json!({ "usage_base_url": u.clone() }),
+    ) {
+        state.gateway.store.add_event(
+            &provider,
+            "error",
+            "lan.edit_sync_record_failed",
+            &format!("failed to record usage base url update for LAN sync: {err}"),
+            serde_json::Value::Null,
+        );
+    }
     state.gateway.store.add_event(
         &provider,
         "info",
@@ -798,6 +871,19 @@ pub(crate) fn clear_usage_base_url(
     }
     persist_config(&state).map_err(|e| e.to_string())?;
     crate::orchestrator::quota::clear_quota_snapshot(&state.gateway, &provider);
+    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
+        &state,
+        &provider,
+        serde_json::json!({ "usage_base_url": serde_json::Value::Null }),
+    ) {
+        state.gateway.store.add_event(
+            &provider,
+            "error",
+            "lan.edit_sync_record_failed",
+            &format!("failed to record usage base url clear for LAN sync: {err}"),
+            serde_json::Value::Null,
+        );
+    }
     state.gateway.store.add_event(
         &provider,
         "info",
@@ -913,6 +999,15 @@ pub(crate) fn set_provider_manual_pricing(
                 None,
                 Some(api_key_ref.clone()),
             )?;
+            if let Err(err) = crate::lan_sync::record_provider_pricing_snapshot(&state, &provider) {
+                state.gateway.store.add_event(
+                    &provider,
+                    "error",
+                    "lan.edit_sync_record_failed",
+                    &format!("failed to record pricing clear for LAN sync: {err}"),
+                    serde_json::Value::Null,
+                );
+            }
             state.gateway.store.add_event(
                 &provider,
                 "info",
@@ -948,6 +1043,15 @@ pub(crate) fn set_provider_manual_pricing(
                 expires,
                 Some(api_key_ref.clone()),
             )?;
+            if let Err(err) = crate::lan_sync::record_provider_pricing_snapshot(&state, &provider) {
+                state.gateway.store.add_event(
+                    &provider,
+                    "error",
+                    "lan.edit_sync_record_failed",
+                    &format!("failed to record pricing update for LAN sync: {err}"),
+                    serde_json::Value::Null,
+                );
+            }
             state.gateway.store.add_event(
                 &provider,
                 "info",
@@ -979,6 +1083,15 @@ pub(crate) fn set_provider_gap_fill(
     match mode.as_str() {
         "none" => {
             state.secrets.set_provider_gap_fill(&provider, None, None)?;
+            if let Err(err) = crate::lan_sync::record_provider_pricing_snapshot(&state, &provider) {
+                state.gateway.store.add_event(
+                    &provider,
+                    "error",
+                    "lan.edit_sync_record_failed",
+                    &format!("failed to record gap-fill clear for LAN sync: {err}"),
+                    serde_json::Value::Null,
+                );
+            }
             state.gateway.store.add_event(
                 &provider,
                 "info",
@@ -998,6 +1111,15 @@ pub(crate) fn set_provider_gap_fill(
             state
                 .secrets
                 .set_provider_gap_fill(&provider, Some(&mode), Some(v))?;
+            if let Err(err) = crate::lan_sync::record_provider_pricing_snapshot(&state, &provider) {
+                state.gateway.store.add_event(
+                    &provider,
+                    "error",
+                    "lan.edit_sync_record_failed",
+                    &format!("failed to record gap-fill update for LAN sync: {err}"),
+                    serde_json::Value::Null,
+                );
+            }
             state.gateway.store.add_event(
                 &provider,
                 "info",

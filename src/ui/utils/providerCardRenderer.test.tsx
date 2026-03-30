@@ -113,6 +113,7 @@ function renderCardHtml(config: Config, status: Status): string {
     openKeyModal: async () => undefined,
     clearKey: async () => undefined,
     deleteProvider: async () => undefined,
+    copyProviderFromConfigSource: async () => undefined,
     openUsageBaseModal: async () => undefined,
     openUsageAuthModal: async () => undefined,
     openProviderEmailModal: () => undefined,

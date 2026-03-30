@@ -25,6 +25,7 @@ type CreateProviderCardRendererOptions = {
   openKeyModal: (provider: string) => Promise<void>
   clearKey: (provider: string) => Promise<void>
   deleteProvider: (provider: string) => Promise<void>
+  copyProviderFromConfigSource: (sourceNodeId: string, sharedProviderId: string) => Promise<void>
   openUsageBaseModal: (provider: string, current: string | null | undefined) => Promise<void>
   openUsageAuthModal: (provider: string) => Promise<void>
   openProviderEmailModal: (provider: string, current: string | null | undefined) => void
@@ -53,6 +54,8 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
       (provider) => !provider.disabled,
     ).length
     const canDeactivate = p.disabled || activeProviderCount > 1
+    const editable = p.editable !== false
+    const canCopyBorrowed = Boolean(p.borrowed && p.source_node_id && p.shared_provider_id)
     const isDragOver = options.dragOverProvider === name
     const dragStyle = overlay
       ? {
@@ -81,6 +84,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   title="Drag to reorder"
                   aria-label="Drag to reorder"
                   type="button"
+                  disabled={!editable}
                   draggable={false}
                   onPointerDown={(e) => options.onProviderHandlePointerDown(name, e)}
                 >
@@ -119,6 +123,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                       className="aoIconGhost"
                       title="Rename"
                       aria-label="Rename"
+                      disabled={!editable}
                       onClick={() => options.beginRenameProvider(name)}
                     >
                       <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -126,6 +131,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                         <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
                       </svg>
                     </button>
+                    {p.borrowed ? <span className="aoProviderGroupTag">Borrowed</span> : null}
                   </>
                 )}
               </div>
@@ -133,6 +139,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 <button
                   className="aoActionBtn aoProviderHeadBtn"
                   title="Set base URL"
+                  disabled={!editable}
                   onClick={() => options.openProviderBaseUrlModal(name, p.base_url)}
                 >
                   <span>Base URL</span>
@@ -140,6 +147,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 <button
                   className="aoActionBtn aoProviderHeadBtn"
                   title="Set key"
+                  disabled={!editable}
                   onClick={() => void options.openKeyModal(name)}
                 >
                   <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -164,12 +172,14 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   }
                   aria-label={p.disabled ? 'Activate provider' : 'Deactivate provider'}
                   aria-pressed={!p.disabled}
-                  disabled={!p.disabled && !canDeactivate}
+                  aria-disabled={!editable || (!p.disabled && !canDeactivate)}
                   onClick={() => {
+                    if (!editable) return
                     const nextDisabled = !Boolean(p.disabled)
                     if (nextDisabled && !canDeactivate) return
                     void options.setProviderDisabled(name, nextDisabled)
                   }}
+                  disabled={!editable || (!p.disabled && !canDeactivate)}
                 >
                   <span className="aoStatusSwitchThumb" aria-hidden="true" />
                 </button>
@@ -195,18 +205,24 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 <div className="aoUsageBtns">
                   <button
                     className="aoTinyBtn"
+                    disabled={!editable}
                     onClick={() => options.openProviderEmailModal(name, p.account_email ?? undefined)}
                   >
                     Email
                   </button>
                   {supportsUsageAuth ? (
-                    <button className="aoTinyBtn" onClick={() => void options.openUsageAuthModal(name)}>
+                    <button
+                      className="aoTinyBtn"
+                      disabled={!editable}
+                      onClick={() => void options.openUsageAuthModal(name)}
+                    >
                       Usage Auth
                     </button>
                   ) : null}
                   {supportsUsageUrl ? (
                     <button
                       className="aoTinyBtn"
+                      disabled={!editable}
                       onClick={() => void options.openUsageBaseModal(name, p.usage_base_url ?? undefined)}
                     >
                       Usage URL
@@ -220,6 +236,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                         <input
                           type="checkbox"
                           checked={quotaHardCap[period]}
+                          disabled={!editable}
                           onChange={(event) =>
                             void options.setProviderQuotaHardCap(name, period, event.target.checked)
                           }
@@ -233,14 +250,26 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
             )}
           </div>
           <div className="aoProviderDeleteSlot">
-            <button
-              className="aoProviderDeleteBtn"
-              title="Delete provider"
-              aria-label="Delete provider"
-              onClick={() => void options.deleteProvider(name)}
-            >
-              <span aria-hidden="true">x</span>
-            </button>
+            {canCopyBorrowed ? (
+              <button
+                className="aoTinyBtn"
+                title="Copy provider to local definitions"
+                aria-label="Copy provider to local definitions"
+                onClick={() => void options.copyProviderFromConfigSource(p.source_node_id!, p.shared_provider_id!)}
+              >
+                Copy
+              </button>
+            ) : (
+              <button
+                className="aoProviderDeleteBtn"
+                title="Delete provider"
+                aria-label="Delete provider"
+                disabled={!editable}
+                onClick={() => void options.deleteProvider(name)}
+              >
+                <span aria-hidden="true">x</span>
+              </button>
+            )}
           </div>
         </div>
       </div>

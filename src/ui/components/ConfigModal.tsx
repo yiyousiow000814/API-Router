@@ -14,6 +14,8 @@ type Props = {
   setNewProviderKey: (next: string) => void
   setNewProviderKeyStorage: (next: 'auth_json' | 'config_toml_experimental_bearer_token') => void
   onAddProvider: () => void
+  onFollowSource: (nodeId: string) => void
+  onClearFollowSource: () => void
   onOpenGroupManager: () => void
   onClose: () => void
   providerListRef: React.RefObject<HTMLDivElement | null>
@@ -37,6 +39,8 @@ export function ConfigModal({
   setNewProviderKey,
   setNewProviderKeyStorage,
   onAddProvider,
+  onFollowSource,
+  onClearFollowSource,
   onOpenGroupManager,
   onClose,
   providerListRef,
@@ -67,6 +71,52 @@ export function ConfigModal({
           </div>
         </div>
         <div className="aoModalBody aoConfigModalBody">
+          <div className="aoCard aoConfigCard">
+            <div className="aoConfigPanel">
+              <div className="aoMiniTitle">Config source</div>
+              <div className="aoMuted">
+                {config.config_source?.mode === 'follow'
+                  ? 'Borrowing provider definitions from a LAN peer. Local provider edits are locked until you switch back.'
+                  : 'Using this device\'s local provider definitions.'}
+              </div>
+              <div className="aoProviderConfigList">
+                {(config.config_source?.sources ?? []).map((source) => (
+                  <div className="aoProviderConfigCard" key={source.node_id}>
+                    <div className="aoProviderConfigBody">
+                      <div className="aoProviderField aoProviderLeft">
+                        <div className="aoProviderNameRow">
+                          <span className="aoProviderName">{source.node_name}</span>
+                          <span className="aoProviderGroupTag">{source.kind}</span>
+                          {source.active ? <span className="aoProviderGroupTag">Active</span> : null}
+                        </div>
+                        <div className="aoModalSub">
+                          using count: {source.using_count}
+                          {source.follow_blocked_reason ? ` | ${source.follow_blocked_reason}` : ''}
+                        </div>
+                      </div>
+                      <div className="aoProviderField aoProviderRight">
+                        <div className="aoUsageBtns">
+                          {source.kind === 'local' ? (
+                            <button className="aoTinyBtn" disabled={source.active} onClick={onClearFollowSource}>
+                              Use Local
+                            </button>
+                          ) : (
+                            <button
+                              className="aoTinyBtn"
+                              disabled={!source.follow_allowed || source.active}
+                              onClick={() => onFollowSource(source.node_id)}
+                            >
+                              Follow
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
           <div className="aoConfigStickyAddProvider">
             <div className="aoCard aoConfigCard">
               <div className="aoConfigDeck">
@@ -77,12 +127,14 @@ export function ConfigModal({
                       className="aoInput"
                       placeholder={nextProviderPlaceholder}
                       value={newProviderName}
+                      disabled={config.config_source?.mode === 'follow'}
                       onChange={(e) => setNewProviderName(e.target.value)}
                     />
                     <input
                       className="aoInput"
                       placeholder="Base URL (e.g. https://api.openai.com/v1)"
                       value={newProviderBaseUrl}
+                      disabled={config.config_source?.mode === 'follow'}
                       onChange={(e) => setNewProviderBaseUrl(e.target.value)}
                     />
                     <input
@@ -90,11 +142,13 @@ export function ConfigModal({
                       type="password"
                       placeholder="Key"
                       value={newProviderKey}
+                      disabled={config.config_source?.mode === 'follow'}
                       onChange={(e) => setNewProviderKey(e.target.value)}
                     />
                     <select
                       className="aoSelect aoAddProviderStorageSelect"
                       value={newProviderKeyStorage}
+                      disabled={config.config_source?.mode === 'follow'}
                       onChange={(e) =>
                         setNewProviderKeyStorage(
                           e.target.value as 'auth_json' | 'config_toml_experimental_bearer_token',
@@ -104,7 +158,11 @@ export function ConfigModal({
                       <option value="auth_json">auth.json</option>
                       <option value="config_toml_experimental_bearer_token">experimental_bearer_token</option>
                     </select>
-                    <button className="aoBtn aoBtnPrimary aoAddProviderSubmit" onClick={onAddProvider}>
+                    <button
+                      className="aoBtn aoBtnPrimary aoAddProviderSubmit"
+                      disabled={config.config_source?.mode === 'follow'}
+                      onClick={onAddProvider}
+                    >
                       Add
                     </button>
                   </div>
