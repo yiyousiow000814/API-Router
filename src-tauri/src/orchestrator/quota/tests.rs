@@ -633,6 +633,84 @@ mod tests {
         assert_eq!(explicit_usage_endpoint_url(&provider), None);
     }
 
+    #[test]
+    fn explicit_usage_endpoint_url_infers_aigateway_usage_endpoint() {
+        let provider = ProviderConfig {
+            display_name: "AI Gateway".to_string(),
+            base_url: "https://aigateway.chat/v1".to_string(),
+            group: None,
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        };
+
+        assert_eq!(
+            explicit_usage_endpoint_url(&provider).as_deref(),
+            Some("https://aigateway.chat/v1/usage")
+        );
+    }
+
+    #[test]
+    fn explicit_usage_endpoint_url_ignores_invalid_explicit_url_for_aigateway() {
+        let provider = ProviderConfig {
+            display_name: "AI Gateway".to_string(),
+            base_url: "https://aigateway.chat/v1".to_string(),
+            group: None,
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: Some("not-a-url".to_string()),
+            api_key: String::new(),
+        };
+
+        assert_eq!(
+            explicit_usage_endpoint_url(&provider).as_deref(),
+            Some("https://aigateway.chat/v1/usage")
+        );
+    }
+
+    #[test]
+    fn explicit_usage_endpoint_payload_reads_aigateway_usage_shape() {
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        let payload = serde_json::json!({
+            "isValid": true,
+            "mode": "unrestricted",
+            "planName": "轻享卡 3天",
+            "remaining": 200,
+            "subscription": {
+                "daily_limit_usd": 200,
+                "daily_usage_usd": 0,
+                "expires_at": "2026-04-02T14:02:27.679994+08:00"
+            },
+            "unit": "USD",
+            "usage": {
+                "today": {
+                    "actual_cost": 0,
+                    "requests": 0,
+                    "total_tokens": 0
+                }
+            }
+        });
+
+        apply_explicit_usage_endpoint_payload(
+            &mut snap,
+            &payload,
+            "https://aigateway.chat/v1/usage",
+            1_700_000_000_000,
+        )
+        .expect("aigateway usage payload should parse");
+
+        assert_eq!(snap.kind, UsageKind::BudgetInfo);
+        assert_eq!(snap.remaining, Some(200.0));
+        assert_eq!(snap.daily_budget_usd, Some(200.0));
+        assert_eq!(snap.daily_spent_usd, Some(0.0));
+        assert_eq!(snap.package_expires_at_unix_ms, Some(1_775_109_747_679));
+        assert_eq!(
+            snap.effective_usage_base.as_deref(),
+            Some("https://aigateway.chat/v1/usage")
+        );
+    }
+
     #[tokio::test]
     async fn explicit_usage_endpoint_fetches_yunyi_budget_info_via_provider_key() {
         let (base, handle) = start_yunyi_me_mock_server().await;
