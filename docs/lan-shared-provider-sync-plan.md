@@ -5,7 +5,7 @@
 Build a LAN-only multi-node collaboration model for `API Router` so that:
 
 - multiple computers on the same router/Wi-Fi can share the same providers and API keys
-- provider metadata changes also converge across nodes, including rename, base URL, key, group, and account email
+- provider definition changes converge across nodes without allowing empty or stale peers to delete another node's data
 - the same `provider + api key + usage source` is refreshed by only one alive node at a time
 - each computer keeps recording its own local requests and activity while offline
 - requests, analytics, usage history, and quota state converge across nodes after reconnect
@@ -17,21 +17,100 @@ Build a LAN-only multi-node collaboration model for `API Router` so that:
 
 - There is no permanent central node.
 - Every node keeps a full local copy of provider configuration and local event history.
-- Provider rows are shared objects, not machine-local objects.
-- A shared provider must converge to the same fields on every alive node; long-lived per-node drift is not allowed.
+- Provider rows are shared objects, but they have two different ownership layers:
+  - static provider definition ownership
+  - shared runtime and record convergence
+- Static provider definition and shared runtime state must not be modeled as the same thing.
 - Shared quota refresh must use per-provider ownership with expiry, not blind polling from every node.
 - Cross-device sync must replicate append-only events, not only derived totals.
-- Provider configuration changes must replicate across nodes with deterministic conflict handling.
+- Provider definition changes must replicate across nodes with deterministic conflict handling.
 - Nodes must continue working while disconnected from peers.
 - Reconnected nodes must catch up automatically from other alive peers.
 - Requests and analytics views must stay smooth under frequent multi-node updates without materially increasing CPU load.
-- Provider health must converge per shared provider source, not drift independently per node once peers are connected.
+- Provider health must converge per shared provider runtime source, not drift independently per node once peers are connected.
 - A provider failure confirmed on any trusted alive node must stop the same shared provider source on the other trusted alive nodes too.
 - Cooldown must be shared per logical provider source and default to 10 minutes.
 - Cooldown recovery probing must be single-owner and limited, not performed by every node at once.
 - During shared cooldown, normal routing must not send regular traffic to that shared provider source.
 - LAN sync traffic must be authenticated, but trusted peers should join automatically without manual pairing.
 - Version or capability mismatch between peers must not cause hard failure; replication and routing should use only the mutually supported feature subset.
+- Empty state is never an implicit delete signal.
+- Missing records on one node must cause backfill/upsert, not deletion on the fuller node.
+- Deletes must be explicit tombstones only.
+- Dashboard `sessions` remain local-only; requests, analytics, quota, and shared provider runtime state are cross-device views.
+
+### Ownership split
+
+`owner` in this plan means only the owner of the static provider definition.
+
+Every node may become an owner for its own local provider definitions.
+Ownership is per provider definition, not per machine forever.
+
+Owner-controlled static definition:
+
+- provider existence
+- provider rename / display name
+- key / usage token / account email
+- base URL / usage URL
+- group
+- operator-managed provider fields such as disabled
+
+Shared runtime state, not owner-exclusive:
+
+- health
+- cooldown
+- last error
+- warning / failure streak
+- quota snapshots and refresh ownership
+- usage request records
+- analytics source data
+- spend / usage history
+
+This split is mandatory. If static definition ownership and runtime ownership are mixed together,
+the system will incorrectly treat provider definition authority as if it also owned transient shared
+runtime truth.
+
+### Config source modes
+
+The Config UI must support two distinct actions when looking at another alive node:
+
+- `follow`
+- `copy`
+
+`follow` rules:
+
+- the local node shows and uses the remote node's provider definition as a borrowed source
+- borrowed definitions remain remote-owned
+- local edits to a followed definition are disabled unless the user first copies it
+- switching away from `follow` back to `local` restores the local node's own provider definition set
+- if the local node's own provider definition set was empty before `follow`, switching back to `local` returns to empty
+
+`copy` rules:
+
+- the local node clones the selected remote provider definition into its own local provider definition set
+- after copy, the copied provider definition is materialized into the receiving node's local definition set
+- copy is explicit; follow must never silently become copy
+- copy does not delete or replace unrelated existing local definitions unless the user explicitly confirms such behavior
+- copy only imports the selected provider definition or the explicitly selected copy scope; it must not wipe unrelated local providers
+- copy does not by itself break shared runtime convergence; runtime sharing still follows `shared_provider_fingerprint`
+
+Copy conflict rules:
+
+- if the receiving node already has a provider definition with the same runtime identity inputs
+  (`key + base URL + usage source`, or their canonical equivalent), copy should update/overwrite that matching local definition instead of creating a duplicate
+- if the receiving node has unrelated providers, they must remain untouched
+- if the receiving node has the same display name but a different key/base/runtime identity, copy must create a separate local provider definition instead of overwriting the unrelated one
+- if copy must create a separate provider definition and the target display name already exists locally, the copied display name must be renamed deterministically, starting with `[copy]`
+- if `[copy]` is already taken, the suffix must continue deterministically, for example `[copy 2]`, `[copy 3]`
+- overwrite matching must prefer runtime identity comparison over plain display-name comparison
+- runtime identity comparison for copy matching must include effective usage source, not only base URL, so providers that share base URL but differ in usage/quota source are not collapsed incorrectly
+
+Cycle prevention rules:
+
+- an owner node cannot `follow` a node that is currently following that same owner
+- the system must reject or disable `follow` when it would create a direct follow cycle
+- direct ownership is allowed on every node, but `follow` relationships must remain acyclic
+- `copy` is allowed even when `follow` would be rejected, because copy creates an independent local definition instead of a live borrowed relationship
 
 ### Network scope
 
@@ -76,28 +155,35 @@ Canonical identity must use two layers:
 
 `shared_provider_id` rules:
 
-- generated once when the shared provider is created
+- generated once when the shared provider definition is created
 - replicated to every node unchanged
 - survives rename, base URL change, API key change, group change, account email change, and other editable metadata changes
-- is the canonical key for provider metadata sync and conflict resolution
+- is the canonical key for static provider definition sync and conflict resolution
+- identifies "this is the same provider object"
 
 `shared_provider_fingerprint` rules:
 
 - derived from the provider's current effective upstream source
 - may change when API key, usage base, or provider-family mapping changes
 - is used for shared quota ownership and shared health/cooldown propagation
+- is used for shared runtime state and record-domain convergence
 - is not the canonical identity of the provider object itself
+- identifies "this is the same runtime/quota/health domain right now"
 
 A candidate `shared_provider_fingerprint` should include:
 
-- normalized provider family
+- `shared_provider_id`
 - normalized effective usage base / effective usage source
-- API key fingerprint
+- auth identity fingerprint
 
 This lets all nodes agree on two different truths at the same time:
 
 - this is the same shared provider object
 - this provider is currently talking to this shared upstream quota/health source
+
+Two different provider rows may still share the same runtime source if they currently resolve to the
+same upstream auth/base combination. Static provider identity and runtime source matching must remain
+separate concepts in code and storage.
 
 ## 3. Quota Refresh Ownership
 
@@ -177,6 +263,15 @@ Replication contract rules:
 - reconnecting nodes must fetch incrementally from a durable cursor, not by repeatedly full-scanning all history
 - deletes or removals must use tombstone-style events instead of silent overwrite or implicit disappearance
 - late-arriving duplicate events must be ignored without changing derived state
+- a missing row on one node means "needs backfill", not "delete it from the other node"
+- event replication must be idempotent by stable id, so A=300 rows and B=200 rows converges to 300 on both nodes instead of shrinking to 200
+
+Record merge rules:
+
+- requests, usage history, analytics source rows, quota snapshots, and shared runtime transitions use upsert-by-id
+- if one peer has extra rows and the other does not, both peers must exchange the missing rows
+- shorter history on one peer must never truncate longer history on another peer
+- replicated records must retain origin metadata such as `node_id` / `node_name`
 
 ## 6. Local-first Operation
 
@@ -192,7 +287,7 @@ After reconnect, it should fetch missing remote events and merge them without wi
 
 ## 7. Provider Metadata Sync
 
-Provider configuration should also converge across nodes.
+Provider static definition should also converge across nodes.
 
 This includes:
 
@@ -211,7 +306,7 @@ These edits should use revisioned entity updates instead of ad-hoc file overwrit
 - provider identity remains stable across rename operations
 - changing one field does not implicitly replace unrelated fields
 
-Conflict rules for shared providers:
+Conflict rules for shared provider definition:
 
 - the canonical entity key is `shared_provider_id`
 - the canonical update unit is field-level or patch-level mutation, not whole-file overwrite
@@ -220,6 +315,18 @@ Conflict rules for shared providers:
 - if two nodes update the same field concurrently, the higher `revision` wins
 - if `revision` ties, use a deterministic tie-break such as `node_id`
 - delete/remove semantics must use tombstones so reconnecting nodes can converge deterministically
+- an empty provider list from one peer is never interpreted as "delete all providers on the other peer"
+- a peer that has not yet loaded or does not yet know a provider must be treated as incomplete, not authoritative for deletion
+
+Static definition ownership rules:
+
+- owner authority applies only to the editable provider definition
+- owner authority does not override shared runtime state such as health, cooldown, last error, quota freshness, or usage records
+- a node may borrow or materialize another node's provider definition while still participating equally in shared runtime propagation
+- if a provider definition is copied from another node, later runtime events still converge by runtime fingerprint even if local UI naming differs temporarily
+- a followed provider definition remains owned by its remote owner until explicitly copied
+- switching from followed mode back to local mode must never mutate the user's original local definition set
+- copy/import scope must be explicit in UI and backend payloads so "copy one provider" and "copy whole source" cannot be confused
 
 ## 8. Derived Views
 
@@ -229,6 +336,8 @@ Derived screens should be computed from merged event/state data.
 - `requests`: merged all-node view with `node_name`
 - `analytics`: merged all-node aggregates with optional node filter
 - `quota`: shared latest snapshot, tagged with source node and updated time
+- `provider config`: shared static definition view
+- `provider runtime`: shared health/cooldown/quota view
 
 UI contract rules:
 
@@ -237,6 +346,8 @@ UI contract rules:
 - `analytics` should default to all nodes and support node filtering
 - shared provider health/cooldown should display the last reporting or probe node when useful
 - shared cooldown UI should show the remaining shared cooldown time, not a misleading local-only timer
+- request/analytics tables must carry machine identity so cross-device rows remain auditable
+- dashboard `sessions` must not silently turn into a merged multi-machine session list
 
 ## 9. LAN Trust Model
 
@@ -296,6 +407,7 @@ Acceptance:
 - owner failover happens automatically after timeout
 - only one alive node is considered the active quota refresh owner per shared fingerprint at a time
 - changing provider metadata does not create duplicate provider identities across nodes
+- shared quota ownership does not imply static provider-definition ownership beyond definition fields
 
 ## Phase 3 - Shared Health and Cooldown Convergence
 
@@ -316,10 +428,11 @@ Acceptance:
 - a successful recovery probe restores health on all alive nodes sharing that fingerprint
 - a failed or non-responsive recovery probe keeps the shared provider unhealthy and re-enters cooldown without thundering herd behavior
 
-## Phase 4 - Request Event Sync
+## Phase 4 - Shared Record Backfill
 
 - replicate raw usage request events across peers
-- dedupe by event id
+- replicate shared runtime transitions and quota snapshots across peers
+- use upsert-by-id merge
 - add `node_name` to requests table
 - remove `cache create` column
 - add batching/indexing so the requests page remains smooth under multi-node updates
@@ -328,6 +441,7 @@ Acceptance:
 
 - requests from different computers appear in one merged table
 - reconnecting peers catch up without duplicates
+- if node A has 300 rows and node B has 200 rows, both converge to the union instead of shrinking to the smaller side
 - requests table remains responsive during sustained cross-node ingestion
 
 ## Phase 5 - Analytics Convergence
@@ -346,7 +460,7 @@ Acceptance:
 
 - replicate spend history manual edits
 - replicate pricing timeline edits
-- replicate provider metadata edits
+- replicate provider definition edits
 - add revision/conflict handling for editable entities
 
 Acceptance:
@@ -354,6 +468,33 @@ Acceptance:
 - editable usage history and pricing changes converge across peers
 - provider rename, base URL, key, group, and email changes converge across peers
 - conflicts resolve deterministically
+- empty peers do not delete non-empty provider definitions
+
+## Phase 7 - Config Source UI and Borrowed Definitions
+
+- add a top-level `config source` selector in the Config modal
+- allow a node to load or borrow another node's provider definition view
+- add explicit `follow` and `copy` actions next to each eligible remote config source
+- keep borrowed provider definitions clearly marked as remote-owned or borrowed
+- show which peers are currently using a given shared provider definition when that information is available
+- prevent follow cycles, including the case where an owner tries to follow a node that is already following that owner
+- define deterministic copy conflict handling:
+  - same key + same base URL + same usage source -> overwrite matching local definition
+  - unrelated local providers stay untouched
+  - same display name but different runtime identity -> create separate copied definition with `[copy]` suffix
+
+Acceptance:
+
+- a user can see multiple alive LAN config sources in the Config UI
+- switching config source does not delete local providers
+- switching from followed mode back to local returns to the user's own local definitions, including empty local state when applicable
+- `follow` and `copy` are visibly distinct actions and do not silently convert into each other
+- borrowed/remote definitions remain clearly distinguishable from local-only edits
+- invalid follow cycles are blocked in UI and backend validation
+- copy does not delete unrelated local providers
+- matching copy imports overwrite only the intended matching local provider definition
+- conflicting-name copy imports produce deterministic `[copy]`-style names
+- dashboard sessions still stay local-only while requests/analytics remain cross-device
 
 ## Immediate Questions
 
@@ -363,6 +504,10 @@ Acceptance:
 - Should merged requests/analytics default to all nodes or current node?
 - What batching window keeps UI smooth while still feeling live enough during multi-node ingestion?
 - What automatic authentication mechanism should LAN peers use for trusted replication membership?
+- How should borrowed provider definitions be marked in the Config UI without confusing them with local definitions?
+- What exact tombstone format should provider-definition deletes use so empty peers never behave like deletion?
+- What remote-source summary should the Config UI show so users can tell who is following whom without opening a debug panel?
+- What exact UI flow should distinguish "copy one provider" from "copy all providers from this source" if both are supported?
 
 ## Non-goals
 
@@ -371,6 +516,8 @@ Acceptance:
 - Do not merge local session runtime lists across machines.
 - Do not sync only precomputed aggregates without raw event provenance.
 - Do not allow unauthenticated LAN peers to mutate shared state.
+- Do not treat empty provider/config state from one peer as an implicit delete for another peer.
+- Do not overwrite longer record history with shorter peer history.
 
 ## Verification Strategy
 
@@ -382,9 +529,10 @@ Each phase should include:
 4. evidence that a shared provider failure on one node propagates to the other alive nodes
 5. evidence that normal traffic stops using a shared provider during shared cooldown
 6. evidence that only one node performs the cooldown recovery probe after expiry
-7. reconnection sync proof with no duplicate request rows
-8. UI proof for local-only sessions and merged requests/analytics
-9. trust proof that unauthenticated peers are ignored
+7. reconnection sync proof with no duplicate request rows and no shrinkage from fuller history to emptier history
+8. proof that empty peer state does not delete non-empty provider definitions or records
+9. UI proof for local-only sessions and merged requests/analytics
+10. trust proof that unauthenticated peers are ignored
 
 ## Success Criteria
 
@@ -397,8 +545,9 @@ The work is complete when:
 - only one alive node performs each cooldown recovery probe for a shared provider fingerprint
 - normal routing stops using a shared provider while it is in shared cooldown
 - offline nodes keep working locally and catch up after reconnect
-- provider metadata edits converge across peers
+- provider definition edits converge across peers
 - requests and analytics converge across nodes
+- longer record history is never truncated by shorter peer history
 - requests and analytics remain smooth under sustained multi-node updates
 - sessions remain local-only and UI clearly labels cross-device request sources
 - unauthenticated LAN peers cannot mutate shared state
