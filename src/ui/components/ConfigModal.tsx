@@ -115,9 +115,15 @@ export function ConfigModal({
                 aria-expanded={sourceMenuOpen}
                 onClick={() => setSourceMenuOpen((openValue) => !openValue)}
               >
+                <span className="aoConfigSourceTriggerIcon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <rect x="4" y="5" width="16" height="10" rx="2" />
+                    <path d="M9 19h6" />
+                    <path d="M12 15v4" />
+                  </svg>
+                </span>
                 <span className="aoConfigSourceTriggerLabel">
                   {selectedConfigSource?.kind === 'local' ? 'Local' : selectedConfigSource?.node_name}
-                  {selectedConfigSource?.active ? ' (Current)' : ''}
                 </span>
                 <span className="aoConfigSourceChevron" aria-hidden="true">
                   ▾
@@ -150,7 +156,13 @@ export function ConfigModal({
                           onFollowSource(source.node_id)
                         }}
                       >
+                        <span className="aoConfigSourceMenuCheck" aria-hidden="true">
+                          {source.node_id === selectedConfigSourceValue ? '✓' : ''}
+                        </span>
                         <span className="aoConfigSourceMenuLabel">{label}</span>
+                        <span className="aoConfigSourceMenuMeta">
+                          {source.kind === 'local' ? 'This device' : source.active ? 'Current' : 'LAN peer'}
+                        </span>
                       </button>
                     )
                   })}
