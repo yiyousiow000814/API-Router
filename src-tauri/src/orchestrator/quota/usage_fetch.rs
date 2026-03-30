@@ -473,6 +473,14 @@ fn apply_explicit_usage_endpoint_payload(
         .or_else(|| {
             root.pointer("/daily_budget_usd")
                 .and_then(|value| as_f64(Some(value)))
+        })
+        .or_else(|| {
+            root.pointer("/daily_limit_usd")
+                .and_then(|value| as_f64(Some(value)))
+        })
+        .or_else(|| {
+            root.pointer("/subscription/daily_limit_usd")
+                .and_then(|value| as_f64(Some(value)))
         });
     let daily_spent_usd = root
         .pointer("/quota/daily_spent")
@@ -492,10 +500,22 @@ fn apply_explicit_usage_endpoint_payload(
         .or_else(|| {
             root.pointer("/daily_spent_usd")
                 .and_then(|value| as_f64(Some(value)))
+        })
+        .or_else(|| {
+            root.pointer("/daily_usage_usd")
+                .and_then(|value| as_f64(Some(value)))
+        })
+        .or_else(|| {
+            root.pointer("/subscription/daily_usage_usd")
+                .and_then(|value| as_f64(Some(value)))
         });
     let remaining = root
         .pointer("/quota/daily_remaining")
         .and_then(|value| as_f64(Some(value)))
+        .or_else(|| {
+            root.pointer("/remaining")
+                .and_then(|value| as_f64(Some(value)))
+        })
         .or_else(|| {
             root.pointer("/remaining_quota")
                 .and_then(|value| as_f64(Some(value)))
@@ -507,7 +527,8 @@ fn apply_explicit_usage_endpoint_payload(
     let package_expires_at_unix_ms = root
         .pointer("/timestamps/expires_at")
         .and_then(|value| parse_unix_ms_from_value(Some(value)))
-        .or_else(|| parse_unix_ms_from_value(root.pointer("/expires_at")));
+        .or_else(|| parse_unix_ms_from_value(root.pointer("/expires_at")))
+        .or_else(|| parse_unix_ms_from_value(root.pointer("/subscription/expires_at")));
     if daily_budget_usd.is_none()
         && daily_spent_usd.is_none()
         && remaining.is_none()

@@ -61,6 +61,14 @@ fn is_pumpkinai_base(base_url: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn is_aigateway_base(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .map(|host| host == "aigateway.chat" || host.ends_with(".aigateway.chat"))
+        .unwrap_or(false)
+}
+
 fn build_models_url(base: &str) -> String {
     let trimmed = base.trim_end_matches('/');
     if trimmed.ends_with("/v1") {
@@ -71,23 +79,28 @@ fn build_models_url(base: &str) -> String {
 }
 
 fn explicit_usage_endpoint_url(provider: &ProviderConfig) -> Option<String> {
-    let raw = provider.usage_base_url.as_deref()?.trim();
-    if raw.is_empty() {
-        return None;
+    if let Some(raw) = provider.usage_base_url.as_deref() {
+        let raw = raw.trim();
+        if !raw.is_empty() {
+            let parsed = reqwest::Url::parse(raw).ok()?;
+            let path = parsed.path().trim_end_matches('/');
+            if !(path.is_empty() || path == "/") {
+                let normalized = path.to_ascii_lowercase();
+                if !matches!(
+                    normalized.as_str(),
+                    "/v1" | "/api" | "/web/api/v1" | "/user/api/v1" | "/backend"
+                ) {
+                    return Some(raw.trim_end_matches('/').to_string());
+                }
+            }
+        }
     }
-    let parsed = reqwest::Url::parse(raw).ok()?;
-    let path = parsed.path().trim_end_matches('/');
-    if path.is_empty() || path == "/" {
-        return None;
+
+    if is_aigateway_base(&provider.base_url) {
+        return Some("https://aigateway.chat/v1/usage".to_string());
     }
-    let normalized = path.to_ascii_lowercase();
-    if matches!(
-        normalized.as_str(),
-        "/v1" | "/api" | "/web/api/v1" | "/user/api/v1" | "/backend"
-    ) {
-        return None;
-    }
-    Some(raw.trim_end_matches('/').to_string())
+
+    None
 }
 
 fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
@@ -131,6 +144,10 @@ fn candidate_quota_bases(provider: &ProviderConfig) -> Vec<String> {
         if let Some(origin) = derive_origin(&provider.base_url) {
             push_unique(origin);
         }
+    }
+
+    if is_aigateway_base(&provider.base_url) {
+        push_unique("https://aigateway.chat".to_string());
     }
 
     if is_ppchat || is_pumpkin {
