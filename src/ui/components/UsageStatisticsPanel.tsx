@@ -3960,13 +3960,13 @@ export function UsageStatisticsPanel({
               >
                 <colgroup>
                   <col className="aoUsageReqColTime" />
+                  <col className="aoUsageReqColNode" />
                   <col className="aoUsageReqColProvider" />
                   <col className="aoUsageReqColModel" />
                   <col className="aoUsageReqColOrigin" />
                   <col className="aoUsageReqColSession" />
                   <col className="aoUsageReqColInput" />
                   <col className="aoUsageReqColOutput" />
-                  <col className="aoUsageReqColCacheCreate" />
                   <col className="aoUsageReqColCacheRead" />
                 </colgroup>
                 <thead>
@@ -4424,7 +4424,7 @@ export function UsageStatisticsPanel({
                 <table className="aoUsageHistoryTable aoUsageRequestsTable">
                   <colgroup>
                     <col className="aoUsageReqColTime" />
-                    <col className="aoUsageReqColProvider" />
+                    <col className="aoUsageReqColNode" />
                     <col className="aoUsageReqColProvider" />
                     <col className="aoUsageReqColModel" />
                     <col className="aoUsageReqColOrigin" />
@@ -4500,13 +4500,13 @@ export function UsageStatisticsPanel({
               <table className="aoUsageHistoryTable aoUsageRequestsTable">
                 <colgroup>
                   <col className="aoUsageReqColTime" />
+                  <col className="aoUsageReqColNode" />
                   <col className="aoUsageReqColProvider" />
                   <col className="aoUsageReqColModel" />
                   <col className="aoUsageReqColOrigin" />
                   <col className="aoUsageReqColSession" />
                   <col className="aoUsageReqColInput" />
                   <col className="aoUsageReqColOutput" />
-                  <col className="aoUsageReqColCacheCreate" />
                   <col className="aoUsageReqColCacheRead" />
                 </colgroup>
                 <tbody>

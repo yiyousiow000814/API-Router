@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react'
 import { ModalBackdrop } from './ModalBackdrop'
 import type { Config } from '../types'
 
@@ -51,14 +52,111 @@ export function ConfigModal({
   renderProviderCard,
 }: Props) {
   if (!open || !config) return null
+  const [sourceMenuOpen, setSourceMenuOpen] = useState(false)
+  const sourceMenuRef = useRef<HTMLDivElement | null>(null)
   const dragPlaceholderHeight = dragCardHeight > 0 ? dragCardHeight : 56
+  const configSources =
+    config.config_source?.sources && config.config_source.sources.length > 0
+      ? config.config_source.sources
+      : [
+          {
+            kind: 'local' as const,
+            node_id: 'local-fallback',
+            node_name: 'Local',
+            active: true,
+            follow_allowed: false,
+            follow_blocked_reason: null,
+            using_count: 1,
+          },
+        ]
+  const selectedConfigSourceValue =
+    configSources.find((source) => source.active)?.node_id ??
+    config.config_source?.followed_node_id ??
+    configSources[0]?.node_id ??
+    'local-fallback'
+  const selectedConfigSource =
+    configSources.find((source) => source.node_id === selectedConfigSourceValue) ?? configSources[0]
+
+  useEffect(() => {
+    if (!sourceMenuOpen) return
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (sourceMenuRef.current?.contains(target)) return
+      setSourceMenuOpen(false)
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setSourceMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handlePointerDown, true)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown, true)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [sourceMenuOpen])
   return (
     <ModalBackdrop onClose={onClose}>
-      <div className="aoModal aoModalWide" onClick={(e) => e.stopPropagation()}>
+      <div className="aoModal aoModalWide aoConfigModalShell" onClick={(e) => e.stopPropagation()}>
         <div className="aoModalHeader">
           <div className="aoConfigHeaderMeta">
             <div className="aoModalTitle">Config</div>
             <div className="aoModalSub aoConfigHeaderSub">keys are stored in ./user-data/secrets.json</div>
+          </div>
+          <div className="aoConfigHeaderSource" aria-label="Config source">
+            <div className="aoActionsMenuWrap aoConfigSourceMenuWrap" ref={sourceMenuRef}>
+              <button
+                type="button"
+                className={`aoSelect aoConfigSourceSelect aoConfigSourceTrigger${sourceMenuOpen ? ' is-open' : ''}`}
+                aria-label="Config source"
+                aria-haspopup="menu"
+                aria-expanded={sourceMenuOpen}
+                onClick={() => setSourceMenuOpen((openValue) => !openValue)}
+              >
+                <span className="aoConfigSourceTriggerLabel">
+                  {selectedConfigSource?.kind === 'local' ? 'Local' : selectedConfigSource?.node_name}
+                  {selectedConfigSource?.active ? ' (Current)' : ''}
+                </span>
+                <span className="aoConfigSourceChevron" aria-hidden="true">
+                  ▾
+                </span>
+              </button>
+              {sourceMenuOpen ? (
+                <div className="aoMenu aoMenuCompact aoConfigSourceMenu" role="menu" aria-label="Config source options">
+                  {configSources.map((source) => {
+                    const label = source.kind === 'local' ? 'Local' : source.node_name
+                    const blockedReason = source.follow_blocked_reason?.trim() || ''
+                    const disabled = source.kind === 'peer' && !source.follow_allowed
+                    return (
+                      <button
+                        key={source.node_id}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={source.node_id === selectedConfigSourceValue}
+                        className={`aoMenuItem aoConfigSourceMenuItem${
+                          source.node_id === selectedConfigSourceValue ? ' is-current' : ''
+                        }`}
+                        disabled={disabled}
+                        title={blockedReason || label}
+                        onClick={() => {
+                          setSourceMenuOpen(false)
+                          if (source.kind === 'local') {
+                            onClearFollowSource()
+                            return
+                          }
+                          if (disabled || source.active) return
+                          onFollowSource(source.node_id)
+                        }}
+                      >
+                        <span className="aoConfigSourceMenuLabel">{label}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              ) : null}
+            </div>
           </div>
           <div className="aoRow aoConfigHeaderActions">
             <button className="aoBtn aoBtnPrimary aoConfigHeaderBtn" onClick={onOpenGroupManager}>
@@ -71,52 +169,6 @@ export function ConfigModal({
           </div>
         </div>
         <div className="aoModalBody aoConfigModalBody">
-          <div className="aoCard aoConfigCard">
-            <div className="aoConfigPanel">
-              <div className="aoMiniTitle">Config source</div>
-              <div className="aoMuted">
-                {config.config_source?.mode === 'follow'
-                  ? 'Borrowing provider definitions from a LAN peer. Local provider edits are locked until you switch back.'
-                  : 'Using this device\'s local provider definitions.'}
-              </div>
-              <div className="aoProviderConfigList">
-                {(config.config_source?.sources ?? []).map((source) => (
-                  <div className="aoProviderConfigCard" key={source.node_id}>
-                    <div className="aoProviderConfigBody">
-                      <div className="aoProviderField aoProviderLeft">
-                        <div className="aoProviderNameRow">
-                          <span className="aoProviderName">{source.node_name}</span>
-                          <span className="aoProviderGroupTag">{source.kind}</span>
-                          {source.active ? <span className="aoProviderGroupTag">Active</span> : null}
-                        </div>
-                        <div className="aoModalSub">
-                          using count: {source.using_count}
-                          {source.follow_blocked_reason ? ` | ${source.follow_blocked_reason}` : ''}
-                        </div>
-                      </div>
-                      <div className="aoProviderField aoProviderRight">
-                        <div className="aoUsageBtns">
-                          {source.kind === 'local' ? (
-                            <button className="aoTinyBtn" disabled={source.active} onClick={onClearFollowSource}>
-                              Use Local
-                            </button>
-                          ) : (
-                            <button
-                              className="aoTinyBtn"
-                              disabled={!source.follow_allowed || source.active}
-                              onClick={() => onFollowSource(source.node_id)}
-                            >
-                              Follow
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
           <div className="aoConfigStickyAddProvider">
             <div className="aoCard aoConfigCard">
               <div className="aoConfigDeck">

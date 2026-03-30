@@ -528,6 +528,48 @@ export const devConfig: Config = {
     },
   },
   provider_order: ['provider_1', 'provider_2', 'provider_3'],
+  config_source: {
+    mode: 'local',
+    followed_node_id: null,
+    sources: [
+      {
+        kind: 'local',
+        node_id: 'node-local',
+        node_name: 'Local',
+        active: true,
+        follow_allowed: false,
+        follow_blocked_reason: null,
+        using_count: 2,
+      },
+      {
+        kind: 'peer',
+        node_id: 'node-desk-b',
+        node_name: 'Desk B',
+        active: false,
+        follow_allowed: true,
+        follow_blocked_reason: null,
+        using_count: 1,
+      },
+      {
+        kind: 'peer',
+        node_id: 'node-laptop-c',
+        node_name: 'Laptop C',
+        active: false,
+        follow_allowed: true,
+        follow_blocked_reason: null,
+        using_count: 0,
+      },
+      {
+        kind: 'peer',
+        node_id: 'node-mini-d',
+        node_name: 'Mini D',
+        active: false,
+        follow_allowed: false,
+        follow_blocked_reason: 'Mini D is already following this local node',
+        using_count: 0,
+      },
+    ],
+  },
 }
 
 const DEV_MOCK_DAY_MS = 24 * 60 * 60 * 1000
