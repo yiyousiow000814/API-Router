@@ -42,6 +42,14 @@ pub struct LanPeerSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct LanQuotaOwnerDecision {
+    pub owner_node_id: String,
+    pub owner_node_name: String,
+    pub local_is_owner: bool,
+    pub contender_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct LanSyncStatusSnapshot {
     pub enabled: bool,
     pub discovery_port: u16,
@@ -75,6 +83,7 @@ struct LanHeartbeatPacket {
 #[derive(Clone)]
 pub struct LanSyncRuntime {
     local_node: LanNodeIdentity,
+    local_provider_fingerprints: Arc<RwLock<Vec<String>>>,
     peers: Arc<RwLock<HashMap<String, LanPeerRuntime>>>,
     started: Arc<AtomicBool>,
 }
@@ -83,6 +92,7 @@ impl LanSyncRuntime {
     pub fn new(local_node: LanNodeIdentity) -> Self {
         Self {
             local_node,
+            local_provider_fingerprints: Arc::new(RwLock::new(Vec::new())),
             peers: Arc::new(RwLock::new(HashMap::new())),
             started: Arc::new(AtomicBool::new(false)),
         }
@@ -106,6 +116,44 @@ impl LanSyncRuntime {
             .ok();
     }
 
+    pub fn quota_owner_for_fingerprint(&self, fingerprint: &str) -> Option<LanQuotaOwnerDecision> {
+        let normalized = fingerprint.trim();
+        if normalized.is_empty() {
+            return None;
+        }
+        let mut contenders = Vec::new();
+        if self
+            .local_provider_fingerprints
+            .read()
+            .iter()
+            .any(|value| value == normalized)
+        {
+            contenders.push((
+                self.local_node.node_id.clone(),
+                self.local_node.node_name.clone(),
+            ));
+        }
+        for peer in self.collect_live_peers(unix_ms()) {
+            if !peer
+                .provider_fingerprints
+                .iter()
+                .any(|value| value == normalized)
+            {
+                continue;
+            }
+            contenders.push((peer.node_id, peer.node_name));
+        }
+        contenders.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        contenders.dedup_by(|a, b| a.0 == b.0);
+        let (owner_node_id, owner_node_name) = contenders.first()?.clone();
+        Some(LanQuotaOwnerDecision {
+            local_is_owner: owner_node_id == self.local_node.node_id,
+            owner_node_id,
+            owner_node_name,
+            contender_count: contenders.len(),
+        })
+    }
+
     pub fn snapshot(
         &self,
         listen_port: u16,
@@ -113,6 +161,8 @@ impl LanSyncRuntime {
         secrets: &SecretStore,
     ) -> LanSyncStatusSnapshot {
         let peers = self.collect_live_peers(unix_ms());
+        let local_provider_fingerprints = build_provider_fingerprints(cfg, secrets);
+        *self.local_provider_fingerprints.write() = local_provider_fingerprints.clone();
         LanSyncStatusSnapshot {
             enabled: true,
             discovery_port: LAN_DISCOVERY_PORT,
@@ -126,7 +176,7 @@ impl LanSyncRuntime {
                     .iter()
                     .map(|value| value.to_string())
                     .collect(),
-                provider_fingerprints: build_provider_fingerprints(cfg, secrets),
+                provider_fingerprints: local_provider_fingerprints,
             },
             peers,
         }
@@ -252,6 +302,8 @@ fn run_sender(runtime: LanSyncRuntime, cfg: Arc<RwLock<AppConfig>>, secrets: Sec
     let target = SocketAddr::from((Ipv4Addr::BROADCAST, LAN_DISCOVERY_PORT));
     loop {
         let cfg_snapshot = cfg.read().clone();
+        let provider_fingerprints = build_provider_fingerprints(&cfg_snapshot, &secrets);
+        *runtime.local_provider_fingerprints.write() = provider_fingerprints.clone();
         let packet = LanHeartbeatPacket {
             version: 1,
             node_id: runtime.local_node.node_id.clone(),
@@ -262,7 +314,7 @@ fn run_sender(runtime: LanSyncRuntime, cfg: Arc<RwLock<AppConfig>>, secrets: Sec
                 .iter()
                 .map(|value| value.to_string())
                 .collect(),
-            provider_fingerprints: build_provider_fingerprints(&cfg_snapshot, &secrets),
+            provider_fingerprints,
         };
         if let Ok(bytes) = serde_json::to_vec(&packet) {
             let _ = socket.send_to(&bytes, target);
@@ -289,46 +341,22 @@ fn peer_is_stale(last_heartbeat_unix_ms: u64, now: u64) -> bool {
 
 fn build_provider_fingerprints(cfg: &AppConfig, secrets: &SecretStore) -> Vec<String> {
     let mut out = Vec::new();
-    for (provider_name, provider) in cfg.providers.iter() {
-        let Some(api_key) = secrets.get_provider_key(provider_name) else {
-            continue;
-        };
-        let normalized_base = provider
-            .usage_base_url
-            .as_deref()
-            .unwrap_or(provider.base_url.as_str())
-            .trim()
-            .to_ascii_lowercase();
-        if normalized_base.is_empty() {
-            continue;
+    for provider_name in cfg.providers.keys() {
+        if let Some(fingerprint) =
+            crate::orchestrator::quota::shared_provider_fingerprint(cfg, secrets, provider_name)
+        {
+            out.push(fingerprint);
         }
-        let key_fp = stable_key_fingerprint(&api_key);
-        out.push(format!(
-            "{}|{}|{}",
-            provider_name.trim().to_ascii_lowercase(),
-            normalized_base,
-            key_fp
-        ));
     }
     out.sort();
     out.dedup();
     out
 }
 
-fn stable_key_fingerprint(input: &str) -> String {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in input.trim().as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{:016x}", hash)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        peer_is_stale, sanitize_node_name, stable_key_fingerprint, LanNodeIdentity, LanSyncRuntime,
-        LAN_PEER_STALE_AFTER_MS,
+        peer_is_stale, sanitize_node_name, LanNodeIdentity, LanSyncRuntime, LAN_PEER_STALE_AFTER_MS,
     };
 
     #[test]
@@ -339,10 +367,55 @@ mod tests {
     }
 
     #[test]
-    fn stable_key_fingerprint_is_deterministic() {
-        let a = stable_key_fingerprint("sk-123");
-        let b = stable_key_fingerprint("sk-123");
-        let c = stable_key_fingerprint("sk-xyz");
+    fn shared_provider_fingerprint_is_deterministic() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let secrets =
+            crate::orchestrator::secrets::SecretStore::new(tmp.path().join("secrets.json"));
+        secrets
+            .set_provider_key("p1", "sk-123")
+            .expect("set provider key");
+        secrets
+            .ensure_provider_shared_id("p1")
+            .expect("ensure shared id");
+        let cfg = crate::orchestrator::config::AppConfig {
+            listen: crate::orchestrator::config::ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 4000,
+            },
+            routing: crate::orchestrator::config::RoutingConfig {
+                preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 1,
+                failure_threshold: 1,
+                cooldown_seconds: 600,
+                request_timeout_seconds: 5,
+            },
+            providers: std::collections::BTreeMap::from([(
+                "p1".to_string(),
+                crate::orchestrator::config::ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url: "https://quota.example/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some("https://quota.example".to_string()),
+                    group: None,
+                    disabled: false,
+                    api_key: String::new(),
+                },
+            )]),
+            provider_order: vec!["p1".to_string()],
+        };
+
+        let a = crate::orchestrator::quota::shared_provider_fingerprint(&cfg, &secrets, "p1")
+            .expect("fingerprint a");
+        let b = crate::orchestrator::quota::shared_provider_fingerprint(&cfg, &secrets, "p1")
+            .expect("fingerprint b");
+        secrets
+            .set_provider_key("p1", "sk-xyz")
+            .expect("update provider key");
+        let c = crate::orchestrator::quota::shared_provider_fingerprint(&cfg, &secrets, "p1")
+            .expect("fingerprint c");
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
@@ -379,6 +452,32 @@ mod tests {
         let peers = runtime.collect_live_peers(100_000);
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].node_id, "fresh");
+    }
+
+    #[test]
+    fn quota_owner_for_fingerprint_prefers_lowest_node_id() {
+        let runtime = LanSyncRuntime::new(LanNodeIdentity {
+            node_id: "node-b".to_string(),
+            node_name: "self".to_string(),
+        });
+        let now = crate::orchestrator::store::unix_ms();
+        *runtime.local_provider_fingerprints.write() = vec!["fp-1".to_string()];
+        runtime.peers.write().insert(
+            "node-a".to_string(),
+            super::LanPeerRuntime {
+                node_id: "node-a".to_string(),
+                node_name: "peer-a".to_string(),
+                listen_addr: "192.168.1.10:4000".to_string(),
+                last_heartbeat_unix_ms: now,
+                capabilities: vec!["heartbeat_v1".to_string()],
+                provider_fingerprints: vec!["fp-1".to_string()],
+            },
+        );
+        let owner = runtime
+            .quota_owner_for_fingerprint("fp-1")
+            .expect("quota owner");
+        assert_eq!(owner.owner_node_id, "node-a");
+        assert!(!owner.local_is_owner);
     }
 
     #[test]

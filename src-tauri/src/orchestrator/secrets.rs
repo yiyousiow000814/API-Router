@@ -26,6 +26,8 @@ struct SecretsFile {
     #[serde(default)]
     provider_quota_hard_cap: BTreeMap<String, ProviderQuotaHardCapOverride>,
     #[serde(default)]
+    provider_shared_ids: BTreeMap<String, String>,
+    #[serde(default)]
     lan_node_id: Option<String>,
     #[serde(default)]
     lan_node_name: Option<String>,
@@ -400,6 +402,31 @@ impl SecretStore {
         self.persist(&data)
     }
 
+    pub fn get_provider_shared_id(&self, provider: &str) -> Option<String> {
+        self.inner.lock().provider_shared_ids.get(provider).cloned()
+    }
+
+    pub fn ensure_provider_shared_id(&self, provider: &str) -> Result<String, String> {
+        let normalized = provider.trim();
+        if normalized.is_empty() {
+            return Err("provider is required".to_string());
+        }
+        let mut data = self.inner.lock();
+        let shared_id = data
+            .provider_shared_ids
+            .get(normalized)
+            .cloned()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| format!("sp_{}", Uuid::new_v4().simple()));
+        let changed = data.provider_shared_ids.get(normalized) != Some(&shared_id);
+        data.provider_shared_ids
+            .insert(normalized.to_string(), shared_id.clone());
+        if changed {
+            self.persist(&data)?;
+        }
+        Ok(shared_id)
+    }
+
     pub fn rename_provider(&self, old: &str, new: &str) -> Result<(), String> {
         if old == new {
             return Ok(());
@@ -428,6 +455,9 @@ impl SecretStore {
         }
         if let Some(v) = data.provider_quota_hard_cap.remove(old) {
             data.provider_quota_hard_cap.insert(new.to_string(), v);
+        }
+        if let Some(v) = data.provider_shared_ids.remove(old) {
+            data.provider_shared_ids.insert(new.to_string(), v);
         }
         self.persist(&data)
     }
@@ -857,6 +887,26 @@ mod tests {
         ProviderPricingPeriod, ProviderQuotaHardCapConfig, SecretStore, UsageLoginConfig,
     };
     use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn provider_shared_id_persists_across_reload_and_rename() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = SecretStore::new(path.clone());
+
+        let first = store
+            .ensure_provider_shared_id("p1")
+            .expect("ensure provider shared id");
+        assert!(first.starts_with("sp_"));
+
+        store.rename_provider("p1", "p2").expect("rename provider");
+
+        let reloaded = SecretStore::new(path);
+        let second = reloaded
+            .ensure_provider_shared_id("p2")
+            .expect("reload provider shared id");
+        assert_eq!(second, first);
+    }
 
     #[test]
     fn lan_node_identity_persists_across_reload() {

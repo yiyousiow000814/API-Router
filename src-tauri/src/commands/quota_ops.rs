@@ -520,8 +520,12 @@ pub(crate) async fn refresh_quota(
         return Err(format!("unknown provider: {provider}"));
     }
     crate::orchestrator::quota::clear_usage_refresh_gate_for_provider(&state.gateway, &provider);
-    let snap =
-        crate::orchestrator::quota::refresh_quota_for_provider(&state.gateway, &provider).await;
+    let snap = crate::orchestrator::quota::refresh_quota_for_provider_with_lan_owner(
+        &state.gateway,
+        &state.lan_sync,
+        &provider,
+    )
+    .await?;
     if snap.last_error.is_empty() && snap.updated_at_unix_ms > 0 {
         state.gateway.store.add_event(
             &provider,
@@ -547,7 +551,9 @@ pub(crate) async fn refresh_quota_shared(
     state: tauri::State<'_, app_state::AppState>,
     provider: String,
 ) -> Result<(), String> {
-    let group = crate::orchestrator::quota::refresh_quota_shared(&state.gateway, &provider).await?;
+    let group =
+        crate::orchestrator::quota::refresh_quota_shared(&state.gateway, &state.lan_sync, &provider)
+            .await?;
     let n = group.len();
     // Keep the message short (events list is meant to be scannable).
     state.gateway.store.add_event(
@@ -565,7 +571,8 @@ pub(crate) async fn refresh_quota_all(
     state: tauri::State<'_, app_state::AppState>,
 ) -> Result<(), String> {
     let (ok, err, failed) =
-        crate::orchestrator::quota::refresh_quota_all_with_summary(&state.gateway).await;
+        crate::orchestrator::quota::refresh_quota_all_with_summary(&state.gateway, &state.lan_sync)
+            .await;
     let now_ms = crate::orchestrator::store::unix_ms();
     if err == 0 {
         let (summary_to_emit, recovered_failures) = usage_refresh_on_success(now_ms, ok);

@@ -159,6 +159,9 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
     if changed || migrated_keys || normalize_api_key_field {
         std::fs::write(&config_path, toml::to_string_pretty(&cfg)?)?;
     }
+    for provider_name in cfg.providers.keys() {
+        let _ = secrets.ensure_provider_shared_id(provider_name);
+    }
 
     let store = open_store_dir(data_dir.clone())?;
     let router = Arc::new(RouterState::new(&cfg, unix_ms()));

@@ -10,6 +10,13 @@ mod tests {
     use std::sync::atomic::AtomicU64;
     use std::sync::Arc;
 
+    fn mk_lan_sync() -> crate::lan_sync::LanSyncRuntime {
+        crate::lan_sync::LanSyncRuntime::new(crate::lan_sync::LanNodeIdentity {
+            node_id: "node-self".to_string(),
+            node_name: "self".to_string(),
+        })
+    }
+
     async fn start_mock_server(token_stats_ok: bool) -> (String, tokio::task::JoinHandle<()>) {
         use axum::http::StatusCode;
         use axum::routing::get;
@@ -2126,7 +2133,8 @@ mod tests {
         secrets.set_usage_token("p2", "t2").unwrap();
         let st = mk_state_with_providers(providers, vec!["p1".to_string(), "p2".to_string()], secrets);
 
-        let (ok, err, failed) = refresh_quota_all_with_summary(&st).await;
+        let lan_sync = mk_lan_sync();
+        let (ok, err, failed) = refresh_quota_all_with_summary(&st, &lan_sync).await;
         handle.abort();
         clear_usage_base_refresh_gate();
 
@@ -2175,7 +2183,8 @@ mod tests {
             secrets,
         );
 
-        let (ok, err, failed) = refresh_quota_all_with_summary(&st).await;
+        let lan_sync = mk_lan_sync();
+        let (ok, err, failed) = refresh_quota_all_with_summary(&st, &lan_sync).await;
 
         assert_eq!(ok, 1);
         assert_eq!(err, 0);
@@ -2223,7 +2232,8 @@ mod tests {
             secrets,
         );
 
-        let (ok, err, failed) = refresh_quota_all_with_summary(&st).await;
+        let lan_sync = mk_lan_sync();
+        let (ok, err, failed) = refresh_quota_all_with_summary(&st, &lan_sync).await;
 
         assert_eq!(ok, 1);
         assert_eq!(err, 0);

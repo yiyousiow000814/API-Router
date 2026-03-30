@@ -525,8 +525,9 @@ pub fn run() {
                 // Quota refresh scheduler: only runs when the gateway is actively being used.
                 let st = app.state::<app_state::AppState>();
                 let gateway = st.gateway.clone();
+                let lan_sync = st.lan_sync.clone();
                 tauri::async_runtime::spawn(async move {
-                    crate::orchestrator::quota::run_quota_scheduler(gateway).await;
+                    crate::orchestrator::quota::run_quota_scheduler(gateway, lan_sync).await;
                 });
             }
 

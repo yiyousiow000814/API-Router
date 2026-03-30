@@ -105,6 +105,15 @@ export type Status = {
       provider_fingerprints: string[]
     }>
   }
+  shared_quota_owners?: Array<{
+    provider: string
+    shared_provider_id: string
+    shared_provider_fingerprint: string
+    owner_node_id: string
+    owner_node_name: string
+    local_is_owner: boolean
+    contender_count: number
+  }>
 }
 
 export type CodexSwapStatus = {

@@ -109,6 +109,8 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
     let lan_sync = state
         .lan_sync
         .snapshot(cfg.listen.port, &cfg, &state.secrets);
+    let shared_quota_owners =
+        crate::orchestrator::quota::shared_quota_owner_statuses(&state.gateway, &state.lan_sync);
 
     let client_sessions = {
         // Best-effort: discover running Codex processes configured to use this router, even before
@@ -326,7 +328,8 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
       "last_activity_unix_ms": last_activity,
       "codex_account": codex_account,
       "client_sessions": client_sessions,
-      "lan_sync": lan_sync
+      "lan_sync": lan_sync,
+      "shared_quota_owners": shared_quota_owners
     })
 }
 

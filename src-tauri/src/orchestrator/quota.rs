@@ -6,9 +6,12 @@ use std::time::{Duration, Instant};
 
 use chrono::{TimeZone, Timelike};
 use futures_util::{SinkExt, StreamExt};
+use serde::Serialize;
 use serde_json::Value;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WebSocketMessage;
+
+use crate::orchestrator::config::AppConfig;
 
 use super::config::ProviderConfig;
 use super::gateway::GatewayState;
@@ -127,6 +130,17 @@ struct UsageSharedKey {
     // makes "same base + same key => same quota snapshot" deterministic.
     base_key: String,
     auth_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SharedQuotaOwnerStatus {
+    pub provider: String,
+    pub shared_provider_id: String,
+    pub shared_provider_fingerprint: String,
+    pub owner_node_id: String,
+    pub owner_node_name: String,
+    pub local_is_owner: bool,
+    pub contender_count: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -496,6 +510,96 @@ fn usage_auth_key(
                 .as_ref()
                 .map(|entry| format!("login:{}", entry.username.trim()))
         })
+}
+
+fn stable_shared_fingerprint_component(input: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in input.trim().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+pub fn shared_provider_fingerprint(
+    cfg: &AppConfig,
+    secrets: &super::secrets::SecretStore,
+    provider_name: &str,
+) -> Option<String> {
+    let provider = cfg.providers.get(provider_name)?;
+    let provider_key = secrets.get_provider_key(provider_name);
+    let usage_token = secrets.get_usage_token(provider_name);
+    let usage_login = secrets.get_usage_login(provider_name);
+    let shared_key = {
+        let shared_base = candidate_quota_bases(provider).first()?.clone();
+        usage_shared_key(&shared_base, &provider_key, &usage_token, &usage_login)
+    };
+    let shared_provider_id = secrets
+        .get_provider_shared_id(provider_name)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| provider_name.trim().to_ascii_lowercase());
+    let auth_component = shared_key
+        .auth_key
+        .as_deref()
+        .map(stable_shared_fingerprint_component)
+        .unwrap_or_else(|| "anon".to_string());
+    Some(format!(
+        "{}|{}|{}",
+        shared_provider_id.trim().to_ascii_lowercase(),
+        shared_key.base_key.trim().to_ascii_lowercase(),
+        auth_component
+    ))
+}
+
+fn shared_provider_fingerprint_for_provider(
+    st: &GatewayState,
+    provider_name: &str,
+) -> Option<String> {
+    let cfg = st.cfg.read().clone();
+    shared_provider_fingerprint(&cfg, &st.secrets, provider_name)
+}
+
+pub fn shared_quota_owner_for_provider(
+    st: &GatewayState,
+    lan_sync: &crate::lan_sync::LanSyncRuntime,
+    provider_name: &str,
+) -> Option<crate::lan_sync::LanQuotaOwnerDecision> {
+    let fingerprint = shared_provider_fingerprint_for_provider(st, provider_name)?;
+    lan_sync.quota_owner_for_fingerprint(&fingerprint)
+}
+
+pub fn shared_quota_owner_statuses(
+    st: &GatewayState,
+    lan_sync: &crate::lan_sync::LanSyncRuntime,
+) -> Vec<SharedQuotaOwnerStatus> {
+    let cfg = st.cfg.read().clone();
+    let mut out = Vec::new();
+    for provider_name in cfg.providers.keys() {
+        let Some(shared_provider_fingerprint) =
+            shared_provider_fingerprint(&cfg, &st.secrets, provider_name)
+        else {
+            continue;
+        };
+        let Some(owner) = lan_sync.quota_owner_for_fingerprint(&shared_provider_fingerprint) else {
+            continue;
+        };
+        let shared_provider_id = st
+            .secrets
+            .get_provider_shared_id(provider_name)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| provider_name.clone());
+        out.push(SharedQuotaOwnerStatus {
+            provider: provider_name.clone(),
+            shared_provider_id,
+            shared_provider_fingerprint,
+            owner_node_id: owner.owner_node_id,
+            owner_node_name: owner.owner_node_name,
+            local_is_owner: owner.local_is_owner,
+            contender_count: owner.contender_count,
+        });
+    }
+    out.sort_by(|a, b| a.provider.cmp(&b.provider));
+    out
 }
 
 async fn compute_quota_snapshot(
@@ -1228,6 +1332,22 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
     snap
 }
 
+pub async fn refresh_quota_for_provider_with_lan_owner(
+    st: &GatewayState,
+    lan_sync: &crate::lan_sync::LanSyncRuntime,
+    provider_name: &str,
+) -> Result<QuotaSnapshot, String> {
+    if let Some(owner) = shared_quota_owner_for_provider(st, lan_sync, provider_name) {
+        if !owner.local_is_owner {
+            return Err(format!(
+                "shared quota refresh is owned by {} ({})",
+                owner.owner_node_name, owner.owner_node_id
+            ));
+        }
+    }
+    Ok(refresh_quota_for_provider(st, provider_name).await)
+}
+
 async fn refresh_quota_for_provider_cached(
     st: &GatewayState,
     provider_name: &str,
@@ -1322,12 +1442,21 @@ fn usage_shared_key_for_provider(st: &GatewayState, provider_name: &str) -> Opti
 
 pub async fn refresh_quota_shared(
     st: &GatewayState,
+    lan_sync: &crate::lan_sync::LanSyncRuntime,
     provider_name: &str,
 ) -> Result<Vec<String>, String> {
     let cfg = st.cfg.read().clone();
     let Some(provider) = cfg.providers.get(provider_name) else {
         return Err(format!("unknown provider: {provider_name}"));
     };
+    if let Some(owner) = shared_quota_owner_for_provider(st, lan_sync, provider_name) {
+        if !owner.local_is_owner {
+            return Err(format!(
+                "shared quota refresh is owned by {} ({})",
+                owner.owner_node_name, owner.owner_node_id
+            ));
+        }
+    }
     if !can_refresh_quota_for_provider(st, provider_name, provider) {
         return Ok(Vec::new());
     }
@@ -1364,7 +1493,10 @@ pub async fn refresh_quota_shared(
     Ok(group)
 }
 
-pub async fn refresh_quota_all_with_summary(st: &GatewayState) -> (usize, usize, Vec<String>) {
+pub async fn refresh_quota_all_with_summary(
+    st: &GatewayState,
+    lan_sync: &crate::lan_sync::LanSyncRuntime,
+) -> (usize, usize, Vec<String>) {
     let cfg = st.cfg.read().clone();
     let mut cache: HashMap<UsageRequestKey, QuotaSnapshot> = HashMap::new();
     let mut ok = 0usize;
@@ -1376,6 +1508,11 @@ pub async fn refresh_quota_all_with_summary(st: &GatewayState) -> (usize, usize,
             continue;
         }
         if !can_refresh_quota_for_provider(st, name, provider) {
+            continue;
+        }
+        if shared_quota_owner_for_provider(st, lan_sync, name)
+            .is_some_and(|owner| !owner.local_is_owner)
+        {
             continue;
         }
         let snap = refresh_quota_for_provider_cached(st, name, &mut cache).await;
@@ -1392,7 +1529,7 @@ pub async fn refresh_quota_all_with_summary(st: &GatewayState) -> (usize, usize,
     (ok, err, failed)
 }
 
-pub async fn run_quota_scheduler(st: GatewayState) {
+pub async fn run_quota_scheduler(st: GatewayState, lan_sync: crate::lan_sync::LanSyncRuntime) {
     let mut next_refresh_unix_ms: HashMap<String, u64> = HashMap::new();
 
     loop {
@@ -1455,6 +1592,23 @@ pub async fn run_quota_scheduler(st: GatewayState) {
             });
             if due != 0 && now < due {
                 next_refresh_unix_ms.insert(name.clone(), due);
+                continue;
+            }
+            if shared_quota_owner_for_provider(&st, &lan_sync, name)
+                .is_some_and(|owner| !owner.local_is_owner)
+            {
+                let jitter_ms = quota_refresh_interval_ms(
+                    now,
+                    active_providers.contains(name),
+                    name == &cfg.routing.preferred_provider,
+                    existing_snapshot.as_ref().is_some_and(|existing| {
+                        existing.last_error.is_empty() && existing.updated_at_unix_ms > 0
+                    }),
+                    shared_provider_count,
+                    "",
+                    detect_package_expiry_strategy(&p.base_url),
+                );
+                next_refresh_unix_ms.insert(name.clone(), now.saturating_add(jitter_ms));
                 continue;
             }
 
