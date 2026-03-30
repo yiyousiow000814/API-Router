@@ -108,6 +108,37 @@ fn next_copy_name(
     }
 }
 
+fn current_local_provider_state_snapshot(
+    state: &app_state::AppState,
+) -> crate::lan_sync::LocalProviderStateSnapshot {
+    let cfg = state.gateway.cfg.read();
+    crate::lan_sync::LocalProviderStateSnapshot {
+        providers: cfg.providers.clone(),
+        provider_order: cfg.provider_order.clone(),
+        preferred_provider: cfg.routing.preferred_provider.clone(),
+        session_preferred_providers: cfg.routing.session_preferred_providers.clone(),
+        provider_state: state.secrets.export_provider_state_bundle(),
+    }
+}
+
+fn provider_definition_patch_payload(
+    state: &app_state::AppState,
+    provider_name: &str,
+    emitted_name: &str,
+) -> Result<serde_json::Value, String> {
+    let cfg = state.gateway.cfg.read();
+    let provider = cfg
+        .providers
+        .get(provider_name)
+        .ok_or_else(|| format!("unknown provider: {provider_name}"))?;
+    Ok(serde_json::json!({
+        "name": emitted_name,
+        "display_name": provider.display_name.clone(),
+        "base_url": provider.base_url.clone(),
+        "group": provider.group.clone(),
+    }))
+}
+
 fn set_manual_override_impl(
     state: &app_state::AppState,
     provider: Option<String>,
@@ -350,17 +381,12 @@ pub(crate) fn copy_provider_from_config_source(
     }
     let payload: crate::lan_sync::ProviderDefinitionSnapshotPayload =
         serde_json::from_value(record.snapshot).map_err(|err| err.to_string())?;
-    let mut local_state = if let Some(snapshot) = crate::lan_sync::load_local_provider_state_snapshot(&state)? {
-        snapshot
-    } else {
-        crate::lan_sync::LocalProviderStateSnapshot {
-            providers: state.gateway.cfg.read().providers.clone(),
-            provider_order: state.gateway.cfg.read().provider_order.clone(),
-            preferred_provider: state.gateway.cfg.read().routing.preferred_provider.clone(),
-            session_preferred_providers: state.gateway.cfg.read().routing.session_preferred_providers.clone(),
-            provider_state: state.secrets.export_provider_state_bundle(),
-        }
-    };
+    let mut local_state =
+        if let Some(snapshot) = crate::lan_sync::load_local_provider_state_snapshot(&state)? {
+            snapshot
+        } else {
+            current_local_provider_state_snapshot(&state)
+        };
     let remote_cfg = crate::orchestrator::config::ProviderConfig {
         display_name: if payload.display_name.trim().is_empty() {
             payload.name.clone()
@@ -899,16 +925,9 @@ fn upsert_provider_impl(
         app_state::normalize_provider_order(&mut cfg);
     }
     persist_config_for_app_state(state).map_err(|e| e.to_string())?;
-    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
-        state,
-        &name,
-        serde_json::json!({
-            "name": name.clone(),
-            "display_name": state.gateway.cfg.read().providers.get(&name).map(|provider| provider.display_name.clone()).unwrap_or_default(),
-            "base_url": state.gateway.cfg.read().providers.get(&name).map(|provider| provider.base_url.clone()).unwrap_or_default(),
-            "group": state.gateway.cfg.read().providers.get(&name).and_then(|provider| provider.group.clone()),
-        }),
-    ) {
+    let patch_payload = provider_definition_patch_payload(state, &name, &name)?;
+    if let Err(err) = crate::lan_sync::record_provider_definition_patch(state, &name, patch_payload)
+    {
         state.gateway.store.add_event(
             &name,
             "error",
@@ -933,6 +952,7 @@ pub(crate) fn set_provider_disabled(
     name: String,
     disabled: bool,
 ) -> Result<(), String> {
+    ensure_local_provider_definitions_editable(&state)?;
     let mut switched_preferred = false;
     {
         let mut cfg = state.gateway.cfg.write();
@@ -1045,6 +1065,7 @@ pub(crate) fn set_provider_group(
     name: String,
     group: Option<String>,
 ) -> Result<(), String> {
+    ensure_local_provider_definitions_editable(&state)?;
     let (changed, normalized_group) = set_provider_group_impl(&state, name.clone(), group)?;
     if !changed {
         return Ok(());
@@ -1182,6 +1203,7 @@ pub(crate) fn set_providers_group(
     providers: Vec<String>,
     group: Option<String>,
 ) -> Result<(), String> {
+    ensure_local_provider_definitions_editable(&state)?;
     let (updated, normalized_group) = set_providers_group_impl(&state, providers, group)?;
     if updated.is_empty() {
         return Ok(());
@@ -1216,51 +1238,7 @@ pub(crate) fn delete_provider(
     state: tauri::State<'_, app_state::AppState>,
     name: String,
 ) -> Result<(), String> {
-    ensure_local_provider_definitions_editable(&state)?;
-    if !state.gateway.cfg.read().providers.contains_key(&name) {
-        return Err(format!("unknown provider: {name}"));
-    }
-    if let Err(err) = crate::lan_sync::record_provider_definition_tombstone(&state, &name) {
-        state.gateway.store.add_event(
-            &name,
-            "error",
-            "lan.edit_sync_record_failed",
-            &format!("failed to record provider delete tombstone for LAN sync: {err}"),
-            serde_json::Value::Null,
-        );
-    }
-    let next_preferred: Option<String> = {
-        let mut cfg = state.gateway.cfg.write();
-        if cfg.providers.len() == 1 {
-            return Err("cannot delete the last provider".to_string());
-        }
-
-        let preferred_after_delete = next_preferred_after_delete(&cfg, &name)?;
-
-        cfg.providers.remove(&name);
-        cfg.provider_order.retain(|p| p != &name);
-        cfg.routing
-            .session_preferred_providers
-            .retain(|_, pref| pref != &name);
-        app_state::normalize_provider_order(&mut cfg);
-
-        let next_preferred = preferred_after_delete.clone();
-        if let Some(p) = preferred_after_delete {
-            cfg.routing.preferred_provider = p;
-        }
-        next_preferred
-    };
-
-    // If the deleted provider was manually locked, return to auto.
-    {
-        let mut mo = state.gateway.router.manual_override.write();
-        if mo.as_deref() == Some(&name) {
-            *mo = None;
-        }
-    }
-    let _ = state.secrets.delete_provider(&name);
-    persist_config(&state).map_err(|e| e.to_string())?;
-    let _ = clear_observed_session_routes_for_provider(&state, &name);
+    let next_preferred = delete_provider_impl(&state, &name)?;
     state.gateway.store.add_event(
         &name,
         "info",
@@ -1278,6 +1256,58 @@ pub(crate) fn delete_provider(
         );
     }
     Ok(())
+}
+
+fn delete_provider_impl(
+    state: &app_state::AppState,
+    name: &str,
+) -> Result<Option<String>, String> {
+    ensure_local_provider_definitions_editable(state)?;
+    let next_preferred: Option<String> = {
+        let mut cfg = state.gateway.cfg.write();
+        if !cfg.providers.contains_key(name) {
+            return Err(format!("unknown provider: {name}"));
+        }
+        if cfg.providers.len() == 1 {
+            return Err("cannot delete the last provider".to_string());
+        }
+
+        let preferred_after_delete = next_preferred_after_delete(&cfg, name)?;
+
+        cfg.providers.remove(name);
+        cfg.provider_order.retain(|p| p != name);
+        cfg.routing
+            .session_preferred_providers
+            .retain(|_, pref| pref != name);
+        app_state::normalize_provider_order(&mut cfg);
+
+        let next_preferred = preferred_after_delete.clone();
+        if let Some(p) = preferred_after_delete {
+            cfg.routing.preferred_provider = p;
+        }
+        next_preferred
+    };
+
+    // If the deleted provider was manually locked, return to auto.
+    {
+        let mut mo = state.gateway.router.manual_override.write();
+        if mo.as_deref() == Some(name) {
+            *mo = None;
+        }
+    }
+    let _ = state.secrets.delete_provider(name);
+    persist_config_for_app_state(state).map_err(|e| e.to_string())?;
+    if let Err(err) = crate::lan_sync::record_provider_definition_tombstone(state, name) {
+        state.gateway.store.add_event(
+            name,
+            "error",
+            "lan.edit_sync_record_failed",
+            &format!("failed to record provider delete tombstone for LAN sync: {err}"),
+            serde_json::Value::Null,
+        );
+    }
+    let _ = clear_observed_session_routes_for_provider(state, name);
+    Ok(next_preferred)
 }
 
 fn next_preferred_after_delete(
@@ -1397,14 +1427,9 @@ pub(crate) fn rename_provider(
             }),
         );
     }
-    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
-        &state,
-        new,
-        serde_json::json!({
-            "name": new,
-            "display_name": new,
-        }),
-    ) {
+    let patch_payload = provider_definition_patch_payload(&state, new, new)?;
+    if let Err(err) = crate::lan_sync::record_provider_definition_patch(&state, new, patch_payload)
+    {
         state.gateway.store.add_event(
             new,
             "error",
@@ -1553,7 +1578,9 @@ pub(crate) fn clear_provider_key(
 #[cfg(test)]
 mod provider_management_tests {
     use super::{
-        clear_session_preferred_provider_impl, next_preferred_after_delete, set_manual_override_impl,
+        clear_session_preferred_provider_impl, current_local_provider_state_snapshot,
+        delete_provider_impl, ensure_local_provider_definitions_editable,
+        next_preferred_after_delete, provider_definition_patch_payload, set_manual_override_impl,
         rename_observed_session_routes_provider_refs, set_provider_group_impl, set_route_mode_impl,
         set_providers_group_impl, set_session_preferred_provider_impl, upsert_provider_impl,
     };
@@ -1645,6 +1672,124 @@ mod provider_management_tests {
 
         let result = next_preferred_after_delete(&cfg, "provider_1");
         assert_eq!(result, Ok(Some("provider_2".to_string())));
+    }
+
+    #[test]
+    fn provider_definition_guard_blocks_mutations_while_following_remote() {
+        let (_tmp, state) = build_test_state();
+        state
+            .secrets
+            .set_followed_config_source_node_id(Some("node-remote"))
+            .expect("set followed source");
+
+        let result = ensure_local_provider_definitions_editable(&state);
+
+        assert_eq!(
+            result,
+            Err(
+                "provider definitions are borrowed from a followed source; switch back to Local or copy first"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn current_local_provider_state_snapshot_reads_all_config_fields_consistently() {
+        let (_tmp, state) = build_test_state();
+        {
+            let mut cfg = state.gateway.cfg.write();
+            cfg.routing.preferred_provider = "provider_2".to_string();
+            cfg.routing
+                .session_preferred_providers
+                .insert("session-a".to_string(), "provider_1".to_string());
+            cfg.provider_order = vec!["provider_2".to_string(), "provider_1".to_string()];
+        }
+        state
+            .secrets
+            .set_provider_key("provider_2", "sk-test-2")
+            .expect("set provider key");
+
+        let snapshot = current_local_provider_state_snapshot(&state);
+
+        assert_eq!(snapshot.preferred_provider, "provider_2");
+        assert_eq!(
+            snapshot.provider_order,
+            vec!["provider_2".to_string(), "provider_1".to_string()]
+        );
+        assert_eq!(
+            snapshot
+                .session_preferred_providers
+                .get("session-a")
+                .map(String::as_str),
+            Some("provider_1")
+        );
+        assert_eq!(
+            snapshot
+                .provider_state
+                .providers
+                .get("provider_2")
+                .map(String::as_str),
+            Some("sk-test-2")
+        );
+    }
+
+    #[test]
+    fn provider_definition_patch_payload_uses_current_display_name() {
+        let (_tmp, state) = build_test_state();
+        {
+            let mut cfg = state.gateway.cfg.write();
+            let provider = cfg.providers.get_mut("provider_1").expect("provider_1");
+            provider.display_name = "Custom Label".to_string();
+            provider.base_url = "https://example.test/v9".to_string();
+            provider.group = Some("shared".to_string());
+        }
+
+        let payload =
+            provider_definition_patch_payload(&state, "provider_1", "provider_renamed").expect(
+                "provider patch payload",
+            );
+
+        assert_eq!(payload["name"].as_str(), Some("provider_renamed"));
+        assert_eq!(payload["display_name"].as_str(), Some("Custom Label"));
+        assert_eq!(payload["base_url"].as_str(), Some("https://example.test/v9"));
+        assert_eq!(payload["group"].as_str(), Some("shared"));
+    }
+
+    #[test]
+    fn delete_provider_impl_does_not_record_tombstone_when_delete_is_rejected() {
+        let (_tmp, state) = build_test_state();
+        {
+            let mut cfg = state.gateway.cfg.write();
+            cfg.providers.retain(|name, _| name == "provider_1");
+            cfg.provider_order.retain(|name| name == "provider_1");
+            cfg.routing.preferred_provider = "provider_1".to_string();
+            cfg.routing.session_preferred_providers.clear();
+        }
+        let (before_events, _has_more) = state.gateway.store.list_lan_edit_events_batch(0, None, 50);
+
+        let result = delete_provider_impl(&state, "provider_1");
+        let (after_events, _has_more) = state.gateway.store.list_lan_edit_events_batch(0, None, 50);
+        let before_tombstones = before_events
+            .iter()
+            .filter(|event| {
+                event.entity_type == "provider_definition"
+                    && event.op == "tombstone"
+                    && event.payload.get("name").and_then(|value| value.as_str()) == Some("provider_1")
+            })
+            .count();
+        let after_tombstones = after_events
+            .iter()
+            .filter(|event| {
+                event.entity_type == "provider_definition"
+                    && event.op == "tombstone"
+                    && event.payload.get("name").and_then(|value| value.as_str()) == Some("provider_1")
+            })
+            .count();
+
+        assert_eq!(result, Err("cannot delete the last provider".to_string()));
+        assert_eq!(after_events.len(), before_events.len());
+        assert_eq!(after_tombstones, before_tombstones);
+        assert!(state.gateway.cfg.read().providers.contains_key("provider_1"));
     }
 
     #[test]
