@@ -76,6 +76,11 @@ export function ConfigModal({
     'local-fallback'
   const selectedConfigSource =
     configSources.find((source) => source.node_id === selectedConfigSourceValue) ?? configSources[0]
+  const selectedUsingCount = selectedConfigSource?.using_count ?? 0
+  const selectedUsingLabel =
+    selectedConfigSource?.kind === 'local'
+      ? `${selectedUsingCount} using`
+      : `${selectedUsingCount} follow`
 
   useEffect(() => {
     if (!sourceMenuOpen) return
@@ -125,6 +130,7 @@ export function ConfigModal({
                 <span className="aoConfigSourceTriggerLabel">
                   {selectedConfigSource?.kind === 'local' ? 'Local' : selectedConfigSource?.node_name}
                 </span>
+                <span className="aoConfigSourceTriggerMeta">{selectedUsingLabel}</span>
                 <span className="aoConfigSourceChevron" aria-hidden="true">
                   ▾
                 </span>
@@ -135,6 +141,16 @@ export function ConfigModal({
                     const label = source.kind === 'local' ? 'Local' : source.node_name
                     const blockedReason = source.follow_blocked_reason?.trim() || ''
                     const disabled = source.kind === 'peer' && !source.follow_allowed
+                    const actionLabel =
+                      source.kind === 'local'
+                        ? source.active
+                          ? 'Current'
+                          : 'Use local'
+                        : source.active
+                          ? 'Following'
+                          : disabled
+                            ? 'Unavailable'
+                            : 'Follow'
                     return (
                       <button
                         key={source.node_id}
@@ -159,9 +175,18 @@ export function ConfigModal({
                         <span className="aoConfigSourceMenuCheck" aria-hidden="true">
                           {source.node_id === selectedConfigSourceValue ? '✓' : ''}
                         </span>
-                        <span className="aoConfigSourceMenuLabel">{label}</span>
+                        <span className="aoConfigSourceMenuText">
+                          <span className="aoConfigSourceMenuLabel">{label}</span>
+                          {source.kind === 'peer' ? (
+                            <span className="aoConfigSourceMenuSub">
+                              {source.using_count > 0
+                                ? `${source.using_count} device${source.using_count === 1 ? '' : 's'}`
+                                : 'LAN peer'}
+                            </span>
+                          ) : null}
+                        </span>
                         <span className="aoConfigSourceMenuMeta">
-                          {source.kind === 'local' ? 'This device' : source.active ? 'Current' : 'LAN peer'}
+                          {actionLabel}
                         </span>
                       </button>
                     )

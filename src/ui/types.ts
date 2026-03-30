@@ -178,6 +178,7 @@ export type Config = {
       editable?: boolean
       source_node_id?: string | null
       shared_provider_id?: string | null
+      local_copy_state?: 'copied' | 'linked' | null
     }
   >
   provider_order?: string[]

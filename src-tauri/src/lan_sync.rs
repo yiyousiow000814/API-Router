@@ -391,6 +391,10 @@ pub struct LocalProviderStateSnapshot {
     pub preferred_provider: String,
     pub session_preferred_providers: std::collections::BTreeMap<String, String>,
     pub provider_state: crate::orchestrator::secrets::ProviderStateBundle,
+    #[serde(default)]
+    pub copied_shared_provider_ids: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    pub linked_shared_provider_ids: std::collections::BTreeSet<String>,
 }
 
 fn persist_gateway_config(
@@ -506,6 +510,8 @@ pub fn save_local_provider_state_snapshot(
         preferred_provider: cfg.routing.preferred_provider.clone(),
         session_preferred_providers: cfg.routing.session_preferred_providers.clone(),
         provider_state: state.secrets.export_provider_state_bundle(),
+        copied_shared_provider_ids: std::collections::BTreeSet::new(),
+        linked_shared_provider_ids: std::collections::BTreeSet::new(),
     };
     write_local_provider_state_snapshot(state, &snapshot)
 }

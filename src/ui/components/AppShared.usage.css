@@ -124,6 +124,21 @@
   color: rgba(13, 18, 32, 0.9);
 }
 
+.aoConfigSourceTriggerMeta {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(13, 18, 32, 0.06);
+  color: rgba(13, 18, 32, 0.58);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .aoConfigSourceChevron {
   flex: 0 0 auto;
   color: rgba(13, 18, 32, 0.54);
@@ -141,9 +156,10 @@
 .aoConfigSourceMenuItem {
   justify-content: flex-start;
   text-align: left;
-  height: 38px;
+  min-height: 44px;
+  height: auto;
   border-radius: 12px;
-  padding: 0 12px;
+  padding: 7px 12px;
   gap: 10px;
 }
 
@@ -158,16 +174,30 @@
   font-weight: 800;
 }
 
-.aoConfigSourceMenuLabel {
+.aoConfigSourceMenuText {
   flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.aoConfigSourceMenuLabel {
   text-align: left;
   font-size: 13px;
+}
+
+.aoConfigSourceMenuSub {
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.46);
 }
 
 .aoConfigSourceMenuMeta {
   flex: 0 0 auto;
   font-size: 11px;
   color: rgba(13, 18, 32, 0.46);
+  font-weight: 700;
 }
 
 .aoConfigHeaderBtn {
@@ -364,6 +394,10 @@
   .aoConfigSourceTriggerLabel,
   .aoConfigSourceMenuLabel {
     text-align: left;
+  }
+
+  .aoConfigSourceTriggerMeta {
+    display: none;
   }
 
   .aoConfigHeaderActions {
@@ -890,6 +924,7 @@
   align-items: center;
   justify-content: flex-end;
   align-self: stretch;
+  min-width: 78px;
 }
 
 .aoProviderDeleteBtn {
@@ -1464,6 +1499,25 @@
   letter-spacing: 0.06em;
   text-transform: uppercase;
   transition: background 120ms ease, border-color 120ms ease;
+}
+
+.aoTinyBtn:disabled {
+  cursor: default;
+  background: rgba(13, 18, 32, 0.06);
+  border-color: rgba(13, 18, 32, 0.1);
+  color: rgba(13, 18, 32, 0.46);
+  pointer-events: none;
+}
+
+.aoTinyBtn:disabled:hover {
+  background: rgba(13, 18, 32, 0.06);
+  border-color: rgba(13, 18, 32, 0.1);
+  color: rgba(13, 18, 32, 0.46);
+}
+
+.aoProviderCopyBtn {
+  min-width: 68px;
+  justify-content: center;
 }
 
 .aoTinyBtnDangerSoft {

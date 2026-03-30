@@ -189,4 +189,34 @@ describe('provider usage controls rendering', () => {
     expect(html).not.toContain('Logged in')
     expect(html).not.toContain('Logout')
   })
+
+  it('shows copied state for borrowed providers already copied locally', () => {
+    const config = buildConfig(null)
+    config.providers.p1 = {
+      ...config.providers.p1,
+      borrowed: true,
+      editable: false,
+      source_node_id: 'node-b',
+      shared_provider_id: 'node-b:p1',
+      local_copy_state: 'copied',
+    }
+    const html = renderCardHtml(config, buildStatus())
+    expect(html).toContain('Copied')
+    expect(html).not.toContain('>Copy<')
+  })
+
+  it('shows linked state when an equivalent local provider already exists', () => {
+    const config = buildConfig(null)
+    config.providers.p1 = {
+      ...config.providers.p1,
+      borrowed: true,
+      editable: false,
+      source_node_id: 'node-b',
+      shared_provider_id: 'node-b:p1',
+      local_copy_state: 'linked',
+    }
+    const html = renderCardHtml(config, buildStatus())
+    expect(html).toContain('Linked')
+    expect(html).not.toContain('>Copy<')
+  })
 })

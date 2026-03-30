@@ -61,6 +61,12 @@ import {
   USAGE_REQUESTS_CANONICAL_QUERY_KEY,
   primeUsageRequestsPrefetchCache,
 } from './components/UsageStatisticsPanel'
+import {
+  buildDevPreviewFollowConfig,
+  getDevPreviewSourceProviders,
+  nextCopiedProviderName,
+  normalizedProviderKey,
+} from './utils/devPreviewConfigSource'
 
 const AppModals = lazy(async () => {
   const module = await import('./components/AppModals')
@@ -91,6 +97,11 @@ const STATUS_CACHE_STORAGE_KEY = 'ao.startup.status.v1'
 const CONFIG_CACHE_STORAGE_KEY = 'ao.startup.config.v1'
 const TOKEN_CACHE_STORAGE_KEY = 'ao.startup.gatewayTokenPreview.v1'
 
+type CopyProviderResult = {
+  target_name: string
+  local_copy_state: 'copied' | 'linked'
+}
+
 recordStartupStage('frontend_app_module_loaded')
 
 function readStartupCache<T>(key: string): T | null {
@@ -112,6 +123,7 @@ function writeStartupCache(key: string, value: unknown) {
     // Ignore cache write failures; startup cache is best-effort only.
   }
 }
+
 
 export default function App() {
   useEffect(() => {
@@ -313,6 +325,8 @@ export default function App() {
   const toastTimerRef = useRef<number | null>(null)
   const rawConfigTestFailOnceRef = useRef<Record<string, boolean>>({})
   const eventLogPreloadSeqRef = useRef(0)
+  const devPreviewLocalConfigRef = useRef<Config | null>(null)
+  const devPreviewFollowSourceProvidersRef = useRef<Config['providers'] | null>(null)
   const rawConfigTextsRef = useRef<Record<string, string>>({})
   const rawConfigDraftAutoSaveTimerRef = useRef<Record<string, number>>({})
   const setRawConfigTextsSync = (
@@ -1121,6 +1135,24 @@ export default function App() {
   })
   async function followConfigSource(nodeId: string) {
     try {
+      if (isDevPreview) {
+        setConfig((prev) => {
+          if (!prev) return prev
+          const localSnapshot = devPreviewLocalConfigRef.current ?? prev
+          if (prev.config_source?.mode !== 'follow') {
+            devPreviewLocalConfigRef.current = prev
+          }
+          devPreviewFollowSourceProvidersRef.current = getDevPreviewSourceProviders(nodeId, localSnapshot)
+          return buildDevPreviewFollowConfig(
+            prev,
+            nodeId,
+            localSnapshot,
+            devPreviewFollowSourceProvidersRef.current,
+          )
+        })
+        flashToast(`Following config source [TEST]: ${nodeId}`)
+        return
+      }
       await invoke('set_followed_config_source', { nodeId })
       flashToast(`Following config source: ${nodeId}`)
       await refreshStatus()
@@ -1131,6 +1163,13 @@ export default function App() {
   }
   async function clearFollowedConfigSource() {
     try {
+      if (isDevPreview) {
+        setConfig(devPreviewLocalConfigRef.current ?? devConfig)
+        devPreviewLocalConfigRef.current = null
+        devPreviewFollowSourceProvidersRef.current = null
+        flashToast('Returned to local config source [TEST]')
+        return
+      }
       await invoke('clear_followed_config_source')
       flashToast('Returned to local config source')
       await refreshStatus()
@@ -1141,11 +1180,104 @@ export default function App() {
   }
   async function copyProviderFromConfigSource(sourceNodeId: string, sharedProviderId: string) {
     try {
-      const copiedName = await invoke<string>('copy_provider_from_config_source', {
+      if (isDevPreview) {
+        const activeConfig = config
+        const localBase = devPreviewLocalConfigRef.current ?? activeConfig ?? devConfig
+        const borrowedEntry = Object.entries(activeConfig?.providers ?? {}).find(
+          ([, provider]) =>
+            provider.borrowed &&
+            provider.source_node_id === sourceNodeId &&
+            provider.shared_provider_id === sharedProviderId,
+        )
+        if (!borrowedEntry) {
+          flashToast('Borrowed provider not found [TEST]', 'error')
+          return
+        }
+        const [borrowedName, borrowedProvider] = borrowedEntry
+        const nextLocalProviders = { ...localBase.providers }
+        const borrowedKey = normalizedProviderKey(borrowedProvider.key_preview)
+        const existingMatch = borrowedKey
+          ? Object.entries(nextLocalProviders).find(([name, provider]) => {
+              if (name === borrowedName) return false
+              return normalizedProviderKey(provider.key_preview) === borrowedKey
+            })?.[0] ?? null
+          : null
+        const targetName = existingMatch
+          ? existingMatch
+          : nextLocalProviders[borrowedName]
+            ? nextCopiedProviderName(nextLocalProviders, borrowedName)
+            : borrowedName
+        const localCopyState = existingMatch ? ('linked' as const) : ('copied' as const)
+        nextLocalProviders[targetName] = {
+          ...borrowedProvider,
+          display_name: targetName,
+          borrowed: false,
+          editable: true,
+          source_node_id: null,
+          local_copy_state: null,
+        }
+        const nextLocalOrder = localBase.provider_order?.includes(targetName)
+          ? (localBase.provider_order ?? [])
+          : [...(localBase.provider_order ?? []), targetName]
+        const nextLocalConfig = {
+          ...localBase,
+          providers: nextLocalProviders,
+          provider_order: nextLocalOrder,
+        }
+        devPreviewLocalConfigRef.current = nextLocalConfig
+        setConfig((prev) => {
+          if (!prev || prev.config_source?.mode !== 'follow') return prev
+          const followedNodeId = prev.config_source?.followed_node_id
+          const rebuilt = followedNodeId
+            ? buildDevPreviewFollowConfig(
+                prev,
+                followedNodeId,
+                nextLocalConfig,
+                devPreviewFollowSourceProvidersRef.current ?? undefined,
+              )
+            : prev
+          return {
+            ...rebuilt,
+            providers: Object.fromEntries(
+              Object.entries(rebuilt.providers).map(([name, provider]) => [
+                name,
+                provider.source_node_id === sourceNodeId && provider.shared_provider_id === sharedProviderId
+                  ? { ...provider, local_copy_state: localCopyState }
+                  : provider,
+              ]),
+            ),
+          }
+        })
+        flashToast(
+          localCopyState === 'linked'
+            ? `Linked provider [TEST]: ${targetName}`
+            : `Copied provider [TEST]: ${targetName}`,
+        )
+        return
+      }
+      const result = await invoke<CopyProviderResult>('copy_provider_from_config_source', {
         sourceNodeId,
         sharedProviderId,
       })
-      flashToast(`Copied provider: ${copiedName}`)
+      setConfig((prev) => {
+        if (!prev || prev.config_source?.mode !== 'follow') return prev
+        return {
+          ...prev,
+          providers: Object.fromEntries(
+            Object.entries(prev.providers).map(([name, provider]) => [
+              name,
+              provider.source_node_id === sourceNodeId && provider.shared_provider_id === sharedProviderId
+                ? { ...provider, local_copy_state: result.local_copy_state }
+                : provider,
+            ]),
+          ),
+        }
+      })
+      flashToast(
+        result.local_copy_state === 'linked'
+          ? `Linked provider: ${result.target_name}`
+          : `Copied provider: ${result.target_name}`,
+      )
       await refreshStatus()
       await refreshConfig()
     } catch (e) {
@@ -1165,6 +1297,11 @@ export default function App() {
     onDevPreviewBootstrap,
     onDevPreviewTick,
   })
+  useEffect(() => {
+    if (!isDevPreview) return
+    devPreviewLocalConfigRef.current = null
+    devPreviewFollowSourceProvidersRef.current = null
+  }, [isDevPreview])
   useAppUsageEffects({
     activePage,
     refreshUsageStatistics,

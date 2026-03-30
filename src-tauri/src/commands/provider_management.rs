@@ -59,26 +59,10 @@ fn ensure_local_provider_definitions_editable(state: &app_state::AppState) -> Re
     }
 }
 
-fn provider_runtime_identity(
-    provider_cfg: &crate::orchestrator::config::ProviderConfig,
-    key: Option<&str>,
-) -> (String, String, String) {
-    let base_url = provider_cfg.base_url.trim().trim_end_matches('/').to_ascii_lowercase();
-    let usage_source = provider_cfg
-        .usage_base_url
-        .as_deref()
-        .map(str::trim)
+fn normalized_provider_key(key: Option<&str>) -> Option<String> {
+    key.map(str::trim)
         .filter(|value| !value.is_empty())
-        .and_then(crate::orchestrator::quota::canonical_packycode_usage_base)
-        .unwrap_or_else(|| {
-            crate::orchestrator::quota::canonical_packycode_usage_base(&provider_cfg.base_url)
-                .unwrap_or_else(|| provider_cfg.base_url.trim().trim_end_matches('/').to_ascii_lowercase())
-        });
-    (
-        key.unwrap_or_default().trim().to_string(),
-        base_url,
-        usage_source,
-    )
+        .map(ToString::to_string)
 }
 
 fn next_copy_name(
@@ -118,7 +102,22 @@ fn current_local_provider_state_snapshot(
         preferred_provider: cfg.routing.preferred_provider.clone(),
         session_preferred_providers: cfg.routing.session_preferred_providers.clone(),
         provider_state: state.secrets.export_provider_state_bundle(),
+        copied_shared_provider_ids: std::collections::BTreeSet::new(),
+        linked_shared_provider_ids: std::collections::BTreeSet::new(),
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LocalCopyState {
+    Copied,
+    Linked,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct CopyProviderFromConfigSourceResult {
+    target_name: String,
+    local_copy_state: LocalCopyState,
 }
 
 fn provider_definition_patch_payload(
@@ -190,6 +189,21 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
     let now = unix_ms();
     let followed_source_node_id = state.secrets.get_followed_config_source_node_id();
     let borrowed = followed_source_node_id.is_some();
+    let (local_copied_shared_ids, local_snapshot_keys) = crate::lan_sync::load_local_provider_state_snapshot(&state)
+        .ok()
+        .flatten()
+        .map(|snapshot| {
+            (
+                snapshot.copied_shared_provider_ids,
+                snapshot
+                    .provider_state
+                    .providers
+                    .into_values()
+                    .filter_map(|value| normalized_provider_key(Some(value.as_str())))
+                    .collect::<std::collections::HashSet<_>>(),
+            )
+        })
+        .unwrap_or_default();
     // Never expose keys in UI/API.
     let providers: serde_json::Map<String, serde_json::Value> = cfg
         .providers
@@ -216,6 +230,22 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
             });
             let has_key = key.is_some();
             let key_preview = key.as_deref().map(mask_key_preview);
+            let shared_provider_id = state.secrets.get_provider_shared_id(name);
+            let local_copy_state = borrowed.then(|| {
+                let normalized_key = normalized_provider_key(key.as_deref());
+                shared_provider_id.as_ref().and_then(|shared_id| {
+                    if local_copied_shared_ids.contains(shared_id) {
+                        Some(LocalCopyState::Copied)
+                    } else if normalized_key
+                        .as_ref()
+                        .is_some_and(|provider_key| local_snapshot_keys.contains(provider_key))
+                    {
+                        Some(LocalCopyState::Linked)
+                    } else {
+                        None
+                    }
+                })
+            }).flatten();
             (
                 name.clone(),
                 serde_json::json!({
@@ -243,7 +273,8 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
                   "borrowed": borrowed,
                   "editable": !borrowed,
                   "source_node_id": followed_source_node_id.clone(),
-                  "shared_provider_id": state.secrets.get_provider_shared_id(name)
+                  "shared_provider_id": shared_provider_id,
+                  "local_copy_state": local_copy_state
                 }),
             )
         })
@@ -365,7 +396,7 @@ pub(crate) fn copy_provider_from_config_source(
     state: tauri::State<'_, app_state::AppState>,
     source_node_id: String,
     shared_provider_id: String,
-) -> Result<String, String> {
+) -> Result<CopyProviderFromConfigSourceResult, String> {
     let source_node_id = source_node_id.trim();
     let shared_provider_id = shared_provider_id.trim();
     if source_node_id.is_empty() || shared_provider_id.is_empty() {
@@ -400,11 +431,24 @@ pub(crate) fn copy_provider_from_config_source(
         usage_base_url: payload.usage_base_url.clone(),
         api_key: String::new(),
     };
-    let remote_identity = provider_runtime_identity(&remote_cfg, payload.key.as_deref());
-    let existing_match = local_state.providers.iter().find_map(|(name, provider_cfg)| {
-        let current_key = local_state.provider_state.providers.get(name).map(|value| value.as_str());
-        (provider_runtime_identity(provider_cfg, current_key) == remote_identity).then(|| name.clone())
+    let remote_key = normalized_provider_key(payload.key.as_deref());
+    let existing_match = remote_key.as_ref().and_then(|remote_key| {
+        local_state.providers.keys().find_map(|name| {
+            let current_key = normalized_provider_key(
+                local_state
+                    .provider_state
+                    .providers
+                    .get(name)
+                    .map(|value| value.as_str()),
+            );
+            (current_key.as_ref() == Some(remote_key)).then(|| name.clone())
+        })
     });
+    let local_copy_state = if existing_match.is_some() {
+        LocalCopyState::Linked
+    } else {
+        LocalCopyState::Copied
+    };
     let target_name = if let Some(name) = existing_match {
         name
     } else if local_state.providers.contains_key(&payload.name) {
@@ -469,6 +513,24 @@ pub(crate) fn copy_provider_from_config_source(
         .provider_state
         .provider_shared_ids
         .insert(target_name.clone(), shared_provider_id.to_string());
+    match local_copy_state {
+        LocalCopyState::Copied => {
+            local_state
+                .copied_shared_provider_ids
+                .insert(shared_provider_id.to_string());
+            local_state
+                .linked_shared_provider_ids
+                .remove(shared_provider_id);
+        }
+        LocalCopyState::Linked => {
+            local_state
+                .linked_shared_provider_ids
+                .insert(shared_provider_id.to_string());
+            local_state
+                .copied_shared_provider_ids
+                .remove(shared_provider_id);
+        }
+    }
 
     if local_provider_definitions_are_locked(&state) {
         crate::lan_sync::write_local_provider_state_snapshot(&state, &local_state)?;
@@ -502,7 +564,10 @@ pub(crate) fn copy_provider_from_config_source(
             "target_name": target_name,
         }),
     );
-    Ok(target_name)
+    Ok(CopyProviderFromConfigSourceResult {
+        target_name,
+        local_copy_state,
+    })
 }
 
 #[tauri::command]

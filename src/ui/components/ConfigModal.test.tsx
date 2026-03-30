@@ -105,4 +105,61 @@ describe('ConfigModal', () => {
     expect(html).toContain('height:50px')
     expect(html).toContain('min-height:50px')
   })
+
+  it('shows selected source usage count in the trigger', () => {
+    const config = buildConfig()
+    config.config_source = {
+      mode: 'local',
+      followed_node_id: null,
+      sources: [
+        {
+          kind: 'local',
+          node_id: 'node-local',
+          node_name: 'Desk',
+          active: true,
+          follow_allowed: false,
+          follow_blocked_reason: null,
+          using_count: 1,
+        },
+        {
+          kind: 'peer',
+          node_id: 'node-b',
+          node_name: 'Desk B',
+          active: false,
+          follow_allowed: true,
+          follow_blocked_reason: null,
+          using_count: 2,
+        },
+      ],
+    }
+
+    const html = renderToStaticMarkup(
+      <ConfigModal
+        open
+        config={config}
+        newProviderName=""
+        newProviderBaseUrl=""
+        newProviderKey=""
+        newProviderKeyStorage="auth_json"
+        nextProviderPlaceholder="provider1"
+        setNewProviderName={() => undefined}
+        setNewProviderBaseUrl={() => undefined}
+        setNewProviderKey={() => undefined}
+        setNewProviderKeyStorage={() => undefined}
+        onAddProvider={() => undefined}
+        onFollowSource={() => undefined}
+        onClearFollowSource={() => undefined}
+        onOpenGroupManager={() => undefined}
+        onClose={() => undefined}
+        providerListRef={{ current: null }}
+        orderedConfigProviders={['p1']}
+        dragPreviewOrder={null}
+        draggingProvider={null}
+        dragCardHeight={0}
+        renderProviderCard={() => null}
+      />,
+    )
+
+    expect(html).toContain('1 using')
+  })
 })

@@ -56,6 +56,14 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
     const canDeactivate = p.disabled || activeProviderCount > 1
     const editable = p.editable !== false
     const canCopyBorrowed = Boolean(p.borrowed && p.source_node_id && p.shared_provider_id)
+    const localCopyState = p.local_copy_state ?? null
+    const copyButtonLabel = localCopyState === 'linked' ? 'Linked' : localCopyState === 'copied' ? 'Copied' : 'Copy'
+    const copyButtonTitle =
+      localCopyState === 'linked'
+        ? 'An equivalent local provider already exists'
+        : localCopyState === 'copied'
+          ? 'Provider already copied to local definitions'
+          : 'Copy provider to local definitions'
     const isDragOver = options.dragOverProvider === name
     const dragStyle = overlay
       ? {
@@ -252,12 +260,13 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
           <div className="aoProviderDeleteSlot">
             {canCopyBorrowed ? (
               <button
-                className="aoTinyBtn"
-                title="Copy provider to local definitions"
-                aria-label="Copy provider to local definitions"
+                className={`aoTinyBtn aoProviderCopyBtn${localCopyState !== null ? ' is-static' : ''}`}
+                title={copyButtonTitle}
+                aria-label={copyButtonTitle}
+                disabled={localCopyState !== null}
                 onClick={() => void options.copyProviderFromConfigSource(p.source_node_id!, p.shared_provider_id!)}
               >
-                Copy
+                {copyButtonLabel}
               </button>
             ) : (
               <button
