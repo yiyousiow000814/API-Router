@@ -68,7 +68,7 @@ import {
   updateDevPreviewPairState,
 } from './utils/devPreviewConfigSource'
 import { lanConfigSourceSyncSignature } from './utils/lanConfigSourceSync'
-import { waitForLanConfigSourceTrust } from './utils/lanPairCompletion'
+import { ensureLanConfigSourceTrust, waitForLanConfigSourceTrust } from './utils/lanPairCompletion'
 
 const AppModals = lazy(async () => {
   const module = await import('./components/AppModals')
@@ -1277,7 +1277,21 @@ export default function App() {
     }
     await invoke('submit_lan_pair_pin', { nodeId, requestId, pinCode })
     await refreshConfig()
-    await watchLanPairTrust(nodeId)
+    await ensureLanConfigSourceTrust({
+      nodeId,
+      loadStatus: () => invoke<Status>('get_status'),
+      loadConfig: () => invoke<Config>('get_config'),
+      applyStatus: (nextStatus) => {
+        setStatus(nextStatus)
+        if (!overrideDirtyRef.current) setOverride(nextStatus.manual_override ?? '')
+      },
+      applyConfig: (nextConfig) => {
+        setConfig(nextConfig)
+        setBaselineBaseUrls(
+          Object.fromEntries(Object.entries(nextConfig.providers ?? {}).map(([name, provider]) => [name, provider.base_url])),
+        )
+      },
+    })
   }
   async function copyProviderFromConfigSource(sourceNodeId: string, sharedProviderId: string) {
     try {

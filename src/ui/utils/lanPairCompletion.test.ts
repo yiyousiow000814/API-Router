@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Config, Status } from '../types'
-import { isLanConfigSourceTrusted, waitForLanConfigSourceTrust } from './lanPairCompletion'
+import { ensureLanConfigSourceTrust, isLanConfigSourceTrusted, waitForLanConfigSourceTrust } from './lanPairCompletion'
 
 function buildStatus(): Status {
   return {
@@ -80,5 +80,24 @@ describe('lanPairCompletion', () => {
     expect(
       appliedConfigs.at(-1)?.config_source?.sources.find((source) => source.node_id === 'node-b')?.pair_state,
     ).toBe('trusted')
+  })
+
+  it('rejects when the config source never becomes trusted', async () => {
+    const wait = vi.fn(async () => {})
+
+    await expect(
+      ensureLanConfigSourceTrust({
+        nodeId: 'node-b',
+        loadStatus: vi.fn(async () => buildStatus()),
+        loadConfig: vi.fn(async () => buildConfig(false, 'pin_required')),
+        applyStatus: vi.fn(),
+        applyConfig: vi.fn(),
+        wait,
+        intervalMs: 1,
+        maxAttempts: 3,
+      }),
+    ).rejects.toThrow('Pairing PIN was not accepted.')
+
+    expect(wait).toHaveBeenCalledTimes(2)
   })
 })

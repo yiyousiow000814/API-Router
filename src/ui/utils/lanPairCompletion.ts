@@ -44,3 +44,12 @@ export async function waitForLanConfigSourceTrust({
   }
   return false
 }
+
+export async function ensureLanConfigSourceTrust(
+  options: WaitForLanConfigSourceTrustOptions,
+): Promise<void> {
+  const trusted = await waitForLanConfigSourceTrust(options)
+  if (!trusted) {
+    throw new Error('Pairing PIN was not accepted.')
+  }
+}
