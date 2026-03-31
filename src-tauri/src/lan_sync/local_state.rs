@@ -290,21 +290,41 @@ pub fn restore_local_provider_state(state: &crate::app_state::AppState) -> Resul
     let Some(snapshot) = load_local_provider_state_snapshot(state)? else {
         return Err("missing local provider snapshot for followed config source".to_string());
     };
+    let previous_cfg = state.gateway.cfg.read().clone();
+    let previous_bundle = state.secrets.export_provider_state_bundle();
     {
         let mut cfg = state.gateway.cfg.write();
-        cfg.providers = snapshot.providers;
-        cfg.provider_order = snapshot.provider_order;
-        cfg.routing.preferred_provider = snapshot.preferred_provider;
-        cfg.routing.session_preferred_providers = snapshot.session_preferred_providers;
+        cfg.providers = snapshot.providers.clone();
+        cfg.provider_order = snapshot.provider_order.clone();
+        cfg.routing.preferred_provider = snapshot.preferred_provider.clone();
+        cfg.routing.session_preferred_providers = snapshot.session_preferred_providers.clone();
         crate::app_state::normalize_provider_order(&mut cfg);
         sanitize_active_routing_refs(&mut cfg);
     }
     state
         .secrets
         .replace_provider_state_bundle(snapshot.provider_state)?;
-    let cfg = state.gateway.cfg.read().clone();
-    persist_gateway_config(&state.gateway, &state.config_path)?;
-    state.gateway.router.sync_with_config(&cfg, unix_ms());
+    let next_cfg = state.gateway.cfg.read().clone();
+    if let Err(err) = persist_gateway_config(&state.gateway, &state.config_path) {
+        state
+            .secrets
+            .replace_provider_state_bundle(previous_bundle)
+            .map_err(|rollback_err| {
+                format!(
+                    "{err}; rollback failed while restoring local provider state bundle: {rollback_err}"
+                )
+            })?;
+        {
+            let mut cfg = state.gateway.cfg.write();
+            *cfg = previous_cfg.clone();
+        }
+        state
+            .gateway
+            .router
+            .sync_with_config(&previous_cfg, unix_ms());
+        return Err(err);
+    }
+    state.gateway.router.sync_with_config(&next_cfg, unix_ms());
     clear_local_provider_state_snapshot(state)?;
     clear_local_provider_copy_state(state)?;
     Ok(())

@@ -2544,9 +2544,9 @@ fn build_provider_fingerprints(cfg: &AppConfig, secrets: &SecretStore) -> Vec<St
 mod tests {
     use super::{
         apply_followed_provider_state, apply_lan_edit_event, deserialize_wire_packet,
-        incoming_event_is_newer, note_entity_version, peer_is_stale, sanitize_node_name,
-        serialize_wire_packet, LanHeartbeatPacket, LanNodeIdentity, LanSyncPacket, LanSyncRuntime,
-        LAN_PEER_STALE_AFTER_MS,
+        incoming_event_is_newer, note_entity_version, peer_is_stale, restore_local_provider_state,
+        sanitize_node_name, serialize_wire_packet, LanHeartbeatPacket, LanNodeIdentity,
+        LanSyncPacket, LanSyncRuntime, LAN_PEER_STALE_AFTER_MS,
     };
     use base64::Engine;
 
@@ -2768,6 +2768,140 @@ mod tests {
         assert_eq!(
             current_bundle.provider_shared_ids,
             previous_bundle.provider_shared_ids
+        );
+    }
+
+    #[test]
+    fn restore_local_provider_state_rolls_back_memory_when_persist_fails() {
+        let (_tmp, mut state) = build_test_state();
+        state
+            .secrets
+            .set_provider_key("provider_1", "sk-local-before")
+            .expect("seed local provider key");
+        let local_snapshot = crate::lan_sync::LocalProviderStateSnapshot {
+            providers: state.gateway.cfg.read().providers.clone(),
+            provider_order: state.gateway.cfg.read().provider_order.clone(),
+            preferred_provider: state.gateway.cfg.read().routing.preferred_provider.clone(),
+            session_preferred_providers: state
+                .gateway
+                .cfg
+                .read()
+                .routing
+                .session_preferred_providers
+                .clone(),
+            provider_state: state.secrets.export_provider_state_bundle(),
+        };
+        crate::lan_sync::write_local_provider_state_snapshot(&state, &local_snapshot)
+            .expect("write local snapshot");
+        crate::lan_sync::write_local_provider_copy_state(
+            &state,
+            &crate::lan_sync::LocalProviderCopyStateSnapshot {
+                copied_shared_provider_ids: std::collections::BTreeSet::from([
+                    "shared-provider-1".to_string()
+                ]),
+            },
+        )
+        .expect("write local copy snapshot");
+
+        {
+            let mut cfg = state.gateway.cfg.write();
+            let provider = cfg.providers.get_mut("provider_1").expect("provider_1");
+            provider.display_name = "Followed Provider".to_string();
+            provider.base_url = "https://followed.example/v1".to_string();
+            cfg.routing.preferred_provider = "provider_2".to_string();
+        }
+        state
+            .secrets
+            .set_provider_key("provider_1", "sk-followed")
+            .expect("seed followed provider key");
+        let previous_cfg = state.gateway.cfg.read().clone();
+        let previous_bundle = state.gateway.secrets.export_provider_state_bundle();
+
+        let bad_path = state
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("persist-fail-dir");
+        std::fs::create_dir_all(&bad_path).expect("create bad path");
+        state.config_path = bad_path;
+
+        let err = restore_local_provider_state(&state).expect_err("persist should fail");
+
+        assert!(!err.trim().is_empty());
+        let current_cfg = state.gateway.cfg.read();
+        assert_eq!(
+            current_cfg.providers.keys().cloned().collect::<Vec<_>>(),
+            previous_cfg.providers.keys().cloned().collect::<Vec<_>>()
+        );
+        for (name, current_provider) in current_cfg.providers.iter() {
+            let previous_provider = previous_cfg
+                .providers
+                .get(name)
+                .expect("provider should exist before failed restore");
+            assert_eq!(
+                current_provider.display_name,
+                previous_provider.display_name
+            );
+            assert_eq!(current_provider.base_url, previous_provider.base_url);
+            assert_eq!(current_provider.group, previous_provider.group);
+            assert_eq!(current_provider.disabled, previous_provider.disabled);
+            assert_eq!(
+                current_provider.usage_adapter,
+                previous_provider.usage_adapter
+            );
+            assert_eq!(
+                current_provider.usage_base_url,
+                previous_provider.usage_base_url
+            );
+        }
+        assert_eq!(current_cfg.provider_order, previous_cfg.provider_order);
+        assert_eq!(
+            current_cfg.routing.preferred_provider,
+            previous_cfg.routing.preferred_provider
+        );
+        assert_eq!(
+            current_cfg.routing.session_preferred_providers,
+            previous_cfg.routing.session_preferred_providers
+        );
+        let current_bundle = state.gateway.secrets.export_provider_state_bundle();
+        assert_eq!(current_bundle.providers, previous_bundle.providers);
+        assert_eq!(
+            current_bundle.provider_key_storage_modes,
+            previous_bundle.provider_key_storage_modes
+        );
+        assert_eq!(
+            current_bundle.provider_account_emails,
+            previous_bundle.provider_account_emails
+        );
+        assert_eq!(current_bundle.usage_tokens, previous_bundle.usage_tokens);
+        assert_eq!(
+            current_bundle
+                .usage_logins
+                .iter()
+                .map(|(name, login)| (name.clone(), login.username.clone(), login.password.clone()))
+                .collect::<Vec<_>>(),
+            previous_bundle
+                .usage_logins
+                .iter()
+                .map(|(name, login)| (name.clone(), login.username.clone(), login.password.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            current_bundle.provider_shared_ids,
+            previous_bundle.provider_shared_ids
+        );
+        assert!(
+            crate::lan_sync::load_local_provider_state_snapshot(&state)
+                .expect("load snapshot after failed restore")
+                .is_some(),
+            "failed restore must not clear saved local snapshot"
+        );
+        assert_eq!(
+            crate::lan_sync::load_local_provider_copy_state(&state)
+                .expect("load copy snapshot after failed restore")
+                .copied_shared_provider_ids,
+            std::collections::BTreeSet::from([("shared-provider-1".to_string())]),
+            "failed restore must not clear saved local copy state"
         );
     }
 
