@@ -29,7 +29,10 @@ pub(crate) fn get_spend_history(
         .filter(|s| !s.is_empty());
 
     let cfg = state.gateway.cfg.read().clone();
-    let pricing = state.secrets.list_provider_pricing();
+    let mut pricing = state.gateway.store.list_provider_pricing_configs();
+    for (provider_name, config) in state.secrets.list_provider_pricing() {
+        pricing.insert(provider_name, config);
+    }
     let mut providers: Vec<String> = cfg
         .providers
         .keys()

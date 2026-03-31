@@ -60,6 +60,45 @@ fn projection_hours_for_day_estimate() -> f64 {
     16.0
 }
 
+fn latest_day_budget_fallback_allowed(now_unix_ms: u64, since_unix_ms: u64) -> bool {
+    let now_ts = match i64::try_from(now_unix_ms) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    let now_dt = match chrono::Local.timestamp_millis_opt(now_ts).single() {
+        Some(value) => value,
+        None => return false,
+    };
+    let start_of_today = match now_dt.date_naive().and_hms_opt(0, 0, 0) {
+        Some(value) => value,
+        None => return false,
+    };
+    let start_of_today = match chrono::Local.from_local_datetime(&start_of_today).single() {
+        Some(value) => value,
+        None => return false,
+    };
+    since_unix_ms >= u64::try_from(start_of_today.timestamp_millis()).unwrap_or(0)
+}
+
+fn merge_usage_metrics_day_counts(
+    req_by_day: &mut BTreeMap<String, u64>,
+    req_by_day_from_req: Option<&BTreeMap<String, u64>>,
+) {
+    let Some(req_by_day_from_req) = req_by_day_from_req else {
+        return;
+    };
+    for (day_key, req_count) in req_by_day_from_req {
+        req_by_day.insert(day_key.clone(), *req_count);
+    }
+}
+
+fn request_window_ratio(day_req_total: f64, day_req_in_window: f64) -> f64 {
+    if day_req_total > 0.0 {
+        return (day_req_in_window / day_req_total).clamp(0.0, 1.0);
+    }
+    0.0
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn get_usage_request_entries(
@@ -373,6 +412,8 @@ pub(crate) fn get_usage_statistics(
     let window_hours = hours.unwrap_or(24).clamp(1, 24 * 30);
     let window_ms = window_hours.saturating_mul(60 * 60 * 1000);
     let since_unix_ms = now.saturating_sub(window_ms);
+    let allow_latest_day_budget_fallback =
+        latest_day_budget_fallback_allowed(now, since_unix_ms);
     let provider_filter: BTreeSet<String> = providers
         .unwrap_or_default()
         .into_iter()
@@ -401,7 +442,10 @@ pub(crate) fn get_usage_statistics(
 
     let records = list_usage_requests_for_statistics(&state.gateway.store);
     let quota = state.gateway.store.list_quota_snapshots();
-    let provider_pricing = state.secrets.list_provider_pricing();
+    let mut provider_pricing = state.gateway.store.list_provider_pricing_configs();
+    for (provider_name, config) in state.secrets.list_provider_pricing() {
+        provider_pricing.insert(provider_name, config);
+    }
 
     let mut provider_tokens_24h: BTreeMap<String, u64> = BTreeMap::new();
     let mut provider_active_hour_buckets: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
@@ -629,11 +673,10 @@ pub(crate) fn get_usage_statistics(
                 .and_modify(|cur| *cur = cur.saturating_add(req))
                 .or_insert(req);
         }
-        if let Some(by_day_from_req) = provider_req_by_day_all_from_req.get(provider) {
-            for (day_key, req_count) in by_day_from_req {
-                req_by_day.entry(day_key.clone()).or_insert(*req_count);
-            }
-        }
+        merge_usage_metrics_day_counts(
+            &mut req_by_day,
+            provider_req_by_day_all_from_req.get(provider),
+        );
         let mut manual_by_day: BTreeMap<String, (Option<f64>, Option<f64>)> = BTreeMap::new();
         for day in state.gateway.store.list_spend_manual_days(provider) {
             let Some(day_key) = day.get("day_key").and_then(|v| v.as_str()) else {
@@ -729,8 +772,6 @@ pub(crate) fn get_usage_statistics(
                                 if overlap_end <= overlap_start {
                                     return None;
                                 }
-                                let ratio = (overlap_end.saturating_sub(overlap_start)) as f64
-                                    / (day_end.saturating_sub(day_start).max(1) as f64);
                                 let day_req_total =
                                     req_by_day.get(&day_key).copied().unwrap_or(0) as f64;
                                 let day_req_in_window = req_by_day_in_window
@@ -741,20 +782,16 @@ pub(crate) fn get_usage_statistics(
                                 if let Some(v) = manual_total {
                                     if day_req_total > 0.0 {
                                         let req_ratio =
-                                            (day_req_in_window / day_req_total).clamp(0.0, 1.0);
+                                            request_window_ratio(day_req_total, day_req_in_window);
                                         Some(*v * req_ratio)
-                                    } else if has_model_filter {
-                                        Some(0.0)
                                     } else {
-                                        Some(*v * ratio)
+                                        Some(0.0)
                                     }
                                 } else if let Some(v) = manual_per_req {
                                     if day_req_in_window > 0.0 {
                                         Some(*v * day_req_in_window)
-                                    } else if has_model_filter {
-                                        Some(0.0)
                                     } else {
-                                        Some(*v * day_req_total * ratio)
+                                        Some(0.0)
                                     }
                                 } else {
                                     None
@@ -834,20 +871,12 @@ pub(crate) fn get_usage_statistics(
                     if overlap_end <= overlap_start {
                         continue;
                     }
-                    let time_ratio = (overlap_end.saturating_sub(overlap_start)) as f64
-                        / (day_end.saturating_sub(day_start).max(1) as f64);
                     let day_req_total = req_by_day.get(&day_key).copied().unwrap_or(0) as f64;
                     let day_req_in_window = req_by_day_in_window
                         .and_then(|m| m.get(&day_key))
                         .copied()
                         .unwrap_or(0) as f64;
-                    let ratio = if day_req_total > 0.0 {
-                        (day_req_in_window / day_req_total).clamp(0.0, 1.0)
-                    } else if has_model_filter {
-                        0.0
-                    } else {
-                        time_ratio
-                    };
+                    let ratio = request_window_ratio(day_req_total, day_req_in_window);
                     tracked_in_window += tracked * ratio;
                 }
 
@@ -861,8 +890,6 @@ pub(crate) fn get_usage_statistics(
                     if overlap_end <= overlap_start {
                         continue;
                     }
-                    let ratio = (overlap_end.saturating_sub(overlap_start)) as f64
-                        / (day_end.saturating_sub(day_start).max(1) as f64);
                     let day_req_total = req_by_day.get(day_key).copied().unwrap_or(0) as f64;
                     let day_req_in_window = req_by_day_in_window
                         .and_then(|m| m.get(day_key))
@@ -870,20 +897,16 @@ pub(crate) fn get_usage_statistics(
                         .unwrap_or(0) as f64;
                     if let Some(v) = manual_total {
                         if day_req_total > 0.0 {
-                            let req_ratio = (day_req_in_window / day_req_total).clamp(0.0, 1.0);
+                            let req_ratio = request_window_ratio(day_req_total, day_req_in_window);
                             manual_additional_in_window += *v * req_ratio;
-                        } else if has_model_filter {
-                            manual_additional_in_window += 0.0;
                         } else {
-                            manual_additional_in_window += *v * ratio;
+                            manual_additional_in_window += 0.0;
                         }
                     } else if let Some(v) = manual_per_req {
                         if day_req_in_window > 0.0 {
                             manual_additional_in_window += *v * day_req_in_window;
-                        } else if has_model_filter {
-                            manual_additional_in_window += 0.0;
                         } else {
-                            manual_additional_in_window += *v * day_req_total * ratio;
+                            manual_additional_in_window += 0.0;
                         }
                     }
                 }
@@ -905,10 +928,12 @@ pub(crate) fn get_usage_statistics(
                     } else {
                         "manual_history".to_string()
                     };
-                } else if let Some(spent_today) = provider_daily_spent_usd.get(provider).copied() {
-                    total_used_cost_usd = Some(spent_today);
-                    actual_tracked_spend_usd = Some(spent_today);
-                    pricing_source = "provider_budget_api_latest_day".to_string();
+                } else if allow_latest_day_budget_fallback {
+                    if let Some(spent_today) = provider_daily_spent_usd.get(provider).copied() {
+                        total_used_cost_usd = Some(spent_today);
+                        actual_tracked_spend_usd = Some(spent_today);
+                        pricing_source = "provider_budget_api_latest_day".to_string();
+                    }
                 } else if let Some(per_tok) = provider_daily_cost_per_token.get(provider).copied() {
                     let estimated = per_tok * agg.total_tokens as f64;
                     if estimated > 0.0 {
@@ -1181,7 +1206,12 @@ pub(crate) fn get_usage_statistics(
 
 #[cfg(test)]
 mod usage_metrics_tests {
-    use super::{normalize_usage_origin, projection_hours_for_day_estimate};
+    use super::{
+        latest_day_budget_fallback_allowed, merge_usage_metrics_day_counts,
+        normalize_usage_origin, request_window_ratio,
+        projection_hours_for_day_estimate,
+    };
+    use std::collections::BTreeMap;
 
     #[test]
     fn normalize_usage_origin_maps_known_values() {
@@ -1199,5 +1229,42 @@ mod usage_metrics_tests {
     #[test]
     fn projection_hours_uses_fixed_16h_workday() {
         assert_eq!(projection_hours_for_day_estimate(), 16.0);
+    }
+
+    #[test]
+    fn latest_day_budget_fallback_only_applies_within_current_local_day() {
+        use chrono::{Local, TimeZone, Timelike};
+
+        let now = Local::now()
+            .with_hour(12)
+            .and_then(|dt| dt.with_minute(0))
+            .and_then(|dt| dt.with_second(0))
+            .and_then(|dt| dt.with_nanosecond(0))
+            .expect("normalize now");
+        let now_unix_ms = u64::try_from(now.timestamp_millis()).expect("now unix ms");
+        let within_today =
+            u64::try_from((now - chrono::Duration::hours(2)).timestamp_millis()).expect("within");
+        let crosses_midnight =
+            u64::try_from((now - chrono::Duration::hours(24)).timestamp_millis()).expect("cross");
+
+        assert!(latest_day_budget_fallback_allowed(now_unix_ms, within_today));
+        assert!(!latest_day_budget_fallback_allowed(
+            now_unix_ms,
+            crosses_midnight
+        ));
+    }
+
+    #[test]
+    fn usage_metrics_prefers_raw_request_day_counts_over_cached_usage_day_counts() {
+        let mut cached = BTreeMap::from([("2026-03-31".to_string(), 2_u64)]);
+        let raw = BTreeMap::from([("2026-03-31".to_string(), 86_u64)]);
+        merge_usage_metrics_day_counts(&mut cached, Some(&raw));
+        assert_eq!(cached.get("2026-03-31"), Some(&86_u64));
+    }
+
+    #[test]
+    fn request_window_ratio_is_zero_when_day_has_no_requests() {
+        assert_eq!(request_window_ratio(0.0, 71.0), 0.0);
+        assert!((request_window_ratio(86.0, 71.0) - (71.0 / 86.0)).abs() < 1e-9);
     }
 }

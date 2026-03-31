@@ -156,6 +156,10 @@ pub(crate) fn set_provider_timeline(
 
     let count = normalized.len();
     state.secrets.set_provider_timeline(&provider, normalized)?;
+    state
+        .gateway
+        .store
+        .sync_provider_pricing_configs(&state.secrets.list_provider_pricing());
     if let Err(err) = crate::lan_sync::record_provider_pricing_snapshot(&state, &provider) {
         state.gateway.store.add_event(
             &provider,
@@ -227,6 +231,10 @@ pub(crate) fn set_provider_schedule(
 
     let count = normalized.len();
     state.secrets.set_provider_schedule(&provider, normalized)?;
+    state
+        .gateway
+        .store
+        .sync_provider_pricing_configs(&state.secrets.list_provider_pricing());
     if let Err(err) = crate::lan_sync::record_provider_pricing_snapshot(&state, &provider) {
         state.gateway.store.add_event(
             &provider,

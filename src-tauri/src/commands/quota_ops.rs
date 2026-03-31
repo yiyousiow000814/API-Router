@@ -1071,6 +1071,10 @@ pub(crate) fn set_provider_manual_pricing(
                 None,
                 Some(api_key_ref.clone()),
             )?;
+            state
+                .gateway
+                .store
+                .sync_provider_pricing_configs(&state.secrets.list_provider_pricing());
             if let Err(err) = crate::lan_sync::record_provider_pricing_snapshot(&state, &provider) {
                 state.gateway.store.add_event(
                     &provider,
@@ -1115,6 +1119,10 @@ pub(crate) fn set_provider_manual_pricing(
                 expires,
                 Some(api_key_ref.clone()),
             )?;
+            state
+                .gateway
+                .store
+                .sync_provider_pricing_configs(&state.secrets.list_provider_pricing());
             if let Err(err) = crate::lan_sync::record_provider_pricing_snapshot(&state, &provider) {
                 state.gateway.store.add_event(
                     &provider,
@@ -1155,6 +1163,10 @@ pub(crate) fn set_provider_gap_fill(
     match mode.as_str() {
         "none" => {
             state.secrets.set_provider_gap_fill(&provider, None, None)?;
+            state
+                .gateway
+                .store
+                .sync_provider_pricing_configs(&state.secrets.list_provider_pricing());
             if let Err(err) = crate::lan_sync::record_provider_pricing_snapshot(&state, &provider) {
                 state.gateway.store.add_event(
                     &provider,
@@ -1183,6 +1195,10 @@ pub(crate) fn set_provider_gap_fill(
             state
                 .secrets
                 .set_provider_gap_fill(&provider, Some(&mode), Some(v))?;
+            state
+                .gateway
+                .store
+                .sync_provider_pricing_configs(&state.secrets.list_provider_pricing());
             if let Err(err) = crate::lan_sync::record_provider_pricing_snapshot(&state, &provider) {
                 state.gateway.store.add_event(
                     &provider,

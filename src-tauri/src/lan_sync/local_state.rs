@@ -185,6 +185,7 @@ fn build_followed_provider_state(
     }
     let mut next_cfg = gateway.cfg.read().clone();
     let mut next_bundle = ProviderStateBundle::default();
+    let current_bundle = gateway.secrets.export_provider_state_bundle();
     let mut next_providers = BTreeMap::new();
     let mut next_order = Vec::new();
     let mut used_names = BTreeSet::new();
@@ -243,7 +244,26 @@ fn build_followed_provider_state(
         }
         next_bundle
             .provider_shared_ids
-            .insert(provider_name, row.shared_provider_id);
+            .insert(provider_name.clone(), row.shared_provider_id.clone());
+        if let Some(existing_name) =
+            current_bundle.find_provider_name_by_shared_id(&row.shared_provider_id)
+        {
+            if let Some(pricing) = current_bundle.provider_pricing.get(&existing_name) {
+                next_bundle
+                    .provider_pricing
+                    .insert(provider_name.clone(), pricing.clone());
+            }
+            if let Some(hard_cap) = current_bundle.provider_quota_hard_cap.get(&existing_name) {
+                next_bundle
+                    .provider_quota_hard_cap
+                    .insert(provider_name.clone(), *hard_cap);
+            }
+            if let Some(proxy_pool) = current_bundle.usage_proxy_pools.get(&existing_name) {
+                next_bundle
+                    .usage_proxy_pools
+                    .insert(provider_name.clone(), proxy_pool.clone());
+            }
+        }
     }
 
     next_cfg.providers = next_providers;
@@ -262,6 +282,9 @@ pub fn apply_followed_provider_state(
     let previous_cfg = gateway.cfg.read().clone();
     let previous_bundle = gateway.secrets.export_provider_state_bundle();
     gateway.secrets.replace_provider_state_bundle(next_bundle)?;
+    gateway
+        .store
+        .sync_provider_pricing_configs(&gateway.secrets.list_provider_pricing());
     {
         let mut cfg = gateway.cfg.write();
         *cfg = next_cfg.clone();
@@ -295,6 +318,10 @@ pub fn restore_local_provider_state(state: &crate::app_state::AppState) -> Resul
     state
         .secrets
         .replace_provider_state_bundle(snapshot.provider_state.clone())?;
+    state
+        .gateway
+        .store
+        .sync_provider_pricing_configs(&state.secrets.list_provider_pricing());
     {
         let mut cfg = state.gateway.cfg.write();
         cfg.providers = snapshot.providers.clone();

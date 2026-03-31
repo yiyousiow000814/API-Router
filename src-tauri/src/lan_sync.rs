@@ -1525,7 +1525,11 @@ fn apply_provider_pricing_event(
     };
     gateway
         .secrets
-        .replace_provider_pricing_config(&provider_name, payload.pricing)
+        .replace_provider_pricing_config(&provider_name, payload.pricing)?;
+    gateway
+        .store
+        .sync_provider_pricing_configs(&gateway.secrets.list_provider_pricing());
+    Ok(())
 }
 
 fn apply_spend_manual_day_event(
@@ -3016,6 +3020,57 @@ mod tests {
             current_bundle.provider_key_storage_modes,
             previous_bundle.provider_key_storage_modes
         );
+    }
+
+    #[test]
+    fn apply_followed_provider_state_preserves_existing_pricing_by_shared_id() {
+        let (_tmp, state) = build_test_state();
+        state
+            .secrets
+            .set_provider_shared_id("provider_1", "shared-remote")
+            .expect("shared id");
+        state
+            .secrets
+            .set_provider_pricing(
+                "provider_1",
+                "per_request",
+                0.035,
+                None,
+                Some("sk-local".to_string()),
+            )
+            .expect("seed local pricing");
+
+        let event = crate::orchestrator::store::LanEditSyncEvent {
+            event_id: "evt-followed-provider".to_string(),
+            node_id: "node-remote".to_string(),
+            node_name: "Remote".to_string(),
+            created_at_unix_ms: crate::orchestrator::store::unix_ms(),
+            lamport_ts: 1,
+            entity_type: "provider_definition".to_string(),
+            entity_id: "shared-remote".to_string(),
+            op: "patch".to_string(),
+            payload: serde_json::json!({
+                "name": "remote-provider",
+                "display_name": "Remote Provider",
+                "base_url": "https://remote.example/v1",
+                "key": "sk-remote",
+                "key_storage": "auth_json",
+            }),
+        };
+        apply_lan_edit_event(&state.gateway, &state.config_path, &event)
+            .expect("seed remote snapshot");
+
+        apply_followed_provider_state(&state.gateway, &state.config_path, "node-remote")
+            .expect("apply followed state");
+
+        let pricing = state.secrets.list_provider_pricing();
+        let followed = pricing
+            .get("remote-provider")
+            .expect("followed provider pricing preserved");
+        assert_eq!(followed.mode, "per_request");
+        assert_eq!(followed.amount_usd, 0.035);
+        assert_eq!(followed.periods.len(), 1);
+        assert_eq!(followed.periods[0].api_key_ref, "sk-local");
     }
 
     #[test]

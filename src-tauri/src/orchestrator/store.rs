@@ -125,6 +125,8 @@ impl Store {
     const EVENT_DAY_COUNTS_INDEX_VERSION: &'static str = "3";
     const USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY: &'static str =
         "usage_requests_migrated_from_sled_v1";
+    const SPEND_HISTORY_SQLITE_MIGRATED_FROM_SLED_KEY: &'static str =
+        "spend_history_sqlite_migrated_from_sled_v1";
 
     fn allowed_key_prefixes() -> [&'static [u8]; 10] {
         [
@@ -331,6 +333,27 @@ impl Store {
               wsl_request_count INTEGER NOT NULL,
               PRIMARY KEY(day_key, provider)
             );
+            CREATE TABLE IF NOT EXISTS spend_days(
+              provider TEXT NOT NULL,
+              day_started_at_unix_ms INTEGER NOT NULL,
+              row_json TEXT NOT NULL,
+              PRIMARY KEY(provider, day_started_at_unix_ms)
+            );
+            CREATE INDEX IF NOT EXISTS idx_spend_days_provider_started_at
+              ON spend_days(provider, day_started_at_unix_ms ASC);
+            CREATE TABLE IF NOT EXISTS spend_manual_days(
+              provider TEXT NOT NULL,
+              day_key TEXT NOT NULL,
+              row_json TEXT NOT NULL,
+              PRIMARY KEY(provider, day_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_spend_manual_days_provider_day
+              ON spend_manual_days(provider, day_key ASC);
+            CREATE TABLE IF NOT EXISTS provider_pricing_configs(
+              provider TEXT PRIMARY KEY,
+              pricing_json TEXT NOT NULL,
+              updated_at_unix_ms INTEGER NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_usage_request_day_provider_day_key
               ON usage_request_day_provider_totals(day_key ASC);
             CREATE TRIGGER IF NOT EXISTS trg_usage_requests_daily_index_after_insert
@@ -457,6 +480,11 @@ impl Store {
                 [Self::USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY],
             )?;
             conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES(?1, '0')
+                 ON CONFLICT(key) DO UPDATE SET value='0'",
+                [Self::SPEND_HISTORY_SQLITE_MIGRATED_FROM_SLED_KEY],
+            )?;
+            conn.execute(
                 "INSERT INTO event_meta(key, value) VALUES('lan_edit_lamport_clock', '0')
                  ON CONFLICT(key) DO UPDATE SET value='0'",
                 [],
@@ -473,6 +501,11 @@ impl Store {
             [Self::USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY],
         )?;
         conn.execute(
+            "INSERT INTO event_meta(key, value) VALUES(?1, '0')
+             ON CONFLICT(key) DO NOTHING",
+            [Self::SPEND_HISTORY_SQLITE_MIGRATED_FROM_SLED_KEY],
+        )?;
+        conn.execute(
             "INSERT INTO event_meta(key, value) VALUES('lan_edit_lamport_clock', '0')
              ON CONFLICT(key) DO NOTHING",
             [],
@@ -481,6 +514,7 @@ impl Store {
         drop(conn);
         self.migrate_legacy_events_from_sled_if_needed()?;
         self.migrate_usage_requests_from_sled_if_needed()?;
+        self.migrate_spend_history_from_sled_if_needed()?;
         self.backfill_usage_request_daily_index_if_needed()?;
         self.rebuild_event_day_counts_index_if_needed()?;
         Ok(())

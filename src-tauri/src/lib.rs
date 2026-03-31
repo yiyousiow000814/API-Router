@@ -237,6 +237,10 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
         None,
         Some("-".to_string()),
     );
+    state
+        .gateway
+        .store
+        .sync_provider_pricing_configs(&state.secrets.list_provider_pricing());
 
     let seed_usage_requests =
         |provider: &str, model: &str, count: usize, input_tokens: u64, output_tokens: u64| {

@@ -687,6 +687,10 @@ fn copy_provider_from_config_source_impl(
         state
             .secrets
             .replace_provider_state_bundle(local_state.provider_state.clone())?;
+        state
+            .gateway
+            .store
+            .sync_provider_pricing_configs(&state.secrets.list_provider_pricing());
         let cfg = state.gateway.cfg.read().clone();
         std::fs::write(
             &state.config_path,

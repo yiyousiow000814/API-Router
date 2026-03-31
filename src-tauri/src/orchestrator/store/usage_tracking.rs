@@ -27,16 +27,24 @@ impl Store {
             }
         }
         let conn = self.events_db.lock();
-        let Ok(mut stmt) = conn.prepare("SELECT DISTINCT provider FROM usage_requests") else {
-            return providers;
-        };
-        let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) else {
-            return providers;
-        };
-        for provider in rows.flatten() {
-            let trimmed = provider.trim();
-            if !trimmed.is_empty() {
-                providers.insert(trimmed.to_string());
+        let sqlite_provider_queries = [
+            "SELECT DISTINCT provider FROM usage_requests",
+            "SELECT DISTINCT provider FROM spend_days",
+            "SELECT DISTINCT provider FROM spend_manual_days",
+            "SELECT DISTINCT provider FROM provider_pricing_configs",
+        ];
+        for sql in sqlite_provider_queries {
+            let Ok(mut stmt) = conn.prepare(sql) else {
+                continue;
+            };
+            let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) else {
+                continue;
+            };
+            for provider in rows.flatten() {
+                let trimmed = provider.trim();
+                if !trimmed.is_empty() {
+                    providers.insert(trimmed.to_string());
+                }
             }
         }
         providers
@@ -70,6 +78,21 @@ impl Store {
     }
 
     pub fn get_spend_day(&self, provider: &str, day_started_at_unix_ms: u64) -> Option<Value> {
+        if let Ok(day_started_at_i64) = i64::try_from(day_started_at_unix_ms) {
+            let conn = self.events_db.lock();
+            if let Ok(Some(row_json)) = conn
+                .query_row(
+                    "SELECT row_json FROM spend_days WHERE provider = ?1 AND day_started_at_unix_ms = ?2",
+                    params![provider, day_started_at_i64],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+            {
+                if let Ok(value) = serde_json::from_str::<Value>(&row_json) {
+                    return Some(value);
+                }
+            }
+        }
         let key = format!("spend_day:{provider}:{day_started_at_unix_ms:013}");
         self.db
             .get(key.as_bytes())
@@ -79,6 +102,19 @@ impl Store {
     }
 
     pub fn put_spend_day(&self, provider: &str, day_started_at_unix_ms: u64, day: &Value) {
+        if let Ok(day_started_at_i64) = i64::try_from(day_started_at_unix_ms) {
+            let conn = self.events_db.lock();
+            let _ = conn.execute(
+                "INSERT INTO spend_days(provider, day_started_at_unix_ms, row_json)
+                 VALUES(?1, ?2, ?3)
+                 ON CONFLICT(provider, day_started_at_unix_ms) DO UPDATE SET row_json = excluded.row_json",
+                params![
+                    provider,
+                    day_started_at_i64,
+                    serde_json::to_string(day).unwrap_or_else(|_| "{}".to_string())
+                ],
+            );
+        }
         let key = format!("spend_day:{provider}:{day_started_at_unix_ms:013}");
         let _ = self
             .db
@@ -87,6 +123,23 @@ impl Store {
     }
 
     pub fn list_spend_days(&self, provider: &str) -> Vec<Value> {
+        let conn = self.events_db.lock();
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT row_json
+             FROM spend_days
+             WHERE provider = ?1
+             ORDER BY day_started_at_unix_ms ASC",
+        ) {
+            if let Ok(rows) = stmt.query_map([provider], |row| row.get::<_, String>(0)) {
+                let parsed = rows
+                    .flatten()
+                    .filter_map(|row_json| serde_json::from_str::<Value>(&row_json).ok())
+                    .collect::<Vec<_>>();
+                if !parsed.is_empty() {
+                    return parsed;
+                }
+            }
+        }
         let prefix = format!("spend_day:{provider}:");
         self.db
             .scan_prefix(prefix.as_bytes())
@@ -96,6 +149,17 @@ impl Store {
     }
 
     pub fn put_spend_manual_day(&self, provider: &str, day_key: &str, day: &Value) {
+        let conn = self.events_db.lock();
+        let _ = conn.execute(
+            "INSERT INTO spend_manual_days(provider, day_key, row_json)
+             VALUES(?1, ?2, ?3)
+             ON CONFLICT(provider, day_key) DO UPDATE SET row_json = excluded.row_json",
+            params![
+                provider,
+                day_key,
+                serde_json::to_string(day).unwrap_or_else(|_| "{}".to_string())
+            ],
+        );
         let key = format!("spend_manual_day:{provider}:{day_key}");
         let _ = self
             .db
@@ -104,18 +168,193 @@ impl Store {
     }
 
     pub fn remove_spend_manual_day(&self, provider: &str, day_key: &str) {
+        let conn = self.events_db.lock();
+        let _ = conn.execute(
+            "DELETE FROM spend_manual_days WHERE provider = ?1 AND day_key = ?2",
+            params![provider, day_key],
+        );
         let key = format!("spend_manual_day:{provider}:{day_key}");
         let _ = self.db.remove(key.as_bytes());
         let _ = self.db.flush();
     }
 
     pub fn list_spend_manual_days(&self, provider: &str) -> Vec<Value> {
+        let conn = self.events_db.lock();
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT row_json
+             FROM spend_manual_days
+             WHERE provider = ?1
+             ORDER BY day_key ASC",
+        ) {
+            if let Ok(rows) = stmt.query_map([provider], |row| row.get::<_, String>(0)) {
+                let parsed = rows
+                    .flatten()
+                    .filter_map(|row_json| serde_json::from_str::<Value>(&row_json).ok())
+                    .collect::<Vec<_>>();
+                if !parsed.is_empty() {
+                    return parsed;
+                }
+            }
+        }
         let prefix = format!("spend_manual_day:{provider}:");
         self.db
             .scan_prefix(prefix.as_bytes())
             .filter_map(|res| res.ok())
             .filter_map(|(_, v)| serde_json::from_slice::<Value>(&v).ok())
             .collect()
+    }
+
+    pub fn list_provider_pricing_configs(
+        &self,
+    ) -> std::collections::BTreeMap<String, crate::orchestrator::secrets::ProviderPricingConfig>
+    {
+        let mut out = std::collections::BTreeMap::new();
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT provider, pricing_json
+             FROM provider_pricing_configs
+             ORDER BY provider ASC",
+        ) else {
+            return out;
+        };
+        let Ok(rows) = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }) else {
+            return out;
+        };
+        for (provider, pricing_json) in rows.flatten() {
+            if let Ok(pricing) = serde_json::from_str::<
+                crate::orchestrator::secrets::ProviderPricingConfig,
+            >(&pricing_json)
+            {
+                out.insert(provider, pricing);
+            }
+        }
+        out
+    }
+
+    pub fn sync_provider_pricing_configs(
+        &self,
+        pricing: &std::collections::BTreeMap<
+            String,
+            crate::orchestrator::secrets::ProviderPricingConfig,
+        >,
+    ) {
+        let conn = self.events_db.lock();
+        let tx = match conn.unchecked_transaction() {
+            Ok(tx) => tx,
+            Err(_) => return,
+        };
+        for (provider, config) in pricing {
+            let updated_at_unix_ms = config
+                .periods
+                .iter()
+                .map(|period| {
+                    period
+                        .started_at_unix_ms
+                        .max(period.ended_at_unix_ms.unwrap_or(0))
+                })
+                .max()
+                .unwrap_or_else(unix_ms);
+            let updated_at_i64 = match i64::try_from(updated_at_unix_ms) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            let pricing_json = match serde_json::to_string(config) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            let _ = tx.execute(
+                "INSERT INTO provider_pricing_configs(provider, pricing_json, updated_at_unix_ms)
+                 VALUES(?1, ?2, ?3)
+                 ON CONFLICT(provider) DO UPDATE SET
+                   pricing_json = excluded.pricing_json,
+                   updated_at_unix_ms = excluded.updated_at_unix_ms",
+                params![provider, pricing_json, updated_at_i64],
+            );
+        }
+        let _ = tx.commit();
+    }
+
+    pub fn migrate_spend_history_from_sled_if_needed(&self) -> anyhow::Result<()> {
+        let done = self.get_event_meta(Self::SPEND_HISTORY_SQLITE_MIGRATED_FROM_SLED_KEY)?;
+        if done.as_deref() == Some("1") {
+            return Ok(());
+        }
+        let mut should_mark_done = false;
+        {
+            let conn = self.events_db.lock();
+            let has_spend_day: Option<i64> = conn
+                .query_row("SELECT 1 FROM spend_days LIMIT 1", [], |row| row.get(0))
+                .optional()?;
+            let has_manual_day: Option<i64> = conn
+                .query_row("SELECT 1 FROM spend_manual_days LIMIT 1", [], |row| {
+                    row.get(0)
+                })
+                .optional()?;
+            if has_spend_day.is_some() || has_manual_day.is_some() {
+                should_mark_done = true;
+            }
+        }
+        if should_mark_done {
+            self.set_event_meta(Self::SPEND_HISTORY_SQLITE_MIGRATED_FROM_SLED_KEY, "1")?;
+            return Ok(());
+        }
+
+        let conn = self.events_db.lock();
+        let tx = conn.unchecked_transaction()?;
+        for res in self.db.scan_prefix(b"spend_day:") {
+            let Ok((key, value)) = res else {
+                continue;
+            };
+            let Ok(key_text) = std::str::from_utf8(key.as_ref()) else {
+                continue;
+            };
+            let mut parts = key_text.splitn(3, ':');
+            let (_prefix, Some(provider), Some(day_started)) =
+                (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            let Ok(day_started_at_unix_ms) = day_started.parse::<i64>() else {
+                continue;
+            };
+            let Ok(row_json) = std::str::from_utf8(value.as_ref()) else {
+                continue;
+            };
+            let _ = tx.execute(
+                "INSERT INTO spend_days(provider, day_started_at_unix_ms, row_json)
+                 VALUES(?1, ?2, ?3)
+                 ON CONFLICT(provider, day_started_at_unix_ms) DO UPDATE SET row_json = excluded.row_json",
+                params![provider, day_started_at_unix_ms, row_json],
+            );
+        }
+        for res in self.db.scan_prefix(b"spend_manual_day:") {
+            let Ok((key, value)) = res else {
+                continue;
+            };
+            let Ok(key_text) = std::str::from_utf8(key.as_ref()) else {
+                continue;
+            };
+            let mut parts = key_text.splitn(3, ':');
+            let (_prefix, Some(provider), Some(day_key)) =
+                (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            let Ok(row_json) = std::str::from_utf8(value.as_ref()) else {
+                continue;
+            };
+            let _ = tx.execute(
+                "INSERT INTO spend_manual_days(provider, day_key, row_json)
+                 VALUES(?1, ?2, ?3)
+                 ON CONFLICT(provider, day_key) DO UPDATE SET row_json = excluded.row_json",
+                params![provider, day_key, row_json],
+            );
+        }
+        tx.commit()?;
+        self.set_event_meta(Self::SPEND_HISTORY_SQLITE_MIGRATED_FROM_SLED_KEY, "1")?;
+        Ok(())
     }
 
     pub fn put_codex_account_snapshot(&self, snapshot: &Value) {
@@ -332,6 +571,7 @@ impl Store {
 mod tests {
     use super::*;
     use crate::orchestrator::gateway::open_store_dir;
+    use crate::orchestrator::secrets::{ProviderPricingConfig, ProviderPricingPeriod};
 
     #[test]
     fn list_usage_history_providers_includes_sled_and_sql_sources() {
@@ -377,5 +617,97 @@ mod tests {
         assert!(providers.contains("archived-packycode"));
         assert!(providers.contains("manual-only-provider"));
         assert!(providers.contains("sql-only-provider"));
+    }
+
+    #[test]
+    fn provider_pricing_configs_roundtrip_via_sqlite() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let pricing = std::collections::BTreeMap::from([(
+            "packycode".to_string(),
+            ProviderPricingConfig {
+                mode: "per_request".to_string(),
+                amount_usd: 0.035,
+                periods: vec![ProviderPricingPeriod {
+                    id: "period-1".to_string(),
+                    mode: "per_request".to_string(),
+                    amount_usd: 0.035,
+                    api_key_ref: "sk-test".to_string(),
+                    started_at_unix_ms: 1_700_000_000_000,
+                    ended_at_unix_ms: None,
+                }],
+                gap_fill_mode: Some("per_request".to_string()),
+                gap_fill_amount_usd: Some(0.04),
+            },
+        )]);
+
+        store.sync_provider_pricing_configs(&pricing);
+        let loaded = store.list_provider_pricing_configs();
+
+        assert_eq!(loaded, pricing);
+    }
+
+    #[test]
+    fn migrate_spend_history_from_sled_copies_legacy_rows_to_sqlite() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+
+        let legacy_spend_day = serde_json::json!({
+            "provider": "legacy-provider",
+            "started_at_unix_ms": 1_700_000_000_000u64,
+            "tracked_spend_usd": 12.3
+        });
+        let legacy_manual_day = serde_json::json!({
+            "provider": "legacy-provider",
+            "day_key": "2026-03-31",
+            "manual_total_usd": 5.0
+        });
+        store
+            .db
+            .insert(
+                b"spend_day:legacy-provider:1700000000000",
+                serde_json::to_vec(&legacy_spend_day).expect("legacy spend day json"),
+            )
+            .expect("insert legacy spend day");
+        store
+            .db
+            .insert(
+                b"spend_manual_day:legacy-provider:2026-03-31",
+                serde_json::to_vec(&legacy_manual_day).expect("legacy manual day json"),
+            )
+            .expect("insert legacy manual day");
+        store
+            .set_event_meta(Store::SPEND_HISTORY_SQLITE_MIGRATED_FROM_SLED_KEY, "0")
+            .expect("reset migration marker");
+
+        {
+            let conn = store.events_db.lock();
+            conn.execute("DELETE FROM spend_days", [])
+                .expect("clear spend_days");
+            conn.execute("DELETE FROM spend_manual_days", [])
+                .expect("clear spend_manual_days");
+        }
+
+        store
+            .migrate_spend_history_from_sled_if_needed()
+            .expect("migrate spend history");
+
+        let spend_days = store.list_spend_days("legacy-provider");
+        let manual_days = store.list_spend_manual_days("legacy-provider");
+
+        assert_eq!(spend_days.len(), 1);
+        assert_eq!(
+            spend_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|v| v.as_f64()),
+            Some(12.3)
+        );
+        assert_eq!(manual_days.len(), 1);
+        assert_eq!(
+            manual_days[0]
+                .get("manual_total_usd")
+                .and_then(|v| v.as_f64()),
+            Some(5.0)
+        );
     }
 }

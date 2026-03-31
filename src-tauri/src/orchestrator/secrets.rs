@@ -70,6 +70,18 @@ pub struct ProviderStateBundle {
     pub provider_shared_ids: BTreeMap<String, String>,
 }
 
+impl ProviderStateBundle {
+    pub fn find_provider_name_by_shared_id(&self, shared_id: &str) -> Option<String> {
+        let normalized = shared_id.trim();
+        if normalized.is_empty() {
+            return None;
+        }
+        self.provider_shared_ids
+            .iter()
+            .find_map(|(provider, value)| (value == normalized).then(|| provider.clone()))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageLoginConfig {
     pub username: String,
@@ -107,7 +119,7 @@ impl Default for ProviderQuotaHardCapConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderPricingPeriod {
     pub id: String,
     pub mode: String,
@@ -119,7 +131,7 @@ pub struct ProviderPricingPeriod {
     pub ended_at_unix_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderPricingConfig {
     pub mode: String,
     pub amount_usd: f64,
