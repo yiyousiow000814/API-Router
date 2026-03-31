@@ -284,13 +284,9 @@ impl Store {
               cache_read_input_tokens INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_usage_requests_unix_ms ON usage_requests(unix_ms DESC);
-            CREATE INDEX IF NOT EXISTS idx_usage_requests_ingested_at_id
-              ON usage_requests(ingested_at_unix_ms ASC, id ASC);
             CREATE INDEX IF NOT EXISTS idx_usage_requests_provider ON usage_requests(provider);
             CREATE INDEX IF NOT EXISTS idx_usage_requests_model ON usage_requests(model);
             CREATE INDEX IF NOT EXISTS idx_usage_requests_origin ON usage_requests(origin);
-            CREATE INDEX IF NOT EXISTS idx_usage_requests_node_name_lc
-              ON usage_requests(lower(node_name));
             CREATE INDEX IF NOT EXISTS idx_usage_requests_provider_lc ON usage_requests(lower(provider));
             CREATE INDEX IF NOT EXISTS idx_usage_requests_model_lc ON usage_requests(lower(model));
             CREATE INDEX IF NOT EXISTS idx_usage_requests_origin_lc ON usage_requests(lower(origin));

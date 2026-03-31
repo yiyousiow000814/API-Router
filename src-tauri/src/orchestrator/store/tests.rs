@@ -381,6 +381,97 @@ mod tests {
     }
 
     #[test]
+    fn open_migrates_legacy_usage_requests_before_creating_new_indexes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sqlite_path = tmp.path().join("events.sqlite3");
+
+        {
+            let conn = rusqlite::Connection::open(&sqlite_path).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS event_meta(
+                  key TEXT PRIMARY KEY,
+                  value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS events(
+                  id TEXT PRIMARY KEY,
+                  unix_ms INTEGER NOT NULL,
+                  provider TEXT NOT NULL,
+                  level TEXT NOT NULL,
+                  code TEXT NOT NULL,
+                  message TEXT NOT NULL,
+                  fields_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS event_day_counts(
+                  day_key TEXT PRIMARY KEY,
+                  day_start_unix_ms INTEGER NOT NULL,
+                  total INTEGER NOT NULL,
+                  infos INTEGER NOT NULL,
+                  warnings INTEGER NOT NULL,
+                  errors INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS usage_requests(
+                  id TEXT PRIMARY KEY,
+                  unix_ms INTEGER NOT NULL,
+                  provider TEXT NOT NULL,
+                  api_key_ref TEXT NOT NULL,
+                  model TEXT NOT NULL,
+                  origin TEXT NOT NULL,
+                  session_id TEXT NOT NULL,
+                  input_tokens INTEGER NOT NULL,
+                  output_tokens INTEGER NOT NULL,
+                  total_tokens INTEGER NOT NULL,
+                  cache_creation_input_tokens INTEGER NOT NULL,
+                  cache_read_input_tokens INTEGER NOT NULL
+                );
+                ",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO usage_requests(
+                    id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                    input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES('legacy-row', 123, 'p1', '-', 'gpt-5.2', 'windows', 's1', 1, 2, 3, 0, 0)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(tmp.path()).unwrap();
+
+        {
+            let conn = store.events_db.lock();
+            let mut stmt = conn.prepare("PRAGMA table_info(usage_requests)").unwrap();
+            let columns = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert!(columns.iter().any(|col| col == "ingested_at_unix_ms"));
+            assert!(columns.iter().any(|col| col == "node_id"));
+            assert!(columns.iter().any(|col| col == "node_name"));
+
+            let ingested: i64 = conn
+                .query_row(
+                    "SELECT ingested_at_unix_ms FROM usage_requests WHERE id='legacy-row'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(ingested, 123);
+
+            let index_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_index_list('usage_requests') WHERE name='idx_usage_requests_ingested_at_id'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(index_count, 1);
+        }
+    }
+
+    #[test]
     fn list_usage_requests_page_is_stable_on_same_timestamp() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();
