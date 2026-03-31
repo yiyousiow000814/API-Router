@@ -157,7 +157,7 @@ export function useAppUsageEffects(params: Params) {
     void refreshUsageStatistics({ silent })
     const t = window.setInterval(() => void refreshUsageStatistics({ silent: true }), refreshMs)
     return () => window.clearInterval(t)
-  }, [activePage, usageWindowHours, usageFilterNodes, usageFilterProviders, usageFilterModels, usageFilterOrigins, hasUsageStatistics, refreshUsageStatistics])
+  }, [activePage, usageWindowHours, usageFilterNodes, usageFilterProviders, usageFilterModels, usageFilterOrigins, refreshUsageStatistics])
 
   useEffect(() => {
     previousActivePageRef.current = activePage
