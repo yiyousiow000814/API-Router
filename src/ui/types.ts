@@ -97,6 +97,8 @@ export type Status = {
     discovery_port: number
     heartbeat_interval_ms: number
     peer_stale_after_ms: number
+    last_peer_heartbeat_received_unix_ms?: number
+    last_peer_heartbeat_source?: string | null
     local_node: {
       node_id: string
       node_name: string

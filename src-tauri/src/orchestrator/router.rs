@@ -79,8 +79,7 @@ impl ProviderHealth {
     }
 
     fn in_cooldown_at(&self, now_ms: u64) -> bool {
-        self.shared_probe_required
-            || (self.cooldown_until_unix_ms != 0 && now_ms < self.cooldown_until_unix_ms)
+        self.cooldown_until_unix_ms != 0 && now_ms < self.cooldown_until_unix_ms
     }
 }
 
@@ -535,7 +534,6 @@ impl RouterState {
 
                 if h.consecutive_failures >= threshold {
                     h.cooldown_from_transient_warnings = false;
-                    h.shared_probe_required = true;
                     h.cooldown_until_unix_ms = now_ms
                         + cfg
                             .routing
@@ -816,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn cooldown_stays_blocked_after_expiry_until_probe_success() {
+    fn failure_cooldown_expires_naturally_without_shared_probe_gate() {
         let mut cfg = AppConfig::default_config();
         cfg.routing.failure_threshold = 1;
         let provider = "official";
@@ -826,7 +824,7 @@ mod tests {
         let after_expiry = 1_000 + cfg.routing.effective_cooldown_seconds() * 1000 + 1;
         let snapshot = router.snapshot(after_expiry);
         let health = snapshot.get(provider).expect("provider health snapshot");
-        assert_eq!(health.status, "cooldown");
+        assert_eq!(health.status, "unhealthy");
 
         let _ = router.mark_success(provider, after_expiry + 1);
         let recovered = router.snapshot(after_expiry + 1);

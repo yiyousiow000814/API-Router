@@ -97,6 +97,8 @@ pub struct LanSyncStatusSnapshot {
     pub discovery_port: u16,
     pub heartbeat_interval_ms: u64,
     pub peer_stale_after_ms: u64,
+    pub last_peer_heartbeat_received_unix_ms: u64,
+    pub last_peer_heartbeat_source: Option<String>,
     pub local_node: LanLocalNodeSnapshot,
     pub peers: Vec<LanPeerSnapshot>,
 }
@@ -278,6 +280,8 @@ pub struct LanSyncRuntime {
     local_node: LanNodeIdentity,
     local_provider_fingerprints: Arc<RwLock<Vec<String>>>,
     peers: Arc<RwLock<HashMap<String, LanPeerRuntime>>>,
+    last_peer_heartbeat_received_unix_ms: Arc<AtomicU64>,
+    last_peer_heartbeat_source: Arc<RwLock<Option<String>>>,
     inbound_pair_requests: Arc<RwLock<HashMap<String, LanPendingPairRequest>>>,
     outbound_pair_requests: Arc<RwLock<HashMap<String, LanOutboundPairRequest>>>,
     pair_approvals: Arc<RwLock<HashMap<String, LanPairApprovalState>>>,
@@ -292,6 +296,8 @@ impl LanSyncRuntime {
             local_node,
             local_provider_fingerprints: Arc::new(RwLock::new(Vec::new())),
             peers: Arc::new(RwLock::new(HashMap::new())),
+            last_peer_heartbeat_received_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_peer_heartbeat_source: Arc::new(RwLock::new(None)),
             inbound_pair_requests: Arc::new(RwLock::new(HashMap::new())),
             outbound_pair_requests: Arc::new(RwLock::new(HashMap::new())),
             pair_approvals: Arc::new(RwLock::new(HashMap::new())),
@@ -419,6 +425,10 @@ impl LanSyncRuntime {
             discovery_port: LAN_DISCOVERY_PORT,
             heartbeat_interval_ms: LAN_HEARTBEAT_INTERVAL_MS,
             peer_stale_after_ms: LAN_PEER_STALE_AFTER_MS,
+            last_peer_heartbeat_received_unix_ms: self
+                .last_peer_heartbeat_received_unix_ms
+                .load(Ordering::Relaxed),
+            last_peer_heartbeat_source: self.last_peer_heartbeat_source.read().clone(),
             local_node: LanLocalNodeSnapshot {
                 node_id: self.local_node.node_id.clone(),
                 node_name: self.local_node.node_name.clone(),
@@ -462,6 +472,9 @@ impl LanSyncRuntime {
             return;
         }
         let listen_addr = format!("{}:{}", source.ip(), packet.listen_port);
+        self.last_peer_heartbeat_received_unix_ms
+            .store(unix_ms(), Ordering::Relaxed);
+        *self.last_peer_heartbeat_source.write() = Some(source.to_string());
         self.peers.write().insert(
             packet.node_id.clone(),
             LanPeerRuntime {
@@ -3004,6 +3017,50 @@ mod tests {
         let peers = runtime.collect_live_peers(100_000);
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].node_id, "fresh");
+    }
+
+    #[test]
+    fn snapshot_tracks_last_peer_heartbeat_for_diagnostics() {
+        let runtime = LanSyncRuntime::new(LanNodeIdentity {
+            node_id: "node-self".to_string(),
+            node_name: "self".to_string(),
+        });
+        let cfg = crate::orchestrator::config::AppConfig::default_config();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let secrets =
+            crate::orchestrator::secrets::SecretStore::new(tmp.path().join("secrets.json"));
+
+        assert_eq!(
+            runtime
+                .snapshot(4000, &cfg, &secrets)
+                .last_peer_heartbeat_received_unix_ms,
+            0
+        );
+        assert!(runtime
+            .snapshot(4000, &cfg, &secrets)
+            .last_peer_heartbeat_source
+            .is_none());
+
+        runtime.note_peer_heartbeat(
+            LanHeartbeatPacket {
+                version: 1,
+                node_id: "node-peer".to_string(),
+                node_name: "peer".to_string(),
+                listen_port: 4000,
+                sent_at_unix_ms: 1000,
+                capabilities: vec!["heartbeat_v1".to_string()],
+                provider_fingerprints: Vec::new(),
+                followed_source_node_id: None,
+            },
+            "192.168.1.50:4000".parse().expect("source addr"),
+        );
+
+        let snapshot = runtime.snapshot(5_000, &cfg, &secrets);
+        assert!(snapshot.last_peer_heartbeat_received_unix_ms > 0);
+        assert_eq!(
+            snapshot.last_peer_heartbeat_source.as_deref(),
+            Some("192.168.1.50:4000")
+        );
     }
 
     #[test]
