@@ -193,6 +193,7 @@ fn widestr(value: &str) -> Vec<u16> {
         .collect()
 }
 
+#[cfg(any(test, target_os = "windows"))]
 fn rule_output_is_sufficient(output: &str, required_profiles: &str, required_port: &str) -> bool {
     let normalized = output.to_ascii_lowercase();
     if normalized.contains("no rules match") {
@@ -210,6 +211,7 @@ fn rule_output_is_sufficient(output: &str, required_profiles: &str, required_por
         && direction.eq_ignore_ascii_case("In")
 }
 
+#[cfg(any(test, target_os = "windows"))]
 fn extract_rule_value(output: &str, key: &str) -> String {
     output
         .lines()
@@ -219,6 +221,7 @@ fn extract_rule_value(output: &str, key: &str) -> String {
         .to_string()
 }
 
+#[cfg(any(test, target_os = "windows"))]
 fn profiles_match(actual: &str, required: &str) -> bool {
     let actual_set = actual
         .split(',')

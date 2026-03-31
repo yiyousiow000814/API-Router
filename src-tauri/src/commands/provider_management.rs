@@ -54,7 +54,9 @@ fn local_provider_definitions_are_locked(state: &app_state::AppState) -> bool {
     state.secrets.get_followed_config_source_node_id().is_some()
 }
 
-fn ensure_local_provider_definitions_editable(state: &app_state::AppState) -> Result<(), String> {
+pub(crate) fn ensure_local_provider_definitions_editable(
+    state: &app_state::AppState,
+) -> Result<(), String> {
     if local_provider_definitions_are_locked(state) {
         Err("provider definitions are borrowed from a followed source; switch back to Local or copy first".to_string())
     } else {
@@ -431,17 +433,18 @@ fn set_followed_config_source_impl(
             &crate::lan_sync::LocalProviderCopyStateSnapshot::default(),
         )?;
     }
-    state
-        .secrets
-        .set_followed_config_source_node_id(Some(normalized_node_id))?;
-    if let Err(err) =
-        crate::lan_sync::apply_followed_provider_state(&state.gateway, &state.config_path, normalized_node_id)
-    {
-        state
-            .secrets
-            .set_followed_config_source_node_id(previous_followed.as_deref())?;
-        return Err(err);
-    }
+    persist_followed_config_source_change(
+        previous_followed.as_deref(),
+        Some(normalized_node_id),
+        |node_id| state.secrets.set_followed_config_source_node_id(node_id),
+        || {
+            crate::lan_sync::apply_followed_provider_state(
+                &state.gateway,
+                &state.config_path,
+                normalized_node_id,
+            )
+        },
+    )?;
     state.gateway.store.add_event(
         "gateway",
         "info",
@@ -449,6 +452,24 @@ fn set_followed_config_source_impl(
         "followed config source updated",
         serde_json::json!({ "node_id": normalized_node_id }),
     );
+    Ok(())
+}
+
+fn persist_followed_config_source_change<FSet, FApply>(
+    previous_followed: Option<&str>,
+    next_followed: Option<&str>,
+    mut set_followed_config_source_node_id: FSet,
+    apply_followed_provider_state: FApply,
+) -> Result<(), String>
+where
+    FSet: FnMut(Option<&str>) -> Result<(), String>,
+    FApply: FnOnce() -> Result<(), String>,
+{
+    set_followed_config_source_node_id(next_followed)?;
+    if let Err(err) = apply_followed_provider_state() {
+        let _ = set_followed_config_source_node_id(previous_followed);
+        return Err(err);
+    }
     Ok(())
 }
 
@@ -1808,10 +1829,11 @@ mod provider_management_tests {
         clear_followed_config_source_impl, clear_session_preferred_provider_impl,
         copy_provider_from_config_source_impl, current_local_provider_state_snapshot,
         delete_provider_impl, ensure_local_provider_definitions_editable,
-        next_preferred_after_delete, provider_definition_patch_payload, LocalCopyState,
-        rename_observed_session_routes_provider_refs, set_followed_config_source_impl,
-        set_manual_override_impl, set_provider_group_impl, set_route_mode_impl,
-        set_providers_group_impl, set_session_preferred_provider_impl, upsert_provider_impl,
+        next_preferred_after_delete, persist_followed_config_source_change,
+        provider_definition_patch_payload, LocalCopyState, rename_observed_session_routes_provider_refs,
+        set_followed_config_source_impl, set_manual_override_impl, set_provider_group_impl,
+        set_route_mode_impl, set_providers_group_impl, set_session_preferred_provider_impl,
+        upsert_provider_impl,
     };
     use crate::app_state::AppState;
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
@@ -2100,6 +2122,35 @@ mod provider_management_tests {
             Err("config source is not trusted; pair this device first".to_string())
         );
         assert_eq!(state.secrets.get_followed_config_source_node_id(), None);
+    }
+
+    #[test]
+    fn persist_followed_config_source_change_returns_original_apply_error_when_rollback_fails() {
+        let mut persisted_values = Vec::new();
+        let result = persist_followed_config_source_change(
+            Some("node-previous"),
+            Some("node-remote"),
+            |node_id| {
+                persisted_values.push(node_id.map(ToString::to_string));
+                if persisted_values.len() == 2 {
+                    return Err("rollback persist failed".to_string());
+                }
+                Ok(())
+            },
+            || Err("apply followed provider state failed".to_string()),
+        );
+
+        assert_eq!(
+            result,
+            Err("apply followed provider state failed".to_string())
+        );
+        assert_eq!(
+            persisted_values,
+            vec![
+                Some("node-remote".to_string()),
+                Some("node-previous".to_string())
+            ]
+        );
     }
 
     #[test]

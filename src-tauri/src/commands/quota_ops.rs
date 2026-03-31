@@ -657,23 +657,30 @@ pub(crate) async fn refresh_quota_all(
     Ok(())
 }
 
-#[tauri::command]
-pub(crate) fn set_usage_token(
-    state: tauri::State<'_, app_state::AppState>,
-    provider: String,
-    token: String,
+fn ensure_usage_settings_editable(
+    state: &app_state::AppState,
+    provider: &str,
 ) -> Result<(), String> {
-    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+    if !state.gateway.cfg.read().providers.contains_key(provider) {
         return Err(format!("unknown provider: {provider}"));
     }
-    state.secrets.set_usage_token(&provider, &token)?;
+    ensure_local_provider_definitions_editable(state)
+}
+
+fn set_usage_token_impl(
+    state: &app_state::AppState,
+    provider: &str,
+    token: &str,
+) -> Result<(), String> {
+    ensure_usage_settings_editable(state, provider)?;
+    state.secrets.set_usage_token(provider, token)?;
     if let Err(err) = crate::lan_sync::record_provider_definition_patch(
-        &state,
-        &provider,
+        state,
+        provider,
         serde_json::json!({ "usage_token": token }),
     ) {
         state.gateway.store.add_event(
-            &provider,
+            provider,
             "error",
             "lan.edit_sync_record_failed",
             &format!("failed to record usage token update for LAN sync: {err}"),
@@ -681,7 +688,7 @@ pub(crate) fn set_usage_token(
         );
     }
     state.gateway.store.add_event(
-        &provider,
+        provider,
         "info",
         "config.usage_token_updated",
         "usage token updated (user-data/secrets.json)",
@@ -690,22 +697,16 @@ pub(crate) fn set_usage_token(
     Ok(())
 }
 
-#[tauri::command]
-pub(crate) fn clear_usage_token(
-    state: tauri::State<'_, app_state::AppState>,
-    provider: String,
-) -> Result<(), String> {
-    if !state.gateway.cfg.read().providers.contains_key(&provider) {
-        return Err(format!("unknown provider: {provider}"));
-    }
-    state.secrets.clear_usage_token(&provider)?;
+fn clear_usage_token_impl(state: &app_state::AppState, provider: &str) -> Result<(), String> {
+    ensure_usage_settings_editable(state, provider)?;
+    state.secrets.clear_usage_token(provider)?;
     if let Err(err) = crate::lan_sync::record_provider_definition_patch(
-        &state,
-        &provider,
+        state,
+        provider,
         serde_json::json!({ "usage_token": serde_json::Value::Null }),
     ) {
         state.gateway.store.add_event(
-            &provider,
+            provider,
             "error",
             "lan.edit_sync_record_failed",
             &format!("failed to record usage token clear for LAN sync: {err}"),
@@ -713,13 +714,200 @@ pub(crate) fn clear_usage_token(
         );
     }
     state.gateway.store.add_event(
-        &provider,
+        provider,
         "info",
         "config.usage_token_cleared",
         "usage token cleared (user-data/secrets.json)",
         serde_json::Value::Null,
     );
     Ok(())
+}
+
+fn set_usage_auth_impl(
+    state: &app_state::AppState,
+    provider: &str,
+    token: &str,
+    username: &str,
+    password: &str,
+) -> Result<(), String> {
+    ensure_usage_settings_editable(state, provider)?;
+    let normalized_token = token.trim().to_string();
+    let normalized_username = username.trim().to_string();
+    if normalized_token.is_empty() {
+        state.secrets.clear_usage_token(provider)?;
+    } else {
+        state.secrets.set_usage_token(provider, &normalized_token)?;
+    }
+    if normalized_username.is_empty() || password.is_empty() {
+        state.secrets.clear_usage_login(provider)?;
+    } else {
+        state
+            .secrets
+            .set_usage_login(provider, &normalized_username, password)?;
+    }
+    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
+        state,
+        provider,
+        serde_json::json!({
+            "usage_token": if normalized_token.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(normalized_token.clone()) },
+            "usage_login_username": if normalized_username.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(normalized_username.clone()) },
+            "usage_login_password": if normalized_username.is_empty() || password.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(password.to_string()) },
+        }),
+    ) {
+        state.gateway.store.add_event(
+            provider,
+            "error",
+            "lan.edit_sync_record_failed",
+            &format!("failed to record usage auth update for LAN sync: {err}"),
+            serde_json::Value::Null,
+        );
+    }
+    state.gateway.store.add_event(
+        provider,
+        "info",
+        "config.usage_auth_updated",
+        "usage auth updated (user-data/secrets.json)",
+        serde_json::json!({
+            "has_token": !normalized_token.is_empty(),
+            "has_login": !normalized_username.is_empty() && !password.is_empty(),
+        }),
+    );
+    Ok(())
+}
+
+fn clear_usage_auth_impl(state: &app_state::AppState, provider: &str) -> Result<(), String> {
+    ensure_usage_settings_editable(state, provider)?;
+    state.secrets.clear_usage_token(provider)?;
+    state.secrets.clear_usage_login(provider)?;
+    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
+        state,
+        provider,
+        serde_json::json!({
+            "usage_token": serde_json::Value::Null,
+            "usage_login_username": serde_json::Value::Null,
+            "usage_login_password": serde_json::Value::Null,
+        }),
+    ) {
+        state.gateway.store.add_event(
+            provider,
+            "error",
+            "lan.edit_sync_record_failed",
+            &format!("failed to record usage auth clear for LAN sync: {err}"),
+            serde_json::Value::Null,
+        );
+    }
+    state.gateway.store.add_event(
+        provider,
+        "info",
+        "config.usage_auth_cleared",
+        "usage auth cleared (user-data/secrets.json)",
+        serde_json::Value::Null,
+    );
+    Ok(())
+}
+
+fn set_usage_base_url_impl(
+    state: &app_state::AppState,
+    provider: &str,
+    url: &str,
+) -> Result<(), String> {
+    ensure_usage_settings_editable(state, provider)?;
+    let provider_base_url = state
+        .gateway
+        .cfg
+        .read()
+        .providers
+        .get(provider)
+        .map(|provider| provider.base_url.clone())
+        .ok_or_else(|| format!("unknown provider: {provider}"))?;
+    let parsed = url.trim().trim_end_matches('/').to_string();
+    let usage_base_url = crate::orchestrator::quota::canonical_packycode_usage_base(&provider_base_url)
+        .filter(|_| crate::orchestrator::quota::canonical_packycode_usage_base(&parsed).is_some())
+        .unwrap_or(parsed);
+    if usage_base_url.is_empty() {
+        return Err("url is required".to_string());
+    }
+    if reqwest::Url::parse(&usage_base_url).is_err() {
+        return Err("invalid url".to_string());
+    }
+    {
+        let mut cfg = state.gateway.cfg.write();
+        if let Some(p) = cfg.providers.get_mut(provider) {
+            p.usage_base_url = Some(usage_base_url.clone());
+        }
+    }
+    persist_config_for_app_state(state).map_err(|e| e.to_string())?;
+    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
+        state,
+        provider,
+        serde_json::json!({ "usage_base_url": usage_base_url.clone() }),
+    ) {
+        state.gateway.store.add_event(
+            provider,
+            "error",
+            "lan.edit_sync_record_failed",
+            &format!("failed to record usage base url update for LAN sync: {err}"),
+            serde_json::Value::Null,
+        );
+    }
+    state.gateway.store.add_event(
+        provider,
+        "info",
+        "config.usage_base_url_updated",
+        "usage base url updated",
+        serde_json::Value::Null,
+    );
+    Ok(())
+}
+
+fn clear_usage_base_url_impl(state: &app_state::AppState, provider: &str) -> Result<(), String> {
+    ensure_usage_settings_editable(state, provider)?;
+    {
+        let mut cfg = state.gateway.cfg.write();
+        if let Some(p) = cfg.providers.get_mut(provider) {
+            p.usage_base_url = None;
+        }
+    }
+    persist_config_for_app_state(state).map_err(|e| e.to_string())?;
+    crate::orchestrator::quota::clear_quota_snapshot(&state.gateway, provider);
+    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
+        state,
+        provider,
+        serde_json::json!({ "usage_base_url": serde_json::Value::Null }),
+    ) {
+        state.gateway.store.add_event(
+            provider,
+            "error",
+            "lan.edit_sync_record_failed",
+            &format!("failed to record usage base url clear for LAN sync: {err}"),
+            serde_json::Value::Null,
+        );
+    }
+    state.gateway.store.add_event(
+        provider,
+        "info",
+        "config.usage_base_url_cleared",
+        "usage base url cleared",
+        serde_json::Value::Null,
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn set_usage_token(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+    token: String,
+) -> Result<(), String> {
+    set_usage_token_impl(&state, &provider, &token)
+}
+
+#[tauri::command]
+pub(crate) fn clear_usage_token(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+) -> Result<(), String> {
+    clear_usage_token_impl(&state, &provider)
 }
 
 #[tauri::command]
@@ -750,51 +938,7 @@ pub(crate) fn set_usage_auth(
     username: String,
     password: String,
 ) -> Result<(), String> {
-    if !state.gateway.cfg.read().providers.contains_key(&provider) {
-        return Err(format!("unknown provider: {provider}"));
-    }
-    let normalized_token = token.trim().to_string();
-    let normalized_username = username.trim().to_string();
-    if normalized_token.is_empty() {
-        state.secrets.clear_usage_token(&provider)?;
-    } else {
-        state.secrets.set_usage_token(&provider, &normalized_token)?;
-    }
-    if normalized_username.is_empty() || password.is_empty() {
-        state.secrets.clear_usage_login(&provider)?;
-    } else {
-        state
-            .secrets
-            .set_usage_login(&provider, &normalized_username, &password)?;
-    }
-    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
-        &state,
-        &provider,
-        serde_json::json!({
-            "usage_token": if normalized_token.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(normalized_token.clone()) },
-            "usage_login_username": if normalized_username.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(normalized_username.clone()) },
-            "usage_login_password": if normalized_username.is_empty() || password.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(password.clone()) },
-        }),
-    ) {
-        state.gateway.store.add_event(
-            &provider,
-            "error",
-            "lan.edit_sync_record_failed",
-            &format!("failed to record usage auth update for LAN sync: {err}"),
-            serde_json::Value::Null,
-        );
-    }
-    state.gateway.store.add_event(
-        &provider,
-        "info",
-        "config.usage_auth_updated",
-        "usage auth updated (user-data/secrets.json)",
-        serde_json::json!({
-            "has_token": !normalized_token.is_empty(),
-            "has_login": !normalized_username.is_empty() && !password.is_empty(),
-        }),
-    );
-    Ok(())
+    set_usage_auth_impl(&state, &provider, &token, &username, &password)
 }
 
 #[tauri::command]
@@ -802,36 +946,7 @@ pub(crate) fn clear_usage_auth(
     state: tauri::State<'_, app_state::AppState>,
     provider: String,
 ) -> Result<(), String> {
-    if !state.gateway.cfg.read().providers.contains_key(&provider) {
-        return Err(format!("unknown provider: {provider}"));
-    }
-    state.secrets.clear_usage_token(&provider)?;
-    state.secrets.clear_usage_login(&provider)?;
-    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
-        &state,
-        &provider,
-        serde_json::json!({
-            "usage_token": serde_json::Value::Null,
-            "usage_login_username": serde_json::Value::Null,
-            "usage_login_password": serde_json::Value::Null,
-        }),
-    ) {
-        state.gateway.store.add_event(
-            &provider,
-            "error",
-            "lan.edit_sync_record_failed",
-            &format!("failed to record usage auth clear for LAN sync: {err}"),
-            serde_json::Value::Null,
-        );
-    }
-    state.gateway.store.add_event(
-        &provider,
-        "info",
-        "config.usage_auth_cleared",
-        "usage auth cleared (user-data/secrets.json)",
-        serde_json::Value::Null,
-    );
-    Ok(())
+    clear_usage_auth_impl(&state, &provider)
 }
 
 #[tauri::command]
@@ -840,53 +955,7 @@ pub(crate) fn set_usage_base_url(
     provider: String,
     url: String,
 ) -> Result<(), String> {
-    let provider_base_url = {
-        let cfg = state.gateway.cfg.read();
-        cfg.providers
-            .get(&provider)
-            .map(|provider| provider.base_url.clone())
-    };
-    let Some(provider_base_url) = provider_base_url else {
-        return Err(format!("unknown provider: {provider}"));
-    };
-    let parsed = url.trim().trim_end_matches('/').to_string();
-    let u = crate::orchestrator::quota::canonical_packycode_usage_base(&provider_base_url)
-        .filter(|_| crate::orchestrator::quota::canonical_packycode_usage_base(&parsed).is_some())
-        .unwrap_or(parsed);
-    if u.is_empty() {
-        return Err("url is required".to_string());
-    }
-    if reqwest::Url::parse(&u).is_err() {
-        return Err("invalid url".to_string());
-    }
-    {
-        let mut cfg = state.gateway.cfg.write();
-        if let Some(p) = cfg.providers.get_mut(&provider) {
-            p.usage_base_url = Some(u.clone());
-        }
-    }
-    persist_config(&state).map_err(|e| e.to_string())?;
-    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
-        &state,
-        &provider,
-        serde_json::json!({ "usage_base_url": u.clone() }),
-    ) {
-        state.gateway.store.add_event(
-            &provider,
-            "error",
-            "lan.edit_sync_record_failed",
-            &format!("failed to record usage base url update for LAN sync: {err}"),
-            serde_json::Value::Null,
-        );
-    }
-    state.gateway.store.add_event(
-        &provider,
-        "info",
-        "config.usage_base_url_updated",
-        "usage base url updated",
-        serde_json::Value::Null,
-    );
-    Ok(())
+    set_usage_base_url_impl(&state, &provider, &url)
 }
 
 #[tauri::command]
@@ -894,38 +963,7 @@ pub(crate) fn clear_usage_base_url(
     state: tauri::State<'_, app_state::AppState>,
     provider: String,
 ) -> Result<(), String> {
-    if !state.gateway.cfg.read().providers.contains_key(&provider) {
-        return Err(format!("unknown provider: {provider}"));
-    }
-    {
-        let mut cfg = state.gateway.cfg.write();
-        if let Some(p) = cfg.providers.get_mut(&provider) {
-            p.usage_base_url = None;
-        }
-    }
-    persist_config(&state).map_err(|e| e.to_string())?;
-    crate::orchestrator::quota::clear_quota_snapshot(&state.gateway, &provider);
-    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
-        &state,
-        &provider,
-        serde_json::json!({ "usage_base_url": serde_json::Value::Null }),
-    ) {
-        state.gateway.store.add_event(
-            &provider,
-            "error",
-            "lan.edit_sync_record_failed",
-            &format!("failed to record usage base url clear for LAN sync: {err}"),
-            serde_json::Value::Null,
-        );
-    }
-    state.gateway.store.add_event(
-        &provider,
-        "info",
-        "config.usage_base_url_cleared",
-        "usage base url cleared",
-        serde_json::Value::Null,
-    );
-    Ok(())
+    clear_usage_base_url_impl(&state, &provider)
 }
 
 #[tauri::command]
@@ -1245,6 +1283,89 @@ pub(crate) async fn probe_provider(
         serde_json::Value::Null,
     );
     Err(err)
+}
+
+#[cfg(test)]
+mod quota_ops_tests {
+    use super::{set_usage_auth_impl, set_usage_base_url_impl, set_usage_token_impl};
+    use crate::app_state::AppState;
+
+    fn build_test_state() -> (tempfile::TempDir, AppState) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        let state = crate::app_state::build_state(config_path, data_dir).expect("build state");
+        (tmp, state)
+    }
+
+    #[test]
+    fn usage_secret_mutations_are_blocked_while_following_remote() {
+        let (_tmp, state) = build_test_state();
+        state
+            .secrets
+            .set_followed_config_source_node_id(Some("node-remote"))
+            .expect("set followed source");
+
+        let token_result = set_usage_token_impl(&state, "provider_1", "usage-token");
+        let auth_result = set_usage_auth_impl(
+            &state,
+            "provider_1",
+            "usage-token",
+            "alice@example.com",
+            "secret",
+        );
+
+        let expected = Err(
+            "provider definitions are borrowed from a followed source; switch back to Local or copy first"
+                .to_string(),
+        );
+        assert_eq!(token_result, expected);
+        assert_eq!(
+            auth_result,
+            Err(
+                "provider definitions are borrowed from a followed source; switch back to Local or copy first"
+                    .to_string()
+            )
+        );
+        assert_eq!(state.secrets.get_usage_token("provider_1"), None);
+        assert_eq!(state.secrets.get_usage_login("provider_1"), None);
+    }
+
+    #[test]
+    fn usage_base_url_mutations_are_blocked_while_following_remote() {
+        let (_tmp, state) = build_test_state();
+        state
+            .secrets
+            .set_followed_config_source_node_id(Some("node-remote"))
+            .expect("set followed source");
+        let original = state
+            .gateway
+            .cfg
+            .read()
+            .providers
+            .get("provider_1")
+            .and_then(|provider| provider.usage_base_url.clone());
+
+        let result = set_usage_base_url_impl(&state, "provider_1", "https://usage.example/v1");
+
+        assert_eq!(
+            result,
+            Err(
+                "provider definitions are borrowed from a followed source; switch back to Local or copy first"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            state
+                .gateway
+                .cfg
+                .read()
+                .providers
+                .get("provider_1")
+                .and_then(|provider| provider.usage_base_url.clone()),
+            original
+        );
+    }
 }
 
 #[cfg(test)]
