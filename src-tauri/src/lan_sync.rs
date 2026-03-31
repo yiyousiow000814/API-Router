@@ -374,7 +374,11 @@ impl LanSyncRuntime {
             .ok();
     }
 
-    pub fn quota_owner_for_fingerprint(&self, fingerprint: &str) -> Option<LanQuotaOwnerDecision> {
+    pub fn quota_owner_for_fingerprint(
+        &self,
+        fingerprint: &str,
+        trusted_node_ids: &std::collections::BTreeSet<String>,
+    ) -> Option<LanQuotaOwnerDecision> {
         let normalized = fingerprint.trim();
         if normalized.is_empty() {
             return None;
@@ -392,6 +396,9 @@ impl LanSyncRuntime {
             ));
         }
         for peer in self.collect_live_peers(unix_ms()) {
+            if !trusted_node_ids.contains(&peer.node_id) {
+                continue;
+            }
             if !peer
                 .provider_fingerprints
                 .iter()
@@ -2188,7 +2195,8 @@ fn handle_quota_refresh_request(
     if fingerprint.is_empty() {
         return;
     }
-    let Some(owner) = runtime.quota_owner_for_fingerprint(fingerprint) else {
+    let trusted_node_ids = gateway.secrets.trusted_lan_node_ids();
+    let Some(owner) = runtime.quota_owner_for_fingerprint(fingerprint, &trusted_node_ids) else {
         return;
     };
     if !owner.local_is_owner {
@@ -2479,7 +2487,9 @@ fn run_shared_health_loop(
             {
                 continue;
             }
-            let Some(owner) = runtime.quota_owner_for_fingerprint(&fingerprint) else {
+            let trusted_node_ids = gateway.secrets.trusted_lan_node_ids();
+            let Some(owner) = runtime.quota_owner_for_fingerprint(&fingerprint, &trusted_node_ids)
+            else {
                 continue;
             };
             if !owner.local_is_owner {
@@ -3133,11 +3143,42 @@ mod tests {
                 followed_source_node_id: None,
             },
         );
+        let mut trusted_node_ids = std::collections::BTreeSet::new();
+        trusted_node_ids.insert("node-a".to_string());
         let owner = runtime
-            .quota_owner_for_fingerprint("fp-1")
+            .quota_owner_for_fingerprint("fp-1", &trusted_node_ids)
             .expect("quota owner");
         assert_eq!(owner.owner_node_id, "node-a");
         assert!(!owner.local_is_owner);
+    }
+
+    #[test]
+    fn quota_owner_for_fingerprint_ignores_untrusted_peers() {
+        let runtime = LanSyncRuntime::new(LanNodeIdentity {
+            node_id: "node-b".to_string(),
+            node_name: "self".to_string(),
+        });
+        let now = crate::orchestrator::store::unix_ms();
+        *runtime.local_provider_fingerprints.write() = vec!["fp-1".to_string()];
+        runtime.peers.write().insert(
+            "node-a".to_string(),
+            super::LanPeerRuntime {
+                node_id: "node-a".to_string(),
+                node_name: "peer-a".to_string(),
+                listen_addr: "192.168.1.10:4000".to_string(),
+                last_heartbeat_unix_ms: now,
+                capabilities: vec!["heartbeat_v1".to_string()],
+                provider_fingerprints: vec!["fp-1".to_string()],
+                followed_source_node_id: None,
+            },
+        );
+
+        let trusted_node_ids = std::collections::BTreeSet::new();
+        let owner = runtime
+            .quota_owner_for_fingerprint("fp-1", &trusted_node_ids)
+            .expect("quota owner");
+        assert_eq!(owner.owner_node_id, "node-b");
+        assert!(owner.local_is_owner);
     }
 
     #[test]

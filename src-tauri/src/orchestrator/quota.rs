@@ -565,7 +565,8 @@ pub fn shared_quota_owner_for_provider(
     provider_name: &str,
 ) -> Option<crate::lan_sync::LanQuotaOwnerDecision> {
     let fingerprint = shared_provider_fingerprint_for_provider(st, provider_name)?;
-    lan_sync.quota_owner_for_fingerprint(&fingerprint)
+    let trusted_node_ids = st.secrets.trusted_lan_node_ids();
+    lan_sync.quota_owner_for_fingerprint(&fingerprint, &trusted_node_ids)
 }
 
 pub fn shared_quota_owner_statuses(
@@ -580,7 +581,10 @@ pub fn shared_quota_owner_statuses(
         else {
             continue;
         };
-        let Some(owner) = lan_sync.quota_owner_for_fingerprint(&shared_provider_fingerprint) else {
+        let trusted_node_ids = st.secrets.trusted_lan_node_ids();
+        let Some(owner) =
+            lan_sync.quota_owner_for_fingerprint(&shared_provider_fingerprint, &trusted_node_ids)
+        else {
             continue;
         };
         let shared_provider_id = st
