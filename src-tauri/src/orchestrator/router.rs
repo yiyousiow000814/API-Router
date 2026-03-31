@@ -552,20 +552,8 @@ impl RouterState {
         out
     }
 
-    pub fn mark_usage_refresh_success(&self, provider: &str, _now_ms: u64) {
-        let mut changed = false;
-        {
-            let mut health = self.health.write();
-            if let Some(h) = health.get_mut(provider) {
-                if matches!(h.state, HealthState::Unknown) {
-                    h.state = HealthState::Healthy;
-                    changed = true;
-                }
-            }
-        }
-        if changed {
-            self.persist_shared_health_state(unix_ms());
-        }
+    pub fn mark_usage_refresh_success(&self, provider: &str, now_ms: u64) {
+        let _ = self.mark_success(provider, now_ms);
     }
 
     pub fn require_usage_confirmation(&self, provider: &str) {
@@ -705,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn usage_refresh_success_promotes_unknown_only() {
+    fn usage_refresh_success_marks_runtime_and_recovers_from_failure() {
         let mut cfg = AppConfig::default_config();
         cfg.routing.failure_threshold = 10;
         let provider = "official";
@@ -715,14 +703,14 @@ mod tests {
         let snapshot = router.snapshot(1_000);
         let health = snapshot.get(provider).expect("provider health snapshot");
         assert_eq!(health.status, "healthy");
-        assert_eq!(health.last_ok_at_unix_ms, 0);
+        assert_eq!(health.last_ok_at_unix_ms, 1_000);
 
         router.mark_failure(provider, &cfg, "boom", 2_000);
         router.mark_usage_refresh_success(provider, 3_000);
         let snapshot = router.snapshot(3_000);
         let health = snapshot.get(provider).expect("provider health snapshot");
-        assert_eq!(health.status, "unhealthy");
-        assert_eq!(health.last_ok_at_unix_ms, 0);
+        assert_eq!(health.status, "healthy");
+        assert_eq!(health.last_ok_at_unix_ms, 3_000);
     }
 
     #[test]
@@ -947,6 +935,27 @@ mod tests {
         assert_eq!(health.status, "cooldown");
         assert_eq!(health.last_error, "boom");
         assert_eq!(health.consecutive_failures, 1);
+    }
+
+    #[test]
+    fn usage_refresh_success_persists_shared_runtime_state() {
+        let cfg = AppConfig::default_config();
+        let provider = "official";
+        let (_tmp, store) = build_test_store();
+        let router = RouterState::new_with_store(&cfg, 0, Some(store.clone()));
+
+        router.mark_usage_refresh_success(provider, 1_000);
+
+        let local_snapshot = router
+            .shared_sync_snapshot(provider, 1_000)
+            .expect("shared sync snapshot");
+        assert_eq!(local_snapshot.status, "healthy");
+        assert_eq!(local_snapshot.updated_at_unix_ms, 1_000);
+
+        let restored = RouterState::new_with_store(&cfg, 2_000, Some(store));
+        let snapshot = restored.snapshot(2_000);
+        let health = snapshot.get(provider).expect("provider health snapshot");
+        assert_eq!(health.status, "healthy");
     }
 
     #[test]

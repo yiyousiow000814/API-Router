@@ -782,7 +782,7 @@ mod tests {
         let health = after.get("p1").expect("provider health snapshot");
         assert_eq!(health.status, "healthy");
         assert_eq!(health.consecutive_failures, 0);
-        assert_eq!(health.last_ok_at_unix_ms, 0);
+        assert_eq!(health.last_ok_at_unix_ms, snap.updated_at_unix_ms);
     }
 
     #[tokio::test]

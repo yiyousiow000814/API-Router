@@ -468,7 +468,7 @@ impl LanSyncRuntime {
                 node_id: packet.node_id,
                 node_name: sanitize_node_name(&packet.node_name),
                 listen_addr,
-                last_heartbeat_unix_ms: packet.sent_at_unix_ms,
+                last_heartbeat_unix_ms: unix_ms(),
                 capabilities: packet.capabilities,
                 provider_fingerprints: packet.provider_fingerprints,
                 followed_source_node_id: packet.followed_source_node_id,
@@ -2939,6 +2939,31 @@ mod tests {
         let peers = runtime.collect_live_peers(100_000);
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].node_id, "fresh");
+    }
+
+    #[test]
+    fn peer_registry_uses_receive_time_for_freshness() {
+        let runtime = LanSyncRuntime::new(LanNodeIdentity {
+            node_id: "node-self".to_string(),
+            node_name: "self".to_string(),
+        });
+        runtime.note_peer_heartbeat(
+            LanHeartbeatPacket {
+                version: 1,
+                node_id: "peer-fresh".to_string(),
+                node_name: "Peer Fresh".to_string(),
+                listen_port: 4000,
+                sent_at_unix_ms: 1,
+                capabilities: vec!["heartbeat_v1".to_string()],
+                provider_fingerprints: vec![],
+                followed_source_node_id: None,
+            },
+            std::net::SocketAddr::from(([192, 168, 1, 10], 38455)),
+        );
+
+        let peers = runtime.collect_live_peers(crate::orchestrator::store::unix_ms());
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].node_id, "peer-fresh");
     }
 
     #[test]
