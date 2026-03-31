@@ -521,19 +521,14 @@ fn stable_shared_fingerprint_component(input: &str) -> String {
     format!("{hash:016x}")
 }
 
-pub fn shared_provider_fingerprint(
-    cfg: &AppConfig,
-    secrets: &super::secrets::SecretStore,
-    provider_name: &str,
+pub fn provider_runtime_identity(
+    provider: &ProviderConfig,
+    provider_key: &Option<String>,
+    usage_token: &Option<String>,
+    usage_login: &Option<UsageLoginConfig>,
 ) -> Option<String> {
-    let provider = cfg.providers.get(provider_name)?;
-    let provider_key = secrets.get_provider_key(provider_name);
-    let usage_token = secrets.get_usage_token(provider_name);
-    let usage_login = secrets.get_usage_login(provider_name);
-    let shared_key = {
-        let shared_base = candidate_quota_bases(provider).first()?.clone();
-        usage_shared_key(&shared_base, &provider_key, &usage_token, &usage_login)
-    };
+    let shared_base = candidate_quota_bases(provider).first()?.clone();
+    let shared_key = usage_shared_key(&shared_base, provider_key, usage_token, usage_login);
     let auth_component = shared_key
         .auth_key
         .as_deref()
@@ -544,6 +539,18 @@ pub fn shared_provider_fingerprint(
         shared_key.base_key.trim().to_ascii_lowercase(),
         auth_component
     ))
+}
+
+pub fn shared_provider_fingerprint(
+    cfg: &AppConfig,
+    secrets: &super::secrets::SecretStore,
+    provider_name: &str,
+) -> Option<String> {
+    let provider = cfg.providers.get(provider_name)?;
+    let provider_key = secrets.get_provider_key(provider_name);
+    let usage_token = secrets.get_usage_token(provider_name);
+    let usage_login = secrets.get_usage_login(provider_name);
+    provider_runtime_identity(provider, &provider_key, &usage_token, &usage_login)
 }
 
 fn shared_provider_fingerprint_for_provider(

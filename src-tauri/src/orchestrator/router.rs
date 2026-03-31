@@ -324,7 +324,7 @@ impl RouterState {
         h.last_error = snapshot.last_error.clone();
         h.last_ok_at_unix_ms = snapshot.last_ok_at_unix_ms;
         h.last_fail_at_unix_ms = snapshot.last_fail_at_unix_ms;
-        h.cooldown_from_transient_warnings = snapshot.status == "cooldown";
+        h.cooldown_from_transient_warnings = false;
         h.usage_confirmation_required = false;
         h.state = match snapshot.status.as_str() {
             "healthy" => {
@@ -759,5 +759,31 @@ mod tests {
         let health = snapshot.get(provider).expect("provider health snapshot");
         assert_eq!(health.status, "cooldown");
         assert_eq!(health.last_error, "newer");
+    }
+
+    #[test]
+    fn shared_probe_cooldown_recovers_after_remote_cooldown_expires() {
+        let cfg = AppConfig::default_config();
+        let provider = "official";
+        let router = RouterState::new(&cfg, 0);
+
+        let remote = SharedHealthSyncSnapshot {
+            status: "cooldown".to_string(),
+            consecutive_failures: 1,
+            cooldown_until_unix_ms: 10_000,
+            last_error: "remote-hard-failure".to_string(),
+            last_ok_at_unix_ms: 0,
+            last_fail_at_unix_ms: 5_000,
+            shared_probe_required: true,
+            updated_at_unix_ms: 5_000,
+            source_node_id: "node-b".to_string(),
+            source_is_local: false,
+        };
+        assert!(router.apply_shared_sync_snapshot(provider, &remote, false));
+
+        let _ = router.mark_success(provider, 10_001);
+        let snapshot = router.snapshot(10_001);
+        let health = snapshot.get(provider).expect("provider health snapshot");
+        assert_eq!(health.status, "healthy");
     }
 }

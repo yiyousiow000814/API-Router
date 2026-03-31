@@ -68,6 +68,27 @@ fn normalized_provider_key(key: Option<&str>) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn provider_runtime_identity_from_bundle(
+    provider: &crate::orchestrator::config::ProviderConfig,
+    provider_name: &str,
+    provider_state: &crate::orchestrator::secrets::ProviderStateBundle,
+) -> Option<String> {
+    let provider_key = provider_state.providers.get(provider_name).cloned();
+    let usage_token = provider_state.usage_tokens.get(provider_name).cloned();
+    let usage_login = provider_state.usage_logins.get(provider_name).map(|entry| {
+        crate::orchestrator::secrets::UsageLoginConfig {
+            username: entry.username.clone(),
+            password: entry.password.clone(),
+        }
+    });
+    crate::orchestrator::quota::provider_runtime_identity(
+        provider,
+        &provider_key,
+        &usage_token,
+        &usage_login,
+    )
+}
+
 fn next_copy_name(
     providers: &std::collections::BTreeMap<String, crate::orchestrator::config::ProviderConfig>,
     base_name: &str,
@@ -505,17 +526,38 @@ fn copy_provider_from_config_source_impl(
         usage_base_url: payload.usage_base_url.clone(),
         api_key: String::new(),
     };
-    let remote_key = normalized_provider_key(payload.key.as_deref());
-    let existing_match = remote_key.as_ref().and_then(|remote_key| {
-        local_state.providers.keys().find_map(|name| {
-            let current_key = normalized_provider_key(
-                local_state
-                    .provider_state
-                    .providers
-                    .get(name)
-                    .map(|value| value.as_str()),
-            );
-            (current_key.as_ref() == Some(remote_key)).then(|| name.clone())
+    let remote_usage_login = match (
+        payload
+            .usage_login_username
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        payload.usage_login_password.as_ref().filter(|value| !value.is_empty()),
+    ) {
+        (Some(username), Some(password)) => Some(crate::orchestrator::secrets::UsageLoginConfig {
+            username: username.to_string(),
+            password: password.clone(),
+        }),
+        _ => None,
+    };
+    let remote_provider_key = normalized_provider_key(payload.key.as_deref());
+    let remote_usage_token = payload
+        .usage_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let remote_identity = crate::orchestrator::quota::provider_runtime_identity(
+        &remote_cfg,
+        &remote_provider_key,
+        &remote_usage_token,
+        &remote_usage_login,
+    );
+    let existing_match = remote_identity.as_ref().and_then(|remote_identity| {
+        local_state.providers.iter().find_map(|(name, provider)| {
+            let current_identity =
+                provider_runtime_identity_from_bundle(provider, name, &local_state.provider_state);
+            (current_identity.as_ref() == Some(remote_identity)).then(|| name.clone())
         })
     });
     let local_copy_state = if existing_match.is_some() {
@@ -2112,8 +2154,10 @@ mod provider_management_tests {
             let mut cfg = state.gateway.cfg.write();
             let provider = cfg.providers.get_mut("provider_1").expect("provider_1");
             provider.display_name = "Local Provider".to_string();
-            provider.base_url = "https://local.example/v1".to_string();
+            provider.base_url = "https://remote.example/v1".to_string();
             provider.group = Some("local-group".to_string());
+            provider.usage_base_url = Some("https://usage.remote".to_string());
+            provider.usage_adapter = "budget_info".to_string();
         }
         state
             .secrets
@@ -2128,6 +2172,8 @@ mod provider_management_tests {
                 display_name: "Remote Provider".to_string(),
                 base_url: "https://remote.example/v1".to_string(),
                 group: Some("remote-group".to_string()),
+                usage_adapter: "budget_info".to_string(),
+                usage_base_url: Some("https://usage.remote".to_string()),
                 key: Some("sk-same".to_string()),
                 account_email: Some("remote@example.com".to_string()),
                 ..Default::default()
@@ -2142,7 +2188,7 @@ mod provider_management_tests {
         let cfg = state.gateway.cfg.read();
         let provider = cfg.providers.get("provider_1").expect("provider_1");
         assert_eq!(provider.display_name, "Local Provider");
-        assert_eq!(provider.base_url, "https://local.example/v1");
+        assert_eq!(provider.base_url, "https://remote.example/v1");
         assert_eq!(provider.group.as_deref(), Some("local-group"));
         drop(cfg);
         assert_eq!(
@@ -2154,6 +2200,52 @@ mod provider_management_tests {
                 .map(String::as_str),
             None
         );
+    }
+
+    #[test]
+    fn copy_provider_from_config_source_does_not_link_same_key_with_different_runtime_identity() {
+        let (_tmp, state) = build_test_state();
+        let source_node_id = "node-remote";
+        let shared_provider_id = "shared-remote-3";
+        state
+            .lan_sync
+            .seed_test_peer(source_node_id, "Remote Node", None);
+        state
+            .secrets
+            .set_lan_node_trusted(source_node_id, true)
+            .expect("trust remote node");
+        {
+            let mut cfg = state.gateway.cfg.write();
+            let provider = cfg.providers.get_mut("provider_1").expect("provider_1");
+            provider.base_url = "https://provider.local/v1".to_string();
+            provider.usage_adapter = "token_stats".to_string();
+            provider.usage_base_url = Some("https://usage.local".to_string());
+        }
+        state
+            .secrets
+            .set_provider_key("provider_1", "sk-same")
+            .expect("set local key");
+        seed_remote_provider_snapshot(
+            &state,
+            source_node_id,
+            shared_provider_id,
+            crate::lan_sync::ProviderDefinitionSnapshotPayload {
+                name: "remote_provider".to_string(),
+                display_name: "Remote Provider".to_string(),
+                base_url: "https://provider.remote/v1".to_string(),
+                usage_adapter: "budget_info".to_string(),
+                usage_base_url: Some("https://usage.remote".to_string()),
+                key: Some("sk-same".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let result = copy_provider_from_config_source_impl(&state, source_node_id, shared_provider_id)
+            .expect("copy remote provider");
+
+        assert_eq!(result.local_copy_state, LocalCopyState::Copied);
+        assert_eq!(result.target_name, "remote_provider");
+        assert!(state.gateway.cfg.read().providers.contains_key("remote_provider"));
     }
 
     #[test]
