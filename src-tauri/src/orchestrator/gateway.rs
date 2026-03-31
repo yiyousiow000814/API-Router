@@ -346,12 +346,9 @@ async fn refresh_usage_once_after_first_failure(
     *usage_refreshed_after_first_failure = true;
 
     let cfg = st.cfg.read().clone();
-    let Some(provider) = cfg.providers.get(provider_name) else {
+    let Some(_provider) = cfg.providers.get(provider_name) else {
         return;
     };
-    if super::quota::uses_packycode_usage_schedule(provider) {
-        return;
-    }
 
     st.router.require_usage_confirmation(provider_name);
     let snap = super::quota::refresh_quota_for_provider(st, provider_name).await;

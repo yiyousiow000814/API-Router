@@ -415,6 +415,9 @@ export function useProviderUsageActions({
     if (!provider) return
     try {
       await applyUsageBaseUrl(provider, usageBaseModal.value)
+      if (!isDevPreview && usageBaseModal.value.trim()) {
+        await refreshQuota(provider)
+      }
       setUsageBaseModal({
         open: false,
         provider: '',
@@ -437,7 +440,9 @@ export function useProviderUsageActions({
     }
   }, [
     applyUsageBaseUrl,
+    isDevPreview,
     flashToast,
+    refreshQuota,
     setUsageBaseModal,
     usageBaseModal.provider,
     usageBaseModal.value,
@@ -513,6 +518,9 @@ export function useProviderUsageActions({
         username: usageAuthModal.username,
         password: usageAuthModal.password,
       })
+      if (!isDevPreview) {
+        await refreshQuota(provider)
+      }
       setUsageAuthModal({
         open: false,
         provider: '',
@@ -528,7 +536,9 @@ export function useProviderUsageActions({
     }
   }, [
     applyUsageAuth,
+    isDevPreview,
     flashToast,
+    refreshQuota,
     setUsageAuthModal,
     usageAuthModal.password,
     usageAuthModal.provider,

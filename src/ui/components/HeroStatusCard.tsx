@@ -17,7 +17,6 @@ export function HeroStatusCard({
   const wslGatewayHost = status.wsl_gateway_host?.trim() || GATEWAY_WSL2_HOST
   const lanNode = status.lan_sync?.local_node
   const lanPeers = status.lan_sync?.peers ?? []
-  const lanPeerNames = lanPeers.map((peer) => peer.node_name).filter(Boolean).slice(0, 3)
   return (
     <div className="aoCard aoHeroCard aoHeroStatus">
       <div className="aoCardHeader">
@@ -36,14 +35,12 @@ export function HeroStatusCard({
         <div className="aoStatValue">
           http://{wslGatewayHost}:{status.listen.port}/v1
         </div>
-        <div className="aoStatLabel">Preferred</div>
-        <div className="aoStatValue">{status.preferred_provider}</div>
-        <div className="aoStatLabel">Override</div>
-        <div className="aoStatValue">{status.manual_override ?? '(auto)'}</div>
         {lanNode ? (
           <>
             <div className="aoStatLabel">LAN node</div>
-            <div className="aoStatValue">{lanNode.node_name} · {lanNode.node_id.slice(0, 8)}</div>
+            <div className="aoStatValue">
+              {lanNode.node_name} · {lanNode.node_id.slice(0, 8)}
+            </div>
             <div className="aoStatLabel">LAN peers</div>
             <div className="aoStatValue">{lanPeers.length} alive</div>
           </>
@@ -70,13 +67,6 @@ export function HeroStatusCard({
           </button>
         </div>
       </div>
-      {lanNode ? (
-        <div className="aoHint">
-          LAN discovery node: <strong>{lanNode.node_name}</strong>
-          {lanNode.listen_addr ? ` at ${lanNode.listen_addr}` : ''}
-          {lanPeerNames.length > 0 ? ` · peers: ${lanPeerNames.join(', ')}` : ' · no alive peers detected yet'}.
-        </div>
-      ) : null}
       <div className="aoHint">
         Put this into{' '}
         <span style={{ fontFamily: 'ui-monospace, "Cascadia Mono", "Consolas", monospace' }}>

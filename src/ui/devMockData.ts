@@ -271,6 +271,7 @@ export function evolveDevStatus(current: Status | null): Status {
 
 export const devStatus: Status = {
   listen: { host: '127.0.0.1', port: 4000 },
+  wsl_gateway_host: '172.26.144.1',
   preferred_provider: 'provider_1',
   manual_override: null,
   providers: {
@@ -467,7 +468,39 @@ export const devStatus: Status = {
     },
   },
   ledgers: {},
+  projected_ledgers: {},
   last_activity_unix_ms: DEV_NOW - 30000,
+  lan_sync: {
+    enabled: true,
+    discovery_port: 4000,
+    heartbeat_interval_ms: 1500,
+    peer_stale_after_ms: 10000,
+    local_node: {
+      node_id: 'node_cc5',
+      node_name: 'DESKTOP-KK6SA2D',
+      listen_addr: '192.168.3.210:4000',
+      capabilities: ['follow', 'copy', 'sync'],
+      provider_fingerprints: ['fp-provider-1', 'fp-provider-2'],
+    },
+    peers: [
+      {
+        node_id: 'node_5173',
+        node_name: 'DESKTOP-5173',
+        listen_addr: '192.168.3.211:4000',
+        last_heartbeat_unix_ms: DEV_NOW - 5000,
+        capabilities: ['follow', 'copy'],
+        provider_fingerprints: ['fp-provider-1'],
+      },
+      {
+        node_id: 'node_5174',
+        node_name: 'DESKTOP-5174',
+        listen_addr: '192.168.3.212:4000',
+        last_heartbeat_unix_ms: DEV_NOW - 9000,
+        capabilities: ['follow'],
+        provider_fingerprints: ['fp-provider-2'],
+      },
+    ],
+  },
   codex_account: {
     ok: true,
     checked_at_unix_ms: DEV_NOW - 90000,

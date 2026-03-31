@@ -5,6 +5,7 @@ use std::time::Duration;
 use parking_lot::RwLock;
 
 use super::config::AppConfig;
+use super::store::Store;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ProviderHealthSnapshot {
@@ -16,7 +17,7 @@ pub struct ProviderHealthSnapshot {
     pub last_fail_at_unix_ms: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SharedHealthSyncSnapshot {
     pub status: String,
     pub consecutive_failures: u32,
@@ -89,7 +90,10 @@ pub struct RouterState {
     quota_closed_by_provider: RwLock<HashMap<String, bool>>,
     unhealthy_by_provider: RwLock<HashMap<String, bool>>,
     balanced_main_session_ids: RwLock<Option<BTreeSet<String>>>,
+    store: Option<Store>,
 }
+
+const SHARED_HEALTH_STATE_META_KEY: &str = "router_shared_health_state_v1";
 
 fn provider_is_enabled(cfg: &AppConfig, name: &str) -> bool {
     cfg.providers
@@ -152,7 +156,12 @@ where
 }
 
 impl RouterState {
+    #[allow(dead_code)]
     pub fn new(cfg: &AppConfig, now_ms: u64) -> Self {
+        Self::new_with_store(cfg, now_ms, None)
+    }
+
+    pub fn new_with_store(cfg: &AppConfig, now_ms: u64, store: Option<Store>) -> Self {
         let mut health = HashMap::new();
         for name in cfg.providers.keys() {
             health.insert(name.clone(), ProviderHealth::new(now_ms));
@@ -163,12 +172,79 @@ impl RouterState {
             quota_closed_by_provider.insert(name.clone(), false);
             unhealthy_by_provider.insert(name.clone(), false);
         }
-        Self {
+        let state = Self {
             manual_override: RwLock::new(None),
             health: RwLock::new(health),
             quota_closed_by_provider: RwLock::new(quota_closed_by_provider),
             unhealthy_by_provider: RwLock::new(unhealthy_by_provider),
             balanced_main_session_ids: RwLock::new(None),
+            store,
+        };
+        state.load_persisted_shared_health_state(cfg, now_ms);
+        state
+    }
+
+    fn load_persisted_shared_health_state(&self, cfg: &AppConfig, now_ms: u64) {
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let Ok(Some(value)) = store.get_event_meta(SHARED_HEALTH_STATE_META_KEY) else {
+            return;
+        };
+        let Ok(persisted) =
+            serde_json::from_str::<HashMap<String, SharedHealthSyncSnapshot>>(&value)
+        else {
+            return;
+        };
+        for provider_name in cfg.providers.keys() {
+            let Some(snapshot) = persisted.get(provider_name) else {
+                continue;
+            };
+            if snapshot.status.trim().eq_ignore_ascii_case("unknown") {
+                continue;
+            }
+            let _ =
+                self.apply_shared_sync_snapshot(provider_name, snapshot, snapshot.source_is_local);
+        }
+        self.persist_shared_health_state(now_ms);
+    }
+
+    fn persist_shared_health_state(&self, now_ms: u64) {
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let payload: HashMap<String, SharedHealthSyncSnapshot> = self
+            .health
+            .read()
+            .iter()
+            .filter_map(|(provider, health)| {
+                let snapshot = Self::snapshot_from_health(health, now_ms);
+                if snapshot.status.eq_ignore_ascii_case("unknown") {
+                    return None;
+                }
+                Some((
+                    provider.clone(),
+                    SharedHealthSyncSnapshot {
+                        status: snapshot.status,
+                        consecutive_failures: snapshot.consecutive_failures,
+                        cooldown_until_unix_ms: snapshot.cooldown_until_unix_ms,
+                        last_error: snapshot.last_error,
+                        last_ok_at_unix_ms: snapshot.last_ok_at_unix_ms,
+                        last_fail_at_unix_ms: snapshot.last_fail_at_unix_ms,
+                        shared_probe_required: health.shared_probe_required,
+                        updated_at_unix_ms: health.last_shared_runtime_update_unix_ms,
+                        source_node_id: health.last_shared_runtime_source_node_id.clone(),
+                        source_is_local: health.last_shared_runtime_origin_local,
+                    },
+                ))
+            })
+            .collect();
+        if payload.is_empty() {
+            let _ = store.delete_event_meta(SHARED_HEALTH_STATE_META_KEY);
+            return;
+        }
+        if let Ok(value) = serde_json::to_string(&payload) {
+            let _ = store.set_event_meta(SHARED_HEALTH_STATE_META_KEY, &value);
         }
     }
 
@@ -197,6 +273,8 @@ impl RouterState {
             unhealthy.entry(name.clone()).or_insert(false);
         }
         unhealthy.retain(|name, _| cfg.providers.contains_key(name));
+
+        self.persist_shared_health_state(now_ms);
     }
 
     pub fn record_quota_closed_states(&self, states: &HashMap<String, bool>) -> Vec<String> {
@@ -287,6 +365,9 @@ impl RouterState {
             return None;
         }
         let snapshot = Self::snapshot_from_health(h, now_ms);
+        if snapshot.status.eq_ignore_ascii_case("unknown") {
+            return None;
+        }
         Some(SharedHealthSyncSnapshot {
             status: snapshot.status,
             consecutive_failures: snapshot.consecutive_failures,
@@ -307,59 +388,75 @@ impl RouterState {
         snapshot: &SharedHealthSyncSnapshot,
         source_is_local: bool,
     ) -> bool {
-        let mut health = self.health.write();
-        let Some(h) = health.get_mut(provider) else {
-            return false;
-        };
-        if !Self::should_apply_shared_update(
-            h,
-            snapshot.updated_at_unix_ms,
-            &snapshot.source_node_id,
-        ) {
+        let status = snapshot.status.trim().to_ascii_lowercase();
+        if !matches!(status.as_str(), "healthy" | "cooldown" | "unhealthy") {
             return false;
         }
-        h.consecutive_failures = snapshot.consecutive_failures;
-        h.cooldown_until_unix_ms = snapshot.cooldown_until_unix_ms;
-        h.shared_probe_required = snapshot.shared_probe_required;
-        h.last_error = snapshot.last_error.clone();
-        h.last_ok_at_unix_ms = snapshot.last_ok_at_unix_ms;
-        h.last_fail_at_unix_ms = snapshot.last_fail_at_unix_ms;
-        h.cooldown_from_transient_warnings = false;
-        h.usage_confirmation_required = false;
-        h.state = match snapshot.status.as_str() {
-            "healthy" => {
-                h.shared_probe_required = false;
-                h.cooldown_until_unix_ms = 0;
-                HealthState::Healthy
+        let applied = {
+            let mut health = self.health.write();
+            let Some(h) = health.get_mut(provider) else {
+                return false;
+            };
+            if !Self::should_apply_shared_update(
+                h,
+                snapshot.updated_at_unix_ms,
+                &snapshot.source_node_id,
+            ) {
+                return false;
             }
-            "unknown" => HealthState::Unknown,
-            _ => HealthState::Unhealthy,
+            h.consecutive_failures = snapshot.consecutive_failures;
+            h.cooldown_until_unix_ms = snapshot.cooldown_until_unix_ms;
+            h.shared_probe_required = snapshot.shared_probe_required;
+            h.last_error = snapshot.last_error.clone();
+            h.last_ok_at_unix_ms = snapshot.last_ok_at_unix_ms;
+            h.last_fail_at_unix_ms = snapshot.last_fail_at_unix_ms;
+            h.cooldown_from_transient_warnings = false;
+            h.usage_confirmation_required = false;
+            h.state = match status.as_str() {
+                "healthy" => {
+                    h.shared_probe_required = false;
+                    h.cooldown_until_unix_ms = 0;
+                    HealthState::Healthy
+                }
+                _ => HealthState::Unhealthy,
+            };
+            h.last_shared_runtime_update_unix_ms = snapshot.updated_at_unix_ms;
+            h.last_shared_runtime_source_node_id = snapshot.source_node_id.clone();
+            h.last_shared_runtime_origin_local = source_is_local;
+            true
         };
-        h.last_shared_runtime_update_unix_ms = snapshot.updated_at_unix_ms;
-        h.last_shared_runtime_source_node_id = snapshot.source_node_id.clone();
-        h.last_shared_runtime_origin_local = source_is_local;
-        true
+        if applied {
+            self.persist_shared_health_state(snapshot.updated_at_unix_ms);
+        }
+        applied
     }
 
     pub fn mark_success(&self, provider: &str, now_ms: u64) -> Option<ProviderHealthSnapshot> {
-        let mut health = self.health.write();
-        if let Some(h) = health.get_mut(provider) {
-            if h.in_cooldown_at(now_ms) && h.cooldown_from_transient_warnings {
-                h.last_ok_at_unix_ms = now_ms;
-                Self::mark_local_runtime_update(h, now_ms);
-                return Some(Self::snapshot_from_health(h, now_ms));
+        let mut out = None;
+        {
+            let mut health = self.health.write();
+            if let Some(h) = health.get_mut(provider) {
+                if h.in_cooldown_at(now_ms) && h.cooldown_from_transient_warnings {
+                    h.last_ok_at_unix_ms = now_ms;
+                    Self::mark_local_runtime_update(h, now_ms);
+                    out = Some(Self::snapshot_from_health(h, now_ms));
+                } else {
+                    h.state = HealthState::Healthy;
+                    h.consecutive_failures = 0;
+                    h.cooldown_until_unix_ms = 0;
+                    h.cooldown_from_transient_warnings = false;
+                    h.shared_probe_required = false;
+                    h.usage_confirmation_required = false;
+                    h.last_ok_at_unix_ms = now_ms;
+                    Self::mark_local_runtime_update(h, now_ms);
+                    out = Some(Self::snapshot_from_health(h, now_ms));
+                }
             }
-            h.state = HealthState::Healthy;
-            h.consecutive_failures = 0;
-            h.cooldown_until_unix_ms = 0;
-            h.cooldown_from_transient_warnings = false;
-            h.shared_probe_required = false;
-            h.usage_confirmation_required = false;
-            h.last_ok_at_unix_ms = now_ms;
-            Self::mark_local_runtime_update(h, now_ms);
-            return Some(Self::snapshot_from_health(h, now_ms));
         }
-        None
+        if out.is_some() {
+            self.persist_shared_health_state(now_ms);
+        }
+        out
     }
 
     pub fn mark_failure(
@@ -379,35 +476,43 @@ impl RouterState {
         err: &str,
         now_ms: u64,
     ) -> Option<ProviderHealthSnapshot> {
-        let mut health = self.health.write();
-        if let Some(h) = health.get_mut(provider) {
-            const TRANSIENT_WARNING_THRESHOLD: usize = 3;
-            let warning_window_ms = cfg
-                .routing
-                .effective_cooldown_seconds()
-                .saturating_mul(1000);
-            let threshold_ms = now_ms.saturating_sub(warning_window_ms);
-            h.transient_warning_timestamps_unix_ms
-                .retain(|ts| *ts >= threshold_ms);
-            h.transient_warning_timestamps_unix_ms.push(now_ms);
-            if h.transient_warning_timestamps_unix_ms.len() >= TRANSIENT_WARNING_THRESHOLD {
-                h.transient_warning_timestamps_unix_ms.clear();
-                h.consecutive_failures = 0;
-                h.state = HealthState::Unhealthy;
-                h.cooldown_from_transient_warnings = true;
-                h.shared_probe_required = false;
-                h.last_error = err.to_string();
-                h.last_fail_at_unix_ms = now_ms;
-                h.cooldown_until_unix_ms = now_ms
-                    + cfg
-                        .routing
-                        .effective_cooldown_seconds()
-                        .saturating_mul(1000);
-                Self::mark_local_runtime_update(h, now_ms);
+        let mut out = None;
+        let mut mutated = false;
+        {
+            let mut health = self.health.write();
+            if let Some(h) = health.get_mut(provider) {
+                const TRANSIENT_WARNING_THRESHOLD: usize = 3;
+                let warning_window_ms = cfg
+                    .routing
+                    .effective_cooldown_seconds()
+                    .saturating_mul(1000);
+                let threshold_ms = now_ms.saturating_sub(warning_window_ms);
+                h.transient_warning_timestamps_unix_ms
+                    .retain(|ts| *ts >= threshold_ms);
+                h.transient_warning_timestamps_unix_ms.push(now_ms);
+                if h.transient_warning_timestamps_unix_ms.len() >= TRANSIENT_WARNING_THRESHOLD {
+                    h.transient_warning_timestamps_unix_ms.clear();
+                    h.consecutive_failures = 0;
+                    h.state = HealthState::Unhealthy;
+                    h.cooldown_from_transient_warnings = true;
+                    h.shared_probe_required = false;
+                    h.last_error = err.to_string();
+                    h.last_fail_at_unix_ms = now_ms;
+                    h.cooldown_until_unix_ms = now_ms
+                        + cfg
+                            .routing
+                            .effective_cooldown_seconds()
+                            .saturating_mul(1000);
+                    Self::mark_local_runtime_update(h, now_ms);
+                    mutated = true;
+                }
+                out = Some(Self::snapshot_from_health(h, now_ms));
             }
-            return Some(Self::snapshot_from_health(h, now_ms));
         }
-        None
+        if mutated {
+            self.persist_shared_health_state(now_ms);
+        }
+        out
     }
 
     fn apply_failure(
@@ -418,35 +523,48 @@ impl RouterState {
         threshold: u32,
         cfg: &AppConfig,
     ) -> Option<ProviderHealthSnapshot> {
-        let mut health = self.health.write();
-        if let Some(h) = health.get_mut(provider) {
-            h.transient_warning_timestamps_unix_ms.clear();
-            h.state = HealthState::Unhealthy;
-            h.consecutive_failures = h.consecutive_failures.saturating_add(1);
-            h.last_error = err.to_string();
-            h.last_fail_at_unix_ms = now_ms;
+        let mut out = None;
+        {
+            let mut health = self.health.write();
+            if let Some(h) = health.get_mut(provider) {
+                h.transient_warning_timestamps_unix_ms.clear();
+                h.state = HealthState::Unhealthy;
+                h.consecutive_failures = h.consecutive_failures.saturating_add(1);
+                h.last_error = err.to_string();
+                h.last_fail_at_unix_ms = now_ms;
 
-            if h.consecutive_failures >= threshold {
-                h.cooldown_from_transient_warnings = false;
-                h.shared_probe_required = true;
-                h.cooldown_until_unix_ms = now_ms
-                    + cfg
-                        .routing
-                        .effective_cooldown_seconds()
-                        .saturating_mul(1000);
+                if h.consecutive_failures >= threshold {
+                    h.cooldown_from_transient_warnings = false;
+                    h.shared_probe_required = true;
+                    h.cooldown_until_unix_ms = now_ms
+                        + cfg
+                            .routing
+                            .effective_cooldown_seconds()
+                            .saturating_mul(1000);
+                }
+                Self::mark_local_runtime_update(h, now_ms);
+                out = Some(Self::snapshot_from_health(h, now_ms));
             }
-            Self::mark_local_runtime_update(h, now_ms);
-            return Some(Self::snapshot_from_health(h, now_ms));
         }
-        None
+        if out.is_some() {
+            self.persist_shared_health_state(now_ms);
+        }
+        out
     }
 
     pub fn mark_usage_refresh_success(&self, provider: &str, _now_ms: u64) {
-        let mut health = self.health.write();
-        if let Some(h) = health.get_mut(provider) {
-            if matches!(h.state, HealthState::Unknown) {
-                h.state = HealthState::Healthy;
+        let mut changed = false;
+        {
+            let mut health = self.health.write();
+            if let Some(h) = health.get_mut(provider) {
+                if matches!(h.state, HealthState::Unknown) {
+                    h.state = HealthState::Healthy;
+                    changed = true;
+                }
             }
+        }
+        if changed {
+            self.persist_shared_health_state(unix_ms());
         }
     }
 
@@ -542,6 +660,13 @@ fn unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn build_test_store() -> (tempfile::TempDir, Store) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store =
+            crate::orchestrator::gateway::open_store_dir(tmp.path().join("data")).expect("store");
+        (tmp, store)
+    }
 
     #[test]
     fn mark_success_keeps_last_error_but_resets_failure_state() {
@@ -759,6 +884,69 @@ mod tests {
         let health = snapshot.get(provider).expect("provider health snapshot");
         assert_eq!(health.status, "cooldown");
         assert_eq!(health.last_error, "newer");
+    }
+
+    #[test]
+    fn apply_shared_sync_snapshot_ignores_unknown_remote_update() {
+        let cfg = AppConfig::default_config();
+        let provider = "official";
+        let router = RouterState::new(&cfg, 0);
+
+        let healthy = SharedHealthSyncSnapshot {
+            status: "healthy".to_string(),
+            consecutive_failures: 0,
+            cooldown_until_unix_ms: 0,
+            last_error: String::new(),
+            last_ok_at_unix_ms: 1_000,
+            last_fail_at_unix_ms: 0,
+            shared_probe_required: false,
+            updated_at_unix_ms: 1_000,
+            source_node_id: "node-a".to_string(),
+            source_is_local: false,
+        };
+        assert!(router.apply_shared_sync_snapshot(provider, &healthy, false));
+
+        let unknown = SharedHealthSyncSnapshot {
+            status: "unknown".to_string(),
+            consecutive_failures: 7,
+            cooldown_until_unix_ms: 99_000,
+            last_error: "pollution".to_string(),
+            last_ok_at_unix_ms: 0,
+            last_fail_at_unix_ms: 0,
+            shared_probe_required: false,
+            updated_at_unix_ms: 2_000,
+            source_node_id: "node-b".to_string(),
+            source_is_local: false,
+        };
+        assert!(!router.apply_shared_sync_snapshot(provider, &unknown, false));
+
+        let snapshot = router.snapshot(2_000);
+        let health = snapshot.get(provider).expect("provider health snapshot");
+        assert_eq!(health.status, "healthy");
+        assert_eq!(health.consecutive_failures, 0);
+        assert_eq!(health.last_error, "");
+    }
+
+    #[test]
+    fn shared_health_state_is_persisted_and_restored() {
+        let mut cfg = AppConfig::default_config();
+        cfg.routing.failure_threshold = 1;
+        let provider = "official";
+        let (_tmp, store) = build_test_store();
+        let router = RouterState::new_with_store(&cfg, 0, Some(store.clone()));
+
+        let _ = router.mark_failure(provider, &cfg, "boom", 1_000);
+        let before = router.snapshot(1_000);
+        let health = before.get(provider).expect("provider health snapshot");
+        assert_eq!(health.status, "cooldown");
+        assert_eq!(health.last_error, "boom");
+
+        let restored = RouterState::new_with_store(&cfg, 2_000, Some(store));
+        let snapshot = restored.snapshot(2_000);
+        let health = snapshot.get(provider).expect("provider health snapshot");
+        assert_eq!(health.status, "cooldown");
+        assert_eq!(health.last_error, "boom");
+        assert_eq!(health.consecutive_failures, 1);
     }
 
     #[test]

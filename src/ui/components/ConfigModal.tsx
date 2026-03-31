@@ -90,9 +90,10 @@ export function ConfigModal({
             active: true,
             follow_allowed: false,
             follow_blocked_reason: null,
-            using_count: 1,
+            using_count: 0,
           },
         ]
+  const showConfigSourceChooser = configSources.length > 1
   const selectedConfigSourceValue =
     configSources.find((source) => source.active)?.node_id ??
     config.config_source?.followed_node_id ??
@@ -102,9 +103,11 @@ export function ConfigModal({
     configSources.find((source) => source.node_id === selectedConfigSourceValue) ?? configSources[0]
   const selectedUsingCount = selectedConfigSource?.using_count ?? 0
   const selectedUsingLabel =
-    selectedConfigSource?.kind === 'local'
-      ? `${selectedUsingCount} using`
-      : `${selectedUsingCount} follow`
+    selectedUsingCount > 0
+      ? selectedConfigSource?.kind === 'local'
+        ? `${selectedUsingCount} using`
+        : `${selectedUsingCount} follow`
+      : ''
 
   useEffect(() => {
     if (!sourceMenuOpen) return
@@ -193,7 +196,8 @@ export function ConfigModal({
             <div className="aoModalSub aoConfigHeaderSub">keys are stored in ./user-data/secrets.json</div>
           </div>
           <div className="aoConfigHeaderSource" aria-label="Config source">
-            <div className="aoActionsMenuWrap aoConfigSourceMenuWrap" ref={sourceMenuRef}>
+            {showConfigSourceChooser ? (
+              <div className="aoActionsMenuWrap aoConfigSourceMenuWrap" ref={sourceMenuRef}>
               <button
                 type="button"
                 className={`aoSelect aoConfigSourceSelect aoConfigSourceTrigger${sourceMenuOpen ? ' is-open' : ''}`}
@@ -212,7 +216,9 @@ export function ConfigModal({
                 <span className="aoConfigSourceTriggerLabel">
                   {selectedConfigSource?.kind === 'local' ? 'Local' : selectedConfigSource?.node_name}
                 </span>
-                <span className="aoConfigSourceTriggerMeta">{selectedUsingLabel}</span>
+                {selectedUsingLabel ? (
+                  <span className="aoConfigSourceTriggerMeta">{selectedUsingLabel}</span>
+                ) : null}
                 <span className="aoConfigSourceChevron" aria-hidden="true">
                   ▾
                 </span>
@@ -326,7 +332,8 @@ export function ConfigModal({
                   })}
                 </div>
               ) : null}
-            </div>
+              </div>
+            ) : null}
           </div>
           <div className="aoRow aoConfigHeaderActions">
             <button className="aoBtn aoBtnPrimary aoConfigHeaderBtn" onClick={onOpenGroupManager}>

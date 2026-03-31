@@ -317,7 +317,7 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
         pair_request_id: None,
         follow_allowed: false,
         follow_blocked_reason: None,
-        using_count: 1 + local_followers,
+        using_count: local_followers,
     })
     .chain(lan_snapshot.peers.iter().map(|peer| ConfigSourceSnapshot {
         kind: "peer",

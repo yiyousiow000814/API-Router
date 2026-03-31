@@ -1777,11 +1777,10 @@ mod tests {
     }
 
     #[test]
-    fn background_quota_refresh_requires_real_recent_provider_usage() {
-        assert!(!should_run_background_quota_refresh(false, false, true));
-        assert!(!should_run_background_quota_refresh(true, false, true));
-        assert!(!should_run_background_quota_refresh(true, true, false));
-        assert!(should_run_background_quota_refresh(true, true, true));
+    fn background_quota_refresh_requires_credentials_and_quota_source() {
+        assert!(!should_run_background_quota_refresh(false, true));
+        assert!(!should_run_background_quota_refresh(true, false));
+        assert!(should_run_background_quota_refresh(true, true));
     }
 
     #[test]
@@ -1869,6 +1868,12 @@ mod tests {
         let due = next_packycode_refresh_at(now);
         assert_eq!(due.hour(), 12);
         assert_eq!(due.minute(), 58);
+        assert_eq!(due.second(), 0);
+
+        let now = tz.with_ymd_and_hms(2026, 3, 10, 23, 58, 0).unwrap();
+        let due = next_packycode_refresh_at(now);
+        assert_eq!(due.hour(), 0);
+        assert_eq!(due.minute(), 1);
         assert_eq!(due.second(), 0);
     }
 
@@ -2240,7 +2245,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_quota_all_skips_packycode_providers_even_when_credentials_exist() {
+    async fn refresh_quota_all_includes_packycode_providers_with_credentials() {
         let (base, _h) = start_mock_server(false).await;
         let providers = std::collections::BTreeMap::from([
             (
@@ -2281,12 +2286,12 @@ mod tests {
         let lan_sync = mk_lan_sync();
         let (ok, err, failed) = refresh_quota_all_with_summary(&st, &lan_sync).await;
 
-        assert_eq!(ok, 1);
+        assert_eq!(ok, 2);
         assert_eq!(err, 0);
         assert!(failed.is_empty());
         assert!(
-            st.store.get_quota_snapshot("packycode").is_none(),
-            "all-provider refresh should not touch packycode"
+            st.store.get_quota_snapshot("packycode").is_some(),
+            "all-provider refresh should include packycode now"
         );
         assert!(
             st.store.get_quota_snapshot("p2").is_some(),

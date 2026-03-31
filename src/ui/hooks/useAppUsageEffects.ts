@@ -32,6 +32,7 @@ type Params = {
   usageFilterProviders: string[]
   usageFilterModels: string[]
   usageFilterOrigins: string[]
+  hasUsageStatistics: boolean
   isDevPreview: boolean
   refreshFxRatesDaily: (force?: boolean) => Promise<void>
   usagePricingModalOpen: boolean
@@ -80,6 +81,14 @@ export function usageStatisticsRefreshIntervalMs(
   return null
 }
 
+export function shouldRefreshUsageSilently(
+  previousActivePage: Params['activePage'] | null,
+  activePage: Params['activePage'],
+  hasUsageStatistics: boolean,
+): boolean {
+  return previousActivePage !== activePage && hasUsageStatistics
+}
+
 export function useAppUsageEffects(params: Params) {
   const usageHistoryPrefetchStartedRef = useRef(false)
   const previousActivePageRef = useRef<Params['activePage'] | null>(null)
@@ -91,6 +100,7 @@ export function useAppUsageEffects(params: Params) {
     usageFilterProviders,
     usageFilterModels,
     usageFilterOrigins,
+    hasUsageStatistics,
     isDevPreview,
     refreshFxRatesDaily,
     usagePricingModalOpen,
@@ -139,11 +149,15 @@ export function useAppUsageEffects(params: Params) {
   useEffect(() => {
     const refreshMs = usageStatisticsRefreshIntervalMs(activePage)
     if (refreshMs == null) return
-    const enteringUsagePage = previousActivePageRef.current !== activePage
-    void refreshUsageStatistics({ silent: enteringUsagePage })
+    const silent = shouldRefreshUsageSilently(
+      previousActivePageRef.current,
+      activePage,
+      hasUsageStatistics,
+    )
+    void refreshUsageStatistics({ silent })
     const t = window.setInterval(() => void refreshUsageStatistics({ silent: true }), refreshMs)
     return () => window.clearInterval(t)
-  }, [activePage, usageWindowHours, usageFilterNodes, usageFilterProviders, usageFilterModels, usageFilterOrigins, refreshUsageStatistics])
+  }, [activePage, usageWindowHours, usageFilterNodes, usageFilterProviders, usageFilterModels, usageFilterOrigins, hasUsageStatistics, refreshUsageStatistics])
 
   useEffect(() => {
     previousActivePageRef.current = activePage

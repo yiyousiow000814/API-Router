@@ -65,6 +65,7 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
         }
     }
     let ledgers = state.gateway.store.list_ledgers();
+    let projected_ledgers = projected_usage_ledgers(&state.gateway, &quota);
     let last_activity = state.gateway.last_activity_unix_ms.load(Ordering::Relaxed);
     let active_recent = last_activity > 0 && now.saturating_sub(last_activity) < 2 * 60 * 1000;
     let (active_provider, active_reason, active_provider_counts) = if active_recent {
@@ -325,12 +326,58 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
       "active_provider_counts": active_provider_counts,
       "quota": quota,
       "ledgers": ledgers,
+      "projected_ledgers": projected_ledgers,
       "last_activity_unix_ms": last_activity,
       "codex_account": codex_account,
       "client_sessions": client_sessions,
       "lan_sync": lan_sync,
       "shared_quota_owners": shared_quota_owners
     })
+}
+
+fn projected_usage_ledgers(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    quota: &serde_json::Value,
+) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    let Some(quota_map) = quota.as_object() else {
+        return serde_json::Value::Object(out);
+    };
+
+    for (provider_name, snapshot) in quota_map {
+        let Some(kind) = snapshot.get("kind").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if kind != "budget_info" {
+            continue;
+        }
+        let Some(updated_at_unix_ms) = snapshot.get("updated_at_unix_ms").and_then(|value| value.as_u64()) else {
+            continue;
+        };
+        if updated_at_unix_ms == 0 {
+            continue;
+        }
+        let (request_count, _, _, total_tokens, _, _) = gateway.store.summarize_usage_requests(
+            updated_at_unix_ms,
+            None,
+            None,
+            &[],
+            std::slice::from_ref(provider_name),
+            &[],
+            &[],
+            &[],
+        );
+        out.insert(
+            provider_name.clone(),
+            serde_json::json!({
+                "since_last_quota_refresh_requests": request_count,
+                "since_last_quota_refresh_total_tokens": total_tokens,
+                "last_reset_unix_ms": updated_at_unix_ms,
+            }),
+        );
+    }
+
+    serde_json::Value::Object(out)
 }
 
 #[tauri::command]
@@ -1110,7 +1157,7 @@ mod tests {
     use crate::orchestrator::gateway::{decide_provider, open_store_dir, GatewayState, LastUsedRoute};
     use crate::orchestrator::router::RouterState;
     use crate::orchestrator::secrets::SecretStore;
-    use crate::orchestrator::store::unix_ms;
+    use crate::orchestrator::store::{unix_ms, UsageRequestSyncRow};
     use crate::orchestrator::upstream::UpstreamClient;
     use crate::orchestrator::gateway::ClientSessionRuntime;
     use chrono::TimeZone;
@@ -2555,6 +2602,75 @@ mod tests {
         assert_eq!(
             main.last_reported_model_provider.as_deref(),
             Some(GATEWAY_MODEL_PROVIDER_ID)
+        );
+    }
+
+    #[test]
+    fn projected_usage_ledgers_include_synced_requests_since_last_refresh() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("user-data").join("data");
+        let state = crate::app_state::build_state(config_path, data_dir).expect("build state");
+        let now = unix_ms();
+        state
+            .gateway
+            .store
+            .put_quota_snapshot(
+                "packycode",
+                &serde_json::json!({
+                    "kind": "budget_info",
+                    "updated_at_unix_ms": now,
+                    "daily_spent_usd": 1.0,
+                    "daily_budget_usd": 10.0,
+                    "weekly_spent_usd": 2.0,
+                    "weekly_budget_usd": 20.0,
+                    "monthly_spent_usd": 3.0,
+                    "monthly_budget_usd": 30.0,
+                    "last_error": "",
+                }),
+            )
+            .expect("quota snapshot");
+        let inserted = state
+            .gateway
+            .store
+            .upsert_usage_request_sync_rows(&[UsageRequestSyncRow {
+                id: "row-1".to_string(),
+                unix_ms: now.saturating_add(1),
+                ingested_at_unix_ms: now.saturating_add(1),
+                provider: "packycode".to_string(),
+                api_key_ref: "-".to_string(),
+                model: "gpt-4.1".to_string(),
+                origin: "windows".to_string(),
+                session_id: "session-1".to_string(),
+                node_id: "node-a".to_string(),
+                node_name: "DESKTOP-A".to_string(),
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 128,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            }]);
+        assert_eq!(inserted, 1);
+
+        let projected = super::projected_usage_ledgers(
+            &state.gateway,
+            &state.gateway.store.list_quota_snapshots(),
+        );
+        assert_eq!(
+            projected
+                .get("packycode")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|value| value.get("since_last_quota_refresh_requests"))
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            projected
+                .get("packycode")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|value| value.get("since_last_quota_refresh_total_tokens"))
+                .and_then(serde_json::Value::as_u64),
+            Some(128)
         );
     }
 

@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::error::Error;
-use std::sync::atomic::Ordering;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -403,14 +402,21 @@ where
         .with_second(0)
         .and_then(|dt| dt.with_nanosecond(0))
         .unwrap_or(now);
-    if base.minute() < 58 {
-        return base.with_minute(58).unwrap_or(base);
+    let hourly = if base.minute() < 58 {
+        base.with_minute(58).unwrap_or(base)
+    } else {
+        (base + chrono::Duration::hours(1))
+            .with_minute(58)
+            .and_then(|dt| dt.with_second(0))
+            .and_then(|dt| dt.with_nanosecond(0))
+            .unwrap_or(base + chrono::Duration::hours(1))
+    };
+    let daily = next_daily_reset_refresh_at(now);
+    if hourly <= daily {
+        hourly
+    } else {
+        daily
     }
-    (base + chrono::Duration::hours(1))
-        .with_minute(58)
-        .and_then(|dt| dt.with_second(0))
-        .and_then(|dt| dt.with_nanosecond(0))
-        .unwrap_or(base + chrono::Duration::hours(1))
 }
 
 fn next_standard_quota_refresh_at<Tz>(now: chrono::DateTime<Tz>) -> chrono::DateTime<Tz>
@@ -435,14 +441,6 @@ fn next_standard_quota_refresh_due_unix_ms(now_ms: u64) -> u64 {
     next_standard_quota_refresh_at(now)
         .timestamp_millis()
         .max(0) as u64
-}
-
-fn next_packycode_refresh_due_unix_ms(now_ms: u64) -> u64 {
-    let now = chrono::Local
-        .timestamp_millis_opt(now_ms as i64)
-        .single()
-        .unwrap_or_else(chrono::Local::now);
-    next_packycode_refresh_at(now).timestamp_millis().max(0) as u64
 }
 
 include!("quota/base_resolution.rs");
@@ -1022,12 +1020,8 @@ fn is_quota_refresh_config_gap(err: &str) -> bool {
     )
 }
 
-fn should_run_background_quota_refresh(
-    has_any_credential: bool,
-    is_recently_used: bool,
-    has_quota_source: bool,
-) -> bool {
-    has_any_credential && is_recently_used && has_quota_source
+fn should_run_background_quota_refresh(has_any_credential: bool, has_quota_source: bool) -> bool {
+    has_any_credential && has_quota_source
 }
 
 fn can_refresh_quota_for_provider(
@@ -1048,10 +1042,6 @@ fn can_refresh_quota_for_provider(
     provider_key.is_some() || usage_token.is_some() || usage_login.is_some()
 }
 
-pub(crate) fn uses_packycode_usage_schedule(provider: &ProviderConfig) -> bool {
-    detect_package_expiry_strategy(&provider.base_url) == PackageExpiryStrategy::Packycode
-}
-
 fn quota_refresh_interval_ms(
     now_ms: u64,
     _is_active_provider: bool,
@@ -1059,11 +1049,8 @@ fn quota_refresh_interval_ms(
     _has_successful_snapshot: bool,
     _shared_provider_count: usize,
     _last_error: &str,
-    provider_strategy: PackageExpiryStrategy,
+    _provider_strategy: PackageExpiryStrategy,
 ) -> u64 {
-    if provider_strategy == PackageExpiryStrategy::Packycode {
-        return next_packycode_refresh_due_unix_ms(now_ms).saturating_sub(now_ms);
-    }
     next_standard_quota_refresh_due_unix_ms(now_ms).saturating_sub(now_ms)
 }
 
@@ -1073,11 +1060,8 @@ fn initial_quota_refresh_due_unix_ms(
     _is_active_provider: bool,
     _is_preferred_provider: bool,
     _shared_provider_count: usize,
-    provider_strategy: PackageExpiryStrategy,
+    _provider_strategy: PackageExpiryStrategy,
 ) -> Option<u64> {
-    if provider_strategy == PackageExpiryStrategy::Packycode {
-        return Some(next_packycode_refresh_due_unix_ms(now_ms));
-    }
     if existing_snapshot.is_some_and(|existing| existing.updated_at_unix_ms == 0) {
         return None;
     }
@@ -1506,9 +1490,6 @@ pub async fn refresh_quota_all_with_summary(
     let mut failed = Vec::new();
 
     for (name, provider) in cfg.providers.iter() {
-        if uses_packycode_usage_schedule(provider) {
-            continue;
-        }
         if !can_refresh_quota_for_provider(st, name, provider) {
             continue;
         }
@@ -1538,20 +1519,7 @@ pub async fn run_quota_scheduler(st: GatewayState, lan_sync: crate::lan_sync::La
         tokio::time::sleep(Duration::from_millis(900)).await;
 
         let now = unix_ms();
-        let last = st.last_activity_unix_ms.load(Ordering::Relaxed);
-        let active = last > 0 && now.saturating_sub(last) < 10 * 60 * 1000;
-        if !active {
-            continue;
-        }
-
         let cfg = st.cfg.read().clone();
-        let active_providers: std::collections::HashSet<String> = st
-            .last_used_by_session
-            .read()
-            .values()
-            .filter(|route| now.saturating_sub(route.unix_ms) < 2 * 60 * 1000)
-            .map(|route| route.provider.clone())
-            .collect();
         let mut shared_provider_counts: HashMap<String, usize> = HashMap::new();
         for name in cfg.providers.keys() {
             if let Some(shared_key) = usage_shared_key_for_provider(&st, name) {
@@ -1564,13 +1532,8 @@ pub async fn run_quota_scheduler(st: GatewayState, lan_sync: crate::lan_sync::La
         for (name, p) in cfg.providers.iter() {
             let has_any_credential = st.secrets.get_provider_key(name).is_some()
                 || st.secrets.get_usage_token(name).is_some();
-            let is_recently_used = active_providers.contains(name);
             let has_quota_source = !candidate_quota_bases(p).is_empty();
-            if !should_run_background_quota_refresh(
-                has_any_credential,
-                is_recently_used,
-                has_quota_source,
-            ) {
+            if !should_run_background_quota_refresh(has_any_credential, has_quota_source) {
                 continue;
             }
 
@@ -1585,7 +1548,7 @@ pub async fn run_quota_scheduler(st: GatewayState, lan_sync: crate::lan_sync::La
                 initial_quota_refresh_due_unix_ms(
                     now,
                     existing_snapshot.as_ref(),
-                    is_recently_used,
+                    false,
                     name == &cfg.routing.preferred_provider,
                     shared_provider_count,
                     detect_package_expiry_strategy(&p.base_url),
@@ -1601,7 +1564,7 @@ pub async fn run_quota_scheduler(st: GatewayState, lan_sync: crate::lan_sync::La
             {
                 let jitter_ms = quota_refresh_interval_ms(
                     now,
-                    active_providers.contains(name),
+                    false,
                     name == &cfg.routing.preferred_provider,
                     existing_snapshot.as_ref().is_some_and(|existing| {
                         existing.last_error.is_empty() && existing.updated_at_unix_ms > 0
@@ -1620,7 +1583,7 @@ pub async fn run_quota_scheduler(st: GatewayState, lan_sync: crate::lan_sync::La
             });
             let jitter_ms = quota_refresh_interval_ms(
                 now,
-                active_providers.contains(name),
+                false,
                 name == &cfg.routing.preferred_provider,
                 previous_success,
                 shared_provider_count,

@@ -70,6 +70,14 @@ export type Status = {
       last_reset_unix_ms: number
     }
   >
+  projected_ledgers?: Record<
+    string,
+    {
+      since_last_quota_refresh_requests?: number
+      since_last_quota_refresh_total_tokens: number
+      last_reset_unix_ms: number
+    }
+  >
   last_activity_unix_ms: number
   codex_account: {
     ok: boolean

@@ -1339,6 +1339,7 @@ export default function App() {
     usageFilterProviders,
     usageFilterModels,
     usageFilterOrigins,
+    hasUsageStatistics: usageStatistics !== null,
     isDevPreview,
     refreshFxRatesDaily,
     usagePricingModalOpen,

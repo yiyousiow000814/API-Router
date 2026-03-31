@@ -32,44 +32,6 @@ export function useProviderActions({
   flashToast,
 }: UseProviderActionsParams): UseProviderActionsResult {
   const {
-    saveProvider,
-    saveProviderBaseUrl,
-    setProviderGroup,
-    setProvidersGroup,
-    setProviderDisabled,
-    deleteProvider,
-    openProviderBaseUrlModal,
-    addProvider,
-  } = useProviderCrudActions({
-    config,
-    isDevPreview,
-    setConfig,
-    providerBaseUrlModal,
-    newProviderName,
-    newProviderBaseUrl,
-    newProviderKey,
-    newProviderKeyStorage,
-    setProviderBaseUrlModal,
-    setNewProviderName,
-    setNewProviderBaseUrl,
-    setNewProviderKey,
-    setNewProviderKeyStorage,
-    refreshStatus,
-    refreshConfig,
-    flashToast,
-  })
-
-  const { saveKey, clearKey, openKeyModal } = useProviderKeyActions({
-    keyModal,
-    config,
-    isDevPreview,
-    setKeyModal,
-    refreshStatus,
-    refreshConfig,
-    flashToast,
-  })
-
-  const {
     refreshQuota,
     refreshQuotaAll,
     saveUsageBaseUrl,
@@ -96,6 +58,45 @@ export function useProviderActions({
     setUsageBaseModal,
     setUsageAuthModal,
     setRefreshingProviders,
+    refreshStatus,
+    refreshConfig,
+    flashToast,
+  })
+
+  const {
+    saveProvider,
+    saveProviderBaseUrl,
+    setProviderGroup,
+    setProvidersGroup,
+    setProviderDisabled,
+    deleteProvider,
+    openProviderBaseUrlModal,
+    addProvider,
+  } = useProviderCrudActions({
+    config,
+    isDevPreview,
+    setConfig,
+    providerBaseUrlModal,
+    refreshQuota,
+    newProviderName,
+    newProviderBaseUrl,
+    newProviderKey,
+    newProviderKeyStorage,
+    setProviderBaseUrlModal,
+    setNewProviderName,
+    setNewProviderBaseUrl,
+    setNewProviderKey,
+    setNewProviderKeyStorage,
+    refreshStatus,
+    refreshConfig,
+    flashToast,
+  })
+
+  const { saveKey, clearKey, openKeyModal } = useProviderKeyActions({
+    keyModal,
+    config,
+    isDevPreview,
+    setKeyModal,
     refreshStatus,
     refreshConfig,
     flashToast,

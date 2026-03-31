@@ -223,7 +223,7 @@ export function buildSwitchboardProviderCards(
     const quota = simulateQuotaForDisplay(
       name,
       status?.quota?.[name],
-      status?.ledgers?.[name],
+      status?.projected_ledgers?.[name] ?? status?.ledgers?.[name],
       usageStatistics,
     )
     const kind = (quota?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info' | 'balance_info'

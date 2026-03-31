@@ -175,7 +175,11 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
     }
 
     let store = open_store_dir(data_dir.clone())?;
-    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let router = Arc::new(RouterState::new_with_store(
+        &cfg,
+        unix_ms(),
+        Some(store.clone()),
+    ));
     let gateway = GatewayState {
         cfg: Arc::new(RwLock::new(cfg)),
         router,
