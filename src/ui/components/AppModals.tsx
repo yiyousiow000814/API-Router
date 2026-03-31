@@ -598,7 +598,7 @@ requires_openai_auth = true`}
         onClearFollowSource={() => void clearFollowedConfigSource()}
         onRequestPair={requestLanPair}
         onApprovePair={approveLanPair}
-        onSubmitPairPin={(nodeId, requestId, pinCode) => void submitLanPairPin(nodeId, requestId, pinCode)}
+        onSubmitPairPin={submitLanPairPin}
         onOpenGroupManager={() => openProviderGroupManager()}
         onClose={() => setConfigModalOpen(false)}
         providerListRef={providerListRef}

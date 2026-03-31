@@ -619,10 +619,24 @@ impl LanSyncRuntime {
                 sent_at_unix_ms: now,
             }),
         )?;
+        gateway.store.add_event(
+            "gateway",
+            "info",
+            "lan.pair.request_sent",
+            "sent LAN pair request",
+            serde_json::json!({
+                "peer_node_id": normalized,
+                "request_id": request_id,
+            }),
+        );
         Ok(request_id)
     }
 
-    pub fn approve_pair(&self, request_id: &str) -> Result<String, String> {
+    pub fn approve_pair(
+        &self,
+        gateway: &crate::orchestrator::gateway::GatewayState,
+        request_id: &str,
+    ) -> Result<String, String> {
         let normalized = request_id.trim();
         if normalized.is_empty() {
             return Err("request_id is required".to_string());
@@ -640,7 +654,7 @@ impl LanSyncRuntime {
         self.pair_approvals.write().insert(
             normalized.to_string(),
             LanPairApprovalState {
-                requester_node_id: request.requester_node_id,
+                requester_node_id: request.requester_node_id.clone(),
                 requester_addr: request.requester_addr,
                 pin_code: pin_code.clone(),
                 created_at_unix_ms: now,
@@ -656,11 +670,22 @@ impl LanSyncRuntime {
                 sent_at_unix_ms: now,
             }),
         )?;
+        gateway.store.add_event(
+            "gateway",
+            "info",
+            "lan.pair.approved",
+            "approved LAN pair request and generated PIN",
+            serde_json::json!({
+                "request_id": normalized,
+                "requester_node_id": request.requester_node_id,
+            }),
+        );
         Ok(pin_code)
     }
 
     pub fn submit_pair_pin(
         &self,
+        gateway: &crate::orchestrator::gateway::GatewayState,
         node_id: &str,
         request_id: &str,
         pin_code: &str,
@@ -706,7 +731,18 @@ impl LanSyncRuntime {
                 pin_code: normalized_pin.to_string(),
                 sent_at_unix_ms: now,
             }),
-        )
+        )?;
+        gateway.store.add_event(
+            "gateway",
+            "info",
+            "lan.pair.pin_submitted",
+            "submitted LAN pairing PIN",
+            serde_json::json!({
+                "peer_node_id": normalized_node_id,
+                "request_id": normalized_request_id,
+            }),
+        );
+        Ok(())
     }
 
     fn prune_pair_state(&self, now: u64) {
@@ -1717,7 +1753,7 @@ fn run_listener(
                             handle_pair_request(&runtime, &gateway, source, packet);
                         }
                         LanWirePacket::PairApprovalReady(packet) => {
-                            handle_pair_approval_ready(&runtime, packet);
+                            handle_pair_approval_ready(&runtime, &gateway, packet);
                         }
                         LanWirePacket::PairPinSubmit(packet) => {
                             handle_pair_pin_submit(&runtime, &gateway, source, packet);
@@ -1854,15 +1890,31 @@ fn handle_pair_request(
     requests.insert(
         normalized_node_id.to_string(),
         LanPendingPairRequest {
-            request_id: packet.request_id,
+            request_id: packet.request_id.clone(),
             requester_node_id: normalized_node_id.to_string(),
             requested_at_unix_ms: now,
             requester_addr: source,
         },
     );
+    gateway.store.add_event(
+        "gateway",
+        "info",
+        "lan.pair.request_received",
+        "received LAN pair request",
+        serde_json::json!({
+            "request_id": packet.request_id,
+            "requester_node_id": normalized_node_id,
+            "requester_node_name": packet.node_name,
+            "requester_addr": source.to_string(),
+        }),
+    );
 }
 
-fn handle_pair_approval_ready(runtime: &LanSyncRuntime, packet: LanPairApprovalReadyPacket) {
+fn handle_pair_approval_ready(
+    runtime: &LanSyncRuntime,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    packet: LanPairApprovalReadyPacket,
+) {
     let normalized_node_id = packet.node_id.trim();
     if normalized_node_id.is_empty() {
         return;
@@ -1875,6 +1927,17 @@ fn handle_pair_approval_ready(runtime: &LanSyncRuntime, packet: LanPairApprovalR
         return;
     }
     request.approval_ready = true;
+    gateway.store.add_event(
+        "gateway",
+        "info",
+        "lan.pair.approval_ready",
+        "remote LAN pair approval is ready for PIN entry",
+        serde_json::json!({
+            "request_id": packet.request_id,
+            "peer_node_id": normalized_node_id,
+            "peer_node_name": packet.node_name,
+        }),
+    );
 }
 
 fn handle_pair_pin_submit(
@@ -1893,11 +1956,32 @@ fn handle_pair_pin_submit(
         .get(packet.request_id.as_str())
         .cloned()
     else {
+        gateway.store.add_event(
+            "gateway",
+            "warning",
+            "lan.pair.pin_rejected_missing_approval",
+            "rejected LAN pairing PIN because no approval state exists",
+            serde_json::json!({
+                "request_id": packet.request_id,
+                "requester_node_id": normalized_node_id,
+            }),
+        );
         return;
     };
     if approval.requester_node_id != normalized_node_id
         || approval.pin_code != packet.pin_code.trim()
     {
+        gateway.store.add_event(
+            "gateway",
+            "warning",
+            "lan.pair.pin_rejected_mismatch",
+            "rejected LAN pairing PIN due to request or PIN mismatch",
+            serde_json::json!({
+                "request_id": packet.request_id,
+                "requester_node_id": normalized_node_id,
+                "expected_requester_node_id": approval.requester_node_id,
+            }),
+        );
         return;
     }
     let trust_secret = match gateway.secrets.ensure_lan_trust_secret() {
@@ -1927,6 +2011,16 @@ fn handle_pair_pin_submit(
         .pair_approvals
         .write()
         .remove(packet.request_id.as_str());
+    gateway.store.add_event(
+        "gateway",
+        "info",
+        "lan.pair.pin_accepted",
+        "accepted LAN pairing PIN and sent trust bundle",
+        serde_json::json!({
+            "request_id": packet.request_id,
+            "requester_node_id": approval.requester_node_id,
+        }),
+    );
     let _ = send_wire_packet(
         approval.requester_addr,
         &LanWirePacket::PairTrustBundle(LanPairTrustBundlePacket {
@@ -1950,6 +2044,16 @@ fn handle_pair_trust_bundle(
         .write()
         .remove(packet.request_id.as_str())
     else {
+        gateway.store.add_event(
+            "gateway",
+            "warning",
+            "lan.pair.trust_bundle_ignored_missing_pin",
+            "ignored LAN trust bundle because no pending PIN exists",
+            serde_json::json!({
+                "request_id": packet.request_id,
+                "peer_node_id": packet.node_id,
+            }),
+        );
         return;
     };
     let Some(plaintext) = decrypt_pair_bundle(
@@ -1958,6 +2062,16 @@ fn handle_pair_trust_bundle(
         &packet.nonce_b64,
         &packet.ciphertext_b64,
     ) else {
+        gateway.store.add_event(
+            "gateway",
+            "warning",
+            "lan.pair.trust_bundle_decrypt_failed",
+            "failed to decrypt LAN trust bundle with submitted PIN",
+            serde_json::json!({
+                "request_id": packet.request_id,
+                "peer_node_id": packet.node_id,
+            }),
+        );
         return;
     };
     let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&plaintext) else {
@@ -1981,6 +2095,17 @@ fn handle_pair_trust_bundle(
         .outbound_pair_requests
         .write()
         .remove(packet.node_id.as_str());
+    gateway.store.add_event(
+        "gateway",
+        "info",
+        "lan.pair.trust_bundle_applied",
+        "applied LAN trust bundle and trusted peer",
+        serde_json::json!({
+            "request_id": packet.request_id,
+            "peer_node_id": packet.node_id,
+            "trusted_node_id": trusted_node_id,
+        }),
+    );
 }
 
 fn peer_sync_addr(peer: &LanPeerSnapshot) -> Option<SocketAddr> {

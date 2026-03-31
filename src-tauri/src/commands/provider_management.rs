@@ -377,7 +377,7 @@ pub(crate) fn approve_lan_pair(
     state: tauri::State<'_, app_state::AppState>,
     request_id: String,
 ) -> Result<String, String> {
-    state.lan_sync.approve_pair(&request_id)
+    state.lan_sync.approve_pair(&state.gateway, &request_id)
 }
 
 #[tauri::command]
@@ -389,7 +389,7 @@ pub(crate) fn submit_lan_pair_pin(
 ) -> Result<(), String> {
     state
         .lan_sync
-        .submit_pair_pin(&node_id, &request_id, &pin_code)
+        .submit_pair_pin(&state.gateway, &node_id, &request_id, &pin_code)
 }
 
 #[tauri::command]
