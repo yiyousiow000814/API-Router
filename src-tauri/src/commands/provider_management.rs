@@ -581,11 +581,6 @@ fn copy_provider_from_config_source_impl(
             (current_identity.as_ref() == Some(remote_identity)).then(|| name.clone())
         })
     });
-    let local_copy_state = if existing_match.is_some() {
-        LocalCopyState::Linked
-    } else {
-        LocalCopyState::Copied
-    };
     let target_name = if let Some(name) = existing_match {
         let mut changed = false;
         if local_copy_state_snapshot
@@ -610,7 +605,7 @@ fn copy_provider_from_config_source_impl(
         );
         return Ok(CopyProviderFromConfigSourceResult {
             target_name: name,
-            local_copy_state,
+            local_copy_state: LocalCopyState::Linked,
         });
     } else if local_state.providers.contains_key(&payload.name) {
         next_copy_name(&local_state.providers, &payload.name)
@@ -674,18 +669,9 @@ fn copy_provider_from_config_source_impl(
         .provider_state
         .provider_shared_ids
         .insert(target_name.clone(), shared_provider_id.to_string());
-    match local_copy_state {
-        LocalCopyState::Copied => {
-            local_copy_state_snapshot
-                .copied_shared_provider_ids
-                .insert(shared_provider_id.to_string());
-        }
-        LocalCopyState::Linked => {
-            local_copy_state_snapshot
-                .copied_shared_provider_ids
-                .remove(shared_provider_id);
-        }
-    }
+    local_copy_state_snapshot
+        .copied_shared_provider_ids
+        .insert(shared_provider_id.to_string());
 
     if local_provider_definitions_are_locked(state) {
         crate::lan_sync::write_local_provider_state_snapshot(state, &local_state)?;
@@ -722,7 +708,7 @@ fn copy_provider_from_config_source_impl(
     );
     Ok(CopyProviderFromConfigSourceResult {
         target_name,
-        local_copy_state,
+        local_copy_state: LocalCopyState::Copied,
     })
 }
 
