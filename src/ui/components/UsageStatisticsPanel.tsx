@@ -4523,9 +4523,9 @@ export function UsageStatisticsPanel({
                     <td>Requests {formatRequestSummaryValue(requestTableSummary?.requests)}</td>
                     <td />
                     <td />
+                    <td />
                     <td>{formatRequestSummaryValue(requestTableSummary?.input)}</td>
                     <td>{formatRequestSummaryValue(requestTableSummary?.output)}</td>
-                    <td>{formatRequestSummaryValue(requestTableSummary?.cacheCreate)}</td>
                     <td>{formatRequestSummaryValue(requestTableSummary?.cacheRead)}</td>
                   </tr>
                 </tbody>
