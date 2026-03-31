@@ -54,6 +54,12 @@ const LAN_HEARTBEAT_CAPABILITIES: [&str; 6] = [
     "quota_refresh_v1",
 ];
 
+static GATEWAY_STATUS_RUNTIME: OnceLock<RwLock<Option<LanSyncRuntime>>> = OnceLock::new();
+
+fn gateway_status_runtime() -> &'static RwLock<Option<LanSyncRuntime>> {
+    GATEWAY_STATUS_RUNTIME.get_or_init(|| RwLock::new(None))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LanNodeIdentity {
     pub node_id: String,
@@ -101,6 +107,21 @@ pub struct LanSyncStatusSnapshot {
     pub last_peer_heartbeat_source: Option<String>,
     pub local_node: LanLocalNodeSnapshot,
     pub peers: Vec<LanPeerSnapshot>,
+}
+
+pub fn register_gateway_status_runtime(runtime: LanSyncRuntime) {
+    *gateway_status_runtime().write() = Some(runtime);
+}
+
+pub fn gateway_status_snapshot(
+    listen_port: u16,
+    cfg: &AppConfig,
+    secrets: &SecretStore,
+) -> Option<LanSyncStatusSnapshot> {
+    gateway_status_runtime()
+        .read()
+        .as_ref()
+        .map(|runtime| runtime.snapshot(listen_port, cfg, secrets))
 }
 
 #[derive(Debug, Clone)]

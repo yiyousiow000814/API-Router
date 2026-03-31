@@ -113,6 +113,10 @@ export type Status = {
       last_heartbeat_unix_ms: number
       capabilities: string[]
       provider_fingerprints: string[]
+      followed_source_node_id?: string | null
+      trusted?: boolean
+      pair_state?: 'trusted' | 'incoming_request' | 'requested' | 'pin_required' | null
+      pair_request_id?: string | null
     }>
   }
   shared_quota_owners?: Array<{

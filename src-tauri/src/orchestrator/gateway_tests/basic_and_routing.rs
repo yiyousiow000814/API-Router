@@ -43,6 +43,12 @@ async fn health_and_status_work_without_upstream() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("status body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("status json");
+    assert!(json.get("lan_sync").is_some());
+    assert!(json.get("windows_firewall").is_some());
 }
 
 #[tokio::test]

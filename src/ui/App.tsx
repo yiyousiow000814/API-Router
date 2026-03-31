@@ -67,6 +67,7 @@ import {
   getDevPreviewSourceProviders,
   updateDevPreviewPairState,
 } from './utils/devPreviewConfigSource'
+import { lanConfigSourceSyncSignature } from './utils/lanConfigSourceSync'
 
 const AppModals = lazy(async () => {
   const module = await import('./components/AppModals')
@@ -329,6 +330,7 @@ export default function App() {
   const devPreviewFollowSourceProvidersRef = useRef<Config['providers'] | null>(null)
   const rawConfigTextsRef = useRef<Record<string, string>>({})
   const rawConfigDraftAutoSaveTimerRef = useRef<Record<string, number>>({})
+  const lastLanConfigSyncSignatureRef = useRef<string>('')
   const setRawConfigTextsSync = (
     updater: Record<string, string> | ((prev: Record<string, string>) => Record<string, string>),
   ) => {
@@ -1326,6 +1328,14 @@ export default function App() {
     onDevPreviewBootstrap,
     onDevPreviewTick,
   })
+  useEffect(() => {
+    if (isDevPreview || !status) return
+    const nextSignature = lanConfigSourceSyncSignature(status.lan_sync)
+    const prevSignature = lastLanConfigSyncSignatureRef.current
+    lastLanConfigSyncSignatureRef.current = nextSignature
+    if (!prevSignature || prevSignature === nextSignature) return
+    void refreshConfig({ refreshProviderSwitchStatus: false })
+  }, [isDevPreview, refreshConfig, status])
   useEffect(() => {
     if (!isDevPreview) return
     devPreviewLocalConfigRef.current = null

@@ -468,8 +468,21 @@ pub fn run() {
                 }
             }
             app.manage(state);
+            {
+                let st = app.state::<app_state::AppState>();
+                crate::lan_sync::register_gateway_status_runtime(st.lan_sync.clone());
+            }
             if !is_ui_tauri {
                 let st = app.state::<app_state::AppState>();
+                if cfg!(target_os = "windows") {
+                    if let Ok(app_path) = std::env::current_exe() {
+                        std::thread::spawn(move || {
+                            crate::platform::windows_firewall::ensure_api_router_udp_firewall_rule(
+                                &app_path,
+                            );
+                        });
+                    }
+                }
                 st.lan_sync
                     .start_background(st.gateway.clone(), st.config_path.clone());
             }
