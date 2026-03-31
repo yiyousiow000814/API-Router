@@ -544,6 +544,10 @@ impl LanSyncRuntime {
             .find(|peer| peer.node_id == node_id)
     }
 
+    pub fn has_alive_peers(&self) -> bool {
+        !self.collect_live_peers(unix_ms()).is_empty()
+    }
+
     pub fn request_pair(
         &self,
         gateway: &crate::orchestrator::gateway::GatewayState,

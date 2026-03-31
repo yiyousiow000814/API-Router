@@ -551,7 +551,21 @@ impl RouterState {
     }
 
     pub fn mark_usage_refresh_success(&self, provider: &str, now_ms: u64) {
-        let _ = self.mark_success(provider, now_ms);
+        let mut should_persist = false;
+        {
+            let mut health = self.health.write();
+            if let Some(h) = health.get_mut(provider) {
+                if matches!(h.state, HealthState::Unknown) {
+                    h.state = HealthState::Healthy;
+                }
+                h.last_ok_at_unix_ms = now_ms;
+                Self::mark_local_runtime_update(h, now_ms);
+                should_persist = !matches!(h.state, HealthState::Unknown);
+            }
+        }
+        if should_persist {
+            self.persist_shared_health_state(now_ms);
+        }
     }
 
     pub fn require_usage_confirmation(&self, provider: &str) {
@@ -691,7 +705,7 @@ mod tests {
     }
 
     #[test]
-    fn usage_refresh_success_marks_runtime_and_recovers_from_failure() {
+    fn usage_refresh_success_marks_runtime_without_clearing_failure_state() {
         let mut cfg = AppConfig::default_config();
         cfg.routing.failure_threshold = 10;
         let provider = "official";
@@ -707,7 +721,8 @@ mod tests {
         router.mark_usage_refresh_success(provider, 3_000);
         let snapshot = router.snapshot(3_000);
         let health = snapshot.get(provider).expect("provider health snapshot");
-        assert_eq!(health.status, "healthy");
+        assert_eq!(health.status, "unhealthy");
+        assert_eq!(health.consecutive_failures, 1);
         assert_eq!(health.last_ok_at_unix_ms, 3_000);
     }
 

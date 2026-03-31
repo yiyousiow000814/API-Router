@@ -1024,6 +1024,17 @@ fn should_run_background_quota_refresh(has_any_credential: bool, has_quota_sourc
     has_any_credential && has_quota_source
 }
 
+fn should_run_background_quota_scheduler(
+    now_ms: u64,
+    last_activity_unix_ms: u64,
+    has_alive_peers: bool,
+) -> bool {
+    if has_alive_peers {
+        return true;
+    }
+    last_activity_unix_ms != 0 && now_ms.saturating_sub(last_activity_unix_ms) < 10 * 60 * 1000
+}
+
 fn can_refresh_quota_for_provider(
     st: &GatewayState,
     provider_name: &str,
@@ -1519,6 +1530,13 @@ pub async fn run_quota_scheduler(st: GatewayState, lan_sync: crate::lan_sync::La
         tokio::time::sleep(Duration::from_millis(900)).await;
 
         let now = unix_ms();
+        let last_activity = st
+            .last_activity_unix_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let has_alive_peers = lan_sync.has_alive_peers();
+        if !should_run_background_quota_scheduler(now, last_activity, has_alive_peers) {
+            continue;
+        }
         let cfg = st.cfg.read().clone();
         let mut shared_provider_counts: HashMap<String, usize> = HashMap::new();
         for name in cfg.providers.keys() {

@@ -1784,6 +1784,15 @@ mod tests {
     }
 
     #[test]
+    fn background_quota_scheduler_requires_recent_activity_without_alive_peers() {
+        let now = 10 * 60 * 1000;
+        assert!(!should_run_background_quota_scheduler(now, 0, false));
+        assert!(!should_run_background_quota_scheduler(now, now.saturating_sub(10 * 60 * 1000), false));
+        assert!(should_run_background_quota_scheduler(now, now - 1_000, false));
+        assert!(should_run_background_quota_scheduler(now, 0, true));
+    }
+
+    #[test]
     fn standard_quota_refresh_prefers_0058_before_next_daily_reset() {
         use chrono::{FixedOffset, TimeZone, Timelike};
 
