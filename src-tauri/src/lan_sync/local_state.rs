@@ -292,6 +292,9 @@ pub fn restore_local_provider_state(state: &crate::app_state::AppState) -> Resul
     };
     let previous_cfg = state.gateway.cfg.read().clone();
     let previous_bundle = state.secrets.export_provider_state_bundle();
+    state
+        .secrets
+        .replace_provider_state_bundle(snapshot.provider_state.clone())?;
     {
         let mut cfg = state.gateway.cfg.write();
         cfg.providers = snapshot.providers.clone();
@@ -301,9 +304,6 @@ pub fn restore_local_provider_state(state: &crate::app_state::AppState) -> Resul
         crate::app_state::normalize_provider_order(&mut cfg);
         sanitize_active_routing_refs(&mut cfg);
     }
-    state
-        .secrets
-        .replace_provider_state_bundle(snapshot.provider_state)?;
     let next_cfg = state.gateway.cfg.read().clone();
     if let Err(err) = persist_gateway_config(&state.gateway, &state.config_path) {
         state

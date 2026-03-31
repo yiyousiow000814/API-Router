@@ -2558,6 +2558,22 @@ mod tests {
         (tmp, state)
     }
 
+    fn build_test_state_with_broken_secrets_path() -> (tempfile::TempDir, crate::app_state::AppState)
+    {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let user_data = tmp.path().join("user-data");
+        let config_path = user_data.join("config.toml");
+        let data_dir = user_data.join("data");
+        std::fs::create_dir_all(&user_data).expect("create user-data dir");
+        let state = crate::app_state::build_state(config_path, data_dir).expect("build state");
+        let secrets_path = state.secrets.path().to_path_buf();
+        if secrets_path.exists() {
+            std::fs::remove_file(&secrets_path).expect("remove secrets file");
+        }
+        std::fs::create_dir_all(&secrets_path).expect("create broken secrets dir");
+        (tmp, state)
+    }
+
     #[test]
     fn sanitize_node_name_trims_and_limits_length() {
         let value = sanitize_node_name("  My/Desk*Top Node Name With Extra Characters  ");
@@ -2902,6 +2918,55 @@ mod tests {
                 .copied_shared_provider_ids,
             std::collections::BTreeSet::from([("shared-provider-1".to_string())]),
             "failed restore must not clear saved local copy state"
+        );
+    }
+
+    #[test]
+    fn restore_local_provider_state_rolls_back_when_secret_bundle_persist_fails() {
+        let (_tmp, state) = build_test_state_with_broken_secrets_path();
+        let local_snapshot = crate::lan_sync::LocalProviderStateSnapshot {
+            providers: state.gateway.cfg.read().providers.clone(),
+            provider_order: state.gateway.cfg.read().provider_order.clone(),
+            preferred_provider: state.gateway.cfg.read().routing.preferred_provider.clone(),
+            session_preferred_providers: state
+                .gateway
+                .cfg
+                .read()
+                .routing
+                .session_preferred_providers
+                .clone(),
+            provider_state: state.secrets.export_provider_state_bundle(),
+        };
+        crate::lan_sync::write_local_provider_state_snapshot(&state, &local_snapshot)
+            .expect("write local snapshot");
+
+        {
+            let mut cfg = state.gateway.cfg.write();
+            let provider = cfg.providers.get_mut("provider_1").expect("provider_1");
+            provider.display_name = "Followed Provider".to_string();
+            cfg.routing.preferred_provider = "provider_2".to_string();
+        }
+        let previous_cfg = state.gateway.cfg.read().clone();
+        let previous_bundle = state.gateway.secrets.export_provider_state_bundle();
+
+        let err = restore_local_provider_state(&state).expect_err("persist should fail");
+
+        assert!(!err.trim().is_empty());
+        let current_cfg = state.gateway.cfg.read();
+        assert_eq!(
+            current_cfg.providers.keys().cloned().collect::<Vec<_>>(),
+            previous_cfg.providers.keys().cloned().collect::<Vec<_>>()
+        );
+        assert_eq!(current_cfg.provider_order, previous_cfg.provider_order);
+        assert_eq!(
+            current_cfg.routing.preferred_provider,
+            previous_cfg.routing.preferred_provider
+        );
+        let current_bundle = state.gateway.secrets.export_provider_state_bundle();
+        assert_eq!(current_bundle.providers, previous_bundle.providers);
+        assert_eq!(
+            current_bundle.provider_key_storage_modes,
+            previous_bundle.provider_key_storage_modes
         );
     }
 
