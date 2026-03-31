@@ -770,6 +770,9 @@ fn should_keep_runtime_session(
     const PIDLESS_WT_MAX_STALE_MS: u64 = 15 * 60 * 1000;
 
     let active = session_is_active(entry, now);
+    if entry.is_review {
+        return active;
+    }
     if entry.pid != 0 && !is_pid_alive(entry.pid) {
         return false;
     }
@@ -786,7 +789,8 @@ fn should_keep_runtime_session(
 
         if !wt.is_empty() {
             let last_seen = entry.last_request_unix_ms.max(entry.last_discovered_unix_ms);
-            let stale_too_long = last_seen == 0 || now.saturating_sub(last_seen) > PIDLESS_WT_MAX_STALE_MS;
+            let stale_too_long =
+                last_seen == 0 || now.saturating_sub(last_seen) > PIDLESS_WT_MAX_STALE_MS;
             if !active && stale_too_long {
                 return false;
             }
@@ -2784,6 +2788,49 @@ mod tests {
         assert!(keep);
     }
 
+    #[test]
+    fn inactive_review_without_process_identity_drops_even_with_parent_session() {
+        let now = 200_000_u64;
+        let entry = ClientSessionRuntime {
+            codex_session_id: "review-pidless".to_string(),
+            pid: 0,
+            wt_session: None,
+            last_request_unix_ms: now.saturating_sub(120_000),
+            last_discovered_unix_ms: now.saturating_sub(120_000),
+            last_reported_model_provider: None,
+            last_reported_model: None,
+            last_reported_base_url: None,
+            agent_parent_session_id: Some("main-1".to_string()),
+            is_agent: true,
+            is_review: true,
+            confirmed_router: true,
+        };
+
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 3, true);
+        assert!(!keep);
+    }
+
+    #[test]
+    fn inactive_review_with_live_process_identity_still_drops() {
+        let now = 200_000_u64;
+        let entry = ClientSessionRuntime {
+            codex_session_id: "review-shared-pid".to_string(),
+            pid: 9527,
+            wt_session: Some("wt-main".to_string()),
+            last_request_unix_ms: now.saturating_sub(120_000),
+            last_discovered_unix_ms: now.saturating_sub(5_000),
+            last_reported_model_provider: None,
+            last_reported_model: None,
+            last_reported_base_url: None,
+            agent_parent_session_id: Some("main-1".to_string()),
+            is_agent: true,
+            is_review: true,
+            confirmed_router: true,
+        };
+
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 0, true);
+        assert!(!keep);
+    }
     #[test]
     fn pidless_wt_session_drops_when_stale_too_long_even_if_wt_alive() {
         let now = 2_000_000_u64;

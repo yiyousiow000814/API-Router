@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { ProvidersTable } from './ProvidersTable'
 import type { Config, Status, UsageStatistics } from '../types'
+import { fmtWhen } from '../utils/format'
 
 function buildStatus(): Status {
   return {
@@ -288,6 +289,54 @@ describe('ProvidersTable', () => {
     expect(html).toContain('monthly: $40.92 / $6,000.304')
     expect(html).not.toContain('balance: $5,959.08')
     expect(html).not.toContain('account summary')
+  })
+
+  it('shows aigateway daily usage and date-only expiry', () => {
+    const packageExpiresAtUnixMs = Date.parse('2026-04-02T14:02:27.679+08:00')
+    const expectedDateOnly = fmtWhen(packageExpiresAtUnixMs).split(' ')[0]
+    const status = buildStatus()
+    status.providers = {
+      aigateway: {
+        status: 'healthy',
+        consecutive_failures: 0,
+        cooldown_until_unix_ms: 0,
+        last_error: '',
+        last_ok_at_unix_ms: 0,
+        last_fail_at_unix_ms: 0,
+      },
+    }
+    status.quota = {
+      aigateway: {
+        kind: 'budget_info',
+        updated_at_unix_ms: 1234,
+        remaining: 200,
+        today_used: null,
+        today_added: null,
+        daily_spent_usd: 0,
+        daily_budget_usd: 200,
+        weekly_spent_usd: null,
+        weekly_budget_usd: null,
+        monthly_spent_usd: null,
+        monthly_budget_usd: null,
+        package_expires_at_unix_ms: packageExpiresAtUnixMs,
+        last_error: '',
+      },
+    }
+
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['aigateway']}
+        status={status}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
+
+    expect(html).toContain('daily: $0 / $200')
+    expect(html).toContain(`title="package ends: ${fmtWhen(packageExpiresAtUnixMs)}"`)
+    expect(html).toContain(`ends: ${expectedDateOnly}`)
+    expect(html).toContain(`>${`ends: ${expectedDateOnly}`}<`)
   })
 
   it('hides balance-only snapshots from the usage preview', () => {
