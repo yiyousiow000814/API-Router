@@ -68,6 +68,7 @@ import {
   updateDevPreviewPairState,
 } from './utils/devPreviewConfigSource'
 import { lanConfigSourceSyncSignature } from './utils/lanConfigSourceSync'
+import { waitForLanConfigSourceTrust } from './utils/lanPairCompletion'
 
 const AppModals = lazy(async () => {
   const module = await import('./components/AppModals')
@@ -331,6 +332,7 @@ export default function App() {
   const rawConfigTextsRef = useRef<Record<string, string>>({})
   const rawConfigDraftAutoSaveTimerRef = useRef<Record<string, number>>({})
   const lastLanConfigSyncSignatureRef = useRef<string>('')
+  const pairCompletionWatchSeqRef = useRef(0)
   const setRawConfigTextsSync = (
     updater: Record<string, string> | ((prev: Record<string, string>) => Record<string, string>),
   ) => {
@@ -1205,10 +1207,31 @@ export default function App() {
       return null
     }
   }
+  async function watchLanPairTrust(nodeId: string): Promise<boolean> {
+    if (isDevPreview) return true
+    const watchSeq = ++pairCompletionWatchSeqRef.current
+    return waitForLanConfigSourceTrust({
+      nodeId,
+      loadStatus: () => invoke<Status>('get_status'),
+      loadConfig: () => invoke<Config>('get_config'),
+      applyStatus: (nextStatus) => {
+        if (pairCompletionWatchSeqRef.current !== watchSeq) return
+        setStatus(nextStatus)
+        if (!overrideDirtyRef.current) setOverride(nextStatus.manual_override ?? '')
+      },
+      applyConfig: (nextConfig) => {
+        if (pairCompletionWatchSeqRef.current !== watchSeq) return
+        setConfig(nextConfig)
+        setBaselineBaseUrls(
+          Object.fromEntries(Object.entries(nextConfig.providers ?? {}).map(([name, provider]) => [name, provider.base_url])),
+        )
+      },
+    })
+  }
   async function approveLanPair(requestId: string): Promise<string | null> {
     try {
+      const nodeId = config?.config_source?.sources.find((entry) => entry.pair_request_id === requestId)?.node_id ?? ''
       if (isDevPreview) {
-        const nodeId = config?.config_source?.sources.find((entry) => entry.pair_request_id === requestId)?.node_id ?? ''
         if (!nodeId) {
           flashToast('Pair request not found [TEST]', 'error')
           return null
@@ -1228,6 +1251,9 @@ export default function App() {
       }
       const pinCode = await invoke<string>('approve_lan_pair', { requestId })
       await refreshConfig()
+      if (nodeId) {
+        void watchLanPairTrust(nodeId)
+      }
       return pinCode
     } catch (e) {
       flashToast(String(e), 'error')
@@ -1251,6 +1277,7 @@ export default function App() {
     }
     await invoke('submit_lan_pair_pin', { nodeId, requestId, pinCode })
     await refreshConfig()
+    await watchLanPairTrust(nodeId)
   }
   async function copyProviderFromConfigSource(sourceNodeId: string, sharedProviderId: string) {
     try {
