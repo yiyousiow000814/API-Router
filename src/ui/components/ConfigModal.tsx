@@ -70,7 +70,6 @@ export function ConfigModal({
   dragCardHeight,
   renderProviderCard,
 }: Props) {
-  if (!open || !config) return null
   const [sourceMenuOpen, setSourceMenuOpen] = useState(false)
   const [pairDialog, setPairDialog] = useState<PairDialogState | null>(null)
   const [pairPinDigits, setPairPinDigits] = useState<string[]>(() => emptyPairPinDigits())
@@ -78,6 +77,7 @@ export function ConfigModal({
   const [pairDialogError, setPairDialogError] = useState('')
   const sourceMenuRef = useRef<HTMLDivElement | null>(null)
   const pairPinInputRefs = useRef<Array<HTMLInputElement | null>>([])
+  if (!open || !config) return null
   const dragPlaceholderHeight = dragCardHeight > 0 ? dragCardHeight : 56
   const configSources =
     config.config_source?.sources && config.config_source.sources.length > 0
@@ -134,6 +134,7 @@ export function ConfigModal({
     pairPinInputRefs.current[0]?.focus()
   }, [pairDialog])
   useEffect(() => {
+    if (!open || !config) return
     if (pairDialog?.mode !== 'show_pin') return
     const source = config.config_source?.sources.find((entry) => entry.node_id === pairDialog.nodeId)
     if (!source?.trusted) return
