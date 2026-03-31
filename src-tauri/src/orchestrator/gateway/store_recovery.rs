@@ -80,4 +80,3 @@ pub fn open_store_dir(base: PathBuf) -> anyhow::Result<Store> {
 
     open_or_recover(&path)
 }
-

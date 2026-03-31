@@ -353,6 +353,7 @@ impl Store {
             );
         }
         tx.commit()?;
+        drop(conn);
         self.set_event_meta(Self::SPEND_HISTORY_SQLITE_MIGRATED_FROM_SLED_KEY, "1")?;
         Ok(())
     }
