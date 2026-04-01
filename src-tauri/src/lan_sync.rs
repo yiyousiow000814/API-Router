@@ -1893,7 +1893,7 @@ fn handle_pair_request(
             request_id: packet.request_id.clone(),
             requester_node_id: normalized_node_id.to_string(),
             requested_at_unix_ms: now,
-            requester_addr: source,
+            requester_addr: SocketAddr::new(source.ip(), LAN_DISCOVERY_PORT),
         },
     );
     gateway.store.add_event(
