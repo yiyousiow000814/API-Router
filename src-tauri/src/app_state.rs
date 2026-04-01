@@ -96,6 +96,94 @@ pub fn run_startup_prune_noisy_lan_events(state: &AppState) -> usize {
         .unwrap_or(0)
 }
 
+pub fn disable_expired_package_providers(state: &AppState) -> Vec<String> {
+    if state.secrets.get_followed_config_source_node_id().is_some() {
+        return Vec::new();
+    }
+    let now = unix_ms();
+    let mut expired = Vec::new();
+    {
+        let mut cfg = state.gateway.cfg.write();
+        for (provider_name, provider) in cfg.providers.iter_mut() {
+            if provider.disabled {
+                continue;
+            }
+            let Some(expires_at) = state
+                .gateway
+                .store
+                .get_quota_snapshot(provider_name)
+                .and_then(|snapshot| {
+                    snapshot
+                        .get("package_expires_at_unix_ms")
+                        .and_then(|value| value.as_u64())
+                })
+            else {
+                continue;
+            };
+            if expires_at > now {
+                continue;
+            }
+            provider.disabled = true;
+            expired.push(provider_name.clone());
+        }
+        if expired.is_empty() {
+            return expired;
+        }
+        cfg.routing
+            .session_preferred_providers
+            .retain(|_, provider_name| !expired.iter().any(|item| item == provider_name));
+        if expired
+            .iter()
+            .any(|provider_name| provider_name == &cfg.routing.preferred_provider)
+        {
+            if let Some(next_provider) = cfg.provider_order.iter().find(|provider_name| {
+                cfg.providers
+                    .get(*provider_name)
+                    .is_some_and(|provider| !provider.disabled)
+            }) {
+                cfg.routing.preferred_provider = next_provider.clone();
+            }
+        }
+        normalize_provider_order(&mut cfg);
+        let _ = std::fs::write(
+            &state.config_path,
+            toml::to_string_pretty(&*cfg).unwrap_or_default(),
+        );
+    }
+    for provider_name in &expired {
+        state
+            .gateway
+            .last_used_by_session
+            .write()
+            .retain(|_, route| {
+                route.provider != *provider_name && route.preferred != *provider_name
+            });
+        if let Err(err) = crate::lan_sync::record_provider_definition_patch(
+            state,
+            provider_name,
+            serde_json::json!({ "disabled": true }),
+        ) {
+            state.gateway.store.add_event(
+                provider_name,
+                "error",
+                "lan.edit_sync_record_failed",
+                &format!("failed to record expired provider disable for LAN sync: {err}"),
+                serde_json::Value::Null,
+            );
+        }
+        state.gateway.store.add_event(
+            provider_name,
+            "warning",
+            "config.provider_disabled_after_package_expiry",
+            "provider disabled automatically after package expiry",
+            serde_json::json!({ "expired_at_unix_ms": now }),
+        );
+    }
+    let cfg = state.gateway.cfg.read().clone();
+    state.gateway.router.sync_with_config(&cfg, now);
+    expired
+}
+
 pub fn load_or_init_config(path: &PathBuf) -> anyhow::Result<AppConfig> {
     if path.exists() {
         let txt = std::fs::read_to_string(path)?;
@@ -274,7 +362,10 @@ fn should_prune_placeholder_provider(cfg: &AppConfig, secrets: &SecretStore, nam
 
 #[cfg(test)]
 mod tests {
-    use super::{build_state, load_or_init_config, run_startup_gateway_token_sync};
+    use super::{
+        build_state, disable_expired_package_providers, load_or_init_config,
+        run_startup_gateway_token_sync,
+    };
     use crate::orchestrator::config::AppConfig;
     use serde_json::json;
 
@@ -437,5 +528,42 @@ mod tests {
 
         drop(prepared);
         drop(occupied);
+    }
+
+    #[test]
+    fn disable_expired_package_providers_disables_local_provider_after_expiry() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+
+        let state = build_state(config_path.clone(), data_dir).expect("build state");
+        let provider_name = "official";
+        state
+            .gateway
+            .store
+            .put_quota_snapshot(
+                provider_name,
+                &json!({
+                    "package_expires_at_unix_ms": crate::orchestrator::store::unix_ms().saturating_sub(1_000)
+                }),
+            )
+            .expect("put quota snapshot");
+
+        let disabled = disable_expired_package_providers(&state);
+
+        assert_eq!(disabled, vec![provider_name.to_string()]);
+        assert!(state
+            .gateway
+            .cfg
+            .read()
+            .providers
+            .get(provider_name)
+            .is_some_and(|provider| provider.disabled));
+        let persisted = load_or_init_config(&config_path).expect("load config");
+        assert!(persisted
+            .providers
+            .get(provider_name)
+            .is_some_and(|provider| provider.disabled));
     }
 }

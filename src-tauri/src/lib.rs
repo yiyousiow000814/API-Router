@@ -556,6 +556,15 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     crate::orchestrator::quota::run_quota_scheduler(gateway, lan_sync).await;
                 });
+
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                        let st = app_handle.state::<app_state::AppState>();
+                        let _ = app_state::disable_expired_package_providers(&st);
+                    }
+                });
             }
 
             if app_profile == "default" {

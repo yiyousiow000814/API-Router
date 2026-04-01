@@ -565,33 +565,47 @@ pub fn shared_quota_owner_for_provider(
     provider_name: &str,
 ) -> Option<crate::lan_sync::LanQuotaOwnerDecision> {
     let fingerprint = shared_provider_fingerprint_for_provider(st, provider_name)?;
-    let cfg = st.cfg.read().clone();
-    if let Some(followed_node_id) = st.secrets.get_followed_config_source_node_id() {
-        let trusted_node_ids = st.secrets.trusted_lan_node_ids();
-        if trusted_node_ids.contains(&followed_node_id) {
-            let lan_snapshot = lan_sync.snapshot(cfg.listen.port, &cfg, &st.secrets);
-            if let Some(peer) = lan_snapshot
-                .peers
-                .iter()
-                .find(|peer| peer.node_id == followed_node_id && peer.trusted)
-            {
-                if peer
-                    .provider_fingerprints
-                    .iter()
-                    .any(|value| value == &fingerprint)
-                {
-                    return Some(crate::lan_sync::LanQuotaOwnerDecision {
-                        local_is_owner: false,
-                        owner_node_id: peer.node_id.clone(),
-                        owner_node_name: peer.node_name.clone(),
-                        contender_count: 2,
-                    });
-                }
-            }
-        }
-    }
     let trusted_node_ids = st.secrets.trusted_lan_node_ids();
     lan_sync.quota_owner_for_fingerprint(&fingerprint, &trusted_node_ids)
+}
+
+pub fn followed_source_quota_fallback_target(
+    st: &GatewayState,
+    lan_sync: &crate::lan_sync::LanSyncRuntime,
+    provider_name: &str,
+) -> Option<crate::lan_sync::LanQuotaOwnerDecision> {
+    let followed_node_id = st.secrets.get_followed_config_source_node_id()?;
+    let fingerprint = shared_provider_fingerprint_for_provider(st, provider_name)?;
+    let trusted_node_ids = st.secrets.trusted_lan_node_ids();
+    if !trusted_node_ids.contains(&followed_node_id) {
+        return None;
+    }
+    let cfg = st.cfg.read().clone();
+    let lan_snapshot = lan_sync.snapshot(cfg.listen.port, &cfg, &st.secrets);
+    let peer = lan_snapshot
+        .peers
+        .iter()
+        .find(|peer| peer.node_id == followed_node_id && peer.trusted)?;
+    if !peer
+        .provider_fingerprints
+        .iter()
+        .any(|value| value == &fingerprint)
+    {
+        return None;
+    }
+    Some(crate::lan_sync::LanQuotaOwnerDecision {
+        local_is_owner: false,
+        owner_node_id: peer.node_id.clone(),
+        owner_node_name: peer.node_name.clone(),
+        contender_count: 2,
+    })
+}
+
+pub fn is_followed_source_refresh_fallback_error(err: &str) -> bool {
+    let normalized = err.trim().to_ascii_lowercase();
+    normalized.contains("packycode browser session:")
+        || normalized.contains("packycode login browser profile not found")
+        || normalized.contains("browser profile not found")
 }
 
 pub fn shared_quota_owner_statuses(
@@ -1089,9 +1103,19 @@ fn quota_refresh_interval_ms(
     _has_successful_snapshot: bool,
     _shared_provider_count: usize,
     _last_error: &str,
-    _provider_strategy: PackageExpiryStrategy,
+    provider_strategy: PackageExpiryStrategy,
 ) -> u64 {
-    next_standard_quota_refresh_due_unix_ms(now_ms).saturating_sub(now_ms)
+    let now = chrono::Local
+        .timestamp_millis_opt(now_ms as i64)
+        .single()
+        .unwrap_or_else(chrono::Local::now);
+    let due = match provider_strategy {
+        PackageExpiryStrategy::Packycode => {
+            next_packycode_refresh_at(now).timestamp_millis().max(0) as u64
+        }
+        _ => next_standard_quota_refresh_due_unix_ms(now_ms),
+    };
+    due.saturating_sub(now_ms)
 }
 
 fn initial_quota_refresh_due_unix_ms(
@@ -1100,12 +1124,21 @@ fn initial_quota_refresh_due_unix_ms(
     _is_active_provider: bool,
     _is_preferred_provider: bool,
     _shared_provider_count: usize,
-    _provider_strategy: PackageExpiryStrategy,
+    provider_strategy: PackageExpiryStrategy,
 ) -> Option<u64> {
     if existing_snapshot.is_some_and(|existing| existing.updated_at_unix_ms == 0) {
         return None;
     }
-    Some(next_standard_quota_refresh_due_unix_ms(now_ms))
+    let now = chrono::Local
+        .timestamp_millis_opt(now_ms as i64)
+        .single()
+        .unwrap_or_else(chrono::Local::now);
+    Some(match provider_strategy {
+        PackageExpiryStrategy::Packycode => {
+            next_packycode_refresh_at(now).timestamp_millis().max(0) as u64
+        }
+        _ => next_standard_quota_refresh_due_unix_ms(now_ms),
+    })
 }
 
 fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
@@ -1625,6 +1658,34 @@ pub async fn run_quota_scheduler(st: GatewayState, lan_sync: crate::lan_sync::La
             }
 
             let snap = refresh_quota_for_provider_cached(&st, name, &mut cache).await;
+            if !snap.last_error.is_empty()
+                && is_followed_source_refresh_fallback_error(&snap.last_error)
+            {
+                if let Some(owner) = followed_source_quota_fallback_target(&st, &lan_sync, name) {
+                    if let Some(fingerprint) = shared_provider_fingerprint(&cfg, &st.secrets, name)
+                    {
+                        if lan_sync
+                            .request_remote_quota_refresh(&st, &owner.owner_node_id, &fingerprint)
+                            .is_ok()
+                        {
+                            st.store.add_event(
+                                name,
+                                "info",
+                                "usage.refresh_forwarded_after_local_failure",
+                                &format!(
+                                    "Usage refresh failed locally and was forwarded to {} ({})",
+                                    owner.owner_node_name, owner.owner_node_id
+                                ),
+                                serde_json::json!({
+                                    "owner_node_id": owner.owner_node_id,
+                                    "owner_node_name": owner.owner_node_name,
+                                    "local_error": snap.last_error,
+                                }),
+                            );
+                        }
+                    }
+                }
+            }
             let previous_success = existing_snapshot.is_some_and(|existing| {
                 existing.last_error.is_empty() && existing.updated_at_unix_ms > 0
             });

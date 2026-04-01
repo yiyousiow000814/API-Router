@@ -2769,6 +2769,16 @@ fn handle_quota_refresh_request(
     let gateway = gateway.clone();
     let runtime = runtime.clone();
     tauri::async_runtime::spawn(async move {
+        gateway.store.add_event(
+            "gateway",
+            "info",
+            "lan.quota_refresh_forwarded_started",
+            "remote quota refresh request received; owner is refreshing now",
+            serde_json::json!({
+                "provider": provider_name,
+                "requester_node_id": packet.node_id,
+            }),
+        );
         match crate::orchestrator::quota::refresh_quota_shared(&gateway, &runtime, &provider_name)
             .await
         {

@@ -2387,7 +2387,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_quota_owner_prefers_followed_source_peer() {
+    fn followed_source_quota_fallback_target_uses_followed_peer() {
         let providers = std::collections::BTreeMap::from([(
             "p1".to_string(),
             ProviderConfig {
@@ -2416,7 +2416,7 @@ mod tests {
         lan_sync.set_test_peer_provider_fingerprints("node-followed", vec![fingerprint]);
 
         let owner =
-            shared_quota_owner_for_provider(&st, &lan_sync, "p1").expect("owner decision");
+            followed_source_quota_fallback_target(&st, &lan_sync, "p1").expect("owner decision");
 
         assert!(!owner.local_is_owner);
         assert_eq!(owner.owner_node_id, "node-followed");
