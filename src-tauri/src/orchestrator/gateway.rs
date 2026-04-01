@@ -489,6 +489,10 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
             post(crate::lan_sync::lan_sync_usage_http),
         )
         .route("/lan-sync/edit", post(crate::lan_sync::lan_sync_edit_http))
+        .route(
+            "/lan-sync/provider-definitions",
+            post(crate::lan_sync::lan_sync_provider_definitions_http),
+        )
         .route("/v1/models", get(models))
         .route("/v1/responses", post(responses))
         .route("/responses", post(responses))

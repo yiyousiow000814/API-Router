@@ -468,6 +468,20 @@ fn set_followed_config_source_impl(
             &crate::lan_sync::LocalProviderCopyStateSnapshot::default(),
         )?;
     }
+    if peer
+        .trusted
+        && peer
+            .capabilities
+            .iter()
+            .any(|value| value == "provider_definitions_v1")
+    {
+        crate::lan_sync::refresh_followed_provider_definitions_from_live_peer(
+            &state.lan_sync,
+            &state.gateway,
+            &state.config_path,
+            &peer,
+        )?;
+    }
     persist_followed_config_source_change(
         previous_followed.as_deref(),
         Some(normalized_node_id),

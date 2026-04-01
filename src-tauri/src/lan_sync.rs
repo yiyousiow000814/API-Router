@@ -50,11 +50,12 @@ const LAN_PAIR_REQUEST_THROTTLE_MS: u64 = 60 * 1000;
 const LAN_PAIR_APPROVAL_TTL_MS: u64 = 5 * 60 * 1000;
 const LAN_SYNC_AUTH_NODE_ID_HEADER: &str = "x-api-router-lan-node-id";
 const LAN_SYNC_AUTH_SECRET_HEADER: &str = "x-api-router-lan-secret";
-const LAN_HEARTBEAT_CAPABILITIES: [&str; 6] = [
+const LAN_HEARTBEAT_CAPABILITIES: [&str; 7] = [
     "heartbeat_v1",
     "status_v1",
     "usage_sync_v1",
     "edit_sync_v1",
+    "provider_definitions_v1",
     "config_source_v1",
     "quota_refresh_v1",
 ];
@@ -78,6 +79,7 @@ pub struct LanLocalNodeSnapshot {
     pub listen_addr: Option<String>,
     pub capabilities: Vec<String>,
     pub provider_fingerprints: Vec<String>,
+    pub provider_definitions_revision: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,6 +90,7 @@ pub struct LanPeerSnapshot {
     pub last_heartbeat_unix_ms: u64,
     pub capabilities: Vec<String>,
     pub provider_fingerprints: Vec<String>,
+    pub provider_definitions_revision: String,
     pub followed_source_node_id: Option<String>,
     pub trusted: bool,
     pub pair_state: Option<String>,
@@ -137,6 +140,7 @@ struct LanPeerRuntime {
     last_heartbeat_unix_ms: u64,
     capabilities: Vec<String>,
     provider_fingerprints: Vec<String>,
+    provider_definitions_revision: String,
     followed_source_node_id: Option<String>,
 }
 
@@ -172,6 +176,8 @@ struct LanHeartbeatPacket {
     sent_at_unix_ms: u64,
     capabilities: Vec<String>,
     provider_fingerprints: Vec<String>,
+    #[serde(default)]
+    provider_definitions_revision: String,
     #[serde(default)]
     followed_source_node_id: Option<String>,
 }
@@ -224,6 +230,31 @@ pub(crate) struct LanEditSyncBatchPacket {
     node_id: String,
     events: Vec<crate::orchestrator::store::LanEditSyncEvent>,
     has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LanProviderDefinitionsRequestPacket {
+    version: u8,
+    node_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LanProviderDefinitionSyncItem {
+    shared_provider_id: String,
+    provider_name: String,
+    deleted: bool,
+    snapshot: Value,
+    lamport_ts: u64,
+    revision_event_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LanProviderDefinitionsSyncPacket {
+    version: u8,
+    node_id: String,
+    node_name: String,
+    provider_definitions_revision: String,
+    definitions: Vec<LanProviderDefinitionSyncItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -469,6 +500,9 @@ impl LanSyncRuntime {
                     .map(|value| value.to_string())
                     .collect(),
                 provider_fingerprints: local_provider_fingerprints,
+                provider_definitions_revision: provider_definitions_revision(
+                    &local_provider_definition_sync_items_from_config(cfg, secrets),
+                ),
             },
             peers,
         }
@@ -493,6 +527,7 @@ impl LanSyncRuntime {
                     .map(|value| value.to_string())
                     .collect(),
                 provider_fingerprints: Vec::new(),
+                provider_definitions_revision: String::new(),
                 followed_source_node_id: followed_source_node_id.map(ToString::to_string),
             },
         );
@@ -515,6 +550,7 @@ impl LanSyncRuntime {
                 last_heartbeat_unix_ms: unix_ms(),
                 capabilities: packet.capabilities,
                 provider_fingerprints: packet.provider_fingerprints,
+                provider_definitions_revision: packet.provider_definitions_revision,
                 followed_source_node_id: packet.followed_source_node_id,
             },
         );
@@ -536,6 +572,7 @@ impl LanSyncRuntime {
                     last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
                     capabilities: peer.capabilities.clone(),
                     provider_fingerprints: peer.provider_fingerprints.clone(),
+                    provider_definitions_revision: peer.provider_definitions_revision.clone(),
                     followed_source_node_id: peer.followed_source_node_id.clone(),
                     trusted: false,
                     pair_state: None,
@@ -554,6 +591,7 @@ impl LanSyncRuntime {
                     last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
                     capabilities: peer.capabilities.clone(),
                     provider_fingerprints: peer.provider_fingerprints.clone(),
+                    provider_definitions_revision: peer.provider_definitions_revision.clone(),
                     followed_source_node_id: peer.followed_source_node_id.clone(),
                     trusted: false,
                     pair_state: None,
@@ -924,6 +962,27 @@ pub(crate) async fn lan_sync_edit_http(
     .into_response()
 }
 
+pub(crate) async fn lan_sync_provider_definitions_http(
+    State(gateway): State<crate::orchestrator::gateway::GatewayState>,
+    headers: HeaderMap,
+    Json(packet): Json<LanProviderDefinitionsRequestPacket>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize_lan_sync_http_request(&gateway, &headers, &packet.node_id) {
+        return err.into_response();
+    }
+    let definitions = local_provider_definition_sync_items(&gateway);
+    let node = gateway.secrets.get_lan_node_identity();
+    Json(serde_json::json!({
+        "ok": true,
+        "version": 1,
+        "node_id": node.as_ref().map(|value| value.node_id.clone()).unwrap_or_default(),
+        "node_name": node.as_ref().map(|value| value.node_name.clone()).unwrap_or_default(),
+        "provider_definitions_revision": provider_definitions_revision(&definitions),
+        "definitions": definitions,
+    }))
+    .into_response()
+}
+
 fn lan_cipher(secret: &str) -> ChaCha20Poly1305 {
     let digest = Sha256::digest(secret.trim().as_bytes());
     ChaCha20Poly1305::new(&digest)
@@ -1290,13 +1349,23 @@ pub fn record_provider_definition_patch(
     patch: Value,
 ) -> Result<(), String> {
     let shared_provider_id = shared_provider_id_for_provider(&state.secrets, provider)?;
-    record_edit_event(
+    let event = record_edit_event(
         &state.gateway,
         &state.lan_sync.local_node,
         "provider_definition",
         &shared_provider_id,
         "patch",
-        patch,
+        patch.clone(),
+    )?;
+    apply_provider_definition_patch(
+        &state.gateway,
+        &state.config_path,
+        &state.lan_sync.local_node.node_id,
+        &state.lan_sync.local_node.node_name,
+        &shared_provider_id,
+        event.lamport_ts,
+        &event.event_id,
+        &patch,
     )
 }
 
@@ -1327,14 +1396,7 @@ pub fn ensure_local_edit_seed_state(state: &crate::app_state::AppState) -> Resul
                 &provider,
             )?)
             .map_err(|err| err.to_string())?;
-            record_edit_event(
-                &state.gateway,
-                &state.lan_sync.local_node,
-                "provider_definition",
-                &shared_provider_id,
-                "patch",
-                payload,
-            )?;
+            record_provider_definition_patch(state, &provider, payload)?;
             let _ = state
                 .gateway
                 .store
@@ -1349,13 +1411,22 @@ pub fn record_provider_definition_tombstone(
     provider: &str,
 ) -> Result<(), String> {
     let shared_provider_id = shared_provider_id_for_provider(&state.secrets, provider)?;
-    record_edit_event(
+    let event = record_edit_event(
         &state.gateway,
         &state.lan_sync.local_node,
         "provider_definition",
         &shared_provider_id,
         "tombstone",
         serde_json::json!({ "name": provider }),
+    )?;
+    apply_provider_definition_tombstone(
+        &state.gateway,
+        &state.config_path,
+        &state.lan_sync.local_node.node_id,
+        &state.lan_sync.local_node.node_name,
+        &shared_provider_id,
+        event.lamport_ts,
+        &event.event_id,
     )
 }
 
@@ -1371,14 +1442,15 @@ pub fn record_provider_pricing_snapshot(
         pricing,
     })
     .map_err(|err| err.to_string())?;
-    record_edit_event(
+    let _ = record_edit_event(
         &state.gateway,
         &state.lan_sync.local_node,
         "provider_pricing",
         &shared_provider_id,
         "replace",
         payload,
-    )
+    )?;
+    Ok(())
 }
 
 pub fn record_spend_manual_day(
@@ -1397,14 +1469,15 @@ pub fn record_spend_manual_day(
         manual_usd_per_req,
     })
     .map_err(|err| err.to_string())?;
-    record_edit_event(
+    let _ = record_edit_event(
         &state.gateway,
         &state.lan_sync.local_node,
         "spend_manual_day",
         &entity_id,
         "replace",
         payload,
-    )
+    )?;
+    Ok(())
 }
 
 fn record_edit_event(
@@ -1414,7 +1487,7 @@ fn record_edit_event(
     entity_id: &str,
     op: &str,
     payload: Value,
-) -> Result<(), String> {
+) -> Result<crate::orchestrator::store::LanEditSyncEvent, String> {
     let created_at_unix_ms = unix_ms();
     let lamport_ts = gateway.store.next_lan_edit_lamport_ts(None);
     let event = crate::orchestrator::store::LanEditSyncEvent {
@@ -1430,7 +1503,7 @@ fn record_edit_event(
     };
     if gateway.store.insert_lan_edit_event(&event) {
         note_entity_version(gateway, &event);
-        Ok(())
+        Ok(event)
     } else {
         Err("failed to insert edit sync event".to_string())
     }
@@ -1481,10 +1554,143 @@ fn note_entity_version(
     gateway: &crate::orchestrator::gateway::GatewayState,
     event: &crate::orchestrator::store::LanEditSyncEvent,
 ) {
-    let _ = gateway.store.set_event_meta(
-        &entity_version_meta_key(&event.entity_type, &event.entity_id),
-        &format!("{}|{}|{}", event.lamport_ts, event.node_id, event.event_id),
+    set_entity_version(
+        gateway,
+        &event.entity_type,
+        &event.entity_id,
+        event.lamport_ts,
+        &event.node_id,
+        &event.event_id,
     );
+}
+
+fn set_entity_version(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    entity_type: &str,
+    entity_id: &str,
+    lamport_ts: u64,
+    node_id: &str,
+    event_id: &str,
+) {
+    let _ = gateway.store.set_event_meta(
+        &entity_version_meta_key(entity_type, entity_id),
+        &format!("{lamport_ts}|{node_id}|{event_id}"),
+    );
+}
+
+fn local_provider_definition_sync_items(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+) -> Vec<LanProviderDefinitionSyncItem> {
+    let local_node_id = gateway
+        .secrets
+        .get_lan_node_identity()
+        .map(|node| node.node_id)
+        .unwrap_or_default();
+    let mut rows = gateway
+        .store
+        .list_all_lan_provider_definition_snapshots(&local_node_id);
+    rows.sort_by(|left, right| {
+        let left_order = left
+            .snapshot
+            .get("order_index")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(u64::MAX);
+        let right_order = right
+            .snapshot
+            .get("order_index")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(u64::MAX);
+        left_order
+            .cmp(&right_order)
+            .then_with(|| {
+                left.provider_name
+                    .to_ascii_lowercase()
+                    .cmp(&right.provider_name.to_ascii_lowercase())
+            })
+            .then_with(|| left.shared_provider_id.cmp(&right.shared_provider_id))
+    });
+    rows.into_iter()
+        .map(|row| LanProviderDefinitionSyncItem {
+            shared_provider_id: row.shared_provider_id,
+            provider_name: row.provider_name,
+            deleted: row.deleted,
+            snapshot: row.snapshot,
+            lamport_ts: row.lamport_ts,
+            revision_event_id: row.revision_event_id,
+        })
+        .collect()
+}
+
+fn provider_definitions_revision(items: &[LanProviderDefinitionSyncItem]) -> String {
+    let Ok(bytes) = serde_json::to_vec(items) else {
+        return String::new();
+    };
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn replace_remote_provider_definition_snapshots(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    config_path: &Path,
+    source_node_id: &str,
+    source_node_name: &str,
+    items: &[LanProviderDefinitionSyncItem],
+) -> Result<(), String> {
+    let existing = gateway
+        .store
+        .list_all_lan_provider_definition_snapshots(source_node_id)
+        .into_iter()
+        .map(|row| row.shared_provider_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let incoming = items
+        .iter()
+        .map(|item| item.shared_provider_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for item in items {
+        let record = crate::orchestrator::store::LanProviderDefinitionSnapshotRecord {
+            source_node_id: source_node_id.to_string(),
+            source_node_name: source_node_name.to_string(),
+            shared_provider_id: item.shared_provider_id.clone(),
+            provider_name: item.provider_name.clone(),
+            deleted: item.deleted,
+            snapshot: item.snapshot.clone(),
+            updated_at_unix_ms: unix_ms(),
+            lamport_ts: item.lamport_ts,
+            revision_event_id: item.revision_event_id.clone(),
+        };
+        gateway
+            .store
+            .upsert_lan_provider_definition_snapshot(&record)?;
+        set_entity_version(
+            gateway,
+            "provider_definition",
+            &item.shared_provider_id,
+            item.lamport_ts,
+            source_node_id,
+            &item.revision_event_id,
+        );
+    }
+
+    for stale_shared_provider_id in existing.difference(&incoming) {
+        gateway
+            .store
+            .remove_lan_provider_definition_snapshot(source_node_id, stale_shared_provider_id)?;
+        let _ = gateway.store.delete_event_meta(&entity_version_meta_key(
+            "provider_definition",
+            stale_shared_provider_id,
+        ));
+    }
+
+    if gateway
+        .secrets
+        .get_followed_config_source_node_id()
+        .as_deref()
+        == Some(source_node_id)
+    {
+        apply_followed_provider_state(gateway, config_path, source_node_id)?;
+    }
+    Ok(())
 }
 
 fn payload_string_field(payload: &Value, key: &str) -> Option<Option<String>> {
@@ -1832,6 +2038,7 @@ fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::Ga
     loop {
         let cfg_snapshot = gateway.cfg.read().clone();
         let provider_fingerprints = build_provider_fingerprints(&cfg_snapshot, &gateway.secrets);
+        let provider_definition_items = local_provider_definition_sync_items(&gateway);
         *runtime.local_provider_fingerprints.write() = provider_fingerprints.clone();
         let packet = LanSyncPacket::Heartbeat(LanHeartbeatPacket {
             version: 1,
@@ -1844,6 +2051,9 @@ fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::Ga
                 .map(|value| value.to_string())
                 .collect(),
             provider_fingerprints,
+            provider_definitions_revision: provider_definitions_revision(
+                &provider_definition_items,
+            ),
             followed_source_node_id: gateway.secrets.get_followed_config_source_node_id(),
         });
         if let LanSyncPacket::Heartbeat(ref heartbeat) = packet {
@@ -2171,6 +2381,10 @@ fn peer_http_base_url(peer: &LanPeerSnapshot) -> Option<String> {
     (!trimmed.is_empty()).then(|| format!("http://{trimmed}"))
 }
 
+fn peer_supports_http_sync(peer: &LanPeerSnapshot, capability: &str) -> bool {
+    peer.trusted && peer.capabilities.iter().any(|value| value == capability)
+}
+
 fn lan_sync_http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
@@ -2393,6 +2607,57 @@ async fn fetch_edit_sync_batch_http(
         .map_err(|err| format!("LAN edit sync response decode failed: {err}"))
 }
 
+async fn fetch_provider_definitions_http(
+    runtime: &LanSyncRuntime,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    peer: &LanPeerSnapshot,
+) -> Result<LanProviderDefinitionsSyncPacket, String> {
+    let base_url = peer_http_base_url(peer)
+        .ok_or_else(|| format!("peer has no valid HTTP listen address: {}", peer.node_id))?;
+    let trust_secret = current_lan_trust_secret(gateway)?;
+    let response = lan_sync_http_client()
+        .post(format!("{base_url}/lan-sync/provider-definitions"))
+        .header(
+            LAN_SYNC_AUTH_NODE_ID_HEADER,
+            runtime.local_node.node_id.clone(),
+        )
+        .header(LAN_SYNC_AUTH_SECRET_HEADER, trust_secret)
+        .json(&LanProviderDefinitionsRequestPacket {
+            version: 1,
+            node_id: runtime.local_node.node_id.clone(),
+        })
+        .send()
+        .await
+        .map_err(|err| format!("LAN provider definitions request failed: {err}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("LAN provider definitions http {status}: {body}"));
+    }
+    response
+        .json::<LanProviderDefinitionsSyncPacket>()
+        .await
+        .map_err(|err| format!("LAN provider definitions response decode failed: {err}"))
+}
+
+pub(crate) fn refresh_followed_provider_definitions_from_live_peer(
+    runtime: &LanSyncRuntime,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    config_path: &Path,
+    peer: &LanPeerSnapshot,
+) -> Result<String, String> {
+    let packet =
+        tauri::async_runtime::block_on(fetch_provider_definitions_http(runtime, gateway, peer))?;
+    replace_remote_provider_definition_snapshots(
+        gateway,
+        config_path,
+        &peer.node_id,
+        packet.node_name.as_str(),
+        &packet.definitions,
+    )?;
+    Ok(packet.provider_definitions_revision)
+}
+
 fn handle_quota_refresh_request(
     runtime: &LanSyncRuntime,
     gateway: &crate::orchestrator::gateway::GatewayState,
@@ -2513,12 +2778,11 @@ fn run_usage_sync_loop(
 ) {
     loop {
         let peers = runtime.collect_live_peers(unix_ms());
+        let trusted_node_ids = gateway.secrets.trusted_lan_node_ids();
         for peer in peers {
-            if !peer
-                .capabilities
-                .iter()
-                .any(|value| value == "usage_sync_v1")
-            {
+            let mut peer = peer;
+            peer.trusted = trusted_node_ids.contains(&peer.node_id);
+            if !peer_supports_http_sync(&peer, "usage_sync_v1") {
                 continue;
             }
             loop {
@@ -2558,14 +2822,59 @@ fn run_edit_sync_loop(
     gateway: crate::orchestrator::gateway::GatewayState,
     config_path: std::path::PathBuf,
 ) {
+    let mut last_live_peer_ids = std::collections::BTreeSet::new();
+    let mut attempted_followed_revisions: HashMap<String, String> = HashMap::new();
+    let mut applied_followed_revisions: HashMap<String, String> = HashMap::new();
     loop {
         let peers = runtime.collect_live_peers(unix_ms());
+        let trusted_node_ids = gateway.secrets.trusted_lan_node_ids();
+        let followed_source_node_id = gateway.secrets.get_followed_config_source_node_id();
+        let current_live_peer_ids = peers
+            .iter()
+            .map(|peer| peer.node_id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
         for peer in peers {
-            if !peer
-                .capabilities
-                .iter()
-                .any(|value| value == "edit_sync_v1")
+            let mut peer = peer;
+            peer.trusted = trusted_node_ids.contains(&peer.node_id);
+            let became_live = !last_live_peer_ids.contains(&peer.node_id);
+            if followed_source_node_id.as_deref() == Some(peer.node_id.as_str())
+                && peer_supports_http_sync(&peer, "provider_definitions_v1")
             {
+                let revision = peer.provider_definitions_revision.trim().to_string();
+                let already_applied = applied_followed_revisions
+                    .get(&peer.node_id)
+                    .is_some_and(|value| value == &revision);
+                let already_attempted = attempted_followed_revisions
+                    .get(&peer.node_id)
+                    .is_some_and(|value| value == &revision);
+                if !revision.is_empty() && (!already_applied && (became_live || !already_attempted))
+                {
+                    attempted_followed_revisions.insert(peer.node_id.clone(), revision.clone());
+                    match refresh_followed_provider_definitions_from_live_peer(
+                        &runtime,
+                        &gateway,
+                        &config_path,
+                        &peer,
+                    ) {
+                        Ok(applied_revision) => {
+                            applied_followed_revisions
+                                .insert(peer.node_id.clone(), applied_revision);
+                        }
+                        Err(err) => {
+                            gateway.store.add_event(
+                                "gateway",
+                                "warning",
+                                "lan.provider_definitions_sync_failed",
+                                &err,
+                                serde_json::json!({
+                                    "peer_node_id": peer.node_id,
+                                }),
+                            );
+                        }
+                    }
+                }
+            }
+            if !peer_supports_http_sync(&peer, "edit_sync_v1") {
                 continue;
             }
             loop {
@@ -2596,6 +2905,7 @@ fn run_edit_sync_loop(
                 }
             }
         }
+        last_live_peer_ids = current_live_peer_ids;
         std::thread::sleep(Duration::from_millis(LAN_EDIT_SYNC_LOOP_INTERVAL_MS));
     }
 }
@@ -2826,14 +3136,66 @@ fn build_provider_fingerprints(cfg: &AppConfig, secrets: &SecretStore) -> Vec<St
     out
 }
 
+fn local_provider_definition_sync_items_from_config(
+    cfg: &AppConfig,
+    secrets: &SecretStore,
+) -> Vec<LanProviderDefinitionSyncItem> {
+    let mut normalized = cfg.clone();
+    crate::app_state::normalize_provider_order(&mut normalized);
+    let mut provider_names = normalized.provider_order.clone();
+    for provider_name in normalized.providers.keys() {
+        if !provider_names.iter().any(|entry| entry == provider_name) {
+            provider_names.push(provider_name.clone());
+        }
+    }
+    provider_names
+        .into_iter()
+        .filter_map(|provider_name| {
+            let provider_cfg = normalized.providers.get(&provider_name)?;
+            let usage_login = secrets.get_usage_login(&provider_name);
+            let shared_provider_id = secrets.ensure_provider_shared_id(&provider_name).ok()?;
+            Some(LanProviderDefinitionSyncItem {
+                shared_provider_id,
+                provider_name: provider_name.clone(),
+                deleted: false,
+                snapshot: serde_json::to_value(ProviderDefinitionSnapshotPayload {
+                    name: provider_name.clone(),
+                    order_index: normalized
+                        .provider_order
+                        .iter()
+                        .position(|entry| entry == &provider_name)
+                        .map(|index| index as u64),
+                    display_name: provider_cfg.display_name.clone(),
+                    base_url: provider_cfg.base_url.clone(),
+                    group: provider_cfg.group.clone(),
+                    disabled: provider_cfg.disabled,
+                    usage_adapter: provider_cfg.usage_adapter.clone(),
+                    usage_base_url: provider_cfg.usage_base_url.clone(),
+                    key: secrets.get_provider_key(&provider_name),
+                    key_storage: Some(secrets.get_provider_key_storage_mode(&provider_name)),
+                    account_email: secrets.get_provider_account_email(&provider_name),
+                    usage_token: secrets.get_usage_token(&provider_name),
+                    usage_login_username: usage_login.as_ref().map(|value| value.username.clone()),
+                    usage_login_password: usage_login.as_ref().map(|value| value.password.clone()),
+                })
+                .ok()?,
+                lamport_ts: 0,
+                revision_event_id: String::new(),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         apply_followed_provider_state, apply_lan_edit_event, deserialize_wire_packet,
-        incoming_event_is_newer, lan_sync_edit_http, lan_sync_usage_http, note_entity_version,
-        peer_is_stale, restore_local_provider_state, sanitize_node_name, serialize_wire_packet,
-        LanEditSyncRequestPacket, LanHeartbeatPacket, LanNodeIdentity, LanSyncPacket,
-        LanSyncRuntime, LanUsageSyncRequestPacket, LAN_PEER_STALE_AFTER_MS,
+        incoming_event_is_newer, lan_sync_edit_http, lan_sync_provider_definitions_http,
+        lan_sync_usage_http, note_entity_version, peer_is_stale, peer_supports_http_sync,
+        replace_remote_provider_definition_snapshots, restore_local_provider_state,
+        sanitize_node_name, serialize_wire_packet, LanEditSyncRequestPacket, LanHeartbeatPacket,
+        LanNodeIdentity, LanProviderDefinitionSyncItem, LanProviderDefinitionsRequestPacket,
+        LanSyncPacket, LanSyncRuntime, LanUsageSyncRequestPacket, LAN_PEER_STALE_AFTER_MS,
         LAN_SYNC_AUTH_NODE_ID_HEADER, LAN_SYNC_AUTH_SECRET_HEADER,
     };
     use crate::orchestrator::store::{LanEditSyncEvent, UsageRequestSyncRow};
@@ -3019,6 +3381,94 @@ mod tests {
         }));
     }
 
+    #[tokio::test]
+    async fn lan_sync_provider_definitions_http_returns_canonical_local_snapshots() {
+        let (_tmp, state) = build_test_state();
+        let trust_secret = state
+            .secrets
+            .ensure_lan_trust_secret()
+            .expect("trust secret");
+        state
+            .secrets
+            .set_lan_node_trusted("node-remote", true)
+            .expect("trust peer");
+        {
+            let mut cfg = state.gateway.cfg.write();
+            cfg.provider_order = vec![
+                "provider_2".to_string(),
+                "official".to_string(),
+                "provider_1".to_string(),
+            ];
+            crate::app_state::normalize_provider_order(&mut cfg);
+        }
+        for provider_name in ["provider_2", "official", "provider_1"] {
+            super::record_provider_definition_patch(
+                &state,
+                provider_name,
+                serde_json::json!({
+                    "order_index": state
+                        .gateway
+                        .cfg
+                        .read()
+                        .provider_order
+                        .iter()
+                        .position(|entry| entry == provider_name)
+                        .map(|index| index as u64),
+                }),
+            )
+            .expect("record local provider definition patch");
+        }
+
+        let response = lan_sync_provider_definitions_http(
+            State(state.gateway.clone()),
+            lan_sync_headers("node-remote", &trust_secret),
+            Json(LanProviderDefinitionsRequestPacket {
+                version: 1,
+                node_id: "node-remote".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("provider definitions body");
+        let json: Value = serde_json::from_slice(&body).expect("provider definitions json");
+        let definitions = json
+            .get("definitions")
+            .and_then(|value| value.as_array())
+            .expect("definitions array");
+        let ordered_names = definitions
+            .iter()
+            .filter(|entry| {
+                !entry
+                    .get("deleted")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false)
+            })
+            .map(|entry| {
+                entry
+                    .get("snapshot")
+                    .and_then(|value| value.get("name"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordered_names,
+            vec![
+                "provider_2".to_string(),
+                "official".to_string(),
+                "provider_1".to_string()
+            ]
+        );
+        assert!(json
+            .get("provider_definitions_revision")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.trim().is_empty()));
+    }
+
     #[test]
     fn shared_provider_fingerprint_is_deterministic() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -3125,6 +3575,7 @@ mod tests {
                 sent_at_unix_ms: 1,
                 capabilities: vec!["heartbeat_v1".to_string()],
                 provider_fingerprints: vec![],
+                provider_definitions_revision: String::new(),
                 followed_source_node_id: None,
             }),
         )
@@ -3509,6 +3960,169 @@ mod tests {
     }
 
     #[test]
+    fn full_reconcile_replaces_stale_followed_provider_snapshots_and_order() {
+        let (_tmp, state) = build_test_state();
+        state
+            .secrets
+            .set_followed_config_source_node_id(Some("node-remote"))
+            .expect("follow remote");
+        state
+            .gateway
+            .store
+            .upsert_lan_provider_definition_snapshot(
+                &crate::orchestrator::store::LanProviderDefinitionSnapshotRecord {
+                    source_node_id: "node-remote".to_string(),
+                    source_node_name: "Remote".to_string(),
+                    shared_provider_id: "shared-alpha".to_string(),
+                    provider_name: "alpha".to_string(),
+                    deleted: false,
+                    snapshot: serde_json::json!({
+                        "name": "alpha",
+                        "display_name": "Alpha",
+                        "base_url": "https://alpha.example/v1",
+                        "order_index": 0,
+                    }),
+                    updated_at_unix_ms: 1,
+                    lamport_ts: 1,
+                    revision_event_id: "evt-alpha-old".to_string(),
+                },
+            )
+            .expect("seed stale alpha");
+        state
+            .gateway
+            .store
+            .upsert_lan_provider_definition_snapshot(
+                &crate::orchestrator::store::LanProviderDefinitionSnapshotRecord {
+                    source_node_id: "node-remote".to_string(),
+                    source_node_name: "Remote".to_string(),
+                    shared_provider_id: "shared-zeta".to_string(),
+                    provider_name: "zeta".to_string(),
+                    deleted: false,
+                    snapshot: serde_json::json!({
+                        "name": "zeta",
+                        "display_name": "Zeta",
+                        "base_url": "https://zeta.example/v1",
+                        "order_index": 1,
+                    }),
+                    updated_at_unix_ms: 1,
+                    lamport_ts: 1,
+                    revision_event_id: "evt-zeta-old".to_string(),
+                },
+            )
+            .expect("seed stale zeta");
+        state
+            .gateway
+            .store
+            .upsert_lan_provider_definition_snapshot(
+                &crate::orchestrator::store::LanProviderDefinitionSnapshotRecord {
+                    source_node_id: "node-remote".to_string(),
+                    source_node_name: "Remote".to_string(),
+                    shared_provider_id: "shared-stale".to_string(),
+                    provider_name: "stale".to_string(),
+                    deleted: false,
+                    snapshot: serde_json::json!({
+                        "name": "stale",
+                        "display_name": "Stale",
+                        "base_url": "https://stale.example/v1",
+                        "order_index": 2,
+                    }),
+                    updated_at_unix_ms: 1,
+                    lamport_ts: 1,
+                    revision_event_id: "evt-stale-old".to_string(),
+                },
+            )
+            .expect("seed stale extra");
+        apply_followed_provider_state(&state.gateway, &state.config_path, "node-remote")
+            .expect("apply stale followed state");
+        assert_eq!(
+            state.gateway.cfg.read().provider_order,
+            vec!["alpha".to_string(), "zeta".to_string(), "stale".to_string()]
+        );
+
+        replace_remote_provider_definition_snapshots(
+            &state.gateway,
+            &state.config_path,
+            "node-remote",
+            "Remote",
+            &[
+                LanProviderDefinitionSyncItem {
+                    shared_provider_id: "shared-zeta".to_string(),
+                    provider_name: "zeta".to_string(),
+                    deleted: false,
+                    snapshot: serde_json::json!({
+                        "name": "zeta",
+                        "display_name": "Zeta",
+                        "base_url": "https://zeta.example/v1",
+                        "order_index": 0,
+                    }),
+                    lamport_ts: 5,
+                    revision_event_id: "evt-zeta-new".to_string(),
+                },
+                LanProviderDefinitionSyncItem {
+                    shared_provider_id: "shared-alpha".to_string(),
+                    provider_name: "alpha".to_string(),
+                    deleted: false,
+                    snapshot: serde_json::json!({
+                        "name": "alpha",
+                        "display_name": "Alpha",
+                        "base_url": "https://alpha.example/v1",
+                        "order_index": 1,
+                    }),
+                    lamport_ts: 6,
+                    revision_event_id: "evt-alpha-new".to_string(),
+                },
+            ],
+        )
+        .expect("replace remote snapshots");
+
+        assert_eq!(
+            state.gateway.cfg.read().provider_order,
+            vec!["zeta".to_string(), "alpha".to_string()]
+        );
+        assert!(state
+            .gateway
+            .store
+            .get_lan_provider_definition_snapshot("node-remote", "shared-stale")
+            .is_none());
+        let alpha_version = state
+            .gateway
+            .store
+            .get_event_meta("lan_edit_entity_version:provider_definition:shared-alpha")
+            .expect("alpha version meta")
+            .expect("alpha version");
+        assert_eq!(alpha_version, "6|node-remote|evt-alpha-new");
+    }
+
+    #[test]
+    fn peer_http_sync_requires_trusted_peer_and_capability() {
+        let trusted_peer = super::LanPeerSnapshot {
+            node_id: "node-a".to_string(),
+            node_name: "Node A".to_string(),
+            listen_addr: "192.168.1.10:4000".to_string(),
+            last_heartbeat_unix_ms: 1,
+            capabilities: vec!["edit_sync_v1".to_string()],
+            provider_fingerprints: Vec::new(),
+            provider_definitions_revision: String::new(),
+            followed_source_node_id: None,
+            trusted: true,
+            pair_state: None,
+            pair_request_id: None,
+        };
+        assert!(peer_supports_http_sync(&trusted_peer, "edit_sync_v1"));
+
+        let mut untrusted_peer = trusted_peer.clone();
+        untrusted_peer.trusted = false;
+        assert!(!peer_supports_http_sync(&untrusted_peer, "edit_sync_v1"));
+
+        let mut missing_capability_peer = trusted_peer.clone();
+        missing_capability_peer.capabilities.clear();
+        assert!(!peer_supports_http_sync(
+            &missing_capability_peer,
+            "edit_sync_v1"
+        ));
+    }
+
+    #[test]
     fn apply_followed_provider_state_does_not_touch_app_codex_auth_json() {
         let (_tmp, state) = build_test_state();
         let app_auth_path = state
@@ -3575,6 +4189,7 @@ mod tests {
                 last_heartbeat_unix_ms: 100_000,
                 capabilities: vec!["heartbeat_v1".to_string()],
                 provider_fingerprints: vec![],
+                provider_definitions_revision: String::new(),
                 followed_source_node_id: None,
             },
         );
@@ -3587,6 +4202,7 @@ mod tests {
                 last_heartbeat_unix_ms: 100_000_u64.saturating_sub(LAN_PEER_STALE_AFTER_MS + 1),
                 capabilities: vec!["heartbeat_v1".to_string()],
                 provider_fingerprints: vec![],
+                provider_definitions_revision: String::new(),
                 followed_source_node_id: None,
             },
         );
@@ -3627,6 +4243,7 @@ mod tests {
                 sent_at_unix_ms: 1000,
                 capabilities: vec!["heartbeat_v1".to_string()],
                 provider_fingerprints: Vec::new(),
+                provider_definitions_revision: String::new(),
                 followed_source_node_id: None,
             },
             "192.168.1.50:4000".parse().expect("source addr"),
@@ -3655,6 +4272,7 @@ mod tests {
                 sent_at_unix_ms: 1,
                 capabilities: vec!["heartbeat_v1".to_string()],
                 provider_fingerprints: vec![],
+                provider_definitions_revision: String::new(),
                 followed_source_node_id: None,
             },
             std::net::SocketAddr::from(([192, 168, 1, 10], 38455)),
@@ -3682,6 +4300,7 @@ mod tests {
                 last_heartbeat_unix_ms: now,
                 capabilities: vec!["heartbeat_v1".to_string()],
                 provider_fingerprints: vec!["fp-1".to_string()],
+                provider_definitions_revision: String::new(),
                 followed_source_node_id: None,
             },
         );
@@ -3711,6 +4330,7 @@ mod tests {
                 last_heartbeat_unix_ms: now,
                 capabilities: vec!["heartbeat_v1".to_string()],
                 provider_fingerprints: vec!["fp-1".to_string()],
+                provider_definitions_revision: String::new(),
                 followed_source_node_id: None,
             },
         );

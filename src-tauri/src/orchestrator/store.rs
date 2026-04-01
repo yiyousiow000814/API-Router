@@ -885,6 +885,62 @@ impl Store {
         rows.flatten().collect()
     }
 
+    pub fn list_all_lan_provider_definition_snapshots(
+        &self,
+        source_node_id: &str,
+    ) -> Vec<LanProviderDefinitionSnapshotRecord> {
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT
+                source_node_id,
+                source_node_name,
+                shared_provider_id,
+                provider_name,
+                deleted,
+                snapshot_json,
+                updated_at_unix_ms,
+                lamport_ts,
+                revision_event_id
+             FROM lan_provider_definition_snapshots
+             WHERE source_node_id = ?1
+             ORDER BY lower(provider_name) ASC, shared_provider_id ASC",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map([source_node_id.trim()], |row| {
+            let snapshot_json = row.get::<_, String>(5)?;
+            Ok(LanProviderDefinitionSnapshotRecord {
+                source_node_id: row.get::<_, String>(0)?,
+                source_node_name: row.get::<_, String>(1)?,
+                shared_provider_id: row.get::<_, String>(2)?,
+                provider_name: row.get::<_, String>(3)?,
+                deleted: row.get::<_, i64>(4)? != 0,
+                snapshot: serde_json::from_str(&snapshot_json).unwrap_or(Value::Null),
+                updated_at_unix_ms: u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
+                lamport_ts: u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                revision_event_id: row.get::<_, String>(8)?,
+            })
+        }) else {
+            return Vec::new();
+        };
+        rows.flatten().collect()
+    }
+
+    pub fn remove_lan_provider_definition_snapshot(
+        &self,
+        source_node_id: &str,
+        shared_provider_id: &str,
+    ) -> Result<(), String> {
+        let conn = self.events_db.lock();
+        conn.execute(
+            "DELETE FROM lan_provider_definition_snapshots
+             WHERE source_node_id = ?1 AND shared_provider_id = ?2",
+            params![source_node_id.trim(), shared_provider_id.trim()],
+        )
+        .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
     fn merge_legacy_events_sqlite(&self, legacy_path: &Path) -> anyhow::Result<()> {
         let legacy_conn = rusqlite::Connection::open(legacy_path)?;
         let mut stmt = legacy_conn.prepare(
