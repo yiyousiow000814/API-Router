@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -2792,7 +2792,7 @@ fn run_single_owner_recovery_probe(
     }
 }
 
-fn detect_local_listen_addr(listen_port: u16) -> Option<String> {
+pub(crate) fn detect_local_listen_ip() -> Option<IpAddr> {
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
     socket.connect((Ipv4Addr::new(8, 8, 8, 8), 80)).ok()?;
     let addr = socket.local_addr().ok()?;
@@ -2800,7 +2800,11 @@ fn detect_local_listen_addr(listen_port: u16) -> Option<String> {
     if ip.is_loopback() || !ip.is_ipv4() {
         return None;
     }
-    Some(format!("{}:{}", ip, listen_port))
+    Some(ip)
+}
+
+fn detect_local_listen_addr(listen_port: u16) -> Option<String> {
+    detect_local_listen_ip().map(|ip| format!("{}:{}", ip, listen_port))
 }
 
 fn peer_is_stale(last_heartbeat_unix_ms: u64, now: u64) -> bool {

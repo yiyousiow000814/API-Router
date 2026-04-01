@@ -155,6 +155,18 @@ describe('provider usage controls rendering', () => {
     expect(html).not.toContain('Current group: alpha')
   })
 
+  it('disables grouped controls on borrowed providers', () => {
+    const config = buildConfig('alpha')
+    config.providers.p1 = {
+      ...config.providers.p1,
+      borrowed: true,
+      editable: false,
+    }
+    const html = renderCardHtml(config, buildStatus())
+    expect(html).toContain('Open Group Manager')
+    expect(html).toContain('disabled=""')
+  })
+
   it('hides hard-cap checkboxes when budget windows are not detected yet', () => {
     const html = renderCardHtml(buildConfig(null), buildStatusWithoutDetectedWindows())
     expect(html).not.toContain('daily cap')

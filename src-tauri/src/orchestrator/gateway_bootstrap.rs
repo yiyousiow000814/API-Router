@@ -24,6 +24,7 @@ fn gateway_listen_addrs_with_overlays(
     listen_host: &str,
     listen_port: u16,
     wsl_host: &str,
+    lan_ip: Option<IpAddr>,
     extra_ips: &[IpAddr],
 ) -> anyhow::Result<Vec<SocketAddr>> {
     let primary: SocketAddr = format!("{listen_host}:{listen_port}").parse()?;
@@ -34,6 +35,11 @@ fn gateway_listen_addrs_with_overlays(
         let parsed_wsl_ip: std::net::IpAddr = wsl_host.parse()?;
         if parsed_wsl_ip != primary.ip() {
             push_unique_addr(&mut addrs, SocketAddr::new(parsed_wsl_ip, listen_port));
+        }
+        if let Some(lan_ip) = lan_ip {
+            if lan_ip != primary.ip() {
+                push_unique_addr(&mut addrs, SocketAddr::new(lan_ip, listen_port));
+            }
         }
         for extra_ip in extra_ips {
             if *extra_ip != primary.ip() {
@@ -136,11 +142,17 @@ fn gateway_listen_addrs(listen_host: &str, listen_port: u16) -> anyhow::Result<V
     #[cfg(windows)]
     {
         let wsl_host = crate::platform::wsl_gateway_host::cached_or_default_wsl_gateway_host(None);
+        let lan_ip = crate::lan_sync::detect_local_listen_ip();
         // Keep startup cheap, but still bind the current Tailscale IPv4 overlay when it is already
         // available so Web Codex QR access works immediately without a manual restart.
         let extra_ips = detected_tailscale_ipv4_addrs();
-        let addrs =
-            gateway_listen_addrs_with_overlays(listen_host, listen_port, &wsl_host, &extra_ips)?;
+        let addrs = gateway_listen_addrs_with_overlays(
+            listen_host,
+            listen_port,
+            &wsl_host,
+            lan_ip,
+            &extra_ips,
+        )?;
         write_gateway_bootstrap_diag(
             "gateway_listen_addrs_ok",
             Some(
@@ -315,12 +327,20 @@ mod tests {
     #[test]
     fn local_bind_adds_tailscale_overlay_listener() {
         let overlays = vec!["100.64.208.117".parse().unwrap()];
-        let addrs =
-            gateway_listen_addrs_with_overlays("127.0.0.1", 4000, "172.26.144.1", &overlays)
-                .unwrap();
+        let addrs = gateway_listen_addrs_with_overlays(
+            "127.0.0.1",
+            4000,
+            "172.26.144.1",
+            Some("192.168.3.210".parse().unwrap()),
+            &overlays,
+        )
+        .unwrap();
         assert!(addrs
             .iter()
             .any(|addr| addr.to_string() == "127.0.0.1:4000"));
+        assert!(addrs
+            .iter()
+            .any(|addr| addr.to_string() == "192.168.3.210:4000"));
         assert!(addrs
             .iter()
             .any(|addr| addr.to_string() == "100.64.208.117:4000"));

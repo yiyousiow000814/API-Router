@@ -50,6 +50,30 @@ struct ConfigSourceSnapshot {
     using_count: usize,
 }
 
+fn offline_followed_config_source_snapshot(
+    state: &app_state::AppState,
+    node_id: &str,
+) -> Option<ConfigSourceSnapshot> {
+    let rows = state.gateway.store.list_lan_provider_definition_snapshots(node_id);
+    let node_name = rows
+        .first()
+        .map(|row| row.source_node_name.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| node_id.to_string());
+    Some(ConfigSourceSnapshot {
+        kind: "peer",
+        node_id: node_id.to_string(),
+        node_name,
+        active: true,
+        trusted: true,
+        pair_state: Some("trusted".to_string()),
+        pair_request_id: None,
+        follow_allowed: false,
+        follow_blocked_reason: Some("that node is offline; switch back to Local to edit or keep using the last synced config".to_string()),
+        using_count: 1,
+    })
+}
+
 fn local_provider_definitions_are_locked(state: &app_state::AppState) -> bool {
     state.secrets.get_followed_config_source_node_id().is_some()
 }
@@ -309,7 +333,7 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
         .iter()
         .filter(|peer| peer.followed_source_node_id.as_deref() == Some(lan_snapshot.local_node.node_id.as_str()))
         .count();
-    let config_sources = std::iter::once(ConfigSourceSnapshot {
+    let mut config_sources = std::iter::once(ConfigSourceSnapshot {
         kind: "local",
         node_id: lan_snapshot.local_node.node_id.clone(),
         node_name: lan_snapshot.local_node.node_name.clone(),
@@ -350,6 +374,17 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
             .count(),
     }))
     .collect::<Vec<_>>();
+    if let Some(followed_node_id) = followed_source_node_id.as_deref() {
+        let followed_peer_is_live = lan_snapshot
+            .peers
+            .iter()
+            .any(|peer| peer.node_id == followed_node_id);
+        if !followed_peer_is_live {
+            if let Some(snapshot) = offline_followed_config_source_snapshot(&state, followed_node_id) {
+                config_sources.push(snapshot);
+            }
+        }
+    }
 
     serde_json::json!({
       "listen": cfg.listen,
@@ -1838,7 +1873,8 @@ mod provider_management_tests {
         clear_followed_config_source_impl, clear_session_preferred_provider_impl,
         copy_provider_from_config_source_impl, current_local_provider_state_snapshot,
         delete_provider_impl, ensure_local_provider_definitions_editable,
-        next_preferred_after_delete, persist_followed_config_source_change,
+        next_preferred_after_delete, offline_followed_config_source_snapshot,
+        persist_followed_config_source_change,
         provider_definition_patch_payload, LocalCopyState, rename_observed_session_routes_provider_refs,
         set_followed_config_source_impl, set_manual_override_impl, set_provider_group_impl,
         set_route_mode_impl, set_providers_group_impl, set_session_preferred_provider_impl,
@@ -2306,6 +2342,31 @@ mod provider_management_tests {
         assert_eq!(result.local_copy_state, LocalCopyState::Copied);
         assert_eq!(result.target_name, "remote_provider");
         assert!(state.gateway.cfg.read().providers.contains_key("remote_provider"));
+    }
+
+    #[test]
+    fn offline_followed_config_source_snapshot_uses_last_synced_remote_name() {
+        let (_tmp, state) = build_test_state();
+        seed_remote_provider_snapshot(
+            &state,
+            "node-remote",
+            "shared-remote-1",
+            crate::lan_sync::ProviderDefinitionSnapshotPayload {
+                name: "remote_provider".to_string(),
+                display_name: "Remote Provider".to_string(),
+                base_url: "https://remote.example/v1".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let snapshot =
+            offline_followed_config_source_snapshot(&state, "node-remote").expect("offline snapshot");
+
+        assert_eq!(snapshot.node_id, "node-remote");
+        assert_eq!(snapshot.node_name, "Remote Node");
+        assert!(snapshot.active);
+        assert!(snapshot.trusted);
+        assert!(!snapshot.follow_allowed);
     }
 
     #[test]

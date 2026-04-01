@@ -199,11 +199,12 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
               <div className="aoUsageBtns">
                 <button
                   className="aoTinyBtn"
+                  disabled={!editable}
                   onClick={() => options.openProviderEmailModal(name, p.account_email ?? undefined)}
                 >
                   Email
                 </button>
-                <button className="aoTinyBtn" onClick={() => options.openProviderGroupManager(name)}>
+                <button className="aoTinyBtn" disabled={!editable} onClick={() => options.openProviderGroupManager(name)}>
                   Open Group Manager
                 </button>
               </div>
