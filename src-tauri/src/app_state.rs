@@ -88,14 +88,6 @@ pub fn run_startup_usage_request_node_backfill(state: &AppState) -> usize {
         .backfill_usage_request_node_identity(&node.node_id, &node.node_name)
 }
 
-pub fn run_startup_prune_noisy_lan_events(state: &AppState) -> usize {
-    state
-        .gateway
-        .store
-        .delete_events_by_codes(&["lan.shared_health_applied", "lan.usage_sync_applied"])
-        .unwrap_or(0)
-}
-
 pub fn disable_expired_package_providers(state: &AppState) -> Vec<String> {
     if state.secrets.get_followed_config_source_node_id().is_some() {
         return Vec::new();
@@ -301,7 +293,6 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         .gateway
         .store
         .sync_provider_pricing_configs(&app_state.secrets.list_provider_pricing());
-    let _ = run_startup_prune_noisy_lan_events(&app_state);
     let _ = crate::lan_sync::ensure_local_edit_seed_state(&app_state);
 
     Ok(app_state)

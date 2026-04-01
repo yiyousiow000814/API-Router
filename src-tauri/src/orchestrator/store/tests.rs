@@ -173,6 +173,86 @@ mod tests {
     }
 
     #[test]
+    fn noisy_lan_events_are_compressed_in_daily_counts_but_raw_rows_remain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let base_ts = chrono::Local
+            .with_ymd_and_hms(2026, 4, 2, 10, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        {
+            let conn = store.events_db.lock();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('lan-a', ?1, 'p1', 'info', 'lan.shared_health_applied', 'a', '{}')",
+                [base_ts],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('lan-b', ?1, 'p1', 'info', 'lan.shared_health_applied', 'b', '{}')",
+                [base_ts + 5_000],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('lan-c', ?1, 'p1', 'info', 'lan.shared_health_applied', 'c', '{}')",
+                [base_ts + 65_000],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES(?1, '0')
+                 ON CONFLICT(key) DO UPDATE SET value='0'",
+                [Store::EVENT_DAY_COUNTS_INDEX_VERSION_KEY],
+            )
+            .unwrap();
+        }
+
+        store.rebuild_event_day_counts_index_if_needed().unwrap();
+
+        let rows = store.list_event_daily_counts_range(None, None);
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.get("total").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(row.get("infos").and_then(|v| v.as_u64()), Some(2));
+
+        let raw = store.list_events_range(None, None, Some(10));
+        assert_eq!(raw.len(), 3);
+    }
+
+    #[test]
+    fn add_event_compresses_noisy_lan_daily_counts_per_minute() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        store.add_event(
+            "p1",
+            "info",
+            "lan.usage_sync_applied",
+            "first",
+            serde_json::json!({}),
+        );
+        store.add_event(
+            "p1",
+            "info",
+            "lan.usage_sync_applied",
+            "second",
+            serde_json::json!({}),
+        );
+
+        let rows = store.list_event_daily_counts_range(None, None);
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.get("total").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(row.get("infos").and_then(|v| v.as_u64()), Some(1));
+
+        let raw = store.list_events_range(None, None, Some(10));
+        assert_eq!(raw.len(), 2);
+    }
+
+    #[test]
     fn list_session_route_assignments_since_filters_old_rows() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();

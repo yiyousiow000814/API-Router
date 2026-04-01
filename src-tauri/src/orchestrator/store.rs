@@ -122,7 +122,7 @@ impl Store {
     const EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY: &'static str = "merged_legacy_sqlite_v1";
     // Day-count index rebuild marker. Bump this when the rules for event inclusion change.
     const EVENT_DAY_COUNTS_INDEX_VERSION_KEY: &'static str = "event_day_counts_index_version";
-    const EVENT_DAY_COUNTS_INDEX_VERSION: &'static str = "3";
+    const EVENT_DAY_COUNTS_INDEX_VERSION: &'static str = "4";
     const USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY: &'static str =
         "usage_requests_migrated_from_sled_v1";
     const SPEND_HISTORY_SQLITE_MIGRATED_FROM_SLED_KEY: &'static str =
@@ -632,18 +632,6 @@ impl Store {
         Ok(())
     }
 
-    pub fn delete_events_by_codes(&self, codes: &[&str]) -> anyhow::Result<usize> {
-        if codes.is_empty() {
-            return Ok(0);
-        }
-        let placeholders = (0..codes.len()).map(|_| "?").collect::<Vec<_>>().join(", ");
-        let sql = format!("DELETE FROM events WHERE code IN ({placeholders})");
-        let conn = self.events_db.lock();
-        let mut stmt = conn.prepare(&sql)?;
-        let removed = stmt.execute(rusqlite::params_from_iter(codes.iter().copied()))?;
-        Ok(removed)
-    }
-
     pub fn next_lan_edit_lamport_ts(&self, observed_remote: Option<u64>) -> u64 {
         let conn = self.events_db.lock();
         let current = conn
@@ -1060,6 +1048,31 @@ impl Store {
         Ok(())
     }
 
+    fn should_compress_daily_event_count(code: &str) -> bool {
+        matches!(
+            code.trim(),
+            "lan.shared_health_applied" | "lan.usage_sync_applied"
+        )
+    }
+
+    fn compressed_daily_event_bucket_key(
+        provider: &str,
+        code: &str,
+        unix_ms_i64: i64,
+    ) -> Option<String> {
+        if !Self::should_compress_daily_event_count(code) {
+            return None;
+        }
+        let unix_ms = u64::try_from(unix_ms_i64).ok()?;
+        let minute_bucket = unix_ms / 60_000;
+        Some(format!(
+            "{}|{}|{}",
+            provider.trim().to_ascii_lowercase(),
+            code.trim(),
+            minute_bucket
+        ))
+    }
+
     fn rebuild_event_day_counts_index_if_needed(&self) -> anyhow::Result<()> {
         let mut conn = self.events_db.lock();
         let current: Option<String> = conn
@@ -1109,6 +1122,10 @@ impl Store {
             String,
             std::collections::HashSet<String>,
         > = std::collections::HashMap::new();
+        let mut compressed_seen_by_day: std::collections::HashMap<
+            String,
+            std::collections::HashSet<String>,
+        > = std::collections::HashMap::new();
         for row in raw_rows {
             let (unix_ms_i64, provider, level, code, fields_json) = row;
             let Ok(unix_ms_u64) = u64::try_from(unix_ms_i64) else {
@@ -1149,6 +1166,14 @@ impl Store {
                 );
                 let set = mismatch_seen_by_day.entry(day_key.clone()).or_default();
                 if !set.insert(sig) {
+                    continue;
+                }
+            }
+            if let Some(bucket_key) =
+                Self::compressed_daily_event_bucket_key(&provider, &code, unix_ms_i64)
+            {
+                let set = compressed_seen_by_day.entry(day_key.clone()).or_default();
+                if !set.insert(bucket_key) {
                     continue;
                 }
             }
@@ -1572,6 +1597,32 @@ impl Store {
         if inserted.is_err() {
             let _ = tx.rollback();
             return;
+        }
+        if Self::compressed_daily_event_bucket_key(provider, code, ts_i64).is_some() {
+            let exists = tx
+                .query_row(
+                    "SELECT 1
+                     FROM events
+                     WHERE id != ?1
+                       AND provider = ?2
+                       AND code = ?3
+                       AND unix_ms >= ?4
+                       AND unix_ms < ?5
+                     LIMIT 1",
+                    params![
+                        id,
+                        provider,
+                        code,
+                        (ts_i64 / 60_000) * 60_000,
+                        ((ts_i64 / 60_000) + 1) * 60_000
+                    ],
+                    |_| Ok(()),
+                )
+                .optional();
+            if matches!(exists, Ok(Some(()))) {
+                let _ = tx.commit();
+                return;
+            }
         }
         if Self::upsert_event_day_counts(&tx, &day_key, day_start_unix_ms, level).is_err() {
             let _ = tx.rollback();
