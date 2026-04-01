@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::error::Error;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::Path;
@@ -97,6 +98,16 @@ pub struct LanPeerSnapshot {
     pub pair_request_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LanHttpSyncProbeSnapshot {
+    pub unix_ms: u64,
+    pub peer_node_id: String,
+    pub peer_listen_addr: String,
+    pub route: String,
+    pub outcome: String,
+    pub detail: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct LanQuotaOwnerDecision {
     pub owner_node_id: String,
@@ -113,6 +124,8 @@ pub struct LanSyncStatusSnapshot {
     pub peer_stale_after_ms: u64,
     pub last_peer_heartbeat_received_unix_ms: u64,
     pub last_peer_heartbeat_source: Option<String>,
+    pub last_http_sync_probe: Option<LanHttpSyncProbeSnapshot>,
+    pub last_http_sync_failure: Option<LanHttpSyncProbeSnapshot>,
     pub local_node: LanLocalNodeSnapshot,
     pub peers: Vec<LanPeerSnapshot>,
 }
@@ -335,6 +348,8 @@ pub struct LanSyncRuntime {
     peers: Arc<RwLock<HashMap<String, LanPeerRuntime>>>,
     last_peer_heartbeat_received_unix_ms: Arc<AtomicU64>,
     last_peer_heartbeat_source: Arc<RwLock<Option<String>>>,
+    last_http_sync_probe: Arc<RwLock<Option<LanHttpSyncProbeSnapshot>>>,
+    last_http_sync_failure: Arc<RwLock<Option<LanHttpSyncProbeSnapshot>>>,
     inbound_pair_requests: Arc<RwLock<HashMap<String, LanPendingPairRequest>>>,
     outbound_pair_requests: Arc<RwLock<HashMap<String, LanOutboundPairRequest>>>,
     pair_approvals: Arc<RwLock<HashMap<String, LanPairApprovalState>>>,
@@ -351,12 +366,35 @@ impl LanSyncRuntime {
             peers: Arc::new(RwLock::new(HashMap::new())),
             last_peer_heartbeat_received_unix_ms: Arc::new(AtomicU64::new(0)),
             last_peer_heartbeat_source: Arc::new(RwLock::new(None)),
+            last_http_sync_probe: Arc::new(RwLock::new(None)),
+            last_http_sync_failure: Arc::new(RwLock::new(None)),
             inbound_pair_requests: Arc::new(RwLock::new(HashMap::new())),
             outbound_pair_requests: Arc::new(RwLock::new(HashMap::new())),
             pair_approvals: Arc::new(RwLock::new(HashMap::new())),
             pending_trust_bundle_pins: Arc::new(RwLock::new(HashMap::new())),
             started: Arc::new(AtomicBool::new(false)),
             last_peer_prune_unix_ms: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn note_http_sync_probe(
+        &self,
+        peer: &LanPeerSnapshot,
+        route: &str,
+        outcome: &str,
+        detail: &str,
+    ) {
+        let snapshot = LanHttpSyncProbeSnapshot {
+            unix_ms: unix_ms(),
+            peer_node_id: peer.node_id.clone(),
+            peer_listen_addr: peer.listen_addr.clone(),
+            route: route.to_string(),
+            outcome: outcome.to_string(),
+            detail: detail.to_string(),
+        };
+        *self.last_http_sync_probe.write() = Some(snapshot.clone());
+        if outcome != "ok" {
+            *self.last_http_sync_failure.write() = Some(snapshot);
         }
     }
 
@@ -491,6 +529,8 @@ impl LanSyncRuntime {
                 .last_peer_heartbeat_received_unix_ms
                 .load(Ordering::Relaxed),
             last_peer_heartbeat_source: self.last_peer_heartbeat_source.read().clone(),
+            last_http_sync_probe: self.last_http_sync_probe.read().clone(),
+            last_http_sync_failure: self.last_http_sync_failure.read().clone(),
             local_node: LanLocalNodeSnapshot {
                 node_id: self.local_node.node_id.clone(),
                 node_name: self.local_node.node_name.clone(),
@@ -2381,6 +2421,46 @@ fn peer_http_base_url(peer: &LanPeerSnapshot) -> Option<String> {
     (!trimmed.is_empty()).then(|| format!("http://{trimmed}"))
 }
 
+fn redact_url_for_logs(url: &reqwest::Url) -> String {
+    let scheme = url.scheme();
+    let host = url.host_str().unwrap_or("<unknown>");
+    let port = url
+        .port()
+        .map(|value| format!(":{value}"))
+        .unwrap_or_default();
+    format!("{scheme}://{host}{port}{}", url.path())
+}
+
+fn format_lan_sync_reqwest_error(err: &reqwest::Error) -> String {
+    let kind = if err.is_timeout() {
+        "timeout"
+    } else if err.is_connect() {
+        "connect"
+    } else {
+        "request"
+    };
+    let mut parts = vec![format!("LAN sync request error ({kind})")];
+    if let Some(url) = err.url() {
+        parts.push(format!("url={}", redact_url_for_logs(url)));
+    }
+    let mut source: Option<&(dyn Error + 'static)> = err.source();
+    let mut causes = Vec::new();
+    while let Some(inner) = source {
+        let rendered = inner.to_string();
+        if !rendered.is_empty() && !causes.contains(&rendered) {
+            causes.push(rendered);
+        }
+        if causes.len() >= 2 {
+            break;
+        }
+        source = inner.source();
+    }
+    if !causes.is_empty() {
+        parts.push(format!("cause={}", causes.join(" | ")));
+    }
+    parts.join("; ")
+}
+
 fn peer_supports_http_sync(peer: &LanPeerSnapshot, capability: &str) -> bool {
     peer.trusted && peer.capabilities.iter().any(|value| value == capability)
 }
@@ -2522,16 +2602,28 @@ async fn fetch_usage_sync_batch_http(
         })
         .send()
         .await
-        .map_err(|err| format!("LAN usage sync request failed: {err}"))?;
+        .map_err(|err| {
+            let detail = format_lan_sync_reqwest_error(&err);
+            runtime.note_http_sync_probe(peer, "/lan-sync/usage", "request_error", &detail);
+            format!("LAN usage sync request failed: {detail}")
+        })?;
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("LAN usage sync http {status}: {body}"));
+        let detail = format!("LAN usage sync http {status}: {body}");
+        runtime.note_http_sync_probe(peer, "/lan-sync/usage", "http_error", &detail);
+        return Err(detail);
     }
-    response
+    let packet = response
         .json::<LanUsageSyncBatchPacket>()
         .await
-        .map_err(|err| format!("LAN usage sync response decode failed: {err}"))
+        .map_err(|err| {
+            let detail = format_lan_sync_reqwest_error(&err);
+            runtime.note_http_sync_probe(peer, "/lan-sync/usage", "decode_error", &detail);
+            format!("LAN usage sync response decode failed: {detail}")
+        })?;
+    runtime.note_http_sync_probe(peer, "/lan-sync/usage", "ok", "HTTP sync ok");
+    Ok(packet)
 }
 
 fn apply_usage_sync_batch(
@@ -2595,16 +2687,28 @@ async fn fetch_edit_sync_batch_http(
         })
         .send()
         .await
-        .map_err(|err| format!("LAN edit sync request failed: {err}"))?;
+        .map_err(|err| {
+            let detail = format_lan_sync_reqwest_error(&err);
+            runtime.note_http_sync_probe(peer, "/lan-sync/edit", "request_error", &detail);
+            format!("LAN edit sync request failed: {detail}")
+        })?;
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("LAN edit sync http {status}: {body}"));
+        let detail = format!("LAN edit sync http {status}: {body}");
+        runtime.note_http_sync_probe(peer, "/lan-sync/edit", "http_error", &detail);
+        return Err(detail);
     }
-    response
+    let packet = response
         .json::<LanEditSyncBatchPacket>()
         .await
-        .map_err(|err| format!("LAN edit sync response decode failed: {err}"))
+        .map_err(|err| {
+            let detail = format_lan_sync_reqwest_error(&err);
+            runtime.note_http_sync_probe(peer, "/lan-sync/edit", "decode_error", &detail);
+            format!("LAN edit sync response decode failed: {detail}")
+        })?;
+    runtime.note_http_sync_probe(peer, "/lan-sync/edit", "ok", "HTTP sync ok");
+    Ok(packet)
 }
 
 async fn fetch_provider_definitions_http(
@@ -2628,16 +2732,43 @@ async fn fetch_provider_definitions_http(
         })
         .send()
         .await
-        .map_err(|err| format!("LAN provider definitions request failed: {err}"))?;
+        .map_err(|err| {
+            let detail = format_lan_sync_reqwest_error(&err);
+            runtime.note_http_sync_probe(
+                peer,
+                "/lan-sync/provider-definitions",
+                "request_error",
+                &detail,
+            );
+            format!("LAN provider definitions request failed: {detail}")
+        })?;
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("LAN provider definitions http {status}: {body}"));
+        let detail = format!("LAN provider definitions http {status}: {body}");
+        runtime.note_http_sync_probe(
+            peer,
+            "/lan-sync/provider-definitions",
+            "http_error",
+            &detail,
+        );
+        return Err(detail);
     }
-    response
+    let packet = response
         .json::<LanProviderDefinitionsSyncPacket>()
         .await
-        .map_err(|err| format!("LAN provider definitions response decode failed: {err}"))
+        .map_err(|err| {
+            let detail = format_lan_sync_reqwest_error(&err);
+            runtime.note_http_sync_probe(
+                peer,
+                "/lan-sync/provider-definitions",
+                "decode_error",
+                &detail,
+            );
+            format!("LAN provider definitions response decode failed: {detail}")
+        })?;
+    runtime.note_http_sync_probe(peer, "/lan-sync/provider-definitions", "ok", "HTTP sync ok");
+    Ok(packet)
 }
 
 pub(crate) fn refresh_followed_provider_definitions_from_live_peer(
@@ -4255,6 +4386,49 @@ mod tests {
             snapshot.last_peer_heartbeat_source.as_deref(),
             Some("192.168.1.50:4000")
         );
+    }
+
+    #[test]
+    fn snapshot_exposes_last_http_sync_probe_diagnostics() {
+        let runtime = LanSyncRuntime::new(LanNodeIdentity {
+            node_id: "node-self".to_string(),
+            node_name: "self".to_string(),
+        });
+        let cfg = crate::orchestrator::config::AppConfig::default_config();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let secrets =
+            crate::orchestrator::secrets::SecretStore::new(tmp.path().join("secrets.json"));
+        let peer = super::LanPeerSnapshot {
+            node_id: "node-peer".to_string(),
+            node_name: "Peer".to_string(),
+            listen_addr: "192.168.1.50:4000".to_string(),
+            last_heartbeat_unix_ms: 1,
+            capabilities: vec!["edit_sync_v1".to_string()],
+            provider_fingerprints: Vec::new(),
+            provider_definitions_revision: String::new(),
+            followed_source_node_id: None,
+            trusted: true,
+            pair_state: None,
+            pair_request_id: None,
+        };
+        runtime.note_http_sync_probe(
+            &peer,
+            "/lan-sync/edit",
+            "request_error",
+            "LAN sync request error (timeout); url=http://192.168.1.50:4000/lan-sync/edit",
+        );
+
+        let snapshot = runtime.snapshot(4_000, &cfg, &secrets);
+        let probe = snapshot.last_http_sync_probe.expect("last http sync probe");
+        assert_eq!(probe.peer_node_id, "node-peer");
+        assert_eq!(probe.peer_listen_addr, "192.168.1.50:4000");
+        assert_eq!(probe.route, "/lan-sync/edit");
+        assert_eq!(probe.outcome, "request_error");
+        assert!(probe.detail.contains("timeout"));
+        let failure = snapshot
+            .last_http_sync_failure
+            .expect("last http sync failure");
+        assert_eq!(failure.route, "/lan-sync/edit");
     }
 
     #[test]
