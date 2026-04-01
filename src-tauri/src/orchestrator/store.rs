@@ -632,6 +632,18 @@ impl Store {
         Ok(())
     }
 
+    pub fn delete_events_by_codes(&self, codes: &[&str]) -> anyhow::Result<usize> {
+        if codes.is_empty() {
+            return Ok(0);
+        }
+        let placeholders = (0..codes.len()).map(|_| "?").collect::<Vec<_>>().join(", ");
+        let sql = format!("DELETE FROM events WHERE code IN ({placeholders})");
+        let conn = self.events_db.lock();
+        let mut stmt = conn.prepare(&sql)?;
+        let removed = stmt.execute(rusqlite::params_from_iter(codes.iter().copied()))?;
+        Ok(removed)
+    }
+
     pub fn next_lan_edit_lamport_ts(&self, observed_remote: Option<u64>) -> u64 {
         let conn = self.events_db.lock();
         let current = conn

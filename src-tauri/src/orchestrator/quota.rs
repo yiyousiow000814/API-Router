@@ -565,6 +565,31 @@ pub fn shared_quota_owner_for_provider(
     provider_name: &str,
 ) -> Option<crate::lan_sync::LanQuotaOwnerDecision> {
     let fingerprint = shared_provider_fingerprint_for_provider(st, provider_name)?;
+    let cfg = st.cfg.read().clone();
+    if let Some(followed_node_id) = st.secrets.get_followed_config_source_node_id() {
+        let trusted_node_ids = st.secrets.trusted_lan_node_ids();
+        if trusted_node_ids.contains(&followed_node_id) {
+            let lan_snapshot = lan_sync.snapshot(cfg.listen.port, &cfg, &st.secrets);
+            if let Some(peer) = lan_snapshot
+                .peers
+                .iter()
+                .find(|peer| peer.node_id == followed_node_id && peer.trusted)
+            {
+                if peer
+                    .provider_fingerprints
+                    .iter()
+                    .any(|value| value == &fingerprint)
+                {
+                    return Some(crate::lan_sync::LanQuotaOwnerDecision {
+                        local_is_owner: false,
+                        owner_node_id: peer.node_id.clone(),
+                        owner_node_name: peer.node_name.clone(),
+                        contender_count: 2,
+                    });
+                }
+            }
+        }
+    }
     let trusted_node_ids = st.secrets.trusted_lan_node_ids();
     lan_sync.quota_owner_for_fingerprint(&fingerprint, &trusted_node_ids)
 }

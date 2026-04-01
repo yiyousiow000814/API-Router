@@ -573,6 +573,18 @@ impl LanSyncRuntime {
         );
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_test_peer_provider_fingerprints(
+        &self,
+        node_id: &str,
+        provider_fingerprints: Vec<String>,
+    ) {
+        if let Some(peer) = self.peers.write().get_mut(node_id) {
+            peer.provider_fingerprints = provider_fingerprints;
+            peer.last_heartbeat_unix_ms = unix_ms();
+        }
+    }
+
     fn note_peer_heartbeat(&self, packet: LanHeartbeatPacket, source: SocketAddr) {
         if packet.node_id.trim().is_empty() || packet.node_id == self.local_node.node_id {
             return;
@@ -2111,25 +2123,7 @@ fn apply_shared_health_packet(
             applied.push(provider_name.clone());
         }
     }
-    if !applied.is_empty() {
-        gateway.store.add_event(
-            "gateway",
-            "info",
-            "lan.shared_health_applied",
-            &format!(
-                "applied shared health from {} to {} provider(s)",
-                packet.node_name,
-                applied.len()
-            ),
-            serde_json::json!({
-                "source_node_id": packet.node_id,
-                "source_node_name": packet.node_name,
-                "providers": applied,
-                "status": shared.status,
-                "cooldown_until_unix_ms": shared.cooldown_until_unix_ms,
-            }),
-        );
-    }
+    let _ = applied;
 }
 
 fn handle_pair_request(
@@ -2610,20 +2604,7 @@ fn apply_usage_sync_batch(
             &last_row.id,
         );
     }
-    if inserted > 0 {
-        gateway.store.add_event(
-            "gateway",
-            "info",
-            "lan.usage_sync_applied",
-            &format!("applied {inserted} synced request row(s)"),
-            serde_json::json!({
-                "source_node_id": packet.node_id,
-                "received_rows": packet.rows.len(),
-                "inserted_rows": inserted,
-                "has_more": packet.has_more,
-            }),
-        );
-    }
+    let _ = inserted;
 }
 
 async fn fetch_edit_sync_batch_http(

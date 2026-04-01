@@ -2385,4 +2385,41 @@ mod tests {
             "non-packycode providers should still refresh"
         );
     }
+
+    #[test]
+    fn shared_quota_owner_prefers_followed_source_peer() {
+        let providers = std::collections::BTreeMap::from([(
+            "p1".to_string(),
+            ProviderConfig {
+                display_name: "P1".to_string(),
+                base_url: "https://usage-router.example/v1".to_string(),
+                usage_adapter: String::new(),
+                usage_base_url: Some("https://usage-router.example".to_string()),
+                group: None,
+                disabled: false,
+                api_key: String::new(),
+            },
+        )]);
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "sk-shared").unwrap();
+        secrets.set_lan_node_trusted("node-followed", true).unwrap();
+        secrets
+            .set_followed_config_source_node_id(Some("node-followed"))
+            .unwrap();
+        let st = mk_state_with_providers(providers, vec!["p1".to_string()], secrets.clone());
+        let lan_sync = mk_lan_sync();
+        let cfg = st.cfg.read().clone();
+        let fingerprint =
+            shared_provider_fingerprint(&cfg, &st.secrets, "p1").expect("shared fingerprint");
+        lan_sync.seed_test_peer("node-followed", "followed", None);
+        lan_sync.set_test_peer_provider_fingerprints("node-followed", vec![fingerprint]);
+
+        let owner =
+            shared_quota_owner_for_provider(&st, &lan_sync, "p1").expect("owner decision");
+
+        assert!(!owner.local_is_owner);
+        assert_eq!(owner.owner_node_id, "node-followed");
+        assert_eq!(owner.owner_node_name, "followed");
+    }
 }
