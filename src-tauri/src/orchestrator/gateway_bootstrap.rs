@@ -12,6 +12,11 @@ pub(crate) struct PreparedGatewayListeners {
     pub(crate) listeners: Vec<(SocketAddr, std::net::TcpListener)>,
 }
 
+struct GatewayListenerBindPlan {
+    primary: SocketAddr,
+    optional: Vec<SocketAddr>,
+}
+
 #[cfg(windows)]
 fn push_unique_addr(addrs: &mut Vec<SocketAddr>, addr: SocketAddr) {
     if !addrs.contains(&addr) {
@@ -182,6 +187,41 @@ fn gateway_listen_addrs(listen_host: &str, listen_port: u16) -> anyhow::Result<V
     }
 }
 
+fn gateway_listener_bind_plan(
+    listen_host: &str,
+    listen_port: u16,
+) -> anyhow::Result<GatewayListenerBindPlan> {
+    let mut addrs = gateway_listen_addrs(listen_host, listen_port)?;
+    let primary = addrs
+        .first()
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("gateway listen address list was empty"))?;
+    let optional = addrs.drain(1..).collect::<Vec<_>>();
+    Ok(GatewayListenerBindPlan { primary, optional })
+}
+
+fn bind_listener_addrs_with_policy<L, F>(
+    primary: SocketAddr,
+    optional: Vec<SocketAddr>,
+    mut bind_one: F,
+) -> anyhow::Result<Vec<(SocketAddr, L)>>
+where
+    F: FnMut(SocketAddr) -> std::io::Result<L>,
+{
+    let primary_listener = bind_one(primary)?;
+    let mut listeners = vec![(primary, primary_listener)];
+    for addr in optional {
+        match bind_one(addr) {
+            Ok(listener) => listeners.push((addr, listener)),
+            Err(err) => write_gateway_bootstrap_diag(
+                "optional_gateway_listener_bind_skipped",
+                Some(&format!("addr={addr} err={err}")),
+            ),
+        }
+    }
+    Ok(listeners)
+}
+
 fn persist_gateway_runtime_port(
     state: &crate::app_state::AppState,
     next_port: u16,
@@ -213,13 +253,12 @@ fn try_bind_gateway_listeners(
         "try_bind_gateway_listeners_start",
         Some(&format!("host={listen_host} port={listen_port}")),
     );
-    let addrs = gateway_listen_addrs(listen_host, listen_port)?;
-    let mut listeners = Vec::with_capacity(addrs.len());
-    for addr in addrs {
+    let plan = gateway_listener_bind_plan(listen_host, listen_port)?;
+    let listeners = bind_listener_addrs_with_policy(plan.primary, plan.optional, |addr| {
         let listener = std::net::TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
-        listeners.push((addr, listener));
-    }
+        Ok(listener)
+    })?;
     write_gateway_bootstrap_diag(
         "try_bind_gateway_listeners_ok",
         Some(
@@ -236,34 +275,22 @@ fn try_bind_gateway_listeners(
 fn bind_fallback_gateway_listeners(
     listen_host: &str,
 ) -> anyhow::Result<Vec<(SocketAddr, std::net::TcpListener)>> {
-    const MAX_ATTEMPTS: usize = 32;
-    for _ in 0..MAX_ATTEMPTS {
-        let primary = std::net::TcpListener::bind(format!("{listen_host}:0"))?;
-        let primary_addr = primary.local_addr()?;
-        primary.set_nonblocking(true)?;
-        let addrs = gateway_listen_addrs(listen_host, primary_addr.port())?;
-        let mut listeners = vec![(primary_addr, primary)];
-        let mut retry = false;
-        for addr in addrs.into_iter().skip(1) {
-            match std::net::TcpListener::bind(addr) {
-                Ok(listener) => {
-                    listener.set_nonblocking(true)?;
-                    listeners.push((addr, listener));
-                }
-                Err(err) if err.kind() == ErrorKind::AddrInUse => {
-                    retry = true;
-                    break;
-                }
-                Err(err) => return Err(err.into()),
-            }
+    let primary = std::net::TcpListener::bind(format!("{listen_host}:0"))?;
+    let primary_addr = primary.local_addr()?;
+    primary.set_nonblocking(true)?;
+    let plan = gateway_listener_bind_plan(listen_host, primary_addr.port())?;
+    let mut primary_listener = Some(primary);
+    bind_listener_addrs_with_policy(plan.primary, plan.optional, |addr| {
+        if addr == primary_addr {
+            let listener = primary_listener
+                .take()
+                .ok_or_else(|| std::io::Error::from(ErrorKind::AddrInUse))?;
+            return Ok(listener);
         }
-        if !retry {
-            return Ok(listeners);
-        }
-    }
-    Err(anyhow::anyhow!(
-        "failed to allocate a shared fallback port for gateway listeners"
-    ))
+        let listener = std::net::TcpListener::bind(addr)?;
+        listener.set_nonblocking(true)?;
+        Ok(listener)
+    })
 }
 
 pub(crate) fn prepare_gateway_listeners(
@@ -314,7 +341,11 @@ pub(crate) fn prepare_gateway_listeners(
 
 #[cfg(test)]
 mod tests {
-    use super::{gateway_listen_addrs, gateway_listen_addrs_with_overlays};
+    use super::{
+        bind_listener_addrs_with_policy, gateway_listen_addrs, gateway_listen_addrs_with_overlays,
+    };
+    use std::io::ErrorKind;
+    use std::net::SocketAddr;
 
     #[test]
     fn local_bind_keeps_primary_listener() {
@@ -358,5 +389,45 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].to_string(), "100.64.208.117");
         assert_eq!(parsed[1].to_string(), "100.118.0.115");
+    }
+
+    #[test]
+    fn bind_listener_policy_keeps_primary_when_optional_overlay_is_invalid() {
+        let primary: SocketAddr = "127.0.0.1:4000".parse().unwrap();
+        let invalid_optional: SocketAddr = "172.26.144.1:4000".parse().unwrap();
+        let valid_optional: SocketAddr = "192.168.3.137:4000".parse().unwrap();
+        let listeners = bind_listener_addrs_with_policy(
+            primary,
+            vec![invalid_optional, valid_optional],
+            |addr| {
+                if addr == invalid_optional {
+                    Err(std::io::Error::new(
+                        ErrorKind::AddrNotAvailable,
+                        "The requested address is not valid in its context. (os error 10049)",
+                    ))
+                } else {
+                    Ok(addr)
+                }
+            },
+        )
+        .expect("bind policy should keep primary and valid overlays");
+
+        let bound = listeners
+            .into_iter()
+            .map(|(addr, _)| addr)
+            .collect::<Vec<_>>();
+        assert_eq!(bound, vec![primary, valid_optional]);
+    }
+
+    #[test]
+    fn bind_listener_policy_still_fails_when_primary_bind_fails() {
+        let primary: SocketAddr = "127.0.0.1:4000".parse().unwrap();
+        let result = bind_listener_addrs_with_policy(primary, Vec::new(), |_addr| {
+            Err::<SocketAddr, std::io::Error>(std::io::Error::new(
+                ErrorKind::AddrInUse,
+                "Only one usage of each socket address is normally permitted",
+            ))
+        });
+        assert!(result.is_err());
     }
 }
