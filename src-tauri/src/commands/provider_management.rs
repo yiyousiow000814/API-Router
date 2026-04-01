@@ -1523,7 +1523,7 @@ fn delete_provider_impl(
     name: &str,
 ) -> Result<Option<String>, String> {
     ensure_local_provider_definitions_editable(state)?;
-    let next_preferred: Option<String> = {
+    let (next_preferred, next_cfg) = {
         let mut cfg = state.gateway.cfg.write();
         if !cfg.providers.contains_key(name) {
             return Err(format!("unknown provider: {name}"));
@@ -1545,7 +1545,7 @@ fn delete_provider_impl(
         if let Some(p) = preferred_after_delete {
             cfg.routing.preferred_provider = p;
         }
-        next_preferred
+        (next_preferred, cfg.clone())
     };
 
     // Keep the tombstone write before secrets.delete_provider(name), otherwise the original
@@ -1568,16 +1568,25 @@ fn delete_provider_impl(
     }
     let _ = state.secrets.delete_provider(name);
     persist_config_for_app_state(state).map_err(|e| e.to_string())?;
+    state.gateway.router.sync_with_config(&next_cfg, unix_ms());
     let _ = clear_observed_session_routes_for_provider(state, name);
     Ok(next_preferred)
 }
 
 fn clear_followed_config_source_impl(state: &app_state::AppState) -> Result<(), String> {
+    let previous_followed = state.secrets.get_followed_config_source_node_id();
     let had_snapshot = crate::lan_sync::load_local_provider_state_snapshot(state)?.is_some();
-    if had_snapshot {
-        crate::lan_sync::restore_local_provider_state(state)?;
-    }
-    state.secrets.set_followed_config_source_node_id(None)?;
+    persist_followed_config_source_change(
+        previous_followed.as_deref(),
+        None,
+        |node_id| state.secrets.set_followed_config_source_node_id(node_id),
+        || {
+            if had_snapshot {
+                crate::lan_sync::restore_local_provider_state(state)?;
+            }
+            Ok(())
+        },
+    )?;
     if !had_snapshot {
         state.gateway.store.add_event(
             "gateway",
@@ -2148,6 +2157,17 @@ mod provider_management_tests {
             .expect("provider tombstone");
 
         assert_eq!(tombstone.entity_id, original_shared_id);
+    }
+
+    #[test]
+    fn delete_provider_impl_removes_deleted_provider_from_router_snapshot_immediately() {
+        let (_tmp, state) = build_test_state();
+        assert!(state.gateway.router.snapshot(unix_ms()).contains_key("provider_1"));
+
+        delete_provider_impl(&state, "provider_1").expect("delete provider");
+
+        let snapshot = state.gateway.router.snapshot(unix_ms());
+        assert!(!snapshot.contains_key("provider_1"));
     }
 
     #[test]

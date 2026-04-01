@@ -234,7 +234,33 @@ mod tests {
         codex_home_dir_for_override, import_rollout_file_into_codex_home,
         import_rollout_from_known_path, resume_import_order, WorkspaceTarget,
     };
+    use crate::orchestrator::gateway::web_codex_home::{lock_wsl_identity_cache, WslIdentityCache};
     use std::path::Path;
+
+    struct WslIdentityGuard {
+        previous: Option<WslIdentityCache>,
+    }
+
+    impl WslIdentityGuard {
+        fn set(distro: &str, home: &str) -> Self {
+            let mut cache = lock_wsl_identity_cache();
+            let previous = cache.clone();
+            *cache = Some(WslIdentityCache {
+                distro: distro.to_string(),
+                home: home.to_string(),
+                updated_at_unix_secs: i64::MAX,
+            });
+            drop(cache);
+            Self { previous }
+        }
+    }
+
+    impl Drop for WslIdentityGuard {
+        fn drop(&mut self) {
+            let mut cache = lock_wsl_identity_cache();
+            *cache = self.previous.clone();
+        }
+    }
 
     #[test]
     fn resume_import_order_respects_workspace_hint() {
@@ -278,6 +304,7 @@ mod tests {
     fn linux_home_override_resolves_to_unc_path_on_windows() {
         #[cfg(target_os = "windows")]
         {
+            let _identity = WslIdentityGuard::set("Ubuntu", "/home/test/.codex");
             let resolved =
                 codex_home_dir_for_override(Some("/home/test/.codex")).expect("resolve wsl home");
             let resolved_str = resolved.to_string_lossy();

@@ -135,6 +135,30 @@ fn request_window_ratio(day_req_total: f64, day_req_in_window: f64) -> f64 {
     0.0
 }
 
+fn resolve_budget_or_token_rate_cost(
+    allow_latest_day_budget_fallback: bool,
+    provider_daily_spent_usd: Option<f64>,
+    provider_daily_cost_per_token: Option<f64>,
+    total_tokens: u64,
+) -> (Option<f64>, Option<f64>, String) {
+    if allow_latest_day_budget_fallback {
+        if let Some(spent_today) = provider_daily_spent_usd {
+            return (
+                Some(spent_today),
+                Some(spent_today),
+                "provider_budget_api_latest_day".to_string(),
+            );
+        }
+    }
+    if let Some(per_tok) = provider_daily_cost_per_token {
+        let estimated = per_tok * total_tokens as f64;
+        if estimated > 0.0 {
+            return (Some(estimated), None, "provider_token_rate".to_string());
+        }
+    }
+    (None, None, "none".to_string())
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn get_usage_request_entries(
@@ -958,17 +982,18 @@ pub(crate) fn get_usage_statistics(
                     } else {
                         "manual_history".to_string()
                     };
-                } else if allow_latest_day_budget_fallback {
-                    if let Some(spent_today) = provider_daily_spent_usd.get(provider).copied() {
-                        total_used_cost_usd = Some(spent_today);
-                        actual_tracked_spend_usd = Some(spent_today);
-                        pricing_source = "provider_budget_api_latest_day".to_string();
-                    }
-                } else if let Some(per_tok) = provider_daily_cost_per_token.get(provider).copied() {
-                    let estimated = per_tok * agg.total_tokens as f64;
-                    if estimated > 0.0 {
-                        total_used_cost_usd = Some(estimated);
-                        pricing_source = "provider_token_rate".to_string();
+                } else {
+                    let (fallback_total_used, fallback_actual_tracked, fallback_source) =
+                        resolve_budget_or_token_rate_cost(
+                            allow_latest_day_budget_fallback,
+                            provider_daily_spent_usd.get(provider).copied(),
+                            provider_daily_cost_per_token.get(provider).copied(),
+                            agg.total_tokens,
+                        );
+                    total_used_cost_usd = fallback_total_used;
+                    actual_tracked_spend_usd = fallback_actual_tracked;
+                    if total_used_cost_usd.is_some() {
+                        pricing_source = fallback_source;
                     }
                 }
 
@@ -1237,13 +1262,13 @@ pub(crate) fn get_usage_statistics(
 #[cfg(test)]
 mod usage_metrics_tests {
     use super::{
-        effective_provider_filter, usage_metrics_configured_provider_names,
-        latest_day_budget_fallback_allowed, merge_usage_metrics_day_counts,
-        normalize_usage_origin, request_window_ratio,
-        projection_hours_for_day_estimate,
+        effective_provider_filter, latest_day_budget_fallback_allowed,
+        merge_usage_metrics_day_counts, normalize_usage_origin,
+        projection_hours_for_day_estimate, request_window_ratio,
+        resolve_budget_or_token_rate_cost, usage_metrics_configured_provider_names,
     };
-    use std::collections::BTreeMap;
     use crate::orchestrator::config::{AppConfig, ProviderConfig};
+    use std::collections::BTreeMap;
 
     #[test]
     fn normalize_usage_origin_maps_known_values() {
@@ -1298,6 +1323,15 @@ mod usage_metrics_tests {
     fn request_window_ratio_is_zero_when_day_has_no_requests() {
         assert_eq!(request_window_ratio(0.0, 71.0), 0.0);
         assert!((request_window_ratio(86.0, 71.0) - (71.0 / 86.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn budget_or_token_rate_cost_falls_back_to_per_token_when_budget_missing() {
+        let (total_used, tracked, source) =
+            resolve_budget_or_token_rate_cost(true, None, Some(0.002), 500);
+        assert_eq!(total_used, Some(1.0));
+        assert_eq!(tracked, None);
+        assert_eq!(source, "provider_token_rate");
     }
 
     fn sample_cfg() -> AppConfig {
