@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { shouldSuppressInvokeError } from './tauriCore'
+import { shouldSuppressInvokeError, shouldSuppressSlowInvokeSuccess } from './tauriCore'
 
 describe('shouldSuppressInvokeError', () => {
   it('suppresses missing optional WSL home probe failures', () => {
@@ -16,5 +16,18 @@ describe('shouldSuppressInvokeError', () => {
     expect(
       shouldSuppressInvokeError('provider_switchboard_status', 'missing WSL distro/HOME'),
     ).toBe(false)
+  })
+})
+
+describe('shouldSuppressSlowInvokeSuccess', () => {
+  it('suppresses high-frequency polling commands', () => {
+    expect(shouldSuppressSlowInvokeSuccess('get_status')).toBe(true)
+    expect(shouldSuppressSlowInvokeSuccess('get_config')).toBe(true)
+    expect(shouldSuppressSlowInvokeSuccess('provider_switchboard_status')).toBe(true)
+    expect(shouldSuppressSlowInvokeSuccess('codex_account_refresh')).toBe(true)
+  })
+
+  it('keeps regular commands observable', () => {
+    expect(shouldSuppressSlowInvokeSuccess('get_usage_statistics')).toBe(false)
   })
 })

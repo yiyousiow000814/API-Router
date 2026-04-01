@@ -551,7 +551,6 @@ impl RouterState {
     }
 
     pub fn mark_usage_refresh_success(&self, provider: &str, now_ms: u64) {
-        let mut should_persist = false;
         {
             let mut health = self.health.write();
             if let Some(h) = health.get_mut(provider) {
@@ -560,12 +559,9 @@ impl RouterState {
                 }
                 h.last_ok_at_unix_ms = now_ms;
                 Self::mark_local_runtime_update(h, now_ms);
-                should_persist = !matches!(h.state, HealthState::Unknown);
             }
         }
-        if should_persist {
-            self.persist_shared_health_state(now_ms);
-        }
+        self.persist_shared_health_state(now_ms);
     }
 
     pub fn require_usage_confirmation(&self, provider: &str) {

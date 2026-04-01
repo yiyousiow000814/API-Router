@@ -33,8 +33,13 @@ function shouldSkipInvokeDiagnostics(command: string): boolean {
   )
 }
 
-function shouldSuppressSlowInvokeSuccess(command: string): boolean {
-  return command === 'codex_account_refresh'
+export function shouldSuppressSlowInvokeSuccess(command: string): boolean {
+  return (
+    command === 'codex_account_refresh' ||
+    command === 'get_status' ||
+    command === 'get_config' ||
+    command === 'provider_switchboard_status'
+  )
 }
 
 export function shouldSuppressInvokeError(command: string, message: string): boolean {
