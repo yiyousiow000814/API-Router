@@ -31,6 +31,42 @@ fn normalize_usage_origin_filter(origins: Option<Vec<String>>) -> BTreeSet<Strin
         .collect()
 }
 
+fn usage_metrics_configured_provider_names(
+    cfg: &crate::orchestrator::config::AppConfig,
+) -> Vec<String> {
+    let mut providers = Vec::new();
+    for provider_name in &cfg.provider_order {
+        if cfg.providers.contains_key(provider_name) {
+            providers.push(provider_name.clone());
+        }
+    }
+    for provider_name in cfg.providers.keys() {
+        if !providers.iter().any(|entry| entry == provider_name) {
+            providers.push(provider_name.clone());
+        }
+    }
+    providers
+}
+
+fn effective_provider_filter(
+    cfg: &crate::orchestrator::config::AppConfig,
+    providers: Option<Vec<String>>,
+) -> BTreeSet<String> {
+    let explicit: BTreeSet<String> = providers
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !explicit.is_empty() {
+        return explicit;
+    }
+    usage_metrics_configured_provider_names(cfg)
+        .into_iter()
+        .map(|provider| provider.to_ascii_lowercase())
+        .collect()
+}
+
 fn usage_node_label(node_name: Option<&str>) -> String {
     let trimmed = node_name.map(str::trim).unwrap_or_default();
     if trimmed.is_empty() {
@@ -115,15 +151,11 @@ pub(crate) fn get_usage_request_entries(
     offset: Option<u64>,
 ) -> serde_json::Value {
     let now = unix_ms();
+    let cfg = state.gateway.cfg.read().clone();
     let window_hours = hours.unwrap_or(24).clamp(1, 24 * 365 * 20);
     let window_ms = window_hours.saturating_mul(60 * 60 * 1000);
     let since_unix_ms = now.saturating_sub(window_ms);
-    let provider_filter: BTreeSet<String> = providers
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| s.trim().to_ascii_lowercase())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let provider_filter = effective_provider_filter(&cfg, providers);
     let model_filter: BTreeSet<String> = models
         .unwrap_or_default()
         .into_iter()
@@ -218,15 +250,11 @@ pub(crate) fn get_usage_request_summary(
     sessions: Option<Vec<String>>,
 ) -> serde_json::Value {
     let now = unix_ms();
+    let cfg = state.gateway.cfg.read().clone();
     let window_hours = hours.unwrap_or(24).clamp(1, 24 * 365 * 20);
     let window_ms = window_hours.saturating_mul(60 * 60 * 1000);
     let since_unix_ms = now.saturating_sub(window_ms);
-    let provider_filter: BTreeSet<String> = providers
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| s.trim().to_ascii_lowercase())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let provider_filter = effective_provider_filter(&cfg, providers);
     let model_filter: BTreeSet<String> = models
         .unwrap_or_default()
         .into_iter()
@@ -276,6 +304,9 @@ pub(crate) fn get_usage_request_daily_totals(
     days: Option<u64>,
 ) -> serde_json::Value {
     let day_limit = days.unwrap_or(45).clamp(1, 180) as usize;
+    let visible_providers: BTreeSet<String> = usage_metrics_configured_provider_names(&state.gateway.cfg.read())
+        .into_iter()
+        .collect();
     let rows = state
         .gateway
         .store
@@ -291,6 +322,9 @@ pub(crate) fn get_usage_request_daily_totals(
         wsl_request_count,
     ) in rows
     {
+        if !visible_providers.contains(&provider) {
+            continue;
+        }
         let Some((day_start_unix_ms, _)) = local_day_range_from_key(&day_key) else {
             continue;
         };
@@ -409,17 +443,13 @@ pub(crate) fn get_usage_statistics(
     }
 
     let now = unix_ms();
+    let cfg = state.gateway.cfg.read().clone();
     let window_hours = hours.unwrap_or(24).clamp(1, 24 * 30);
     let window_ms = window_hours.saturating_mul(60 * 60 * 1000);
     let since_unix_ms = now.saturating_sub(window_ms);
     let allow_latest_day_budget_fallback =
         latest_day_budget_fallback_allowed(now, since_unix_ms);
-    let provider_filter: BTreeSet<String> = providers
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| s.trim().to_ascii_lowercase())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let provider_filter = effective_provider_filter(&cfg, providers);
     let model_filter: BTreeSet<String> = models
         .unwrap_or_default()
         .into_iter()
@@ -1207,11 +1237,13 @@ pub(crate) fn get_usage_statistics(
 #[cfg(test)]
 mod usage_metrics_tests {
     use super::{
+        effective_provider_filter, usage_metrics_configured_provider_names,
         latest_day_budget_fallback_allowed, merge_usage_metrics_day_counts,
         normalize_usage_origin, request_window_ratio,
         projection_hours_for_day_estimate,
     };
     use std::collections::BTreeMap;
+    use crate::orchestrator::config::{AppConfig, ProviderConfig};
 
     #[test]
     fn normalize_usage_origin_maps_known_values() {
@@ -1233,7 +1265,7 @@ mod usage_metrics_tests {
 
     #[test]
     fn latest_day_budget_fallback_only_applies_within_current_local_day() {
-        use chrono::{Local, TimeZone, Timelike};
+        use chrono::{Local, Timelike};
 
         let now = Local::now()
             .with_hour(12)
@@ -1266,5 +1298,91 @@ mod usage_metrics_tests {
     fn request_window_ratio_is_zero_when_day_has_no_requests() {
         assert_eq!(request_window_ratio(0.0, 71.0), 0.0);
         assert!((request_window_ratio(86.0, 71.0) - (71.0 / 86.0)).abs() < 1e-9);
+    }
+
+    fn sample_cfg() -> AppConfig {
+        let mut cfg = AppConfig::default_config();
+        cfg.providers = BTreeMap::from([
+            (
+                "official".to_string(),
+                ProviderConfig {
+                    display_name: "Official".to_string(),
+                    base_url: "https://official.example/v1".to_string(),
+                    group: None,
+                    disabled: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "packycode".to_string(),
+                ProviderConfig {
+                    display_name: "Packycode".to_string(),
+                    base_url: "https://packycode.example/v1".to_string(),
+                    group: None,
+                    disabled: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "aigateway".to_string(),
+                ProviderConfig {
+                    display_name: "AIGateway".to_string(),
+                    base_url: "https://aigateway.example/v1".to_string(),
+                    group: None,
+                    disabled: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            ),
+        ]);
+        cfg.provider_order = vec!["packycode".to_string(), "official".to_string()];
+        cfg
+    }
+
+    #[test]
+    fn configured_provider_names_follow_config_order_first() {
+        assert_eq!(
+            usage_metrics_configured_provider_names(&sample_cfg()),
+            vec![
+                "packycode".to_string(),
+                "official".to_string(),
+                "aigateway".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn effective_provider_filter_defaults_to_current_config_providers() {
+        assert_eq!(
+            effective_provider_filter(&sample_cfg(), None),
+            BTreeMap::from([
+                ("aigateway".to_string(), ()),
+                ("official".to_string(), ()),
+                ("packycode".to_string(), ())
+            ])
+            .into_keys()
+            .collect()
+        );
+    }
+
+    #[test]
+    fn effective_provider_filter_preserves_explicit_selection() {
+        assert_eq!(
+            effective_provider_filter(
+                &sample_cfg(),
+                Some(vec![" official ".to_string(), "PACKYCODE".to_string()])
+            ),
+            BTreeMap::from([
+                ("official".to_string(), ()),
+                ("packycode".to_string(), ())
+            ])
+            .into_keys()
+            .collect()
+        );
     }
 }

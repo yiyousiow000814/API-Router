@@ -1,55 +1,7 @@
 use super::*;
 use rusqlite::params;
-use std::collections::BTreeSet;
 
 impl Store {
-    pub fn list_usage_history_providers(&self) -> BTreeSet<String> {
-        fn provider_from_prefixed_key(key: &[u8], prefix: &str) -> Option<String> {
-            let text = std::str::from_utf8(key).ok()?;
-            let rest = text.strip_prefix(prefix)?;
-            let provider = rest.split(':').next()?.trim();
-            if provider.is_empty() {
-                None
-            } else {
-                Some(provider.to_string())
-            }
-        }
-
-        let mut providers = BTreeSet::new();
-        for prefix in ["usage_day:", "spend_day:", "spend_manual_day:"] {
-            for res in self.db.scan_prefix(prefix.as_bytes()) {
-                let Ok((key, _)) = res else {
-                    continue;
-                };
-                if let Some(provider) = provider_from_prefixed_key(key.as_ref(), prefix) {
-                    providers.insert(provider);
-                }
-            }
-        }
-        let conn = self.events_db.lock();
-        let sqlite_provider_queries = [
-            "SELECT DISTINCT provider FROM usage_requests",
-            "SELECT DISTINCT provider FROM spend_days",
-            "SELECT DISTINCT provider FROM spend_manual_days",
-            "SELECT DISTINCT provider FROM provider_pricing_configs",
-        ];
-        for sql in sqlite_provider_queries {
-            let Ok(mut stmt) = conn.prepare(sql) else {
-                continue;
-            };
-            let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) else {
-                continue;
-            };
-            for provider in rows.flatten() {
-                let trimmed = provider.trim();
-                if !trimmed.is_empty() {
-                    providers.insert(trimmed.to_string());
-                }
-            }
-        }
-        providers
-    }
-
     pub fn list_usage_days(&self, provider: &str) -> Vec<Value> {
         let prefix = format!("usage_day:{provider}:");
         self.db
@@ -573,52 +525,6 @@ mod tests {
     use super::*;
     use crate::orchestrator::gateway::open_store_dir;
     use crate::orchestrator::secrets::{ProviderPricingConfig, ProviderPricingPeriod};
-
-    #[test]
-    fn list_usage_history_providers_includes_sled_and_sql_sources() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let store = open_store_dir(tmp.path().join("data")).expect("store");
-        store.put_spend_day(
-            "archived-packycode",
-            1_700_000_000_000,
-            &serde_json::json!({
-                "started_at_unix_ms": 1_700_000_000_000u64,
-                "tracked_spend_usd": 12.3
-            }),
-        );
-        store.put_spend_manual_day(
-            "manual-only-provider",
-            "2026-02-18",
-            &serde_json::json!({
-                "day_key": "2026-02-18",
-                "manual_total_usd": 5.0
-            }),
-        );
-        store.add_usage_request(
-            "sql-only-provider",
-            "gpt-5",
-            UsageTokenIncrements {
-                input_tokens: 10,
-                output_tokens: 5,
-                total_tokens: 15,
-                cache_creation_input_tokens: 0,
-                cache_read_input_tokens: 0,
-            },
-            UsageRequestContext {
-                api_key_ref: Some("key-1"),
-                origin: crate::constants::USAGE_ORIGIN_WINDOWS,
-                session_id: Some("session-1"),
-                node_id: Some("node-a"),
-                node_name: Some("Desk A"),
-            },
-        );
-
-        let providers = store.list_usage_history_providers();
-
-        assert!(providers.contains("archived-packycode"));
-        assert!(providers.contains("manual-only-provider"));
-        assert!(providers.contains("sql-only-provider"));
-    }
 
     #[test]
     fn provider_pricing_configs_roundtrip_via_sqlite() {

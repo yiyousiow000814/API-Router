@@ -175,7 +175,7 @@ fn build_followed_provider_state(
     gateway: &GatewayState,
     source_node_id: &str,
 ) -> Result<(AppConfig, ProviderStateBundle), String> {
-    let snapshot_rows = gateway
+    let mut snapshot_rows = gateway
         .store
         .list_lan_provider_definition_snapshots(source_node_id);
     if snapshot_rows.is_empty() {
@@ -183,6 +183,26 @@ fn build_followed_provider_state(
             "no synced provider definitions available yet for source: {source_node_id}"
         ));
     }
+    snapshot_rows.sort_by(|left, right| {
+        let left_order = left
+            .snapshot
+            .get("order_index")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(u64::MAX);
+        let right_order = right
+            .snapshot
+            .get("order_index")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(u64::MAX);
+        left_order
+            .cmp(&right_order)
+            .then_with(|| {
+                left.provider_name
+                    .to_ascii_lowercase()
+                    .cmp(&right.provider_name.to_ascii_lowercase())
+            })
+            .then_with(|| left.shared_provider_id.cmp(&right.shared_provider_id))
+    });
     let mut next_cfg = gateway.cfg.read().clone();
     let mut next_bundle = ProviderStateBundle::default();
     let current_bundle = gateway.secrets.export_provider_state_bundle();

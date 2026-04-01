@@ -6,6 +6,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use axum::extract::{Json, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse;
 use base64::Engine;
 use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce};
@@ -36,15 +39,17 @@ pub const LAN_DISCOVERY_PORT: u16 = 38455;
 pub const LAN_HEARTBEAT_INTERVAL_MS: u64 = 2_000;
 pub const LAN_PEER_STALE_AFTER_MS: u64 = 7_000;
 const LAN_SHARED_HEALTH_LOOP_INTERVAL_MS: u64 = 900;
-const LAN_USAGE_SYNC_LOOP_INTERVAL_MS: u64 = 1_500;
-const LAN_USAGE_SYNC_BATCH_LIMIT: usize = 32;
-const LAN_EDIT_SYNC_LOOP_INTERVAL_MS: u64 = 1_500;
-const LAN_EDIT_SYNC_BATCH_LIMIT: usize = 32;
+const LAN_USAGE_SYNC_LOOP_INTERVAL_MS: u64 = 1_000;
+const LAN_USAGE_SYNC_BATCH_LIMIT: usize = 2_048;
+const LAN_EDIT_SYNC_LOOP_INTERVAL_MS: u64 = 1_000;
+const LAN_EDIT_SYNC_BATCH_LIMIT: usize = 512;
 const LAN_PACKET_SOFT_LIMIT_BYTES: usize = 8 * 1024;
 const LAN_SOCKET_RETRY_MS: u64 = 2_000;
 const LAN_PAIR_REQUEST_TTL_MS: u64 = 5 * 60 * 1000;
 const LAN_PAIR_REQUEST_THROTTLE_MS: u64 = 60 * 1000;
 const LAN_PAIR_APPROVAL_TTL_MS: u64 = 5 * 60 * 1000;
+const LAN_SYNC_AUTH_NODE_ID_HEADER: &str = "x-api-router-lan-node-id";
+const LAN_SYNC_AUTH_SECRET_HEADER: &str = "x-api-router-lan-secret";
 const LAN_HEARTBEAT_CAPABILITIES: [&str; 6] = [
     "heartbeat_v1",
     "status_v1",
@@ -188,7 +193,7 @@ struct LanSharedHealthPacket {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct LanUsageSyncRequestPacket {
+pub(crate) struct LanUsageSyncRequestPacket {
     version: u8,
     node_id: String,
     after_ingested_at_unix_ms: u64,
@@ -197,7 +202,7 @@ struct LanUsageSyncRequestPacket {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct LanUsageSyncBatchPacket {
+pub(crate) struct LanUsageSyncBatchPacket {
     version: u8,
     node_id: String,
     rows: Vec<crate::orchestrator::store::UsageRequestSyncRow>,
@@ -205,7 +210,7 @@ struct LanUsageSyncBatchPacket {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct LanEditSyncRequestPacket {
+pub(crate) struct LanEditSyncRequestPacket {
     version: u8,
     node_id: String,
     after_lamport_ts: u64,
@@ -214,7 +219,7 @@ struct LanEditSyncRequestPacket {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct LanEditSyncBatchPacket {
+pub(crate) struct LanEditSyncBatchPacket {
     version: u8,
     node_id: String,
     events: Vec<crate::orchestrator::store::LanEditSyncEvent>,
@@ -270,10 +275,6 @@ struct LanPairTrustBundlePacket {
 enum LanSyncPacket {
     Heartbeat(LanHeartbeatPacket),
     SharedHealth(LanSharedHealthPacket),
-    UsageSyncRequest(LanUsageSyncRequestPacket),
-    UsageSyncBatch(LanUsageSyncBatchPacket),
-    EditSyncRequest(LanEditSyncRequestPacket),
-    EditSyncBatch(LanEditSyncBatchPacket),
     QuotaRefreshRequest(LanQuotaRefreshRequestPacket),
 }
 
@@ -339,10 +340,9 @@ impl LanSyncRuntime {
 
         let listener_runtime = self.clone();
         let listener_gateway = gateway.clone();
-        let listener_config_path = config_path.clone();
         std::thread::Builder::new()
             .name("lan-sync-listener".to_string())
-            .spawn(move || run_listener(listener_runtime, listener_gateway, listener_config_path))
+            .spawn(move || run_listener(listener_runtime, listener_gateway))
             .ok();
 
         let sender_runtime = self.clone();
@@ -368,9 +368,12 @@ impl LanSyncRuntime {
 
         let edit_sync_runtime = self.clone();
         let edit_sync_gateway = gateway.clone();
+        let edit_sync_config_path = config_path.clone();
         std::thread::Builder::new()
             .name("lan-sync-edit-sync".to_string())
-            .spawn(move || run_edit_sync_loop(edit_sync_runtime, edit_sync_gateway))
+            .spawn(move || {
+                run_edit_sync_loop(edit_sync_runtime, edit_sync_gateway, edit_sync_config_path)
+            })
             .ok();
     }
 
@@ -822,6 +825,105 @@ fn current_lan_trust_secret(
         .ok_or_else(|| "missing lan trust secret".to_string())
 }
 
+fn lan_sync_auth_error(message: &str) -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({
+            "ok": false,
+            "error": message,
+        })),
+    )
+}
+
+fn authorize_lan_sync_http_request(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    headers: &HeaderMap,
+    node_id: &str,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let normalized_node_id = node_id.trim();
+    if normalized_node_id.is_empty() {
+        return Err(lan_sync_auth_error("missing LAN sync node id"));
+    }
+    if !gateway.secrets.is_lan_node_trusted(normalized_node_id) {
+        return Err(lan_sync_auth_error("LAN sync peer is not trusted"));
+    }
+    let expected_secret = current_lan_trust_secret(gateway)
+        .map_err(|_| lan_sync_auth_error("missing LAN trust secret"))?;
+    let header_node_id = headers
+        .get(LAN_SYNC_AUTH_NODE_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| lan_sync_auth_error("missing LAN sync node header"))?;
+    if header_node_id != normalized_node_id {
+        return Err(lan_sync_auth_error("LAN sync node header mismatch"));
+    }
+    let provided_secret = headers
+        .get(LAN_SYNC_AUTH_SECRET_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| lan_sync_auth_error("missing LAN sync secret header"))?;
+    if provided_secret != expected_secret {
+        return Err(lan_sync_auth_error("invalid LAN sync secret"));
+    }
+    Ok(())
+}
+
+pub(crate) async fn lan_sync_usage_http(
+    State(gateway): State<crate::orchestrator::gateway::GatewayState>,
+    headers: HeaderMap,
+    Json(packet): Json<LanUsageSyncRequestPacket>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize_lan_sync_http_request(&gateway, &headers, &packet.node_id) {
+        return err.into_response();
+    }
+    let (rows, has_more) = gateway.store.list_usage_request_sync_batch(
+        packet.after_ingested_at_unix_ms,
+        Some(packet.after_id.as_str()),
+        packet.limit.clamp(1, LAN_USAGE_SYNC_BATCH_LIMIT),
+    );
+    Json(serde_json::json!({
+        "ok": true,
+        "version": 1,
+        "node_id": gateway
+            .secrets
+            .get_lan_node_identity()
+            .map(|node| node.node_id)
+            .unwrap_or_default(),
+        "rows": rows,
+        "has_more": has_more,
+    }))
+    .into_response()
+}
+
+pub(crate) async fn lan_sync_edit_http(
+    State(gateway): State<crate::orchestrator::gateway::GatewayState>,
+    headers: HeaderMap,
+    Json(packet): Json<LanEditSyncRequestPacket>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize_lan_sync_http_request(&gateway, &headers, &packet.node_id) {
+        return err.into_response();
+    }
+    let (events, has_more) = gateway.store.list_lan_edit_events_batch(
+        packet.after_lamport_ts,
+        Some(packet.after_event_id.as_str()),
+        packet.limit.clamp(1, LAN_EDIT_SYNC_BATCH_LIMIT),
+    );
+    Json(serde_json::json!({
+        "ok": true,
+        "version": 1,
+        "node_id": gateway
+            .secrets
+            .get_lan_node_identity()
+            .map(|node| node.node_id)
+            .unwrap_or_default(),
+        "events": events,
+        "has_more": has_more,
+    }))
+    .into_response()
+}
+
 fn lan_cipher(secret: &str) -> ChaCha20Poly1305 {
     let digest = Sha256::digest(secret.trim().as_bytes());
     ChaCha20Poly1305::new(&digest)
@@ -966,61 +1068,6 @@ fn decrypt_pair_bundle(
         .ok()
 }
 
-fn packet_encoded_size(
-    gateway: &crate::orchestrator::gateway::GatewayState,
-    packet: &LanSyncPacket,
-) -> usize {
-    serialize_wire_packet(gateway, packet)
-        .map(|bytes| bytes.len())
-        .unwrap_or(usize::MAX)
-}
-
-fn trim_usage_rows_to_fit(
-    gateway: &crate::orchestrator::gateway::GatewayState,
-    node_id: &str,
-    rows: &[crate::orchestrator::store::UsageRequestSyncRow],
-    has_more: bool,
-) -> (Vec<crate::orchestrator::store::UsageRequestSyncRow>, bool) {
-    let mut end = rows.len();
-    while end > 0 {
-        let limited = rows[..end].to_vec();
-        let packet = LanSyncPacket::UsageSyncBatch(LanUsageSyncBatchPacket {
-            version: 1,
-            node_id: node_id.to_string(),
-            rows: limited.clone(),
-            has_more: has_more || end < rows.len(),
-        });
-        if packet_encoded_size(gateway, &packet) <= LAN_PACKET_SOFT_LIMIT_BYTES {
-            return (limited, has_more || end < rows.len());
-        }
-        end -= 1;
-    }
-    (Vec::new(), has_more || !rows.is_empty())
-}
-
-fn trim_edit_events_to_fit(
-    gateway: &crate::orchestrator::gateway::GatewayState,
-    node_id: &str,
-    events: &[crate::orchestrator::store::LanEditSyncEvent],
-    has_more: bool,
-) -> (Vec<crate::orchestrator::store::LanEditSyncEvent>, bool) {
-    let mut end = events.len();
-    while end > 0 {
-        let limited = events[..end].to_vec();
-        let packet = LanSyncPacket::EditSyncBatch(LanEditSyncBatchPacket {
-            version: 1,
-            node_id: node_id.to_string(),
-            events: limited.clone(),
-            has_more: has_more || end < events.len(),
-        });
-        if packet_encoded_size(gateway, &packet) <= LAN_PACKET_SOFT_LIMIT_BYTES {
-            return (limited, has_more || end < events.len());
-        }
-        end -= 1;
-    }
-    (Vec::new(), has_more || !events.is_empty())
-}
-
 fn send_wire_bytes(addr: SocketAddr, bytes: &[u8]) -> Result<(), String> {
     shared_lan_send_socket()?
         .send_to(bytes, addr)
@@ -1092,6 +1139,8 @@ pub struct ProviderDefinitionSnapshotPayload {
     #[serde(default)]
     pub name: String,
     #[serde(default)]
+    pub order_index: Option<u64>,
+    #[serde(default)]
     pub display_name: String,
     #[serde(default)]
     pub base_url: String,
@@ -1148,6 +1197,11 @@ fn provider_definition_snapshot_payload(
     let usage_login = gateway.secrets.get_usage_login(provider);
     Ok(ProviderDefinitionSnapshotPayload {
         name: provider.to_string(),
+        order_index: cfg
+            .provider_order
+            .iter()
+            .position(|entry| entry == provider)
+            .map(|index| index as u64),
         display_name: provider_cfg.display_name.clone(),
         base_url: provider_cfg.base_url.clone(),
         group: provider_cfg.group.clone(),
@@ -1170,6 +1224,20 @@ fn merge_provider_definition_snapshot_payload(
     let mut next = current.unwrap_or_default();
     if let Some(Some(value)) = payload_string_field(payload, "name") {
         next.name = value;
+    }
+    if let Some(order_index) = payload
+        .get("order_index")
+        .and_then(|value| value.as_u64())
+        .or_else(|| {
+            payload
+                .get("order_index")
+                .and_then(|value| value.as_i64())
+                .and_then(|value| (value >= 0).then_some(value as u64))
+        })
+    {
+        next.order_index = Some(order_index);
+    } else if payload.get("order_index").is_some_and(Value::is_null) {
+        next.order_index = None;
     }
     if let Some(Some(value)) = payload_string_field(payload, "display_name") {
         next.display_name = value;
@@ -1686,11 +1754,7 @@ pub fn sanitize_node_name(raw: &str) -> String {
     }
 }
 
-fn run_listener(
-    runtime: LanSyncRuntime,
-    gateway: crate::orchestrator::gateway::GatewayState,
-    config_path: std::path::PathBuf,
-) {
+fn run_listener(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::GatewayState) {
     loop {
         let socket = match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, LAN_DISCOVERY_PORT)) {
             Ok(socket) => socket,
@@ -1731,18 +1795,6 @@ fn run_listener(
                                 }
                                 LanSyncPacket::SharedHealth(packet) => {
                                     apply_shared_health_packet(&runtime, &gateway, packet);
-                                }
-                                LanSyncPacket::UsageSyncRequest(packet) => {
-                                    handle_usage_sync_request(&runtime, &gateway, source, packet);
-                                }
-                                LanSyncPacket::UsageSyncBatch(packet) => {
-                                    apply_usage_sync_batch(&runtime, &gateway, packet);
-                                }
-                                LanSyncPacket::EditSyncRequest(packet) => {
-                                    handle_edit_sync_request(&runtime, &gateway, source, packet);
-                                }
-                                LanSyncPacket::EditSyncBatch(packet) => {
-                                    apply_edit_sync_batch(&runtime, &gateway, &config_path, packet);
                                 }
                                 LanSyncPacket::QuotaRefreshRequest(packet) => {
                                     handle_quota_refresh_request(&runtime, &gateway, packet);
@@ -2114,6 +2166,23 @@ fn peer_sync_addr(peer: &LanPeerSnapshot) -> Option<SocketAddr> {
     Some(SocketAddr::from((ip, LAN_DISCOVERY_PORT)))
 }
 
+fn peer_http_base_url(peer: &LanPeerSnapshot) -> Option<String> {
+    let trimmed = peer.listen_addr.trim();
+    (!trimmed.is_empty()).then(|| format!("http://{trimmed}"))
+}
+
+fn lan_sync_http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .gzip(true)
+            .brotli(true)
+            .deflate(true)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
 fn peer_pair_state(
     node_id: &str,
     trusted_node_ids: &std::collections::BTreeSet<String>,
@@ -2214,35 +2283,41 @@ fn save_edit_sync_cursor(
     );
 }
 
-fn handle_usage_sync_request(
+async fn fetch_usage_sync_batch_http(
     runtime: &LanSyncRuntime,
     gateway: &crate::orchestrator::gateway::GatewayState,
-    source: SocketAddr,
-    packet: LanUsageSyncRequestPacket,
-) {
-    if packet.node_id.trim().is_empty() || packet.node_id == runtime.local_node.node_id {
-        return;
-    }
-    let (rows, has_more) = gateway.store.list_usage_request_sync_batch(
-        packet.after_ingested_at_unix_ms,
-        Some(packet.after_id.as_str()),
-        packet.limit.clamp(1, LAN_USAGE_SYNC_BATCH_LIMIT),
-    );
-    let (rows, has_more) =
-        trim_usage_rows_to_fit(gateway, &runtime.local_node.node_id, &rows, has_more);
-    if rows.is_empty() {
-        return;
-    }
-    let _ = send_packet_to_addr(
-        gateway,
-        SocketAddr::from((source.ip(), LAN_DISCOVERY_PORT)),
-        &LanSyncPacket::UsageSyncBatch(LanUsageSyncBatchPacket {
+    peer: &LanPeerSnapshot,
+) -> Result<LanUsageSyncBatchPacket, String> {
+    let base_url = peer_http_base_url(peer)
+        .ok_or_else(|| format!("peer has no valid HTTP listen address: {}", peer.node_id))?;
+    let (after_ingested_at_unix_ms, after_id) = load_usage_sync_cursor(gateway, &peer.node_id);
+    let trust_secret = current_lan_trust_secret(gateway)?;
+    let response = lan_sync_http_client()
+        .post(format!("{base_url}/lan-sync/usage"))
+        .header(
+            LAN_SYNC_AUTH_NODE_ID_HEADER,
+            runtime.local_node.node_id.clone(),
+        )
+        .header(LAN_SYNC_AUTH_SECRET_HEADER, trust_secret)
+        .json(&LanUsageSyncRequestPacket {
             version: 1,
             node_id: runtime.local_node.node_id.clone(),
-            rows,
-            has_more,
-        }),
-    );
+            after_ingested_at_unix_ms,
+            after_id,
+            limit: LAN_USAGE_SYNC_BATCH_LIMIT,
+        })
+        .send()
+        .await
+        .map_err(|err| format!("LAN usage sync request failed: {err}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("LAN usage sync http {status}: {body}"));
+    }
+    response
+        .json::<LanUsageSyncBatchPacket>()
+        .await
+        .map_err(|err| format!("LAN usage sync response decode failed: {err}"))
 }
 
 fn apply_usage_sync_batch(
@@ -2281,35 +2356,41 @@ fn apply_usage_sync_batch(
     }
 }
 
-fn handle_edit_sync_request(
+async fn fetch_edit_sync_batch_http(
     runtime: &LanSyncRuntime,
     gateway: &crate::orchestrator::gateway::GatewayState,
-    source: SocketAddr,
-    packet: LanEditSyncRequestPacket,
-) {
-    if packet.node_id.trim().is_empty() || packet.node_id == runtime.local_node.node_id {
-        return;
-    }
-    let (events, has_more) = gateway.store.list_lan_edit_events_batch(
-        packet.after_lamport_ts,
-        Some(packet.after_event_id.as_str()),
-        packet.limit.clamp(1, LAN_EDIT_SYNC_BATCH_LIMIT),
-    );
-    let (events, has_more) =
-        trim_edit_events_to_fit(gateway, &runtime.local_node.node_id, &events, has_more);
-    if events.is_empty() {
-        return;
-    }
-    let _ = send_packet_to_addr(
-        gateway,
-        SocketAddr::from((source.ip(), LAN_DISCOVERY_PORT)),
-        &LanSyncPacket::EditSyncBatch(LanEditSyncBatchPacket {
+    peer: &LanPeerSnapshot,
+) -> Result<LanEditSyncBatchPacket, String> {
+    let base_url = peer_http_base_url(peer)
+        .ok_or_else(|| format!("peer has no valid HTTP listen address: {}", peer.node_id))?;
+    let (after_lamport_ts, after_event_id) = load_edit_sync_cursor(gateway, &peer.node_id);
+    let trust_secret = current_lan_trust_secret(gateway)?;
+    let response = lan_sync_http_client()
+        .post(format!("{base_url}/lan-sync/edit"))
+        .header(
+            LAN_SYNC_AUTH_NODE_ID_HEADER,
+            runtime.local_node.node_id.clone(),
+        )
+        .header(LAN_SYNC_AUTH_SECRET_HEADER, trust_secret)
+        .json(&LanEditSyncRequestPacket {
             version: 1,
             node_id: runtime.local_node.node_id.clone(),
-            events,
-            has_more,
-        }),
-    );
+            after_lamport_ts,
+            after_event_id,
+            limit: LAN_EDIT_SYNC_BATCH_LIMIT,
+        })
+        .send()
+        .await
+        .map_err(|err| format!("LAN edit sync request failed: {err}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("LAN edit sync http {status}: {body}"));
+    }
+    response
+        .json::<LanEditSyncBatchPacket>()
+        .await
+        .map_err(|err| format!("LAN edit sync response decode failed: {err}"))
 }
 
 fn handle_quota_refresh_request(
@@ -2440,22 +2521,33 @@ fn run_usage_sync_loop(
             {
                 continue;
             }
-            let Some(addr) = peer_sync_addr(&peer) else {
-                continue;
-            };
-            let (after_ingested_at_unix_ms, after_id) =
-                load_usage_sync_cursor(&gateway, &peer.node_id);
-            let _ = send_packet_to_addr(
-                &gateway,
-                addr,
-                &LanSyncPacket::UsageSyncRequest(LanUsageSyncRequestPacket {
-                    version: 1,
-                    node_id: runtime.local_node.node_id.clone(),
-                    after_ingested_at_unix_ms,
-                    after_id,
-                    limit: LAN_USAGE_SYNC_BATCH_LIMIT,
-                }),
-            );
+            loop {
+                let batch = match tauri::async_runtime::block_on(fetch_usage_sync_batch_http(
+                    &runtime, &gateway, &peer,
+                )) {
+                    Ok(batch) => batch,
+                    Err(err) => {
+                        gateway.store.add_event(
+                            "gateway",
+                            "warning",
+                            "lan.usage_sync_http_failed",
+                            &err,
+                            serde_json::json!({
+                                "peer_node_id": peer.node_id,
+                            }),
+                        );
+                        break;
+                    }
+                };
+                let has_more = batch.has_more;
+                if batch.rows.is_empty() {
+                    break;
+                }
+                apply_usage_sync_batch(&runtime, &gateway, batch);
+                if !has_more {
+                    break;
+                }
+            }
         }
         std::thread::sleep(Duration::from_millis(LAN_USAGE_SYNC_LOOP_INTERVAL_MS));
     }
@@ -2464,6 +2556,7 @@ fn run_usage_sync_loop(
 fn run_edit_sync_loop(
     runtime: LanSyncRuntime,
     gateway: crate::orchestrator::gateway::GatewayState,
+    config_path: std::path::PathBuf,
 ) {
     loop {
         let peers = runtime.collect_live_peers(unix_ms());
@@ -2475,21 +2568,33 @@ fn run_edit_sync_loop(
             {
                 continue;
             }
-            let Some(addr) = peer_sync_addr(&peer) else {
-                continue;
-            };
-            let (after_lamport_ts, after_event_id) = load_edit_sync_cursor(&gateway, &peer.node_id);
-            let _ = send_packet_to_addr(
-                &gateway,
-                addr,
-                &LanSyncPacket::EditSyncRequest(LanEditSyncRequestPacket {
-                    version: 1,
-                    node_id: runtime.local_node.node_id.clone(),
-                    after_lamport_ts,
-                    after_event_id,
-                    limit: LAN_EDIT_SYNC_BATCH_LIMIT,
-                }),
-            );
+            loop {
+                let batch = match tauri::async_runtime::block_on(fetch_edit_sync_batch_http(
+                    &runtime, &gateway, &peer,
+                )) {
+                    Ok(batch) => batch,
+                    Err(err) => {
+                        gateway.store.add_event(
+                            "gateway",
+                            "warning",
+                            "lan.edit_sync_http_failed",
+                            &err,
+                            serde_json::json!({
+                                "peer_node_id": peer.node_id,
+                            }),
+                        );
+                        break;
+                    }
+                };
+                let has_more = batch.has_more;
+                if batch.events.is_empty() {
+                    break;
+                }
+                apply_edit_sync_batch(&runtime, &gateway, &config_path, batch);
+                if !has_more {
+                    break;
+                }
+            }
         }
         std::thread::sleep(Duration::from_millis(LAN_EDIT_SYNC_LOOP_INTERVAL_MS));
     }
@@ -2721,11 +2826,19 @@ fn build_provider_fingerprints(cfg: &AppConfig, secrets: &SecretStore) -> Vec<St
 mod tests {
     use super::{
         apply_followed_provider_state, apply_lan_edit_event, deserialize_wire_packet,
-        incoming_event_is_newer, note_entity_version, peer_is_stale, restore_local_provider_state,
-        sanitize_node_name, serialize_wire_packet, LanHeartbeatPacket, LanNodeIdentity,
-        LanSyncPacket, LanSyncRuntime, LAN_PEER_STALE_AFTER_MS,
+        incoming_event_is_newer, lan_sync_edit_http, lan_sync_usage_http, note_entity_version,
+        peer_is_stale, restore_local_provider_state, sanitize_node_name, serialize_wire_packet,
+        LanEditSyncRequestPacket, LanHeartbeatPacket, LanNodeIdentity, LanSyncPacket,
+        LanSyncRuntime, LanUsageSyncRequestPacket, LAN_PEER_STALE_AFTER_MS,
+        LAN_SYNC_AUTH_NODE_ID_HEADER, LAN_SYNC_AUTH_SECRET_HEADER,
     };
+    use crate::orchestrator::store::{LanEditSyncEvent, UsageRequestSyncRow};
+    use axum::body::to_bytes;
+    use axum::extract::{Json, State};
+    use axum::http::{HeaderMap, HeaderValue, StatusCode};
+    use axum::response::IntoResponse;
     use base64::Engine;
+    use serde_json::Value;
 
     fn build_test_state() -> (tempfile::TempDir, crate::app_state::AppState) {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -2751,11 +2864,155 @@ mod tests {
         (tmp, state)
     }
 
+    fn lan_sync_headers(node_id: &str, trust_secret: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            LAN_SYNC_AUTH_NODE_ID_HEADER,
+            HeaderValue::from_str(node_id).expect("node id header"),
+        );
+        headers.insert(
+            LAN_SYNC_AUTH_SECRET_HEADER,
+            HeaderValue::from_str(trust_secret).expect("trust secret header"),
+        );
+        headers
+    }
+
     #[test]
     fn sanitize_node_name_trims_and_limits_length() {
         let value = sanitize_node_name("  My/Desk*Top Node Name With Extra Characters  ");
         assert_eq!(value, "My-Desk-Top Node Name With Extra Characters");
         assert!(sanitize_node_name("").contains("api-router-node"));
+    }
+
+    #[tokio::test]
+    async fn lan_sync_usage_http_rejects_invalid_secret() {
+        let (_tmp, state) = build_test_state();
+        let trust_secret = state
+            .secrets
+            .ensure_lan_trust_secret()
+            .expect("trust secret");
+        state
+            .secrets
+            .set_lan_node_trusted("node-remote", true)
+            .expect("trust peer");
+        let response = lan_sync_usage_http(
+            State(state.gateway.clone()),
+            lan_sync_headers("node-remote", &format!("{trust_secret}-wrong")),
+            Json(LanUsageSyncRequestPacket {
+                version: 1,
+                node_id: "node-remote".to_string(),
+                after_ingested_at_unix_ms: 0,
+                after_id: String::new(),
+                limit: 10,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn lan_sync_http_endpoints_return_usage_and_edit_payloads() {
+        let (_tmp, state) = build_test_state();
+        let trust_secret = state
+            .secrets
+            .ensure_lan_trust_secret()
+            .expect("trust secret");
+        state
+            .secrets
+            .set_lan_node_trusted("node-remote", true)
+            .expect("trust peer");
+        assert_eq!(
+            state
+                .gateway
+                .store
+                .upsert_usage_request_sync_rows(&[UsageRequestSyncRow {
+                    id: "usage-row-1".to_string(),
+                    unix_ms: crate::orchestrator::store::unix_ms(),
+                    ingested_at_unix_ms: crate::orchestrator::store::unix_ms(),
+                    provider: "official".to_string(),
+                    api_key_ref: "sk-test".to_string(),
+                    model: "gpt-5".to_string(),
+                    origin: crate::constants::USAGE_ORIGIN_WINDOWS.to_string(),
+                    session_id: "session-1".to_string(),
+                    node_id: "node-local".to_string(),
+                    node_name: "Desk Local".to_string(),
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    total_tokens: 15,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0,
+                }]),
+            1
+        );
+        let edit_event = LanEditSyncEvent {
+            event_id: "evt-lan-http".to_string(),
+            node_id: state.lan_sync.local_node_id(),
+            node_name: state.lan_sync.local_node_name(),
+            created_at_unix_ms: crate::orchestrator::store::unix_ms(),
+            lamport_ts: 1,
+            entity_type: "provider_definition".to_string(),
+            entity_id: "shared-official".to_string(),
+            op: "patch".to_string(),
+            payload: serde_json::json!({
+                "name": "official",
+                "display_name": "Official",
+            }),
+        };
+        assert!(state.gateway.store.insert_lan_edit_event(&edit_event));
+
+        let usage_response = lan_sync_usage_http(
+            State(state.gateway.clone()),
+            lan_sync_headers("node-remote", &trust_secret),
+            Json(LanUsageSyncRequestPacket {
+                version: 1,
+                node_id: "node-remote".to_string(),
+                after_ingested_at_unix_ms: 0,
+                after_id: String::new(),
+                limit: 10,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(usage_response.status(), StatusCode::OK);
+        let usage_body = to_bytes(usage_response.into_body(), usize::MAX)
+            .await
+            .expect("usage body");
+        let usage_json: Value = serde_json::from_slice(&usage_body).expect("usage json");
+        let usage_rows = usage_json
+            .get("rows")
+            .and_then(|value| value.as_array())
+            .expect("usage rows");
+        assert!(usage_rows
+            .iter()
+            .any(|row| { row.get("id").and_then(|value| value.as_str()) == Some("usage-row-1") }));
+
+        let edit_response = lan_sync_edit_http(
+            State(state.gateway.clone()),
+            lan_sync_headers("node-remote", &trust_secret),
+            Json(LanEditSyncRequestPacket {
+                version: 1,
+                node_id: "node-remote".to_string(),
+                after_lamport_ts: 0,
+                after_event_id: String::new(),
+                limit: 10,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(edit_response.status(), StatusCode::OK);
+        let edit_body = to_bytes(edit_response.into_body(), usize::MAX)
+            .await
+            .expect("edit body");
+        let edit_json: Value = serde_json::from_slice(&edit_body).expect("edit json");
+        let edit_events = edit_json
+            .get("events")
+            .and_then(|value| value.as_array())
+            .expect("edit events");
+        assert!(edit_events.iter().any(|event| {
+            event.get("event_id").and_then(|value| value.as_str()) == Some("evt-lan-http")
+        }));
     }
 
     #[test]
@@ -3196,6 +3453,107 @@ mod tests {
         assert_eq!(followed.amount_usd, 0.035);
         assert_eq!(followed.periods.len(), 1);
         assert_eq!(followed.periods[0].api_key_ref, "sk-local");
+    }
+
+    #[test]
+    fn apply_followed_provider_state_uses_remote_provider_order() {
+        let (_tmp, state) = build_test_state();
+        let remote_a = crate::orchestrator::store::LanEditSyncEvent {
+            event_id: "evt-followed-order-a".to_string(),
+            node_id: "node-remote".to_string(),
+            node_name: "Remote".to_string(),
+            created_at_unix_ms: crate::orchestrator::store::unix_ms(),
+            lamport_ts: 1,
+            entity_type: "provider_definition".to_string(),
+            entity_id: "shared-remote-a".to_string(),
+            op: "patch".to_string(),
+            payload: serde_json::json!({
+                "name": "alpha",
+                "display_name": "Alpha",
+                "base_url": "https://alpha.example/v1",
+                "order_index": 1,
+            }),
+        };
+        let remote_b = crate::orchestrator::store::LanEditSyncEvent {
+            event_id: "evt-followed-order-b".to_string(),
+            node_id: "node-remote".to_string(),
+            node_name: "Remote".to_string(),
+            created_at_unix_ms: crate::orchestrator::store::unix_ms(),
+            lamport_ts: 2,
+            entity_type: "provider_definition".to_string(),
+            entity_id: "shared-remote-b".to_string(),
+            op: "patch".to_string(),
+            payload: serde_json::json!({
+                "name": "zeta",
+                "display_name": "Zeta",
+                "base_url": "https://zeta.example/v1",
+                "order_index": 0,
+            }),
+        };
+        apply_lan_edit_event(&state.gateway, &state.config_path, &remote_a)
+            .expect("seed remote alpha snapshot");
+        apply_lan_edit_event(&state.gateway, &state.config_path, &remote_b)
+            .expect("seed remote zeta snapshot");
+
+        apply_followed_provider_state(&state.gateway, &state.config_path, "node-remote")
+            .expect("apply followed state");
+
+        assert_eq!(
+            state.gateway.cfg.read().provider_order,
+            vec!["zeta".to_string(), "alpha".to_string()]
+        );
+    }
+
+    #[test]
+    fn apply_followed_provider_state_does_not_touch_app_codex_auth_json() {
+        let (_tmp, state) = build_test_state();
+        let app_auth_path = state
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("codex-home")
+            .join("auth.json");
+        std::fs::create_dir_all(app_auth_path.parent().expect("auth parent"))
+            .expect("create codex auth parent");
+        let original_auth = serde_json::json!({
+            "tokens": {
+                "access_token": "codex-access-token"
+            }
+        });
+        std::fs::write(
+            &app_auth_path,
+            serde_json::to_string_pretty(&original_auth).expect("auth json"),
+        )
+        .expect("write app auth");
+
+        let event = crate::orchestrator::store::LanEditSyncEvent {
+            event_id: "evt-followed-auth-isolation".to_string(),
+            node_id: "node-remote".to_string(),
+            node_name: "Remote".to_string(),
+            created_at_unix_ms: crate::orchestrator::store::unix_ms(),
+            lamport_ts: 1,
+            entity_type: "provider_definition".to_string(),
+            entity_id: "shared-remote-auth".to_string(),
+            op: "patch".to_string(),
+            payload: serde_json::json!({
+                "name": "remote-provider",
+                "display_name": "Remote Provider",
+                "base_url": "https://remote.example/v1",
+                "key": "sk-remote",
+                "key_storage": "auth_json",
+                "usage_token": "usage-remote"
+            }),
+        };
+        apply_lan_edit_event(&state.gateway, &state.config_path, &event)
+            .expect("seed remote snapshot");
+
+        apply_followed_provider_state(&state.gateway, &state.config_path, "node-remote")
+            .expect("apply followed state");
+
+        let persisted_auth: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&app_auth_path).expect("read app auth"))
+                .expect("parse app auth");
+        assert_eq!(persisted_auth, original_auth);
     }
 
     #[test]

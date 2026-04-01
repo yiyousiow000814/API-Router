@@ -484,6 +484,11 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
     let router = Router::new()
         .route("/health", get(health))
         .route("/status", get(status))
+        .route(
+            "/lan-sync/usage",
+            post(crate::lan_sync::lan_sync_usage_http),
+        )
+        .route("/lan-sync/edit", post(crate::lan_sync::lan_sync_edit_http))
         .route("/v1/models", get(models))
         .route("/v1/responses", post(responses))
         .route("/responses", post(responses))

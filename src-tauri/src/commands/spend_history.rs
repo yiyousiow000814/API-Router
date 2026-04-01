@@ -1,3 +1,20 @@
+fn spend_history_configured_provider_names(
+    cfg: &crate::orchestrator::config::AppConfig,
+) -> Vec<String> {
+    let mut providers = Vec::new();
+    for provider_name in &cfg.provider_order {
+        if cfg.providers.contains_key(provider_name) {
+            providers.push(provider_name.clone());
+        }
+    }
+    for provider_name in cfg.providers.keys() {
+        if !providers.iter().any(|entry| entry == provider_name) {
+            providers.push(provider_name.clone());
+        }
+    }
+    providers
+}
+
 #[tauri::command]
 pub(crate) fn get_spend_history(
     state: tauri::State<'_, app_state::AppState>,
@@ -23,25 +40,25 @@ pub(crate) fn get_spend_history(
     let keep_days = days.unwrap_or(60).clamp(1, 365);
     let compact_only = compact_only.unwrap_or(true);
     let since = now.saturating_sub(keep_days.saturating_mul(24 * 60 * 60 * 1000));
-    let provider_filter = provider
+    let requested_provider = provider
         .as_deref()
-        .map(|s| s.trim().to_ascii_lowercase())
-        .filter(|s| !s.is_empty());
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+    let provider_filter = requested_provider
+        .as_deref()
+        .map(|s| s.to_ascii_lowercase());
 
     let cfg = state.gateway.cfg.read().clone();
     let mut pricing = state.gateway.store.list_provider_pricing_configs();
     for (provider_name, config) in state.secrets.list_provider_pricing() {
         pricing.insert(provider_name, config);
     }
-    let mut providers: Vec<String> = cfg
-        .providers
-        .keys()
-        .cloned()
-        .chain(state.gateway.store.list_usage_history_providers())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    providers.sort();
+    let providers: Vec<String> = if let Some(filter) = requested_provider {
+        vec![filter]
+    } else {
+        spend_history_configured_provider_names(&cfg)
+    };
 
     let mut rows: Vec<Value> = Vec::new();
     for provider_name in providers {
@@ -459,8 +476,9 @@ mod spend_history_tests {
     use crate::orchestrator::secrets::{
         resolve_provider_pricing_config, ProviderPricingConfig, ProviderPricingPeriod,
     };
+    use crate::orchestrator::config::{AppConfig, ProviderConfig};
 
-    use super::merge_usage_history_day_counts;
+    use super::{merge_usage_history_day_counts, spend_history_configured_provider_names};
 
     #[test]
     fn resolves_history_pricing_by_api_key_ref_when_provider_was_renamed() {
@@ -584,5 +602,58 @@ mod spend_history_tests {
         assert_eq!(per_request, Some(0.035));
         let total = per_request.map(|v| (v * 100.0 * 1000.0).round() / 1000.0);
         assert_eq!(total, Some(3.5));
+    }
+
+    #[test]
+    fn configured_provider_names_follow_config_order_first() {
+        let mut cfg = AppConfig::default_config();
+        cfg.providers = BTreeMap::from([
+            (
+                "official".to_string(),
+                ProviderConfig {
+                    display_name: "Official".to_string(),
+                    base_url: "https://official.example/v1".to_string(),
+                    group: None,
+                    disabled: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "packycode".to_string(),
+                ProviderConfig {
+                    display_name: "Packycode".to_string(),
+                    base_url: "https://packycode.example/v1".to_string(),
+                    group: None,
+                    disabled: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "aigateway".to_string(),
+                ProviderConfig {
+                    display_name: "AIGateway".to_string(),
+                    base_url: "https://aigateway.example/v1".to_string(),
+                    group: None,
+                    disabled: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            ),
+        ]);
+        cfg.provider_order = vec!["packycode".to_string(), "official".to_string()];
+
+        assert_eq!(
+            spend_history_configured_provider_names(&cfg),
+            vec![
+                "packycode".to_string(),
+                "official".to_string(),
+                "aigateway".to_string()
+            ]
+        );
     }
 }

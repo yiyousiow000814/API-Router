@@ -1753,12 +1753,31 @@ pub(crate) fn set_provider_order(
     state: tauri::State<'_, app_state::AppState>,
     order: Vec<String>,
 ) -> Result<(), String> {
-    {
+    ensure_local_provider_definitions_editable(&state)?;
+    let ordered_providers = {
         let mut cfg = state.gateway.cfg.write();
         cfg.provider_order = order;
         app_state::normalize_provider_order(&mut cfg);
-    }
+        cfg.provider_order.clone()
+    };
     persist_config(&state).map_err(|e| e.to_string())?;
+    for (index, provider_name) in ordered_providers.iter().enumerate() {
+        if let Err(err) = crate::lan_sync::record_provider_definition_patch(
+            &state,
+            provider_name,
+            serde_json::json!({ "order_index": index }),
+        ) {
+            state.gateway.store.add_event(
+                provider_name,
+                "error",
+                "lan.edit_sync_record_failed",
+                &format!("failed to record provider order update for LAN sync: {err}"),
+                serde_json::json!({
+                    "order_index": index,
+                }),
+            );
+        }
+    }
     state.gateway.store.add_event(
         "-",
         "info",

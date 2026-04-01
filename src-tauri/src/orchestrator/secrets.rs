@@ -228,6 +228,10 @@ const PROVIDER_KEY_STORAGE_AUTH_JSON: &str = "auth_json";
 const PROVIDER_KEY_STORAGE_CONFIG_TOML_EXPERIMENTAL_BEARER_TOKEN: &str =
     "config_toml_experimental_bearer_token";
 
+fn is_reserved_provider_state_key(key: &str) -> bool {
+    key.trim() == GATEWAY_TOKEN_KEY
+}
+
 impl SecretStore {
     pub fn path(&self) -> &std::path::Path {
         &self.path
@@ -281,7 +285,12 @@ impl SecretStore {
     pub fn export_provider_state_bundle(&self) -> ProviderStateBundle {
         let data = self.inner.lock();
         ProviderStateBundle {
-            providers: data.providers.clone(),
+            providers: data
+                .providers
+                .iter()
+                .filter(|(provider, _)| !is_reserved_provider_state_key(provider))
+                .map(|(provider, value)| (provider.clone(), value.clone()))
+                .collect(),
             provider_key_storage_modes: data.provider_key_storage_modes.clone(),
             provider_account_emails: data.provider_account_emails.clone(),
             usage_tokens: data.usage_tokens.clone(),
@@ -296,7 +305,16 @@ impl SecretStore {
     pub fn replace_provider_state_bundle(&self, bundle: ProviderStateBundle) -> Result<(), String> {
         let mut data = self.inner.lock();
         let previous = data.clone();
+        let reserved_provider_entries = data
+            .providers
+            .iter()
+            .filter(|(provider, _)| is_reserved_provider_state_key(provider))
+            .map(|(provider, value)| (provider.clone(), value.clone()))
+            .collect::<BTreeMap<_, _>>();
         data.providers = bundle.providers;
+        for (provider, value) in reserved_provider_entries {
+            data.providers.insert(provider, value);
+        }
         data.provider_key_storage_modes = bundle.provider_key_storage_modes;
         data.provider_account_emails = bundle.provider_account_emails;
         data.usage_tokens = bundle.usage_tokens;
@@ -1306,6 +1324,44 @@ mod tests {
         );
         assert_eq!(store.get_provider_key("p1").as_deref(), Some("sk-before"));
         assert_eq!(store.get_provider_key("p2"), None);
+    }
+
+    #[test]
+    fn provider_state_bundle_excludes_and_preserves_gateway_token() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = SecretStore::new(path);
+        store
+            .set_gateway_token("ao-local-token")
+            .expect("set gateway token");
+        store
+            .set_provider_key("p1", "sk-p1")
+            .expect("set provider key");
+
+        let exported = store.export_provider_state_bundle();
+        assert!(
+            !exported.providers.contains_key(super::GATEWAY_TOKEN_KEY),
+            "gateway token must stay out of provider bundle exports"
+        );
+        assert_eq!(
+            exported.providers.get("p1").map(String::as_str),
+            Some("sk-p1")
+        );
+
+        store
+            .replace_provider_state_bundle(ProviderStateBundle {
+                providers: BTreeMap::from([("p2".to_string(), "sk-p2".to_string())]),
+                ..ProviderStateBundle::default()
+            })
+            .expect("replace provider bundle");
+
+        assert_eq!(
+            store.get_gateway_token().as_deref(),
+            Some("ao-local-token"),
+            "gateway token must survive provider bundle replacement"
+        );
+        assert_eq!(store.get_provider_key("p1"), None);
+        assert_eq!(store.get_provider_key("p2").as_deref(), Some("sk-p2"));
     }
 
     #[test]
