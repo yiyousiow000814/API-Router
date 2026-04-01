@@ -350,6 +350,7 @@ pub struct LanSyncRuntime {
     last_peer_heartbeat_source: Arc<RwLock<Option<String>>>,
     last_http_sync_probe: Arc<RwLock<Option<LanHttpSyncProbeSnapshot>>>,
     last_http_sync_failure: Arc<RwLock<Option<LanHttpSyncProbeSnapshot>>>,
+    active_http_sync_failures: Arc<RwLock<HashMap<String, LanHttpSyncProbeSnapshot>>>,
     inbound_pair_requests: Arc<RwLock<HashMap<String, LanPendingPairRequest>>>,
     outbound_pair_requests: Arc<RwLock<HashMap<String, LanOutboundPairRequest>>>,
     pair_approvals: Arc<RwLock<HashMap<String, LanPairApprovalState>>>,
@@ -368,6 +369,7 @@ impl LanSyncRuntime {
             last_peer_heartbeat_source: Arc::new(RwLock::new(None)),
             last_http_sync_probe: Arc::new(RwLock::new(None)),
             last_http_sync_failure: Arc::new(RwLock::new(None)),
+            active_http_sync_failures: Arc::new(RwLock::new(HashMap::new())),
             inbound_pair_requests: Arc::new(RwLock::new(HashMap::new())),
             outbound_pair_requests: Arc::new(RwLock::new(HashMap::new())),
             pair_approvals: Arc::new(RwLock::new(HashMap::new())),
@@ -383,7 +385,7 @@ impl LanSyncRuntime {
         route: &str,
         outcome: &str,
         detail: &str,
-    ) {
+    ) -> Option<LanHttpSyncProbeSnapshot> {
         let snapshot = LanHttpSyncProbeSnapshot {
             unix_ms: unix_ms(),
             peer_node_id: peer.node_id.clone(),
@@ -392,10 +394,18 @@ impl LanSyncRuntime {
             outcome: outcome.to_string(),
             detail: detail.to_string(),
         };
+        let failure_key = lan_http_sync_failure_key(&peer.node_id, route);
         *self.last_http_sync_probe.write() = Some(snapshot.clone());
-        if outcome != "ok" {
-            *self.last_http_sync_failure.write() = Some(snapshot);
-        }
+        let mut failures = self.active_http_sync_failures.write();
+        let recovered = if outcome == "ok" {
+            failures.remove(&failure_key)
+        } else {
+            failures.insert(failure_key, snapshot.clone());
+            None
+        };
+        *self.last_http_sync_failure.write() =
+            failures.values().max_by_key(|value| value.unix_ms).cloned();
+        recovered
     }
 
     pub fn start_background(
@@ -2389,6 +2399,31 @@ fn redact_url_for_logs(url: &reqwest::Url) -> String {
     format!("{scheme}://{host}{port}{}", url.path())
 }
 
+fn lan_http_sync_failure_key(peer_node_id: &str, route: &str) -> String {
+    format!("{peer_node_id}|{route}")
+}
+
+fn emit_http_sync_recovered_event(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    code: &str,
+    message: &str,
+    recovered: &LanHttpSyncProbeSnapshot,
+) {
+    gateway.store.add_event(
+        "gateway",
+        "info",
+        code,
+        message,
+        serde_json::json!({
+            "peer_node_id": recovered.peer_node_id,
+            "peer_listen_addr": recovered.peer_listen_addr,
+            "route": recovered.route,
+            "previous_outcome": recovered.outcome,
+            "previous_detail": recovered.detail,
+        }),
+    );
+}
+
 fn format_lan_sync_reqwest_error(err: &reqwest::Error) -> String {
     let kind = if err.is_timeout() {
         "timeout"
@@ -2580,7 +2615,16 @@ async fn fetch_usage_sync_batch_http(
             runtime.note_http_sync_probe(peer, "/lan-sync/usage", "decode_error", &detail);
             format!("LAN usage sync response decode failed: {detail}")
         })?;
-    runtime.note_http_sync_probe(peer, "/lan-sync/usage", "ok", "HTTP sync ok");
+    if let Some(recovered) =
+        runtime.note_http_sync_probe(peer, "/lan-sync/usage", "ok", "HTTP sync ok")
+    {
+        emit_http_sync_recovered_event(
+            gateway,
+            "lan.usage_sync_http_recovered",
+            "LAN usage sync request recovered",
+            &recovered,
+        );
+    }
     Ok(packet)
 }
 
@@ -2652,7 +2696,16 @@ async fn fetch_edit_sync_batch_http(
             runtime.note_http_sync_probe(peer, "/lan-sync/edit", "decode_error", &detail);
             format!("LAN edit sync response decode failed: {detail}")
         })?;
-    runtime.note_http_sync_probe(peer, "/lan-sync/edit", "ok", "HTTP sync ok");
+    if let Some(recovered) =
+        runtime.note_http_sync_probe(peer, "/lan-sync/edit", "ok", "HTTP sync ok")
+    {
+        emit_http_sync_recovered_event(
+            gateway,
+            "lan.edit_sync_http_recovered",
+            "LAN edit sync request recovered",
+            &recovered,
+        );
+    }
     Ok(packet)
 }
 
@@ -2712,7 +2765,16 @@ async fn fetch_provider_definitions_http(
             );
             format!("LAN provider definitions response decode failed: {detail}")
         })?;
-    runtime.note_http_sync_probe(peer, "/lan-sync/provider-definitions", "ok", "HTTP sync ok");
+    if let Some(recovered) =
+        runtime.note_http_sync_probe(peer, "/lan-sync/provider-definitions", "ok", "HTTP sync ok")
+    {
+        emit_http_sync_recovered_event(
+            gateway,
+            "lan.provider_definitions_sync_http_recovered",
+            "LAN provider definitions sync request recovered",
+            &recovered,
+        );
+    }
     Ok(packet)
 }
 
@@ -4475,6 +4537,48 @@ mod tests {
             .last_http_sync_failure
             .expect("last http sync failure");
         assert_eq!(failure.route, "/lan-sync/edit");
+    }
+
+    #[test]
+    fn successful_http_sync_probe_clears_matching_failure_and_marks_recovery() {
+        let runtime = LanSyncRuntime::new(LanNodeIdentity {
+            node_id: "node-self".to_string(),
+            node_name: "self".to_string(),
+        });
+        let cfg = crate::orchestrator::config::AppConfig::default_config();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let secrets =
+            crate::orchestrator::secrets::SecretStore::new(tmp.path().join("secrets.json"));
+        let peer = super::LanPeerSnapshot {
+            node_id: "node-peer".to_string(),
+            node_name: "Peer".to_string(),
+            listen_addr: "192.168.1.50:4000".to_string(),
+            last_heartbeat_unix_ms: 1,
+            capabilities: vec!["edit_sync_v1".to_string()],
+            provider_fingerprints: Vec::new(),
+            provider_definitions_revision: String::new(),
+            followed_source_node_id: None,
+            trusted: true,
+            pair_state: None,
+            pair_request_id: None,
+        };
+        runtime.note_http_sync_probe(
+            &peer,
+            "/lan-sync/edit",
+            "request_error",
+            "LAN sync request error (timeout); url=http://192.168.1.50:4000/lan-sync/edit",
+        );
+
+        let recovered = runtime.note_http_sync_probe(&peer, "/lan-sync/edit", "ok", "HTTP sync ok");
+        let recovered = recovered.expect("matching sync failure should be marked recovered");
+        assert_eq!(recovered.route, "/lan-sync/edit");
+        assert_eq!(recovered.outcome, "request_error");
+
+        let snapshot = runtime.snapshot(4_000, &cfg, &secrets);
+        let probe = snapshot.last_http_sync_probe.expect("last http sync probe");
+        assert_eq!(probe.route, "/lan-sync/edit");
+        assert_eq!(probe.outcome, "ok");
+        assert!(snapshot.last_http_sync_failure.is_none());
     }
 
     #[test]
