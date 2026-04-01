@@ -37,6 +37,14 @@ function shouldSuppressSlowInvokeSuccess(command: string): boolean {
   return command === 'codex_account_refresh'
 }
 
+export function shouldSuppressInvokeError(command: string, message: string): boolean {
+  const normalizedMessage = message.trim().toLowerCase()
+  return (
+    command === 'codex_cli_default_wsl_home' &&
+    normalizedMessage.includes('missing wsl distro/home')
+  )
+}
+
 export async function invoke<T>(
   cmd: string,
   args?: actual.InvokeArgs,
@@ -68,16 +76,18 @@ export async function invoke<T>(
     if (!shouldSkipInvokeDiagnostics(cmd)) {
       const message =
         error instanceof Error ? error.message : typeof error === 'string' ? error : JSON.stringify(error)
-      void actual
-        .invoke('record_ui_invoke_result', {
-          command: cmd,
-          elapsedMs,
-          ok: false,
-          errorMessage: message,
-          activePage: currentActivePage(),
-          visible: currentVisible(),
-        })
-        .catch(() => {})
+      if (!shouldSuppressInvokeError(cmd, message)) {
+        void actual
+          .invoke('record_ui_invoke_result', {
+            command: cmd,
+            elapsedMs,
+            ok: false,
+            errorMessage: message,
+            activePage: currentActivePage(),
+            visible: currentVisible(),
+          })
+          .catch(() => {})
+      }
     }
     throw error
   }
