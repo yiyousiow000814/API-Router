@@ -1621,44 +1621,8 @@ fn set_entity_version(
 fn local_provider_definition_sync_items(
     gateway: &crate::orchestrator::gateway::GatewayState,
 ) -> Vec<LanProviderDefinitionSyncItem> {
-    let local_node_id = gateway
-        .secrets
-        .get_lan_node_identity()
-        .map(|node| node.node_id)
-        .unwrap_or_default();
-    let mut rows = gateway
-        .store
-        .list_all_lan_provider_definition_snapshots(&local_node_id);
-    rows.sort_by(|left, right| {
-        let left_order = left
-            .snapshot
-            .get("order_index")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(u64::MAX);
-        let right_order = right
-            .snapshot
-            .get("order_index")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(u64::MAX);
-        left_order
-            .cmp(&right_order)
-            .then_with(|| {
-                left.provider_name
-                    .to_ascii_lowercase()
-                    .cmp(&right.provider_name.to_ascii_lowercase())
-            })
-            .then_with(|| left.shared_provider_id.cmp(&right.shared_provider_id))
-    });
-    rows.into_iter()
-        .map(|row| LanProviderDefinitionSyncItem {
-            shared_provider_id: row.shared_provider_id,
-            provider_name: row.provider_name,
-            deleted: row.deleted,
-            snapshot: row.snapshot,
-            lamport_ts: row.lamport_ts,
-            revision_event_id: row.revision_event_id,
-        })
-        .collect()
+    let cfg = gateway.cfg.read().clone();
+    local_provider_definition_sync_items_from_config(&cfg, &gateway.secrets)
 }
 
 fn provider_definitions_revision(items: &[LanProviderDefinitionSyncItem]) -> String {
@@ -3598,6 +3562,97 @@ mod tests {
             .get("provider_definitions_revision")
             .and_then(|value| value.as_str())
             .is_some_and(|value| !value.trim().is_empty()));
+    }
+
+    #[tokio::test]
+    async fn lan_sync_provider_definitions_http_uses_live_config_even_without_seeded_snapshots() {
+        let (_tmp, state) = build_test_state();
+        let trust_secret = state
+            .secrets
+            .ensure_lan_trust_secret()
+            .expect("trust secret");
+        state
+            .secrets
+            .set_lan_node_trusted("node-remote", true)
+            .expect("trust peer");
+        {
+            let mut cfg = state.gateway.cfg.write();
+            cfg.provider_order = vec![
+                "provider_2".to_string(),
+                "official".to_string(),
+                "provider_1".to_string(),
+            ];
+            crate::app_state::normalize_provider_order(&mut cfg);
+        }
+        let local_node_id = state
+            .secrets
+            .get_lan_node_identity()
+            .map(|node| node.node_id)
+            .expect("local node id");
+        for row in state
+            .gateway
+            .store
+            .list_all_lan_provider_definition_snapshots(&local_node_id)
+        {
+            state
+                .gateway
+                .store
+                .remove_lan_provider_definition_snapshot(&local_node_id, &row.shared_provider_id)
+                .expect("remove seeded snapshot");
+        }
+
+        let response = lan_sync_provider_definitions_http(
+            State(state.gateway.clone()),
+            lan_sync_headers("node-remote", &trust_secret),
+            Json(LanProviderDefinitionsRequestPacket {
+                version: 1,
+                node_id: "node-remote".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("provider definitions body");
+        let json: Value = serde_json::from_slice(&body).expect("provider definitions json");
+        let definitions = json
+            .get("definitions")
+            .and_then(|value| value.as_array())
+            .expect("definitions array");
+        let ordered_names = definitions
+            .iter()
+            .map(|entry| {
+                entry
+                    .get("snapshot")
+                    .and_then(|value| value.get("name"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordered_names,
+            vec![
+                "provider_2".to_string(),
+                "official".to_string(),
+                "provider_1".to_string()
+            ]
+        );
+        let status_revision = state
+            .lan_sync
+            .snapshot(
+                state.gateway.cfg.read().listen.port,
+                &state.gateway.cfg.read(),
+                &state.secrets,
+            )
+            .local_node
+            .provider_definitions_revision;
+        assert_eq!(
+            json.get("provider_definitions_revision")
+                .and_then(|value| value.as_str()),
+            Some(status_revision.as_str())
+        );
     }
 
     #[test]
