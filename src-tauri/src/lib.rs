@@ -89,22 +89,6 @@ fn profile_data_dir_name(profile: &str) -> String {
     }
 }
 
-fn should_use_local_user_data_dir(local_user_data_dir: &std::path::Path) -> bool {
-    // Default to a stable per-user app-data directory so rebuilds don't force re-login.
-    // Only use a local ./user-data (next to the EXE) when explicitly requested for portability.
-    //
-    // This avoids the common dev-repo footgun: a checked-in ./user-data directory would otherwise
-    // silently override the real app data directory and make users appear "signed out".
-    if std::env::var("API_ROUTER_USE_LOCAL_USER_DATA")
-        .ok()
-        .as_deref()
-        == Some("1")
-    {
-        return true;
-    }
-    local_user_data_dir.join(".portable").exists()
-}
-
 fn should_reset_profile_data(profile: &str, is_ui_tauri: bool) -> bool {
     !is_ui_tauri && profile == "test"
 }
@@ -399,8 +383,8 @@ pub fn run() {
                 )?;
             }
 
-            // Prefer a stable per-user app data directory so rebuilds don't force re-login.
-            // If a local ./user-data already exists next to the EXE, keep using it for portability.
+            // Canonical runtime layout is always local to the running EXE so config, secrets,
+            // SQLite, logs, and diagnostics stay together and are easy to inspect/port.
             // Layout:
             // - user-data/config.toml
             // - user-data/secrets.json
@@ -419,22 +403,15 @@ pub fn run() {
                     let _ = std::fs::create_dir_all(&p);
                     p
                 }
-            } else if app_profile != "default" {
-                let base = app.path().app_data_dir()?;
-                let p = base.join(profile_data_dir_name(&app_profile));
+            } else {
+                let exe = std::env::current_exe()?;
+                let dir = exe
+                    .parent()
+                    .map(std::path::Path::to_path_buf)
+                    .ok_or_else(|| anyhow::anyhow!("failed to resolve EXE directory"))?;
+                let p = dir.join(profile_data_dir_name(&app_profile));
                 let _ = std::fs::create_dir_all(&p);
                 p
-            } else {
-                (|| -> Option<std::path::PathBuf> {
-                    let exe = std::env::current_exe().ok()?;
-                    let dir = exe.parent()?.to_path_buf();
-                    let local = dir.join("user-data");
-                    if local.exists() && should_use_local_user_data_dir(&local) {
-                        return Some(local);
-                    }
-                    None
-                })()
-                .unwrap_or(app.path().app_data_dir()?)
             };
 
             if should_reset_profile_data(&app_profile, is_ui_tauri) {
@@ -711,7 +688,7 @@ pub fn run() {
 mod tests {
     use super::{
         app_profile_name_from_inputs, profile_data_dir_name, resolve_codex_home,
-        should_reset_profile_data, should_seed_mock_data, should_use_local_user_data_dir,
+        should_reset_profile_data, should_seed_mock_data,
     };
 
     #[test]
@@ -740,28 +717,6 @@ mod tests {
         assert!(!should_seed_mock_data("test", true));
         assert!(!should_reset_profile_data("default", false));
         assert!(!should_seed_mock_data("default", false));
-    }
-
-    #[test]
-    fn local_user_data_requires_portable_marker_or_env_flag() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let local = tmp.path().join("user-data");
-        std::fs::create_dir_all(&local).unwrap();
-
-        // No marker, no env => do not use local.
-        std::env::remove_var("API_ROUTER_USE_LOCAL_USER_DATA");
-        assert!(!should_use_local_user_data_dir(&local));
-
-        // Marker file enables local.
-        std::fs::write(local.join(".portable"), b"").unwrap();
-        assert!(should_use_local_user_data_dir(&local));
-
-        // Env flag enables local even without marker.
-        let local2 = tmp.path().join("user-data-2");
-        std::fs::create_dir_all(&local2).unwrap();
-        std::env::set_var("API_ROUTER_USE_LOCAL_USER_DATA", "1");
-        assert!(should_use_local_user_data_dir(&local2));
-        std::env::remove_var("API_ROUTER_USE_LOCAL_USER_DATA");
     }
 
     #[test]

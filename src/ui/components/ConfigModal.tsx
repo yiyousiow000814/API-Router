@@ -31,6 +31,7 @@ type Props = {
 }
 
 type PairDialogState =
+  | { mode: 'waiting_approval'; nodeId: string; nodeName: string; requestId: string }
   | { mode: 'enter_pin'; nodeId: string; nodeName: string; requestId: string }
   | { mode: 'show_pin'; nodeId: string; nodeName: string; pinCode: string }
   | { mode: 'paired'; nodeId: string; nodeName: string }
@@ -41,6 +42,17 @@ function normalizePinInput(value: string): string {
 
 function emptyPairPinDigits(): string[] {
   return Array.from({ length: 6 }, () => '')
+}
+
+function formatPairDialogError(error: unknown): string {
+  const text = String(error ?? '').trim()
+  if (text.includes('pair approval is not ready yet')) {
+    return 'Waiting for the other device to approve this pairing request.'
+  }
+  if (text.includes('Pairing PIN was not accepted.')) {
+    return 'PIN was not accepted. Check the code and try again.'
+  }
+  return text || 'Pairing failed.'
 }
 
 export function ConfigModal({
@@ -135,6 +147,28 @@ export function ConfigModal({
   }, [pairDialog])
   useEffect(() => {
     if (!open || !config) return
+    if (pairDialog?.mode === 'waiting_approval') {
+      const source = config.config_source?.sources.find((entry) => entry.node_id === pairDialog.nodeId)
+      if (!source) return
+      if (source.trusted) {
+        setPairDialog({
+          mode: 'paired',
+          nodeId: pairDialog.nodeId,
+          nodeName: pairDialog.nodeName,
+        })
+        return
+      }
+      if (source.pair_state === 'pin_required') {
+        setPairDialog({
+          mode: 'enter_pin',
+          nodeId: pairDialog.nodeId,
+          nodeName: pairDialog.nodeName,
+          requestId: pairDialog.requestId,
+        })
+        setPairDialogError('')
+      }
+      return
+    }
     if (pairDialog?.mode !== 'show_pin') return
     const source = config.config_source?.sources.find((entry) => entry.node_id === pairDialog.nodeId)
     if (!source?.trusted) return
@@ -167,7 +201,7 @@ export function ConfigModal({
       })
       setPairPinDigits(emptyPairPinDigits())
     } catch (error) {
-      setPairDialogError(String(error))
+      setPairDialogError(formatPairDialogError(error))
     } finally {
       setPairDialogBusy(false)
     }
@@ -297,10 +331,9 @@ export function ConfigModal({
                           if (!source.trusted) {
                             const requestId = await onRequestPair(source.node_id)
                             if (requestId) {
-                              setPairPinDigits(emptyPairPinDigits())
                               setPairDialogError('')
                               setPairDialog({
-                                mode: 'enter_pin',
+                                mode: 'waiting_approval',
                                 nodeId: source.node_id,
                                 nodeName: label,
                                 requestId,
@@ -428,6 +461,8 @@ export function ConfigModal({
                     ? 'Pairing PIN'
                     : pairDialog.mode === 'paired'
                       ? 'Paired'
+                      : pairDialog.mode === 'waiting_approval'
+                        ? 'Waiting for Approval'
                       : 'Enter Pairing PIN'}
                 </div>
                 <div className="aoModalSub">
@@ -435,7 +470,9 @@ export function ConfigModal({
                     ? `Share this code with ${pairDialog.nodeName}.`
                     : pairDialog.mode === 'paired'
                       ? `${pairDialog.nodeName} is now trusted.`
-                    : `Enter the 6-digit code shown on ${pairDialog.nodeName}.`}
+                      : pairDialog.mode === 'waiting_approval'
+                        ? `Waiting for ${pairDialog.nodeName} to approve this pairing request.`
+                      : `Enter the 6-digit code shown on ${pairDialog.nodeName}.`}
                 </div>
               </div>
             </div>
@@ -451,6 +488,11 @@ export function ConfigModal({
               ) : pairDialog.mode === 'paired' ? (
                 <div className="aoPairSuccessBadge" aria-label="pairing success">
                   Paired
+                </div>
+              ) : pairDialog.mode === 'waiting_approval' ? (
+                <div className="aoPairWaitingState" aria-label="waiting for pairing approval">
+                  <span className="aoPairWaitingSpinner" aria-hidden="true" />
+                  <span>Waiting for approval on {pairDialog.nodeName}...</span>
                 </div>
               ) : (
                 <div className="aoPairEntryBlock">
