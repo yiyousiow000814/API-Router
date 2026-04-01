@@ -2011,6 +2011,31 @@ mod tests {
     }
 
     #[test]
+    fn initial_packycode_refresh_due_retries_even_after_failed_snapshot() {
+        use chrono::{Local, Timelike};
+
+        let now = Local::now();
+        let now_ms = now.timestamp_millis().max(0) as u64;
+        let mut snapshot = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snapshot.updated_at_unix_ms = 0;
+        snapshot.last_error = "initial refresh failed".to_string();
+
+        let due = initial_quota_refresh_due_unix_ms(
+            now_ms,
+            Some(&snapshot),
+            true,
+            true,
+            1,
+            PackageExpiryStrategy::Packycode,
+        )
+        .expect("packycode due after failed snapshot");
+        let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
+        assert!(due > now_ms);
+        assert_eq!(due_dt.minute(), 58);
+        assert_eq!(due_dt.second(), 0);
+    }
+
+    #[test]
     fn usage_proxy_pool_rotates_per_request() {
         clear_usage_proxy_rotation_state();
         let tmp = tempfile::tempdir().unwrap();

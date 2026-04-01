@@ -1,15 +1,22 @@
-fn spend_history_configured_provider_names(
+fn spend_history_provider_names(
     cfg: &crate::orchestrator::config::AppConfig,
+    store: &crate::orchestrator::store::Store,
 ) -> Vec<String> {
     let mut providers = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
     for provider_name in &cfg.provider_order {
-        if cfg.providers.contains_key(provider_name) {
+        if cfg.providers.contains_key(provider_name) && seen.insert(provider_name.clone()) {
             providers.push(provider_name.clone());
         }
     }
     for provider_name in cfg.providers.keys() {
-        if !providers.iter().any(|entry| entry == provider_name) {
+        if seen.insert(provider_name.clone()) {
             providers.push(provider_name.clone());
+        }
+    }
+    for provider_name in store.list_spend_history_provider_names() {
+        if seen.insert(provider_name.clone()) {
+            providers.push(provider_name);
         }
     }
     providers
@@ -57,7 +64,7 @@ pub(crate) fn get_spend_history(
     let providers: Vec<String> = if let Some(filter) = requested_provider {
         vec![filter]
     } else {
-        spend_history_configured_provider_names(&cfg)
+        spend_history_provider_names(&cfg, &state.gateway.store)
     };
 
     let mut rows: Vec<Value> = Vec::new();
@@ -478,7 +485,7 @@ mod spend_history_tests {
     };
     use crate::orchestrator::config::{AppConfig, ProviderConfig};
 
-    use super::{merge_usage_history_day_counts, spend_history_configured_provider_names};
+    use super::{merge_usage_history_day_counts, spend_history_provider_names};
 
     #[test]
     fn resolves_history_pricing_by_api_key_ref_when_provider_was_renamed() {
@@ -606,6 +613,9 @@ mod spend_history_tests {
 
     #[test]
     fn configured_provider_names_follow_config_order_first() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = crate::orchestrator::gateway::open_store_dir(tmp.path().join("data"))
+            .expect("store");
         let mut cfg = AppConfig::default_config();
         cfg.providers = BTreeMap::from([
             (
@@ -648,12 +658,43 @@ mod spend_history_tests {
         cfg.provider_order = vec!["packycode".to_string(), "official".to_string()];
 
         assert_eq!(
-            spend_history_configured_provider_names(&cfg),
+            spend_history_provider_names(&cfg, &store),
             vec![
                 "packycode".to_string(),
                 "official".to_string(),
                 "aigateway".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn provider_names_append_historical_providers_after_current_config() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = crate::orchestrator::gateway::open_store_dir(tmp.path().join("data"))
+            .expect("store");
+        store.put_spend_day(
+            "removed-provider",
+            1_700_000_000_000,
+            &serde_json::json!({"day":"2026-03-31"}),
+        );
+        let mut cfg = AppConfig::default_config();
+        cfg.providers = BTreeMap::from([(
+            "official".to_string(),
+            ProviderConfig {
+                display_name: "Official".to_string(),
+                base_url: "https://official.example/v1".to_string(),
+                group: None,
+                disabled: false,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        )]);
+        cfg.provider_order = vec!["official".to_string()];
+
+        assert_eq!(
+            spend_history_provider_names(&cfg, &store),
+            vec!["official".to_string(), "removed-provider".to_string()]
         );
     }
 }

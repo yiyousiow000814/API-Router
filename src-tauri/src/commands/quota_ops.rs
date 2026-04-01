@@ -554,12 +554,7 @@ pub(crate) async fn refresh_quota(
         }
     }
     crate::orchestrator::quota::clear_usage_refresh_gate_for_provider(&state.gateway, &provider);
-    let snap = crate::orchestrator::quota::refresh_quota_for_provider_with_lan_owner(
-        &state.gateway,
-        &state.lan_sync,
-        &provider,
-    )
-    .await?;
+    let snap = crate::orchestrator::quota::refresh_quota_for_provider(&state.gateway, &provider).await;
     if snap.last_error.is_empty() && snap.updated_at_unix_ms > 0 {
         state.gateway.store.add_event(
             &provider,

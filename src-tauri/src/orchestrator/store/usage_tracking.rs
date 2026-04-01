@@ -2,6 +2,50 @@ use super::*;
 use rusqlite::params;
 
 impl Store {
+    pub fn list_spend_history_provider_names(&self) -> Vec<String> {
+        let mut ordered = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+
+        for res in self.db.scan_prefix(b"usage_day:") {
+            let Ok((key, _value)) = res else {
+                continue;
+            };
+            let Ok(key_text) = std::str::from_utf8(key.as_ref()) else {
+                continue;
+            };
+            let mut parts = key_text.splitn(3, ':');
+            let (_prefix, Some(provider), Some(_rest)) = (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            if seen.insert(provider.to_string()) {
+                ordered.push(provider.to_string());
+            }
+        }
+
+        let conn = self.events_db.lock();
+        let queries = [
+            "SELECT DISTINCT provider FROM usage_requests ORDER BY provider ASC",
+            "SELECT DISTINCT provider FROM spend_days ORDER BY provider ASC",
+            "SELECT DISTINCT provider FROM spend_manual_days ORDER BY provider ASC",
+        ];
+        for query in queries {
+            let Ok(mut stmt) = conn.prepare(query) else {
+                continue;
+            };
+            let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) else {
+                continue;
+            };
+            for provider in rows.flatten() {
+                if seen.insert(provider.clone()) {
+                    ordered.push(provider);
+                }
+            }
+        }
+
+        ordered
+    }
+
     pub fn list_usage_days(&self, provider: &str) -> Vec<Value> {
         let prefix = format!("usage_day:{provider}:");
         self.db
@@ -636,5 +680,45 @@ mod tests {
         assert!(store
             .get_spend_day("legacy-provider", 1_700_000_000_000u64)
             .is_none());
+    }
+
+    #[test]
+    fn list_spend_history_provider_names_includes_historical_providers() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+
+        store.put_spend_day(
+            "removed-provider",
+            1_700_000_000_000,
+            &serde_json::json!({"day":"2026-03-31"}),
+        );
+        {
+            let conn = store.events_db.lock();
+            conn.execute(
+                "INSERT INTO usage_requests(
+                    id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, session_id, node_id, node_name,
+                    input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                ) VALUES(?1, ?2, ?3, ?4, '-', '', 'windows', '', '', '', 0, 0, 0, 0, 0)",
+                params![
+                    "req-1",
+                    1_700_000_000_000i64,
+                    1_700_000_000_000i64,
+                    "usage-only-provider",
+                ],
+            )
+            .expect("insert usage request");
+        }
+        store
+            .db
+            .insert(
+                b"usage_day:legacy-provider:2026-03-30",
+                serde_json::to_vec(&serde_json::json!({"req_count":1})).expect("sled json"),
+            )
+            .expect("insert usage_day");
+
+        let providers = store.list_spend_history_provider_names();
+        assert!(providers.contains(&"removed-provider".to_string()));
+        assert!(providers.contains(&"usage-only-provider".to_string()));
+        assert!(providers.contains(&"legacy-provider".to_string()));
     }
 }

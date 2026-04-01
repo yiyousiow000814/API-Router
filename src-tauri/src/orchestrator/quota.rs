@@ -1126,9 +1126,6 @@ fn initial_quota_refresh_due_unix_ms(
     _shared_provider_count: usize,
     provider_strategy: PackageExpiryStrategy,
 ) -> Option<u64> {
-    if existing_snapshot.is_some_and(|existing| existing.updated_at_unix_ms == 0) {
-        return None;
-    }
     let now = chrono::Local
         .timestamp_millis_opt(now_ms as i64)
         .single()
@@ -1137,7 +1134,12 @@ fn initial_quota_refresh_due_unix_ms(
         PackageExpiryStrategy::Packycode => {
             next_packycode_refresh_at(now).timestamp_millis().max(0) as u64
         }
-        _ => next_standard_quota_refresh_due_unix_ms(now_ms),
+        _ => {
+            if existing_snapshot.is_some_and(|existing| existing.updated_at_unix_ms == 0) {
+                return None;
+            }
+            next_standard_quota_refresh_due_unix_ms(now_ms)
+        }
     })
 }
 
@@ -1389,22 +1391,6 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
     store_quota_snapshot(st, provider_name, &snap);
     propagate_quota_snapshot_shared(st, provider_name, &shared_key, &snap).await;
     snap
-}
-
-pub async fn refresh_quota_for_provider_with_lan_owner(
-    st: &GatewayState,
-    lan_sync: &crate::lan_sync::LanSyncRuntime,
-    provider_name: &str,
-) -> Result<QuotaSnapshot, String> {
-    if let Some(owner) = shared_quota_owner_for_provider(st, lan_sync, provider_name) {
-        if !owner.local_is_owner {
-            return Err(format!(
-                "shared quota refresh is owned by {} ({})",
-                owner.owner_node_name, owner.owner_node_id
-            ));
-        }
-    }
-    Ok(refresh_quota_for_provider(st, provider_name).await)
 }
 
 async fn refresh_quota_for_provider_cached(
