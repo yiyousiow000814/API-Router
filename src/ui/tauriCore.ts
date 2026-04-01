@@ -33,6 +33,10 @@ function shouldSkipInvokeDiagnostics(command: string): boolean {
   )
 }
 
+function shouldSuppressSlowInvokeSuccess(command: string): boolean {
+  return command === 'codex_account_refresh'
+}
+
 export async function invoke<T>(
   cmd: string,
   args?: actual.InvokeArgs,
@@ -44,7 +48,7 @@ export async function invoke<T>(
     const elapsedMs = Math.round(
       (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt,
     )
-    if (!shouldSkipInvokeDiagnostics(cmd)) {
+    if (!shouldSkipInvokeDiagnostics(cmd) && !shouldSuppressSlowInvokeSuccess(cmd)) {
       void actual
         .invoke('record_ui_invoke_result', {
           command: cmd,
