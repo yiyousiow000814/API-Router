@@ -497,9 +497,12 @@ pub fn run() {
             if !is_ui_tauri {
                 // Spawn the local OpenAI-compatible gateway without blocking Tauri setup.
                 let app_handle = app.handle().clone();
+                write_app_startup_diag("gateway_spawn_scheduled", 0, None);
                 tauri::async_runtime::spawn(async move {
+                    write_app_startup_diag("gateway_spawn_enter", 0, None);
                     let (gateway, prepared_gateway) = {
                         let st = app_handle.state::<app_state::AppState>();
+                        write_app_startup_diag("gateway_prepare_enter", 0, None);
                         let prepare_started = Instant::now();
                         let prepared_gateway = match prepare_gateway_listeners(&st) {
                             Ok(prepared) => prepared,
@@ -529,8 +532,20 @@ pub fn run() {
                         );
                         (st.gateway.clone(), prepared_gateway)
                     };
+                    write_app_startup_diag(
+                        "serve_in_background_enter",
+                        0,
+                        Some(&format!("listen_port={}", prepared_gateway.listen_port)),
+                    );
                     if let Err(e) = serve_in_background(gateway, prepared_gateway).await {
+                        write_app_startup_diag(
+                            "serve_in_background_failed",
+                            0,
+                            Some(&e.to_string()),
+                        );
                         log::error!("gateway exited: {e:?}");
+                    } else {
+                        write_app_startup_diag("serve_in_background_completed", 0, None);
                     }
                 });
 

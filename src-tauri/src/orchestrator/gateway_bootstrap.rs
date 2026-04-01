@@ -52,24 +52,71 @@ fn tailscale_hidden_command(program: &str) -> Command {
     cmd
 }
 
+fn write_gateway_bootstrap_diag(stage: &str, detail: Option<&str>) {
+    let Some(user_data_dir) = std::env::var("API_ROUTER_USER_DATA_DIR").ok() else {
+        return;
+    };
+    let trimmed = user_data_dir.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let path = std::path::PathBuf::from(trimmed).join("gateway-bootstrap.json");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut payload = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .unwrap_or_else(|| serde_json::json!({ "stages": [] }));
+    let entry = serde_json::json!({
+        "stage": stage,
+        "detail": detail,
+        "updatedAtUnixMs": crate::orchestrator::store::unix_ms(),
+    });
+    if let Some(stages) = payload
+        .get_mut("stages")
+        .and_then(|value| value.as_array_mut())
+    {
+        stages.push(entry);
+    } else {
+        payload["stages"] = serde_json::json!([entry]);
+    }
+    payload["updatedAtUnixMs"] = serde_json::json!(crate::orchestrator::store::unix_ms());
+    let _ = std::fs::write(
+        path,
+        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    );
+}
+
 #[cfg(windows)]
 fn detected_tailscale_ipv4_addrs() -> Vec<IpAddr> {
+    write_gateway_bootstrap_diag("tailscale_ipv4_detect_start", None);
     let output = tailscale_hidden_command("tailscale")
         .args(["ip", "-4"])
         .output();
     let Ok(output) = output else {
+        write_gateway_bootstrap_diag("tailscale_ipv4_detect_unavailable", None);
         return Vec::new();
     };
     if !output.status.success() {
+        write_gateway_bootstrap_diag(
+            "tailscale_ipv4_detect_failed",
+            Some(&format!("status={}", output.status)),
+        );
         return Vec::new();
     }
 
-    String::from_utf8_lossy(&output.stdout)
+    let addrs = String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .filter_map(|line| line.parse::<IpAddr>().ok())
-        .collect()
+        .collect::<Vec<_>>();
+    write_gateway_bootstrap_diag(
+        "tailscale_ipv4_detect_ok",
+        Some(&format!("count={}", addrs.len())),
+    );
+    addrs
 }
 
 #[cfg(not(windows))]
@@ -82,17 +129,44 @@ fn gateway_listen_addrs_with_overlays(
 }
 
 fn gateway_listen_addrs(listen_host: &str, listen_port: u16) -> anyhow::Result<Vec<SocketAddr>> {
+    write_gateway_bootstrap_diag(
+        "gateway_listen_addrs_start",
+        Some(&format!("host={listen_host} port={listen_port}")),
+    );
     #[cfg(windows)]
     {
         let wsl_host = crate::platform::wsl_gateway_host::cached_or_default_wsl_gateway_host(None);
         // Keep startup cheap, but still bind the current Tailscale IPv4 overlay when it is already
         // available so Web Codex QR access works immediately without a manual restart.
         let extra_ips = detected_tailscale_ipv4_addrs();
-        gateway_listen_addrs_with_overlays(listen_host, listen_port, &wsl_host, &extra_ips)
+        let addrs =
+            gateway_listen_addrs_with_overlays(listen_host, listen_port, &wsl_host, &extra_ips)?;
+        write_gateway_bootstrap_diag(
+            "gateway_listen_addrs_ok",
+            Some(
+                &addrs
+                    .iter()
+                    .map(|addr| addr.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+        );
+        Ok(addrs)
     }
     #[cfg(not(windows))]
     {
-        gateway_listen_addrs_with_overlays(listen_host, listen_port)
+        let addrs = gateway_listen_addrs_with_overlays(listen_host, listen_port)?;
+        write_gateway_bootstrap_diag(
+            "gateway_listen_addrs_ok",
+            Some(
+                &addrs
+                    .iter()
+                    .map(|addr| addr.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+        );
+        Ok(addrs)
     }
 }
 
@@ -123,6 +197,10 @@ fn try_bind_gateway_listeners(
     listen_host: &str,
     listen_port: u16,
 ) -> anyhow::Result<Vec<(SocketAddr, std::net::TcpListener)>> {
+    write_gateway_bootstrap_diag(
+        "try_bind_gateway_listeners_start",
+        Some(&format!("host={listen_host} port={listen_port}")),
+    );
     let addrs = gateway_listen_addrs(listen_host, listen_port)?;
     let mut listeners = Vec::with_capacity(addrs.len());
     for addr in addrs {
@@ -130,6 +208,16 @@ fn try_bind_gateway_listeners(
         listener.set_nonblocking(true)?;
         listeners.push((addr, listener));
     }
+    write_gateway_bootstrap_diag(
+        "try_bind_gateway_listeners_ok",
+        Some(
+            &listeners
+                .iter()
+                .map(|(addr, _)| addr.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+    );
     Ok(listeners)
 }
 
@@ -169,6 +257,7 @@ fn bind_fallback_gateway_listeners(
 pub(crate) fn prepare_gateway_listeners(
     state: &crate::app_state::AppState,
 ) -> anyhow::Result<PreparedGatewayListeners> {
+    write_gateway_bootstrap_diag("prepare_gateway_listeners_enter", None);
     let cfg = state.gateway.cfg.read().clone();
     let bound = match try_bind_gateway_listeners(&cfg.listen.host, cfg.listen.port) {
         Ok(listeners) => listeners,
@@ -177,6 +266,10 @@ pub(crate) fn prepare_gateway_listeners(
                 .downcast_ref::<std::io::Error>()
                 .is_some_and(|io| io.kind() == ErrorKind::AddrInUse) =>
         {
+            write_gateway_bootstrap_diag(
+                "prepare_gateway_listeners_addr_in_use",
+                Some(&format!("configured_port={}", cfg.listen.port)),
+            );
             let listeners = bind_fallback_gateway_listeners(&cfg.listen.host)?;
             let next_port = listeners
                 .first()
@@ -185,12 +278,22 @@ pub(crate) fn prepare_gateway_listeners(
             persist_gateway_runtime_port(state, next_port)?;
             listeners
         }
-        Err(err) => return Err(err),
+        Err(err) => {
+            write_gateway_bootstrap_diag(
+                "prepare_gateway_listeners_failed",
+                Some(&err.to_string()),
+            );
+            return Err(err);
+        }
     };
     let listen_port = bound
         .first()
         .map(|(addr, _)| addr.port())
         .ok_or_else(|| anyhow::anyhow!("gateway bind produced no listeners"))?;
+    write_gateway_bootstrap_diag(
+        "prepare_gateway_listeners_ok",
+        Some(&format!("listen_port={listen_port}")),
+    );
     Ok(PreparedGatewayListeners {
         listen_port,
         listeners: bound,
