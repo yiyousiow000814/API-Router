@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type MutableRefObject } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 
 type TopPage =
@@ -42,11 +42,17 @@ export function useAppPolling({
   onDevPreviewBootstrap,
   onDevPreviewTick,
 }: UseAppPollingOptions) {
+  const UI_WATCHDOG_SLOW_REFRESH_AFTER_MS = 2_000
   const refreshStatusRef = useRef(refreshStatus)
   const refreshConfigRef = useRef(refreshConfig)
   const refreshProviderSwitchStatusRef = useRef(refreshProviderSwitchStatus)
   const providerSwitchRefreshTimerRef = useRef<number | null>(null)
   const providerSwitchDirWatcherPrimedRef = useRef<boolean>(false)
+  const activePageRef = useRef(activePage)
+  const documentVisibleRef = useRef(true)
+  const statusRefreshInFlightCountRef = useRef(0)
+  const configRefreshInFlightCountRef = useRef(0)
+  const providerSwitchRefreshInFlightCountRef = useRef(0)
   const [isDocumentVisible, setIsDocumentVisible] = useState<boolean>(
     typeof document === 'undefined' || document.visibilityState !== 'hidden',
   )
@@ -58,9 +64,18 @@ export function useAppPolling({
   }, [refreshConfig, refreshProviderSwitchStatus, refreshStatus])
 
   useEffect(() => {
+    activePageRef.current = activePage
+    if (typeof window !== 'undefined') {
+      window.__API_ROUTER_ACTIVE_PAGE__ = activePage
+    }
+  }, [activePage])
+
+  useEffect(() => {
     if (typeof document === 'undefined') return
     const handleVisibilityChange = () => {
-      setIsDocumentVisible(document.visibilityState !== 'hidden')
+      const visible = document.visibilityState !== 'hidden'
+      documentVisibleRef.current = visible
+      setIsDocumentVisible(visible)
     }
     handleVisibilityChange()
     document.addEventListener('visibilitychange', handleVisibilityChange)
@@ -70,15 +85,68 @@ export function useAppPolling({
   }, [])
 
   useEffect(() => {
+    documentVisibleRef.current = isDocumentVisible
+  }, [isDocumentVisible])
+
+  const reportSlowRefresh = (kind: 'status' | 'config' | 'provider_switch', elapsedMs: number) => {
+    if (isDevPreview || elapsedMs < UI_WATCHDOG_SLOW_REFRESH_AFTER_MS) {
+      return
+    }
+    void invoke('record_ui_slow_refresh', {
+      kind,
+      elapsedMs,
+      activePage: activePageRef.current,
+      visible: documentVisibleRef.current,
+    }).catch(() => {})
+  }
+
+  const runTrackedRefresh = async (
+    kind: 'status' | 'config' | 'provider_switch',
+    counterRef: MutableRefObject<number>,
+    refresh: () => Promise<void>,
+  ) => {
+    counterRef.current += 1
+    const startedAt =
+      typeof performance !== 'undefined' ? performance.now() : Date.now()
+    try {
+      await refresh()
+    } finally {
+      counterRef.current = Math.max(0, counterRef.current - 1)
+      const endedAt =
+        typeof performance !== 'undefined' ? performance.now() : Date.now()
+      reportSlowRefresh(kind, Math.round(endedAt - startedAt))
+    }
+  }
+
+  useEffect(() => {
+    if (isDevPreview) return
+    const timer = window.setInterval(() => {
+      void invoke('record_ui_watchdog_heartbeat', {
+        activePage: activePageRef.current,
+        visible: documentVisibleRef.current,
+        statusInFlight: statusRefreshInFlightCountRef.current > 0,
+        configInFlight: configRefreshInFlightCountRef.current > 0,
+        providerSwitchInFlight: providerSwitchRefreshInFlightCountRef.current > 0,
+      }).catch(() => {})
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [isDevPreview])
+
+  useEffect(() => {
     if (isDevPreview) {
       onDevPreviewBootstrap()
       const timer = window.setInterval(() => onDevPreviewTick(), 1800)
-      void refreshProviderSwitchStatusRef.current()
+      void runTrackedRefresh(
+        'provider_switch',
+        providerSwitchRefreshInFlightCountRef,
+        () => refreshProviderSwitchStatusRef.current(),
+      )
       return () => window.clearInterval(timer)
     }
-    void refreshStatusRef.current()
+    void runTrackedRefresh('status', statusRefreshInFlightCountRef, () => refreshStatusRef.current())
     const t = setInterval(
-      () => void refreshStatusRef.current(),
+      () =>
+        void runTrackedRefresh('status', statusRefreshInFlightCountRef, () => refreshStatusRef.current()),
       statusPollIntervalMs(activePage, isDocumentVisible),
     )
     const codexRefresh = window.setInterval(() => {
@@ -100,7 +168,7 @@ export function useAppPolling({
     const rafId = window.requestAnimationFrame(() => {
       const runRefreshConfig = () => {
         if (cancelled) return
-        void refreshConfigRef.current()
+        void runTrackedRefresh('config', configRefreshInFlightCountRef, () => refreshConfigRef.current())
       }
       if (typeof window.requestIdleCallback === 'function') {
         idleId = window.requestIdleCallback(runRefreshConfig, { timeout: 1200 })
@@ -130,7 +198,9 @@ export function useAppPolling({
       providerSwitchRefreshTimerRef.current = null
     }
     providerSwitchRefreshTimerRef.current = window.setTimeout(() => {
-      void refreshProviderSwitchStatusRef.current()
+      void runTrackedRefresh('provider_switch', providerSwitchRefreshInFlightCountRef, () =>
+        refreshProviderSwitchStatusRef.current(),
+      )
       providerSwitchRefreshTimerRef.current = null
     }, 220)
     return () => {

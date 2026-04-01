@@ -163,11 +163,11 @@ async function main() {
   const buildMode = keepVisible ? 'debug' : 'release'
   console.log(`[ui:tauri] Building Tauri ${buildMode} binary (--no-bundle)...`)
   // Windows: npm entrypoint is npm.cmd.
-  const npmArgs = ['run', 'tauri', '--', 'build', ...(buildMode === 'debug' ? ['--debug'] : []), '--no-bundle']
+  const tauriBuildArgs = ['scripts/run-with-win-sdk.mjs', 'tauri', 'build', ...(buildMode === 'debug' ? ['--debug'] : []), '--no-bundle']
   if (keepVisible) {
-    runOrThrow('cmd.exe', ['/d', '/s', '/c', 'npm.cmd', ...npmArgs], { cwd: repoRoot })
+    runOrThrow('node', tauriBuildArgs, { cwd: repoRoot })
   } else {
-    runQuietOrThrow('cmd.exe', ['/d', '/s', '/c', 'npm.cmd', ...npmArgs], { cwd: repoRoot })
+    runQuietOrThrow('node', tauriBuildArgs, { cwd: repoRoot })
   }
 
   const appPath = resolveTauriAppPath(buildMode)

@@ -35,6 +35,11 @@ function resolveGatewayTokenFromSecrets(): string {
 }
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@tauri-apps/api/core': path.resolve(process.cwd(), 'src', 'ui', 'tauriCore.ts'),
+    },
+  },
   plugins: [
     react(),
     {

@@ -1977,9 +1977,17 @@ impl Store {
                 "UPDATE usage_requests SET provider=?1 WHERE provider=?2",
                 params![new, old],
             );
+            let _ = conn.execute(
+                "UPDATE spend_days SET provider=?1 WHERE provider=?2",
+                params![new, old],
+            );
+            let _ = conn.execute(
+                "UPDATE spend_manual_days SET provider=?1 WHERE provider=?2",
+                params![new, old],
+            );
         }
 
-        for prefix in ["usage_day:", "spend_day:", "spend_manual_day:"] {
+        for prefix in ["usage_day:"] {
             let old_prefix = format!("{prefix}{old}:");
             let new_prefix = format!("{prefix}{new}:");
             let old_prefix_bytes = old_prefix.as_bytes();
@@ -2703,37 +2711,56 @@ impl Store {
             let _ = tx.commit();
         }
 
-        for res in self.db.scan_prefix(b"spend_day:") {
-            let Ok((k, v)) = res else {
-                continue;
+        {
+            let mut conn = self.events_db.lock();
+            let Ok(tx) = conn.transaction() else {
+                return updated;
             };
-            let Ok(mut row) = serde_json::from_slice::<Value>(&v) else {
-                continue;
-            };
-            if has_key_ref(&row) {
-                continue;
+            let mut spend_days: Vec<(String, i64, String)> = Vec::new();
+            {
+                let Ok(mut stmt) = tx.prepare(
+                    "SELECT provider, day_started_at_unix_ms, row_json
+                     FROM spend_days",
+                ) else {
+                    return updated;
+                };
+                let Ok(rows) = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                }) else {
+                    return updated;
+                };
+                for row in rows.flatten() {
+                    spend_days.push(row);
+                }
             }
-            let provider = row
-                .get("provider")
-                .and_then(|v| v.as_str())
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty());
-            let Some(provider) = provider else {
-                continue;
-            };
-            let key_ref = provider_api_key_ref
-                .get(provider)
-                .cloned()
-                .unwrap_or_else(|| "-".to_string());
-            row["api_key_ref"] = serde_json::json!(key_ref);
-            let _ = self
-                .db
-                .insert(k, serde_json::to_vec(&row).unwrap_or_default());
-            updated = updated.saturating_add(1);
-        }
-
-        if updated > 0 {
-            let _ = self.db.flush();
+            for (provider, day_started_at_unix_ms, row_json) in spend_days {
+                let Ok(mut row) = serde_json::from_str::<Value>(&row_json) else {
+                    continue;
+                };
+                if has_key_ref(&row) {
+                    continue;
+                }
+                let key_ref = provider_api_key_ref
+                    .get(provider.trim())
+                    .cloned()
+                    .unwrap_or_else(|| "-".to_string());
+                row["api_key_ref"] = serde_json::json!(key_ref);
+                let Ok(next_row_json) = serde_json::to_string(&row) else {
+                    continue;
+                };
+                let _ = tx.execute(
+                    "UPDATE spend_days
+                     SET row_json=?1
+                     WHERE provider=?2 AND day_started_at_unix_ms=?3",
+                    params![next_row_json, provider, day_started_at_unix_ms],
+                );
+                updated = updated.saturating_add(1);
+            }
+            let _ = tx.commit();
         }
         updated
     }

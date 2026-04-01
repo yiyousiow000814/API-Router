@@ -565,6 +565,19 @@ pub fn run() {
                         let _ = app_state::disable_expired_package_providers(&st);
                     }
                 });
+
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        let st = app_handle.state::<app_state::AppState>();
+                        st.ui_watchdog.check_unresponsive(
+                            &st.gateway.store,
+                            &st.diagnostics_dir,
+                            unix_ms(),
+                        );
+                    }
+                });
             }
 
             if app_profile == "default" {
@@ -633,6 +646,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::record_app_startup_stage,
+            commands::record_ui_watchdog_heartbeat,
+            commands::record_ui_slow_refresh,
+            commands::record_ui_long_task,
+            commands::record_ui_frontend_error,
+            commands::record_ui_invoke_result,
             commands::get_event_log_entries,
             commands::get_event_log_years,
             commands::get_event_log_daily_stats,

@@ -393,6 +393,121 @@ pub(crate) fn record_app_startup_stage(
     append_app_startup_stage(stage, elapsed_ms, detail.as_deref());
 }
 
+#[tauri::command]
+pub(crate) fn record_ui_watchdog_heartbeat(
+    state: tauri::State<'_, app_state::AppState>,
+    active_page: String,
+    visible: bool,
+    status_in_flight: bool,
+    config_in_flight: bool,
+    provider_switch_in_flight: bool,
+) {
+    state.ui_watchdog.record_heartbeat(
+        &active_page,
+        visible,
+        status_in_flight,
+        config_in_flight,
+        provider_switch_in_flight,
+        unix_ms(),
+    );
+}
+
+#[tauri::command]
+pub(crate) fn record_ui_slow_refresh(
+    state: tauri::State<'_, app_state::AppState>,
+    kind: String,
+    elapsed_ms: u64,
+    active_page: String,
+    visible: bool,
+) {
+    state.ui_watchdog.record_slow_refresh(
+        app_state::UiWatchdogRuntime {
+            store: &state.gateway.store,
+            diagnostics_dir: &state.diagnostics_dir,
+        },
+        &kind,
+        elapsed_ms,
+        app_state::UiWatchdogPageState {
+            active_page: &active_page,
+            visible,
+        },
+        unix_ms(),
+    );
+}
+
+#[tauri::command]
+pub(crate) fn record_ui_long_task(
+    state: tauri::State<'_, app_state::AppState>,
+    elapsed_ms: u64,
+    active_page: String,
+    visible: bool,
+) {
+    state.ui_watchdog.record_long_task(
+        app_state::UiWatchdogRuntime {
+            store: &state.gateway.store,
+            diagnostics_dir: &state.diagnostics_dir,
+        },
+        elapsed_ms,
+        app_state::UiWatchdogPageState {
+            active_page: &active_page,
+            visible,
+        },
+        unix_ms(),
+    );
+}
+
+#[tauri::command]
+pub(crate) fn record_ui_frontend_error(
+    state: tauri::State<'_, app_state::AppState>,
+    kind: String,
+    message: String,
+    active_page: String,
+    visible: bool,
+) {
+    state.ui_watchdog.record_frontend_error(
+        app_state::UiWatchdogRuntime {
+            store: &state.gateway.store,
+            diagnostics_dir: &state.diagnostics_dir,
+        },
+        &kind,
+        &message,
+        app_state::UiWatchdogPageState {
+            active_page: &active_page,
+            visible,
+        },
+        unix_ms(),
+    );
+}
+
+#[tauri::command]
+pub(crate) fn record_ui_invoke_result(
+    state: tauri::State<'_, app_state::AppState>,
+    command: String,
+    elapsed_ms: u64,
+    ok: bool,
+    error_message: Option<String>,
+    active_page: String,
+    visible: bool,
+) {
+    state.ui_watchdog.record_invoke_result(
+        app_state::UiWatchdogRuntime {
+            store: &state.gateway.store,
+            diagnostics_dir: &state.diagnostics_dir,
+        },
+        app_state::UiWatchdogInvokeResult {
+            command: &command,
+            elapsed_ms,
+            ok,
+            error_message: error_message.as_deref(),
+        },
+        app_state::UiWatchdogPageState {
+            active_page: &active_page,
+            visible,
+        },
+        unix_ms(),
+    );
+}
+
 fn merge_discovered_model_provider(
     entry: &mut crate::orchestrator::gateway::ClientSessionRuntime,
     discovered_model_provider: Option<&str>,

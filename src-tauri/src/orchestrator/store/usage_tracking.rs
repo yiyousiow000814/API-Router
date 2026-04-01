@@ -45,12 +45,7 @@ impl Store {
                 }
             }
         }
-        let key = format!("spend_day:{provider}:{day_started_at_unix_ms:013}");
-        self.db
-            .get(key.as_bytes())
-            .ok()
-            .flatten()
-            .and_then(|v| serde_json::from_slice::<Value>(&v).ok())
+        None
     }
 
     pub fn put_spend_day(&self, provider: &str, day_started_at_unix_ms: u64, day: &Value) {
@@ -67,11 +62,6 @@ impl Store {
                 ],
             );
         }
-        let key = format!("spend_day:{provider}:{day_started_at_unix_ms:013}");
-        let _ = self
-            .db
-            .insert(key.as_bytes(), serde_json::to_vec(day).unwrap_or_default());
-        let _ = self.db.flush();
     }
 
     pub fn list_spend_days(&self, provider: &str) -> Vec<Value> {
@@ -92,12 +82,7 @@ impl Store {
                 }
             }
         }
-        let prefix = format!("spend_day:{provider}:");
-        self.db
-            .scan_prefix(prefix.as_bytes())
-            .filter_map(|res| res.ok())
-            .filter_map(|(_, v)| serde_json::from_slice::<Value>(&v).ok())
-            .collect()
+        Vec::new()
     }
 
     pub fn put_spend_manual_day(&self, provider: &str, day_key: &str, day: &Value) {
@@ -112,11 +97,6 @@ impl Store {
                 serde_json::to_string(day).unwrap_or_else(|_| "{}".to_string())
             ],
         );
-        let key = format!("spend_manual_day:{provider}:{day_key}");
-        let _ = self
-            .db
-            .insert(key.as_bytes(), serde_json::to_vec(day).unwrap_or_default());
-        let _ = self.db.flush();
     }
 
     pub fn remove_spend_manual_day(&self, provider: &str, day_key: &str) {
@@ -125,9 +105,6 @@ impl Store {
             "DELETE FROM spend_manual_days WHERE provider = ?1 AND day_key = ?2",
             params![provider, day_key],
         );
-        let key = format!("spend_manual_day:{provider}:{day_key}");
-        let _ = self.db.remove(key.as_bytes());
-        let _ = self.db.flush();
     }
 
     pub fn list_spend_manual_days(&self, provider: &str) -> Vec<Value> {
@@ -148,12 +125,7 @@ impl Store {
                 }
             }
         }
-        let prefix = format!("spend_manual_day:{provider}:");
-        self.db
-            .scan_prefix(prefix.as_bytes())
-            .filter_map(|res| res.ok())
-            .filter_map(|(_, v)| serde_json::from_slice::<Value>(&v).ok())
-            .collect()
+        Vec::new()
     }
 
     pub fn list_provider_pricing_configs(
@@ -616,5 +588,53 @@ mod tests {
                 .and_then(|v| v.as_f64()),
             Some(5.0)
         );
+    }
+
+    #[test]
+    fn spend_history_runtime_reads_do_not_fallback_to_sled_after_sqlite_migration() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+
+        let legacy_spend_day = serde_json::json!({
+            "provider": "legacy-provider",
+            "started_at_unix_ms": 1_700_000_000_000u64,
+            "tracked_spend_usd": 12.3
+        });
+        let legacy_manual_day = serde_json::json!({
+            "provider": "legacy-provider",
+            "day_key": "2026-03-31",
+            "manual_total_usd": 5.0
+        });
+        store
+            .db
+            .insert(
+                b"spend_day:legacy-provider:1700000000000",
+                serde_json::to_vec(&legacy_spend_day).expect("legacy spend day json"),
+            )
+            .expect("insert legacy spend day");
+        store
+            .db
+            .insert(
+                b"spend_manual_day:legacy-provider:2026-03-31",
+                serde_json::to_vec(&legacy_manual_day).expect("legacy manual day json"),
+            )
+            .expect("insert legacy manual day");
+        store
+            .set_event_meta(Store::SPEND_HISTORY_SQLITE_MIGRATED_FROM_SLED_KEY, "1")
+            .expect("mark migration done");
+
+        {
+            let conn = store.events_db.lock();
+            conn.execute("DELETE FROM spend_days", [])
+                .expect("clear spend_days");
+            conn.execute("DELETE FROM spend_manual_days", [])
+                .expect("clear spend_manual_days");
+        }
+
+        assert!(store.list_spend_days("legacy-provider").is_empty());
+        assert!(store.list_spend_manual_days("legacy-provider").is_empty());
+        assert!(store
+            .get_spend_day("legacy-provider", 1_700_000_000_000u64)
+            .is_none());
     }
 }
