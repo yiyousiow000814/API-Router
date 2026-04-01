@@ -217,18 +217,6 @@ impl UiWatchdogState {
             return;
         }
         *last_logged_at = now_unix_ms;
-        runtime.store.add_event(
-            "gateway",
-            "warning",
-            "app.ui_slow_refresh",
-            &format!("ui {kind_key} refresh was slow: {elapsed_ms}ms"),
-            serde_json::json!({
-                "kind": kind_key,
-                "elapsed_ms": elapsed_ms,
-                "active_page": page.active_page.trim(),
-                "visible": page.visible,
-            }),
-        );
         self.write_dump(
             runtime.diagnostics_dir,
             "slow-refresh",
@@ -265,17 +253,6 @@ impl UiWatchdogState {
             return;
         }
         snapshot.last_long_task_log_unix_ms = now_unix_ms;
-        runtime.store.add_event(
-            "gateway",
-            "warning",
-            "app.ui_long_task",
-            &format!("ui main thread long task detected: {elapsed_ms}ms"),
-            serde_json::json!({
-                "elapsed_ms": elapsed_ms,
-                "active_page": page.active_page.trim(),
-                "visible": page.visible,
-            }),
-        );
         self.write_dump(runtime.diagnostics_dir, "long-task", now_unix_ms, &snapshot);
     }
 
@@ -392,18 +369,6 @@ impl UiWatchdogState {
             return;
         }
         snapshot.last_invoke_slow_log_unix_ms = now_unix_ms;
-        runtime.store.add_event(
-            "gateway",
-            "warning",
-            "app.ui_slow_invoke",
-            &format!("ui invoke was slow: {command} {elapsed_ms}ms"),
-            serde_json::json!({
-                "command": command,
-                "elapsed_ms": elapsed_ms,
-                "active_page": page.active_page.trim(),
-                "visible": page.visible,
-            }),
-        );
         self.write_dump(
             runtime.diagnostics_dir,
             "slow-invoke",
@@ -1037,7 +1002,7 @@ mod tests {
     }
 
     #[test]
-    fn ui_watchdog_throttles_slow_refresh_logs() {
+    fn ui_watchdog_slow_refresh_only_writes_diagnostics_dumps() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_path = tmp.path().join("user-data").join("config.toml");
         let data_dir = tmp.path().join("data");
@@ -1099,6 +1064,11 @@ mod tests {
             })
             .count();
 
-        assert_eq!(slow_refresh_events, 2);
+        assert_eq!(slow_refresh_events, 0);
+        let dump_count = std::fs::read_dir(&state.diagnostics_dir)
+            .expect("diagnostics dir")
+            .filter_map(|entry| entry.ok())
+            .count();
+        assert!(dump_count >= 2);
     }
 }

@@ -493,6 +493,19 @@ fn set_followed_config_source_impl(
                 normalized_node_id,
             )
         },
+        |rollback_err| {
+            state.gateway.store.add_event(
+                "gateway",
+                "error",
+                "config.followed_source_rollback_failed",
+                &format!("failed to roll back followed config source change: {rollback_err}"),
+                serde_json::json!({
+                    "previous_followed": previous_followed,
+                    "next_followed": normalized_node_id,
+                    "rollback_error": rollback_err,
+                }),
+            );
+        },
     )?;
     state.gateway.store.add_event(
         "gateway",
@@ -509,6 +522,7 @@ fn persist_followed_config_source_change<FSet, FApply>(
     next_followed: Option<&str>,
     mut set_followed_config_source_node_id: FSet,
     apply_followed_provider_state: FApply,
+    mut record_rollback_failure: impl FnMut(&str),
 ) -> Result<(), String>
 where
     FSet: FnMut(Option<&str>) -> Result<(), String>,
@@ -516,7 +530,9 @@ where
 {
     set_followed_config_source_node_id(next_followed)?;
     if let Err(err) = apply_followed_provider_state() {
-        let _ = set_followed_config_source_node_id(previous_followed);
+        if let Err(rollback_err) = set_followed_config_source_node_id(previous_followed) {
+            record_rollback_failure(&rollback_err);
+        }
         return Err(err);
     }
     Ok(())
@@ -1586,6 +1602,19 @@ fn clear_followed_config_source_impl(state: &app_state::AppState) -> Result<(), 
             }
             Ok(())
         },
+        |rollback_err| {
+            state.gateway.store.add_event(
+                "gateway",
+                "error",
+                "config.followed_source_rollback_failed",
+                &format!("failed to roll back followed config source change: {rollback_err}"),
+                serde_json::json!({
+                    "previous_followed": previous_followed,
+                    "next_followed": serde_json::Value::Null,
+                    "rollback_error": rollback_err,
+                }),
+            );
+        },
     )?;
     if !had_snapshot {
         state.gateway.store.add_event(
@@ -2206,6 +2235,7 @@ mod provider_management_tests {
     #[test]
     fn persist_followed_config_source_change_returns_original_apply_error_when_rollback_fails() {
         let mut persisted_values = Vec::new();
+        let mut rollback_logs = Vec::new();
         let result = persist_followed_config_source_change(
             Some("node-previous"),
             Some("node-remote"),
@@ -2217,6 +2247,7 @@ mod provider_management_tests {
                 Ok(())
             },
             || Err("apply followed provider state failed".to_string()),
+            |rollback_err| rollback_logs.push(rollback_err.to_string()),
         );
 
         assert_eq!(
@@ -2230,6 +2261,7 @@ mod provider_management_tests {
                 Some("node-previous".to_string())
             ]
         );
+        assert_eq!(rollback_logs, vec!["rollback persist failed".to_string()]);
     }
 
     #[test]
