@@ -34,6 +34,7 @@ type ActivePage =
 
 type Params = {
   activePage: ActivePage
+  usageRefreshRevision: string
   enqueueBackgroundRefresh: (
     key: string,
     owner: ActivePage | 'any',
@@ -109,6 +110,37 @@ export function buildUsageHistoryQuotaRefreshToken(
     .join('|')
 }
 
+function normalizeUsageRefreshRevisionValues(values: string[]): string {
+  return values
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b))
+    .join(',')
+}
+
+export function buildUsageRefreshRevision(params: {
+  usageWindowHours: number
+  usageFilterNodes: string[]
+  usageFilterProviders: string[]
+  usageFilterModels: string[]
+  usageFilterOrigins: string[]
+}): string {
+  const {
+    usageWindowHours,
+    usageFilterNodes,
+    usageFilterProviders,
+    usageFilterModels,
+    usageFilterOrigins,
+  } = params
+  return [
+    `hours:${usageWindowHours}`,
+    `nodes:${normalizeUsageRefreshRevisionValues(usageFilterNodes)}`,
+    `providers:${normalizeUsageRefreshRevisionValues(usageFilterProviders)}`,
+    `models:${normalizeUsageRefreshRevisionValues(usageFilterModels)}`,
+    `origins:${normalizeUsageRefreshRevisionValues(usageFilterOrigins)}`,
+  ].join('|')
+}
+
 export function usageStatisticsRefreshIntervalMs(
   activePage: ActivePage,
 ): number | null {
@@ -166,6 +198,7 @@ export function useAppUsageEffects(params: Params) {
   const refreshUsageStatisticsRef = useRef(params.refreshUsageStatistics)
   const {
     activePage,
+    usageRefreshRevision,
     enqueueBackgroundRefresh,
     refreshUsageOverview,
     refreshUsageStatistics,
@@ -274,6 +307,7 @@ export function useAppUsageEffects(params: Params) {
     }
   }, [
     activePage,
+    usageRefreshRevision,
     enqueueBackgroundRefresh,
     hasUsageOverview,
     hasUsageStatistics,

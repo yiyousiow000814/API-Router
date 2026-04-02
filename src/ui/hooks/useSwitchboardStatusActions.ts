@@ -105,6 +105,15 @@ export function applyProviderSwitchStatusResult(
   }
 }
 
+export function shouldRefreshConfigForRevision(
+  previousRevision: string | null | undefined,
+  nextRevision: string | null | undefined,
+): boolean {
+  const prev = previousRevision?.trim() ?? ''
+  const next = nextRevision?.trim() ?? ''
+  return !!next && !!prev && prev !== next
+}
+
 function scheduleLowPriorityUiTask(task: () => void, delayMs = 200): void {
   if (typeof window === 'undefined') {
     task()
@@ -164,6 +173,7 @@ export function useSwitchboardStatusActions({
   const [providerSwitchBusy, setProviderSwitchBusy] = useState<boolean>(false)
   const providerSwitchBusyRef = useRef<boolean>(false)
   const providerSwitchStatusRef = useRef<ProviderSwitchboardStatus | null>(providerSwitchStatus)
+  const configRevisionRef = useRef<string | null>(null)
   const statusInFlightRef = useRef<Map<string, Promise<Status>>>(new Map())
   const configInFlightRef = useRef<Map<string, Promise<Config>>>(new Map())
   const startupStatusRefreshTracedRef = useRef(false)
@@ -361,6 +371,9 @@ export function useSwitchboardStatusActions({
         )
       }
       if (!shouldApply()) return
+      const previousConfigRevision = configRevisionRef.current
+      const nextConfigRevision = s.config_revision ?? null
+      configRevisionRef.current = nextConfigRevision
       const apply = () => {
         setStatus(s)
         if (!overrideDirtyRef.current) setOverride(s.manual_override ?? '')
@@ -372,6 +385,16 @@ export function useSwitchboardStatusActions({
       }
       if (shouldRefreshSwapStatus) {
         void refreshCodexSwapStatus(undefined, options?.swapStatusSource ?? `${source}:swap`)
+      }
+      if (shouldRefreshConfigForRevision(previousConfigRevision, nextConfigRevision)) {
+        scheduleLowPriorityUiTask(
+          () =>
+            void refreshConfig({
+              refreshProviderSwitchStatus: false,
+              interactive: false,
+            }),
+          120,
+        )
       }
     } catch (e) {
       console.error(e)

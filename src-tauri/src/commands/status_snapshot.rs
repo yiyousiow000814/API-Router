@@ -1,3 +1,5 @@
+use sha2::Digest;
+
 fn app_startup_diag_path() -> Option<std::path::PathBuf> {
     let user_data_dir = std::env::var("API_ROUTER_USER_DATA_DIR").ok()?;
     let trimmed = user_data_dir.trim();
@@ -45,6 +47,7 @@ pub(crate) fn get_status(
         .as_deref()
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("dashboard"));
     let cfg = state.gateway.cfg.read().clone();
+    let config_revision = config_revision(&state, &cfg);
     let wsl_gateway_host =
         crate::platform::wsl_gateway_host::cached_or_default_wsl_gateway_host(Some(&state.config_path));
     let now = unix_ms();
@@ -340,6 +343,7 @@ pub(crate) fn get_status(
 
     serde_json::json!({
       "listen": { "host": cfg.listen.host, "port": cfg.listen.port },
+      "config_revision": config_revision,
       "wsl_gateway_host": wsl_gateway_host,
       "preferred_provider": cfg.routing.preferred_provider,
       "manual_override": manual_override,
@@ -358,6 +362,69 @@ pub(crate) fn get_status(
       "lan_sync": lan_sync,
       "shared_quota_owners": shared_quota_owners
     })
+}
+
+fn config_revision(state: &app_state::AppState, cfg: &crate::orchestrator::config::AppConfig) -> String {
+    let followed_source_node_id = state.secrets.get_followed_config_source_node_id();
+    let local_copied_shared_ids = crate::lan_sync::load_local_provider_copy_state(state)
+        .map(|snapshot| snapshot.copied_shared_provider_ids)
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut providers = Vec::new();
+    for provider_name in &cfg.provider_order {
+        let Some(provider_cfg) = cfg.providers.get(provider_name) else {
+            continue;
+        };
+        providers.push(serde_json::json!({
+            "name": provider_name,
+            "display_name": provider_cfg.display_name,
+            "base_url": provider_cfg.base_url,
+            "group": provider_cfg.group,
+            "disabled": provider_cfg.disabled,
+            "usage_adapter": provider_cfg.usage_adapter,
+            "usage_base_url": provider_cfg.usage_base_url,
+            "shared_provider_id": state.secrets.get_provider_shared_id(provider_name),
+            "key_storage": state.secrets.get_provider_key_storage_mode(provider_name),
+            "has_key": state.secrets.get_provider_key(provider_name).is_some(),
+            "account_email": state.secrets.get_provider_account_email(provider_name),
+            "has_usage_token": state.secrets.get_usage_token(provider_name).is_some(),
+            "has_usage_login": state.secrets.get_usage_login(provider_name).is_some(),
+        }));
+    }
+    for provider_name in cfg.providers.keys() {
+        if cfg.provider_order.iter().any(|entry| entry == provider_name) {
+            continue;
+        }
+        let Some(provider_cfg) = cfg.providers.get(provider_name) else {
+            continue;
+        };
+        providers.push(serde_json::json!({
+            "name": provider_name,
+            "display_name": provider_cfg.display_name,
+            "base_url": provider_cfg.base_url,
+            "group": provider_cfg.group,
+            "disabled": provider_cfg.disabled,
+            "usage_adapter": provider_cfg.usage_adapter,
+            "usage_base_url": provider_cfg.usage_base_url,
+            "shared_provider_id": state.secrets.get_provider_shared_id(provider_name),
+            "key_storage": state.secrets.get_provider_key_storage_mode(provider_name),
+            "has_key": state.secrets.get_provider_key(provider_name).is_some(),
+            "account_email": state.secrets.get_provider_account_email(provider_name),
+            "has_usage_token": state.secrets.get_usage_token(provider_name).is_some(),
+            "has_usage_login": state.secrets.get_usage_login(provider_name).is_some(),
+        }));
+    }
+    let payload = serde_json::json!({
+        "listen": cfg.listen,
+        "routing": cfg.routing,
+        "provider_order": cfg.provider_order,
+        "followed_source_node_id": followed_source_node_id,
+        "copied_shared_provider_ids": local_copied_shared_ids,
+        "providers": providers,
+    });
+    let digest = sha2::Sha256::digest(serde_json::to_vec(&payload).unwrap_or_default());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn projected_usage_ledgers(
@@ -1388,6 +1455,183 @@ fn append_backup_event_daily_stats(
     }
 }
 
+fn display_event_minute_bucket(unix_ms: u64) -> u64 {
+    unix_ms / 60_000
+}
+
+fn display_event_compression_bucket(event: &Value) -> Option<String> {
+    let unix_ms = event.get("unix_ms")?.as_u64()?;
+    let code = event.get("code")?.as_str()?.trim();
+    let minute_bucket = display_event_minute_bucket(unix_ms);
+    let fields = event.get("fields").and_then(Value::as_object);
+    match code {
+        "lan.edit_sync_applied" => {
+            let source_node_id = fields
+                .and_then(|map| map.get("source_node_id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            Some(format!("{code}|{minute_bucket}|{source_node_id}"))
+        }
+        "usage.refresh_shared_applied" => {
+            let applied_from_node_id = fields
+                .and_then(|map| map.get("applied_from_node_id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            Some(format!("{code}|{minute_bucket}|{applied_from_node_id}"))
+        }
+        _ => None,
+    }
+}
+
+fn compress_noisy_display_events(events: Vec<Value>) -> Vec<Value> {
+    let mut passthrough = Vec::new();
+    let mut buckets: std::collections::HashMap<String, Vec<Value>> = std::collections::HashMap::new();
+
+    for event in events {
+        if let Some(bucket) = display_event_compression_bucket(&event) {
+            buckets.entry(bucket).or_default().push(event);
+        } else {
+            passthrough.push(event);
+        }
+    }
+
+    for mut bucket_events in buckets.into_values() {
+        if bucket_events.len() == 1 {
+            if let Some(event) = bucket_events.pop() {
+                passthrough.push(event);
+            }
+            continue;
+        }
+        bucket_events.sort_by_key(|event| event.get("unix_ms").and_then(Value::as_u64).unwrap_or(0));
+        let Some(latest) = bucket_events.last().cloned() else {
+            continue;
+        };
+        let code = latest
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+
+        let compressed = match code.as_str() {
+            "lan.edit_sync_applied" => {
+                let mut applied_total = 0_u64;
+                let mut received_total = 0_u64;
+                let mut source_node_name = String::new();
+                for event in &bucket_events {
+                    let fields = event.get("fields").and_then(Value::as_object);
+                    applied_total = applied_total.saturating_add(
+                        fields
+                            .and_then(|map| map.get("applied_events"))
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                    );
+                    received_total = received_total.saturating_add(
+                        fields
+                            .and_then(|map| map.get("received_events"))
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                    );
+                    if source_node_name.is_empty() {
+                        source_node_name = fields
+                            .and_then(|map| map.get("source_node_name"))
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .trim()
+                            .to_string();
+                    }
+                }
+                let mut fields = latest.get("fields").cloned().unwrap_or(Value::Null);
+                if let Some(map) = fields.as_object_mut() {
+                    map.insert("applied_events".to_string(), serde_json::json!(applied_total));
+                    map.insert("received_events".to_string(), serde_json::json!(received_total));
+                    map.insert("batch_count".to_string(), serde_json::json!(bucket_events.len()));
+                    map.insert("compressed".to_string(), serde_json::json!(true));
+                }
+                let source_suffix = if source_node_name.is_empty() {
+                    String::new()
+                } else {
+                    format!(" from {source_node_name}")
+                };
+                serde_json::json!({
+                    "unix_ms": latest.get("unix_ms").and_then(Value::as_u64).unwrap_or(0),
+                    "provider": latest.get("provider").and_then(Value::as_str).unwrap_or("gateway"),
+                    "level": latest.get("level").and_then(Value::as_str).unwrap_or("info"),
+                    "code": code,
+                    "message": format!(
+                        "Applied {applied_total} synced editable event(s) across {} batch(es){source_suffix}",
+                        bucket_events.len()
+                    ),
+                    "fields": fields,
+                })
+            }
+            "usage.refresh_shared_applied" => {
+                let mut applied_from_node_name = String::new();
+                let mut providers = std::collections::BTreeSet::new();
+                for event in &bucket_events {
+                    if let Some(provider) = event.get("provider").and_then(Value::as_str) {
+                        let trimmed = provider.trim();
+                        if !trimmed.is_empty() {
+                            let _ = providers.insert(trimmed.to_string());
+                        }
+                    }
+                    let fields = event.get("fields").and_then(Value::as_object);
+                    if applied_from_node_name.is_empty() {
+                        applied_from_node_name = fields
+                            .and_then(|map| map.get("applied_from_node_name"))
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .trim()
+                        .to_string();
+                    }
+                }
+                let provider_count = providers.len();
+                let mut fields = latest.get("fields").cloned().unwrap_or(Value::Null);
+                if let Some(map) = fields.as_object_mut() {
+                    map.insert("provider_count".to_string(), serde_json::json!(provider_count));
+                    map.insert("providers".to_string(), serde_json::json!(providers.clone()));
+                    map.insert("event_count".to_string(), serde_json::json!(bucket_events.len()));
+                    map.insert("compressed".to_string(), serde_json::json!(true));
+                }
+                let provider_name = if provider_count == 1 {
+                    providers.into_iter().next().unwrap_or_else(|| "gateway".to_string())
+                } else {
+                    "gateway".to_string()
+                };
+                let source_label = if applied_from_node_name.is_empty() {
+                    "remote peer".to_string()
+                } else {
+                    applied_from_node_name
+                };
+                serde_json::json!({
+                    "unix_ms": latest.get("unix_ms").and_then(Value::as_u64).unwrap_or(0),
+                    "provider": provider_name,
+                    "level": latest.get("level").and_then(Value::as_str).unwrap_or("info"),
+                    "code": code,
+                    "message": format!(
+                        "Applied shared usage update from {source_label} to {} provider(s)",
+                        provider_count
+                    ),
+                    "fields": fields,
+                })
+            }
+            _ => latest,
+        };
+        passthrough.push(compressed);
+    }
+
+    passthrough.sort_by(|a, b| {
+        let a_ts = a.get("unix_ms").and_then(Value::as_u64).unwrap_or(0);
+        let b_ts = b.get("unix_ms").and_then(Value::as_u64).unwrap_or(0);
+        b_ts.cmp(&a_ts)
+    });
+    passthrough
+}
+
 #[tauri::command]
 pub(crate) fn get_event_log_entries(
     state: tauri::State<'_, app_state::AppState>,
@@ -1413,11 +1657,7 @@ pub(crate) fn get_event_log_entries(
         .as_path();
     let backup_root = backup_data_root_from_config_path(backup_root);
     append_backup_events(&mut events, &mut dedup, &backup_root, from, to, cap);
-    events.sort_by(|a, b| {
-        let a_ts = a.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
-        let b_ts = b.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
-        b_ts.cmp(&a_ts)
-    });
+    events = compress_noisy_display_events(events);
     events.truncate(cap);
     serde_json::Value::Array(events)
 }
@@ -1454,12 +1694,14 @@ mod tests {
         apply_discovered_router_confirmation, backfill_main_confirmation_from_verified_agent,
         clear_removed_main_session_routes_and_assignments,
         append_backup_event_daily_stats, day_start_unix_ms_from_day_key, event_query_key,
+        config_revision,
         main_session_ids_excluding_agents_and_reviews,
         overlay_discovered_sessions_for_display,
         rebalance_balanced_assignments_on_main_session_change,
         displayed_session_route, merge_discovered_model_provider, next_last_discovered_unix_ms,
         normalize_event_query_limit, next_wsl_discovery_miss_count,
         should_keep_runtime_session,
+        compress_noisy_display_events,
     };
     use crate::orchestrator::config::{AppConfig, ListenConfig, ProviderConfig, RoutingConfig};
     use crate::orchestrator::gateway::{decide_provider, open_store_dir, GatewayState, LastUsedRoute};
@@ -1471,6 +1713,7 @@ mod tests {
     use crate::platform::windows_terminal::InferredWtSession;
     use chrono::TimeZone;
     use parking_lot::RwLock;
+    use serde_json::Value;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
@@ -1495,6 +1738,94 @@ mod tests {
         assert_eq!(
             entry.last_reported_model_provider.as_deref(),
             Some(GATEWAY_MODEL_PROVIDER_ID)
+        );
+    }
+
+    #[test]
+    fn compress_noisy_display_events_aggregates_shared_usage_rows() {
+        let minute = 1_775_192_400_000_u64;
+        let events = vec![
+            serde_json::json!({
+                "unix_ms": minute + 15_000,
+                "provider": "aigateway",
+                "level": "info",
+                "code": "usage.refresh_shared_applied",
+                "message": "Shared usage update applied from DESKTOP-A",
+                "fields": {
+                    "applied_from_node_id": "node-a",
+                    "applied_from_node_name": "DESKTOP-A"
+                }
+            }),
+            serde_json::json!({
+                "unix_ms": minute + 20_000,
+                "provider": "packycode4",
+                "level": "info",
+                "code": "usage.refresh_shared_applied",
+                "message": "Shared usage update applied from DESKTOP-A",
+                "fields": {
+                    "applied_from_node_id": "node-a",
+                    "applied_from_node_name": "DESKTOP-A"
+                }
+            }),
+        ];
+
+        let compressed = compress_noisy_display_events(events);
+        assert_eq!(compressed.len(), 1);
+        assert_eq!(
+            compressed[0].get("provider").and_then(Value::as_str),
+            Some("gateway")
+        );
+        assert_eq!(
+            compressed[0].get("message").and_then(Value::as_str),
+            Some("Applied shared usage update from DESKTOP-A to 2 provider(s)")
+        );
+    }
+
+    #[test]
+    fn compress_noisy_display_events_aggregates_edit_sync_batches() {
+        let minute = 1_775_192_400_000_u64;
+        let events = vec![
+            serde_json::json!({
+                "unix_ms": minute + 5_000,
+                "provider": "gateway",
+                "level": "info",
+                "code": "lan.edit_sync_applied",
+                "message": "applied 10 synced editable event(s)",
+                "fields": {
+                    "source_node_id": "node-a",
+                    "source_node_name": "DESKTOP-A",
+                    "received_events": 10,
+                    "applied_events": 10
+                }
+            }),
+            serde_json::json!({
+                "unix_ms": minute + 40_000,
+                "provider": "gateway",
+                "level": "info",
+                "code": "lan.edit_sync_applied",
+                "message": "applied 64 synced editable event(s)",
+                "fields": {
+                    "source_node_id": "node-a",
+                    "source_node_name": "DESKTOP-A",
+                    "received_events": 64,
+                    "applied_events": 64
+                }
+            }),
+        ];
+
+        let compressed = compress_noisy_display_events(events);
+        assert_eq!(compressed.len(), 1);
+        assert_eq!(
+            compressed[0].get("message").and_then(Value::as_str),
+            Some("Applied 74 synced editable event(s) across 2 batch(es) from DESKTOP-A")
+        );
+        assert_eq!(
+            compressed[0]
+                .get("fields")
+                .and_then(Value::as_object)
+                .and_then(|fields| fields.get("batch_count"))
+                .and_then(Value::as_u64),
+            Some(2)
         );
     }
 
@@ -3018,6 +3349,25 @@ mod tests {
                 .and_then(serde_json::Value::as_u64),
             Some(128)
         );
+    }
+
+    #[test]
+    fn config_revision_changes_when_provider_order_changes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("user-data").join("data");
+        let state = crate::app_state::build_state(config_path, data_dir).expect("build state");
+        let before_cfg = state.gateway.cfg.read().clone();
+        let before_revision = config_revision(&state, &before_cfg);
+
+        {
+            let mut cfg = state.gateway.cfg.write();
+            cfg.provider_order.reverse();
+        }
+
+        let after_cfg = state.gateway.cfg.read().clone();
+        let after_revision = config_revision(&state, &after_cfg);
+        assert_ne!(before_revision, after_revision);
     }
 
     #[test]

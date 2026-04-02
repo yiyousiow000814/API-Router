@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildUsageRefreshRevision,
   buildUsageHistoryQuotaRefreshToken,
   shouldRefreshUsageSilently,
   usageRefreshMode,
@@ -65,5 +66,43 @@ describe('useAppUsageEffects', () => {
     })
 
     expect(after).not.toBe(before)
+  })
+
+  it('changes the refresh revision when usage filters change', () => {
+    const before = buildUsageRefreshRevision({
+      usageWindowHours: 24,
+      usageFilterNodes: ['windows'],
+      usageFilterProviders: ['aigateway'],
+      usageFilterModels: [],
+      usageFilterOrigins: [],
+    })
+    const after = buildUsageRefreshRevision({
+      usageWindowHours: 24,
+      usageFilterNodes: ['windows'],
+      usageFilterProviders: ['official'],
+      usageFilterModels: [],
+      usageFilterOrigins: [],
+    })
+
+    expect(after).not.toBe(before)
+  })
+
+  it('normalizes usage refresh revision inputs so equivalent selections stay stable', () => {
+    const left = buildUsageRefreshRevision({
+      usageWindowHours: 24,
+      usageFilterNodes: [' wsl2 ', 'windows'],
+      usageFilterProviders: ['b', 'a'],
+      usageFilterModels: [' gpt-5 ', 'gpt-4'],
+      usageFilterOrigins: ['windows'],
+    })
+    const right = buildUsageRefreshRevision({
+      usageWindowHours: 24,
+      usageFilterNodes: ['windows', 'wsl2'],
+      usageFilterProviders: ['a', 'b'],
+      usageFilterModels: ['gpt-4', 'gpt-5'],
+      usageFilterOrigins: ['windows'],
+    })
+
+    expect(left).toBe(right)
   })
 })

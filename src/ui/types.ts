@@ -9,6 +9,7 @@ export type ProviderHealth = {
 
 export type Status = {
   listen: { host: string; port: number }
+  config_revision?: string
   wsl_gateway_host?: string
   preferred_provider: string
   manual_override: string | null

@@ -30,6 +30,25 @@ export function isDashboardUsageRefreshSource(source: string): boolean {
   return source.startsWith('usage_page_') && source.endsWith(':dashboard')
 }
 
+export function buildDevPreviewUsageSnapshot(params: {
+  now: number
+  usageWindowHours: number
+  usageFilterNodes: string[]
+  usageFilterProviders: string[]
+  usageFilterModels: string[]
+  usageFilterOrigins: string[]
+  config: Config | null
+}): {
+  stats: UsageStatistics
+  overview: UsageStatisticsOverview | null
+} {
+  const stats = buildDevUsageStatistics(params)
+  return {
+    stats,
+    overview: buildUsageStatisticsOverviewFromFull(stats),
+  }
+}
+
 type Params = {
   isDevPreview: boolean
   usageWindowHours: number
@@ -163,45 +182,52 @@ export function useUsageOpsBridge(params: Params) {
     const interactive = options?.interactive ?? true
     const source = options?.source?.trim() || 'unknown'
     if (isDevPreview) {
-      const apply = () =>
-        setUsageStatistics(
-          buildDevUsageStatistics({
-            now: Date.now(),
-            usageWindowHours,
-            usageFilterNodes,
-            usageFilterProviders,
-            usageFilterModels,
-            usageFilterOrigins,
-            config,
-          }),
-        )
+      const { stats: devStats, overview: devOverview } = buildDevPreviewUsageSnapshot({
+        now: Date.now(),
+        usageWindowHours,
+        usageFilterNodes,
+        usageFilterProviders,
+        usageFilterModels,
+        usageFilterOrigins,
+        config,
+      })
+      const apply = () => {
+        setUsageStatistics(devStats)
+        if (devOverview) {
+          setUsageOverview(devOverview)
+        }
+      }
       if (interactive) apply()
       else startTransition(apply)
       return
     }
     if (isDashboardUsageRefreshSource(source)) {
-      const requestKey = JSON.stringify({
-        detail_level: 'overview',
-        hours: usageWindowHours,
-        nodes: usageFilterNodes,
-        providers: usageFilterProviders,
-        models: usageFilterModels,
-        origins: usageFilterOrigins,
-      })
-      const res = await runSingleFlight(usageOverviewInFlightRef.current, requestKey, () =>
-        invoke<UsageStatisticsOverview>('get_usage_statistics', {
-          detailLevel: 'overview',
+      try {
+        const requestKey = JSON.stringify({
+          detail_level: 'overview',
           hours: usageWindowHours,
-          nodes: usageFilterNodes.length ? usageFilterNodes : null,
-          providers: usageFilterProviders.length ? usageFilterProviders : null,
-          models: usageFilterModels.length ? usageFilterModels : null,
-          origins: usageFilterOrigins.length ? usageFilterOrigins : null,
-        }),
-      )
-      if (!shouldApply()) return
-      const applyOverview = () => setUsageOverview(res)
-      if (interactive) applyOverview()
-      else startTransition(applyOverview)
+          nodes: usageFilterNodes,
+          providers: usageFilterProviders,
+          models: usageFilterModels,
+          origins: usageFilterOrigins,
+        })
+        const res = await runSingleFlight(usageOverviewInFlightRef.current, requestKey, () =>
+          invoke<UsageStatisticsOverview>('get_usage_statistics', {
+            detailLevel: 'overview',
+            hours: usageWindowHours,
+            nodes: usageFilterNodes.length ? usageFilterNodes : null,
+            providers: usageFilterProviders.length ? usageFilterProviders : null,
+            models: usageFilterModels.length ? usageFilterModels : null,
+            origins: usageFilterOrigins.length ? usageFilterOrigins : null,
+          }),
+        )
+        if (!shouldApply()) return
+        const applyOverview = () => setUsageOverview(res)
+        if (interactive) applyOverview()
+        else startTransition(applyOverview)
+      } catch (e) {
+        if (!silent) flashToast(String(e), 'error')
+      }
       return
     }
     if (!silent) setUsageStatisticsLoading(true)

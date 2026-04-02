@@ -46,6 +46,7 @@ import { useSwitchboardStatusActions } from './hooks/useSwitchboardStatusActions
 import { useStatusDerivations } from './hooks/useStatusDerivations'
 import { usePageScroll } from './hooks/usePageScroll'
 import { useAppUsageEffects } from './hooks/useAppUsageEffects'
+import { buildUsageRefreshRevision } from './hooks/useAppUsageEffects'
 import { buildUsageHistoryQuotaRefreshToken } from './hooks/useAppUsageEffects'
 import { useDashboardDerivations } from './hooks/useDashboardDerivations'
 import { useProviderPanelUi } from './hooks/useProviderPanelUi'
@@ -273,6 +274,23 @@ export default function App() {
   const [usageFilterProviders, setUsageFilterProviders] = useState<string[]>([])
   const [usageFilterModels, setUsageFilterModels] = useState<string[]>([])
   const [usageFilterOrigins, setUsageFilterOrigins] = useState<string[]>([])
+  const usageRefreshRevision = useMemo(
+    () =>
+      buildUsageRefreshRevision({
+        usageWindowHours,
+        usageFilterNodes,
+        usageFilterProviders,
+        usageFilterModels,
+        usageFilterOrigins,
+      }),
+    [
+      usageWindowHours,
+      usageFilterNodes,
+      usageFilterProviders,
+      usageFilterModels,
+      usageFilterOrigins,
+    ],
+  )
   const [usageStatisticsLoading, setUsageStatisticsLoading] = useState<boolean>(false)
   const [usagePricingModalOpen, setUsagePricingModalOpen] = useState<boolean>(false)
   const [usagePricingDrafts, setUsagePricingDrafts] = useState<Record<string, UsagePricingDraft>>({})
@@ -1432,6 +1450,7 @@ export default function App() {
   }, [isDevPreview])
   useAppUsageEffects({
     activePage,
+    usageRefreshRevision,
     enqueueBackgroundRefresh,
     refreshUsageOverview,
     refreshUsageStatistics,
