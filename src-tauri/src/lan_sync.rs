@@ -4149,6 +4149,20 @@ mod tests {
     #[test]
     fn apply_followed_provider_state_rolls_back_memory_when_persist_fails() {
         let (_tmp, state) = build_test_state();
+        state
+            .secrets
+            .set_provider_pricing(
+                "provider_1",
+                "per_request",
+                0.035,
+                None,
+                Some("sk-local".to_string()),
+            )
+            .expect("seed local provider pricing");
+        state
+            .gateway
+            .store
+            .sync_provider_pricing_configs(&state.secrets.list_provider_pricing());
         let shared_provider_id = state
             .secrets
             .ensure_provider_shared_id("provider_1")
@@ -4214,6 +4228,10 @@ mod tests {
             current_bundle.provider_shared_ids,
             previous_bundle.provider_shared_ids
         );
+        assert_eq!(
+            state.gateway.store.list_provider_pricing_configs(),
+            state.secrets.list_provider_pricing()
+        );
     }
 
     #[test]
@@ -4223,6 +4241,20 @@ mod tests {
             .secrets
             .set_provider_key("provider_1", "sk-local-before")
             .expect("seed local provider key");
+        state
+            .secrets
+            .set_provider_pricing(
+                "provider_1",
+                "per_request",
+                0.035,
+                None,
+                Some("sk-local-before".to_string()),
+            )
+            .expect("seed local pricing");
+        state
+            .gateway
+            .store
+            .sync_provider_pricing_configs(&state.secrets.list_provider_pricing());
         let local_snapshot = crate::lan_sync::LocalProviderStateSnapshot {
             providers: state.gateway.cfg.read().providers.clone(),
             provider_order: state.gateway.cfg.read().provider_order.clone(),
@@ -4259,6 +4291,16 @@ mod tests {
             .secrets
             .set_provider_key("provider_1", "sk-followed")
             .expect("seed followed provider key");
+        state
+            .secrets
+            .set_provider_pricing(
+                "provider_1",
+                "package_total",
+                12.5,
+                None,
+                Some("sk-followed".to_string()),
+            )
+            .expect("seed followed pricing");
         let previous_cfg = state.gateway.cfg.read().clone();
         let previous_bundle = state.gateway.secrets.export_provider_state_bundle();
 
@@ -4334,6 +4376,10 @@ mod tests {
         assert_eq!(
             current_bundle.provider_shared_ids,
             previous_bundle.provider_shared_ids
+        );
+        assert_eq!(
+            state.gateway.store.list_provider_pricing_configs(),
+            state.secrets.list_provider_pricing()
         );
         assert!(
             crate::lan_sync::load_local_provider_state_snapshot(&state)

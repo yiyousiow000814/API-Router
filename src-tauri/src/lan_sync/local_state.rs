@@ -318,6 +318,9 @@ pub fn apply_followed_provider_state(
                     "{err}; rollback failed while restoring provider state bundle: {rollback_err}"
                 )
             })?;
+        gateway
+            .store
+            .sync_provider_pricing_configs(&gateway.secrets.list_provider_pricing());
         {
             let mut cfg = gateway.cfg.write();
             *cfg = previous_cfg.clone();
@@ -361,6 +364,10 @@ pub fn restore_local_provider_state(state: &crate::app_state::AppState) -> Resul
                     "{err}; rollback failed while restoring local provider state bundle: {rollback_err}"
                 )
             })?;
+        state
+            .gateway
+            .store
+            .sync_provider_pricing_configs(&state.secrets.list_provider_pricing());
         {
             let mut cfg = state.gateway.cfg.write();
             *cfg = previous_cfg.clone();

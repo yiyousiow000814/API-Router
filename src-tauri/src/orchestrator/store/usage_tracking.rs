@@ -339,6 +339,7 @@ impl Store {
             Ok(tx) => tx,
             Err(_) => return,
         };
+        let _ = tx.execute("DELETE FROM provider_pricing_configs", []);
         for (provider, config) in pricing {
             let updated_at_unix_ms = config
                 .periods
@@ -701,6 +702,60 @@ mod tests {
         let loaded = store.list_provider_pricing_configs();
 
         assert_eq!(loaded, pricing);
+    }
+
+    #[test]
+    fn sync_provider_pricing_configs_prunes_rows_missing_from_latest_snapshot() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+
+        let first = std::collections::BTreeMap::from([
+            (
+                "packycode".to_string(),
+                ProviderPricingConfig {
+                    mode: "per_request".to_string(),
+                    amount_usd: 0.035,
+                    periods: vec![ProviderPricingPeriod {
+                        id: "period-1".to_string(),
+                        mode: "per_request".to_string(),
+                        amount_usd: 0.035,
+                        api_key_ref: "sk-test".to_string(),
+                        started_at_unix_ms: 1_700_000_000_000,
+                        ended_at_unix_ms: None,
+                    }],
+                    gap_fill_mode: None,
+                    gap_fill_amount_usd: None,
+                },
+            ),
+            (
+                "stale-provider".to_string(),
+                ProviderPricingConfig {
+                    mode: "package_total".to_string(),
+                    amount_usd: 12.0,
+                    periods: vec![ProviderPricingPeriod {
+                        id: "period-2".to_string(),
+                        mode: "package_total".to_string(),
+                        amount_usd: 12.0,
+                        api_key_ref: "sk-stale".to_string(),
+                        started_at_unix_ms: 1_700_000_000_000,
+                        ended_at_unix_ms: None,
+                    }],
+                    gap_fill_mode: None,
+                    gap_fill_amount_usd: None,
+                },
+            ),
+        ]);
+        let second = std::collections::BTreeMap::from([(
+            "packycode".to_string(),
+            first.get("packycode").expect("packycode config").clone(),
+        )]);
+
+        store.sync_provider_pricing_configs(&first);
+        store.sync_provider_pricing_configs(&second);
+
+        let loaded = store.list_provider_pricing_configs();
+        assert_eq!(loaded, second);
+        assert!(!loaded.contains_key("stale-provider"));
     }
 
     #[test]
