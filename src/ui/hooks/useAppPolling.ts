@@ -33,6 +33,7 @@ type UseAppPollingOptions = {
     applyGuard?: () => boolean
     interactive?: boolean
     source?: string
+    detailLevel?: 'dashboard' | 'full'
   }) => Promise<void>
   refreshConfig: (options?: {
     refreshProviderSwitchStatus?: boolean
@@ -56,6 +57,10 @@ export function statusPollIntervalMs(activePage: TopPage, isDocumentVisible: boo
   if (!isDocumentVisible) return 15_000
   if (activePage === 'dashboard' || activePage === 'provider_switchboard') return 1_500
   return 5_000
+}
+
+export function statusPollDetailLevel(activePage: TopPage): 'dashboard' | 'full' {
+  return activePage === 'dashboard' ? 'dashboard' : 'full'
 }
 
 export function shouldPollSwapStatusOnStatusRefresh(
@@ -220,6 +225,7 @@ export function useAppPolling({
             source: 'status_poll_bootstrap',
             applyGuard: guard,
             interactive: false,
+            detailLevel: statusPollDetailLevel(activePageRef.current),
             refreshSwapStatus: shouldPollSwapStatusOnStatusRefresh(
               activePageRef.current,
               codexSwapModalOpen,
@@ -237,6 +243,7 @@ export function useAppPolling({
               source: 'status_poll_interval',
               applyGuard: guard,
               interactive: false,
+              detailLevel: statusPollDetailLevel(activePageRef.current),
               refreshSwapStatus: shouldPollSwapStatusOnStatusRefresh(
                 activePageRef.current,
                 codexSwapModalOpen,

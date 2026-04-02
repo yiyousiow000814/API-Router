@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildUsageHistoryQuotaRefreshToken,
   shouldRefreshUsageSilently,
+  usageRefreshMode,
   usageStatisticsRefreshIntervalMs,
 } from './useAppUsageEffects'
 
@@ -25,6 +26,12 @@ describe('useAppUsageEffects', () => {
 
   it('keeps page-entry refresh silent after usage data already exists', () => {
     expect(shouldRefreshUsageSilently('event_log', 'dashboard', true)).toBe(true)
+  })
+
+  it('uses overview only on dashboard and full stats only on usage page', () => {
+    expect(usageRefreshMode('dashboard')).toBe('overview')
+    expect(usageRefreshMode('usage_statistics')).toBe('full')
+    expect(usageRefreshMode('event_log')).toBeNull()
   })
 
   it('changes the history refresh token when quota snapshots advance', () => {

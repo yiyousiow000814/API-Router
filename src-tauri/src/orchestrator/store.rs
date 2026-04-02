@@ -1,6 +1,6 @@
 use chrono::{Datelike, Local, TimeZone};
 use parking_lot::Mutex;
-use rusqlite::{params, params_from_iter, OptionalExtension};
+use rusqlite::{params, params_from_iter, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -11,6 +11,7 @@ mod usage_tracking;
 #[derive(Clone)]
 pub struct Store {
     db: sled::Db,
+    events_db_path: PathBuf,
     events_db: Arc<Mutex<rusqlite::Connection>>,
 }
 
@@ -61,6 +62,21 @@ pub struct UsageRequestSyncRow {
     pub session_id: String,
     pub node_id: String,
     pub node_name: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cache_read_input_tokens: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsageRequestStatsRow {
+    pub provider: String,
+    pub api_key_ref: String,
+    pub model: String,
+    pub origin: String,
+    pub node_name: String,
+    pub unix_ms: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
@@ -194,10 +210,11 @@ impl Store {
                 }
             }
         }
-        let events_db = rusqlite::Connection::open(events_db_path)
+        let events_db = rusqlite::Connection::open(&events_db_path)
             .map_err(|e| sled::Error::Unsupported(format!("open events sqlite failed: {e}")))?;
         let store = Self {
             db,
+            events_db_path,
             events_db: Arc::new(Mutex::new(events_db)),
         };
         store
@@ -518,6 +535,25 @@ impl Store {
         self.backfill_usage_request_daily_index_if_needed()?;
         self.rebuild_event_day_counts_index_if_needed()?;
         Ok(())
+    }
+
+    fn open_events_read_connection(&self) -> rusqlite::Result<rusqlite::Connection> {
+        let conn = rusqlite::Connection::open_with_flags(
+            &self.events_db_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let _ = conn.busy_timeout(std::time::Duration::from_millis(250));
+        Ok(conn)
+    }
+
+    fn with_events_read_conn<T>(&self, f: impl FnOnce(&rusqlite::Connection) -> T) -> T {
+        match self.open_events_read_connection() {
+            Ok(conn) => f(&conn),
+            Err(_) => {
+                let conn = self.events_db.lock();
+                f(&conn)
+            }
+        }
     }
 
     fn ensure_usage_request_columns(conn: &rusqlite::Connection) -> anyhow::Result<()> {
@@ -2206,6 +2242,23 @@ impl Store {
         out
     }
 
+    pub fn backfill_usage_request_node_identity(&self, node_id: &str, node_name: &str) -> usize {
+        let trimmed_node_id = node_id.trim();
+        let trimmed_node_name = node_name.trim();
+        if trimmed_node_id.is_empty() || trimmed_node_name.is_empty() {
+            return 0;
+        }
+        let conn = self.events_db.lock();
+        conn.execute(
+            "UPDATE usage_requests
+             SET node_id = ?1, node_name = ?2
+             WHERE trim(node_id) = '' OR trim(node_name) = ''",
+            params![trimmed_node_id, trimmed_node_name],
+        )
+        .unwrap_or(0)
+    }
+
+    #[cfg(test)]
     pub fn list_usage_requests(&self, limit: usize) -> Vec<Value> {
         let mut out: Vec<Value> = Vec::with_capacity(limit.min(1024));
         let conn = self.events_db.lock();
@@ -2243,22 +2296,6 @@ impl Store {
             out.push(row);
         }
         out
-    }
-
-    pub fn backfill_usage_request_node_identity(&self, node_id: &str, node_name: &str) -> usize {
-        let trimmed_node_id = node_id.trim();
-        let trimmed_node_name = node_name.trim();
-        if trimmed_node_id.is_empty() || trimmed_node_name.is_empty() {
-            return 0;
-        }
-        let conn = self.events_db.lock();
-        conn.execute(
-            "UPDATE usage_requests
-             SET node_id = ?1, node_name = ?2
-             WHERE trim(node_id) = '' OR trim(node_name) = ''",
-            params![trimmed_node_id, trimmed_node_name],
-        )
-        .unwrap_or(0)
     }
 
     pub fn list_usage_request_sync_batch(
@@ -2470,39 +2507,40 @@ impl Store {
             i64::try_from(offset).unwrap_or(i64::MAX),
         ));
 
-        let mut out: Vec<Value> = Vec::with_capacity(limit.min(1024));
-        let conn = self.events_db.lock();
-        let Ok(mut stmt) = conn.prepare(&sql) else {
-            return (out, false);
-        };
-        let Ok(rows) = stmt.query_map(params_from_iter(params.iter()), |row| {
-            Ok(serde_json::json!({
-                "id": row.get::<_, String>(0)?,
-                "provider": row.get::<_, String>(1)?,
-                "api_key_ref": row.get::<_, String>(2)?,
-                "model": row.get::<_, String>(3)?,
-                "origin": row.get::<_, String>(4)?,
-                "session_id": row.get::<_, String>(5)?,
-                "unix_ms": u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
-                "node_id": row.get::<_, String>(7)?,
-                "node_name": row.get::<_, String>(8)?,
-                "input_tokens": u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
-                "output_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
-                "total_tokens": u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
-                "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
-                "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
-            }))
-        }) else {
-            return (out, false);
-        };
-        for row in rows.flatten() {
-            out.push(row);
-        }
-        let has_more = out.len() > limit;
-        if has_more {
-            out.truncate(limit);
-        }
-        (out, has_more)
+        self.with_events_read_conn(|conn| {
+            let mut out: Vec<Value> = Vec::with_capacity(limit.min(1024));
+            let Ok(mut stmt) = conn.prepare(&sql) else {
+                return (out, false);
+            };
+            let Ok(rows) = stmt.query_map(params_from_iter(params.iter()), |row| {
+                Ok(serde_json::json!({
+                    "id": row.get::<_, String>(0)?,
+                    "provider": row.get::<_, String>(1)?,
+                    "api_key_ref": row.get::<_, String>(2)?,
+                    "model": row.get::<_, String>(3)?,
+                    "origin": row.get::<_, String>(4)?,
+                    "session_id": row.get::<_, String>(5)?,
+                    "unix_ms": u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
+                    "node_id": row.get::<_, String>(7)?,
+                    "node_name": row.get::<_, String>(8)?,
+                    "input_tokens": u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
+                    "output_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+                    "total_tokens": u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+                    "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
+                    "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
+                }))
+            }) else {
+                return (out, false);
+            };
+            for row in rows.flatten() {
+                out.push(row);
+            }
+            let has_more = out.len() > limit;
+            if has_more {
+                out.truncate(limit);
+            }
+            (out, has_more)
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2588,75 +2626,77 @@ impl Store {
                 ));
             }
         }
-        let conn = self.events_db.lock();
-        let Ok(mut stmt) = conn.prepare(&sql) else {
-            return (0, 0, 0, 0, 0, 0);
-        };
-        let Ok(row) = stmt.query_row(params_from_iter(params.iter()), |row| {
-            Ok((
-                u64::try_from(row.get::<_, i64>(0)?).unwrap_or(0),
-                u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
-                u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
-                u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
-                u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
-                u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
-            ))
-        }) else {
-            return (0, 0, 0, 0, 0, 0);
-        };
-        row
+        self.with_events_read_conn(|conn| {
+            let Ok(mut stmt) = conn.prepare(&sql) else {
+                return (0, 0, 0, 0, 0, 0);
+            };
+            let Ok(row) = stmt.query_row(params_from_iter(params.iter()), |row| {
+                Ok((
+                    u64::try_from(row.get::<_, i64>(0)?).unwrap_or(0),
+                    u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+                    u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                    u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
+                    u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+                    u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+                ))
+            }) else {
+                return (0, 0, 0, 0, 0, 0);
+            };
+            row
+        })
     }
 
     pub fn list_usage_request_daily_totals(
         &self,
         day_limit: usize,
     ) -> Vec<(String, String, u64, u64, u64, u64)> {
-        let mut out: Vec<(String, String, u64, u64, u64, u64)> = Vec::new();
-        let limit = day_limit.clamp(1, 180);
-        let conn = self.events_db.lock();
-        let Ok(mut stmt) = conn.prepare(
-            "WITH latest_days AS (
-                SELECT day_key
-                FROM usage_request_day_provider_totals
-                GROUP BY day_key
-                ORDER BY day_key DESC
-                LIMIT ?1
-             )
-             SELECT
-               u.day_key,
-               u.provider,
-               u.total_tokens,
-               u.request_count,
-               u.windows_request_count,
-               u.wsl_request_count
-             FROM usage_request_day_provider_totals u
-             JOIN latest_days d ON d.day_key = u.day_key
-             ORDER BY u.day_key ASC, u.total_tokens DESC",
-        ) else {
-            return out;
-        };
-        let Ok(rows) = stmt.query_map([i64::try_from(limit).unwrap_or(45)], |row| {
-            let day_key = row.get::<_, String>(0)?;
-            let provider = row.get::<_, String>(1)?;
-            let total_tokens = u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0);
-            let request_count = u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0);
-            let windows_request_count = u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0);
-            let wsl_request_count = u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0);
-            Ok((
-                day_key,
-                provider,
-                total_tokens,
-                request_count,
-                windows_request_count,
-                wsl_request_count,
-            ))
-        }) else {
-            return out;
-        };
-        for row in rows.flatten() {
-            out.push(row);
-        }
-        out
+        self.with_events_read_conn(|conn| {
+            let mut out: Vec<(String, String, u64, u64, u64, u64)> = Vec::new();
+            let limit = day_limit.clamp(1, 180);
+            let Ok(mut stmt) = conn.prepare(
+                "WITH latest_days AS (
+                    SELECT day_key
+                    FROM usage_request_day_provider_totals
+                    GROUP BY day_key
+                    ORDER BY day_key DESC
+                    LIMIT ?1
+                 )
+                 SELECT
+                   u.day_key,
+                   u.provider,
+                   u.total_tokens,
+                   u.request_count,
+                   u.windows_request_count,
+                   u.wsl_request_count
+                 FROM usage_request_day_provider_totals u
+                 JOIN latest_days d ON d.day_key = u.day_key
+                 ORDER BY u.day_key ASC, u.total_tokens DESC",
+            ) else {
+                return out;
+            };
+            let Ok(rows) = stmt.query_map([i64::try_from(limit).unwrap_or(45)], |row| {
+                let day_key = row.get::<_, String>(0)?;
+                let provider = row.get::<_, String>(1)?;
+                let total_tokens = u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0);
+                let request_count = u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0);
+                let windows_request_count = u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0);
+                let wsl_request_count = u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0);
+                Ok((
+                    day_key,
+                    provider,
+                    total_tokens,
+                    request_count,
+                    windows_request_count,
+                    wsl_request_count,
+                ))
+            }) else {
+                return out;
+            };
+            for row in rows.flatten() {
+                out.push(row);
+            }
+            out
+        })
     }
 
     pub fn backfill_api_key_ref_fields(

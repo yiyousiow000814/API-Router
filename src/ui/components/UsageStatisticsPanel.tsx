@@ -3370,6 +3370,9 @@ export function UsageStatisticsPanel({
     ? Math.max(0, (tableRowsForDisplay.length - virtualUsageRequestEnd) * USAGE_REQUEST_ROW_HEIGHT_PX)
     : 0
   const totalRequestRowsForDisplay = rowsForRequestRender.length
+  const requestFooterTotalRows = defaultTodayOnly
+    ? tableRowsForDisplay.length
+    : totalRequestRowsForDisplay
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests') return
     if (!hasExplicitTimeFilter) return
@@ -4624,7 +4627,7 @@ export function UsageStatisticsPanel({
                   : 'All loaded'}
             </span>
             <span className="aoHint">
-              {tableRowsForDisplay.length.toLocaleString()} / {totalRequestRowsForDisplay.toLocaleString()} rows
+              {tableRowsForDisplay.length.toLocaleString()} / {requestFooterTotalRows.toLocaleString()} rows
             </span>
           </div>
         </div>

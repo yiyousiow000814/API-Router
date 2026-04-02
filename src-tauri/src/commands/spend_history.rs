@@ -33,7 +33,7 @@ fn tracked_spend_history_day_key(day: &Value) -> Option<String> {
 
 fn tracked_spend_history_allocations_by_day(
     day: &Value,
-    request_timestamps: &[u64],
+    request_counts_by_day: &BTreeMap<String, u64>,
     now_unix_ms: u64,
 ) -> BTreeMap<String, f64> {
     let mut allocations = BTreeMap::new();
@@ -60,19 +60,26 @@ fn tracked_spend_history_allocations_by_day(
         .filter(|v| *v > started_at)
         .unwrap_or(now_unix_ms.max(started_at.saturating_add(1)));
 
-    let mut counts_by_day: BTreeMap<String, u64> = BTreeMap::new();
-    for ts in request_timestamps {
-        if *ts < started_at || *ts >= ended_at {
-            continue;
-        }
-        let Some(day_key) = local_day_key_from_unix_ms(*ts) else {
-            continue;
-        };
-        counts_by_day
-            .entry(day_key)
-            .and_modify(|count| *count = count.saturating_add(1))
-            .or_insert(1);
-    }
+    let start_day_key = local_day_key_from_unix_ms(started_at);
+    let end_day_key = local_day_key_from_unix_ms(ended_at.saturating_sub(1));
+    let counts_by_day: BTreeMap<String, u64> = request_counts_by_day
+        .iter()
+        .filter(|(day_key, count)| {
+            if **count == 0 {
+                return false;
+            }
+            let after_start = match start_day_key.as_ref() {
+                Some(start) => day_key.as_str() >= start.as_str(),
+                None => true,
+            };
+            let before_end = match end_day_key.as_ref() {
+                Some(end) => day_key.as_str() <= end.as_str(),
+                None => true,
+            };
+            after_start && before_end
+        })
+        .map(|(day_key, count)| (day_key.clone(), *count))
+        .collect();
 
     let total_requests: u64 = counts_by_day.values().copied().sum();
     if total_requests > 0 {
@@ -166,77 +173,33 @@ pub(crate) fn get_spend_history(
                 .or_insert((req_count, total_tokens, updated_at));
         }
         let mut usage_by_day_from_req: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
+        let mut request_counts_by_day: BTreeMap<String, u64> = BTreeMap::new();
         let mut api_key_ref_counts_by_day: BTreeMap<String, BTreeMap<String, u64>> =
             BTreeMap::new();
-        let mut provider_request_timestamps: Vec<u64> = Vec::new();
-        const PAGE_SIZE: usize = 2_000;
-        let provider_only = vec![provider_name.clone()];
-        let mut req_offset = 0usize;
-        loop {
-            let (req_rows, has_more) = state.gateway.store.list_usage_requests_page(
-                since,
-                None,
-                None,
-                &[],
-                &provider_only,
-                &[],
-                &[],
-                &[],
-                PAGE_SIZE,
-                req_offset,
-            );
-            if req_rows.is_empty() {
-                break;
-            }
-            req_offset = req_offset.saturating_add(req_rows.len());
-            for req in req_rows {
-                let ts = req.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
-                if ts == 0 {
-                    continue;
-                }
-                let Some(day_key) = local_day_key_from_unix_ms(ts) else {
-                    continue;
-                };
-                let total_tokens = req
-                    .get("total_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or_else(|| {
-                        let input_tokens = req
-                            .get("input_tokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        let output_tokens = req
-                            .get("output_tokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        input_tokens.saturating_add(output_tokens)
-                    });
-                provider_request_timestamps.push(ts);
-                usage_by_day_from_req
-                    .entry(day_key.clone())
-                    .and_modify(|(r, t, u)| {
-                        *r = r.saturating_add(1);
-                        *t = t.saturating_add(total_tokens);
-                        *u = (*u).max(ts);
-                    })
-                    .or_insert((1, total_tokens, ts));
-                let req_api_key_ref = req
-                    .get("api_key_ref")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.trim())
-                    .filter(|s| !s.is_empty() && *s != "-")
-                    .map(|s| s.to_string());
-                if let Some(key_ref) = req_api_key_ref {
-                    api_key_ref_counts_by_day
-                        .entry(day_key)
-                        .or_default()
-                        .entry(key_ref)
-                        .and_modify(|v| *v = v.saturating_add(1))
-                        .or_insert(1);
-                }
-            }
-            if !has_more {
-                break;
+        for (day_key, api_key_ref, req_count, total_tokens, updated_at) in state
+            .gateway
+            .store
+            .list_usage_request_day_rollups_for_provider(&provider_name, since)
+        {
+            usage_by_day_from_req
+                .entry(day_key.clone())
+                .and_modify(|(r, t, u)| {
+                    *r = r.saturating_add(req_count);
+                    *t = t.saturating_add(total_tokens);
+                    *u = (*u).max(updated_at);
+                })
+                .or_insert((req_count, total_tokens, updated_at));
+            request_counts_by_day
+                .entry(day_key.clone())
+                .and_modify(|count| *count = count.saturating_add(req_count))
+                .or_insert(req_count);
+            if api_key_ref != "-" {
+                api_key_ref_counts_by_day
+                    .entry(day_key)
+                    .or_default()
+                    .entry(api_key_ref)
+                    .and_modify(|v| *v = v.saturating_add(req_count))
+                    .or_insert(req_count);
             }
         }
         merge_usage_history_day_counts(&mut usage_by_day, usage_by_day_from_req);
@@ -247,7 +210,7 @@ pub(crate) fn get_spend_history(
         let mut tracked_day_meta_by_day: BTreeMap<String, Value> = BTreeMap::new();
         for day in state.gateway.store.list_spend_days(&provider_name) {
             let allocated_tracked =
-                tracked_spend_history_allocations_by_day(&day, &provider_request_timestamps, now);
+                tracked_spend_history_allocations_by_day(&day, &request_counts_by_day, now);
             if allocated_tracked.is_empty() {
                 continue;
             }
@@ -815,14 +778,16 @@ mod spend_history_tests {
             "ended_at_unix_ms": 1_775_145_660_939u64,
             "tracked_spend_usd": 94.406078
         });
-        let request_timestamps = vec![
-            1_775_126_183_956u64,
-            1_775_126_183_957u64,
-            1_775_145_635_197u64,
-        ];
+        let request_counts_by_day = BTreeMap::from([
+            ("2026-04-02".to_string(), 2_u64),
+            ("2026-04-03".to_string(), 1_u64),
+        ]);
 
-        let allocations =
-            tracked_spend_history_allocations_by_day(&day, &request_timestamps, 1_775_145_660_939u64);
+        let allocations = tracked_spend_history_allocations_by_day(
+            &day,
+            &request_counts_by_day,
+            1_775_145_660_939u64,
+        );
 
         assert_eq!(allocations.len(), 2);
         let day_02 = allocations.get("2026-04-02").copied().unwrap_or(0.0);

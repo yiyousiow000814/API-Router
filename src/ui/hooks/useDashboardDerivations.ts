@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react'
 import { useCallback, useMemo } from 'react'
-import type { Config, ProviderSwitchboardStatus, Status, UsageStatistics } from '../types'
+import type { Config, ProviderSwitchboardStatus, Status, UsageStatistics, UsageStatisticsOverview } from '../types'
 import { computeUsageAnomalies } from '../utils/usageAnomalies'
 import { buildUsageChartModel, fmtUsageBucketLabel } from '../utils/usageDisplay'
 import {
@@ -35,6 +35,7 @@ type Params = {
   fmtAmount: (value: number | null | undefined) => string
   fmtUsd: (value: number | null | undefined) => string
   pctOf: (part?: number | null, total?: number | null) => number | null
+  usageOverview: UsageStatisticsOverview | null
   usageStatistics: UsageStatistics | null
   usageFilterNodes: string[]
   setUsageFilterNodes: Dispatch<SetStateAction<string[]>>
@@ -67,6 +68,7 @@ export function useDashboardDerivations(params: Params) {
     fmtAmount,
     fmtUsd,
     pctOf,
+    usageOverview,
     usageStatistics,
     setUsageFilterNodes,
     setUsageFilterProviders,
@@ -96,13 +98,13 @@ export function useDashboardDerivations(params: Params) {
   )
   const switchboardProviderCards = useMemo(
     () =>
-      buildSwitchboardProviderCards(managedProviderNames, config, status, usageStatistics, {
+      buildSwitchboardProviderCards(managedProviderNames, config, status, usageOverview, {
         fmtPct,
         fmtAmount,
         fmtUsd,
         pctOf,
       }),
-    [config, managedProviderNames, pctOf, status, usageStatistics, fmtAmount, fmtPct, fmtUsd],
+    [config, managedProviderNames, pctOf, status, usageOverview, fmtAmount, fmtPct, fmtUsd],
   )
 
   const switchboardModeLabel = providerSwitchStatus?.mode ?? '-'
@@ -113,14 +115,14 @@ export function useDashboardDerivations(params: Params) {
   const switchboardTargetDirsLabel =
     providerSwitchStatus?.dirs?.map((d) => d.cli_home).join(' | ') || '-'
 
-  const usageSummary = usageStatistics?.summary ?? null
+  const usageSummary = usageOverview?.summary ?? null
   const providerGroupMaps = useMemo(() => buildProviderGroupMaps(config), [config])
   const usageTimelineRaw = usageSummary?.timeline ?? []
   const usageTimeline = useMemo(
     () => [...usageTimelineRaw].sort((a, b) => a.bucket_unix_ms - b.bucket_unix_ms),
     [usageTimelineRaw],
   )
-  const usageByModel = usageSummary?.by_model ?? []
+  const usageByModel = usageStatistics?.summary?.by_model ?? []
   const usageByProvider = usageSummary?.by_provider ?? []
   const orderedUsageByProvider = useMemo(
     () => orderUsageProvidersByConfig(usageByProvider, orderedConfigProviders),
@@ -128,13 +130,13 @@ export function useDashboardDerivations(params: Params) {
   )
   const usageMaxTimelineRequests = Math.max(1, ...usageTimeline.map((x) => x.requests ?? 0))
   const usageMaxTimelineTokens = Math.max(1, ...usageTimeline.map((x) => x.total_tokens ?? 0))
-  const usageTotalInputTokens = usageByModel.reduce((sum: number, x) => sum + (x.input_tokens ?? 0), 0)
-  const usageTotalOutputTokens = usageByModel.reduce((sum: number, x) => sum + (x.output_tokens ?? 0), 0)
+  const usageTotalInputTokens = usageSummary?.input_tokens ?? 0
+  const usageTotalOutputTokens = usageSummary?.output_tokens ?? 0
   const usageAvgTokensPerRequest =
     (usageSummary?.total_requests ?? 0) > 0
       ? Math.round((usageSummary?.total_tokens ?? 0) / (usageSummary?.total_requests ?? 1))
       : 0
-  const usageTopModel = usageByModel[0] ?? null
+  const usageTopModel = usageSummary?.top_model ?? null
   const usageCatalogProviders = usageStatistics?.catalog?.providers ?? []
   const usageCatalogModels = usageStatistics?.catalog?.models ?? []
   const usageCatalogNodes = usageStatistics?.catalog?.nodes ?? []
@@ -198,7 +200,7 @@ export function useDashboardDerivations(params: Params) {
     if (summaryActiveHours != null && Number.isFinite(summaryActiveHours) && summaryActiveHours > 0) {
       return summaryActiveHours
     }
-    const bucketSeconds = usageStatistics?.bucket_seconds ?? 0
+    const bucketSeconds = usageOverview?.bucket_seconds ?? 0
     if (bucketSeconds <= 0) return 0
     const activeBucketCount = usageTimeline.reduce(
       (sum: number, point) => sum + ((point.requests ?? 0) > 0 ? 1 : 0),
@@ -206,7 +208,7 @@ export function useDashboardDerivations(params: Params) {
     )
     if (activeBucketCount <= 0) return 0
     return (activeBucketCount * bucketSeconds) / 3600
-  }, [usageSummary?.active_window_hours, usageTimeline, usageStatistics?.bucket_seconds])
+  }, [usageSummary?.active_window_hours, usageTimeline, usageOverview?.bucket_seconds])
   const usageAvgRequestsPerHour =
     (usageSummary?.total_requests ?? 0) > 0 && usageActiveWindowHours > 0
       ? (usageSummary?.total_requests ?? 0) / usageActiveWindowHours
@@ -236,11 +238,11 @@ export function useDashboardDerivations(params: Params) {
       computeUsageAnomalies(
         usageTimeline,
         orderedUsageByProvider,
-        usageStatistics?.window_hours ?? 24,
+        usageOverview?.window_hours ?? 24,
         usageProviderRowKey,
         formatUsdMaybe,
       ),
-    [usageTimeline, orderedUsageByProvider, usageStatistics?.window_hours],
+    [usageTimeline, orderedUsageByProvider, usageOverview?.window_hours],
   )
 
   const toggleUsageProviderFilterDisplayOption = useCallback((providers: string[]) => {
@@ -297,11 +299,11 @@ export function useDashboardDerivations(params: Params) {
     setUsageChartHover({
       x: Math.min(Math.max(rawX + 10, 8), maxX),
       y: Math.min(Math.max(rawY - 42, 8), maxY),
-      title: fmtUsageBucketLabel(bucketUnixMs, usageStatistics?.window_hours ?? 24),
+      title: fmtUsageBucketLabel(bucketUnixMs, usageOverview?.window_hours ?? 24),
       subtitle: `Requests ${requests} | Tokens ${totalTokens.toLocaleString()}`,
     })
     },
-    [setUsageChartHover, usageStatistics?.window_hours],
+    [setUsageChartHover, usageOverview?.window_hours],
   )
 
   return {

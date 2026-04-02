@@ -2,6 +2,128 @@ use super::*;
 use rusqlite::params;
 
 impl Store {
+    pub fn list_usage_request_stats_rows_window(
+        &self,
+        since_unix_ms: u64,
+    ) -> Vec<UsageRequestStatsRow> {
+        let Ok(since_i64) = i64::try_from(since_unix_ms) else {
+            return Vec::new();
+        };
+        self.with_events_read_conn(|conn| {
+            let mut out = Vec::new();
+            let Ok(mut stmt) = conn.prepare(
+                "SELECT
+                   provider,
+                   api_key_ref,
+                   model,
+                   origin,
+                   node_name,
+                   unix_ms,
+                   input_tokens,
+                   output_tokens,
+                   total_tokens,
+                   cache_creation_input_tokens,
+                   cache_read_input_tokens
+                 FROM usage_requests
+                 WHERE unix_ms >= ?1
+                 ORDER BY unix_ms DESC, id DESC",
+            ) else {
+                return out;
+            };
+            let Ok(rows) = stmt.query_map(params![since_i64], |row| {
+                Ok(UsageRequestStatsRow {
+                    provider: row.get::<_, String>(0)?,
+                    api_key_ref: row.get::<_, String>(1)?,
+                    model: row.get::<_, String>(2)?,
+                    origin: row.get::<_, String>(3)?,
+                    node_name: row.get::<_, String>(4)?,
+                    unix_ms: u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+                    input_tokens: u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
+                    output_tokens: u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                    total_tokens: u64::try_from(row.get::<_, i64>(8)?).unwrap_or(0),
+                    cache_creation_input_tokens: u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
+                    cache_read_input_tokens: u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+                })
+            }) else {
+                return out;
+            };
+            out.extend(rows.flatten());
+            out
+        })
+    }
+
+    pub fn list_usage_request_day_counts_for_provider(
+        &self,
+        provider: &str,
+    ) -> std::collections::BTreeMap<String, u64> {
+        self.with_events_read_conn(|conn| {
+            let mut out = std::collections::BTreeMap::new();
+            let Ok(mut stmt) = conn.prepare(
+                "SELECT day_key, request_count
+                 FROM usage_request_day_provider_totals
+                 WHERE lower(provider) = lower(?1)
+                 ORDER BY day_key ASC",
+            ) else {
+                return out;
+            };
+            let Ok(rows) = stmt.query_map(params![provider], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+                ))
+            }) else {
+                return out;
+            };
+            for (day_key, request_count) in rows.flatten() {
+                out.insert(day_key, request_count);
+            }
+            out
+        })
+    }
+
+    pub fn list_usage_request_day_rollups_for_provider(
+        &self,
+        provider: &str,
+        since_unix_ms: u64,
+    ) -> Vec<(String, String, u64, u64, u64)> {
+        let Ok(since_i64) = i64::try_from(since_unix_ms) else {
+            return Vec::new();
+        };
+        self.with_events_read_conn(|conn| {
+            let mut out = Vec::new();
+            let Ok(mut stmt) = conn.prepare(
+                "SELECT
+                   strftime('%Y-%m-%d', unix_ms / 1000, 'unixepoch', 'localtime') AS day_key,
+                   COALESCE(NULLIF(trim(api_key_ref), ''), '-') AS api_key_ref,
+                   COUNT(*) AS request_count,
+                   SUM(total_tokens) AS total_tokens,
+                   MAX(unix_ms) AS updated_at_unix_ms
+                 FROM usage_requests
+                 WHERE lower(provider) = lower(?1)
+                   AND unix_ms >= ?2
+                 GROUP BY day_key, api_key_ref
+                 ORDER BY day_key ASC, api_key_ref ASC",
+            ) else {
+                return out;
+            };
+            let Ok(rows) = stmt.query_map(params![provider, since_i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                    u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
+                    u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+                ))
+            }) else {
+                return out;
+            };
+            for row in rows.flatten() {
+                out.push(row);
+            }
+            out
+        })
+    }
+
     pub fn list_spend_history_provider_names(&self) -> Vec<String> {
         let mut ordered = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
@@ -23,25 +145,26 @@ impl Store {
             }
         }
 
-        let conn = self.events_db.lock();
-        let queries = [
-            "SELECT DISTINCT provider FROM usage_requests ORDER BY provider ASC",
-            "SELECT DISTINCT provider FROM spend_days ORDER BY provider ASC",
-            "SELECT DISTINCT provider FROM spend_manual_days ORDER BY provider ASC",
-        ];
-        for query in queries {
-            let Ok(mut stmt) = conn.prepare(query) else {
-                continue;
-            };
-            let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) else {
-                continue;
-            };
-            for provider in rows.flatten() {
-                if seen.insert(provider.clone()) {
-                    ordered.push(provider);
+        self.with_events_read_conn(|conn| {
+            let queries = [
+                "SELECT DISTINCT provider FROM usage_requests ORDER BY provider ASC",
+                "SELECT DISTINCT provider FROM spend_days ORDER BY provider ASC",
+                "SELECT DISTINCT provider FROM spend_manual_days ORDER BY provider ASC",
+            ];
+            for query in queries {
+                let Ok(mut stmt) = conn.prepare(query) else {
+                    continue;
+                };
+                let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) else {
+                    continue;
+                };
+                for provider in rows.flatten() {
+                    if seen.insert(provider.clone()) {
+                        ordered.push(provider);
+                    }
                 }
             }
-        }
+        });
 
         ordered
     }
@@ -109,24 +232,25 @@ impl Store {
     }
 
     pub fn list_spend_days(&self, provider: &str) -> Vec<Value> {
-        let conn = self.events_db.lock();
-        if let Ok(mut stmt) = conn.prepare(
-            "SELECT row_json
-             FROM spend_days
-             WHERE provider = ?1
-             ORDER BY day_started_at_unix_ms ASC",
-        ) {
-            if let Ok(rows) = stmt.query_map([provider], |row| row.get::<_, String>(0)) {
-                let parsed = rows
-                    .flatten()
-                    .filter_map(|row_json| serde_json::from_str::<Value>(&row_json).ok())
-                    .collect::<Vec<_>>();
-                if !parsed.is_empty() {
-                    return parsed;
+        self.with_events_read_conn(|conn| {
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT row_json
+                 FROM spend_days
+                 WHERE provider = ?1
+                 ORDER BY day_started_at_unix_ms ASC",
+            ) {
+                if let Ok(rows) = stmt.query_map([provider], |row| row.get::<_, String>(0)) {
+                    let parsed = rows
+                        .flatten()
+                        .filter_map(|row_json| serde_json::from_str::<Value>(&row_json).ok())
+                        .collect::<Vec<_>>();
+                    if !parsed.is_empty() {
+                        return parsed;
+                    }
                 }
             }
-        }
-        Vec::new()
+            Vec::new()
+        })
     }
 
     pub fn put_spend_manual_day(&self, provider: &str, day_key: &str, day: &Value) {
@@ -152,53 +276,55 @@ impl Store {
     }
 
     pub fn list_spend_manual_days(&self, provider: &str) -> Vec<Value> {
-        let conn = self.events_db.lock();
-        if let Ok(mut stmt) = conn.prepare(
-            "SELECT row_json
-             FROM spend_manual_days
-             WHERE provider = ?1
-             ORDER BY day_key ASC",
-        ) {
-            if let Ok(rows) = stmt.query_map([provider], |row| row.get::<_, String>(0)) {
-                let parsed = rows
-                    .flatten()
-                    .filter_map(|row_json| serde_json::from_str::<Value>(&row_json).ok())
-                    .collect::<Vec<_>>();
-                if !parsed.is_empty() {
-                    return parsed;
+        self.with_events_read_conn(|conn| {
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT row_json
+                 FROM spend_manual_days
+                 WHERE provider = ?1
+                 ORDER BY day_key ASC",
+            ) {
+                if let Ok(rows) = stmt.query_map([provider], |row| row.get::<_, String>(0)) {
+                    let parsed = rows
+                        .flatten()
+                        .filter_map(|row_json| serde_json::from_str::<Value>(&row_json).ok())
+                        .collect::<Vec<_>>();
+                    if !parsed.is_empty() {
+                        return parsed;
+                    }
                 }
             }
-        }
-        Vec::new()
+            Vec::new()
+        })
     }
 
     pub fn list_provider_pricing_configs(
         &self,
     ) -> std::collections::BTreeMap<String, crate::orchestrator::secrets::ProviderPricingConfig>
     {
-        let mut out = std::collections::BTreeMap::new();
-        let conn = self.events_db.lock();
-        let Ok(mut stmt) = conn.prepare(
-            "SELECT provider, pricing_json
-             FROM provider_pricing_configs
-             ORDER BY provider ASC",
-        ) else {
-            return out;
-        };
-        let Ok(rows) = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        }) else {
-            return out;
-        };
-        for (provider, pricing_json) in rows.flatten() {
-            if let Ok(pricing) = serde_json::from_str::<
-                crate::orchestrator::secrets::ProviderPricingConfig,
-            >(&pricing_json)
-            {
-                out.insert(provider, pricing);
+        self.with_events_read_conn(|conn| {
+            let mut out = std::collections::BTreeMap::new();
+            let Ok(mut stmt) = conn.prepare(
+                "SELECT provider, pricing_json
+                 FROM provider_pricing_configs
+                 ORDER BY provider ASC",
+            ) else {
+                return out;
+            };
+            let Ok(rows) = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            }) else {
+                return out;
+            };
+            for (provider, pricing_json) in rows.flatten() {
+                if let Ok(pricing) = serde_json::from_str::<
+                    crate::orchestrator::secrets::ProviderPricingConfig,
+                >(&pricing_json)
+                {
+                    out.insert(provider, pricing);
+                }
             }
-        }
-        out
+            out
+        })
     }
 
     pub fn sync_provider_pricing_configs(

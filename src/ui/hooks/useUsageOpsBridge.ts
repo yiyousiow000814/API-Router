@@ -2,10 +2,12 @@ import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
 import { startTransition, useCallback, useMemo, useRef } from 'react'
 import type { SpendHistoryRow } from '../devMockData'
 import { invoke, recordUiTrace } from '../tauriCore'
-import type { Config, UsageStatistics } from '../types'
+import type { Config, UsageStatistics, UsageStatisticsOverview } from '../types'
 import type { ProviderScheduleDraft, UsageHistoryDraft, UsagePricingDraft, UsagePricingSaveState, UsageScheduleSaveState } from '../types/usage'
 import { buildUsageCurrencyOptions, convertCurrencyToUsd, convertUsdToCurrency } from '../utils/currency'
 import { buildDevUsageStatistics } from '../utils/devUsageStatistics'
+import { buildUsageStatisticsOverviewFromFull } from '../utils/usageStatisticsOverview'
+import { runSingleFlight } from '../utils/singleFlight'
 import { useUsageScheduleCore } from './useUsageScheduleCore'
 import { useUsagePricingHistoryActions } from './useUsagePricingHistoryActions'
 
@@ -24,6 +26,10 @@ type UsageScheduleCurrencyMenuState = {
   width: number
 } | null
 
+export function isDashboardUsageRefreshSource(source: string): boolean {
+  return source.startsWith('usage_page_') && source.endsWith(':dashboard')
+}
+
 type Params = {
   isDevPreview: boolean
   usageWindowHours: number
@@ -31,6 +37,7 @@ type Params = {
   usageFilterProviders: string[]
   usageFilterModels: string[]
   usageFilterOrigins: string[]
+  setUsageOverview: Dispatch<SetStateAction<UsageStatisticsOverview | null>>
   setUsageStatistics: Dispatch<SetStateAction<UsageStatistics | null>>
   setUsageStatisticsLoading: Dispatch<SetStateAction<boolean>>
   flashToast: (msg: string, kind?: 'info' | 'error') => void
@@ -78,6 +85,7 @@ export function useUsageOpsBridge(params: Params) {
     usageFilterProviders,
     usageFilterModels,
     usageFilterOrigins,
+    setUsageOverview,
     setUsageStatistics,
     setUsageStatisticsLoading,
     flashToast,
@@ -116,6 +124,8 @@ export function useUsageOpsBridge(params: Params) {
     setUsageHistoryEditCell,
     usageHistoryDrafts,
   } = params
+  const usageOverviewInFlightRef = useRef<Map<string, Promise<UsageStatisticsOverview>>>(new Map())
+  const usageStatisticsInFlightRef = useRef<Map<string, Promise<UsageStatistics>>>(new Map())
 
   function clearAutoSaveTimer(key: string) {
     const timer = autoSaveTimersRef.current[key]
@@ -147,7 +157,7 @@ export function useUsageOpsBridge(params: Params) {
     applyGuard?: () => boolean
     interactive?: boolean
     source?: string
-  }) => {
+    }) => {
     const silent = options?.silent === true
     const shouldApply = options?.applyGuard ?? (() => true)
     const interactive = options?.interactive ?? true
@@ -169,6 +179,31 @@ export function useUsageOpsBridge(params: Params) {
       else startTransition(apply)
       return
     }
+    if (isDashboardUsageRefreshSource(source)) {
+      const requestKey = JSON.stringify({
+        detail_level: 'overview',
+        hours: usageWindowHours,
+        nodes: usageFilterNodes,
+        providers: usageFilterProviders,
+        models: usageFilterModels,
+        origins: usageFilterOrigins,
+      })
+      const res = await runSingleFlight(usageOverviewInFlightRef.current, requestKey, () =>
+        invoke<UsageStatisticsOverview>('get_usage_statistics', {
+          detailLevel: 'overview',
+          hours: usageWindowHours,
+          nodes: usageFilterNodes.length ? usageFilterNodes : null,
+          providers: usageFilterProviders.length ? usageFilterProviders : null,
+          models: usageFilterModels.length ? usageFilterModels : null,
+          origins: usageFilterOrigins.length ? usageFilterOrigins : null,
+        }),
+      )
+      if (!shouldApply()) return
+      const applyOverview = () => setUsageOverview(res)
+      if (interactive) applyOverview()
+      else startTransition(applyOverview)
+      return
+    }
     if (!silent) setUsageStatisticsLoading(true)
     recordUiTrace('usage_refresh_requested', {
       source,
@@ -181,17 +216,32 @@ export function useUsageOpsBridge(params: Params) {
       origin_filter_count: usageFilterOrigins.length,
     })
     try {
-      const res = await invoke<UsageStatistics>('get_usage_statistics', {
+      const requestKey = JSON.stringify({
         hours: usageWindowHours,
-        nodes: usageFilterNodes.length ? usageFilterNodes : null,
-        providers: usageFilterProviders.length ? usageFilterProviders : null,
-        models: usageFilterModels.length ? usageFilterModels : null,
-        origins: usageFilterOrigins.length ? usageFilterOrigins : null,
+        nodes: usageFilterNodes,
+        providers: usageFilterProviders,
+        models: usageFilterModels,
+        origins: usageFilterOrigins,
       })
+      const res = await runSingleFlight(usageStatisticsInFlightRef.current, requestKey, () =>
+        invoke<UsageStatistics>('get_usage_statistics', {
+          hours: usageWindowHours,
+          nodes: usageFilterNodes.length ? usageFilterNodes : null,
+          providers: usageFilterProviders.length ? usageFilterProviders : null,
+          models: usageFilterModels.length ? usageFilterModels : null,
+          origins: usageFilterOrigins.length ? usageFilterOrigins : null,
+        }),
+      )
       if (!shouldApply()) return
+      const overview = buildUsageStatisticsOverviewFromFull(res)
       const apply = () => setUsageStatistics(res)
       if (interactive) apply()
       else startTransition(apply)
+      if (overview) {
+        const applyOverview = () => setUsageOverview(overview)
+        if (interactive) applyOverview()
+        else startTransition(applyOverview)
+      }
     } catch (e) {
       if (!silent) flashToast(String(e), 'error')
     } finally {
@@ -207,6 +257,82 @@ export function useUsageOpsBridge(params: Params) {
     usageFilterModels,
     usageFilterOrigins,
     setUsageStatisticsLoading,
+    flashToast,
+    setUsageOverview,
+  ])
+
+  const refreshUsageOverview = useCallback(async (options?: {
+    silent?: boolean
+    applyGuard?: () => boolean
+    interactive?: boolean
+    source?: string
+  }) => {
+    const silent = options?.silent === true
+    const shouldApply = options?.applyGuard ?? (() => true)
+    const interactive = options?.interactive ?? true
+    const source = options?.source?.trim() || 'unknown'
+    if (isDevPreview) {
+      const devStats = buildDevUsageStatistics({
+        now: Date.now(),
+        usageWindowHours,
+        usageFilterNodes,
+        usageFilterProviders,
+        usageFilterModels,
+        usageFilterOrigins,
+        config,
+      })
+      const overview = buildUsageStatisticsOverviewFromFull(devStats)
+      if (!overview) return
+      const apply = () => setUsageOverview(overview)
+      if (interactive) apply()
+      else startTransition(apply)
+      return
+    }
+    recordUiTrace('usage_overview_refresh_requested', {
+      source,
+      silent,
+      interactive,
+      hours: usageWindowHours,
+      node_filter_count: usageFilterNodes.length,
+      provider_filter_count: usageFilterProviders.length,
+      model_filter_count: usageFilterModels.length,
+      origin_filter_count: usageFilterOrigins.length,
+    })
+    try {
+      const requestKey = JSON.stringify({
+        detail_level: 'overview',
+        hours: usageWindowHours,
+        nodes: usageFilterNodes,
+        providers: usageFilterProviders,
+        models: usageFilterModels,
+        origins: usageFilterOrigins,
+      })
+      const res = await runSingleFlight(usageOverviewInFlightRef.current, requestKey, () =>
+        invoke<UsageStatisticsOverview>('get_usage_statistics', {
+          detailLevel: 'overview',
+          hours: usageWindowHours,
+          nodes: usageFilterNodes.length ? usageFilterNodes : null,
+          providers: usageFilterProviders.length ? usageFilterProviders : null,
+          models: usageFilterModels.length ? usageFilterModels : null,
+          origins: usageFilterOrigins.length ? usageFilterOrigins : null,
+        }),
+      )
+      if (!shouldApply()) return
+      const apply = () => setUsageOverview(res)
+      if (interactive) apply()
+      else startTransition(apply)
+    } catch (e) {
+      if (!silent) flashToast(String(e), 'error')
+    }
+  }, [
+    isDevPreview,
+    usageWindowHours,
+    usageFilterNodes,
+    usageFilterProviders,
+    usageFilterModels,
+    usageFilterOrigins,
+    config,
+    setUsageOverview,
     flashToast,
   ])
 
@@ -286,6 +412,7 @@ export function useUsageOpsBridge(params: Params) {
     clearAutoSaveTimer,
     clearAutoSaveTimersByPrefix,
     queueAutoSaveTimer,
+    refreshUsageOverview,
     refreshUsageStatistics,
     usageCurrencyOptions,
     ...scheduleCore,

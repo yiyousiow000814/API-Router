@@ -648,6 +648,7 @@ pub fn run() {
             commands::record_app_startup_stage,
             commands::record_ui_watchdog_heartbeat,
             commands::record_ui_trace,
+            commands::record_ui_diagnostics_batch,
             commands::record_ui_slow_refresh,
             commands::record_ui_long_task,
             commands::record_ui_frame_stall,

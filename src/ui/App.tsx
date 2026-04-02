@@ -3,7 +3,14 @@ import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 import './components/AppShared.css'
 import { recordStartupStage } from './startupTrace'
-import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status, UsageStatistics } from './types'
+import type {
+  CodexSwapStatus,
+  Config,
+  ProviderSwitchboardStatus,
+  Status,
+  UsageStatistics,
+  UsageStatisticsOverview,
+} from './types'
 import { fmtAmount, fmtPct, fmtUsd, pctOf } from './utils/format'
 import {
   fmtKpiTokens as formatKpiTokens,
@@ -47,6 +54,7 @@ import { useUsageOpsBridge } from './hooks/useUsageOpsBridge'
 import { useUsageUiDerived } from './hooks/useUsageUiDerived'
 import { useMainContentCallbacks } from './hooks/useMainContentCallbacks'
 import { useTopNavIntentPrefetch } from './hooks/useTopNavIntentPrefetch'
+import { buildUsageStatisticsOverviewFromFull } from './utils/usageStatisticsOverview'
 import type {
   KeyModalState,
   ProviderBaseUrlModalState,
@@ -100,6 +108,7 @@ const EVENT_LOG_PRELOAD_LIMIT = 5000
 const STATUS_CACHE_STORAGE_KEY = 'ao.startup.status.v1'
 const CONFIG_CACHE_STORAGE_KEY = 'ao.startup.config.v1'
 const TOKEN_CACHE_STORAGE_KEY = 'ao.startup.gatewayTokenPreview.v1'
+const USAGE_OVERVIEW_CACHE_STORAGE_KEY = 'ao.startup.usageOverview.v1'
 const USAGE_STATS_CACHE_STORAGE_KEY = 'ao.startup.usageStatistics.v1'
 
 type CopyProviderResult = {
@@ -134,6 +143,16 @@ export default function App() {
   useEffect(() => {
     recordStartupStage('frontend_app_component_mounted')
   }, [])
+  const cachedUsageStatistics = useMemo(
+    () => readStartupCache<UsageStatistics>(USAGE_STATS_CACHE_STORAGE_KEY),
+    [],
+  )
+  const cachedUsageOverview = useMemo(
+    () =>
+      readStartupCache<UsageStatisticsOverview>(USAGE_OVERVIEW_CACHE_STORAGE_KEY) ??
+      buildUsageStatisticsOverviewFromFull(cachedUsageStatistics),
+    [cachedUsageStatistics],
+  )
   const isDevPreview = useMemo(() => {
     if (!import.meta.env.DEV) return false
     if (typeof window === 'undefined') return false
@@ -243,8 +262,11 @@ export default function App() {
   const [providerSwitchStatus, setProviderSwitchStatus] = useState<ProviderSwitchboardStatus | null>(null)
   const [providerGroupManagerOpen, setProviderGroupManagerOpen] = useState<boolean>(false)
   const [providerGroupManagerFocusProvider, setProviderGroupManagerFocusProvider] = useState<string | null>(null)
+  const [usageOverview, setUsageOverview] = useState<UsageStatisticsOverview | null>(
+    cachedUsageOverview,
+  )
   const [usageStatistics, setUsageStatistics] = useState<UsageStatistics | null>(
-    () => readStartupCache<UsageStatistics>(USAGE_STATS_CACHE_STORAGE_KEY),
+    cachedUsageStatistics,
   )
   const [usageWindowHours, setUsageWindowHours] = useState<number>(24)
   const [usageFilterNodes, setUsageFilterNodes] = useState<string[]>([])
@@ -455,6 +477,10 @@ export default function App() {
     if (!gatewayTokenPreview.trim()) return
     writeStartupCache(TOKEN_CACHE_STORAGE_KEY, gatewayTokenPreview)
   }, [gatewayTokenPreview])
+  useEffect(() => {
+    if (!usageOverview) return
+    writeStartupCache(USAGE_OVERVIEW_CACHE_STORAGE_KEY, usageOverview)
+  }, [usageOverview])
   useEffect(() => {
     if (!usageStatistics) return
     writeStartupCache(USAGE_STATS_CACHE_STORAGE_KEY, usageStatistics)
@@ -965,6 +991,7 @@ export default function App() {
     clearAutoSaveTimer,
     clearAutoSaveTimersByPrefix,
     queueAutoSaveTimer,
+    refreshUsageOverview,
     refreshUsageStatistics,
     usageCurrencyOptions,
     providerApiKeyLabel,
@@ -997,6 +1024,7 @@ export default function App() {
     usageFilterProviders,
     usageFilterModels,
     usageFilterOrigins,
+    setUsageOverview,
     setUsageStatistics,
     setUsageStatisticsLoading,
     flashToast,
@@ -1091,6 +1119,7 @@ export default function App() {
     fmtAmount,
     fmtUsd,
     pctOf,
+    usageOverview,
     usageStatistics,
     usageFilterNodes,
     setUsageFilterNodes,
@@ -1403,12 +1432,9 @@ export default function App() {
   useAppUsageEffects({
     activePage,
     enqueueBackgroundRefresh,
+    refreshUsageOverview,
     refreshUsageStatistics,
-    usageWindowHours,
-    usageFilterNodes,
-    usageFilterProviders,
-    usageFilterModels,
-    usageFilterOrigins,
+    hasUsageOverview: usageOverview !== null,
     hasUsageStatistics: usageStatistics !== null,
     isDevPreview,
     refreshFxRatesDaily,
@@ -1703,7 +1729,7 @@ export default function App() {
               eventLogSeedDailyStats={eventLogPreloadDailyStats}
               eventLogFocusRequest={eventLogFocusRequest}
               onEventLogFocusRequestHandled={handleEventLogFocusRequestHandled}
-              usageStatistics={usageStatistics}
+              usageOverview={usageOverview}
               usageProps={usageProps}
               switchboardProps={switchboardProps}
             />

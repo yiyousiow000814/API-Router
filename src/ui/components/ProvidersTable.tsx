@@ -1,5 +1,5 @@
 import { fmtAmount, fmtPct, fmtUsd, fmtWhen, pctOf } from '../utils/format'
-import type { Config, Status, UsageStatistics } from '../types'
+import type { Config, Status, UsageStatistics, UsageStatisticsOverview } from '../types'
 import { simulateQuotaForDisplay } from '../utils/quotaSimulation'
 
 const mono = 'ui-monospace, "Cascadia Mono", "Consolas", monospace'
@@ -14,7 +14,7 @@ type Props = {
   providers: string[]
   status: Status
   config?: Config | null
-  usageStatistics?: UsageStatistics | null
+  usageStatistics?: UsageStatistics | UsageStatisticsOverview | null
   refreshingProviders: Record<string, boolean>
   onRefreshQuota: (provider: string) => void
   onOpenLastErrorInEventLog: (payload: LastErrorJump) => void

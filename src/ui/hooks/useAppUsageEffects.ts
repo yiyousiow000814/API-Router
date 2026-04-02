@@ -39,17 +39,19 @@ type Params = {
     owner: ActivePage | 'any',
     run: (guard: () => boolean) => Promise<void> | void,
   ) => void
+  refreshUsageOverview: (options?: {
+    silent?: boolean
+    applyGuard?: () => boolean
+    interactive?: boolean
+    source?: string
+  }) => Promise<void>
   refreshUsageStatistics: (options?: {
     silent?: boolean
     applyGuard?: () => boolean
     interactive?: boolean
     source?: string
   }) => Promise<void>
-  usageWindowHours: number
-  usageFilterNodes: string[]
-  usageFilterProviders: string[]
-  usageFilterModels: string[]
-  usageFilterOrigins: string[]
+  hasUsageOverview: boolean
   hasUsageStatistics: boolean
   isDevPreview: boolean
   refreshFxRatesDaily: (force?: boolean) => Promise<void>
@@ -115,12 +117,20 @@ export function usageStatisticsRefreshIntervalMs(
   return null
 }
 
+export function usageRefreshMode(
+  activePage: ActivePage,
+): 'overview' | 'full' | null {
+  if (activePage === 'dashboard') return 'overview'
+  if (activePage === 'usage_statistics') return 'full'
+  return null
+}
+
 export function shouldRefreshUsageSilently(
   previousActivePage: ActivePage | null,
   activePage: ActivePage,
-  hasUsageStatistics: boolean,
+  hasUsageData: boolean,
 ): boolean {
-  return previousActivePage !== activePage && hasUsageStatistics
+  return previousActivePage !== activePage && hasUsageData
 }
 
 function scheduleDeferredUiRefresh(run: () => void, delayMs: number): () => void {
@@ -157,12 +167,9 @@ export function useAppUsageEffects(params: Params) {
   const {
     activePage,
     enqueueBackgroundRefresh,
+    refreshUsageOverview,
     refreshUsageStatistics,
-    usageWindowHours,
-    usageFilterNodes,
-    usageFilterProviders,
-    usageFilterModels,
-    usageFilterOrigins,
+    hasUsageOverview,
     hasUsageStatistics,
     isDevPreview,
     refreshFxRatesDaily,
@@ -204,7 +211,12 @@ export function useAppUsageEffects(params: Params) {
     queueAutoSaveTimer,
     autoSaveUsageScheduleRows,
   } = params
+  const refreshUsageOverviewRef = useRef(params.refreshUsageOverview)
   const refreshUsageHistoryRef = useRef(refreshUsageHistory)
+
+  useEffect(() => {
+    refreshUsageOverviewRef.current = refreshUsageOverview
+  }, [refreshUsageOverview])
 
   useEffect(() => {
     refreshUsageStatisticsRef.current = refreshUsageStatistics
@@ -217,21 +229,31 @@ export function useAppUsageEffects(params: Params) {
   useEffect(() => {
     const refreshMs = usageStatisticsRefreshIntervalMs(activePage)
     if (refreshMs == null) return
+    const refreshMode = usageRefreshMode(activePage)
+    if (refreshMode == null) return
+    const hasUsageData = refreshMode === 'overview' ? hasUsageOverview : hasUsageStatistics
     const silent = shouldRefreshUsageSilently(
       previousActivePageRef.current,
       activePage,
-      hasUsageStatistics,
+      hasUsageData,
     )
     const isInitialDashboardBoot =
       previousActivePageRef.current == null && activePage === 'dashboard'
     const scheduleRefresh = (nextSilent: boolean, source: string) =>
-      enqueueBackgroundRefresh(`usage:${activePage}`, activePage, (guard) =>
-        refreshUsageStatisticsRef.current({
-          silent: nextSilent,
-          applyGuard: guard,
-          interactive: false,
-          source,
-        }),
+      enqueueBackgroundRefresh(`usage:${refreshMode}:${activePage}`, activePage, (guard) =>
+        refreshMode === 'overview'
+          ? refreshUsageOverviewRef.current({
+              silent: nextSilent,
+              applyGuard: guard,
+              interactive: false,
+              source,
+            })
+          : refreshUsageStatisticsRef.current({
+              silent: nextSilent,
+              applyGuard: guard,
+              interactive: false,
+              source,
+            }),
       )
     const initialDelayMs = isInitialDashboardBoot ? 350 : 140
     const cancelInitialRefresh = scheduleDeferredUiRefresh(() => {
@@ -253,11 +275,8 @@ export function useAppUsageEffects(params: Params) {
   }, [
     activePage,
     enqueueBackgroundRefresh,
-    usageFilterModels,
-    usageFilterNodes,
-    usageFilterOrigins,
-    usageFilterProviders,
-    usageWindowHours,
+    hasUsageOverview,
+    hasUsageStatistics,
   ])
 
   useEffect(() => {

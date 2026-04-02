@@ -1,4 +1,11 @@
-import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status, UsageStatistics } from '../types'
+import type {
+  CodexSwapStatus,
+  Config,
+  ProviderSwitchboardStatus,
+  Status,
+  UsageStatistics,
+  UsageStatisticsOverview,
+} from '../types'
 import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
 import { normalizePathForCompare } from './path'
 import { simulateQuotaForDisplay } from './quotaSimulation'
@@ -210,7 +217,7 @@ export function buildSwitchboardProviderCards(
   managedProviderNames: string[],
   config: Config | null,
   status: Status | null,
-  usageStatistics: UsageStatistics | null,
+  usageStatistics: UsageStatistics | UsageStatisticsOverview | null,
   options: {
     fmtPct: (value: number | null) => string
     fmtAmount: (value: number | null) => string

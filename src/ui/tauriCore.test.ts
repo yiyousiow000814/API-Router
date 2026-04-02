@@ -21,13 +21,13 @@ describe('shouldSuppressInvokeError', () => {
 
 describe('shouldSuppressSlowInvokeSuccess', () => {
   it('suppresses high-frequency polling commands', () => {
-    expect(shouldSuppressSlowInvokeSuccess('get_status')).toBe(true)
     expect(shouldSuppressSlowInvokeSuccess('get_config')).toBe(true)
     expect(shouldSuppressSlowInvokeSuccess('provider_switchboard_status')).toBe(true)
     expect(shouldSuppressSlowInvokeSuccess('codex_account_refresh')).toBe(true)
   })
 
   it('keeps regular commands observable', () => {
+    expect(shouldSuppressSlowInvokeSuccess('get_status')).toBe(false)
     expect(shouldSuppressSlowInvokeSuccess('get_usage_statistics')).toBe(false)
   })
 })

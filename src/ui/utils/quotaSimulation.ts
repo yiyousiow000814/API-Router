@@ -1,11 +1,11 @@
-import type { Status, UsageStatistics } from '../types'
+import type { Status, UsageStatistics, UsageStatisticsOverview } from '../types'
 
 type ProviderQuota = Status['quota'][string]
 type ProviderLedger = Status['ledgers'][string] | undefined
 
 function resolveEstimatedAvgRequestCostUsd(
   provider: string,
-  usageStatistics: UsageStatistics | null | undefined,
+  usageStatistics: UsageStatistics | UsageStatisticsOverview | null | undefined,
 ): number | null {
   const rows =
     usageStatistics?.summary?.by_provider?.filter(
@@ -42,7 +42,7 @@ export function simulateQuotaForDisplay(
   provider: string,
   quota: ProviderQuota | undefined,
   ledger: ProviderLedger,
-  usageStatistics: UsageStatistics | null | undefined,
+  usageStatistics: UsageStatistics | UsageStatisticsOverview | null | undefined,
 ): ProviderQuota | undefined {
   if (!quota || quota.kind !== 'budget_info' || quota.updated_at_unix_ms <= 0) {
     return quota

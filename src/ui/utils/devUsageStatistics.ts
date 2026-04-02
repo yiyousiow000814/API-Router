@@ -201,6 +201,8 @@ export function buildDevUsageStatistics(params: {
 
   const totalRequests = byProvider.reduce((sum, row) => sum + row.requests, 0)
   const totalTokens = byProvider.reduce((sum, row) => sum + row.total_tokens, 0)
+  const totalInputTokens = byModel.reduce((sum, row) => sum + row.input_tokens, 0)
+  const totalOutputTokens = byModel.reduce((sum, row) => sum + row.output_tokens, 0)
   const totalCost = byProvider.reduce((sum, row) => sum + row.estimated_total_cost_usd, 0)
   const totalCacheCreation = timeline.reduce((sum, row) => sum + (row.cache_creation_tokens ?? 0), 0)
   const totalCacheRead = timeline.reduce((sum, row) => sum + (row.cache_read_tokens ?? 0), 0)
@@ -225,9 +227,19 @@ export function buildDevUsageStatistics(params: {
     summary: {
       total_requests: totalRequests,
       total_tokens: totalTokens,
+      input_tokens: totalInputTokens,
+      output_tokens: totalOutputTokens,
       cache_creation_tokens: totalCacheCreation,
       cache_read_tokens: totalCacheRead,
       unique_models: byModel.length,
+      top_model:
+        byModel[0] != null
+          ? {
+              model: byModel[0].model,
+              requests: byModel[0].requests,
+              share_pct: byModel[0].share_pct,
+            }
+          : null,
       estimated_total_cost_usd: Number(totalCost.toFixed(2)),
       estimated_daily_cost_usd: Number(totalCost.toFixed(2)),
       by_model: byModel,

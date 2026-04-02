@@ -1,9 +1,11 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
+import { useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { SpendHistoryRow } from '../devMockData'
 import type { Config } from '../types'
 import type { UsageHistoryDraft, UsagePricingDraft, UsagePricingSaveState } from '../types/usage'
 import { formatDraftAmount, parsePositiveAmount } from '../utils/currency'
+import { runSingleFlight } from '../utils/singleFlight'
 import { resolvePricingAmountUsd as computePricingAmountUsd } from '../utils/usagePricing'
 import { historyDraftFromRow as buildHistoryDraftFromRow } from '../utils/usageSchedule'
 import { buildDevMockHistoryRows } from '../devMockData'
@@ -90,6 +92,7 @@ export function useUsagePricingHistoryActions(params: Params) {
     historyEffectiveDisplayValue,
     historyPerReqDisplayValue,
   } = params
+  const usageHistoryInFlightRef = useRef<Map<string, Promise<SpendHistoryRow[]>>>(new Map())
 
   function resolvePricingAmountUsd(draft: UsagePricingDraft, fallbackAmountUsd?: number | null): number | null {
     return computePricingAmountUsd(
@@ -312,8 +315,18 @@ export function useUsagePricingHistoryActions(params: Params) {
       if (devMockHistoryEnabled) rows = buildDevMockHistoryRows(120)
       else if (isDevPreview) rows = []
       else {
-        const res = await invoke<{ ok: boolean; rows: SpendHistoryRow[] }>('get_spend_history', { provider: null, days: 180, compactOnly: true })
-        rows = Array.isArray(res?.rows) ? res.rows : []
+        rows = await runSingleFlight(
+          usageHistoryInFlightRef.current,
+          'spend_history:all:180:compact',
+          async () => {
+            const res = await invoke<{ ok: boolean; rows: SpendHistoryRow[] }>('get_spend_history', {
+              provider: null,
+              days: 180,
+              compactOnly: true,
+            })
+            return Array.isArray(res?.rows) ? res.rows : []
+          },
+        )
       }
       setUsageHistoryRows(rows)
       usageHistoryLoadedRef.current = true

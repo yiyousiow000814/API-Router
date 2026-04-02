@@ -733,6 +733,95 @@ mod tests {
     }
 
     #[test]
+    fn list_usage_request_day_rollups_for_provider_groups_by_day_and_api_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let day1 = chrono::Local
+            .with_ymd_and_hms(2026, 4, 2, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let day2 = chrono::Local
+            .with_ymd_and_hms(2026, 4, 3, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        {
+            let conn = store.events_db.lock();
+            let insert = |id: &str, ts: i64, provider: &str, key_ref: &str, total: i64| {
+                conn.execute(
+                    "INSERT INTO usage_requests(
+                        id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                        input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                     ) VALUES(?1, ?2, ?3, ?4, 'gpt-5.2-codex', 'windows', 's', ?5, 0, ?5, 0, 0)",
+                    rusqlite::params![id, ts, provider, key_ref, total],
+                )
+                .unwrap();
+            };
+            insert("rollup-1", day1, "aigateway", "key-a", 100);
+            insert("rollup-2", day1 + 1_000, "aigateway", "key-a", 200);
+            insert("rollup-3", day1 + 2_000, "aigateway", "key-b", 300);
+            insert("rollup-4", day2, "aigateway", "", 400);
+            insert("rollup-5", day2, "other", "key-x", 500);
+        }
+
+        let rows = store.list_usage_request_day_rollups_for_provider("aigateway", 0);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows,
+            vec![
+                ("2026-04-02".to_string(), "key-a".to_string(), 2, 300, day1 as u64 + 1_000),
+                ("2026-04-02".to_string(), "key-b".to_string(), 1, 300, day1 as u64 + 2_000),
+                ("2026-04-03".to_string(), "-".to_string(), 1, 400, day2 as u64),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_usage_request_day_counts_for_provider_reads_sqlite_daily_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let day1 = chrono::Local
+            .with_ymd_and_hms(2026, 4, 2, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let day2 = chrono::Local
+            .with_ymd_and_hms(2026, 4, 3, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        {
+            let conn = store.events_db.lock();
+            let insert = |id: &str, ts: i64, provider: &str| {
+                conn.execute(
+                    "INSERT INTO usage_requests(
+                        id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                        input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                     ) VALUES(?1, ?2, ?3, '-', 'gpt-5.2-codex', 'windows', 's', 10, 1, 11, 0, 0)",
+                    rusqlite::params![id, ts, provider],
+                )
+                .unwrap();
+            };
+            insert("count-1", day1, "official");
+            insert("count-2", day1 + 1_000, "official");
+            insert("count-3", day2, "official");
+            insert("count-4", day2, "other");
+        }
+
+        let out = store.list_usage_request_day_counts_for_provider("official");
+        assert_eq!(
+            out,
+            std::collections::BTreeMap::from([
+                ("2026-04-02".to_string(), 2_u64),
+                ("2026-04-03".to_string(), 1_u64),
+            ])
+        );
+    }
+
+    #[test]
     fn rename_provider_keeps_daily_totals_index_in_sync() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();

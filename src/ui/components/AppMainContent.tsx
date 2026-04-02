@@ -44,9 +44,6 @@ export function preloadAppMainContentModules(): Promise<unknown> {
   preloadAppMainContentModulesPromise = Promise.allSettled([
     loadUsageAnalyticsPanel(),
     loadUsageRequestsPanel(),
-    loadProviderSwitchboardPanel(),
-    loadEventLogPanel(),
-    loadWebCodexPanel(),
   ])
   return preloadAppMainContentModulesPromise
 }
@@ -88,7 +85,7 @@ type Props = {
   onEventLogFocusRequestHandled: (nonce: number) => void
   usageProps: any
   switchboardProps: any
-  usageStatistics?: any
+  usageOverview?: any
 }
 
 function pageFallbackFor(activePage: Props['activePage']) {
@@ -196,7 +193,7 @@ function AppMainContentInner(props: Props) {
     onEventLogFocusRequestHandled,
     usageProps,
     switchboardProps,
-    usageStatistics,
+    usageOverview,
   } = props
   const pageFallback = pageFallbackFor(activePage)
   if (activePage === 'usage_statistics') {
@@ -284,7 +281,7 @@ function AppMainContentInner(props: Props) {
         refreshingProviders={refreshingProviders}
         onRefreshQuota={onRefreshQuota}
         onOpenLastErrorInEventLog={onOpenLastErrorInEventLog}
-        usageStatistics={usageStatistics}
+        usageOverview={usageOverview}
         clientSessions={clientSessions ?? []}
         updatingSessionPref={updatingSessionPref}
         onSetSessionPreferred={onSetSessionPreferred}
@@ -342,7 +339,7 @@ function areEqualAppMainContentProps(prev: Props, next: Props): boolean {
         prev.updatingSessionPref === next.updatingSessionPref &&
         prev.onSetSessionPreferred === next.onSetSessionPreferred &&
         prev.onOpenLastErrorInEventLog === next.onOpenLastErrorInEventLog &&
-        prev.usageStatistics === next.usageStatistics
+        prev.usageOverview === next.usageOverview
       )
   }
 }

@@ -4,6 +4,7 @@ import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status } from 
 import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
 import { normalizePathForCompare } from '../utils/path'
 import { resolveCliHomes } from '../utils/switchboard'
+import { runSingleFlight } from '../utils/singleFlight'
 import { recordStartupStage } from '../startupTrace'
 
 type UseSwitchboardStatusActionsOptions = {
@@ -163,6 +164,8 @@ export function useSwitchboardStatusActions({
   const [providerSwitchBusy, setProviderSwitchBusy] = useState<boolean>(false)
   const providerSwitchBusyRef = useRef<boolean>(false)
   const providerSwitchStatusRef = useRef<ProviderSwitchboardStatus | null>(providerSwitchStatus)
+  const statusInFlightRef = useRef<Map<string, Promise<Status>>>(new Map())
+  const configInFlightRef = useRef<Map<string, Promise<Config>>>(new Map())
   const startupStatusRefreshTracedRef = useRef(false)
   const startupConfigRefreshTracedRef = useRef(false)
   const startupSwitchboardRefreshTracedRef = useRef(false)
@@ -173,6 +176,7 @@ export function useSwitchboardStatusActions({
     applyGuard?: () => boolean
     interactive?: boolean
     source?: string
+    detailLevel?: 'dashboard' | 'full'
   }
 
   function tryEnterProviderSwitchBusy(): boolean {
@@ -329,6 +333,7 @@ export function useSwitchboardStatusActions({
       source,
       interactive,
       refresh_swap_status: shouldRefreshSwapStatus,
+      detail_level: options?.detailLevel ?? 'full',
     })
     const shouldTraceStartup = !startupStatusRefreshTracedRef.current
     const startedAt =
@@ -340,7 +345,15 @@ export function useSwitchboardStatusActions({
       recordStartupStage('frontend_status_refresh_requested')
     }
     try {
-      const s = await invoke<Status>('get_status')
+      const detailLevel = options?.detailLevel ?? 'full'
+      const s = await runSingleFlight(
+        statusInFlightRef.current,
+        `status:${detailLevel}`,
+        () =>
+          invoke<Status>('get_status', {
+            detailLevel,
+          }),
+      )
       if (shouldTraceStartup) {
         recordStartupStage(
           'frontend_status_refresh_resolved',
@@ -390,7 +403,9 @@ export function useSwitchboardStatusActions({
       recordStartupStage('frontend_config_refresh_requested')
     }
     try {
-      const c = await invoke<Config>('get_config')
+      const c = await runSingleFlight(configInFlightRef.current, 'config', () =>
+        invoke<Config>('get_config'),
+      )
       if (shouldTraceStartup) {
         recordStartupStage(
           'frontend_config_refresh_resolved',
