@@ -447,6 +447,17 @@ export function useSwitchboardStatusActions({
       if (shouldTraceStartup) {
         recordStartupStage('frontend_config_state_applied')
       }
+      const refreshGatewayPreview = () =>
+        void refreshGatewayTokenPreview({
+          applyGuard: shouldApply,
+          interactive: false,
+          source: 'config_refresh',
+        })
+      if (shouldTraceStartup) {
+        scheduleLowPriorityUiTask(refreshGatewayPreview, 220)
+      } else {
+        refreshGatewayPreview()
+      }
       if (shouldRefreshProviderSwitchStatus) {
         const homes = resolveCliHomes(
           codexSwapDir1Ref.current,
