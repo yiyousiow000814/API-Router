@@ -397,6 +397,7 @@ impl Store {
 
         let conn = self.events_db.lock();
         let tx = conn.unchecked_transaction()?;
+        let mut migrated_sled_keys = Vec::new();
         for res in self.db.scan_prefix(b"spend_day:") {
             let Ok((key, value)) = res else {
                 continue;
@@ -422,6 +423,7 @@ impl Store {
                  ON CONFLICT(provider, day_started_at_unix_ms) DO UPDATE SET row_json = excluded.row_json",
                 params![provider, day_started_at_unix_ms, row_json],
             );
+            migrated_sled_keys.push(key.to_vec());
         }
         for res in self.db.scan_prefix(b"spend_manual_day:") {
             let Ok((key, value)) = res else {
@@ -445,9 +447,14 @@ impl Store {
                  ON CONFLICT(provider, day_key) DO UPDATE SET row_json = excluded.row_json",
                 params![provider, day_key, row_json],
             );
+            migrated_sled_keys.push(key.to_vec());
         }
         tx.commit()?;
         drop(conn);
+        for key in migrated_sled_keys {
+            self.db.remove(key)?;
+        }
+        self.db.flush()?;
         self.set_event_meta(Self::SPEND_HISTORY_SQLITE_MIGRATED_FROM_SLED_KEY, "1")?;
         Ok(())
     }
@@ -758,6 +765,16 @@ mod tests {
                 .and_then(|v| v.as_f64()),
             Some(5.0)
         );
+        assert!(store
+            .db
+            .get(b"spend_day:legacy-provider:1700000000000")
+            .expect("read migrated legacy spend day")
+            .is_none());
+        assert!(store
+            .db
+            .get(b"spend_manual_day:legacy-provider:2026-03-31")
+            .expect("read migrated legacy manual day")
+            .is_none());
     }
 
     #[test]

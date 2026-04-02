@@ -19,8 +19,37 @@ type BackgroundTask = {
   run: (guard: RefreshGuard) => Promise<void> | void
 }
 
+type PendingRefreshStore = Map<string, BackgroundTask>
+
 export function appendPendingRefreshKey(order: string[], key: string): string[] {
   return order.includes(key) ? order : [...order, key]
+}
+
+export function takePendingRefreshBatch(
+  order: string[],
+  tasks: PendingRefreshStore,
+): BackgroundTask[] {
+  const batch: BackgroundTask[] = []
+  for (const key of order) {
+    const task = tasks.get(key)
+    if (!task) continue
+    tasks.delete(key)
+    batch.push(task)
+  }
+  return batch
+}
+
+export async function runPendingRefreshBatch(
+  batch: BackgroundTask[],
+  createGuard: (key: string, owner: RefreshOwner, generation: number) => RefreshGuard,
+): Promise<void> {
+  await Promise.allSettled(
+    batch.map(async (task) => {
+      const guard = createGuard(task.key, task.owner, task.generation)
+      if (!guard()) return
+      await task.run(guard)
+    }),
+  )
 }
 
 export function shouldApplyRefreshResult(
@@ -68,16 +97,13 @@ export function useRefreshScheduler(activePage: TopPage) {
     queueMicrotask(async () => {
       try {
         while (pendingOrderRef.current.length > 0) {
-          const key = pendingOrderRef.current.shift()
-          if (!key) continue
-          const task = pendingTaskByKeyRef.current.get(key)
-          pendingTaskByKeyRef.current.delete(key)
-          if (!task) continue
-          const guard = createGuard(task.key, task.owner, task.generation)
-          if (!guard()) {
+          const order = pendingOrderRef.current
+          pendingOrderRef.current = []
+          const batch = takePendingRefreshBatch(order, pendingTaskByKeyRef.current)
+          if (batch.length === 0) {
             continue
           }
-          await task.run(guard)
+          await runPendingRefreshBatch(batch, createGuard)
         }
       } finally {
         drainingRef.current = false

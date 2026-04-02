@@ -534,6 +534,8 @@ pub(crate) fn set_spend_history_entry(
 mod spend_history_tests {
     use std::collections::BTreeMap;
 
+    use chrono::{Local, LocalResult, TimeZone};
+
     use crate::orchestrator::secrets::{
         resolve_provider_pricing_config, ProviderPricingConfig, ProviderPricingPeriod,
     };
@@ -543,6 +545,17 @@ mod spend_history_tests {
         merge_usage_history_day_counts, spend_history_provider_names,
         tracked_spend_history_allocations_by_day, tracked_spend_history_day_key,
     };
+
+    fn local_unix_ms(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> u64 {
+        let dt = match Local.with_ymd_and_hms(year, month, day, hour, minute, second) {
+            LocalResult::Single(value) => value,
+            LocalResult::Ambiguous(earliest, _) => earliest,
+            LocalResult::None => panic!(
+                "invalid local datetime {year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}"
+            ),
+        };
+        u64::try_from(dt.timestamp_millis()).expect("positive local timestamp")
+    }
 
     #[test]
     fn resolves_history_pricing_by_api_key_ref_when_provider_was_renamed() {
@@ -757,10 +770,12 @@ mod spend_history_tests {
 
     #[test]
     fn tracked_spend_uses_ended_day_for_closed_periods() {
+        let started_at_unix_ms = local_unix_ms(2026, 4, 2, 12, 0, 0);
+        let ended_at_unix_ms = local_unix_ms(2026, 4, 4, 0, 0, 0);
         let day = serde_json::json!({
             "provider": "aigateway",
-            "started_at_unix_ms": 1_775_030_569_757u64,
-            "ended_at_unix_ms": 1_775_145_660_939u64,
+            "started_at_unix_ms": started_at_unix_ms,
+            "ended_at_unix_ms": ended_at_unix_ms,
             "tracked_spend_usd": 94.406078
         });
 
@@ -772,10 +787,12 @@ mod spend_history_tests {
 
     #[test]
     fn tracked_spend_allocates_closed_period_to_request_days() {
+        let started_at_unix_ms = local_unix_ms(2026, 4, 2, 12, 0, 0);
+        let ended_at_unix_ms = local_unix_ms(2026, 4, 4, 0, 0, 0);
         let day = serde_json::json!({
             "provider": "aigateway",
-            "started_at_unix_ms": 1_775_030_569_757u64,
-            "ended_at_unix_ms": 1_775_145_660_939u64,
+            "started_at_unix_ms": started_at_unix_ms,
+            "ended_at_unix_ms": ended_at_unix_ms,
             "tracked_spend_usd": 94.406078
         });
         let request_counts_by_day = BTreeMap::from([
@@ -786,7 +803,7 @@ mod spend_history_tests {
         let allocations = tracked_spend_history_allocations_by_day(
             &day,
             &request_counts_by_day,
-            1_775_145_660_939u64,
+            ended_at_unix_ms,
         );
 
         assert_eq!(allocations.len(), 2);

@@ -1,6 +1,4 @@
 use serde::Serialize;
-#[cfg(target_os = "windows")]
-use std::os::windows::ffi::OsStrExt;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FirewallStatusSnapshot {
@@ -74,14 +72,16 @@ pub fn ensure_api_router_udp_firewall_rule(app_path: &std::path::Path) {
     {
         let mut status = firewall_runtime_status().write();
         status.last_checked_unix_ms = now;
+        if inspection.sufficient {
+            status.last_fix_error = None;
+        } else {
+            status.last_fix_error = Some(format!(
+                "missing or insufficient firewall rule for {} on UDP {}",
+                app_path.display(),
+                API_ROUTER_UDP_RULE_PORT
+            ));
+        }
     }
-    if inspection.sufficient {
-        return;
-    }
-    let request_result = request_elevated_udp_rule_fix(app_path);
-    let mut status = firewall_runtime_status().write();
-    status.last_fix_requested_unix_ms = now;
-    status.last_fix_error = request_result.err();
 }
 
 #[cfg(target_os = "windows")]
@@ -131,66 +131,6 @@ fn show_firewall_rule(rule_name: &str) -> Result<String, String> {
         .output()
         .map_err(|err| format!("failed to inspect firewall rule: {err}"))?;
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-#[cfg(target_os = "windows")]
-fn request_elevated_udp_rule_fix(app_path: &std::path::Path) -> Result<(), String> {
-    use base64::Engine;
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
-
-    let script = build_udp_rule_script(app_path);
-    let encoded = base64::engine::general_purpose::STANDARD.encode(encode_utf16le(&script));
-    let parameters = format!(
-        "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand {encoded}"
-    );
-    let operation = widestr("runas");
-    let file = widestr("powershell.exe");
-    let params = widestr(&parameters);
-
-    let result = unsafe {
-        ShellExecuteW(
-            0,
-            operation.as_ptr(),
-            file.as_ptr(),
-            params.as_ptr(),
-            std::ptr::null(),
-            SW_HIDE,
-        )
-    } as isize;
-
-    if result <= 32 {
-        return Err(format!(
-            "failed to request elevated firewall update: ShellExecuteW={result}"
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn build_udp_rule_script(app_path: &std::path::Path) -> String {
-    let escaped_program = app_path.display().to_string().replace('\'', "''");
-    format!(
-        "$program = '{escaped_program}'; \
-         netsh advfirewall firewall delete rule name=\"{API_ROUTER_UDP_RULE_NAME}\" program=\"$program\" protocol=UDP localport={API_ROUTER_UDP_RULE_PORT} *> $null; \
-         netsh advfirewall firewall add rule name=\"{API_ROUTER_UDP_RULE_NAME}\" dir=in action=allow profile={API_ROUTER_UDP_RULE_PROFILES} program=\"$program\" protocol=UDP localport={API_ROUTER_UDP_RULE_PORT} *> $null"
-    )
-}
-
-#[cfg(target_os = "windows")]
-fn encode_utf16le(value: &str) -> Vec<u8> {
-    value
-        .encode_utf16()
-        .flat_map(|unit| unit.to_le_bytes())
-        .collect()
-}
-
-#[cfg(target_os = "windows")]
-fn widestr(value: &str) -> Vec<u16> {
-    std::ffi::OsStr::new(value)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
 }
 
 #[cfg(any(test, target_os = "windows"))]
@@ -294,27 +234,5 @@ Action:                               Allow
             "domain,private,public",
             "38455"
         ));
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn udp_rule_script_targets_udp_port_and_program_path() {
-        use super::build_udp_rule_script;
-
-        let path = std::path::Path::new(r"C:\Program Files\API Router\API Router.exe");
-        let script = build_udp_rule_script(path);
-        assert!(script.contains("protocol=UDP"));
-        assert!(script.contains("localport=38455"));
-        assert!(script.contains("API Router Allow UDP"));
-        assert!(script.contains("API Router.exe"));
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn encoded_command_bytes_use_utf16le() {
-        use super::encode_utf16le;
-
-        let bytes = encode_utf16le("AB");
-        assert_eq!(bytes, vec![65, 0, 66, 0]);
     }
 }
