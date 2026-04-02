@@ -413,6 +413,25 @@ pub(crate) fn record_ui_watchdog_heartbeat(
 }
 
 #[tauri::command]
+pub(crate) fn record_ui_trace(
+    state: tauri::State<'_, app_state::AppState>,
+    kind: String,
+    active_page: String,
+    visible: bool,
+    fields: serde_json::Value,
+) {
+    state.ui_watchdog.record_trace(
+        &kind,
+        serde_json::json!({
+            "active_page": active_page,
+            "visible": visible,
+            "fields": fields,
+        }),
+        unix_ms(),
+    );
+}
+
+#[tauri::command]
 pub(crate) fn record_ui_slow_refresh(
     state: tauri::State<'_, app_state::AppState>,
     kind: String,
@@ -448,6 +467,29 @@ pub(crate) fn record_ui_long_task(
             diagnostics_dir: &state.diagnostics_dir,
         },
         elapsed_ms,
+        app_state::UiWatchdogPageState {
+            active_page: &active_page,
+            visible,
+        },
+        unix_ms(),
+    );
+}
+
+#[tauri::command]
+pub(crate) fn record_ui_frame_stall(
+    state: tauri::State<'_, app_state::AppState>,
+    elapsed_ms: u64,
+    monitor_kind: String,
+    active_page: String,
+    visible: bool,
+) {
+    state.ui_watchdog.record_frame_stall(
+        app_state::UiWatchdogRuntime {
+            store: &state.gateway.store,
+            diagnostics_dir: &state.diagnostics_dir,
+        },
+        elapsed_ms,
+        &monitor_kind,
         app_state::UiWatchdogPageState {
             active_page: &active_page,
             visible,

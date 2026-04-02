@@ -34,10 +34,12 @@ import { useProviderActions } from './hooks/useProviderActions'
 import { useUsageHistoryScrollbar } from './hooks/useUsageHistoryScrollbar'
 import { useAppPolling } from './hooks/useAppPolling'
 import { useAppPrefs } from './hooks/useAppPrefs'
+import { useRefreshScheduler } from './hooks/useRefreshScheduler'
 import { useSwitchboardStatusActions } from './hooks/useSwitchboardStatusActions'
 import { useStatusDerivations } from './hooks/useStatusDerivations'
 import { usePageScroll } from './hooks/usePageScroll'
 import { useAppUsageEffects } from './hooks/useAppUsageEffects'
+import { buildUsageHistoryQuotaRefreshToken } from './hooks/useAppUsageEffects'
 import { useDashboardDerivations } from './hooks/useDashboardDerivations'
 import { useProviderPanelUi } from './hooks/useProviderPanelUi'
 import { useAppActions } from './hooks/useAppActions'
@@ -98,6 +100,7 @@ const EVENT_LOG_PRELOAD_LIMIT = 5000
 const STATUS_CACHE_STORAGE_KEY = 'ao.startup.status.v1'
 const CONFIG_CACHE_STORAGE_KEY = 'ao.startup.config.v1'
 const TOKEN_CACHE_STORAGE_KEY = 'ao.startup.gatewayTokenPreview.v1'
+const USAGE_STATS_CACHE_STORAGE_KEY = 'ao.startup.usageStatistics.v1'
 
 type CopyProviderResult = {
   target_name: string
@@ -228,6 +231,7 @@ export default function App() {
   const [refreshingProviders, setRefreshingProviders] = useState<Record<string, boolean>>({})
   const [codexRefreshing, setCodexRefreshing] = useState<boolean>(false)
   const [activePage, setActivePage] = useState<TopPage>('dashboard')
+  const { runPrimaryRefresh, enqueueBackgroundRefresh } = useRefreshScheduler(activePage)
   const [eventLogFocusRequest, setEventLogFocusRequest] = useState<{
     provider: string
     unixMs: number
@@ -239,7 +243,9 @@ export default function App() {
   const [providerSwitchStatus, setProviderSwitchStatus] = useState<ProviderSwitchboardStatus | null>(null)
   const [providerGroupManagerOpen, setProviderGroupManagerOpen] = useState<boolean>(false)
   const [providerGroupManagerFocusProvider, setProviderGroupManagerFocusProvider] = useState<string | null>(null)
-  const [usageStatistics, setUsageStatistics] = useState<UsageStatistics | null>(null)
+  const [usageStatistics, setUsageStatistics] = useState<UsageStatistics | null>(
+    () => readStartupCache<UsageStatistics>(USAGE_STATS_CACHE_STORAGE_KEY),
+  )
   const [usageWindowHours, setUsageWindowHours] = useState<number>(24)
   const [usageFilterNodes, setUsageFilterNodes] = useState<string[]>([])
   const [usageFilterProviders, setUsageFilterProviders] = useState<string[]>([])
@@ -449,6 +455,10 @@ export default function App() {
     if (!gatewayTokenPreview.trim()) return
     writeStartupCache(TOKEN_CACHE_STORAGE_KEY, gatewayTokenPreview)
   }, [gatewayTokenPreview])
+  useEffect(() => {
+    if (!usageStatistics) return
+    writeStartupCache(USAGE_STATS_CACHE_STORAGE_KEY, usageStatistics)
+  }, [usageStatistics])
   useEffect(() => {
     if (activePage !== 'event_log') return
     let cancelled = false
@@ -779,6 +789,7 @@ export default function App() {
     providerSwitchBusy,
     toggleCodexSwap,
     refreshProviderSwitchStatus,
+    refreshGatewayTokenPreview,
     refreshStatus,
     refreshConfig,
     setProviderSwitchTarget,
@@ -1032,6 +1043,10 @@ export default function App() {
     refreshUsageStatistics,
     clientSessions: status?.client_sessions ?? [],
   })
+  const usageHistoryQuotaRefreshToken = useMemo(
+    () => buildUsageHistoryQuotaRefreshToken(status?.quota),
+    [status?.quota],
+  )
   useEffect(() => {
     if (typeof window === 'undefined') return
     let cancelled = false
@@ -1358,13 +1373,17 @@ export default function App() {
   useAppPolling({
     activePage,
     isDevPreview,
+    codexSwapModalOpen,
     codexSwapDir1,
     codexSwapDir2,
     codexSwapUseWindows,
     codexSwapUseWsl,
+    runPrimaryRefresh,
+    enqueueBackgroundRefresh,
     refreshStatus,
     refreshConfig,
     refreshProviderSwitchStatus,
+    refreshGatewayTokenPreview,
     onDevPreviewBootstrap,
     onDevPreviewTick,
   })
@@ -1383,6 +1402,7 @@ export default function App() {
   }, [isDevPreview])
   useAppUsageEffects({
     activePage,
+    enqueueBackgroundRefresh,
     refreshUsageStatistics,
     usageWindowHours,
     usageFilterNodes,
@@ -1408,6 +1428,7 @@ export default function App() {
     resetUsageHistoryScrollbarState,
     clearUsageHistoryScrollbarTimers,
     usageHistoryLoadedRef,
+    usageHistoryQuotaRefreshToken,
     refreshUsageHistory,
     refreshUsageHistoryScrollbarUi,
     usageHistoryRows,

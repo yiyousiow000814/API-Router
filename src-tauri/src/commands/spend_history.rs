@@ -22,6 +22,73 @@ fn spend_history_provider_names(
     providers
 }
 
+fn tracked_spend_history_day_key(day: &Value) -> Option<String> {
+    let ended_at = day.get("ended_at_unix_ms").and_then(|v| v.as_u64());
+    if let Some(ended_at_unix_ms) = ended_at.filter(|v| *v > 0) {
+        return local_day_key_from_unix_ms(ended_at_unix_ms.saturating_sub(1));
+    }
+    let started_at = day.get("started_at_unix_ms").and_then(|v| v.as_u64())?;
+    local_day_key_from_unix_ms(started_at)
+}
+
+fn tracked_spend_history_allocations_by_day(
+    day: &Value,
+    request_timestamps: &[u64],
+    now_unix_ms: u64,
+) -> BTreeMap<String, f64> {
+    let mut allocations = BTreeMap::new();
+    let tracked = day
+        .get("tracked_spend_usd")
+        .and_then(|value| {
+            value
+                .as_f64()
+                .or_else(|| value.as_i64().map(|n| n as f64))
+                .or_else(|| value.as_u64().map(|n| n as f64))
+        })
+        .unwrap_or(0.0);
+    if !(tracked.is_finite() && tracked > 0.0) {
+        return allocations;
+    }
+
+    let started_at = day.get("started_at_unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+    if started_at == 0 {
+        return allocations;
+    }
+    let ended_at = day
+        .get("ended_at_unix_ms")
+        .and_then(|v| v.as_u64())
+        .filter(|v| *v > started_at)
+        .unwrap_or(now_unix_ms.max(started_at.saturating_add(1)));
+
+    let mut counts_by_day: BTreeMap<String, u64> = BTreeMap::new();
+    for ts in request_timestamps {
+        if *ts < started_at || *ts >= ended_at {
+            continue;
+        }
+        let Some(day_key) = local_day_key_from_unix_ms(*ts) else {
+            continue;
+        };
+        counts_by_day
+            .entry(day_key)
+            .and_modify(|count| *count = count.saturating_add(1))
+            .or_insert(1);
+    }
+
+    let total_requests: u64 = counts_by_day.values().copied().sum();
+    if total_requests > 0 {
+        for (day_key, request_count) in counts_by_day {
+            let ratio = request_count as f64 / total_requests as f64;
+            allocations.insert(day_key, tracked * ratio);
+        }
+        return allocations;
+    }
+
+    if let Some(day_key) = tracked_spend_history_day_key(day) {
+        allocations.insert(day_key, tracked);
+    }
+    allocations
+}
+
 #[tauri::command]
 pub(crate) fn get_spend_history(
     state: tauri::State<'_, app_state::AppState>,
@@ -101,6 +168,7 @@ pub(crate) fn get_spend_history(
         let mut usage_by_day_from_req: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
         let mut api_key_ref_counts_by_day: BTreeMap<String, BTreeMap<String, u64>> =
             BTreeMap::new();
+        let mut provider_request_timestamps: Vec<u64> = Vec::new();
         const PAGE_SIZE: usize = 2_000;
         let provider_only = vec![provider_name.clone()];
         let mut req_offset = 0usize;
@@ -143,6 +211,7 @@ pub(crate) fn get_spend_history(
                             .unwrap_or(0);
                         input_tokens.saturating_add(output_tokens)
                     });
+                provider_request_timestamps.push(ts);
                 usage_by_day_from_req
                     .entry(day_key.clone())
                     .and_modify(|(r, t, u)| {
@@ -177,19 +246,10 @@ pub(crate) fn get_spend_history(
         let mut updated_by_day: BTreeMap<String, u64> = BTreeMap::new();
         let mut tracked_day_meta_by_day: BTreeMap<String, Value> = BTreeMap::new();
         for day in state.gateway.store.list_spend_days(&provider_name) {
-            let started = day
-                .get("started_at_unix_ms")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let Some(day_key) = local_day_key_from_unix_ms(started) else {
+            let allocated_tracked =
+                tracked_spend_history_allocations_by_day(&day, &provider_request_timestamps, now);
+            if allocated_tracked.is_empty() {
                 continue;
-            };
-            let tracked = as_f64(day.get("tracked_spend_usd")).unwrap_or(0.0);
-            if tracked > 0.0 && tracked.is_finite() {
-                tracked_by_day
-                    .entry(day_key.clone())
-                    .and_modify(|v| *v += tracked)
-                    .or_insert(tracked);
             }
             if let Some(key_ref) = day
                 .get("api_key_ref")
@@ -197,28 +257,40 @@ pub(crate) fn get_spend_history(
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty() && *s != "-")
             {
-                tracked_api_key_ref_by_day.insert(day_key.clone(), key_ref.to_string());
+                for day_key in allocated_tracked.keys() {
+                    tracked_api_key_ref_by_day.insert(day_key.clone(), key_ref.to_string());
+                }
             }
             let updated_at = day
                 .get("updated_at_unix_ms")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(started);
-            updated_by_day
-                .entry(day_key.clone())
-                .and_modify(|v| *v = (*v).max(updated_at))
-                .or_insert(updated_at);
-            tracked_day_meta_by_day
-                .entry(day_key.clone())
-                .and_modify(|current| {
-                    let current_updated = current
-                        .get("updated_at_unix_ms")
-                        .and_then(|value| value.as_u64())
-                        .unwrap_or(0);
-                    if updated_at >= current_updated {
-                        *current = day.clone();
-                    }
-                })
-                .or_insert(day.clone());
+                .unwrap_or_else(|| {
+                    day.get("started_at_unix_ms")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                });
+            for (day_key, tracked) in allocated_tracked {
+                tracked_by_day
+                    .entry(day_key.clone())
+                    .and_modify(|v| *v += tracked)
+                    .or_insert(tracked);
+                updated_by_day
+                    .entry(day_key.clone())
+                    .and_modify(|v| *v = (*v).max(updated_at))
+                    .or_insert(updated_at);
+                tracked_day_meta_by_day
+                    .entry(day_key.clone())
+                    .and_modify(|current| {
+                        let current_updated = current
+                            .get("updated_at_unix_ms")
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or(0);
+                        if updated_at >= current_updated {
+                            *current = day.clone();
+                        }
+                    })
+                    .or_insert(day.clone());
+            }
         }
 
         let mut manual_by_day: BTreeMap<String, (Option<f64>, Option<f64>, u64)> = BTreeMap::new();
@@ -504,7 +576,10 @@ mod spend_history_tests {
     };
     use crate::orchestrator::config::{AppConfig, ProviderConfig};
 
-    use super::{merge_usage_history_day_counts, spend_history_provider_names};
+    use super::{
+        merge_usage_history_day_counts, spend_history_provider_names,
+        tracked_spend_history_allocations_by_day, tracked_spend_history_day_key,
+    };
 
     #[test]
     fn resolves_history_pricing_by_api_key_ref_when_provider_was_renamed() {
@@ -715,5 +790,44 @@ mod spend_history_tests {
             spend_history_provider_names(&cfg, &store),
             vec!["official".to_string(), "removed-provider".to_string()]
         );
+    }
+
+    #[test]
+    fn tracked_spend_uses_ended_day_for_closed_periods() {
+        let day = serde_json::json!({
+            "provider": "aigateway",
+            "started_at_unix_ms": 1_775_030_569_757u64,
+            "ended_at_unix_ms": 1_775_145_660_939u64,
+            "tracked_spend_usd": 94.406078
+        });
+
+        assert_eq!(
+            tracked_spend_history_day_key(&day).as_deref(),
+            Some("2026-04-03")
+        );
+    }
+
+    #[test]
+    fn tracked_spend_allocates_closed_period_to_request_days() {
+        let day = serde_json::json!({
+            "provider": "aigateway",
+            "started_at_unix_ms": 1_775_030_569_757u64,
+            "ended_at_unix_ms": 1_775_145_660_939u64,
+            "tracked_spend_usd": 94.406078
+        });
+        let request_timestamps = vec![
+            1_775_126_183_956u64,
+            1_775_126_183_957u64,
+            1_775_145_635_197u64,
+        ];
+
+        let allocations =
+            tracked_spend_history_allocations_by_day(&day, &request_timestamps, 1_775_145_660_939u64);
+
+        assert_eq!(allocations.len(), 2);
+        let day_02 = allocations.get("2026-04-02").copied().unwrap_or(0.0);
+        let day_03 = allocations.get("2026-04-03").copied().unwrap_or(0.0);
+        assert!(day_02 > day_03);
+        assert!((day_02 + day_03 - 94.406078).abs() < 1e-6);
     }
 }

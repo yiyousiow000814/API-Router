@@ -27,7 +27,11 @@ type TopPage =
 
 type Params = {
   activePage: TopPage
-  refreshUsageStatistics: (opts?: { silent?: boolean }) => Promise<unknown> | void
+  refreshUsageStatistics: (opts?: {
+    silent?: boolean
+    interactive?: boolean
+    source?: string
+  }) => Promise<unknown> | void
   clientSessions?: Status['client_sessions']
 }
 
@@ -235,7 +239,13 @@ export function useTopNavIntentPrefetch({
     }
     usageStatsIntentPrefetchAtRef.current = now
     usageStatsIntentPrefetchInFlightRef.current = true
-    void Promise.resolve(refreshUsageStatistics({ silent: true })).finally(() => {
+    void Promise.resolve(
+      refreshUsageStatistics({
+        silent: true,
+        interactive: false,
+        source: 'top_nav_usage_intent_prefetch',
+      }),
+    ).finally(() => {
       usageStatsIntentPrefetchInFlightRef.current = false
     })
   }, [activePage, refreshUsageStatistics])

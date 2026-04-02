@@ -1,7 +1,7 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
-import { useCallback, useMemo, useRef } from 'react'
-import { invoke } from '@tauri-apps/api/core'
+import { startTransition, useCallback, useMemo, useRef } from 'react'
 import type { SpendHistoryRow } from '../devMockData'
+import { invoke, recordUiTrace } from '../tauriCore'
 import type { Config, UsageStatistics } from '../types'
 import type { ProviderScheduleDraft, UsageHistoryDraft, UsagePricingDraft, UsagePricingSaveState, UsageScheduleSaveState } from '../types/usage'
 import { buildUsageCurrencyOptions, convertCurrencyToUsd, convertUsdToCurrency } from '../utils/currency'
@@ -142,23 +142,44 @@ export function useUsageOpsBridge(params: Params) {
     }, delayMs)
   }
 
-  const refreshUsageStatistics = useCallback(async (options?: { silent?: boolean }) => {
+  const refreshUsageStatistics = useCallback(async (options?: {
+    silent?: boolean
+    applyGuard?: () => boolean
+    interactive?: boolean
+    source?: string
+  }) => {
     const silent = options?.silent === true
+    const shouldApply = options?.applyGuard ?? (() => true)
+    const interactive = options?.interactive ?? true
+    const source = options?.source?.trim() || 'unknown'
     if (isDevPreview) {
-      setUsageStatistics(
-        buildDevUsageStatistics({
-          now: Date.now(),
-          usageWindowHours,
-          usageFilterNodes,
-          usageFilterProviders,
-          usageFilterModels,
-          usageFilterOrigins,
-          config,
-        }),
-      )
+      const apply = () =>
+        setUsageStatistics(
+          buildDevUsageStatistics({
+            now: Date.now(),
+            usageWindowHours,
+            usageFilterNodes,
+            usageFilterProviders,
+            usageFilterModels,
+            usageFilterOrigins,
+            config,
+          }),
+        )
+      if (interactive) apply()
+      else startTransition(apply)
       return
     }
     if (!silent) setUsageStatisticsLoading(true)
+    recordUiTrace('usage_refresh_requested', {
+      source,
+      silent,
+      interactive,
+      hours: usageWindowHours,
+      node_filter_count: usageFilterNodes.length,
+      provider_filter_count: usageFilterProviders.length,
+      model_filter_count: usageFilterModels.length,
+      origin_filter_count: usageFilterOrigins.length,
+    })
     try {
       const res = await invoke<UsageStatistics>('get_usage_statistics', {
         hours: usageWindowHours,
@@ -167,7 +188,10 @@ export function useUsageOpsBridge(params: Params) {
         models: usageFilterModels.length ? usageFilterModels : null,
         origins: usageFilterOrigins.length ? usageFilterOrigins : null,
       })
-      setUsageStatistics(res)
+      if (!shouldApply()) return
+      const apply = () => setUsageStatistics(res)
+      if (interactive) apply()
+      else startTransition(apply)
     } catch (e) {
       if (!silent) flashToast(String(e), 'error')
     } finally {

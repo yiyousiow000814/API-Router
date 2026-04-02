@@ -26,8 +26,10 @@ function shouldSkipInvokeDiagnostics(command: string): boolean {
   return (
     command === 'record_app_startup_stage' ||
     command === 'record_ui_watchdog_heartbeat' ||
+    command === 'record_ui_trace' ||
     command === 'record_ui_slow_refresh' ||
     command === 'record_ui_long_task' ||
+    command === 'record_ui_frame_stall' ||
     command === 'record_ui_frontend_error' ||
     command === 'record_ui_invoke_result'
   )
@@ -96,4 +98,15 @@ export async function invoke<T>(
     }
     throw error
   }
+}
+
+export function recordUiTrace(kind: string, fields: Record<string, unknown>): void {
+  void actual
+    .invoke('record_ui_trace', {
+      kind,
+      activePage: currentActivePage(),
+      visible: currentVisible(),
+      fields,
+    })
+    .catch(() => {})
 }

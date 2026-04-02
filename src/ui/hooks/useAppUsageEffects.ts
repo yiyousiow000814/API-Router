@@ -1,6 +1,6 @@
 import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from 'react'
 import { useEffect, useRef } from 'react'
-import type { Config } from '../types'
+import type { Config, Status } from '../types'
 import type {
   ProviderScheduleDraft,
   UsagePricingDraft,
@@ -24,9 +24,27 @@ type ScheduleCurrencyMenuState = {
   width: number
 } | null
 
+type ActivePage =
+  | 'dashboard'
+  | 'usage_statistics'
+  | 'usage_requests'
+  | 'provider_switchboard'
+  | 'event_log'
+  | 'web_codex'
+
 type Params = {
-  activePage: 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log' | 'web_codex'
-  refreshUsageStatistics: (options?: { silent?: boolean }) => Promise<void>
+  activePage: ActivePage
+  enqueueBackgroundRefresh: (
+    key: string,
+    owner: ActivePage | 'any',
+    run: (guard: () => boolean) => Promise<void> | void,
+  ) => void
+  refreshUsageStatistics: (options?: {
+    silent?: boolean
+    applyGuard?: () => boolean
+    interactive?: boolean
+    source?: string
+  }) => Promise<void>
   usageWindowHours: number
   usageFilterNodes: string[]
   usageFilterProviders: string[]
@@ -51,6 +69,7 @@ type Params = {
   resetUsageHistoryScrollbarState: () => void
   clearUsageHistoryScrollbarTimers: () => void
   usageHistoryLoadedRef: MutableRefObject<boolean>
+  usageHistoryQuotaRefreshToken: string
   refreshUsageHistory: (options?: { silent?: boolean; keepEditCell?: boolean }) => Promise<void>
   refreshUsageHistoryScrollbarUi: () => void
   usageHistoryRows: SpendHistoryRow[]
@@ -73,8 +92,23 @@ type Params = {
   autoSaveUsageScheduleRows: (rows: ProviderScheduleDraft[], signature: string) => Promise<void>
 }
 
+export function buildUsageHistoryQuotaRefreshToken(
+  quota: Status['quota'] | null | undefined,
+): string {
+  if (!quota) return ''
+  return Object.entries(quota)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([provider, snapshot]) => {
+      const updatedAt = snapshot?.updated_at_unix_ms ?? 0
+      const appliedAt = snapshot?.applied_at_unix_ms ?? 0
+      const spent = snapshot?.daily_spent_usd ?? null
+      return `${provider}:${updatedAt}:${appliedAt}:${spent ?? 'null'}`
+    })
+    .join('|')
+}
+
 export function usageStatisticsRefreshIntervalMs(
-  activePage: Params['activePage'],
+  activePage: ActivePage,
 ): number | null {
   if (activePage === 'usage_statistics') return 15_000
   if (activePage === 'dashboard') return 60_000
@@ -82,8 +116,8 @@ export function usageStatisticsRefreshIntervalMs(
 }
 
 export function shouldRefreshUsageSilently(
-  previousActivePage: Params['activePage'] | null,
-  activePage: Params['activePage'],
+  previousActivePage: ActivePage | null,
+  activePage: ActivePage,
   hasUsageStatistics: boolean,
 ): boolean {
   return previousActivePage !== activePage && hasUsageStatistics
@@ -118,9 +152,11 @@ function scheduleDeferredUiRefresh(run: () => void, delayMs: number): () => void
 }
 
 export function useAppUsageEffects(params: Params) {
-  const previousActivePageRef = useRef<Params['activePage'] | null>(null)
+  const previousActivePageRef = useRef<ActivePage | null>(null)
+  const refreshUsageStatisticsRef = useRef(params.refreshUsageStatistics)
   const {
     activePage,
+    enqueueBackgroundRefresh,
     refreshUsageStatistics,
     usageWindowHours,
     usageFilterNodes,
@@ -146,6 +182,7 @@ export function useAppUsageEffects(params: Params) {
     resetUsageHistoryScrollbarState,
     clearUsageHistoryScrollbarTimers,
     usageHistoryLoadedRef,
+    usageHistoryQuotaRefreshToken,
     refreshUsageHistory,
     refreshUsageHistoryScrollbarUi,
     usageHistoryRows,
@@ -170,6 +207,10 @@ export function useAppUsageEffects(params: Params) {
   const refreshUsageHistoryRef = useRef(refreshUsageHistory)
 
   useEffect(() => {
+    refreshUsageStatisticsRef.current = refreshUsageStatistics
+  }, [refreshUsageStatistics])
+
+  useEffect(() => {
     refreshUsageHistoryRef.current = refreshUsageHistory
   }, [refreshUsageHistory])
 
@@ -183,20 +224,41 @@ export function useAppUsageEffects(params: Params) {
     )
     const isInitialDashboardBoot =
       previousActivePageRef.current == null && activePage === 'dashboard'
-    const cancelInitialRefresh = isInitialDashboardBoot
-      ? scheduleDeferredUiRefresh(() => {
-          void refreshUsageStatistics({ silent })
-        }, 350)
-      : (() => {
-          void refreshUsageStatistics({ silent })
-          return () => {}
-        })()
-    const t = window.setInterval(() => void refreshUsageStatistics({ silent: true }), refreshMs)
+    const scheduleRefresh = (nextSilent: boolean, source: string) =>
+      enqueueBackgroundRefresh(`usage:${activePage}`, activePage, (guard) =>
+        refreshUsageStatisticsRef.current({
+          silent: nextSilent,
+          applyGuard: guard,
+          interactive: false,
+          source,
+        }),
+      )
+    const initialDelayMs = isInitialDashboardBoot ? 350 : 140
+    const cancelInitialRefresh = scheduleDeferredUiRefresh(() => {
+      scheduleRefresh(
+        silent,
+        isInitialDashboardBoot
+          ? `usage_page_bootstrap:${activePage}`
+          : `usage_page_entry:${activePage}`,
+      )
+    }, initialDelayMs)
+    const t = window.setInterval(
+      () => scheduleRefresh(true, `usage_page_interval:${activePage}`),
+      refreshMs,
+    )
     return () => {
       window.clearInterval(t)
       cancelInitialRefresh()
     }
-  }, [activePage, usageWindowHours, usageFilterNodes, usageFilterProviders, usageFilterModels, usageFilterOrigins, refreshUsageStatistics])
+  }, [
+    activePage,
+    enqueueBackgroundRefresh,
+    usageFilterModels,
+    usageFilterNodes,
+    usageFilterOrigins,
+    usageFilterProviders,
+    usageWindowHours,
+  ])
 
   useEffect(() => {
     previousActivePageRef.current = activePage
@@ -286,6 +348,13 @@ export function useAppUsageEffects(params: Params) {
     const shouldSilentRefresh = usageHistoryLoadedRef.current
     void refreshUsageHistory({ silent: shouldSilentRefresh })
   }, [usageHistoryModalOpen, resetUsageHistoryScrollbarState, clearUsageHistoryScrollbarTimers])
+
+  useEffect(() => {
+    if (!usageHistoryModalOpen) return
+    if (!usageHistoryLoadedRef.current) return
+    if (!usageHistoryQuotaRefreshToken) return
+    void refreshUsageHistory({ silent: true })
+  }, [usageHistoryModalOpen, usageHistoryQuotaRefreshToken, refreshUsageHistory])
 
   useEffect(() => {
     if (!usageHistoryModalOpen || typeof window === 'undefined') return

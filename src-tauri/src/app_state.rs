@@ -15,6 +15,7 @@ use std::sync::atomic::AtomicU64;
 const UI_WATCHDOG_UNRESPONSIVE_AFTER_MS: u64 = 6_000;
 const UI_WATCHDOG_SLOW_REFRESH_AFTER_MS: u64 = 2_000;
 const UI_WATCHDOG_LONG_TASK_AFTER_MS: u64 = 1_000;
+const UI_WATCHDOG_FRAME_STALL_LOG_COOLDOWN_MS: u64 = 10_000;
 const UI_WATCHDOG_SLOW_REFRESH_LOG_COOLDOWN_MS: u64 = 60_000;
 const UI_WATCHDOG_LONG_TASK_LOG_COOLDOWN_MS: u64 = 60_000;
 const UI_WATCHDOG_INVOKE_LOG_COOLDOWN_MS: u64 = 60_000;
@@ -86,6 +87,7 @@ struct UiWatchdogSnapshot {
     last_config_slow_log_unix_ms: u64,
     last_provider_switch_slow_log_unix_ms: u64,
     last_long_task_log_unix_ms: u64,
+    last_frame_stall_log_unix_ms: u64,
     last_frontend_error_log_unix_ms: u64,
     last_invoke_slow_log_unix_ms: u64,
     last_invoke_error_log_unix_ms: u64,
@@ -180,6 +182,11 @@ impl UiWatchdogState {
         );
     }
 
+    pub fn record_trace(&self, kind: &str, fields: serde_json::Value, now_unix_ms: u64) {
+        let mut snapshot = self.inner.lock();
+        Self::push_trace(&mut snapshot, kind.trim(), now_unix_ms, fields);
+    }
+
     pub fn record_slow_refresh(
         &self,
         runtime: UiWatchdogRuntime<'_>,
@@ -254,6 +261,54 @@ impl UiWatchdogState {
         }
         snapshot.last_long_task_log_unix_ms = now_unix_ms;
         self.write_dump(runtime.diagnostics_dir, "long-task", now_unix_ms, &snapshot);
+    }
+
+    pub fn record_frame_stall(
+        &self,
+        runtime: UiWatchdogRuntime<'_>,
+        elapsed_ms: u64,
+        monitor_kind: &str,
+        page: UiWatchdogPageState<'_>,
+        now_unix_ms: u64,
+    ) {
+        let mut snapshot = self.inner.lock();
+        let monitor_kind = monitor_kind.trim();
+        Self::push_trace(
+            &mut snapshot,
+            "frame_stall",
+            now_unix_ms,
+            serde_json::json!({
+                "elapsed_ms": elapsed_ms,
+                "monitor_kind": monitor_kind,
+                "active_page": page.active_page.trim(),
+                "visible": page.visible,
+            }),
+        );
+        if snapshot.last_frame_stall_log_unix_ms > 0
+            && now_unix_ms.saturating_sub(snapshot.last_frame_stall_log_unix_ms)
+                < UI_WATCHDOG_FRAME_STALL_LOG_COOLDOWN_MS
+        {
+            return;
+        }
+        snapshot.last_frame_stall_log_unix_ms = now_unix_ms;
+        runtime.store.add_event(
+            "gateway",
+            "warning",
+            "app.ui_frame_stall",
+            &format!("ui frame stalled for {elapsed_ms}ms"),
+            serde_json::json!({
+                "elapsed_ms": elapsed_ms,
+                "monitor_kind": monitor_kind,
+                "active_page": page.active_page.trim(),
+                "visible": page.visible,
+            }),
+        );
+        self.write_dump(
+            runtime.diagnostics_dir,
+            "frame-stall",
+            now_unix_ms,
+            &snapshot,
+        );
     }
 
     pub fn record_frontend_error(
@@ -1070,5 +1125,77 @@ mod tests {
             .filter_map(|entry| entry.ok())
             .count();
         assert!(dump_count >= 2);
+    }
+
+    #[test]
+    fn ui_watchdog_frame_stall_logs_with_cooldown() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+
+        let state = build_state(config_path, data_dir).expect("build state");
+        let watchdog = UiWatchdogState::default();
+
+        let runtime = UiWatchdogRuntime {
+            store: &state.gateway.store,
+            diagnostics_dir: &state.diagnostics_dir,
+        };
+        let page = UiWatchdogPageState {
+            active_page: "requests",
+            visible: true,
+        };
+
+        watchdog.record_frame_stall(runtime, 123, "startup", page, 10_000);
+        watchdog.record_frame_stall(
+            UiWatchdogRuntime {
+                store: &state.gateway.store,
+                diagnostics_dir: &state.diagnostics_dir,
+            },
+            145,
+            "interaction",
+            UiWatchdogPageState {
+                active_page: "requests",
+                visible: true,
+            },
+            15_000,
+        );
+        watchdog.record_frame_stall(
+            UiWatchdogRuntime {
+                store: &state.gateway.store,
+                diagnostics_dir: &state.diagnostics_dir,
+            },
+            167,
+            "interaction",
+            UiWatchdogPageState {
+                active_page: "requests",
+                visible: true,
+            },
+            21_000,
+        );
+
+        let events = state.gateway.store.list_events_range(None, None, Some(10));
+        let frame_stall_events = events
+            .iter()
+            .filter(|entry| {
+                entry
+                    .get("code")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|code| code == "app.ui_frame_stall")
+            })
+            .count();
+        assert_eq!(frame_stall_events, 2);
+
+        let dump_count = std::fs::read_dir(&state.diagnostics_dir)
+            .expect("diagnostics dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.contains("frame-stall"))
+            })
+            .count();
+        assert_eq!(dump_count, 2);
     }
 }

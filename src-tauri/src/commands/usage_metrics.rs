@@ -1265,7 +1265,8 @@ mod usage_metrics_tests {
         effective_provider_filter, latest_day_budget_fallback_allowed,
         merge_usage_metrics_day_counts, normalize_usage_origin,
         projection_hours_for_day_estimate, request_window_ratio,
-        resolve_budget_or_token_rate_cost, usage_metrics_configured_provider_names,
+        resolve_budget_or_token_rate_cost,
+        usage_metrics_configured_provider_names,
     };
     use crate::orchestrator::config::{AppConfig, ProviderConfig};
     use std::collections::BTreeMap;
