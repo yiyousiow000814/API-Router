@@ -1500,6 +1500,67 @@ mod tests {
         assert!(st.store.get_spend_state("p2").is_none());
     }
 
+    #[test]
+    fn remote_quota_snapshot_skips_disabled_siblings_and_logs_shared_apply() {
+        let providers = std::collections::BTreeMap::from([
+            (
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url: "https://usage-router.example/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some("https://usage-router.example".to_string()),
+                    group: None,
+                    disabled: false,
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "p2".to_string(),
+                ProviderConfig {
+                    display_name: "P2".to_string(),
+                    base_url: "https://usage-router.example/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some("https://usage-router.example".to_string()),
+                    group: None,
+                    disabled: true,
+                    api_key: String::new(),
+                },
+            ),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "sk-shared").unwrap();
+        secrets.set_provider_key("p2", "sk-shared").unwrap();
+        let st = mk_state_with_providers(
+            providers,
+            vec!["p1".to_string(), "p2".to_string()],
+            secrets,
+        );
+
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.updated_at_unix_ms = 1_739_120_000_000;
+        snap.daily_spent_usd = Some(5.0);
+        snap.producer_node_id = Some("node-owner".to_string());
+        snap.producer_node_name = Some("Owner".to_string());
+
+        apply_remote_quota_snapshot(&st, "p1", &snap, Some("node-owner"), Some("Owner"));
+
+        assert!(st.store.get_quota_snapshot("p1").is_some());
+        assert!(
+            st.store.get_quota_snapshot("p2").is_none(),
+            "disabled sibling should not receive propagated shared quota"
+        );
+        let events = st.store.list_events_range(None, None, Some(10));
+        assert!(
+            events.iter().any(|event| {
+                event.get("code").and_then(|value| value.as_str())
+                    == Some("usage.refresh_shared_applied")
+            }),
+            "requester should see that the shared usage result came back"
+        );
+    }
+
     async fn start_mock_server_token_info() -> (String, tokio::task::JoinHandle<()>) {
         use axum::http::StatusCode;
         use axum::routing::get;
@@ -2427,6 +2488,54 @@ mod tests {
         assert!(
             st.store.get_quota_snapshot("p2").is_some(),
             "non-packycode providers should still refresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_quota_all_skips_disabled_provider_even_with_credentials() {
+        let (base, _h) = start_mock_server(false).await;
+        let providers = std::collections::BTreeMap::from([
+            (
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url: "https://usage-router.example/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some(base.clone()),
+                    group: None,
+                    disabled: false,
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "p2".to_string(),
+                ProviderConfig {
+                    display_name: "P2".to_string(),
+                    base_url: "https://usage-router.example/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some(base),
+                    group: None,
+                    disabled: true,
+                    api_key: String::new(),
+                },
+            ),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_usage_token("p1", "token-1").unwrap();
+        secrets.set_usage_token("p2", "token-2").unwrap();
+        let st = mk_state_with_providers(providers, vec!["p1".to_string(), "p2".to_string()], secrets);
+
+        let lan_sync = mk_lan_sync();
+        let (ok, err, failed) = refresh_quota_all_with_summary(&st, &lan_sync).await;
+
+        assert_eq!(ok, 1);
+        assert_eq!(err, 0);
+        assert!(failed.is_empty());
+        assert!(st.store.get_quota_snapshot("p1").is_some());
+        assert!(
+            st.store.get_quota_snapshot("p2").is_none(),
+            "disabled provider must not be refreshed just because it still has credentials"
         );
     }
 

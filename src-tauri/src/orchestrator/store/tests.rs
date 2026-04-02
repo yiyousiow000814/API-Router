@@ -253,6 +253,50 @@ mod tests {
     }
 
     #[test]
+    fn add_event_compresses_repeated_sync_and_rebalance_info_per_minute() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        store.add_event(
+            "gateway",
+            "info",
+            "lan.edit_sync_applied",
+            "applied 1 synced editable event(s)",
+            serde_json::json!({}),
+        );
+        store.add_event(
+            "gateway",
+            "info",
+            "lan.edit_sync_applied",
+            "applied 2 synced editable event(s)",
+            serde_json::json!({}),
+        );
+        store.add_event(
+            "gateway",
+            "info",
+            "routing.balanced_reassign_on_session_topology_change",
+            "cleared balanced assignments after codex session topology changed",
+            serde_json::json!({}),
+        );
+        store.add_event(
+            "gateway",
+            "info",
+            "routing.balanced_reassign_on_session_topology_change",
+            "cleared balanced assignments after codex session topology changed",
+            serde_json::json!({}),
+        );
+
+        let rows = store.list_event_daily_counts_range(None, None);
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.get("total").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(row.get("infos").and_then(|v| v.as_u64()), Some(2));
+
+        let raw = store.list_events_range(None, None, Some(10));
+        assert_eq!(raw.len(), 4);
+    }
+
+    #[test]
     fn list_session_route_assignments_since_filters_old_rows() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();

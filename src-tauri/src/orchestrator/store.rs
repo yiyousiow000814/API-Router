@@ -1051,7 +1051,10 @@ impl Store {
     fn should_compress_daily_event_count(code: &str) -> bool {
         matches!(
             code.trim(),
-            "lan.shared_health_applied" | "lan.usage_sync_applied"
+            "lan.shared_health_applied"
+                | "lan.usage_sync_applied"
+                | "lan.edit_sync_applied"
+                | "routing.balanced_reassign_on_session_topology_change"
         )
     }
 

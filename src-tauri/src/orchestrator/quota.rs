@@ -974,6 +974,14 @@ pub(crate) fn apply_remote_quota_snapshot(
     applied_from_node_id: Option<&str>,
     applied_from_node_name: Option<&str>,
 ) {
+    let cfg = st.cfg.read().clone();
+    if cfg
+        .providers
+        .get(provider_name)
+        .is_some_and(|provider| provider.disabled)
+    {
+        return;
+    }
     let existing = st
         .store
         .get_quota_snapshot(provider_name)
@@ -989,7 +997,23 @@ pub(crate) fn apply_remote_quota_snapshot(
     snapshot_to_store.applied_from_node_name = applied_from_node_name.map(ToString::to_string);
     snapshot_to_store.applied_at_unix_ms = unix_ms();
     store_quota_snapshot_silent(st, provider_name, &snapshot_to_store);
-    let cfg = st.cfg.read().clone();
+    if let Some(remote_node_name) = applied_from_node_name.filter(|value| !value.trim().is_empty())
+    {
+        st.store.add_event(
+            provider_name,
+            "info",
+            "usage.refresh_shared_applied",
+            &format!("Shared usage update applied from {remote_node_name}"),
+            serde_json::json!({
+                "provider": provider_name,
+                "producer_node_id": snapshot_to_store.producer_node_id,
+                "producer_node_name": snapshot_to_store.producer_node_name,
+                "applied_from_node_id": snapshot_to_store.applied_from_node_id,
+                "applied_from_node_name": snapshot_to_store.applied_from_node_name,
+                "updated_at_unix_ms": snapshot_to_store.updated_at_unix_ms,
+            }),
+        );
+    }
     let provider_key = st.secrets.get_provider_key(provider_name);
     let usage_token = st.secrets.get_usage_token(provider_name);
     let usage_login = st.secrets.get_usage_login(provider_name);
@@ -1003,6 +1027,9 @@ pub(crate) fn apply_remote_quota_snapshot(
     let shared_key = usage_shared_key(&shared_base, &provider_key, &usage_token, &usage_login);
     for (name, provider) in cfg.providers.iter() {
         if name == provider_name {
+            continue;
+        }
+        if provider.disabled {
             continue;
         }
         let other_key = usage_shared_key(
@@ -1229,6 +1256,9 @@ fn can_refresh_quota_for_provider(
     provider_name: &str,
     provider: &ProviderConfig,
 ) -> bool {
+    if provider.disabled {
+        return false;
+    }
     let bases = candidate_quota_bases(provider);
     if bases.is_empty() {
         return false;
@@ -1477,6 +1507,9 @@ async fn propagate_quota_snapshot_shared(
         .unwrap_or(PackageExpiryStrategy::None);
     for (name, p) in cfg.providers.iter() {
         if name == source_provider {
+            continue;
+        }
+        if p.disabled {
             continue;
         }
 
