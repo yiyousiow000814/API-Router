@@ -6,6 +6,7 @@ import type { UseProviderActionsParams, UseProviderActionsResult } from './provi
 export function useProviderActions({
   config,
   status,
+  setStatus,
   isDevPreview,
   setConfig,
   keyModal,
@@ -49,6 +50,7 @@ export function useProviderActions({
   } = useProviderUsageActions({
     config,
     status,
+    setStatus,
     setConfig,
     isDevPreview,
     providerEmailModal,

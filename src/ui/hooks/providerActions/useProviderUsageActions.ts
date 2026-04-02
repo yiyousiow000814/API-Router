@@ -1,4 +1,4 @@
-import { useCallback, useMemo, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { UseProviderActionsParams } from './types'
 import type { Config, Status } from '../../types'
@@ -19,6 +19,7 @@ type ProviderUsageActions = Pick<
   UseProviderActionsParams,
   | 'config'
   | 'status'
+  | 'setStatus'
   | 'setConfig'
   | 'isDevPreview'
   | 'providerEmailModal'
@@ -262,6 +263,7 @@ export async function setProviderQuotaHardCapFieldWithRefresh({
 export function useProviderUsageActions({
   config,
   status,
+  setStatus,
   setConfig,
   isDevPreview,
   providerEmailModal,
@@ -276,6 +278,10 @@ export function useProviderUsageActions({
   flashToast,
 }: ProviderUsageActions) {
   const providerGroupMaps = useMemo(() => buildProviderGroupMaps(config), [config])
+  const statusRef = useRef(status)
+  useEffect(() => {
+    statusRef.current = status
+  }, [status])
   const providersForTarget = useCallback(
     (provider: string): string[] => providerGroupMaps.membersByProvider[provider] ?? [provider],
     [providerGroupMaps.membersByProvider],
@@ -288,12 +294,12 @@ export function useProviderUsageActions({
   const refreshQuota = useCallback(
     async (name: string) => {
       setRefreshingProviders((prev) => ({ ...prev, [name]: true }))
-      const previousQuota = readQuotaSnapshotPreview(status, name)
+      const previousQuota = readQuotaSnapshotPreview(statusRef.current, name)
       try {
         await invokeManualQuotaRefresh(name)
         const nextStatus = await waitForQuotaSnapshotAdvance(name, previousQuota)
         if (nextStatus) {
-          await refreshStatus()
+          setStatus(nextStatus)
         } else {
           await refreshStatus()
         }
@@ -307,7 +313,7 @@ export function useProviderUsageActions({
         setRefreshingProviders((prev) => ({ ...prev, [name]: false }))
       }
     },
-    [flashToast, refreshStatus, setRefreshingProviders, status],
+    [flashToast, refreshStatus, setRefreshingProviders, setStatus],
   )
 
   const refreshQuotaAll = useCallback(

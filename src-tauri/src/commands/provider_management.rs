@@ -759,12 +759,10 @@ fn copy_provider_from_config_source_impl(
             cfg.routing.session_preferred_providers = local_state.session_preferred_providers.clone();
         }
         let cfg = state.gateway.cfg.read().clone();
-        if let Err(err) = std::fs::write(
-            &state.config_path,
-            toml::to_string_pretty(&cfg).map_err(|err| err.to_string())?,
-        )
-        .map_err(|err| err.to_string())
-        {
+        let persist_result = toml::to_string_pretty(&cfg)
+            .map_err(|err| err.to_string())
+            .and_then(|toml| std::fs::write(&state.config_path, toml).map_err(|err| err.to_string()));
+        if let Err(err) = persist_result {
             state
                 .secrets
                 .replace_provider_state_bundle(previous_bundle)
@@ -2475,6 +2473,64 @@ mod provider_management_tests {
         assert_eq!(
             current_cfg.routing.session_preferred_providers,
             previous_cfg.routing.session_preferred_providers
+        );
+    }
+
+    #[test]
+    fn copy_provider_from_config_source_rolls_back_when_config_persist_fails() {
+        let (_tmp, state) = build_test_state();
+        let source_node_id = "node-remote";
+        let shared_provider_id = "shared-remote-5";
+        state
+            .lan_sync
+            .seed_test_peer(source_node_id, "Remote Node", None);
+        state
+            .secrets
+            .set_lan_node_trusted(source_node_id, true)
+            .expect("trust remote node");
+        seed_remote_provider_snapshot(
+            &state,
+            source_node_id,
+            shared_provider_id,
+            crate::lan_sync::ProviderDefinitionSnapshotPayload {
+                name: "remote_provider".to_string(),
+                display_name: "Remote Provider".to_string(),
+                base_url: "https://remote.example/v1".to_string(),
+                key: Some("sk-remote".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let previous_cfg = state.gateway.cfg.read().clone();
+        let previous_bundle = state.secrets.export_provider_state_bundle();
+        let config_dir = state.config_path.clone();
+        std::fs::remove_file(&config_dir).expect("remove config file");
+        std::fs::create_dir_all(&config_dir).expect("replace config path with dir");
+
+        let result = copy_provider_from_config_source_impl(&state, source_node_id, shared_provider_id);
+
+        assert!(result.is_err(), "copy should fail when config persist fails");
+        let current_cfg = state.gateway.cfg.read().clone();
+        assert_eq!(
+            current_cfg.providers.keys().cloned().collect::<Vec<_>>(),
+            previous_cfg.providers.keys().cloned().collect::<Vec<_>>()
+        );
+        assert_eq!(current_cfg.provider_order, previous_cfg.provider_order);
+        assert_eq!(
+            current_cfg.routing.preferred_provider,
+            previous_cfg.routing.preferred_provider
+        );
+        assert_eq!(
+            current_cfg.routing.session_preferred_providers,
+            previous_cfg.routing.session_preferred_providers
+        );
+        assert_eq!(
+            state.secrets.export_provider_state_bundle().providers,
+            previous_bundle.providers
+        );
+        assert_eq!(
+            state.secrets.export_provider_state_bundle().provider_shared_ids,
+            previous_bundle.provider_shared_ids
         );
     }
 

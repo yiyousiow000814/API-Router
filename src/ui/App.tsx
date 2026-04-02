@@ -1155,6 +1155,7 @@ export default function App() {
   } = useProviderActions({
     config,
     status,
+    setStatus,
     isDevPreview,
     setConfig,
     keyModal,
