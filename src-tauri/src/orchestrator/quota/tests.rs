@@ -261,6 +261,12 @@ mod tests {
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
             client_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
+        crate::lan_sync::register_gateway_status_runtime(crate::lan_sync::LanSyncRuntime::new(
+            crate::lan_sync::LanNodeIdentity {
+                node_id: "node-self".to_string(),
+                node_name: "self".to_string(),
+            },
+        ));
 
         let previous = QuotaSnapshot {
             kind: UsageKind::BudgetInfo,
@@ -278,6 +284,11 @@ mod tests {
             last_error: String::new(),
             effective_usage_base: Some("https://codex-for.me".to_string()),
             effective_usage_source: Some("codex_for_me_balance".to_string()),
+            producer_node_id: Some("node-owner".to_string()),
+            producer_node_name: Some("owner".to_string()),
+            applied_from_node_id: Some("node-owner".to_string()),
+            applied_from_node_name: Some("owner".to_string()),
+            applied_at_unix_ms: 1_000,
         };
         store_quota_snapshot(&st, provider_name, &previous);
 
@@ -297,6 +308,11 @@ mod tests {
             last_error: "http 500 from https://codex-for.me".to_string(),
             effective_usage_base: None,
             effective_usage_source: None,
+            producer_node_id: None,
+            producer_node_name: None,
+            applied_from_node_id: None,
+            applied_from_node_name: None,
+            applied_at_unix_ms: 0,
         };
 
         let preserved = preserved_quota_snapshot_for_storage(&st, provider_name, &failed_refresh);
@@ -304,6 +320,8 @@ mod tests {
         assert_eq!(preserved.remaining, previous.remaining);
         assert_eq!(preserved.daily_spent_usd, previous.daily_spent_usd);
         assert_eq!(preserved.monthly_spent_usd, previous.monthly_spent_usd);
+        assert_eq!(preserved.producer_node_id.as_deref(), Some("node-self"));
+        assert_eq!(preserved.applied_from_node_id.as_deref(), Some("node-self"));
         assert_eq!(preserved.last_error, failed_refresh.last_error);
     }
 
@@ -2099,9 +2117,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "k1").unwrap();
-        let st = mk_state("https://example.com/v1".to_string(), secrets);
+        let gated_base = "https://manual-refresh-backoff.invalid";
+        let st = mk_state(format!("{gated_base}/v1"), secrets);
         let now = unix_ms();
-        note_usage_base_rate_limited("https://example.com", now, 15 * 60_000);
+        note_usage_base_rate_limited(gated_base, now, 15 * 60_000);
 
         let snap = tokio::time::timeout(
             Duration::from_millis(250),
@@ -2113,7 +2132,7 @@ mod tests {
         assert_eq!(snap.updated_at_unix_ms, 0);
         assert!(
             snap.last_error
-                .starts_with("usage base rate limited: https://example.com"),
+                .starts_with(&format!("usage base rate limited: {gated_base}")),
             "unexpected error: {}",
             snap.last_error
         );

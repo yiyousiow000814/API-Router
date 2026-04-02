@@ -60,6 +60,12 @@ export type Status = {
       package_expires_at_unix_ms?: number | null
       last_error: string
       effective_usage_base?: string | null
+      effective_usage_source?: string | null
+      producer_node_id?: string | null
+      producer_node_name?: string | null
+      applied_from_node_id?: string | null
+      applied_from_node_name?: string | null
+      applied_at_unix_ms?: number
     }
   >
   ledgers: Record<

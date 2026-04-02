@@ -25,7 +25,7 @@ import {
   normalizeCurrencyCode,
   parsePositiveAmount,
 } from './utils/currency'
-import { AppMainContent } from './components/AppMainContent'
+import { AppMainContent, preloadAppMainContentModules } from './components/AppMainContent'
 import { AppTopNav } from './components/AppTopNav'
 import type { EventLogDailyStat, EventLogEntry } from './components/EventLogPanel'
 import type { LastErrorJump } from './components/ProvidersTable'
@@ -1032,31 +1032,30 @@ export default function App() {
     refreshUsageStatistics,
     clientSessions: status?.client_sessions ?? [],
   })
-  const usageRequestsWarmupStartedRef = useRef(false)
   useEffect(() => {
-    if (usageRequestsWarmupStartedRef.current) return
-    usageRequestsWarmupStartedRef.current = true
     if (typeof window === 'undefined') return
-
-    const runWarmup = () => {
-      handleUsageRequestsIntentPrefetch()
+    let cancelled = false
+    let idleId: number | null = null
+    let timerId: number | null = null
+    const runPreload = () => {
+      if (cancelled) return
+      void preloadAppMainContentModules()
     }
-
-    const w = window as unknown as {
-      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number
-      cancelIdleCallback?: (id: number) => void
-      setTimeout: typeof window.setTimeout
-      clearTimeout: typeof window.clearTimeout
+    if (typeof window.requestIdleCallback === 'function') {
+      idleId = window.requestIdleCallback(runPreload, { timeout: 1200 })
+    } else {
+      timerId = window.setTimeout(runPreload, 300)
     }
-
-    if (typeof w.requestIdleCallback === 'function') {
-      const id = w.requestIdleCallback(runWarmup, { timeout: 1500 })
-      return () => w.cancelIdleCallback?.(id)
+    return () => {
+      cancelled = true
+      if (idleId != null && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(idleId)
+      }
+      if (timerId != null) {
+        window.clearTimeout(timerId)
+      }
     }
-
-    const timer = w.setTimeout(runWarmup, 450)
-    return () => w.clearTimeout(timer)
-  }, [handleUsageRequestsIntentPrefetch])
+  }, [])
   const {
     providerGroupLabelByName, linkedProvidersForApiKey, switchboardProviderCards, switchboardModeLabel,
     switchboardModelProviderLabel, switchboardTargetDirsLabel, usageSummary, usageByProvider, usageTotalInputTokens,
@@ -1477,6 +1476,145 @@ export default function App() {
     usagePricingModalOpen ||
     usageScheduleModalOpen
 
+  const usageProps = useMemo(
+    () => ({
+      config,
+      usageWindowHours,
+      setUsageWindowHours,
+      usageStatisticsLoading,
+      usageFilterNodes,
+      setUsageFilterNodes,
+      usageNodeFilterOptions,
+      toggleUsageNodeFilter,
+      usageFilterProviders,
+      setUsageFilterProviders,
+      usageProviderFilterOptions,
+      usageProviderFilterDisplayOptions,
+      toggleUsageProviderFilterDisplayOption,
+      usageFilterModels,
+      setUsageFilterModels,
+      usageModelFilterOptions,
+      toggleUsageModelFilter,
+      usageFilterOrigins,
+      setUsageFilterOrigins,
+      usageOriginFilterOptions,
+      toggleUsageOriginFilter,
+      usageAnomalies,
+      usageSummary,
+      formatKpiTokens,
+      usageTopModel,
+      formatUsdMaybe,
+      usageDedupedTotalUsedUsd,
+      usageTotalInputTokens,
+      usageTotalOutputTokens,
+      usageAvgTokensPerRequest,
+      usageActiveWindowHours,
+      usagePricedRequestCount,
+      usagePricedCoveragePct,
+      usageAvgRequestsPerHour,
+      usageAvgTokensPerHour,
+      usageWindowLabel,
+      usageStatistics,
+      usageChart,
+      setUsageChartHover,
+      showUsageChartHover,
+      usageChartHover,
+      formatUsageBucketLabel,
+      setUsageHistoryModalOpen,
+      setUsagePricingModalOpen,
+      usageScheduleProviderOptions,
+      usageByProvider,
+      openUsageScheduleModal,
+      providerPreferredCurrency,
+      setUsageProviderShowDetails,
+      usageProviderShowDetails,
+      usageProviderShowDetailsStorageKey: USAGE_PROVIDER_SHOW_DETAILS_KEY,
+      usageProviderDisplayGroups,
+      usageProviderRowKey,
+      formatPricingSource,
+      usageProviderTotalsAndAverages,
+      usageActivityUnixMs: status?.last_activity_unix_ms ?? null,
+      clientSessions: status?.client_sessions ?? [],
+    }),
+    [
+      config,
+      usageWindowHours,
+      usageStatisticsLoading,
+      usageFilterNodes,
+      usageNodeFilterOptions,
+      toggleUsageNodeFilter,
+      usageFilterProviders,
+      usageProviderFilterOptions,
+      usageProviderFilterDisplayOptions,
+      toggleUsageProviderFilterDisplayOption,
+      usageFilterModels,
+      usageModelFilterOptions,
+      toggleUsageModelFilter,
+      usageFilterOrigins,
+      usageOriginFilterOptions,
+      toggleUsageOriginFilter,
+      usageAnomalies,
+      usageSummary,
+      usageTopModel,
+      usageDedupedTotalUsedUsd,
+      usageTotalInputTokens,
+      usageTotalOutputTokens,
+      usageAvgTokensPerRequest,
+      usageActiveWindowHours,
+      usagePricedRequestCount,
+      usagePricedCoveragePct,
+      usageAvgRequestsPerHour,
+      usageAvgTokensPerHour,
+      usageWindowLabel,
+      usageStatistics,
+      usageChart,
+      showUsageChartHover,
+      usageChartHover,
+      usageScheduleProviderOptions,
+      usageByProvider,
+      openUsageScheduleModal,
+      providerPreferredCurrency,
+      usageProviderShowDetails,
+      usageProviderDisplayGroups,
+      usageProviderRowKey,
+      usageProviderTotalsAndAverages,
+      status?.last_activity_unix_ms,
+      status?.client_sessions,
+    ],
+  )
+
+  const switchboardProps = useMemo(
+    () => ({
+      providerSwitchStatus,
+      providerSwitchBusy,
+      codexSwapDir1,
+      codexSwapDir2,
+      codexSwapUseWindows,
+      codexSwapUseWsl,
+      switchboardModeLabel,
+      switchboardModelProviderLabel,
+      switchboardTargetDirsLabel,
+      switchboardProviderCards,
+      onSetProviderSwitchTarget: setProviderSwitchTarget,
+      onOpenConfigureDirs: () => setCodexSwapModalOpen(true),
+      onOpenRawConfig: () => void openRawConfigModal(),
+    }),
+    [
+      providerSwitchStatus,
+      providerSwitchBusy,
+      codexSwapDir1,
+      codexSwapDir2,
+      codexSwapUseWindows,
+      codexSwapUseWsl,
+      switchboardModeLabel,
+      switchboardModelProviderLabel,
+      switchboardTargetDirsLabel,
+      switchboardProviderCards,
+      setProviderSwitchTarget,
+      openRawConfigModal,
+    ],
+  )
+
   return (
     <div className="aoRoot" ref={containerRef}>
       <div className="aoScale">
@@ -1545,80 +1683,8 @@ export default function App() {
               eventLogFocusRequest={eventLogFocusRequest}
               onEventLogFocusRequestHandled={handleEventLogFocusRequestHandled}
               usageStatistics={usageStatistics}
-              usageProps={{
-                config,
-                usageWindowHours,
-                setUsageWindowHours,
-                usageStatisticsLoading,
-                usageFilterNodes,
-                setUsageFilterNodes,
-                usageNodeFilterOptions,
-                toggleUsageNodeFilter,
-                usageFilterProviders,
-                setUsageFilterProviders,
-                usageProviderFilterOptions,
-                usageProviderFilterDisplayOptions,
-                toggleUsageProviderFilterDisplayOption,
-                usageFilterModels,
-                setUsageFilterModels,
-                usageModelFilterOptions,
-                toggleUsageModelFilter,
-                usageFilterOrigins,
-                setUsageFilterOrigins,
-                usageOriginFilterOptions,
-                toggleUsageOriginFilter,
-                usageAnomalies,
-                usageSummary,
-                formatKpiTokens,
-                usageTopModel,
-                formatUsdMaybe,
-                usageDedupedTotalUsedUsd,
-                usageTotalInputTokens,
-                usageTotalOutputTokens,
-                usageAvgTokensPerRequest,
-                usageActiveWindowHours,
-                usagePricedRequestCount,
-                usagePricedCoveragePct,
-                usageAvgRequestsPerHour,
-                usageAvgTokensPerHour,
-                usageWindowLabel,
-                usageStatistics,
-                usageChart,
-                setUsageChartHover,
-                showUsageChartHover,
-                usageChartHover,
-                formatUsageBucketLabel,
-                setUsageHistoryModalOpen,
-                setUsagePricingModalOpen,
-                usageScheduleProviderOptions,
-                usageByProvider,
-                openUsageScheduleModal,
-                providerPreferredCurrency,
-                setUsageProviderShowDetails,
-                usageProviderShowDetails,
-                usageProviderShowDetailsStorageKey: USAGE_PROVIDER_SHOW_DETAILS_KEY,
-                usageProviderDisplayGroups,
-                usageProviderRowKey,
-                formatPricingSource,
-                usageProviderTotalsAndAverages,
-                usageActivityUnixMs: status?.last_activity_unix_ms ?? null,
-                clientSessions: status?.client_sessions ?? [],
-              }}
-              switchboardProps={{
-                providerSwitchStatus,
-                providerSwitchBusy,
-                codexSwapDir1,
-                codexSwapDir2,
-                codexSwapUseWindows,
-                codexSwapUseWsl,
-                switchboardModeLabel,
-                switchboardModelProviderLabel,
-                switchboardTargetDirsLabel,
-                switchboardProviderCards,
-                onSetProviderSwitchTarget: setProviderSwitchTarget,
-                onOpenConfigureDirs: () => setCodexSwapModalOpen(true),
-                onOpenRawConfig: () => void openRawConfigModal(),
-              }}
+              usageProps={usageProps}
+              switchboardProps={switchboardProps}
             />
           </div>
         </div>

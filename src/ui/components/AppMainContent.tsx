@@ -1,33 +1,55 @@
-import { lazy, Suspense } from 'react'
+import { lazy, memo, Suspense } from 'react'
 import { DashboardPanel } from './DashboardPanel'
 import type { EventLogFocusRequest } from './EventLogPanel'
 import { LoadingSurface } from './LoadingSurface'
 import type { LastErrorJump } from './ProvidersTable'
 
-const EventLogPanel = lazy(async () => {
+const loadEventLogPanel = async () => {
   const module = await import('./EventLogPanel')
   return { default: module.EventLogPanel }
-})
+}
 
-const ProviderSwitchboardPanel = lazy(async () => {
+const loadProviderSwitchboardPanel = async () => {
   const module = await import('./ProviderSwitchboardPanel')
   return { default: module.ProviderSwitchboardPanel }
-})
+}
 
-const UsageAnalyticsPanel = lazy(async () => {
+const loadUsageAnalyticsPanel = async () => {
   const module = await import('./UsageAnalyticsPanel')
   return { default: module.UsageAnalyticsPanel }
-})
+}
 
-const UsageRequestsPanel = lazy(async () => {
+const loadUsageRequestsPanel = async () => {
   const module = await import('./UsageRequestsPanel')
   return { default: module.UsageRequestsPanel }
-})
+}
 
-const WebCodexPanel = lazy(async () => {
+const loadWebCodexPanel = async () => {
   const module = await import('./WebCodexPanel')
   return { default: module.WebCodexPanel }
-})
+}
+
+const EventLogPanel = lazy(loadEventLogPanel)
+const ProviderSwitchboardPanel = lazy(loadProviderSwitchboardPanel)
+const UsageAnalyticsPanel = lazy(loadUsageAnalyticsPanel)
+const UsageRequestsPanel = lazy(loadUsageRequestsPanel)
+const WebCodexPanel = lazy(loadWebCodexPanel)
+
+let preloadAppMainContentModulesPromise: Promise<unknown> | null = null
+
+export function preloadAppMainContentModules(): Promise<unknown> {
+  if (preloadAppMainContentModulesPromise) {
+    return preloadAppMainContentModulesPromise
+  }
+  preloadAppMainContentModulesPromise = Promise.allSettled([
+    loadUsageAnalyticsPanel(),
+    loadUsageRequestsPanel(),
+    loadProviderSwitchboardPanel(),
+    loadEventLogPanel(),
+    loadWebCodexPanel(),
+  ])
+  return preloadAppMainContentModulesPromise
+}
 
 type Props = {
   activePage: 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log' | 'web_codex'
@@ -69,7 +91,74 @@ type Props = {
   usageStatistics?: any
 }
 
-export function AppMainContent(props: Props) {
+function pageFallbackFor(activePage: Props['activePage']) {
+  if (activePage === 'usage_statistics') {
+    return (
+      <div className="aoUsageStatsWrap">
+        <div className="aoSwitchboardSectionHead">
+          <div className="aoMiniLabel">Provider Statistics</div>
+        </div>
+        <LoadingSurface
+          compact
+          eyebrow="Analytics"
+          title="Loading provider statistics"
+          detail="Preparing usage charts and aggregated cost signals."
+        />
+      </div>
+    )
+  }
+  if (activePage === 'usage_requests') {
+    return (
+      <div className="aoUsageStatsWrap">
+        <div className="aoSwitchboardSectionHead">
+          <div className="aoMiniLabel">Request Details</div>
+        </div>
+        <LoadingSurface
+          compact
+          eyebrow="Requests"
+          title="Loading request history"
+          detail="Preparing the latest request timeline, filters, and per-session breakdowns."
+        />
+      </div>
+    )
+  }
+  if (activePage === 'provider_switchboard') {
+    return (
+      <div className="aoPagePlaceholder">
+        <div className="aoPagePlaceholderTitle">Provider Switchboard</div>
+        <LoadingSurface
+          compact
+          eyebrow="Switchboard"
+          title="Loading provider switchboard"
+          detail="Restoring provider target snapshots and Codex home routing state."
+        />
+      </div>
+    )
+  }
+  if (activePage === 'event_log') {
+    return (
+      <div className="aoEventLogWrap">
+        <div className="aoH3">Event Log</div>
+        <LoadingSurface
+          compact
+          eyebrow="Events"
+          title="Loading event log"
+          detail="Preparing the latest events, daily counts, and focus state."
+        />
+      </div>
+    )
+  }
+  return (
+    <LoadingSurface
+      compact
+      eyebrow="API Router"
+      title="Loading this view"
+      detail="Fetching the data and modules needed for this page."
+    />
+  )
+}
+
+function AppMainContentInner(props: Props) {
   const {
     activePage,
     status,
@@ -109,14 +198,7 @@ export function AppMainContent(props: Props) {
     switchboardProps,
     usageStatistics,
   } = props
-  const pageFallback = (
-    <LoadingSurface
-      compact
-      eyebrow="API Router"
-      title="Loading this view"
-      detail="Fetching the data and modules needed for this page."
-    />
-  )
+  const pageFallback = pageFallbackFor(activePage)
   if (activePage === 'usage_statistics') {
     return (
       <Suspense fallback={pageFallback}>
@@ -210,3 +292,59 @@ export function AppMainContent(props: Props) {
     </>
   )
 }
+
+function areEqualAppMainContentProps(prev: Props, next: Props): boolean {
+  if (prev.activePage !== next.activePage) return false
+  switch (next.activePage) {
+    case 'usage_statistics':
+    case 'usage_requests':
+      return prev.usageProps === next.usageProps
+    case 'provider_switchboard':
+      return prev.switchboardProps === next.switchboardProps
+    case 'event_log':
+      return (
+        prev.eventLogSeedEvents === next.eventLogSeedEvents &&
+        prev.eventLogSeedDailyStats === next.eventLogSeedDailyStats &&
+        prev.eventLogFocusRequest === next.eventLogFocusRequest &&
+        prev.onEventLogFocusRequestHandled === next.onEventLogFocusRequestHandled
+      )
+    case 'web_codex':
+      return prev.status?.listen?.port === next.status?.listen?.port
+    case 'dashboard':
+    default:
+      return (
+        prev.status === next.status &&
+        prev.config === next.config &&
+        prev.providers === next.providers &&
+        prev.gatewayTokenPreview === next.gatewayTokenPreview &&
+        prev.onCopyToken === next.onCopyToken &&
+        prev.onShowGatewayRotate === next.onShowGatewayRotate &&
+        prev.onCodexLoginLogout === next.onCodexLoginLogout &&
+        prev.onCodexRefresh === next.onCodexRefresh &&
+        prev.codexRefreshing === next.codexRefreshing &&
+        prev.onCodexSwapAuthConfig === next.onCodexSwapAuthConfig &&
+        prev.onOpenCodexSwapOptions === next.onOpenCodexSwapOptions &&
+        prev.codexSwapTarget === next.codexSwapTarget &&
+        prev.codexSwapUseWindows === next.codexSwapUseWindows &&
+        prev.codexSwapUseWsl === next.codexSwapUseWsl &&
+        prev.onChangeCodexSwapTarget === next.onChangeCodexSwapTarget &&
+        prev.codexSwapBadgeText === next.codexSwapBadgeText &&
+        prev.codexSwapBadgeTitle === next.codexSwapBadgeTitle &&
+        prev.routeMode === next.routeMode &&
+        prev.onRouteModeChange === next.onRouteModeChange &&
+        prev.override === next.override &&
+        prev.onOverrideChange === next.onOverrideChange &&
+        prev.onPreferredChange === next.onPreferredChange &&
+        prev.onOpenConfigModal === next.onOpenConfigModal &&
+        prev.refreshingProviders === next.refreshingProviders &&
+        prev.onRefreshQuota === next.onRefreshQuota &&
+        prev.clientSessions === next.clientSessions &&
+        prev.updatingSessionPref === next.updatingSessionPref &&
+        prev.onSetSessionPreferred === next.onSetSessionPreferred &&
+        prev.onOpenLastErrorInEventLog === next.onOpenLastErrorInEventLog &&
+        prev.usageStatistics === next.usageStatistics
+      )
+  }
+}
+
+export const AppMainContent = memo(AppMainContentInner, areEqualAppMainContentProps)

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 
 type TopPage =
   | 'dashboard'
@@ -29,7 +29,7 @@ function isPointerNearButton(event: React.MouseEvent<HTMLDivElement>, button: HT
   )
 }
 
-export function AppTopNav({
+export const AppTopNav = memo(function AppTopNav({
   activePage,
   onSwitchPage,
   onOpenGettingStarted,
@@ -214,4 +214,4 @@ export function AppTopNav({
       </button>
     </div>
   )
-}
+})

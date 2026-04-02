@@ -1,5 +1,5 @@
 import type * as React from 'react'
-import { useCallback, useEffect, useRef } from 'react'
+import { startTransition, useCallback, useEffect, useRef } from 'react'
 
 export function usePageScroll(options: {
   containerRef: React.RefObject<HTMLDivElement | null>
@@ -67,7 +67,9 @@ export function usePageScroll(options: {
       if (next === current) return
       saveCurrentPageScroll(current)
       prevPageRef.current = next
-      options.setActivePage(next)
+      startTransition(() => {
+        options.setActivePage(next)
+      })
       scheduleRestore(next)
     },
     [options.setActivePage, saveCurrentPageScroll, scheduleRestore],

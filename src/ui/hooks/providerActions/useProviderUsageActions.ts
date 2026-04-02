@@ -1,11 +1,13 @@
 import { useCallback, useMemo, type Dispatch, type SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { UseProviderActionsParams } from './types'
-import type { Config } from '../../types'
+import type { Config, Status } from '../../types'
 import { buildProviderGroupMaps, resolveProviderDisplayName } from '../../utils/providerGroups'
 
 const PACKYCODE_LOGIN_SYNC_POLL_MS = 2000
 const PACKYCODE_LOGIN_SYNC_TIMEOUT_MS = 10 * 60 * 1000
+const MANUAL_QUOTA_REFRESH_WAIT_TIMEOUT_MS = 12_000
+const MANUAL_QUOTA_REFRESH_WAIT_POLL_MS = 350
 
 type UsageAuthPayload = {
   token: string
@@ -161,6 +163,54 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+type QuotaSnapshotPreview = {
+  updatedAtUnixMs: number
+  dailySpentUsd: number | null
+  lastError: string
+}
+
+function readQuotaSnapshotPreview(
+  status: Status | null | undefined,
+  provider: string,
+): QuotaSnapshotPreview {
+  const quota = status?.quota?.[provider]
+  return {
+    updatedAtUnixMs: Number(quota?.updated_at_unix_ms ?? 0),
+    dailySpentUsd:
+      typeof quota?.daily_spent_usd === 'number' && Number.isFinite(quota.daily_spent_usd)
+        ? quota.daily_spent_usd
+        : null,
+    lastError: String(quota?.last_error ?? ''),
+  }
+}
+
+function quotaSnapshotAdvanced(
+  previous: QuotaSnapshotPreview,
+  next: QuotaSnapshotPreview,
+): boolean {
+  return (
+    next.updatedAtUnixMs > previous.updatedAtUnixMs ||
+    next.dailySpentUsd !== previous.dailySpentUsd ||
+    next.lastError !== previous.lastError
+  )
+}
+
+async function waitForQuotaSnapshotAdvance(
+  provider: string,
+  previous: QuotaSnapshotPreview,
+): Promise<Status | null> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < MANUAL_QUOTA_REFRESH_WAIT_TIMEOUT_MS) {
+    const nextStatus = await invoke<Status>('get_status')
+    const next = readQuotaSnapshotPreview(nextStatus, provider)
+    if (quotaSnapshotAdvanced(previous, next)) {
+      return nextStatus
+    }
+    await delay(MANUAL_QUOTA_REFRESH_WAIT_POLL_MS)
+  }
+  return null
+}
+
 export async function waitForProviderUsageLogin(
   provider: string,
   getConfig: () => Promise<Config>,
@@ -211,6 +261,7 @@ export async function setProviderQuotaHardCapFieldWithRefresh({
 
 export function useProviderUsageActions({
   config,
+  status,
   setConfig,
   isDevPreview,
   providerEmailModal,
@@ -237,9 +288,15 @@ export function useProviderUsageActions({
   const refreshQuota = useCallback(
     async (name: string) => {
       setRefreshingProviders((prev) => ({ ...prev, [name]: true }))
+      const previousQuota = readQuotaSnapshotPreview(status, name)
       try {
         await invokeManualQuotaRefresh(name)
-        await refreshStatus()
+        const nextStatus = await waitForQuotaSnapshotAdvance(name, previousQuota)
+        if (nextStatus) {
+          await refreshStatus()
+        } else {
+          await refreshStatus()
+        }
         flashToast(`Usage refreshed: ${name}`)
       } catch (e) {
         try {
@@ -250,7 +307,7 @@ export function useProviderUsageActions({
         setRefreshingProviders((prev) => ({ ...prev, [name]: false }))
       }
     },
-    [flashToast, refreshStatus, setRefreshingProviders],
+    [flashToast, refreshStatus, setRefreshingProviders, status],
   )
 
   const refreshQuotaAll = useCallback(

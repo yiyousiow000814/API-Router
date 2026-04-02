@@ -541,10 +541,7 @@ pub(crate) async fn refresh_quota(
                 &provider,
                 "info",
                 "usage.refresh_forwarded",
-                &format!(
-                    "Usage refresh forwarded to {} ({})",
-                    owner.owner_node_name, owner.owner_node_id
-                ),
+                &format!("Usage refresh forwarded to {}", owner.owner_node_name),
                 serde_json::json!({
                     "owner_node_id": owner.owner_node_id,
                     "owner_node_name": owner.owner_node_name,
@@ -593,8 +590,8 @@ pub(crate) async fn refresh_quota(
                     "info",
                     "usage.refresh_forwarded_after_local_failure",
                     &format!(
-                        "Usage refresh failed locally and was forwarded to {} ({})",
-                        owner.owner_node_name, owner.owner_node_id
+                        "Usage refresh failed locally and was forwarded to {}",
+                        owner.owner_node_name
                     ),
                     serde_json::json!({
                         "owner_node_id": owner.owner_node_id,

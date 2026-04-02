@@ -89,8 +89,35 @@ export function shouldRefreshUsageSilently(
   return previousActivePage !== activePage && hasUsageStatistics
 }
 
+function scheduleDeferredUiRefresh(run: () => void, delayMs: number): () => void {
+  if (typeof window === 'undefined') {
+    run()
+    return () => {}
+  }
+  let cancelled = false
+  let idleId: number | null = null
+  let timerId: number | null = null
+  const execute = () => {
+    if (cancelled) return
+    run()
+  }
+  if (typeof window.requestIdleCallback === 'function') {
+    idleId = window.requestIdleCallback(execute, { timeout: delayMs })
+  } else {
+    timerId = window.setTimeout(execute, delayMs)
+  }
+  return () => {
+    cancelled = true
+    if (idleId != null && typeof window.cancelIdleCallback === 'function') {
+      window.cancelIdleCallback(idleId)
+    }
+    if (timerId != null) {
+      window.clearTimeout(timerId)
+    }
+  }
+}
+
 export function useAppUsageEffects(params: Params) {
-  const usageHistoryPrefetchStartedRef = useRef(false)
   const previousActivePageRef = useRef<Params['activePage'] | null>(null)
   const {
     activePage,
@@ -154,9 +181,21 @@ export function useAppUsageEffects(params: Params) {
       activePage,
       hasUsageStatistics,
     )
-    void refreshUsageStatistics({ silent })
+    const isInitialDashboardBoot =
+      previousActivePageRef.current == null && activePage === 'dashboard'
+    const cancelInitialRefresh = isInitialDashboardBoot
+      ? scheduleDeferredUiRefresh(() => {
+          void refreshUsageStatistics({ silent })
+        }, 350)
+      : (() => {
+          void refreshUsageStatistics({ silent })
+          return () => {}
+        })()
     const t = window.setInterval(() => void refreshUsageStatistics({ silent: true }), refreshMs)
-    return () => window.clearInterval(t)
+    return () => {
+      window.clearInterval(t)
+      cancelInitialRefresh()
+    }
   }, [activePage, usageWindowHours, usageFilterNodes, usageFilterProviders, usageFilterModels, usageFilterOrigins, refreshUsageStatistics])
 
   useEffect(() => {
@@ -236,19 +275,6 @@ export function useAppUsageEffects(params: Params) {
       return changed ? next : prev
     })
   }, [usagePricingModalOpen, usagePricingProviderNames, config])
-
-  useEffect(() => {
-    if (usageHistoryPrefetchStartedRef.current) return
-    if (usageHistoryLoadedRef.current) return
-    usageHistoryPrefetchStartedRef.current = true
-    const timer = window.setTimeout(() => {
-      if (usageHistoryLoadedRef.current) return
-      void refreshUsageHistoryRef.current({ silent: true })
-    }, 400)
-    return () => {
-      window.clearTimeout(timer)
-    }
-  }, [usageHistoryLoadedRef])
 
   useEffect(() => {
     if (!usageHistoryModalOpen) {

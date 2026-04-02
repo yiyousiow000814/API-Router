@@ -175,6 +175,7 @@ pub(crate) fn get_spend_history(
         let mut tracked_by_day: BTreeMap<String, f64> = BTreeMap::new();
         let mut tracked_api_key_ref_by_day: BTreeMap<String, String> = BTreeMap::new();
         let mut updated_by_day: BTreeMap<String, u64> = BTreeMap::new();
+        let mut tracked_day_meta_by_day: BTreeMap<String, Value> = BTreeMap::new();
         for day in state.gateway.store.list_spend_days(&provider_name) {
             let started = day
                 .get("started_at_unix_ms")
@@ -203,9 +204,21 @@ pub(crate) fn get_spend_history(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(started);
             updated_by_day
-                .entry(day_key)
+                .entry(day_key.clone())
                 .and_modify(|v| *v = (*v).max(updated_at))
                 .or_insert(updated_at);
+            tracked_day_meta_by_day
+                .entry(day_key.clone())
+                .and_modify(|current| {
+                    let current_updated = current
+                        .get("updated_at_unix_ms")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0);
+                    if updated_at >= current_updated {
+                        *current = day.clone();
+                    }
+                })
+                .or_insert(day.clone());
         }
 
         let mut manual_by_day: BTreeMap<String, (Option<f64>, Option<f64>, u64)> = BTreeMap::new();
@@ -258,6 +271,7 @@ pub(crate) fn get_spend_history(
             );
             let package_profile = package_profile_for_day(pricing_cfg, day_start);
             let tracked_total = tracked_by_day.get(&day_key).copied();
+            let tracked_day = tracked_day_meta_by_day.get(&day_key);
             let scheduled_total = package_total_schedule_by_day(pricing_cfg, day_start, day_end)
                 .remove(&day_key)
                 .filter(|value| value.is_finite() && *value > 0.0);
@@ -344,7 +358,12 @@ pub(crate) fn get_spend_history(
                 "effective_total_usd": effective_total.map(round3),
                 "effective_usd_per_req": effective_per_req.map(round3),
                 "source": source,
-                "updated_at_unix_ms": updated_at
+                "updated_at_unix_ms": updated_at,
+                "tracked_producer_node_id": tracked_day.as_ref().and_then(|day| day.get("producer_node_id")).and_then(|value| value.as_str()),
+                "tracked_producer_node_name": tracked_day.as_ref().and_then(|day| day.get("producer_node_name")).and_then(|value| value.as_str()),
+                "tracked_applied_from_node_id": tracked_day.as_ref().and_then(|day| day.get("applied_from_node_id")).and_then(|value| value.as_str()),
+                "tracked_applied_from_node_name": tracked_day.as_ref().and_then(|day| day.get("applied_from_node_name")).and_then(|value| value.as_str()),
+                "tracked_applied_at_unix_ms": tracked_day.as_ref().and_then(|day| day.get("applied_at_unix_ms")).and_then(|value| value.as_u64())
             }));
         }
     }

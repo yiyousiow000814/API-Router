@@ -1255,6 +1255,19 @@ struct SpendManualDaySyncPayload {
     manual_usd_per_req: Option<f64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct QuotaSnapshotSyncPayload {
+    provider_name: String,
+    snapshot: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TrackedSpendDaySyncPayload {
+    provider_name: String,
+    day_started_at_unix_ms: u64,
+    row: Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderDefinitionSnapshotPayload {
     #[serde(default)]
@@ -1304,6 +1317,43 @@ fn shared_provider_id_for_provider(
     provider: &str,
 ) -> Result<String, String> {
     secrets.ensure_provider_shared_id(provider)
+}
+
+fn local_node_identity_for_edit_recording() -> Option<LanNodeIdentity> {
+    gateway_status_runtime()
+        .read()
+        .as_ref()
+        .map(|runtime| runtime.local_node.clone())
+}
+
+pub(crate) fn current_local_node_identity() -> Option<LanNodeIdentity> {
+    local_node_identity_for_edit_recording()
+}
+
+fn resolve_provider_name_for_shared_provider_id(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    shared_provider_id: &str,
+    provider_name_hint: &str,
+) -> Result<String, String> {
+    if let Some(provider_name) = gateway
+        .secrets
+        .find_provider_by_shared_id(shared_provider_id)
+    {
+        return Ok(provider_name);
+    }
+    if !provider_name_hint.trim().is_empty()
+        && gateway
+            .cfg
+            .read()
+            .providers
+            .contains_key(provider_name_hint)
+    {
+        gateway
+            .secrets
+            .set_provider_shared_id(provider_name_hint, shared_provider_id)?;
+        return Ok(provider_name_hint.to_string());
+    }
+    Err(format!("unknown shared provider id: {shared_provider_id}"))
 }
 
 fn provider_definition_snapshot_payload(
@@ -1435,6 +1485,55 @@ fn provider_definition_seed_meta_key(shared_provider_id: &str) -> String {
     format!("lan_provider_definition_seed:{shared_provider_id}")
 }
 
+fn provider_pricing_seed_meta_key(shared_provider_id: &str) -> String {
+    format!("lan_provider_pricing_seed:{shared_provider_id}")
+}
+
+fn quota_snapshot_seed_meta_key(shared_provider_id: &str) -> String {
+    format!("lan_quota_snapshot_seed:{shared_provider_id}")
+}
+
+fn tracked_spend_day_seed_meta_key(entity_id: &str) -> String {
+    format!("lan_tracked_spend_day_seed:{entity_id}")
+}
+
+fn spend_manual_day_seed_meta_key(entity_id: &str) -> String {
+    format!("lan_spend_manual_day_seed:{entity_id}")
+}
+
+fn seed_payload_revision(value: &Value) -> Result<String, String> {
+    serde_json::to_string(value).map_err(|err| err.to_string())
+}
+
+fn seed_edit_event_if_changed(
+    state: &crate::app_state::AppState,
+    entity_type: &str,
+    entity_id: &str,
+    op: &str,
+    payload: Value,
+    meta_key: &str,
+) -> Result<(), String> {
+    let next_revision = seed_payload_revision(&payload)?;
+    let current_revision = state
+        .gateway
+        .store
+        .get_event_meta(meta_key)
+        .map_err(|err| err.to_string())?;
+    if current_revision.as_deref() == Some(next_revision.as_str()) {
+        return Ok(());
+    }
+    let _ = record_edit_event(
+        &state.gateway,
+        &state.lan_sync.local_node,
+        entity_type,
+        entity_id,
+        op,
+        payload,
+    )?;
+    let _ = state.gateway.store.set_event_meta(meta_key, &next_revision);
+    Ok(())
+}
+
 pub fn ensure_local_edit_seed_state(state: &crate::app_state::AppState) -> Result<(), String> {
     let provider_names = state
         .gateway
@@ -1463,6 +1562,89 @@ pub fn ensure_local_edit_seed_state(state: &crate::app_state::AppState) -> Resul
                 .gateway
                 .store
                 .set_event_meta(&provider_definition_seed_meta_key(&shared_provider_id), "1");
+        }
+
+        let mut pricing_map = state.secrets.list_provider_pricing();
+        let pricing = pricing_map.remove(&provider);
+        let pricing_payload = serde_json::to_value(ProviderPricingSyncPayload {
+            provider_name: provider.clone(),
+            pricing,
+        })
+        .map_err(|err| err.to_string())?;
+        seed_edit_event_if_changed(
+            state,
+            "provider_pricing",
+            &shared_provider_id,
+            "replace",
+            pricing_payload,
+            &provider_pricing_seed_meta_key(&shared_provider_id),
+        )?;
+
+        if let Some(snapshot) = state.gateway.store.get_quota_snapshot(&provider) {
+            let snapshot_payload = serde_json::to_value(QuotaSnapshotSyncPayload {
+                provider_name: provider.clone(),
+                snapshot,
+            })
+            .map_err(|err| err.to_string())?;
+            seed_edit_event_if_changed(
+                state,
+                "quota_snapshot",
+                &shared_provider_id,
+                "replace",
+                snapshot_payload,
+                &quota_snapshot_seed_meta_key(&shared_provider_id),
+            )?;
+        }
+
+        for row in state.gateway.store.list_spend_days(&provider) {
+            let Some(day_started_at_unix_ms) = row
+                .get("started_at_unix_ms")
+                .and_then(|value| value.as_u64())
+            else {
+                continue;
+            };
+            let entity_id = format!("{shared_provider_id}|{day_started_at_unix_ms}");
+            let tracked_payload = serde_json::to_value(TrackedSpendDaySyncPayload {
+                provider_name: provider.clone(),
+                day_started_at_unix_ms,
+                row,
+            })
+            .map_err(|err| err.to_string())?;
+            seed_edit_event_if_changed(
+                state,
+                "tracked_spend_day",
+                &entity_id,
+                "replace",
+                tracked_payload,
+                &tracked_spend_day_seed_meta_key(&entity_id),
+            )?;
+        }
+
+        for row in state.gateway.store.list_spend_manual_days(&provider) {
+            let Some(day_key) = row
+                .get("day_key")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            let entity_id = format!("{shared_provider_id}|{day_key}");
+            let manual_payload = serde_json::to_value(SpendManualDaySyncPayload {
+                provider_name: provider.clone(),
+                day_key: day_key.to_string(),
+                manual_total_usd: row.get("manual_total_usd").and_then(Value::as_f64),
+                manual_usd_per_req: row.get("manual_usd_per_req").and_then(Value::as_f64),
+            })
+            .map_err(|err| err.to_string())?;
+            seed_edit_event_if_changed(
+                state,
+                "spend_manual_day",
+                &entity_id,
+                "replace",
+                manual_payload,
+                &spend_manual_day_seed_meta_key(&entity_id),
+            )?;
         }
     }
     Ok(())
@@ -1535,6 +1717,61 @@ pub fn record_spend_manual_day(
         &state.gateway,
         &state.lan_sync.local_node,
         "spend_manual_day",
+        &entity_id,
+        "replace",
+        payload,
+    )?;
+    Ok(())
+}
+
+pub fn record_quota_snapshot_from_gateway(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    secrets: &SecretStore,
+    provider: &str,
+    snapshot: &crate::orchestrator::quota::QuotaSnapshot,
+) -> Result<(), String> {
+    let Some(local_node) = local_node_identity_for_edit_recording() else {
+        return Ok(());
+    };
+    let shared_provider_id = shared_provider_id_for_provider(secrets, provider)?;
+    let payload = serde_json::to_value(QuotaSnapshotSyncPayload {
+        provider_name: provider.to_string(),
+        snapshot: snapshot.to_json(),
+    })
+    .map_err(|err| err.to_string())?;
+    let _ = record_edit_event(
+        gateway,
+        &local_node,
+        "quota_snapshot",
+        &shared_provider_id,
+        "replace",
+        payload,
+    )?;
+    Ok(())
+}
+
+pub fn record_tracked_spend_day_from_gateway(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    secrets: &SecretStore,
+    provider: &str,
+    day_started_at_unix_ms: u64,
+    row: &Value,
+) -> Result<(), String> {
+    let Some(local_node) = local_node_identity_for_edit_recording() else {
+        return Ok(());
+    };
+    let shared_provider_id = shared_provider_id_for_provider(secrets, provider)?;
+    let entity_id = format!("{shared_provider_id}|{day_started_at_unix_ms}");
+    let payload = serde_json::to_value(TrackedSpendDaySyncPayload {
+        provider_name: provider.to_string(),
+        day_started_at_unix_ms,
+        row: row.clone(),
+    })
+    .map_err(|err| err.to_string())?;
+    let _ = record_edit_event(
+        gateway,
+        &local_node,
+        "tracked_spend_day",
         &entity_id,
         "replace",
         payload,
@@ -1840,31 +2077,48 @@ fn apply_provider_pricing_event(
 ) -> Result<(), String> {
     let payload: ProviderPricingSyncPayload =
         serde_json::from_value(payload.clone()).map_err(|err| err.to_string())?;
-    let provider_name = if let Some(provider_name) = gateway
-        .secrets
-        .find_provider_by_shared_id(shared_provider_id)
-    {
-        provider_name
-    } else if !payload.provider_name.trim().is_empty()
-        && gateway
-            .cfg
-            .read()
-            .providers
-            .contains_key(&payload.provider_name)
-    {
-        gateway
-            .secrets
-            .set_provider_shared_id(&payload.provider_name, shared_provider_id)?;
-        payload.provider_name.clone()
-    } else {
-        return Err(format!("unknown shared provider id: {shared_provider_id}"));
-    };
+    let provider_name = resolve_provider_name_for_shared_provider_id(
+        gateway,
+        shared_provider_id,
+        &payload.provider_name,
+    )?;
     gateway
         .secrets
         .replace_provider_pricing_config(&provider_name, payload.pricing)?;
     gateway
         .store
         .sync_provider_pricing_configs(&gateway.secrets.list_provider_pricing());
+    Ok(())
+}
+
+fn apply_quota_snapshot_event(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    shared_provider_id: &str,
+    payload: &Value,
+    event: &crate::orchestrator::store::LanEditSyncEvent,
+) -> Result<(), String> {
+    let payload: QuotaSnapshotSyncPayload =
+        serde_json::from_value(payload.clone()).map_err(|err| err.to_string())?;
+    let provider_name = resolve_provider_name_for_shared_provider_id(
+        gateway,
+        shared_provider_id,
+        &payload.provider_name,
+    )?;
+    let mut snapshot = crate::orchestrator::quota::quota_snapshot_from_json(&payload.snapshot)
+        .ok_or_else(|| "invalid quota snapshot payload".to_string())?;
+    if snapshot.producer_node_id.is_none() {
+        snapshot.producer_node_id = Some(event.node_id.clone());
+    }
+    if snapshot.producer_node_name.is_none() {
+        snapshot.producer_node_name = Some(event.node_name.clone());
+    }
+    crate::orchestrator::quota::apply_remote_quota_snapshot(
+        gateway,
+        &provider_name,
+        &snapshot,
+        Some(event.node_id.as_str()),
+        Some(event.node_name.as_str()),
+    );
     Ok(())
 }
 
@@ -1878,25 +2132,11 @@ fn apply_spend_manual_day_event(
     let (shared_provider_id, _) = entity_id
         .split_once('|')
         .ok_or_else(|| format!("invalid spend manual entity id: {entity_id}"))?;
-    let provider_name = if let Some(provider_name) = gateway
-        .secrets
-        .find_provider_by_shared_id(shared_provider_id)
-    {
-        provider_name
-    } else if !payload.provider_name.trim().is_empty()
-        && gateway
-            .cfg
-            .read()
-            .providers
-            .contains_key(&payload.provider_name)
-    {
-        gateway
-            .secrets
-            .set_provider_shared_id(&payload.provider_name, shared_provider_id)?;
-        payload.provider_name.clone()
-    } else {
-        return Err(format!("unknown shared provider id: {shared_provider_id}"));
-    };
+    let provider_name = resolve_provider_name_for_shared_provider_id(
+        gateway,
+        shared_provider_id,
+        &payload.provider_name,
+    )?;
     if payload.manual_total_usd.is_none() && payload.manual_usd_per_req.is_none() {
         gateway
             .store
@@ -1913,6 +2153,51 @@ fn apply_spend_manual_day_event(
             .store
             .put_spend_manual_day(&provider_name, &payload.day_key, &row);
     }
+    Ok(())
+}
+
+fn apply_tracked_spend_day_event(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    entity_id: &str,
+    payload: &Value,
+    event: &crate::orchestrator::store::LanEditSyncEvent,
+) -> Result<(), String> {
+    let payload: TrackedSpendDaySyncPayload =
+        serde_json::from_value(payload.clone()).map_err(|err| err.to_string())?;
+    let (shared_provider_id, _) = entity_id
+        .split_once('|')
+        .ok_or_else(|| format!("invalid tracked spend entity id: {entity_id}"))?;
+    let provider_name = resolve_provider_name_for_shared_provider_id(
+        gateway,
+        shared_provider_id,
+        &payload.provider_name,
+    )?;
+    let mut row = payload.row.clone();
+    if let Some(map) = row.as_object_mut() {
+        map.insert(
+            "producer_node_id".to_string(),
+            Value::String(event.node_id.clone()),
+        );
+        map.insert(
+            "producer_node_name".to_string(),
+            Value::String(event.node_name.clone()),
+        );
+        map.insert(
+            "applied_from_node_id".to_string(),
+            Value::String(event.node_id.clone()),
+        );
+        map.insert(
+            "applied_from_node_name".to_string(),
+            Value::String(event.node_name.clone()),
+        );
+        map.insert(
+            "applied_at_unix_ms".to_string(),
+            serde_json::json!(unix_ms()),
+        );
+    }
+    gateway
+        .store
+        .put_spend_day(&provider_name, payload.day_started_at_unix_ms, &row);
     Ok(())
 }
 
@@ -1947,8 +2232,14 @@ fn apply_lan_edit_event(
         "provider_pricing" => {
             apply_provider_pricing_event(gateway, &event.entity_id, &event.payload)
         }
+        "quota_snapshot" => {
+            apply_quota_snapshot_event(gateway, &event.entity_id, &event.payload, event)
+        }
         "spend_manual_day" => {
             apply_spend_manual_day_event(gateway, &event.entity_id, &event.payload)
+        }
+        "tracked_spend_day" => {
+            apply_tracked_spend_day_event(gateway, &event.entity_id, &event.payload, event)
         }
         other => Err(format!("unsupported edit entity type: {other}")),
     }
@@ -2828,42 +3119,52 @@ fn handle_quota_refresh_request(
         return;
     };
     let provider_name = provider_name.clone();
+    let requester_node_id = packet.node_id.trim().to_string();
+    let requester_node_name = runtime
+        .live_peer_by_node_id(&requester_node_id)
+        .map(|peer| peer.node_name)
+        .unwrap_or_else(|| requester_node_id.clone());
     let gateway = gateway.clone();
     let runtime = runtime.clone();
     tauri::async_runtime::spawn(async move {
         gateway.store.add_event(
-            "gateway",
+            &provider_name,
             "info",
             "lan.quota_refresh_forwarded_started",
-            "remote quota refresh request received; owner is refreshing now",
+            &format!("Shared usage refresh received from {}", requester_node_name),
             serde_json::json!({
                 "provider": provider_name,
-                "requester_node_id": packet.node_id,
+                "requester_node_id": requester_node_id,
+                "requester_node_name": requester_node_name,
             }),
         );
         match crate::orchestrator::quota::refresh_quota_shared(&gateway, &runtime, &provider_name)
             .await
         {
             Ok(group) => gateway.store.add_event(
-                "gateway",
+                &provider_name,
                 "info",
                 "lan.quota_refresh_forwarded_succeeded",
-                &format!(
-                    "remote quota refresh request succeeded for {} provider(s)",
-                    group.len()
-                ),
+                &format!("Shared usage refresh completed for {}", requester_node_name),
                 serde_json::json!({
                     "provider": provider_name,
                     "providers": group,
+                    "requester_node_id": requester_node_id,
+                    "requester_node_name": requester_node_name,
                 }),
             ),
             Err(err) => gateway.store.add_event(
-                "gateway",
+                &provider_name,
                 "warning",
                 "lan.quota_refresh_forwarded_failed",
-                &format!("remote quota refresh request failed: {err}"),
+                &format!(
+                    "Shared usage refresh failed for {}: {err}",
+                    requester_node_name
+                ),
                 serde_json::json!({
                     "provider": provider_name,
+                    "requester_node_id": requester_node_id,
+                    "requester_node_name": requester_node_name,
                 }),
             ),
         }
@@ -4582,6 +4883,136 @@ mod tests {
     }
 
     #[test]
+    fn quota_and_tracked_spend_recording_emit_lan_edit_events() {
+        let (_tmp, state) = build_test_state();
+        let runtime = LanSyncRuntime::new(LanNodeIdentity {
+            node_id: "node-self".to_string(),
+            node_name: "self".to_string(),
+        });
+        super::register_gateway_status_runtime(runtime);
+        state
+            .secrets
+            .ensure_provider_shared_id("provider_1")
+            .expect("shared id");
+
+        let snapshot = crate::orchestrator::quota::QuotaSnapshot {
+            kind: crate::orchestrator::quota::UsageKind::BudgetInfo,
+            updated_at_unix_ms: 5000,
+            remaining: None,
+            today_used: None,
+            today_added: None,
+            daily_spent_usd: Some(12.34),
+            daily_budget_usd: Some(100.0),
+            weekly_spent_usd: None,
+            weekly_budget_usd: None,
+            monthly_spent_usd: None,
+            monthly_budget_usd: None,
+            package_expires_at_unix_ms: None,
+            last_error: String::new(),
+            effective_usage_base: Some("https://example.com/v1".to_string()),
+            effective_usage_source: Some("remote".to_string()),
+            producer_node_id: None,
+            producer_node_name: None,
+            applied_from_node_id: None,
+            applied_from_node_name: None,
+            applied_at_unix_ms: 0,
+        };
+        super::record_quota_snapshot_from_gateway(
+            &state.gateway,
+            &state.secrets,
+            "provider_1",
+            &snapshot,
+        )
+        .expect("record quota snapshot");
+        let tracked_row = serde_json::json!({
+            "provider": "provider_1",
+            "started_at_unix_ms": 1711929600000u64,
+            "tracked_spend_usd": 12.34,
+            "updated_at_unix_ms": 5000u64
+        });
+        super::record_tracked_spend_day_from_gateway(
+            &state.gateway,
+            &state.secrets,
+            "provider_1",
+            1711929600000,
+            &tracked_row,
+        )
+        .expect("record tracked spend");
+
+        let (events, _) = state.gateway.store.list_lan_edit_events_batch(0, None, 10);
+        assert!(events
+            .iter()
+            .any(|event| event.entity_type == "quota_snapshot"));
+        assert!(events
+            .iter()
+            .any(|event| event.entity_type == "tracked_spend_day"));
+    }
+
+    #[test]
+    fn ensure_local_edit_seed_state_includes_existing_usage_entities() {
+        let (_tmp, state) = build_test_state();
+        state
+            .secrets
+            .set_provider_pricing("provider_1", "per_request", 0.035, None, None)
+            .expect("set provider pricing");
+        state
+            .gateway
+            .store
+            .sync_provider_pricing_configs(&state.secrets.list_provider_pricing());
+        state
+            .gateway
+            .store
+            .put_quota_snapshot(
+                "provider_1",
+                &serde_json::json!({
+                    "kind": "budget_info",
+                    "updated_at_unix_ms": 5000u64,
+                    "daily_spent_usd": 12.34,
+                    "daily_budget_usd": 100.0,
+                    "last_error": "",
+                }),
+            )
+            .expect("seed quota snapshot");
+        state.gateway.store.put_spend_day(
+            "provider_1",
+            1711929600000,
+            &serde_json::json!({
+                "provider": "provider_1",
+                "started_at_unix_ms": 1711929600000u64,
+                "tracked_spend_usd": 12.34,
+                "updated_at_unix_ms": 5000u64,
+            }),
+        );
+        state.gateway.store.put_spend_manual_day(
+            "provider_1",
+            "2026-04-02",
+            &serde_json::json!({
+                "provider": "provider_1",
+                "day_key": "2026-04-02",
+                "manual_total_usd": 1.25,
+                "manual_usd_per_req": 0.5,
+                "updated_at_unix_ms": 6000u64,
+            }),
+        );
+
+        super::ensure_local_edit_seed_state(&state).expect("seed local edit state");
+
+        let (events, _) = state.gateway.store.list_lan_edit_events_batch(0, None, 20);
+        assert!(events
+            .iter()
+            .any(|event| event.entity_type == "provider_pricing"));
+        assert!(events
+            .iter()
+            .any(|event| event.entity_type == "quota_snapshot"));
+        assert!(events
+            .iter()
+            .any(|event| event.entity_type == "tracked_spend_day"));
+        assert!(events
+            .iter()
+            .any(|event| event.entity_type == "spend_manual_day"));
+    }
+
+    #[test]
     fn peer_registry_uses_receive_time_for_freshness() {
         let runtime = LanSyncRuntime::new(LanNodeIdentity {
             node_id: "node-self".to_string(),
@@ -4722,7 +5153,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_pricing_and_spend_events_apply_by_shared_provider_id() {
+    fn provider_pricing_quota_and_spend_events_apply_by_shared_provider_id() {
         let (_tmp, state) = build_test_state();
         let shared_provider_id = state
             .secrets
@@ -4759,6 +5190,39 @@ mod tests {
         apply_lan_edit_event(&state.gateway, &state.config_path, &pricing_event)
             .expect("apply pricing");
 
+        let quota_event = crate::orchestrator::store::LanEditSyncEvent {
+            event_id: "edit_test_quota".to_string(),
+            node_id: "node-remote".to_string(),
+            node_name: "remote".to_string(),
+            created_at_unix_ms: 2,
+            lamport_ts: 2,
+            entity_type: "quota_snapshot".to_string(),
+            entity_id: shared_provider_id.clone(),
+            op: "replace".to_string(),
+            payload: serde_json::json!({
+                "provider_name": "provider_1",
+                "snapshot": {
+                    "kind": "budget_info",
+                    "updated_at_unix_ms": 2222,
+                    "remaining": null,
+                    "today_used": null,
+                    "today_added": null,
+                    "daily_spent_usd": 17.47,
+                    "daily_budget_usd": 200.0,
+                    "weekly_spent_usd": null,
+                    "weekly_budget_usd": null,
+                    "monthly_spent_usd": null,
+                    "monthly_budget_usd": null,
+                    "package_expires_at_unix_ms": null,
+                    "last_error": "",
+                    "effective_usage_base": "https://example.com/v1",
+                    "effective_usage_source": "remote"
+                }
+            }),
+        };
+        apply_lan_edit_event(&state.gateway, &state.config_path, &quota_event)
+            .expect("apply quota");
+
         let spend_event = crate::orchestrator::store::LanEditSyncEvent {
             event_id: "edit_test_spend".to_string(),
             node_id: "node-remote".to_string(),
@@ -4778,11 +5242,86 @@ mod tests {
         apply_lan_edit_event(&state.gateway, &state.config_path, &spend_event)
             .expect("apply spend");
 
+        let tracked_spend_event = crate::orchestrator::store::LanEditSyncEvent {
+            event_id: "edit_test_tracked_spend".to_string(),
+            node_id: "node-remote".to_string(),
+            node_name: "remote".to_string(),
+            created_at_unix_ms: 4,
+            lamport_ts: 4,
+            entity_type: "tracked_spend_day".to_string(),
+            entity_id: format!("{shared_provider_id}|1711929600000"),
+            op: "replace".to_string(),
+            payload: serde_json::json!({
+                "provider_name": "provider_1",
+                "day_started_at_unix_ms": 1711929600000u64,
+                "row": {
+                    "provider": "provider_1",
+                    "api_key_ref": "sk-abc******wxyz",
+                    "started_at_unix_ms": 1711929600000u64,
+                    "ended_at_unix_ms": null,
+                    "tracked_spend_usd": 17.47,
+                    "last_seen_daily_spent_usd": 17.47,
+                    "updated_at_unix_ms": 2222u64
+                }
+            }),
+        };
+        apply_lan_edit_event(&state.gateway, &state.config_path, &tracked_spend_event)
+            .expect("apply tracked spend");
+
         let pricing = state.secrets.list_provider_pricing();
         let provider_pricing = pricing.get("provider_1").expect("provider pricing");
         assert_eq!(provider_pricing.mode, "per_request");
         assert_eq!(provider_pricing.amount_usd, 0.035);
         assert_eq!(provider_pricing.periods.len(), 1);
+
+        let quota_snapshot = state
+            .gateway
+            .store
+            .get_quota_snapshot("provider_1")
+            .expect("quota snapshot");
+        assert_eq!(
+            quota_snapshot
+                .get("daily_spent_usd")
+                .and_then(|value| value.as_f64()),
+            Some(17.47)
+        );
+        assert_eq!(
+            quota_snapshot
+                .get("updated_at_unix_ms")
+                .and_then(|value| value.as_u64()),
+            Some(2222)
+        );
+        assert_eq!(
+            quota_snapshot
+                .get("producer_node_id")
+                .and_then(|value| value.as_str()),
+            Some("node-remote")
+        );
+        assert_eq!(
+            quota_snapshot
+                .get("producer_node_name")
+                .and_then(|value| value.as_str()),
+            Some("remote")
+        );
+        assert_eq!(
+            quota_snapshot
+                .get("applied_from_node_id")
+                .and_then(|value| value.as_str()),
+            Some("node-remote")
+        );
+        assert_eq!(
+            quota_snapshot
+                .get("applied_from_node_name")
+                .and_then(|value| value.as_str()),
+            Some("remote")
+        );
+        assert!(
+            quota_snapshot
+                .get("applied_at_unix_ms")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0)
+                > 0
+        );
 
         let manual_days = state.gateway.store.list_spend_manual_days("provider_1");
         assert_eq!(manual_days.len(), 1);
@@ -4797,6 +5336,117 @@ mod tests {
                 .get("manual_total_usd")
                 .and_then(|value| value.as_f64()),
             Some(12.5)
+        );
+
+        let tracked_days = state.gateway.store.list_spend_days("provider_1");
+        assert_eq!(tracked_days.len(), 1);
+        assert_eq!(
+            tracked_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(17.47)
+        );
+        assert_eq!(
+            tracked_days[0]
+                .get("producer_node_id")
+                .and_then(|value| value.as_str()),
+            Some("node-remote")
+        );
+        assert_eq!(
+            tracked_days[0]
+                .get("applied_from_node_id")
+                .and_then(|value| value.as_str()),
+            Some("node-remote")
+        );
+    }
+
+    #[tokio::test]
+    async fn forwarded_quota_refresh_events_are_scoped_to_provider_and_keep_node_ids_in_fields() {
+        let (_tmp, state) = build_test_state();
+        {
+            let mut cfg = state.gateway.cfg.write();
+            let provider = cfg.providers.get_mut("provider_1").expect("provider_1");
+            provider.base_url = "https://provider1.mock.local/v1".to_string();
+            provider.usage_base_url = Some("https://usage.provider1.mock.local/v1".to_string());
+        }
+        state
+            .secrets
+            .set_provider_key("provider_1", "sk-owner")
+            .expect("set provider key");
+        state
+            .gateway
+            .secrets
+            .set_provider_key("provider_1", "sk-owner")
+            .expect("set gateway provider key");
+        let runtime = LanSyncRuntime::new(LanNodeIdentity {
+            node_id: "node-owner".to_string(),
+            node_name: "owner-box".to_string(),
+        });
+        let fingerprint = crate::orchestrator::quota::shared_provider_fingerprint(
+            &state.gateway.cfg.read().clone(),
+            &state.secrets,
+            "provider_1",
+        )
+        .expect("shared fingerprint");
+        *runtime.local_provider_fingerprints.write() = vec![fingerprint.clone()];
+        state
+            .secrets
+            .set_lan_node_trusted("node-remote", true)
+            .expect("trust requester");
+        runtime.peers.write().insert(
+            "node-remote".to_string(),
+            super::LanPeerRuntime {
+                node_id: "node-remote".to_string(),
+                node_name: "remote-box".to_string(),
+                listen_addr: "192.168.1.21:4000".to_string(),
+                last_heartbeat_unix_ms: crate::orchestrator::store::unix_ms(),
+                capabilities: vec!["heartbeat_v1".to_string()],
+                provider_fingerprints: vec![fingerprint.clone()],
+                provider_definitions_revision: String::new(),
+                followed_source_node_id: None,
+            },
+        );
+
+        super::handle_quota_refresh_request(
+            &runtime,
+            &state.gateway,
+            super::LanQuotaRefreshRequestPacket {
+                version: 1,
+                node_id: "node-remote".to_string(),
+                shared_provider_fingerprint: fingerprint,
+            },
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        let events = state.gateway.store.list_events_range(None, None, Some(20));
+        let started = events
+            .iter()
+            .find(|event| {
+                event.get("code").and_then(|value| value.as_str())
+                    == Some("lan.quota_refresh_forwarded_started")
+            })
+            .expect("started event");
+        assert_eq!(
+            started.get("provider").and_then(|value| value.as_str()),
+            Some("provider_1")
+        );
+        assert_eq!(
+            started.get("message").and_then(|value| value.as_str()),
+            Some("Shared usage refresh received from remote-box")
+        );
+        let fields = started.get("fields").expect("started fields");
+        assert_eq!(
+            fields
+                .get("requester_node_id")
+                .and_then(|value| value.as_str()),
+            Some("node-remote")
+        );
+        assert_eq!(
+            fields
+                .get("requester_node_name")
+                .and_then(|value| value.as_str()),
+            Some("remote-box")
         );
     }
 

@@ -109,6 +109,11 @@ pub struct QuotaSnapshot {
     pub last_error: String,
     pub effective_usage_base: Option<String>,
     pub effective_usage_source: Option<String>,
+    pub producer_node_id: Option<String>,
+    pub producer_node_name: Option<String>,
+    pub applied_from_node_id: Option<String>,
+    pub applied_from_node_name: Option<String>,
+    pub applied_at_unix_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -302,6 +307,11 @@ impl QuotaSnapshot {
             last_error: String::new(),
             effective_usage_base: None,
             effective_usage_source: None,
+            producer_node_id: None,
+            producer_node_name: None,
+            applied_from_node_id: None,
+            applied_from_node_name: None,
+            applied_at_unix_ms: 0,
         }
     }
 
@@ -322,6 +332,11 @@ impl QuotaSnapshot {
             "last_error": self.last_error,
             "effective_usage_base": self.effective_usage_base,
             "effective_usage_source": self.effective_usage_source,
+            "producer_node_id": self.producer_node_id,
+            "producer_node_name": self.producer_node_name,
+            "applied_from_node_id": self.applied_from_node_id,
+            "applied_from_node_name": self.applied_from_node_name,
+            "applied_at_unix_ms": self.applied_at_unix_ms,
         })
     }
 }
@@ -868,10 +883,25 @@ fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnap
         .store
         .get_quota_snapshot(provider_name)
         .and_then(|value| quota_snapshot_from_json(&value));
-    let snapshot_to_store = preserved_quota_snapshot_for_storage(st, provider_name, snap);
+    let mut snapshot_to_store = preserved_quota_snapshot_for_storage(st, provider_name, snap);
+    if let Some(local_node) = crate::lan_sync::current_local_node_identity() {
+        if snapshot_to_store.updated_at_unix_ms > 0 && snapshot_to_store.last_error.is_empty() {
+            snapshot_to_store.producer_node_id = Some(local_node.node_id.clone());
+            snapshot_to_store.producer_node_name = Some(local_node.node_name.clone());
+        }
+        snapshot_to_store.applied_from_node_id = Some(local_node.node_id);
+        snapshot_to_store.applied_from_node_name = Some(local_node.node_name);
+        snapshot_to_store.applied_at_unix_ms = snapshot_to_store.updated_at_unix_ms.max(unix_ms());
+    }
     let _ = st
         .store
         .put_quota_snapshot(provider_name, &snapshot_to_store.to_json());
+    let _ = crate::lan_sync::record_quota_snapshot_from_gateway(
+        st,
+        &st.secrets,
+        provider_name,
+        &snapshot_to_store,
+    );
     track_budget_spend(st, provider_name, &snapshot_to_store);
     if snap.last_error.is_empty() && snap.updated_at_unix_ms > 0 {
         st.router
@@ -937,7 +967,60 @@ fn store_quota_snapshot_silent(st: &GatewayState, provider_name: &str, snap: &Qu
     // providers and inflate total usage cost.
 }
 
-fn quota_snapshot_from_json(value: &Value) -> Option<QuotaSnapshot> {
+pub(crate) fn apply_remote_quota_snapshot(
+    st: &GatewayState,
+    provider_name: &str,
+    snap: &QuotaSnapshot,
+    applied_from_node_id: Option<&str>,
+    applied_from_node_name: Option<&str>,
+) {
+    let existing = st
+        .store
+        .get_quota_snapshot(provider_name)
+        .and_then(|value| quota_snapshot_from_json(&value));
+    if existing
+        .as_ref()
+        .is_some_and(|previous| previous.updated_at_unix_ms > snap.updated_at_unix_ms)
+    {
+        return;
+    }
+    let mut snapshot_to_store = snap.clone();
+    snapshot_to_store.applied_from_node_id = applied_from_node_id.map(ToString::to_string);
+    snapshot_to_store.applied_from_node_name = applied_from_node_name.map(ToString::to_string);
+    snapshot_to_store.applied_at_unix_ms = unix_ms();
+    store_quota_snapshot_silent(st, provider_name, &snapshot_to_store);
+    let cfg = st.cfg.read().clone();
+    let provider_key = st.secrets.get_provider_key(provider_name);
+    let usage_token = st.secrets.get_usage_token(provider_name);
+    let usage_login = st.secrets.get_usage_login(provider_name);
+    let Some(shared_base) = cfg
+        .providers
+        .get(provider_name)
+        .and_then(|provider| candidate_quota_bases(provider).first().cloned())
+    else {
+        return;
+    };
+    let shared_key = usage_shared_key(&shared_base, &provider_key, &usage_token, &usage_login);
+    for (name, provider) in cfg.providers.iter() {
+        if name == provider_name {
+            continue;
+        }
+        let other_key = usage_shared_key(
+            candidate_quota_bases(provider)
+                .first()
+                .map(String::as_str)
+                .unwrap_or_default(),
+            &st.secrets.get_provider_key(name),
+            &st.secrets.get_usage_token(name),
+            &st.secrets.get_usage_login(name),
+        );
+        if other_key == shared_key {
+            store_quota_snapshot_silent(st, name, &snapshot_to_store);
+        }
+    }
+}
+
+pub(crate) fn quota_snapshot_from_json(value: &Value) -> Option<QuotaSnapshot> {
     Some(QuotaSnapshot {
         kind: UsageKind::from_str(value.get("kind")?.as_str().unwrap_or("none")),
         updated_at_unix_ms: value
@@ -969,6 +1052,26 @@ fn quota_snapshot_from_json(value: &Value) -> Option<QuotaSnapshot> {
             .get("effective_usage_source")
             .and_then(Value::as_str)
             .map(ToString::to_string),
+        producer_node_id: value
+            .get("producer_node_id")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        producer_node_name: value
+            .get("producer_node_name")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        applied_from_node_id: value
+            .get("applied_from_node_id")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        applied_from_node_name: value
+            .get("applied_from_node_name")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        applied_at_unix_ms: value
+            .get("applied_at_unix_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
     })
 }
 
@@ -1019,6 +1122,11 @@ fn preserved_quota_snapshot_for_storage(
         last_error: snap.last_error.clone(),
         effective_usage_base: previous.effective_usage_base,
         effective_usage_source: previous.effective_usage_source,
+        producer_node_id: previous.producer_node_id,
+        producer_node_name: previous.producer_node_name,
+        applied_from_node_id: previous.applied_from_node_id,
+        applied_from_node_name: previous.applied_from_node_name,
+        applied_at_unix_ms: previous.applied_at_unix_ms,
     }
 }
 
@@ -1030,6 +1138,44 @@ fn quota_refresh_source_label(source: &str) -> &'static str {
         "codex_for_me_balance" => "codex-for.me dashboard",
         _ => "",
     }
+}
+
+fn annotate_local_tracked_spend_day(mut day: Value) -> Value {
+    annotate_local_tracked_spend_day_in_place(&mut day);
+    day
+}
+
+fn annotate_local_tracked_spend_day_in_place(day: &mut Value) {
+    let Some(local_node) = crate::lan_sync::current_local_node_identity() else {
+        return;
+    };
+    let Some(map) = day.as_object_mut() else {
+        return;
+    };
+    map.insert(
+        "producer_node_id".to_string(),
+        Value::String(local_node.node_id.clone()),
+    );
+    map.insert(
+        "producer_node_name".to_string(),
+        Value::String(local_node.node_name.clone()),
+    );
+    map.insert(
+        "applied_from_node_id".to_string(),
+        Value::String(local_node.node_id),
+    );
+    map.insert(
+        "applied_from_node_name".to_string(),
+        Value::String(local_node.node_name),
+    );
+    let applied_at = map
+        .get("updated_at_unix_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(unix_ms);
+    map.insert(
+        "applied_at_unix_ms".to_string(),
+        serde_json::json!(applied_at),
+    );
 }
 
 fn quota_refresh_error_log_key(err: &str) -> String {
@@ -1211,8 +1357,16 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
             "last_seen_daily_spent_usd": current_daily_spent,
             "updated_at_unix_ms": now
         });
+        let day = annotate_local_tracked_spend_day(day);
         st.store
             .put_spend_day(provider_name, open_day_started_at_unix_ms, &day);
+        let _ = crate::lan_sync::record_tracked_spend_day_from_gateway(
+            st,
+            &st.secrets,
+            provider_name,
+            open_day_started_at_unix_ms,
+            &day,
+        );
     } else {
         let epsilon = 1e-7_f64;
         if current_daily_spent + epsilon < last_seen_daily_spent {
@@ -1227,8 +1381,16 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
                 }
                 prev_day["updated_at_unix_ms"] = serde_json::json!(now);
                 prev_day["last_seen_daily_spent_usd"] = serde_json::json!(last_seen_daily_spent);
+                annotate_local_tracked_spend_day_in_place(&mut prev_day);
                 st.store
                     .put_spend_day(provider_name, open_day_started_at_unix_ms, &prev_day);
+                let _ = crate::lan_sync::record_tracked_spend_day_from_gateway(
+                    st,
+                    &st.secrets,
+                    provider_name,
+                    open_day_started_at_unix_ms,
+                    &prev_day,
+                );
             }
 
             open_day_started_at_unix_ms = now;
@@ -1242,8 +1404,16 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
                 "last_seen_daily_spent_usd": current_daily_spent,
                 "updated_at_unix_ms": now
             });
+            let day = annotate_local_tracked_spend_day(day);
             st.store
                 .put_spend_day(provider_name, open_day_started_at_unix_ms, &day);
+            let _ = crate::lan_sync::record_tracked_spend_day_from_gateway(
+                st,
+                &st.secrets,
+                provider_name,
+                open_day_started_at_unix_ms,
+                &day,
+            );
             last_seen_daily_spent = current_daily_spent;
         } else {
             let delta = (current_daily_spent - last_seen_daily_spent).max(0.0);
@@ -1265,8 +1435,16 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
             day["tracked_spend_usd"] = serde_json::json!(tracked + delta);
             day["last_seen_daily_spent_usd"] = serde_json::json!(current_daily_spent);
             day["updated_at_unix_ms"] = serde_json::json!(now);
+            annotate_local_tracked_spend_day_in_place(&mut day);
             st.store
                 .put_spend_day(provider_name, open_day_started_at_unix_ms, &day);
+            let _ = crate::lan_sync::record_tracked_spend_day_from_gateway(
+                st,
+                &st.secrets,
+                provider_name,
+                open_day_started_at_unix_ms,
+                &day,
+            );
             last_seen_daily_spent = current_daily_spent;
         }
     }
@@ -1659,8 +1837,8 @@ pub async fn run_quota_scheduler(st: GatewayState, lan_sync: crate::lan_sync::La
                                 "info",
                                 "usage.refresh_forwarded_after_local_failure",
                                 &format!(
-                                    "Usage refresh failed locally and was forwarded to {} ({})",
-                                    owner.owner_node_name, owner.owner_node_id
+                                    "Usage refresh failed locally and was forwarded to {}",
+                                    owner.owner_node_name
                                 ),
                                 serde_json::json!({
                                     "owner_node_id": owner.owner_node_id,

@@ -95,4 +95,5 @@ describe('simulateQuotaForDisplay', () => {
       ),
     ).toEqual(quota)
   })
+
 })

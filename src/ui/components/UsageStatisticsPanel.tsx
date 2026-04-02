@@ -148,6 +148,9 @@ const USAGE_REQUEST_COLUMN_FILTERS: Array<{
   { key: 'cacheRead', label: 'Cache Read', filterable: false },
 ]
 const USAGE_REQUEST_PAGE_SIZE = 200
+const USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS = 120
+const USAGE_REQUEST_ROW_HEIGHT_PX = 33
+const USAGE_REQUEST_OVERSCAN_ROWS = 18
 const USAGE_REQUEST_GRAPH_SOURCE_LIMIT = 60
 const USAGE_REQUEST_GRAPH_MAX_SESSIONS = 6
 const USAGE_REQUEST_TEST_MIN_ROWS = 401
@@ -213,6 +216,25 @@ function shortSessionIdForLegend(sessionId: string): string {
   const value = sessionId.trim()
   if (value.length <= 24) return value
   return `${value.slice(0, 12)}...${value.slice(-8)}`
+}
+
+function resolveUsageRequestVirtualRange(
+  scrollTop: number,
+  viewportHeight: number,
+  rowCount: number,
+): { start: number; end: number } {
+  if (rowCount <= 0) return { start: 0, end: 0 }
+  if (viewportHeight <= 0) {
+    return { start: 0, end: Math.min(rowCount, USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS) }
+  }
+  const visibleStart = Math.max(0, Math.floor(scrollTop / USAGE_REQUEST_ROW_HEIGHT_PX))
+  const visibleCount = Math.max(1, Math.ceil(viewportHeight / USAGE_REQUEST_ROW_HEIGHT_PX))
+  const start = Math.max(0, visibleStart - USAGE_REQUEST_OVERSCAN_ROWS)
+  const end = Math.min(
+    rowCount,
+    visibleStart + visibleCount + USAGE_REQUEST_OVERSCAN_ROWS,
+  )
+  return { start, end }
 }
 
 function listUsageRequestDailyProviderHints(
@@ -1324,6 +1346,7 @@ export function UsageStatisticsPanel({
     Record<string, UsageRequestEntry[]>
   >({})
   const [usageRequestTableScrollLeft, setUsageRequestTableScrollLeft] = useState(0)
+  const [usageRequestVirtualRange, setUsageRequestVirtualRange] = useState(() => ({ start: 0, end: 0 }))
   const [usageRequestHasMore, setUsageRequestHasMore] = useState(false)
   const [usageRequestLoading, setUsageRequestLoading] = useState(false)
   const [usageRequestError, setUsageRequestError] = useState('')
@@ -1392,6 +1415,7 @@ export function UsageStatisticsPanel({
   const usageRequestLastRenderedRowsRef = useRef<UsageRequestEntry[]>([])
   const usageRequestLastActivityRef = useRef<number | null>(null)
   const usageRequestWasNearBottomRef = useRef(false)
+  const usageRequestVirtualRowCountRef = useRef(0)
   const usageRequestWarmupAtRef = useRef(0)
   const usageRequestDefaultTodayAutoPageRef = useRef(false)
   const usageRequestsPagePrefetchInFlightRef = useRef(false)
@@ -1680,10 +1704,28 @@ export function UsageStatisticsPanel({
     clearUsageHistoryScrollbarTimers: clearUsageRequestScrollbarTimers,
   } = useUsageHistoryScrollbar()
 
+  const syncUsageRequestVirtualRange = useCallback(() => {
+    const wrap = usageRequestTableWrapRef.current
+    const rowCount = usageRequestVirtualRowCountRef.current
+    if (!wrap || rowCount <= 0) {
+      setUsageRequestVirtualRange({ start: 0, end: rowCount })
+      return
+    }
+    if (rowCount <= USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS) {
+      setUsageRequestVirtualRange({ start: 0, end: rowCount })
+      return
+    }
+    const nextRange = resolveUsageRequestVirtualRange(wrap.scrollTop, wrap.clientHeight, rowCount)
+    setUsageRequestVirtualRange((prev) =>
+      prev.start === nextRange.start && prev.end === nextRange.end ? prev : nextRange,
+    )
+  }, [usageRequestTableWrapRef])
+
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests' || typeof window === 'undefined') return
     const sync = () => {
       scheduleUsageRequestScrollbarSync()
+      syncUsageRequestVirtualRange()
     }
     const raf = window.requestAnimationFrame(sync)
     const onResize = () => sync()
@@ -1694,6 +1736,7 @@ export function UsageStatisticsPanel({
     }
   }, [
     effectiveDetailsTab,
+    syncUsageRequestVirtualRange,
     usageRequestRows,
     usageRequestLoading,
     scheduleUsageRequestScrollbarSync,
@@ -3308,6 +3351,24 @@ export function UsageStatisticsPanel({
   const tableRowsForDisplay = showPreviousRowsDuringQuerySwitch
     ? usageRequestLastRenderedRowsRef.current
     : displayedFilteredUsageRequestRows
+  usageRequestVirtualRowCountRef.current = tableRowsForDisplay.length
+  const shouldVirtualizeUsageRequestRows =
+    isRequestsTab && tableRowsForDisplay.length > USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS
+  const virtualUsageRequestStart = shouldVirtualizeUsageRequestRows
+    ? Math.min(usageRequestVirtualRange.start, Math.max(0, tableRowsForDisplay.length - 1))
+    : 0
+  const virtualUsageRequestEnd = shouldVirtualizeUsageRequestRows
+    ? Math.max(usageRequestVirtualRange.end, Math.min(tableRowsForDisplay.length, USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS))
+    : tableRowsForDisplay.length
+  const visibleUsageRequestRows = shouldVirtualizeUsageRequestRows
+    ? tableRowsForDisplay.slice(virtualUsageRequestStart, virtualUsageRequestEnd)
+    : tableRowsForDisplay
+  const usageRequestTopSpacerPx = shouldVirtualizeUsageRequestRows
+    ? virtualUsageRequestStart * USAGE_REQUEST_ROW_HEIGHT_PX
+    : 0
+  const usageRequestBottomSpacerPx = shouldVirtualizeUsageRequestRows
+    ? Math.max(0, (tableRowsForDisplay.length - virtualUsageRequestEnd) * USAGE_REQUEST_ROW_HEIGHT_PX)
+    : 0
   const totalRequestRowsForDisplay = rowsForRequestRender.length
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests') return
@@ -4399,6 +4460,7 @@ export function UsageStatisticsPanel({
                   const wrap = usageRequestTableWrapRef.current
                   if (wrap) {
                     setUsageRequestTableScrollLeft(wrap.scrollLeft)
+                    syncUsageRequestVirtualRange()
                     if (usageRequestHasMore && !usageRequestLoading) {
                       if (hasExplicitRequestFilters && !hasImpossibleRequestFilters) {
                         const nearBottom = isNearBottom(wrap, 24)
@@ -4445,7 +4507,13 @@ export function UsageStatisticsPanel({
                         </td>
                       </tr>
                     ) : (
-                      tableRowsForDisplay.map((row) => (
+                      <>
+                        {usageRequestTopSpacerPx > 0 ? (
+                          <tr aria-hidden="true">
+                            <td colSpan={9} style={{ padding: 0, borderBottom: 0, background: 'transparent', height: usageRequestTopSpacerPx }} />
+                          </tr>
+                        ) : null}
+                        {visibleUsageRequestRows.map((row) => (
                         <tr key={usageRequestRowIdentity(row)}>
                           <td>{fmtWhen(row.unix_ms)}</td>
                           <td className="aoUsageRequestsMono">{row.node_name || 'Local'}</td>
@@ -4478,7 +4546,13 @@ export function UsageStatisticsPanel({
                           <td>{row.output_tokens.toLocaleString()}</td>
                           <td>{row.cache_read_input_tokens.toLocaleString()}</td>
                         </tr>
-                      ))
+                        ))}
+                        {usageRequestBottomSpacerPx > 0 ? (
+                          <tr aria-hidden="true">
+                            <td colSpan={9} style={{ padding: 0, borderBottom: 0, background: 'transparent', height: usageRequestBottomSpacerPx }} />
+                          </tr>
+                        ) : null}
+                      </>
                     )}
                   </tbody>
                 </table>

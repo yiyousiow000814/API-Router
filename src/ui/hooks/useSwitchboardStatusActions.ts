@@ -104,6 +104,18 @@ export function applyProviderSwitchStatusResult(
   }
 }
 
+function scheduleLowPriorityUiTask(task: () => void, delayMs = 200): void {
+  if (typeof window === 'undefined') {
+    task()
+    return
+  }
+  if (typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(() => task(), { timeout: delayMs })
+    return
+  }
+  window.setTimeout(task, delayMs)
+}
+
 export async function runGatewaySwitchPreflight(
   target: 'gateway' | 'official' | 'provider',
   homes: string[],
@@ -154,6 +166,7 @@ export function useSwitchboardStatusActions({
   const startupStatusRefreshTracedRef = useRef(false)
   const startupConfigRefreshTracedRef = useRef(false)
   const startupSwitchboardRefreshTracedRef = useRef(false)
+  const startupGatewayTokenPreviewTracedRef = useRef(false)
   providerSwitchStatusRef.current = providerSwitchStatus
 
   function tryEnterProviderSwitchBusy(): boolean {
@@ -191,6 +204,20 @@ export function useSwitchboardStatusActions({
       setCodexSwapStatus(res)
     } catch {
       setCodexSwapStatus({ ok: true, overall: 'error', dirs: [] })
+    }
+  }
+
+  async function refreshGatewayTokenPreview() {
+    if (isDevPreview) return
+    try {
+      const p = await invoke<string>('get_gateway_token_preview')
+      setGatewayTokenPreview(p)
+      if (!startupGatewayTokenPreviewTracedRef.current) {
+        startupGatewayTokenPreviewTracedRef.current = true
+        recordStartupStage('frontend_gateway_token_preview_resolved')
+      }
+    } catch {
+      // Keep the last token preview when background refresh fails transiently.
     }
   }
 
@@ -324,19 +351,22 @@ export function useSwitchboardStatusActions({
         recordStartupStage('frontend_config_state_applied')
       }
       setBaselineBaseUrls(Object.fromEntries(Object.entries(c.providers).map(([name, p]) => [name, p.base_url])))
-      const p = await invoke<string>('get_gateway_token_preview')
-      setGatewayTokenPreview(p)
-      if (shouldTraceStartup) {
-        recordStartupStage('frontend_gateway_token_preview_resolved')
+      const refreshAuxiliaryUi = () => {
+        void refreshGatewayTokenPreview()
+        const homes = resolveCliHomes(
+          codexSwapDir1Ref.current,
+          codexSwapDir2Ref.current,
+          codexSwapUseWindowsRef.current,
+          codexSwapUseWslRef.current,
+        )
+        if (homes.length > 0 && shouldRefreshProviderSwitchStatus) {
+          void refreshProviderSwitchStatus(homes)
+        }
       }
-      const homes = resolveCliHomes(
-        codexSwapDir1Ref.current,
-        codexSwapDir2Ref.current,
-        codexSwapUseWindowsRef.current,
-        codexSwapUseWslRef.current,
-      )
-      if (homes.length > 0 && shouldRefreshProviderSwitchStatus) {
-        void refreshProviderSwitchStatus(homes)
+      if (shouldTraceStartup) {
+        scheduleLowPriorityUiTask(refreshAuxiliaryUi, 400)
+      } else {
+        refreshAuxiliaryUi()
       }
     } catch (e) {
       console.error(e)
