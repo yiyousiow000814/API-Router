@@ -757,6 +757,7 @@ fn copy_provider_from_config_source_impl(
             cfg.provider_order = local_state.provider_order.clone();
             cfg.routing.preferred_provider = local_state.preferred_provider.clone();
             cfg.routing.session_preferred_providers = local_state.session_preferred_providers.clone();
+            app_state::normalize_provider_order(&mut cfg);
         }
         let cfg = state.gateway.cfg.read().clone();
         let persist_result = toml::to_string_pretty(&cfg)
@@ -2532,6 +2533,49 @@ mod provider_management_tests {
             state.secrets.export_provider_state_bundle().provider_shared_ids,
             previous_bundle.provider_shared_ids
         );
+    }
+
+    #[test]
+    fn copy_provider_from_config_source_normalizes_provider_order_before_persist() {
+        let (_tmp, state) = build_test_state();
+        let source_node_id = "node-remote";
+        let shared_provider_id = "shared-remote-6";
+        state
+            .lan_sync
+            .seed_test_peer(source_node_id, "Remote Node", None);
+        state
+            .secrets
+            .set_lan_node_trusted(source_node_id, true)
+            .expect("trust remote node");
+        seed_remote_provider_snapshot(
+            &state,
+            source_node_id,
+            shared_provider_id,
+            crate::lan_sync::ProviderDefinitionSnapshotPayload {
+                name: "remote_provider".to_string(),
+                display_name: "Remote Provider".to_string(),
+                base_url: "https://remote.example/v1".to_string(),
+                key: Some("sk-remote".to_string()),
+                ..Default::default()
+            },
+        );
+        {
+            let mut cfg = state.gateway.cfg.write();
+            cfg.provider_order = vec![
+                "ghost-provider".to_string(),
+                "provider_1".to_string(),
+                "provider_2".to_string(),
+            ];
+        }
+
+        let result = copy_provider_from_config_source_impl(&state, source_node_id, shared_provider_id)
+            .expect("copy remote provider");
+
+        assert_eq!(result.target_name, "remote_provider");
+        let cfg = state.gateway.cfg.read();
+        assert!(!cfg.provider_order.iter().any(|name| name == "ghost-provider"));
+        assert!(cfg.provider_order.iter().any(|name| name == "remote_provider"));
+        assert!(cfg.provider_order.iter().all(|name| cfg.providers.contains_key(name)));
     }
 
     #[test]

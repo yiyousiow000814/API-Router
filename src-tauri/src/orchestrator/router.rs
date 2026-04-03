@@ -326,10 +326,15 @@ impl RouterState {
         h: &ProviderHealth,
         updated_at_unix_ms: u64,
         source_node_id: &str,
+        source_is_local: bool,
     ) -> bool {
         updated_at_unix_ms > h.last_shared_runtime_update_unix_ms
             || (updated_at_unix_ms == h.last_shared_runtime_update_unix_ms
-                && source_node_id > h.last_shared_runtime_source_node_id.as_str())
+                && if source_is_local != h.last_shared_runtime_origin_local {
+                    source_is_local && !h.last_shared_runtime_origin_local
+                } else {
+                    source_node_id > h.last_shared_runtime_source_node_id.as_str()
+                })
     }
 
     fn snapshot_from_health(v: &ProviderHealth, now_ms: u64) -> ProviderHealthSnapshot {
@@ -400,6 +405,7 @@ impl RouterState {
                 h,
                 snapshot.updated_at_unix_ms,
                 &snapshot.source_node_id,
+                source_is_local,
             ) {
                 return false;
             }
@@ -989,6 +995,37 @@ mod tests {
 
         let _ = router.mark_success(provider, 10_001);
         let snapshot = router.snapshot(10_001);
+        let health = snapshot.get(provider).expect("provider health snapshot");
+        assert_eq!(health.status, "healthy");
+    }
+
+    #[test]
+    fn local_runtime_update_wins_same_timestamp_tie_over_remote_snapshot() {
+        let cfg = AppConfig::default_config();
+        let provider = "official";
+        let router = RouterState::new(&cfg, 0);
+
+        let remote = SharedHealthSyncSnapshot {
+            status: "cooldown".to_string(),
+            consecutive_failures: 1,
+            cooldown_until_unix_ms: 20_000,
+            last_error: "remote-cooldown".to_string(),
+            last_ok_at_unix_ms: 0,
+            last_fail_at_unix_ms: 9_000,
+            shared_probe_required: true,
+            updated_at_unix_ms: 10_000,
+            source_node_id: "node-b".to_string(),
+            source_is_local: false,
+        };
+        assert!(router.apply_shared_sync_snapshot(provider, &remote, false));
+
+        let _ = router.mark_success(provider, 10_000);
+        assert!(
+            !router.apply_shared_sync_snapshot(provider, &remote, false),
+            "same-timestamp remote snapshot must not override a local runtime update"
+        );
+
+        let snapshot = router.snapshot(10_000);
         let health = snapshot.get(provider).expect("provider health snapshot");
         assert_eq!(health.status, "healthy");
     }
