@@ -7,8 +7,6 @@ import {
   buildUsageBaseModalDraft,
   invokeManualQuotaRefresh,
   setProviderQuotaHardCapFieldWithRefresh,
-  supportsPackycodeLoginProvider,
-  waitForProviderUsageLogin,
 } from './useProviderUsageActions'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -68,8 +66,6 @@ describe('buildUsageBaseModalDraft', () => {
       provider: 'p1',
       baseUrl: 'https://codex-api.packycode.com/v1',
       showUrlInput: true,
-      showPackycodeLogin: false,
-      hasUsageLogin: false,
       value: '',
       auto: true,
       explicitValue: '',
@@ -88,8 +84,6 @@ describe('buildUsageBaseModalDraft', () => {
       provider: 'p1',
       baseUrl: 'https://codex-api.packycode.com/v1',
       showUrlInput: true,
-      showPackycodeLogin: false,
-      hasUsageLogin: false,
       value: 'https://manual.example.com',
       auto: false,
       explicitValue: 'https://manual.example.com',
@@ -102,7 +96,7 @@ describe('buildUsageBaseModalDraft', () => {
     })
   })
 
-  it('supports login-only mode for group member packycode auth', () => {
+  it('supports hidden usage url input when requested', () => {
     expect(
       buildUsageBaseModalDraft(
         'p1',
@@ -110,15 +104,13 @@ describe('buildUsageBaseModalDraft', () => {
         'https://codex.packycode.com',
         'https://codex.packycode.com',
         undefined,
-        { showUrlInput: false, showPackycodeLogin: true, hasUsageLogin: true },
+        { showUrlInput: false },
       ),
     ).toEqual({
       open: true,
       provider: 'p1',
       baseUrl: 'https://codex.packycode.com/v1',
       showUrlInput: false,
-      showPackycodeLogin: true,
-      hasUsageLogin: true,
       value: 'https://codex.packycode.com',
       auto: false,
       explicitValue: 'https://codex.packycode.com',
@@ -129,43 +121,6 @@ describe('buildUsageBaseModalDraft', () => {
       loading: false,
       loadFailed: false,
     })
-  })
-})
-
-describe('supportsPackycodeLoginProvider', () => {
-  it('matches packycode hosts only', () => {
-    expect(supportsPackycodeLoginProvider('https://codex.packycode.com/v1')).toBe(true)
-    expect(supportsPackycodeLoginProvider('https://api-vip.codex-for.me/v1')).toBe(false)
-  })
-})
-
-describe('waitForProviderUsageLogin', () => {
-  it('resolves true once provider usage auth appears in config', async () => {
-    let reads = 0
-    const getConfig = vi.fn(async () => {
-      reads += 1
-      return {
-        ...buildConfig(),
-        providers: {
-          p1: {
-            ...buildConfig().providers.p1,
-            has_usage_token: reads >= 2,
-          },
-        },
-      }
-    })
-
-    await expect(waitForProviderUsageLogin('p1', getConfig, { pollMs: 1, timeoutMs: 50 })).resolves.toBe(
-      true,
-    )
-  })
-
-  it('resolves false after timeout when usage auth never appears', async () => {
-    const getConfig = vi.fn(async () => buildConfig())
-
-    await expect(waitForProviderUsageLogin('p1', getConfig, { pollMs: 1, timeoutMs: 5 })).resolves.toBe(
-      false,
-    )
   })
 })
 

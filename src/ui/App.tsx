@@ -195,8 +195,6 @@ export default function App() {
     provider: '',
     baseUrl: '',
     showUrlInput: true,
-    showPackycodeLogin: false,
-    hasUsageLogin: false,
     value: '',
     auto: false,
     explicitValue: '',
@@ -1168,7 +1166,7 @@ export default function App() {
     setProviderDisabled, deleteProvider, saveKey, clearKey, saveProviderBaseUrl, refreshQuota,
     saveUsageBaseUrl, saveUsageAuth, clearUsageAuth, saveProviderEmail, clearProviderEmail,
     setUsageBaseUrl, clearUsageBaseUrl, setProviderQuotaHardCap,
-    openKeyModal, openProviderBaseUrlModal, openUsageBaseModal, openUsageAuthModal, openPackycodeLogin, openProviderEmailModal, addProvider,
+    openKeyModal, openProviderBaseUrlModal, openUsageBaseModal, openUsageAuthModal, openProviderEmailModal, addProvider,
     setProvidersGroup,
   } = useProviderActions({
     config,
@@ -1776,7 +1774,6 @@ export default function App() {
             usageBaseModal={usageBaseModal}
             setUsageBaseModal={setUsageBaseModal}
             saveUsageBaseUrl={saveUsageBaseUrl}
-            openPackycodeLogin={openPackycodeLogin}
             instructionModalOpen={instructionModalOpen}
             setInstructionModalOpen={setInstructionModalOpen}
             openRawConfigModal={openRawConfigModal}
@@ -1940,7 +1937,6 @@ export default function App() {
             onClearUsageAuth={clearUsageAuth}
             onSetHardCap={setProviderQuotaHardCap}
             onOpenProviderEmailModal={openProviderEmailModal}
-            onOpenPackycodeLogin={openPackycodeLogin}
             onOpenUsageAuthModal={openUsageAuthModal}
           />
         </Suspense>

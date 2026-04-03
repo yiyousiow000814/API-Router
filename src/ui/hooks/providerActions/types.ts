@@ -15,8 +15,6 @@ export type UsageBaseModalState = {
   provider: string
   baseUrl: string
   showUrlInput: boolean
-  showPackycodeLogin: boolean
-  hasUsageLogin: boolean
   value: string
   auto: boolean
   explicitValue: string
@@ -116,7 +114,6 @@ export type UseProviderActionsResult = {
     options?: { showUrlInput?: boolean },
   ) => Promise<void>
   openUsageAuthModal: (provider: string) => Promise<void>
-  openPackycodeLogin: (provider: string) => Promise<void>
   openProviderEmailModal: (provider: string, current: string | null | undefined) => void
   addProvider: () => Promise<void>
 }
