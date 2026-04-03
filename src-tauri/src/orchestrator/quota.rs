@@ -1273,6 +1273,26 @@ pub(crate) fn reconcile_spend_state_from_history(
     Some(state)
 }
 
+fn load_spend_state_for_tracking(st: &GatewayState, provider_name: &str) -> Option<Value> {
+    let Some(state) = st.store.get_spend_state(provider_name) else {
+        return reconcile_spend_state_from_history(st, provider_name);
+    };
+    let Some(open_day_started_at_unix_ms) = state
+        .get("open_day_started_at_unix_ms")
+        .and_then(Value::as_u64)
+    else {
+        return reconcile_spend_state_from_history(st, provider_name);
+    };
+    if st
+        .store
+        .get_spend_day(provider_name, open_day_started_at_unix_ms)
+        .is_some()
+    {
+        return Some(state);
+    }
+    reconcile_spend_state_from_history(st, provider_name)
+}
+
 fn quota_refresh_error_log_key(err: &str) -> String {
     let trimmed = err.trim();
     if let Some(rest) = trimmed.strip_prefix("usage base rate limited: ") {
@@ -1423,7 +1443,7 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
 
     let now = snap.updated_at_unix_ms;
     let api_key_ref = api_key_ref_from_raw(st.secrets.get_provider_key(provider_name).as_deref());
-    let existing_state = reconcile_spend_state_from_history(st, provider_name);
+    let existing_state = load_spend_state_for_tracking(st, provider_name);
 
     let mut tracking_started_unix_ms = existing_state
         .as_ref()
