@@ -26,7 +26,11 @@ fn tracked_spend_history_day_key(day: &Value) -> Option<String> {
     let updated_at_unix_ms = day
         .get("updated_at_unix_ms")
         .and_then(|v| v.as_u64())
-        .or_else(|| day.get("ended_at_unix_ms").and_then(|v| v.as_u64()))
+        .or_else(|| {
+            day.get("ended_at_unix_ms")
+                .and_then(|v| v.as_u64())
+                .map(|value| value.saturating_sub(1))
+        })
         .or_else(|| day.get("started_at_unix_ms").and_then(|v| v.as_u64()))?;
     local_day_key_from_unix_ms(updated_at_unix_ms)
 }
@@ -44,7 +48,11 @@ fn tracked_spend_history_snapshot(day: &Value) -> Option<(String, f64, u64)> {
     let updated_at_unix_ms = day
         .get("updated_at_unix_ms")
         .and_then(|v| v.as_u64())
-        .or_else(|| day.get("ended_at_unix_ms").and_then(|v| v.as_u64()))
+        .or_else(|| {
+            day.get("ended_at_unix_ms")
+                .and_then(|v| v.as_u64())
+                .map(|value| value.saturating_sub(1))
+        })
         .or_else(|| day.get("started_at_unix_ms").and_then(|v| v.as_u64()))?;
     let day_key = tracked_spend_history_day_key(day)?;
     Some((day_key, tracked_spend_usd, updated_at_unix_ms))
@@ -762,6 +770,27 @@ mod spend_history_tests {
         assert_eq!(
             tracked_spend_history_snapshot(&day),
             Some(("2026-04-03".to_string(), 153.7, updated_at_unix_ms))
+        );
+    }
+
+    #[test]
+    fn tracked_spend_ended_at_midnight_falls_back_to_previous_day() {
+        let started_at_unix_ms = local_unix_ms(2026, 4, 2, 3, 58, 3);
+        let ended_at_unix_ms = local_unix_ms(2026, 4, 4, 0, 0, 0);
+        let day = serde_json::json!({
+            "provider": "codex-for.me",
+            "started_at_unix_ms": started_at_unix_ms,
+            "ended_at_unix_ms": ended_at_unix_ms,
+            "tracked_spend_usd": 153.7
+        });
+
+        assert_eq!(
+            tracked_spend_history_day_key(&day).as_deref(),
+            Some("2026-04-03")
+        );
+        assert_eq!(
+            tracked_spend_history_snapshot(&day),
+            Some(("2026-04-03".to_string(), 153.7, ended_at_unix_ms.saturating_sub(1)))
         );
     }
 
