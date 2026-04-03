@@ -50,6 +50,25 @@ fn tracked_spend_history_snapshot(day: &Value) -> Option<(String, f64, u64)> {
     Some((day_key, tracked_spend_usd, updated_at_unix_ms))
 }
 
+fn include_compact_spend_history_row(
+    compact_only: bool,
+    req_count: u64,
+    tracked_total: Option<f64>,
+    manual_total: Option<f64>,
+    manual_per_req: Option<f64>,
+) -> bool {
+    if !compact_only {
+        return true;
+    }
+    if req_count > 0 {
+        return true;
+    }
+    if tracked_total.is_some() {
+        return true;
+    }
+    manual_total.is_some() || manual_per_req.is_some()
+}
+
 #[tauri::command]
 pub(crate) fn get_spend_history(
     state: tauri::State<'_, app_state::AppState>,
@@ -262,8 +281,13 @@ pub(crate) fn get_spend_history(
             let has_scheduled = scheduled_total.is_some()
                 || scheduled_package_total_usd.is_some()
                 || per_request_total.is_some();
-            if compact_only && req_count == 0 && manual_total.is_none() && manual_per_req.is_none()
-            {
+            if !include_compact_spend_history_row(
+                compact_only,
+                req_count,
+                tracked_total,
+                manual_total,
+                manual_per_req,
+            ) {
                 continue;
             }
 
@@ -478,8 +502,9 @@ mod spend_history_tests {
     use crate::orchestrator::config::{AppConfig, ProviderConfig};
 
     use super::{
-        merge_usage_history_day_counts, spend_history_provider_names,
-        tracked_spend_history_day_key, tracked_spend_history_snapshot,
+        include_compact_spend_history_row, merge_usage_history_day_counts,
+        spend_history_provider_names, tracked_spend_history_day_key,
+        tracked_spend_history_snapshot,
     };
 
     fn local_unix_ms(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> u64 {
@@ -771,5 +796,19 @@ mod spend_history_tests {
             latest,
             Some(("2026-04-03".to_string(), 93.26, second_updated_at_unix_ms))
         );
+    }
+
+    #[test]
+    fn compact_view_keeps_tracked_only_rows() {
+        assert!(include_compact_spend_history_row(
+            true,
+            0,
+            Some(17.47),
+            None,
+            None
+        ));
+        assert!(!include_compact_spend_history_row(
+            true, 0, None, None, None
+        ));
     }
 }
