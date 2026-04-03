@@ -4,11 +4,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use chrono::{TimeZone, Timelike};
-use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
-use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::Message as WebSocketMessage;
 
 use crate::orchestrator::config::AppConfig;
 
@@ -584,45 +581,6 @@ pub fn shared_quota_owner_for_provider(
     lan_sync.quota_owner_for_fingerprint(&fingerprint, &trusted_node_ids)
 }
 
-pub fn followed_source_quota_fallback_target(
-    st: &GatewayState,
-    lan_sync: &crate::lan_sync::LanSyncRuntime,
-    provider_name: &str,
-) -> Option<crate::lan_sync::LanQuotaOwnerDecision> {
-    let followed_node_id = st.secrets.get_followed_config_source_node_id()?;
-    let fingerprint = shared_provider_fingerprint_for_provider(st, provider_name)?;
-    let trusted_node_ids = st.secrets.trusted_lan_node_ids();
-    if !trusted_node_ids.contains(&followed_node_id) {
-        return None;
-    }
-    let cfg = st.cfg.read().clone();
-    let lan_snapshot = lan_sync.snapshot(cfg.listen.port, &cfg, &st.secrets);
-    let peer = lan_snapshot
-        .peers
-        .iter()
-        .find(|peer| peer.node_id == followed_node_id && peer.trusted)?;
-    if !peer
-        .provider_fingerprints
-        .iter()
-        .any(|value| value == &fingerprint)
-    {
-        return None;
-    }
-    Some(crate::lan_sync::LanQuotaOwnerDecision {
-        local_is_owner: false,
-        owner_node_id: peer.node_id.clone(),
-        owner_node_name: peer.node_name.clone(),
-        contender_count: 2,
-    })
-}
-
-pub fn is_followed_source_refresh_fallback_error(err: &str) -> bool {
-    let normalized = err.trim().to_ascii_lowercase();
-    normalized.contains("packycode browser session:")
-        || normalized.contains("packycode login browser profile not found")
-        || normalized.contains("browser profile not found")
-}
-
 pub fn shared_quota_owner_statuses(
     st: &GatewayState,
     lan_sync: &crate::lan_sync::LanSyncRuntime,
@@ -669,89 +627,17 @@ async fn compute_quota_snapshot(
     credentials: QuotaCredentials<'_>,
     strategies: QuotaSnapshotStrategies,
 ) -> QuotaSnapshot {
-    let should_use_packycode_usage_flow = strategies.provider_strategy
-        == PackageExpiryStrategy::Packycode
-        && (credentials.usage_token.is_some()
-            || strategies.package_expiry_fetch_strategy == PackageExpiryStrategy::Packycode);
+    let should_use_packycode_usage_flow =
+        strategies.provider_strategy == PackageExpiryStrategy::Packycode;
     if should_use_packycode_usage_flow {
-        let mut budget_errors: Vec<String> = Vec::new();
-
-        if credentials.usage_token.is_some() {
-            let browser_base = bases
-                .first()
-                .map(|value| value.as_str())
-                .unwrap_or("https://codex.packycode.com");
-            let budget = fetch_packycode_budget_info_via_browser_context(
-                st,
-                provider_name,
-                browser_base,
-                credentials.usage_token,
-            )
-            .await;
-            if budget.last_error.is_empty() {
-                return budget;
-            }
-            budget_errors.push(format!("packycode browser session: {}", budget.last_error));
-
-            if let Some(token) = credentials.usage_token {
-                let budget = fetch_budget_info_any(
-                    st,
-                    provider_name,
-                    bases,
-                    Some(token),
-                    strategies.package_expiry_fetch_strategy,
-                )
-                .await;
-                if budget.last_error.is_empty() {
-                    return budget;
-                }
-                budget_errors.push(format!("packycode login token: {}", budget.last_error));
-            }
-        }
-
-        if let Some(token) = credentials.provider_key {
-            if credentials.usage_token != Some(token) {
-                let budget = fetch_budget_info_any(
-                    st,
-                    provider_name,
-                    bases,
-                    Some(token),
-                    strategies.package_expiry_fetch_strategy,
-                )
-                .await;
-                if budget.last_error.is_empty() {
-                    return budget;
-                }
-                budget_errors.push(format!("provider key: {}", budget.last_error));
-            }
-        }
-
-        if credentials.provider_key.is_some() {
-            let mut stats = fetch_token_stats_any(
-                st,
-                provider_name,
-                bases,
-                explicit_usage_endpoint,
-                credentials.provider_key,
-                credentials.usage_token,
-                strategies.package_expiry_fetch_strategy,
-            )
-            .await;
-            if !stats.last_error.is_empty() && !budget_errors.is_empty() {
-                stats.last_error = format!(
-                    "{}; token stats fallback: {}",
-                    budget_errors.join("; "),
-                    stats.last_error
-                );
-            }
-            return stats;
-        }
-
-        if !budget_errors.is_empty() {
-            let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
-            out.last_error = budget_errors.join("; ");
-            return out;
-        }
+        return fetch_budget_info_any(
+            st,
+            provider_name,
+            bases,
+            credentials.usage_token,
+            strategies.package_expiry_fetch_strategy,
+        )
+        .await;
     }
 
     if is_codex_for_me_base(provider_name, bases) {
@@ -1159,7 +1045,6 @@ fn preserved_quota_snapshot_for_storage(
 
 fn quota_refresh_source_label(source: &str) -> &'static str {
     match source.trim() {
-        "packycode_browser_session" => "Packycode dashboard session",
         "usage_base" => "usage base",
         "token_stats" => "token stats",
         "codex_for_me_balance" => "codex-for.me dashboard",
@@ -1236,10 +1121,6 @@ fn is_quota_refresh_config_gap(err: &str) -> bool {
     )
 }
 
-fn should_run_background_quota_refresh(has_any_credential: bool, has_quota_source: bool) -> bool {
-    has_any_credential && has_quota_source
-}
-
 fn should_run_background_quota_scheduler(
     now_ms: u64,
     last_activity_unix_ms: u64,
@@ -1266,6 +1147,9 @@ fn can_refresh_quota_for_provider(
     let provider_key = st.secrets.get_provider_key(provider_name);
     let usage_token = st.secrets.get_usage_token(provider_name);
     let usage_login = st.secrets.get_usage_login(provider_name);
+    if detect_package_expiry_strategy(&provider.base_url) == PackageExpiryStrategy::Packycode {
+        return usage_token.is_some();
+    }
     if is_codex_for_me_base(provider_name, &bases) {
         return usage_token.is_some() || usage_login.is_some();
     }
@@ -1807,10 +1691,7 @@ pub async fn run_quota_scheduler(st: GatewayState, lan_sync: crate::lan_sync::La
         }
         let mut cache: HashMap<UsageRequestKey, QuotaSnapshot> = HashMap::new();
         for (name, p) in cfg.providers.iter() {
-            let has_any_credential = st.secrets.get_provider_key(name).is_some()
-                || st.secrets.get_usage_token(name).is_some();
-            let has_quota_source = !candidate_quota_bases(p).is_empty();
-            if !should_run_background_quota_refresh(has_any_credential, has_quota_source) {
+            if !can_refresh_quota_for_provider(&st, name, p) {
                 continue;
             }
 
@@ -1855,34 +1736,6 @@ pub async fn run_quota_scheduler(st: GatewayState, lan_sync: crate::lan_sync::La
             }
 
             let snap = refresh_quota_for_provider_cached(&st, name, &mut cache).await;
-            if !snap.last_error.is_empty()
-                && is_followed_source_refresh_fallback_error(&snap.last_error)
-            {
-                if let Some(owner) = followed_source_quota_fallback_target(&st, &lan_sync, name) {
-                    if let Some(fingerprint) = shared_provider_fingerprint(&cfg, &st.secrets, name)
-                    {
-                        if lan_sync
-                            .request_remote_quota_refresh(&st, &owner.owner_node_id, &fingerprint)
-                            .is_ok()
-                        {
-                            st.store.add_event(
-                                name,
-                                "info",
-                                "usage.refresh_forwarded_after_local_failure",
-                                &format!(
-                                    "Usage refresh failed locally and was forwarded to {}",
-                                    owner.owner_node_name
-                                ),
-                                serde_json::json!({
-                                    "owner_node_id": owner.owner_node_id,
-                                    "owner_node_name": owner.owner_node_name,
-                                    "local_error": snap.last_error,
-                                }),
-                            );
-                        }
-                    }
-                }
-            }
             let previous_success = existing_snapshot.is_some_and(|existing| {
                 existing.last_error.is_empty() && existing.updated_at_unix_ms > 0
             });

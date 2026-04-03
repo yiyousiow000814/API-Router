@@ -204,6 +204,11 @@ fn lock_threads_workspace_index() -> std::sync::MutexGuard<'static, ThreadsWorks
     }
 }
 
+#[cfg(test)]
+pub(super) fn clear_threads_workspace_index_for_test() {
+    *lock_threads_workspace_index() = ThreadsWorkspaceIndex::default();
+}
+
 fn workspace_bucket_ref(
     index: &ThreadsWorkspaceIndex,
     target: WorkspaceTarget,

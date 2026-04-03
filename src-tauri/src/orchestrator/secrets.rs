@@ -233,6 +233,7 @@ fn is_reserved_provider_state_key(key: &str) -> bool {
 }
 
 impl SecretStore {
+    #[allow(dead_code)]
     pub fn path(&self) -> &std::path::Path {
         &self.path
     }

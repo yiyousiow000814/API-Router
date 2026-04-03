@@ -1044,6 +1044,7 @@ mod tests {
     use super::*;
     use crate::orchestrator::gateway::web_codex_home::parse_workspace_target;
     use crate::orchestrator::gateway::web_codex_session_runtime::_clear_workspace_runtime_registry_for_test;
+    use crate::orchestrator::gateway::web_codex_threads::clear_threads_workspace_index_for_test;
     use serde_json::json;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -1104,6 +1105,7 @@ mod tests {
         let _win_home = isolate_windows_web_codex_home();
         let _wsl_home = isolate_wsl_web_codex_home();
         _clear_workspace_runtime_registry_for_test();
+        clear_threads_workspace_index_for_test();
         let windows = CodexSessionManager::new(parse_workspace_target("windows"));
         let wsl2 = CodexSessionManager::new(parse_workspace_target("wsl2"));
         assert_eq!(windows.workspace_target(), Some(WorkspaceTarget::Windows));
@@ -1117,6 +1119,7 @@ mod tests {
         let _guard = crate::codex_app_server::lock_test_globals();
         let _home = isolate_windows_web_codex_home();
         _clear_workspace_runtime_registry_for_test();
+        clear_threads_workspace_index_for_test();
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_ref = calls.clone();
         crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
@@ -1160,6 +1163,7 @@ mod tests {
     async fn ensure_server_marks_workspace_runtime_connected() {
         let _guard = crate::codex_app_server::lock_test_globals();
         _clear_workspace_runtime_registry_for_test();
+        clear_threads_workspace_index_for_test();
         crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
             move |_home, method, _params| Err(format!("{method} should not be called")),
         )))
@@ -1182,6 +1186,7 @@ mod tests {
         let _guard = crate::codex_app_server::lock_test_globals();
         let _home = isolate_windows_web_codex_home();
         _clear_workspace_runtime_registry_for_test();
+        clear_threads_workspace_index_for_test();
         crate::codex_app_server::_clear_notifications_for_test().await;
         let home = web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows))
             .expect("isolated windows home");
@@ -1207,6 +1212,7 @@ mod tests {
         let _guard = crate::codex_app_server::lock_test_globals();
         let _home = isolate_windows_web_codex_home();
         _clear_workspace_runtime_registry_for_test();
+        clear_threads_workspace_index_for_test();
         crate::codex_app_server::_clear_notifications_for_test().await;
         let home = web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows))
             .expect("isolated windows home");
@@ -1346,6 +1352,7 @@ mod tests {
     async fn thread_start_registers_canonical_runtime_for_new_web_thread() {
         let _guard = crate::codex_app_server::lock_test_globals();
         _clear_workspace_runtime_registry_for_test();
+        clear_threads_workspace_index_for_test();
         crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
             move |_home, method, params| match method {
                 "thread/start" => {
@@ -1520,6 +1527,7 @@ mod tests {
     async fn open_managed_terminal_surface_discovers_remote_terminal_by_cwd() {
         let _guard = crate::codex_app_server::lock_test_globals();
         _clear_workspace_runtime_registry_for_test();
+        clear_threads_workspace_index_for_test();
         crate::platform::codex_terminal_session::_set_test_discovery_sessions(None);
         crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
             move |_home, method, _params| Err(format!("{method} should not be called")),

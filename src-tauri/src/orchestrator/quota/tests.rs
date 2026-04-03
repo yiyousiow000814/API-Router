@@ -843,11 +843,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn packycode_quota_refresh_requires_usage_token() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "api-key").unwrap();
+        let st = mk_state("https://codex.packycode.com/v1".to_string(), secrets);
+        let cfg = st.cfg.read().clone();
+        let provider = cfg.providers.get("p1").unwrap();
+        assert!(!can_refresh_quota_for_provider(&st, "p1", provider));
+    }
+
+    #[tokio::test]
     async fn auto_probe_prefers_token_stats_when_key_present() {
         let (base, _h) = start_mock_server(true).await;
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "k1").unwrap();
+        secrets.set_usage_token("p1", "jwt-token").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
 
         let snap = refresh_quota_for_provider(&st, "p1").await;
@@ -862,6 +874,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "k1").unwrap();
+        secrets.set_usage_token("p1", "jwt-token").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
 
         let before = st.router.snapshot(unix_ms());
@@ -991,6 +1004,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "k1").unwrap();
+        secrets.set_usage_token("p1", "jwt-token").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
         {
             let mut cfg = st.cfg.write();
@@ -1012,7 +1026,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn packycode_budget_info_prefers_login_token_over_provider_key() {
+    async fn packycode_budget_info_uses_usage_token_api_only() {
         use axum::extract::State;
         use axum::http::{HeaderMap, StatusCode};
         use axum::routing::get;
@@ -1106,7 +1120,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn packycode_budget_info_labels_login_provider_key_and_token_stats_failures() {
+    async fn packycode_budget_info_returns_api_error_without_packycode_fallbacks() {
         use axum::extract::State;
         use axum::http::{HeaderMap, StatusCode};
         use axum::routing::get;
@@ -1181,64 +1195,8 @@ mod tests {
         clear_usage_base_refresh_gate();
 
         assert_eq!(snap.updated_at_unix_ms, 0);
-        assert!(snap.last_error.contains("packycode browser session:"));
-        assert!(snap.last_error.contains("packycode login token: http 401"));
-        assert!(snap.last_error.contains("provider key: http 429"));
-        assert!(snap.last_error.contains("token stats fallback: "));
-        assert!(token_stats_hits.load(Ordering::Relaxed) <= 1);
-    }
-
-    #[test]
-    fn extract_packycode_browser_auth_storage_user_reads_runtime_evaluate_value() {
-        let payload = serde_json::json!({
-            "result": {
-                "result": {
-                    "value": {
-                        "state": {
-                            "user": {
-                                "daily_spent_usd": 1,
-                                "plan_expires_at": "2030-01-01T00:00:00Z"
-                            }
-                        }
-                    }
-                }
-            }
-        });
-        let extracted = extract_packycode_browser_auth_storage_user(&payload).expect("payload");
-        assert_eq!(extracted["daily_spent_usd"], 1);
-        assert_eq!(extracted["plan_expires_at"], "2030-01-01T00:00:00Z");
-    }
-
-    #[test]
-    fn extract_packycode_browser_auth_storage_user_reads_stringified_storage() {
-        let payload = serde_json::json!({
-            "result": {
-                "result": {
-                    "value": "{\"state\":{\"user\":{\"monthly_spent_usd\":\"699.7540\",\"monthly_budget_usd\":\"3600.00000000\"}}}"
-                }
-            }
-        });
-        let extracted = extract_packycode_browser_auth_storage_user(&payload).expect("payload");
-        assert_eq!(extracted["monthly_spent_usd"], "699.7540");
-        assert_eq!(extracted["monthly_budget_usd"], "3600.00000000");
-    }
-
-    #[test]
-    fn packycode_usage_browser_args_are_headless() {
-        let args = packycode_usage_browser_args(
-            std::path::Path::new("C:/tmp/packycode-login/provider-1"),
-            "https://codex.packycode.com/dashboard",
-        );
-        assert!(args.iter().any(|arg| arg == "--headless=new"));
-        assert!(args.iter().any(|arg| arg == "--remote-debugging-port=0"));
-        assert!(args
-            .iter()
-            .any(|arg| arg == "--user-data-dir=C:/tmp/packycode-login/provider-1"));
-        assert!(!args.iter().any(|arg| arg == "--new-window"));
-        assert_eq!(
-            args.last().map(String::as_str),
-            Some("https://codex.packycode.com/dashboard")
-        );
+        assert_eq!(snap.last_error, format!("http 401 from {base}"));
+        assert_eq!(token_stats_hits.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
@@ -1277,6 +1235,8 @@ mod tests {
                         (
                             StatusCode::OK,
                             Json(serde_json::json!({
+                              "daily_spent_usd": 1.0,
+                              "daily_budget_usd": 60,
                               "plan_expires_at": "2030-01-01T00:00:00Z"
                             })),
                         )
@@ -1304,6 +1264,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "k1").unwrap();
+        secrets.set_usage_token("p1", "jwt-token").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
         {
             let mut cfg = st.cfg.write();
@@ -1338,7 +1299,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cached_future_package_expiry_does_not_disable_packycode_browser_fallback() {
+    async fn cached_future_package_expiry_does_not_disable_packycode_api_refresh() {
         use axum::http::StatusCode;
         use axum::routing::get;
         use axum::{Json, Router};
@@ -1417,12 +1378,9 @@ mod tests {
         clear_usage_base_refresh_gate();
 
         assert_eq!(snap.updated_at_unix_ms, 0);
-        assert!(snap.last_error.contains("packycode browser session:"));
-        assert!(snap.last_error.contains("packycode login token: http 429"));
-        assert!(
-            snap.last_error.contains("provider key:")
-                || snap.last_error.contains("token stats fallback:")
-        );
+        assert_eq!(snap.last_error, format!("http 429 from {base}"));
+        assert_eq!(budget_hits.load(Ordering::Relaxed), 1);
+        assert_eq!(token_stats_hits.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
@@ -1911,7 +1869,7 @@ mod tests {
         recovered.daily_spent_usd = Some(1.0);
         recovered.daily_budget_usd = Some(10.0);
         recovered.effective_usage_base = Some("https://codex.packycode.com".to_string());
-        recovered.effective_usage_source = Some("packycode_browser_session".to_string());
+        recovered.effective_usage_source = Some("usage_base".to_string());
         store_quota_snapshot(&st, "p1", &recovered);
 
         let recovered_event = st
@@ -1929,15 +1887,8 @@ mod tests {
                 .get("message")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
-                .contains("Packycode dashboard session")
+                .contains("usage base")
         );
-    }
-
-    #[test]
-    fn background_quota_refresh_requires_credentials_and_quota_source() {
-        assert!(!should_run_background_quota_refresh(false, true));
-        assert!(!should_run_background_quota_refresh(true, false));
-        assert!(should_run_background_quota_refresh(true, true));
     }
 
     #[test]
@@ -2492,6 +2443,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_quota_all_skips_packycode_without_usage_token() {
+        let (base, _h) = start_mock_server(false).await;
+        let providers = std::collections::BTreeMap::from([(
+            "packycode".to_string(),
+            ProviderConfig {
+                display_name: "Packycode".to_string(),
+                base_url: "https://codex.packycode.com/v1".to_string(),
+                usage_adapter: String::new(),
+                usage_base_url: Some(base),
+                group: None,
+                disabled: false,
+                api_key: String::new(),
+            },
+        )]);
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("packycode", "packy-key").unwrap();
+        let st = mk_state_with_providers(providers, vec!["packycode".to_string()], secrets);
+
+        let lan_sync = mk_lan_sync();
+        let (ok, err, failed) = refresh_quota_all_with_summary(&st, &lan_sync).await;
+
+        assert_eq!(ok, 0);
+        assert_eq!(err, 0);
+        assert!(failed.is_empty());
+        assert!(
+            st.store.get_quota_snapshot("packycode").is_none(),
+            "packycode refresh should require usage token"
+        );
+    }
+
+    #[tokio::test]
     async fn refresh_quota_all_skips_disabled_provider_even_with_credentials() {
         let (base, _h) = start_mock_server(false).await;
         let providers = std::collections::BTreeMap::from([
@@ -2539,40 +2522,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn followed_source_quota_fallback_target_uses_followed_peer() {
-        let providers = std::collections::BTreeMap::from([(
-            "p1".to_string(),
-            ProviderConfig {
-                display_name: "P1".to_string(),
-                base_url: "https://usage-router.example/v1".to_string(),
-                usage_adapter: String::new(),
-                usage_base_url: Some("https://usage-router.example".to_string()),
-                group: None,
-                disabled: false,
-                api_key: String::new(),
-            },
-        )]);
-        let tmp = tempfile::tempdir().unwrap();
-        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
-        secrets.set_provider_key("p1", "sk-shared").unwrap();
-        secrets.set_lan_node_trusted("node-followed", true).unwrap();
-        secrets
-            .set_followed_config_source_node_id(Some("node-followed"))
-            .unwrap();
-        let st = mk_state_with_providers(providers, vec!["p1".to_string()], secrets.clone());
-        let lan_sync = mk_lan_sync();
-        let cfg = st.cfg.read().clone();
-        let fingerprint =
-            shared_provider_fingerprint(&cfg, &st.secrets, "p1").expect("shared fingerprint");
-        lan_sync.seed_test_peer("node-followed", "followed", None);
-        lan_sync.set_test_peer_provider_fingerprints("node-followed", vec![fingerprint]);
-
-        let owner =
-            followed_source_quota_fallback_target(&st, &lan_sync, "p1").expect("owner decision");
-
-        assert!(!owner.local_is_owner);
-        assert_eq!(owner.owner_node_id, "node-followed");
-        assert_eq!(owner.owner_node_name, "followed");
-    }
 }

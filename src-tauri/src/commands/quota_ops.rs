@@ -567,41 +567,6 @@ pub(crate) async fn refresh_quota(
         } else {
             snap.last_error.chars().take(300).collect::<String>()
         };
-        if crate::orchestrator::quota::is_followed_source_refresh_fallback_error(&err) {
-            if let Some(owner) = crate::orchestrator::quota::followed_source_quota_fallback_target(
-                &state.gateway,
-                &state.lan_sync,
-                &provider,
-            ) {
-                let cfg = state.gateway.cfg.read().clone();
-                let fingerprint = crate::orchestrator::quota::shared_provider_fingerprint(
-                    &cfg,
-                    &state.gateway.secrets,
-                    &provider,
-                )
-                .ok_or_else(|| "shared quota fingerprint unavailable".to_string())?;
-                state.lan_sync.request_remote_quota_refresh(
-                    &state.gateway,
-                    &owner.owner_node_id,
-                    &fingerprint,
-                )?;
-                state.gateway.store.add_event(
-                    &provider,
-                    "info",
-                    "usage.refresh_forwarded_after_local_failure",
-                    &format!(
-                        "Usage refresh failed locally and was forwarded to {}",
-                        owner.owner_node_name
-                    ),
-                    serde_json::json!({
-                        "owner_node_id": owner.owner_node_id,
-                        "owner_node_name": owner.owner_node_name,
-                        "local_error": err,
-                    }),
-                );
-                return Ok(());
-            }
-        }
         return Err(err);
     }
     Ok(())

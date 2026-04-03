@@ -584,6 +584,7 @@ impl LanSyncRuntime {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn set_test_peer_provider_fingerprints(
         &self,
         node_id: &str,
