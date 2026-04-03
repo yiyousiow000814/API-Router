@@ -16,7 +16,7 @@
     "build": "npm run check:gateway-provider-id && npm run check:line-endings && npm run check:web-codex-assets && tsc && vite build",
     "preview": "vite preview",
     "tauri": "node scripts/run-with-win-sdk.mjs tauri",
-    "build:root-exe": "node scripts/run-with-win-sdk.mjs tauri build --no-bundle && node scripts/copy-root-exe.mjs && node scripts/open-root-exe.mjs",
+    "build:root-exe": "npm run tauri -- build --no-bundle && node scripts/copy-root-exe.mjs && node scripts/open-root-exe.mjs",
     "build:root-installers": "node scripts/run-with-win-sdk.mjs tauri build",
     "ui:tauri": "node scripts/tauri-ui-check.mjs",
     "ui:check": "node scripts/run-ui-tauri-if-windows.mjs",

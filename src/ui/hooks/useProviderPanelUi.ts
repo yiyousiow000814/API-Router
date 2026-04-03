@@ -25,6 +25,7 @@ type Params = {
   openProviderBaseUrlModal: (provider: string, current: string) => void
   openKeyModal: (provider: string) => Promise<void>
   clearKey: (provider: string) => Promise<void>
+  copyProviderFromConfigSource: (sourceNodeId: string, sharedProviderId: string) => Promise<void>
   openUsageBaseModal: (provider: string, current: string | null | undefined) => Promise<void>
   openUsageAuthModal: (provider: string) => Promise<void>
   openProviderEmailModal: (provider: string, current: string | null | undefined) => void
@@ -59,6 +60,7 @@ export function useProviderPanelUi(params: Params) {
     openProviderBaseUrlModal,
     openKeyModal,
     clearKey,
+    copyProviderFromConfigSource,
     openUsageBaseModal,
     openUsageAuthModal,
     openProviderEmailModal,
@@ -113,6 +115,7 @@ export function useProviderPanelUi(params: Params) {
         openProviderBaseUrlModal,
         openKeyModal,
         clearKey,
+        copyProviderFromConfigSource,
         openUsageBaseModal,
         openUsageAuthModal,
         openProviderEmailModal,
@@ -139,6 +142,7 @@ export function useProviderPanelUi(params: Params) {
       openProviderBaseUrlModal,
       openKeyModal,
       clearKey,
+      copyProviderFromConfigSource,
       openUsageBaseModal,
       openUsageAuthModal,
       openProviderEmailModal,

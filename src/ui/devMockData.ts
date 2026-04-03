@@ -271,6 +271,7 @@ export function evolveDevStatus(current: Status | null): Status {
 
 export const devStatus: Status = {
   listen: { host: '127.0.0.1', port: 4000 },
+  wsl_gateway_host: '172.26.144.1',
   preferred_provider: 'provider_1',
   manual_override: null,
   providers: {
@@ -467,7 +468,39 @@ export const devStatus: Status = {
     },
   },
   ledgers: {},
+  projected_ledgers: {},
   last_activity_unix_ms: DEV_NOW - 30000,
+  lan_sync: {
+    enabled: true,
+    discovery_port: 4000,
+    heartbeat_interval_ms: 1500,
+    peer_stale_after_ms: 10000,
+    local_node: {
+      node_id: 'node_cc5',
+      node_name: 'DESKTOP-KK6SA2D',
+      listen_addr: '192.168.3.210:4000',
+      capabilities: ['follow', 'copy', 'sync'],
+      provider_fingerprints: ['fp-provider-1', 'fp-provider-2'],
+    },
+    peers: [
+      {
+        node_id: 'node_5173',
+        node_name: 'DESKTOP-5173',
+        listen_addr: '192.168.3.211:4000',
+        last_heartbeat_unix_ms: DEV_NOW - 5000,
+        capabilities: ['follow', 'copy'],
+        provider_fingerprints: ['fp-provider-1'],
+      },
+      {
+        node_id: 'node_5174',
+        node_name: 'DESKTOP-5174',
+        listen_addr: '192.168.3.212:4000',
+        last_heartbeat_unix_ms: DEV_NOW - 9000,
+        capabilities: ['follow'],
+        provider_fingerprints: ['fp-provider-2'],
+      },
+    ],
+  },
   codex_account: {
     ok: true,
     checked_at_unix_ms: DEV_NOW - 90000,
@@ -528,6 +561,60 @@ export const devConfig: Config = {
     },
   },
   provider_order: ['provider_1', 'provider_2', 'provider_3'],
+  config_source: {
+    mode: 'local',
+    followed_node_id: null,
+    sources: [
+      {
+        kind: 'local',
+        node_id: 'node-local',
+        node_name: 'Local',
+        active: true,
+        trusted: true,
+        pair_state: 'trusted',
+        pair_request_id: null,
+        follow_allowed: false,
+        follow_blocked_reason: null,
+        using_count: 2,
+      },
+      {
+        kind: 'peer',
+        node_id: 'node-desk-b',
+        node_name: 'Desk B',
+        active: false,
+        trusted: false,
+        pair_state: null,
+        pair_request_id: null,
+        follow_allowed: true,
+        follow_blocked_reason: null,
+        using_count: 1,
+      },
+      {
+        kind: 'peer',
+        node_id: 'node-laptop-c',
+        node_name: 'Laptop C',
+        active: false,
+        trusted: false,
+        pair_state: 'incoming_request',
+        pair_request_id: 'pair_node-laptop-c',
+        follow_allowed: false,
+        follow_blocked_reason: 'pair this device before following its config',
+        using_count: 0,
+      },
+      {
+        kind: 'peer',
+        node_id: 'node-mini-d',
+        node_name: 'Mini D',
+        active: false,
+        trusted: false,
+        pair_state: null,
+        pair_request_id: null,
+        follow_allowed: false,
+        follow_blocked_reason: 'Mini D is already following this local node',
+        using_count: 0,
+      },
+    ],
+  },
 }
 
 const DEV_MOCK_DAY_MS = 24 * 60 * 60 * 1000

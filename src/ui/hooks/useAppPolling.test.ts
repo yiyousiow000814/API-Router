@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { statusPollIntervalMs } from './useAppPolling'
+import {
+  shouldPollSwapStatusOnStatusRefresh,
+  statusPollDetailLevel,
+  statusPollIntervalMs,
+} from './useAppPolling'
 
 describe('useAppPolling', () => {
   it('keeps dashboard polling fast while visible', () => {
@@ -15,5 +19,17 @@ describe('useAppPolling', () => {
   it('uses the slowest poll interval when hidden', () => {
     expect(statusPollIntervalMs('dashboard', false)).toBe(15000)
     expect(statusPollIntervalMs('web_codex', false)).toBe(15000)
+  })
+
+  it('only polls swap status in switchboard-focused flows', () => {
+    expect(shouldPollSwapStatusOnStatusRefresh('dashboard', false)).toBe(false)
+    expect(shouldPollSwapStatusOnStatusRefresh('provider_switchboard', false)).toBe(true)
+    expect(shouldPollSwapStatusOnStatusRefresh('dashboard', true)).toBe(true)
+  })
+
+  it('uses dashboard detail only on dashboard polls', () => {
+    expect(statusPollDetailLevel('dashboard')).toBe('dashboard')
+    expect(statusPollDetailLevel('provider_switchboard')).toBe('full')
+    expect(statusPollDetailLevel('usage_requests')).toBe('full')
   })
 })

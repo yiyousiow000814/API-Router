@@ -54,6 +54,7 @@ export type ProviderBaseUrlModalState = {
 export type UseProviderActionsParams = {
   config: Config | null
   status: Status | null
+  setStatus: Dispatch<SetStateAction<Status | null>>
   isDevPreview: boolean
   setConfig: Dispatch<SetStateAction<Config | null>>
   keyModal: KeyModalState

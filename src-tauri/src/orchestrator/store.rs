@@ -1,6 +1,7 @@
 use chrono::{Datelike, Local, TimeZone};
 use parking_lot::Mutex;
-use rusqlite::{params, params_from_iter, OptionalExtension};
+use rusqlite::{params, params_from_iter, OpenFlags, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,6 +11,7 @@ mod usage_tracking;
 #[derive(Clone)]
 pub struct Store {
     db: sled::Db,
+    events_db_path: PathBuf,
     events_db: Arc<Mutex<rusqlite::Connection>>,
 }
 
@@ -22,6 +24,15 @@ struct UsageTokenIncrements {
     total_tokens: u64,
     cache_creation_input_tokens: u64,
     cache_read_input_tokens: u64,
+}
+
+#[derive(Clone, Copy)]
+pub struct UsageRequestContext<'a> {
+    pub api_key_ref: Option<&'a str>,
+    pub origin: &'a str,
+    pub session_id: Option<&'a str>,
+    pub node_id: Option<&'a str>,
+    pub node_name: Option<&'a str>,
 }
 
 type UsageRequestSqlRow = (
@@ -38,6 +49,66 @@ type UsageRequestSqlRow = (
     i64,
     i64,
 );
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UsageRequestSyncRow {
+    pub id: String,
+    pub unix_ms: u64,
+    pub ingested_at_unix_ms: u64,
+    pub provider: String,
+    pub api_key_ref: String,
+    pub model: String,
+    pub origin: String,
+    pub session_id: String,
+    pub node_id: String,
+    pub node_name: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cache_read_input_tokens: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsageRequestStatsRow {
+    pub provider: String,
+    pub api_key_ref: String,
+    pub model: String,
+    pub origin: String,
+    pub node_name: String,
+    pub unix_ms: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cache_read_input_tokens: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LanEditSyncEvent {
+    pub event_id: String,
+    pub node_id: String,
+    pub node_name: String,
+    pub created_at_unix_ms: u64,
+    pub lamport_ts: u64,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub op: String,
+    pub payload: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LanProviderDefinitionSnapshotRecord {
+    pub source_node_id: String,
+    pub source_node_name: String,
+    pub shared_provider_id: String,
+    pub provider_name: String,
+    pub deleted: bool,
+    pub snapshot: Value,
+    pub updated_at_unix_ms: u64,
+    pub lamport_ts: u64,
+    pub revision_event_id: String,
+}
 
 #[derive(Clone, Debug)]
 pub struct SessionRouteAssignment {
@@ -67,9 +138,11 @@ impl Store {
     const EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY: &'static str = "merged_legacy_sqlite_v1";
     // Day-count index rebuild marker. Bump this when the rules for event inclusion change.
     const EVENT_DAY_COUNTS_INDEX_VERSION_KEY: &'static str = "event_day_counts_index_version";
-    const EVENT_DAY_COUNTS_INDEX_VERSION: &'static str = "3";
+    const EVENT_DAY_COUNTS_INDEX_VERSION: &'static str = "4";
     const USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY: &'static str =
         "usage_requests_migrated_from_sled_v1";
+    const SPEND_HISTORY_SQLITE_MIGRATED_FROM_SLED_KEY: &'static str =
+        "spend_history_sqlite_migrated_from_sled_v1";
 
     fn allowed_key_prefixes() -> [&'static [u8]; 10] {
         [
@@ -137,10 +210,11 @@ impl Store {
                 }
             }
         }
-        let events_db = rusqlite::Connection::open(events_db_path)
+        let events_db = rusqlite::Connection::open(&events_db_path)
             .map_err(|e| sled::Error::Unsupported(format!("open events sqlite failed: {e}")))?;
         let store = Self {
             db,
+            events_db_path,
             events_db: Arc::new(Mutex::new(events_db)),
         };
         store
@@ -214,11 +288,14 @@ impl Store {
             CREATE TABLE IF NOT EXISTS usage_requests(
               id TEXT PRIMARY KEY,
               unix_ms INTEGER NOT NULL,
+              ingested_at_unix_ms INTEGER NOT NULL DEFAULT 0,
               provider TEXT NOT NULL,
               api_key_ref TEXT NOT NULL,
               model TEXT NOT NULL,
               origin TEXT NOT NULL,
               session_id TEXT NOT NULL,
+              node_id TEXT NOT NULL DEFAULT '',
+              node_name TEXT NOT NULL DEFAULT '',
               input_tokens INTEGER NOT NULL,
               output_tokens INTEGER NOT NULL,
               total_tokens INTEGER NOT NULL,
@@ -237,6 +314,33 @@ impl Store {
               ON usage_requests(lower(provider), unix_ms DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_usage_requests_origin_lc_unix_ms_id
               ON usage_requests(lower(origin), unix_ms DESC, id DESC);
+            CREATE TABLE IF NOT EXISTS lan_edit_events(
+              event_id TEXT PRIMARY KEY,
+              node_id TEXT NOT NULL,
+              node_name TEXT NOT NULL,
+              created_at_unix_ms INTEGER NOT NULL,
+              lamport_ts INTEGER NOT NULL,
+              entity_type TEXT NOT NULL,
+              entity_id TEXT NOT NULL,
+              op TEXT NOT NULL,
+              payload_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_lan_edit_events_lamport_event
+              ON lan_edit_events(lamport_ts ASC, event_id ASC);
+            CREATE TABLE IF NOT EXISTS lan_provider_definition_snapshots(
+              source_node_id TEXT NOT NULL,
+              source_node_name TEXT NOT NULL,
+              shared_provider_id TEXT NOT NULL,
+              provider_name TEXT NOT NULL,
+              deleted INTEGER NOT NULL,
+              snapshot_json TEXT NOT NULL,
+              updated_at_unix_ms INTEGER NOT NULL,
+              lamport_ts INTEGER NOT NULL,
+              revision_event_id TEXT NOT NULL,
+              PRIMARY KEY(source_node_id, shared_provider_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_lan_provider_definition_snapshots_source
+              ON lan_provider_definition_snapshots(source_node_id, deleted, provider_name);
             CREATE TABLE IF NOT EXISTS usage_request_day_provider_totals(
               day_key TEXT NOT NULL,
               provider TEXT NOT NULL,
@@ -245,6 +349,27 @@ impl Store {
               windows_request_count INTEGER NOT NULL,
               wsl_request_count INTEGER NOT NULL,
               PRIMARY KEY(day_key, provider)
+            );
+            CREATE TABLE IF NOT EXISTS spend_days(
+              provider TEXT NOT NULL,
+              day_started_at_unix_ms INTEGER NOT NULL,
+              row_json TEXT NOT NULL,
+              PRIMARY KEY(provider, day_started_at_unix_ms)
+            );
+            CREATE INDEX IF NOT EXISTS idx_spend_days_provider_started_at
+              ON spend_days(provider, day_started_at_unix_ms ASC);
+            CREATE TABLE IF NOT EXISTS spend_manual_days(
+              provider TEXT NOT NULL,
+              day_key TEXT NOT NULL,
+              row_json TEXT NOT NULL,
+              PRIMARY KEY(provider, day_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_spend_manual_days_provider_day
+              ON spend_manual_days(provider, day_key ASC);
+            CREATE TABLE IF NOT EXISTS provider_pricing_configs(
+              provider TEXT PRIMARY KEY,
+              pricing_json TEXT NOT NULL,
+              updated_at_unix_ms INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_usage_request_day_provider_day_key
               ON usage_request_day_provider_totals(day_key ASC);
@@ -371,6 +496,16 @@ impl Store {
                  ON CONFLICT(key) DO UPDATE SET value='0'",
                 [Self::USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY],
             )?;
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES(?1, '0')
+                 ON CONFLICT(key) DO UPDATE SET value='0'",
+                [Self::SPEND_HISTORY_SQLITE_MIGRATED_FROM_SLED_KEY],
+            )?;
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES('lan_edit_lamport_clock', '0')
+                 ON CONFLICT(key) DO UPDATE SET value='0'",
+                [],
+            )?;
         }
         conn.execute(
             "INSERT INTO event_meta(key, value) VALUES(?1, '0')
@@ -382,11 +517,84 @@ impl Store {
              ON CONFLICT(key) DO NOTHING",
             [Self::USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY],
         )?;
+        conn.execute(
+            "INSERT INTO event_meta(key, value) VALUES(?1, '0')
+             ON CONFLICT(key) DO NOTHING",
+            [Self::SPEND_HISTORY_SQLITE_MIGRATED_FROM_SLED_KEY],
+        )?;
+        conn.execute(
+            "INSERT INTO event_meta(key, value) VALUES('lan_edit_lamport_clock', '0')
+             ON CONFLICT(key) DO NOTHING",
+            [],
+        )?;
+        Self::ensure_usage_request_columns(&conn)?;
         drop(conn);
         self.migrate_legacy_events_from_sled_if_needed()?;
         self.migrate_usage_requests_from_sled_if_needed()?;
+        self.migrate_spend_history_from_sled_if_needed()?;
         self.backfill_usage_request_daily_index_if_needed()?;
         self.rebuild_event_day_counts_index_if_needed()?;
+        Ok(())
+    }
+
+    fn open_events_read_connection(&self) -> rusqlite::Result<rusqlite::Connection> {
+        let conn = rusqlite::Connection::open_with_flags(
+            &self.events_db_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let _ = conn.busy_timeout(std::time::Duration::from_millis(250));
+        Ok(conn)
+    }
+
+    fn with_events_read_conn<T>(&self, f: impl FnOnce(&rusqlite::Connection) -> T) -> T {
+        match self.open_events_read_connection() {
+            Ok(conn) => f(&conn),
+            Err(_) => {
+                let conn = self.events_db.lock();
+                f(&conn)
+            }
+        }
+    }
+
+    fn ensure_usage_request_columns(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+        let mut columns = std::collections::BTreeSet::new();
+        let mut stmt = conn.prepare("PRAGMA table_info(usage_requests)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        for column in rows.flatten() {
+            columns.insert(column);
+        }
+        if !columns.contains("ingested_at_unix_ms") {
+            conn.execute(
+                "ALTER TABLE usage_requests ADD COLUMN ingested_at_unix_ms INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE usage_requests SET ingested_at_unix_ms = unix_ms WHERE ingested_at_unix_ms = 0",
+                [],
+            )?;
+        }
+        if !columns.contains("node_id") {
+            conn.execute(
+                "ALTER TABLE usage_requests ADD COLUMN node_id TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        if !columns.contains("node_name") {
+            conn.execute(
+                "ALTER TABLE usage_requests ADD COLUMN node_name TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_usage_requests_ingested_at_id
+             ON usage_requests(ingested_at_unix_ms ASC, id ASC)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_usage_requests_node_name_lc
+             ON usage_requests(lower(node_name))",
+            [],
+        )?;
         Ok(())
     }
 
@@ -427,24 +635,345 @@ impl Store {
     }
 
     fn legacy_sqlite_merge_done(&self) -> anyhow::Result<bool> {
-        let conn = self.events_db.lock();
-        let value: Option<String> = conn
-            .query_row(
-                "SELECT value FROM event_meta WHERE key=?1",
-                [Self::EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let value = self.get_event_meta(Self::EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY)?;
         Ok(value.as_deref() == Some("1"))
     }
 
     fn mark_legacy_sqlite_merge_done(&self) -> anyhow::Result<()> {
+        self.set_event_meta(Self::EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY, "1")
+    }
+
+    pub fn get_event_meta(&self, key: &str) -> anyhow::Result<Option<String>> {
+        let conn = self.events_db.lock();
+        conn.query_row("SELECT value FROM event_meta WHERE key=?1", [key], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(Into::into)
+    }
+
+    pub fn set_event_meta(&self, key: &str, value: &str) -> anyhow::Result<()> {
         let conn = self.events_db.lock();
         conn.execute(
-            "INSERT INTO event_meta(key, value) VALUES(?1, '1')
-             ON CONFLICT(key) DO UPDATE SET value='1'",
-            [Self::EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY],
+            "INSERT INTO event_meta(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![key, value],
         )?;
+        Ok(())
+    }
+
+    pub fn delete_event_meta(&self, key: &str) -> anyhow::Result<()> {
+        let conn = self.events_db.lock();
+        conn.execute("DELETE FROM event_meta WHERE key = ?1", [key])?;
+        Ok(())
+    }
+
+    pub fn next_lan_edit_lamport_ts(&self, observed_remote: Option<u64>) -> u64 {
+        let conn = self.events_db.lock();
+        let current = conn
+            .query_row(
+                "SELECT value FROM event_meta WHERE key='lan_edit_lamport_clock'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let next = current.max(observed_remote.unwrap_or(0)).saturating_add(1);
+        let _ = conn.execute(
+            "INSERT INTO event_meta(key, value) VALUES('lan_edit_lamport_clock', ?1)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [next.to_string()],
+        );
+        next
+    }
+
+    pub fn note_lan_edit_lamport_ts(&self, observed_remote: u64) {
+        let conn = self.events_db.lock();
+        let current = conn
+            .query_row(
+                "SELECT value FROM event_meta WHERE key='lan_edit_lamport_clock'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        if observed_remote <= current {
+            return;
+        }
+        let _ = conn.execute(
+            "INSERT INTO event_meta(key, value) VALUES('lan_edit_lamport_clock', ?1)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [observed_remote.to_string()],
+        );
+    }
+
+    pub fn insert_lan_edit_event(&self, event: &LanEditSyncEvent) -> bool {
+        let payload_json =
+            serde_json::to_string(&event.payload).unwrap_or_else(|_| "null".to_string());
+        let conn = self.events_db.lock();
+        conn.execute(
+            "INSERT OR IGNORE INTO lan_edit_events(
+                event_id, node_id, node_name, created_at_unix_ms, lamport_ts,
+                entity_type, entity_id, op, payload_json
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                event.event_id,
+                event.node_id,
+                event.node_name,
+                i64::try_from(event.created_at_unix_ms).unwrap_or(i64::MAX),
+                i64::try_from(event.lamport_ts).unwrap_or(i64::MAX),
+                event.entity_type,
+                event.entity_id,
+                event.op,
+                payload_json,
+            ],
+        )
+        .unwrap_or(0)
+            > 0
+    }
+
+    pub fn list_lan_edit_events_batch(
+        &self,
+        after_lamport_ts: u64,
+        after_event_id: Option<&str>,
+        limit: usize,
+    ) -> (Vec<LanEditSyncEvent>, bool) {
+        let mut out = Vec::with_capacity(limit.min(128));
+        let after_lamport_i64 = i64::try_from(after_lamport_ts).unwrap_or(i64::MAX);
+        let after_event_id = after_event_id.unwrap_or_default().trim();
+        let fetch_limit = limit.saturating_add(1);
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT
+                event_id,
+                node_id,
+                node_name,
+                created_at_unix_ms,
+                lamport_ts,
+                entity_type,
+                entity_id,
+                op,
+                payload_json
+             FROM lan_edit_events
+             WHERE lamport_ts > ?1
+                OR (lamport_ts = ?1 AND event_id > ?2)
+             ORDER BY lamport_ts ASC, event_id ASC
+             LIMIT ?3",
+        ) else {
+            return (out, false);
+        };
+        let Ok(rows) = stmt.query_map(
+            params![
+                after_lamport_i64,
+                after_event_id,
+                i64::try_from(fetch_limit).unwrap_or(i64::MAX)
+            ],
+            |row| {
+                let payload_json = row.get::<_, String>(8)?;
+                Ok(LanEditSyncEvent {
+                    event_id: row.get::<_, String>(0)?,
+                    node_id: row.get::<_, String>(1)?,
+                    node_name: row.get::<_, String>(2)?,
+                    created_at_unix_ms: u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
+                    lamport_ts: u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+                    entity_type: row.get::<_, String>(5)?,
+                    entity_id: row.get::<_, String>(6)?,
+                    op: row.get::<_, String>(7)?,
+                    payload: serde_json::from_str(&payload_json).unwrap_or(Value::Null),
+                })
+            },
+        ) else {
+            return (out, false);
+        };
+        for row in rows.flatten() {
+            out.push(row);
+        }
+        let has_more = out.len() > limit;
+        if has_more {
+            out.truncate(limit);
+        }
+        (out, has_more)
+    }
+
+    pub fn get_lan_provider_definition_snapshot(
+        &self,
+        source_node_id: &str,
+        shared_provider_id: &str,
+    ) -> Option<LanProviderDefinitionSnapshotRecord> {
+        let conn = self.events_db.lock();
+        conn.query_row(
+            "SELECT
+                source_node_id,
+                source_node_name,
+                shared_provider_id,
+                provider_name,
+                deleted,
+                snapshot_json,
+                updated_at_unix_ms,
+                lamport_ts,
+                revision_event_id
+             FROM lan_provider_definition_snapshots
+             WHERE source_node_id = ?1 AND shared_provider_id = ?2",
+            params![source_node_id.trim(), shared_provider_id.trim()],
+            |row| {
+                let snapshot_json = row.get::<_, String>(5)?;
+                Ok(LanProviderDefinitionSnapshotRecord {
+                    source_node_id: row.get::<_, String>(0)?,
+                    source_node_name: row.get::<_, String>(1)?,
+                    shared_provider_id: row.get::<_, String>(2)?,
+                    provider_name: row.get::<_, String>(3)?,
+                    deleted: row.get::<_, i64>(4)? != 0,
+                    snapshot: serde_json::from_str(&snapshot_json).unwrap_or(Value::Null),
+                    updated_at_unix_ms: u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
+                    lamport_ts: u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                    revision_event_id: row.get::<_, String>(8)?,
+                })
+            },
+        )
+        .optional()
+        .ok()
+        .flatten()
+    }
+
+    pub fn upsert_lan_provider_definition_snapshot(
+        &self,
+        record: &LanProviderDefinitionSnapshotRecord,
+    ) -> Result<(), String> {
+        let snapshot_json =
+            serde_json::to_string(&record.snapshot).unwrap_or_else(|_| "null".to_string());
+        let conn = self.events_db.lock();
+        conn.execute(
+            "INSERT INTO lan_provider_definition_snapshots(
+                source_node_id,
+                source_node_name,
+                shared_provider_id,
+                provider_name,
+                deleted,
+                snapshot_json,
+                updated_at_unix_ms,
+                lamport_ts,
+                revision_event_id
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(source_node_id, shared_provider_id) DO UPDATE SET
+                source_node_name = excluded.source_node_name,
+                provider_name = excluded.provider_name,
+                deleted = excluded.deleted,
+                snapshot_json = excluded.snapshot_json,
+                updated_at_unix_ms = excluded.updated_at_unix_ms,
+                lamport_ts = excluded.lamport_ts,
+                revision_event_id = excluded.revision_event_id",
+            params![
+                record.source_node_id,
+                record.source_node_name,
+                record.shared_provider_id,
+                record.provider_name,
+                if record.deleted { 1_i64 } else { 0_i64 },
+                snapshot_json,
+                i64::try_from(record.updated_at_unix_ms).unwrap_or(i64::MAX),
+                i64::try_from(record.lamport_ts).unwrap_or(i64::MAX),
+                record.revision_event_id,
+            ],
+        )
+        .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    pub fn list_lan_provider_definition_snapshots(
+        &self,
+        source_node_id: &str,
+    ) -> Vec<LanProviderDefinitionSnapshotRecord> {
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT
+                source_node_id,
+                source_node_name,
+                shared_provider_id,
+                provider_name,
+                deleted,
+                snapshot_json,
+                updated_at_unix_ms,
+                lamport_ts,
+                revision_event_id
+             FROM lan_provider_definition_snapshots
+             WHERE source_node_id = ?1 AND deleted = 0
+             ORDER BY lower(provider_name) ASC, shared_provider_id ASC",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map([source_node_id.trim()], |row| {
+            let snapshot_json = row.get::<_, String>(5)?;
+            Ok(LanProviderDefinitionSnapshotRecord {
+                source_node_id: row.get::<_, String>(0)?,
+                source_node_name: row.get::<_, String>(1)?,
+                shared_provider_id: row.get::<_, String>(2)?,
+                provider_name: row.get::<_, String>(3)?,
+                deleted: row.get::<_, i64>(4)? != 0,
+                snapshot: serde_json::from_str(&snapshot_json).unwrap_or(Value::Null),
+                updated_at_unix_ms: u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
+                lamport_ts: u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                revision_event_id: row.get::<_, String>(8)?,
+            })
+        }) else {
+            return Vec::new();
+        };
+        rows.flatten().collect()
+    }
+
+    pub fn list_all_lan_provider_definition_snapshots(
+        &self,
+        source_node_id: &str,
+    ) -> Vec<LanProviderDefinitionSnapshotRecord> {
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT
+                source_node_id,
+                source_node_name,
+                shared_provider_id,
+                provider_name,
+                deleted,
+                snapshot_json,
+                updated_at_unix_ms,
+                lamport_ts,
+                revision_event_id
+             FROM lan_provider_definition_snapshots
+             WHERE source_node_id = ?1
+             ORDER BY lower(provider_name) ASC, shared_provider_id ASC",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map([source_node_id.trim()], |row| {
+            let snapshot_json = row.get::<_, String>(5)?;
+            Ok(LanProviderDefinitionSnapshotRecord {
+                source_node_id: row.get::<_, String>(0)?,
+                source_node_name: row.get::<_, String>(1)?,
+                shared_provider_id: row.get::<_, String>(2)?,
+                provider_name: row.get::<_, String>(3)?,
+                deleted: row.get::<_, i64>(4)? != 0,
+                snapshot: serde_json::from_str(&snapshot_json).unwrap_or(Value::Null),
+                updated_at_unix_ms: u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
+                lamport_ts: u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                revision_event_id: row.get::<_, String>(8)?,
+            })
+        }) else {
+            return Vec::new();
+        };
+        rows.flatten().collect()
+    }
+
+    pub fn remove_lan_provider_definition_snapshot(
+        &self,
+        source_node_id: &str,
+        shared_provider_id: &str,
+    ) -> Result<(), String> {
+        let conn = self.events_db.lock();
+        conn.execute(
+            "DELETE FROM lan_provider_definition_snapshots
+             WHERE source_node_id = ?1 AND shared_provider_id = ?2",
+            params![source_node_id.trim(), shared_provider_id.trim()],
+        )
+        .map_err(|err| err.to_string())?;
         Ok(())
     }
 
@@ -555,6 +1084,34 @@ impl Store {
         Ok(())
     }
 
+    fn should_compress_daily_event_count(code: &str) -> bool {
+        matches!(
+            code.trim(),
+            "lan.shared_health_applied"
+                | "lan.usage_sync_applied"
+                | "lan.edit_sync_applied"
+                | "routing.balanced_reassign_on_session_topology_change"
+        )
+    }
+
+    fn compressed_daily_event_bucket_key(
+        provider: &str,
+        code: &str,
+        unix_ms_i64: i64,
+    ) -> Option<String> {
+        if !Self::should_compress_daily_event_count(code) {
+            return None;
+        }
+        let unix_ms = u64::try_from(unix_ms_i64).ok()?;
+        let minute_bucket = unix_ms / 60_000;
+        Some(format!(
+            "{}|{}|{}",
+            provider.trim().to_ascii_lowercase(),
+            code.trim(),
+            minute_bucket
+        ))
+    }
+
     fn rebuild_event_day_counts_index_if_needed(&self) -> anyhow::Result<()> {
         let mut conn = self.events_db.lock();
         let current: Option<String> = conn
@@ -604,6 +1161,10 @@ impl Store {
             String,
             std::collections::HashSet<String>,
         > = std::collections::HashMap::new();
+        let mut compressed_seen_by_day: std::collections::HashMap<
+            String,
+            std::collections::HashSet<String>,
+        > = std::collections::HashMap::new();
         for row in raw_rows {
             let (unix_ms_i64, provider, level, code, fields_json) = row;
             let Ok(unix_ms_u64) = u64::try_from(unix_ms_i64) else {
@@ -644,6 +1205,14 @@ impl Store {
                 );
                 let set = mismatch_seen_by_day.entry(day_key.clone()).or_default();
                 if !set.insert(sig) {
+                    continue;
+                }
+            }
+            if let Some(bucket_key) =
+                Self::compressed_daily_event_bucket_key(&provider, &code, unix_ms_i64)
+            {
+                let set = compressed_seen_by_day.entry(day_key.clone()).or_default();
+                if !set.insert(bucket_key) {
                     continue;
                 }
             }
@@ -1011,10 +1580,10 @@ impl Store {
         {
             tx.execute(
                 "INSERT OR IGNORE INTO usage_requests(
-                    id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                    id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, session_id, node_id, node_name,
                     input_tokens, output_tokens, total_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 ) VALUES(?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, '', '', ?8, ?9, ?10, ?11, ?12)",
                 params![
                     id,
                     unix_ms,
@@ -1068,6 +1637,32 @@ impl Store {
             let _ = tx.rollback();
             return;
         }
+        if Self::compressed_daily_event_bucket_key(provider, code, ts_i64).is_some() {
+            let exists = tx
+                .query_row(
+                    "SELECT 1
+                     FROM events
+                     WHERE id != ?1
+                       AND provider = ?2
+                       AND code = ?3
+                       AND unix_ms >= ?4
+                       AND unix_ms < ?5
+                     LIMIT 1",
+                    params![
+                        id,
+                        provider,
+                        code,
+                        (ts_i64 / 60_000) * 60_000,
+                        ((ts_i64 / 60_000) + 1) * 60_000
+                    ],
+                    |_| Ok(()),
+                )
+                .optional();
+            if matches!(exists, Ok(Some(()))) {
+                let _ = tx.commit();
+                return;
+            }
+        }
         if Self::upsert_event_day_counts(&tx, &day_key, day_start_unix_ms, level).is_err() {
             let _ = tx.rollback();
             return;
@@ -1079,28 +1674,17 @@ impl Store {
         &self,
         provider: &str,
         response_obj: &Value,
-        api_key_ref: Option<&str>,
-        origin: &str,
-        session_id: Option<&str>,
+        context: UsageRequestContext<'_>,
     ) {
-        self.record_success_with_model(
-            provider,
-            response_obj,
-            api_key_ref,
-            None,
-            origin,
-            session_id,
-        );
+        self.record_success_with_model(provider, response_obj, context, None);
     }
 
     pub fn record_success_with_model(
         &self,
         provider: &str,
         response_obj: &Value,
-        api_key_ref: Option<&str>,
+        context: UsageRequestContext<'_>,
         model_override: Option<&str>,
-        origin: &str,
-        session_id: Option<&str>,
     ) {
         let (
             input_tokens,
@@ -1131,9 +1715,7 @@ impl Store {
             provider,
             &Self::model_for_usage(response_obj, model_override),
             increments,
-            api_key_ref,
-            origin,
-            session_id,
+            context,
         );
     }
 
@@ -1434,9 +2016,17 @@ impl Store {
                 "UPDATE usage_requests SET provider=?1 WHERE provider=?2",
                 params![new, old],
             );
+            let _ = conn.execute(
+                "UPDATE spend_days SET provider=?1 WHERE provider=?2",
+                params![new, old],
+            );
+            let _ = conn.execute(
+                "UPDATE spend_manual_days SET provider=?1 WHERE provider=?2",
+                params![new, old],
+            );
         }
 
-        for prefix in ["usage_day:", "spend_day:", "spend_manual_day:"] {
+        for prefix in ["usage_day:"] {
             let old_prefix = format!("{prefix}{old}:");
             let new_prefix = format!("{prefix}{new}:");
             let old_prefix_bytes = old_prefix.as_bytes();
@@ -1652,11 +2242,28 @@ impl Store {
         out
     }
 
+    pub fn backfill_usage_request_node_identity(&self, node_id: &str, node_name: &str) -> usize {
+        let trimmed_node_id = node_id.trim();
+        let trimmed_node_name = node_name.trim();
+        if trimmed_node_id.is_empty() || trimmed_node_name.is_empty() {
+            return 0;
+        }
+        let conn = self.events_db.lock();
+        conn.execute(
+            "UPDATE usage_requests
+             SET node_id = ?1, node_name = ?2
+             WHERE trim(node_id) = '' OR trim(node_name) = ''",
+            params![trimmed_node_id, trimmed_node_name],
+        )
+        .unwrap_or(0)
+    }
+
+    #[cfg(test)]
     pub fn list_usage_requests(&self, limit: usize) -> Vec<Value> {
         let mut out: Vec<Value> = Vec::with_capacity(limit.min(1024));
         let conn = self.events_db.lock();
         let Ok(mut stmt) = conn.prepare(
-            "SELECT provider, api_key_ref, model, origin, session_id, unix_ms,
+            "SELECT id, provider, api_key_ref, model, origin, session_id, unix_ms, node_id, node_name,
                     input_tokens, output_tokens, total_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens
              FROM usage_requests
@@ -1667,17 +2274,20 @@ impl Store {
         };
         let Ok(rows) = stmt.query_map([limit as i64], |row| {
             Ok(serde_json::json!({
-                "provider": row.get::<_, String>(0)?,
-                "api_key_ref": row.get::<_, String>(1)?,
-                "model": row.get::<_, String>(2)?,
-                "origin": row.get::<_, String>(3)?,
-                "session_id": row.get::<_, String>(4)?,
-                "unix_ms": u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
-                "input_tokens": u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
-                "output_tokens": u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
-                "total_tokens": u64::try_from(row.get::<_, i64>(8)?).unwrap_or(0),
-                "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
-                "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+                "id": row.get::<_, String>(0)?,
+                "provider": row.get::<_, String>(1)?,
+                "api_key_ref": row.get::<_, String>(2)?,
+                "model": row.get::<_, String>(3)?,
+                "origin": row.get::<_, String>(4)?,
+                "session_id": row.get::<_, String>(5)?,
+                "unix_ms": u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
+                "node_id": row.get::<_, String>(7)?,
+                "node_name": row.get::<_, String>(8)?,
+                "input_tokens": u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
+                "output_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+                "total_tokens": u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+                "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
+                "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
             }))
         }) else {
             return out;
@@ -1688,12 +2298,132 @@ impl Store {
         out
     }
 
+    pub fn list_usage_request_sync_batch(
+        &self,
+        after_ingested_at_unix_ms: u64,
+        after_id: Option<&str>,
+        limit: usize,
+    ) -> (Vec<UsageRequestSyncRow>, bool) {
+        let mut out = Vec::with_capacity(limit.min(128));
+        let after_ingested_i64 = i64::try_from(after_ingested_at_unix_ms).unwrap_or(i64::MAX);
+        let after_id = after_id.unwrap_or_default().trim();
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT
+                id,
+                unix_ms,
+                ingested_at_unix_ms,
+                provider,
+                api_key_ref,
+                model,
+                origin,
+                session_id,
+                node_id,
+                node_name,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                cache_creation_input_tokens,
+                cache_read_input_tokens
+             FROM usage_requests
+             WHERE ingested_at_unix_ms > ?1
+                OR (ingested_at_unix_ms = ?1 AND id > ?2)
+             ORDER BY ingested_at_unix_ms ASC, id ASC
+             LIMIT ?3",
+        ) else {
+            return (out, false);
+        };
+        let fetch_limit = limit.saturating_add(1);
+        let Ok(rows) = stmt.query_map(
+            params![
+                after_ingested_i64,
+                after_id,
+                i64::try_from(fetch_limit).unwrap_or(i64::MAX)
+            ],
+            |row| {
+                Ok(UsageRequestSyncRow {
+                    id: row.get::<_, String>(0)?,
+                    unix_ms: u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+                    ingested_at_unix_ms: u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                    provider: row.get::<_, String>(3)?,
+                    api_key_ref: row.get::<_, String>(4)?,
+                    model: row.get::<_, String>(5)?,
+                    origin: row.get::<_, String>(6)?,
+                    session_id: row.get::<_, String>(7)?,
+                    node_id: row.get::<_, String>(8)?,
+                    node_name: row.get::<_, String>(9)?,
+                    input_tokens: u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+                    output_tokens: u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+                    total_tokens: u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
+                    cache_creation_input_tokens: u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
+                    cache_read_input_tokens: u64::try_from(row.get::<_, i64>(14)?).unwrap_or(0),
+                })
+            },
+        ) else {
+            return (out, false);
+        };
+        for row in rows.flatten() {
+            out.push(row);
+        }
+        let has_more = out.len() > limit;
+        if has_more {
+            out.truncate(limit);
+        }
+        (out, has_more)
+    }
+
+    pub fn upsert_usage_request_sync_rows(&self, rows: &[UsageRequestSyncRow]) -> usize {
+        if rows.is_empty() {
+            return 0;
+        }
+        let mut conn = self.events_db.lock();
+        let Ok(tx) = conn.transaction() else {
+            return 0;
+        };
+        let mut inserted = 0usize;
+        for row in rows {
+            let Ok(changed) = tx.execute(
+                "INSERT OR IGNORE INTO usage_requests(
+                    id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, session_id,
+                    node_id, node_name, input_tokens, output_tokens, total_tokens,
+                    cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                params![
+                    row.id,
+                    i64::try_from(row.unix_ms).unwrap_or(i64::MAX),
+                    i64::try_from(row.ingested_at_unix_ms).unwrap_or(i64::MAX),
+                    row.provider,
+                    row.api_key_ref,
+                    row.model,
+                    row.origin,
+                    row.session_id,
+                    row.node_id,
+                    row.node_name,
+                    i64::try_from(row.input_tokens).unwrap_or(i64::MAX),
+                    i64::try_from(row.output_tokens).unwrap_or(i64::MAX),
+                    i64::try_from(row.total_tokens).unwrap_or(i64::MAX),
+                    i64::try_from(row.cache_creation_input_tokens).unwrap_or(i64::MAX),
+                    i64::try_from(row.cache_read_input_tokens).unwrap_or(i64::MAX),
+                ],
+            ) else {
+                let _ = tx.rollback();
+                return inserted;
+            };
+            inserted = inserted.saturating_add(changed);
+        }
+        if tx.commit().is_err() {
+            return 0;
+        }
+        inserted
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn list_usage_requests_page(
         &self,
         since_unix_ms: u64,
         from_unix_ms: Option<u64>,
         to_unix_ms: Option<u64>,
+        nodes: &[String],
         providers: &[String],
         models: &[String],
         origins: &[String],
@@ -1702,7 +2432,7 @@ impl Store {
         offset: usize,
     ) -> (Vec<Value>, bool) {
         let mut sql = String::from(
-            "SELECT provider, api_key_ref, model, origin, session_id, unix_ms,
+            "SELECT id, provider, api_key_ref, model, origin, session_id, unix_ms, node_id, node_name,
                     input_tokens, output_tokens, total_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens
              FROM usage_requests
@@ -1730,6 +2460,15 @@ impl Store {
             for provider in providers {
                 params.push(rusqlite::types::Value::Text(
                     provider.trim().to_ascii_lowercase(),
+                ));
+            }
+        }
+        if !nodes.is_empty() {
+            let placeholders = vec!["?"; nodes.len()].join(", ");
+            sql.push_str(&format!(" AND lower(CASE WHEN trim(node_name) = '' THEN 'Local' ELSE node_name END) IN ({placeholders})"));
+            for node in nodes {
+                params.push(rusqlite::types::Value::Text(
+                    node.trim().to_ascii_lowercase(),
                 ));
             }
         }
@@ -1768,36 +2507,40 @@ impl Store {
             i64::try_from(offset).unwrap_or(i64::MAX),
         ));
 
-        let mut out: Vec<Value> = Vec::with_capacity(limit.min(1024));
-        let conn = self.events_db.lock();
-        let Ok(mut stmt) = conn.prepare(&sql) else {
-            return (out, false);
-        };
-        let Ok(rows) = stmt.query_map(params_from_iter(params.iter()), |row| {
-            Ok(serde_json::json!({
-                "provider": row.get::<_, String>(0)?,
-                "api_key_ref": row.get::<_, String>(1)?,
-                "model": row.get::<_, String>(2)?,
-                "origin": row.get::<_, String>(3)?,
-                "session_id": row.get::<_, String>(4)?,
-                "unix_ms": u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
-                "input_tokens": u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
-                "output_tokens": u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
-                "total_tokens": u64::try_from(row.get::<_, i64>(8)?).unwrap_or(0),
-                "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
-                "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
-            }))
-        }) else {
-            return (out, false);
-        };
-        for row in rows.flatten() {
-            out.push(row);
-        }
-        let has_more = out.len() > limit;
-        if has_more {
-            out.truncate(limit);
-        }
-        (out, has_more)
+        self.with_events_read_conn(|conn| {
+            let mut out: Vec<Value> = Vec::with_capacity(limit.min(1024));
+            let Ok(mut stmt) = conn.prepare(&sql) else {
+                return (out, false);
+            };
+            let Ok(rows) = stmt.query_map(params_from_iter(params.iter()), |row| {
+                Ok(serde_json::json!({
+                    "id": row.get::<_, String>(0)?,
+                    "provider": row.get::<_, String>(1)?,
+                    "api_key_ref": row.get::<_, String>(2)?,
+                    "model": row.get::<_, String>(3)?,
+                    "origin": row.get::<_, String>(4)?,
+                    "session_id": row.get::<_, String>(5)?,
+                    "unix_ms": u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
+                    "node_id": row.get::<_, String>(7)?,
+                    "node_name": row.get::<_, String>(8)?,
+                    "input_tokens": u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
+                    "output_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+                    "total_tokens": u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+                    "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
+                    "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
+                }))
+            }) else {
+                return (out, false);
+            };
+            for row in rows.flatten() {
+                out.push(row);
+            }
+            let has_more = out.len() > limit;
+            if has_more {
+                out.truncate(limit);
+            }
+            (out, has_more)
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1806,6 +2549,7 @@ impl Store {
         since_unix_ms: u64,
         from_unix_ms: Option<u64>,
         to_unix_ms: Option<u64>,
+        nodes: &[String],
         providers: &[String],
         models: &[String],
         origins: &[String],
@@ -1846,6 +2590,15 @@ impl Store {
                 ));
             }
         }
+        if !nodes.is_empty() {
+            let placeholders = vec!["?"; nodes.len()].join(", ");
+            sql.push_str(&format!(" AND lower(CASE WHEN trim(node_name) = '' THEN 'Local' ELSE node_name END) IN ({placeholders})"));
+            for node in nodes {
+                params.push(rusqlite::types::Value::Text(
+                    node.trim().to_ascii_lowercase(),
+                ));
+            }
+        }
         if !models.is_empty() {
             let placeholders = vec!["?"; models.len()].join(", ");
             sql.push_str(&format!(" AND lower(model) IN ({placeholders})"));
@@ -1873,75 +2626,77 @@ impl Store {
                 ));
             }
         }
-        let conn = self.events_db.lock();
-        let Ok(mut stmt) = conn.prepare(&sql) else {
-            return (0, 0, 0, 0, 0, 0);
-        };
-        let Ok(row) = stmt.query_row(params_from_iter(params.iter()), |row| {
-            Ok((
-                u64::try_from(row.get::<_, i64>(0)?).unwrap_or(0),
-                u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
-                u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
-                u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
-                u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
-                u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
-            ))
-        }) else {
-            return (0, 0, 0, 0, 0, 0);
-        };
-        row
+        self.with_events_read_conn(|conn| {
+            let Ok(mut stmt) = conn.prepare(&sql) else {
+                return (0, 0, 0, 0, 0, 0);
+            };
+            let Ok(row) = stmt.query_row(params_from_iter(params.iter()), |row| {
+                Ok((
+                    u64::try_from(row.get::<_, i64>(0)?).unwrap_or(0),
+                    u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+                    u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                    u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
+                    u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+                    u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+                ))
+            }) else {
+                return (0, 0, 0, 0, 0, 0);
+            };
+            row
+        })
     }
 
     pub fn list_usage_request_daily_totals(
         &self,
         day_limit: usize,
     ) -> Vec<(String, String, u64, u64, u64, u64)> {
-        let mut out: Vec<(String, String, u64, u64, u64, u64)> = Vec::new();
-        let limit = day_limit.clamp(1, 180);
-        let conn = self.events_db.lock();
-        let Ok(mut stmt) = conn.prepare(
-            "WITH latest_days AS (
-                SELECT day_key
-                FROM usage_request_day_provider_totals
-                GROUP BY day_key
-                ORDER BY day_key DESC
-                LIMIT ?1
-             )
-             SELECT
-               u.day_key,
-               u.provider,
-               u.total_tokens,
-               u.request_count,
-               u.windows_request_count,
-               u.wsl_request_count
-             FROM usage_request_day_provider_totals u
-             JOIN latest_days d ON d.day_key = u.day_key
-             ORDER BY u.day_key ASC, u.total_tokens DESC",
-        ) else {
-            return out;
-        };
-        let Ok(rows) = stmt.query_map([i64::try_from(limit).unwrap_or(45)], |row| {
-            let day_key = row.get::<_, String>(0)?;
-            let provider = row.get::<_, String>(1)?;
-            let total_tokens = u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0);
-            let request_count = u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0);
-            let windows_request_count = u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0);
-            let wsl_request_count = u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0);
-            Ok((
-                day_key,
-                provider,
-                total_tokens,
-                request_count,
-                windows_request_count,
-                wsl_request_count,
-            ))
-        }) else {
-            return out;
-        };
-        for row in rows.flatten() {
-            out.push(row);
-        }
-        out
+        self.with_events_read_conn(|conn| {
+            let mut out: Vec<(String, String, u64, u64, u64, u64)> = Vec::new();
+            let limit = day_limit.clamp(1, 180);
+            let Ok(mut stmt) = conn.prepare(
+                "WITH latest_days AS (
+                    SELECT day_key
+                    FROM usage_request_day_provider_totals
+                    GROUP BY day_key
+                    ORDER BY day_key DESC
+                    LIMIT ?1
+                 )
+                 SELECT
+                   u.day_key,
+                   u.provider,
+                   u.total_tokens,
+                   u.request_count,
+                   u.windows_request_count,
+                   u.wsl_request_count
+                 FROM usage_request_day_provider_totals u
+                 JOIN latest_days d ON d.day_key = u.day_key
+                 ORDER BY u.day_key ASC, u.total_tokens DESC",
+            ) else {
+                return out;
+            };
+            let Ok(rows) = stmt.query_map([i64::try_from(limit).unwrap_or(45)], |row| {
+                let day_key = row.get::<_, String>(0)?;
+                let provider = row.get::<_, String>(1)?;
+                let total_tokens = u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0);
+                let request_count = u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0);
+                let windows_request_count = u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0);
+                let wsl_request_count = u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0);
+                Ok((
+                    day_key,
+                    provider,
+                    total_tokens,
+                    request_count,
+                    windows_request_count,
+                    wsl_request_count,
+                ))
+            }) else {
+                return out;
+            };
+            for row in rows.flatten() {
+                out.push(row);
+            }
+            out
+        })
     }
 
     pub fn backfill_api_key_ref_fields(
@@ -1999,37 +2754,56 @@ impl Store {
             let _ = tx.commit();
         }
 
-        for res in self.db.scan_prefix(b"spend_day:") {
-            let Ok((k, v)) = res else {
-                continue;
+        {
+            let mut conn = self.events_db.lock();
+            let Ok(tx) = conn.transaction() else {
+                return updated;
             };
-            let Ok(mut row) = serde_json::from_slice::<Value>(&v) else {
-                continue;
-            };
-            if has_key_ref(&row) {
-                continue;
+            let mut spend_days: Vec<(String, i64, String)> = Vec::new();
+            {
+                let Ok(mut stmt) = tx.prepare(
+                    "SELECT provider, day_started_at_unix_ms, row_json
+                     FROM spend_days",
+                ) else {
+                    return updated;
+                };
+                let Ok(rows) = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                }) else {
+                    return updated;
+                };
+                for row in rows.flatten() {
+                    spend_days.push(row);
+                }
             }
-            let provider = row
-                .get("provider")
-                .and_then(|v| v.as_str())
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty());
-            let Some(provider) = provider else {
-                continue;
-            };
-            let key_ref = provider_api_key_ref
-                .get(provider)
-                .cloned()
-                .unwrap_or_else(|| "-".to_string());
-            row["api_key_ref"] = serde_json::json!(key_ref);
-            let _ = self
-                .db
-                .insert(k, serde_json::to_vec(&row).unwrap_or_default());
-            updated = updated.saturating_add(1);
-        }
-
-        if updated > 0 {
-            let _ = self.db.flush();
+            for (provider, day_started_at_unix_ms, row_json) in spend_days {
+                let Ok(mut row) = serde_json::from_str::<Value>(&row_json) else {
+                    continue;
+                };
+                if has_key_ref(&row) {
+                    continue;
+                }
+                let key_ref = provider_api_key_ref
+                    .get(provider.trim())
+                    .cloned()
+                    .unwrap_or_else(|| "-".to_string());
+                row["api_key_ref"] = serde_json::json!(key_ref);
+                let Ok(next_row_json) = serde_json::to_string(&row) else {
+                    continue;
+                };
+                let _ = tx.execute(
+                    "UPDATE spend_days
+                     SET row_json=?1
+                     WHERE provider=?2 AND day_started_at_unix_ms=?3",
+                    params![next_row_json, provider, day_started_at_unix_ms],
+                );
+                updated = updated.saturating_add(1);
+            }
+            let _ = tx.commit();
         }
         updated
     }

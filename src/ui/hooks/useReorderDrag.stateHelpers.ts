@@ -79,3 +79,13 @@ export function measureDragItemHeight(node: HTMLDivElement | null): number {
   if (Number.isFinite(measured) && measured > 1) return measured
   return MIN_DRAG_PLACEHOLDER_HEIGHT_PX
 }
+
+export function computeDragStartTopInList(
+  itemRectTop: number | null | undefined,
+  listRectTop: number | null | undefined,
+  scrollTop: number | null | undefined,
+): number {
+  if (!Number.isFinite(itemRectTop) || !Number.isFinite(listRectTop)) return 0
+  const normalizedScrollTop = Number.isFinite(scrollTop) ? Number(scrollTop) : 0
+  return Number(itemRectTop) - Number(listRectTop) + normalizedScrollTop
+}

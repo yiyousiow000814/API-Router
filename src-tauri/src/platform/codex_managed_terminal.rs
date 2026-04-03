@@ -175,16 +175,6 @@ pub fn build_managed_terminal_launch_spec(
                 launch_script.push_str(&format!(" --cd {}", powershell_single_quote(cwd)));
             }
             script_parts.push(launch_script);
-            let args = vec![
-                "/C".to_string(),
-                "start".to_string(),
-                "".to_string(),
-                "powershell.exe".to_string(),
-                "-NoLogo".to_string(),
-                "-NoExit".to_string(),
-                "-Command".to_string(),
-                script_parts.join("; "),
-            ];
             let mut env = Vec::new();
             if let Some(token) = gateway_token {
                 env.push((REMOTE_AUTH_TOKEN_ENV.to_string(), token));
@@ -193,8 +183,13 @@ pub fn build_managed_terminal_launch_spec(
                 env.push(("CODEX_HOME".to_string(), home_override));
             }
             Ok(ManagedTerminalLaunchSpec {
-                program: "cmd.exe".to_string(),
-                args,
+                program: "powershell.exe".to_string(),
+                args: vec![
+                    "-NoLogo".to_string(),
+                    "-NoExit".to_string(),
+                    "-Command".to_string(),
+                    script_parts.join("; "),
+                ],
                 env,
             })
         }
@@ -230,12 +225,8 @@ pub fn build_managed_terminal_launch_spec(
             }
             script.push(command);
             Ok(ManagedTerminalLaunchSpec {
-                program: "cmd.exe".to_string(),
+                program: "wsl.exe".to_string(),
                 args: vec![
-                    "/C".to_string(),
-                    "start".to_string(),
-                    "".to_string(),
-                    "wsl.exe".to_string(),
                     "-d".to_string(),
                     distro,
                     "--".to_string(),
@@ -265,11 +256,6 @@ pub fn launch_managed_terminal_surface(
     command.args(&spec.args);
     for (key, value) in &spec.env {
         command.env(key, value);
-    }
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
     }
     command.spawn().map_err(|error| error.to_string())?;
     Ok(spec)
@@ -308,20 +294,9 @@ mod tests {
         })
         .expect("windows launch spec");
 
-        assert_eq!(spec.program, "cmd.exe");
-        assert_eq!(
-            spec.args[..7],
-            [
-                "/C",
-                "start",
-                "",
-                "powershell.exe",
-                "-NoLogo",
-                "-NoExit",
-                "-Command",
-            ]
-        );
-        let command = spec.args.get(7).expect("powershell command");
+        assert_eq!(spec.program, "powershell.exe");
+        assert_eq!(spec.args[..3], ["-NoLogo", "-NoExit", "-Command"]);
+        let command = spec.args.get(3).expect("powershell command");
         assert!(command.contains("Start-Transcript"));
         assert!(command.contains("api-router-managed-terminal.log"));
         assert!(command.contains("$env:API_ROUTER_GATEWAY_TOKEN='token-1'"));
@@ -357,14 +332,10 @@ mod tests {
         })
         .expect("wsl launch spec");
 
-        assert_eq!(spec.program, "cmd.exe");
+        assert_eq!(spec.program, "wsl.exe");
         assert_eq!(
             spec.args,
             vec![
-                "/C",
-                "start",
-                "",
-                "wsl.exe",
                 "-d",
                 "Ubuntu",
                 "--",

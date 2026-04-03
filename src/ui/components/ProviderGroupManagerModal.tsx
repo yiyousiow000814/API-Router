@@ -181,10 +181,11 @@ export function ProviderGroupManagerModal({
   }, [editingGroupName, groupNames])
 
   if (!open || !config) return null
+  const definitionsEditable = config.config_source?.mode !== 'follow'
 
   const selectedGroupName =
     assignMode === 'new' ? groupDraft.trim() : targetExistingGroup.trim()
-  const canApplyAssign = selectedProviders.length > 0 && selectedGroupName.length > 0
+  const canApplyAssign = definitionsEditable && selectedProviders.length > 0 && selectedGroupName.length > 0
 
   return (
     <ModalBackdrop onClose={onClose}>
@@ -204,13 +205,14 @@ export function ProviderGroupManagerModal({
                 <span className="aoGroupManagerAssignModeSlider" aria-hidden="true" />
                 <button
                   className={`aoGroupManagerAssignModeBtn${assignMode === 'new' ? ' is-active' : ''}`}
+                  disabled={!definitionsEditable}
                   onClick={() => setAssignMode('new')}
                 >
                   New Group
                 </button>
                 <button
                   className={`aoGroupManagerAssignModeBtn${assignMode === 'add' ? ' is-active' : ''}`}
-                  disabled={groupNames.length === 0}
+                  disabled={!definitionsEditable || groupNames.length === 0}
                   onClick={() => setAssignMode('add')}
                 >
                   Add to Group
@@ -222,14 +224,15 @@ export function ProviderGroupManagerModal({
                     className="aoInput"
                     placeholder="Group name"
                     value={groupDraft}
+                    disabled={!definitionsEditable}
                     onChange={(event) => setGroupDraft(event.target.value)}
                   />
                 ) : (
                   <select
                     className="aoSelect"
                     value={targetExistingGroup}
+                    disabled={!definitionsEditable || groupNames.length === 0}
                     onChange={(event) => setTargetExistingGroup(event.target.value)}
-                    disabled={groupNames.length === 0}
                   >
                     {groupNames.map((name) => (
                       <option key={`assign-group-option-${name}`} value={name}>
@@ -262,6 +265,7 @@ export function ProviderGroupManagerModal({
                       <input
                         type="checkbox"
                         checked={selected}
+                        disabled={!definitionsEditable}
                         onChange={(event) =>
                           setSelectedProviders((prev) => {
                             if (event.target.checked) return [...new Set([...prev, provider])]
@@ -322,6 +326,7 @@ export function ProviderGroupManagerModal({
                         <div className="aoGroupManagerMemberActions">
                           <button
                             className="aoGroupManagerEditLink"
+                            disabled={!definitionsEditable}
                             onClick={() => setEditingGroupName((prev) => (prev === name ? null : name))}
                           >
                             {isEditingThisGroup ? 'Done' : 'Edit'}
@@ -342,6 +347,7 @@ export function ProviderGroupManagerModal({
                               <div className="aoGroupManagerMemberActions">
                                 <button
                                   className="aoTinyBtn"
+                                  disabled={!definitionsEditable}
                                   onClick={() =>
                                     onOpenProviderEmailModal(
                                       provider,
@@ -354,6 +360,7 @@ export function ProviderGroupManagerModal({
                                 {supportsProviderLogin ? (
                                   <button
                                     className={`aoTinyBtn${hasLogin ? ' aoTinyBtnDangerSoft' : ''}`}
+                                    disabled={!definitionsEditable}
                                     onClick={() =>
                                       void (hasLogin
                                         ? onClearUsageAuth(provider)
@@ -370,6 +377,7 @@ export function ProviderGroupManagerModal({
                                     className="aoGroupManagerMemberRemove"
                                     title={`Remove ${provider} from group`}
                                     aria-label={`Remove ${provider} from group`}
+                                    disabled={!definitionsEditable}
                                     onClick={() => void onAssignGroup([provider], null).catch(() => undefined)}
                                   >
                                     ×
@@ -389,13 +397,14 @@ export function ProviderGroupManagerModal({
                           className="aoInput aoGroupUsageBaseInput"
                           placeholder="Usage URL"
                           value={usageBaseDraft}
+                          disabled={!definitionsEditable}
                           onChange={(event) =>
                             setGroupUsageBaseDrafts((prev) => ({ ...prev, [name]: event.target.value }))
                           }
                         />
                         <button
                           className="aoBtn"
-                          disabled={!groupActionTarget}
+                          disabled={!definitionsEditable || !groupActionTarget}
                           onClick={() => {
                             setGroupUsageBaseDrafts((prev) => ({ ...prev, [name]: '' }))
                             void onClearUsageBase(groupActionTarget)
@@ -405,7 +414,7 @@ export function ProviderGroupManagerModal({
                         </button>
                         <button
                           className="aoBtn aoBtnPrimary"
-                          disabled={!groupActionTarget}
+                          disabled={!definitionsEditable || !groupActionTarget}
                           onClick={() => void onSetUsageBase(groupActionTarget, usageBaseDraft)}
                         >
                           Save
@@ -419,7 +428,7 @@ export function ProviderGroupManagerModal({
                               <input
                                 type="checkbox"
                                 checked={Boolean(groupHardCap[period])}
-                                disabled={!groupActionTarget}
+                                disabled={!definitionsEditable || !groupActionTarget}
                                 ref={(input) => {
                                   if (!input) return
                                   input.indeterminate = groupHardCapMixed[period]
@@ -445,7 +454,7 @@ export function ProviderGroupManagerModal({
                       <div className="aoGroupManagerGroupActions">
                         <button
                           className="aoBtn aoBtnDangerSoft"
-                          disabled={members.length === 0}
+                          disabled={!definitionsEditable || members.length === 0}
                           onClick={async () => {
                             try {
                               await onAssignGroup(members, null)

@@ -5,6 +5,7 @@ mod codex_home_env;
 mod codex_wsl_bridge;
 mod commands;
 mod constants;
+mod lan_sync;
 mod orchestrator;
 mod platform;
 mod provider_switchboard;
@@ -86,22 +87,6 @@ fn profile_data_dir_name(profile: &str) -> String {
     } else {
         format!("user-data-{profile}")
     }
-}
-
-fn should_use_local_user_data_dir(local_user_data_dir: &std::path::Path) -> bool {
-    // Default to a stable per-user app-data directory so rebuilds don't force re-login.
-    // Only use a local ./user-data (next to the EXE) when explicitly requested for portability.
-    //
-    // This avoids the common dev-repo footgun: a checked-in ./user-data directory would otherwise
-    // silently override the real app data directory and make users appear "signed out".
-    if std::env::var("API_ROUTER_USE_LOCAL_USER_DATA")
-        .ok()
-        .as_deref()
-        == Some("1")
-    {
-        return true;
-    }
-    local_user_data_dir.join(".portable").exists()
 }
 
 fn should_reset_profile_data(profile: &str, is_ui_tauri: bool) -> bool {
@@ -236,6 +221,10 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
         None,
         Some("-".to_string()),
     );
+    state
+        .gateway
+        .store
+        .sync_provider_pricing_configs(&state.secrets.list_provider_pricing());
 
     let seed_usage_requests =
         |provider: &str, model: &str, count: usize, input_tokens: u64, output_tokens: u64| {
@@ -257,6 +246,8 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
                     crate::constants::USAGE_ORIGIN_WSL2
                 };
                 let session_id = format!("test-session-{}", (i % 9) + 1);
+                let local_node_id = state.lan_sync.local_node_id();
+                let local_node_name = state.lan_sync.local_node_name();
                 state.gateway.store.record_success_with_model(
                     provider,
                     &json!({
@@ -270,10 +261,14 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
                             "cache_read_input_tokens": cache_read,
                         }
                     }),
-                    Some("test"),
+                    crate::orchestrator::store::UsageRequestContext {
+                        api_key_ref: Some("test"),
+                        origin,
+                        session_id: Some(session_id.as_str()),
+                        node_id: Some(local_node_id.as_str()),
+                        node_name: Some(local_node_name.as_str()),
+                    },
                     None,
-                    origin,
-                    Some(session_id.as_str()),
                 );
             }
         };
@@ -388,8 +383,8 @@ pub fn run() {
                 )?;
             }
 
-            // Prefer a stable per-user app data directory so rebuilds don't force re-login.
-            // If a local ./user-data already exists next to the EXE, keep using it for portability.
+            // Canonical runtime layout is always local to the running EXE so config, secrets,
+            // SQLite, logs, and diagnostics stay together and are easy to inspect/port.
             // Layout:
             // - user-data/config.toml
             // - user-data/secrets.json
@@ -408,22 +403,15 @@ pub fn run() {
                     let _ = std::fs::create_dir_all(&p);
                     p
                 }
-            } else if app_profile != "default" {
-                let base = app.path().app_data_dir()?;
-                let p = base.join(profile_data_dir_name(&app_profile));
+            } else {
+                let exe = std::env::current_exe()?;
+                let dir = exe
+                    .parent()
+                    .map(std::path::Path::to_path_buf)
+                    .ok_or_else(|| anyhow::anyhow!("failed to resolve EXE directory"))?;
+                let p = dir.join(profile_data_dir_name(&app_profile));
                 let _ = std::fs::create_dir_all(&p);
                 p
-            } else {
-                (|| -> Option<std::path::PathBuf> {
-                    let exe = std::env::current_exe().ok()?;
-                    let dir = exe.parent()?.to_path_buf();
-                    let local = dir.join("user-data");
-                    if local.exists() && should_use_local_user_data_dir(&local) {
-                        return Some(local);
-                    }
-                    None
-                })()
-                .unwrap_or(app.path().app_data_dir()?)
             };
 
             if should_reset_profile_data(&app_profile, is_ui_tauri) {
@@ -461,6 +449,24 @@ pub fn run() {
                 }
             }
             app.manage(state);
+            {
+                let st = app.state::<app_state::AppState>();
+                crate::lan_sync::register_gateway_status_runtime(st.lan_sync.clone());
+            }
+            if !is_ui_tauri {
+                let st = app.state::<app_state::AppState>();
+                if cfg!(target_os = "windows") {
+                    if let Ok(app_path) = std::env::current_exe() {
+                        std::thread::spawn(move || {
+                            crate::platform::windows_firewall::ensure_api_router_udp_firewall_rule(
+                                &app_path,
+                            );
+                        });
+                    }
+                }
+                st.lan_sync
+                    .start_background(st.gateway.clone(), st.config_path.clone());
+            }
             if !is_ui_tauri {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -474,14 +480,29 @@ pub fn run() {
                         Some(&detail),
                     );
                 });
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let st = app_handle.state::<app_state::AppState>();
+                    let started = Instant::now();
+                    let updated = app_state::run_startup_usage_request_node_backfill(&st);
+                    let detail = format!("updated_rows={updated}");
+                    write_app_startup_diag(
+                        "usage_request_node_backfill",
+                        started.elapsed().as_millis(),
+                        Some(&detail),
+                    );
+                });
             }
 
             if !is_ui_tauri {
                 // Spawn the local OpenAI-compatible gateway without blocking Tauri setup.
                 let app_handle = app.handle().clone();
+                write_app_startup_diag("gateway_spawn_scheduled", 0, None);
                 tauri::async_runtime::spawn(async move {
+                    write_app_startup_diag("gateway_spawn_enter", 0, None);
                     let (gateway, prepared_gateway) = {
                         let st = app_handle.state::<app_state::AppState>();
+                        write_app_startup_diag("gateway_prepare_enter", 0, None);
                         let prepare_started = Instant::now();
                         let prepared_gateway = match prepare_gateway_listeners(&st) {
                             Ok(prepared) => prepared,
@@ -511,16 +532,51 @@ pub fn run() {
                         );
                         (st.gateway.clone(), prepared_gateway)
                     };
+                    write_app_startup_diag(
+                        "serve_in_background_enter",
+                        0,
+                        Some(&format!("listen_port={}", prepared_gateway.listen_port)),
+                    );
                     if let Err(e) = serve_in_background(gateway, prepared_gateway).await {
+                        write_app_startup_diag(
+                            "serve_in_background_failed",
+                            0,
+                            Some(&e.to_string()),
+                        );
                         log::error!("gateway exited: {e:?}");
+                    } else {
+                        write_app_startup_diag("serve_in_background_completed", 0, None);
                     }
                 });
 
                 // Quota refresh scheduler: only runs when the gateway is actively being used.
                 let st = app.state::<app_state::AppState>();
                 let gateway = st.gateway.clone();
+                let lan_sync = st.lan_sync.clone();
                 tauri::async_runtime::spawn(async move {
-                    crate::orchestrator::quota::run_quota_scheduler(gateway).await;
+                    crate::orchestrator::quota::run_quota_scheduler(gateway, lan_sync).await;
+                });
+
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                        let st = app_handle.state::<app_state::AppState>();
+                        let _ = app_state::disable_expired_package_providers(&st);
+                    }
+                });
+
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        let st = app_handle.state::<app_state::AppState>();
+                        st.ui_watchdog.check_unresponsive(
+                            &st.gateway.store,
+                            &st.diagnostics_dir,
+                            unix_ms(),
+                        );
+                    }
                 });
             }
 
@@ -590,11 +646,25 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::record_app_startup_stage,
+            commands::record_ui_watchdog_heartbeat,
+            commands::record_ui_trace,
+            commands::record_ui_diagnostics_batch,
+            commands::record_ui_slow_refresh,
+            commands::record_ui_long_task,
+            commands::record_ui_frame_stall,
+            commands::record_ui_frontend_error,
+            commands::record_ui_invoke_result,
             commands::get_event_log_entries,
             commands::get_event_log_years,
             commands::get_event_log_daily_stats,
             commands::set_manual_override,
             commands::get_config,
+            commands::request_lan_pair,
+            commands::approve_lan_pair,
+            commands::submit_lan_pair_pin,
+            commands::set_followed_config_source,
+            commands::clear_followed_config_source,
+            commands::copy_provider_from_config_source,
             commands::get_gateway_token_preview,
             commands::get_gateway_token,
             commands::rotate_gateway_token,
@@ -663,7 +733,7 @@ pub fn run() {
 mod tests {
     use super::{
         app_profile_name_from_inputs, profile_data_dir_name, resolve_codex_home,
-        should_reset_profile_data, should_seed_mock_data, should_use_local_user_data_dir,
+        should_reset_profile_data, should_seed_mock_data,
     };
 
     #[test]
@@ -692,28 +762,6 @@ mod tests {
         assert!(!should_seed_mock_data("test", true));
         assert!(!should_reset_profile_data("default", false));
         assert!(!should_seed_mock_data("default", false));
-    }
-
-    #[test]
-    fn local_user_data_requires_portable_marker_or_env_flag() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let local = tmp.path().join("user-data");
-        std::fs::create_dir_all(&local).unwrap();
-
-        // No marker, no env => do not use local.
-        std::env::remove_var("API_ROUTER_USE_LOCAL_USER_DATA");
-        assert!(!should_use_local_user_data_dir(&local));
-
-        // Marker file enables local.
-        std::fs::write(local.join(".portable"), b"").unwrap();
-        assert!(should_use_local_user_data_dir(&local));
-
-        // Env flag enables local even without marker.
-        let local2 = tmp.path().join("user-data-2");
-        std::fs::create_dir_all(&local2).unwrap();
-        std::env::set_var("API_ROUTER_USE_LOCAL_USER_DATA", "1");
-        assert!(should_use_local_user_data_dir(&local2));
-        std::env::remove_var("API_ROUTER_USE_LOCAL_USER_DATA");
     }
 
     #[test]

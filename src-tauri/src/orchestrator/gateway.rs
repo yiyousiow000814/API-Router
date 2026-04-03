@@ -346,12 +346,9 @@ async fn refresh_usage_once_after_first_failure(
     *usage_refreshed_after_first_failure = true;
 
     let cfg = st.cfg.read().clone();
-    let Some(provider) = cfg.providers.get(provider_name) else {
+    let Some(_provider) = cfg.providers.get(provider_name) else {
         return;
     };
-    if super::quota::uses_packycode_usage_schedule(provider) {
-        return;
-    }
 
     st.router.require_usage_confirmation(provider_name);
     let snap = super::quota::refresh_quota_for_provider(st, provider_name).await;
@@ -487,6 +484,15 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
     let router = Router::new()
         .route("/health", get(health))
         .route("/status", get(status))
+        .route(
+            "/lan-sync/usage",
+            post(crate::lan_sync::lan_sync_usage_http),
+        )
+        .route("/lan-sync/edit", post(crate::lan_sync::lan_sync_edit_http))
+        .route(
+            "/lan-sync/provider-definitions",
+            post(crate::lan_sync::lan_sync_provider_definitions_http),
+        )
         .route("/v1/models", get(models))
         .route("/v1/responses", post(responses))
         .route("/responses", post(responses))
@@ -1388,14 +1394,19 @@ async fn responses(
                         );
                     }
                     let api_key_ref = api_key_ref_from_raw(api_key.as_deref());
+                    let local_node = st.secrets.get_lan_node_identity();
 
                     // Persist the exchange so we can keep continuity if provider changes later.
                     st.store.record_success(
                         &provider_name,
                         &response_obj,
-                        Some(&api_key_ref),
-                        request_origin,
-                        Some(session_key.as_str()),
+                        crate::orchestrator::store::UsageRequestContext {
+                            api_key_ref: Some(&api_key_ref),
+                            origin: request_origin,
+                            session_id: Some(session_key.as_str()),
+                            node_id: local_node.as_ref().map(|value| value.node_id.as_str()),
+                            node_name: local_node.as_ref().map(|value| value.node_name.as_str()),
+                        },
                     );
 
                     // Avoid spamming the event log for routine successful requests; only surface

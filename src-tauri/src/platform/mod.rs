@@ -4,6 +4,7 @@
 
 pub mod codex_managed_terminal;
 pub mod codex_terminal_session;
+pub mod windows_firewall;
 pub mod windows_loopback_peer;
 pub mod windows_terminal;
 pub mod wsl_gateway_host;

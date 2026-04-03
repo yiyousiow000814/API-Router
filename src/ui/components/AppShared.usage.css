@@ -21,7 +21,14 @@
   margin-top: 12px;
 }
 
+.aoConfigModalShell .aoModalHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+}
+
 .aoConfigHeaderActions {
+  justify-self: end;
   gap: 8px;
 }
 
@@ -30,11 +37,161 @@
   align-items: baseline;
   gap: 12px;
   min-width: 0;
+  justify-self: start;
 }
 
 .aoConfigHeaderSub {
   margin: 0;
   white-space: nowrap;
+}
+
+.aoConfigHeaderSource {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: center;
+}
+
+.aoConfigSourceSelect {
+  min-width: 248px;
+  max-width: min(360px, 100%);
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: none;
+  padding-right: 14px;
+}
+
+.aoConfigSourceMenuWrap {
+  justify-content: center;
+}
+
+.aoConfigSourceTrigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  height: 38px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(250, 252, 255, 0.94));
+  padding: 0 14px;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.aoConfigSourceTrigger:hover {
+  border-color: rgba(13, 18, 32, 0.14);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(242, 250, 252, 0.96));
+}
+
+.aoConfigSourceTrigger.is-open {
+  border-color: rgba(13, 18, 32, 0.16);
+}
+
+.aoConfigSourceTriggerIcon {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(13, 18, 32, 0.56);
+  flex: 0 0 auto;
+}
+
+.aoConfigSourceTriggerIcon svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.aoConfigSourceTriggerLabel {
+  flex: 1 1 auto;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 650;
+  color: rgba(13, 18, 32, 0.9);
+}
+
+.aoConfigSourceTriggerMeta {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(13, 18, 32, 0.06);
+  color: rgba(13, 18, 32, 0.58);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.aoConfigSourceChevron {
+  flex: 0 0 auto;
+  color: rgba(13, 18, 32, 0.54);
+  font-size: 11px;
+}
+
+.aoConfigSourceMenu {
+  min-width: 248px;
+  width: 100%;
+  top: 52px;
+  padding: 10px 6px 6px;
+  border-radius: 16px;
+}
+
+.aoConfigSourceMenuItem {
+  justify-content: flex-start;
+  text-align: left;
+  min-height: 44px;
+  height: auto;
+  border-radius: 12px;
+  padding: 7px 12px;
+  gap: 10px;
+}
+
+.aoConfigSourceMenuCheck {
+  width: 14px;
+  flex: 0 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(var(--ao-accent-rgb), 0.9);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.aoConfigSourceMenuText {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.aoConfigSourceMenuLabel {
+  text-align: left;
+  font-size: 13px;
+}
+
+.aoConfigSourceMenuSub {
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.46);
+}
+
+.aoConfigSourceMenuMeta {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.46);
+  font-weight: 700;
 }
 
 .aoConfigHeaderBtn {
@@ -201,14 +358,44 @@
 }
 
 @media (max-width: 820px) {
+  .aoConfigModalShell .aoModalHeader {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
   .aoConfigHeaderMeta {
     flex-direction: column;
     align-items: flex-start;
     gap: 2px;
+    justify-self: stretch;
   }
 
   .aoConfigHeaderSub {
     white-space: normal;
+  }
+
+  .aoConfigHeaderSource {
+    justify-content: flex-start;
+    justify-self: stretch;
+  }
+
+  .aoConfigSourceSelect {
+    min-width: 0;
+    width: 100%;
+    max-width: 280px;
+  }
+
+  .aoConfigSourceTriggerLabel,
+  .aoConfigSourceMenuLabel {
+    text-align: left;
+  }
+
+  .aoConfigSourceTriggerMeta {
+    display: none;
+  }
+
+  .aoConfigHeaderActions {
+    justify-self: stretch;
   }
 }
 
@@ -731,6 +918,7 @@
   align-items: center;
   justify-content: flex-end;
   align-self: stretch;
+  min-width: 78px;
 }
 
 .aoProviderDeleteBtn {
@@ -1127,13 +1315,20 @@
 }
 
 .aoMenuCompact {
-  top: 34px;
   /* Match the split button width so the option feels proportional. */
   width: 100%;
   min-width: 0;
   border-radius: 11px;
   padding: 2px;
   box-sizing: border-box;
+}
+
+.aoMenuCompactOffset {
+  top: 34px;
+}
+
+.aoConfigSourceMenu {
+  top: 40px;
 }
 
 .aoMenuCompact .aoMenuItem {
@@ -1179,6 +1374,130 @@
 .aoMenuItem:hover {
   background: rgba(13, 18, 32, 0.04);
   border-color: rgba(13, 18, 32, 0.08);
+}
+
+.aoConfigSourceMenu .aoConfigSourceMenuItem.is-current,
+.aoConfigSourceMenu .aoConfigSourceMenuItem.is-current:hover,
+.aoConfigSourceMenu .aoConfigSourceMenuItem.is-current:focus-visible {
+  background: linear-gradient(135deg, rgba(40, 199, 217, 0.1), rgba(242, 193, 77, 0.1));
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.aoConfigSourceMenu .aoConfigSourceMenuItem.is-current .aoConfigSourceMenuMeta {
+  color: rgba(var(--ao-accent-rgb), 0.78);
+}
+
+.aoPairModal {
+  width: min(420px, calc(100vw - 32px));
+}
+
+.aoPairModalBody {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding-top: 8px;
+}
+
+.aoPairEntryBlock {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.aoPairPinInputWrap,
+.aoPairPinDisplay {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+  max-width: 312px;
+}
+
+.aoPairPinDisplay .aoPairPinCell {
+  height: 56px;
+  border-radius: 16px;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 249, 252, 0.96));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.9);
+  font-variant-numeric: tabular-nums;
+}
+
+.aoPairPinInputWrap {
+  align-items: center;
+}
+
+.aoPairPinInput {
+  height: 56px;
+  border-radius: 16px;
+  border: 1px solid rgba(13, 18, 32, 0.12);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 249, 252, 0.96));
+  text-align: center;
+  font-size: 24px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.9);
+  font-variant-numeric: tabular-nums;
+  caret-color: rgba(13, 18, 32, 0.82);
+  outline: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.aoPairPinInput:focus,
+.aoPairPinInput:focus-visible {
+  border-color: rgba(34, 119, 255, 0.78);
+  box-shadow: 0 0 0 2px rgba(34, 119, 255, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 1), rgba(247, 251, 255, 0.98));
+}
+
+.aoPairSuccessBadge {
+  min-width: 160px;
+  height: 56px;
+  border-radius: 999px;
+  border: 1px solid rgba(31, 125, 91, 0.18);
+  background: linear-gradient(180deg, rgba(236, 252, 244, 0.98), rgba(224, 248, 236, 0.96));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px;
+  color: rgba(24, 92, 68, 0.92);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.aoPairWaitingState {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 14px 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(128, 144, 168, 0.22);
+  background: rgba(244, 247, 252, 0.96);
+  color: rgba(28, 36, 52, 0.86);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.aoPairWaitingSpinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 2px solid rgba(128, 144, 168, 0.22);
+  border-top-color: rgba(var(--ao-accent-rgb), 0.92);
+  animation: aoSpin 0.8s linear infinite;
+}
+
+.aoPairDialogError {
+  margin: -6px 24px 0;
+  color: rgba(145, 12, 43, 0.92);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .aoMenuIcon {
@@ -1286,6 +1605,25 @@
   letter-spacing: 0.06em;
   text-transform: uppercase;
   transition: background 120ms ease, border-color 120ms ease;
+}
+
+.aoTinyBtn:disabled {
+  cursor: default;
+  background: rgba(13, 18, 32, 0.06);
+  border-color: rgba(13, 18, 32, 0.1);
+  color: rgba(13, 18, 32, 0.46);
+  pointer-events: none;
+}
+
+.aoTinyBtn:disabled:hover {
+  background: rgba(13, 18, 32, 0.06);
+  border-color: rgba(13, 18, 32, 0.1);
+  color: rgba(13, 18, 32, 0.46);
+}
+
+.aoProviderCopyBtn {
+  min-width: 68px;
+  justify-content: center;
 }
 
 .aoTinyBtnDangerSoft {

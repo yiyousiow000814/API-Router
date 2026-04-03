@@ -11,7 +11,10 @@ function buildUsageStatistics(): UsageStatistics {
     summary: {
       total_requests: 10,
       total_tokens: 1000,
+      input_tokens: 600,
+      output_tokens: 400,
       unique_models: 1,
+      top_model: null,
       estimated_total_cost_usd: 1.2,
       by_model: [],
       by_provider: [
@@ -95,4 +98,5 @@ describe('simulateQuotaForDisplay', () => {
       ),
     ).toEqual(quota)
   })
+
 })

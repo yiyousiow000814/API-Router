@@ -15,6 +15,8 @@ export function HeroStatusCard({
   onShowRotate,
 }: HeroStatusProps) {
   const wslGatewayHost = status.wsl_gateway_host?.trim() || GATEWAY_WSL2_HOST
+  const lanNode = status.lan_sync?.local_node
+  const lanPeers = status.lan_sync?.peers ?? []
   return (
     <div className="aoCard aoHeroCard aoHeroStatus">
       <div className="aoCardHeader">
@@ -33,10 +35,16 @@ export function HeroStatusCard({
         <div className="aoStatValue">
           http://{wslGatewayHost}:{status.listen.port}/v1
         </div>
-        <div className="aoStatLabel">Preferred</div>
-        <div className="aoStatValue">{status.preferred_provider}</div>
-        <div className="aoStatLabel">Override</div>
-        <div className="aoStatValue">{status.manual_override ?? '(auto)'}</div>
+        {lanNode ? (
+          <>
+            <div className="aoStatLabel">LAN node</div>
+            <div className="aoStatValue">
+              {lanNode.node_name} · {lanNode.node_id.slice(0, 8)}
+            </div>
+            <div className="aoStatLabel">LAN peers</div>
+            <div className="aoStatValue">{lanPeers.length} alive</div>
+          </>
+        ) : null}
       </div>
       <div className="aoDivider" />
       <div className="aoTokenRow">

@@ -318,7 +318,9 @@ mod tests {
     use super::{
         history_parse_count_for_path, reset_history_parse_counter, should_prefer_wsl_linux_loader,
     };
-    use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
+    use crate::orchestrator::gateway::web_codex_home::{
+        lock_wsl_identity_cache, WorkspaceTarget, WslIdentityCache,
+    };
     use std::io::Write;
 
     fn lock_history_test_globals() -> std::sync::MutexGuard<'static, ()> {
@@ -349,6 +351,31 @@ mod tests {
             } else {
                 std::env::remove_var(self.key);
             }
+        }
+    }
+
+    struct WslIdentityGuard {
+        previous: Option<WslIdentityCache>,
+    }
+
+    impl WslIdentityGuard {
+        fn set(distro: &str, home: &str) -> Self {
+            let mut cache = lock_wsl_identity_cache();
+            let previous = cache.clone();
+            *cache = Some(WslIdentityCache {
+                distro: distro.to_string(),
+                home: home.to_string(),
+                updated_at_unix_secs: i64::MAX,
+            });
+            drop(cache);
+            Self { previous }
+        }
+    }
+
+    impl Drop for WslIdentityGuard {
+        fn drop(&mut self) {
+            let mut cache = lock_wsl_identity_cache();
+            *cache = self.previous.clone();
         }
     }
 
@@ -844,6 +871,7 @@ mod tests {
 
     #[test]
     fn wsl_rollout_path_resolves_host_specific_local_path() {
+        let _identity = WslIdentityGuard::set("Ubuntu", "/home/test/.codex");
         let _home = EnvGuard::set("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", "/home/test/.codex");
         let raw_path = "/home/test/.codex/sessions/2026/03/07/rollout.jsonl";
         let path = resolve_rollout_path(Some(WorkspaceTarget::Wsl2), raw_path)
@@ -864,6 +892,7 @@ mod tests {
 
     #[test]
     fn wsl_unc_rollout_path_is_preserved() {
+        let _identity = WslIdentityGuard::set("Ubuntu", "/home/test/.codex");
         let path = resolve_rollout_path(
             Some(WorkspaceTarget::Wsl2),
             r"\\wsl.localhost\Ubuntu\home\test\.codex\sessions\2026\03\07\rollout.jsonl",
@@ -890,6 +919,7 @@ mod tests {
 
     #[test]
     fn wsl_history_falls_back_to_linux_loader_when_local_path_is_missing() {
+        let _identity = WslIdentityGuard::set("Ubuntu", "/home/test/.codex");
         let _home = EnvGuard::set("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", "/home/test/.codex");
         let seen = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
         let seen_clone = seen.clone();

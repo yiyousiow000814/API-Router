@@ -10,6 +10,13 @@ mod tests {
     use std::sync::atomic::AtomicU64;
     use std::sync::Arc;
 
+    fn mk_lan_sync() -> crate::lan_sync::LanSyncRuntime {
+        crate::lan_sync::LanSyncRuntime::new(crate::lan_sync::LanNodeIdentity {
+            node_id: "node-self".to_string(),
+            node_name: "self".to_string(),
+        })
+    }
+
     async fn start_mock_server(token_stats_ok: bool) -> (String, tokio::task::JoinHandle<()>) {
         use axum::http::StatusCode;
         use axum::routing::get;
@@ -254,6 +261,12 @@ mod tests {
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
             client_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
+        crate::lan_sync::register_gateway_status_runtime(crate::lan_sync::LanSyncRuntime::new(
+            crate::lan_sync::LanNodeIdentity {
+                node_id: "node-self".to_string(),
+                node_name: "self".to_string(),
+            },
+        ));
 
         let previous = QuotaSnapshot {
             kind: UsageKind::BudgetInfo,
@@ -271,6 +284,11 @@ mod tests {
             last_error: String::new(),
             effective_usage_base: Some("https://codex-for.me".to_string()),
             effective_usage_source: Some("codex_for_me_balance".to_string()),
+            producer_node_id: Some("node-owner".to_string()),
+            producer_node_name: Some("owner".to_string()),
+            applied_from_node_id: Some("node-owner".to_string()),
+            applied_from_node_name: Some("owner".to_string()),
+            applied_at_unix_ms: 1_000,
         };
         store_quota_snapshot(&st, provider_name, &previous);
 
@@ -290,6 +308,11 @@ mod tests {
             last_error: "http 500 from https://codex-for.me".to_string(),
             effective_usage_base: None,
             effective_usage_source: None,
+            producer_node_id: None,
+            producer_node_name: None,
+            applied_from_node_id: None,
+            applied_from_node_name: None,
+            applied_at_unix_ms: 0,
         };
 
         let preserved = preserved_quota_snapshot_for_storage(&st, provider_name, &failed_refresh);
@@ -297,6 +320,8 @@ mod tests {
         assert_eq!(preserved.remaining, previous.remaining);
         assert_eq!(preserved.daily_spent_usd, previous.daily_spent_usd);
         assert_eq!(preserved.monthly_spent_usd, previous.monthly_spent_usd);
+        assert_eq!(preserved.producer_node_id.as_deref(), Some("node-self"));
+        assert_eq!(preserved.applied_from_node_id.as_deref(), Some("node-self"));
         assert_eq!(preserved.last_error, failed_refresh.last_error);
     }
 
@@ -853,7 +878,7 @@ mod tests {
         let health = after.get("p1").expect("provider health snapshot");
         assert_eq!(health.status, "healthy");
         assert_eq!(health.consecutive_failures, 0);
-        assert_eq!(health.last_ok_at_unix_ms, 0);
+        assert_eq!(health.last_ok_at_unix_ms, snap.updated_at_unix_ms);
     }
 
     #[tokio::test]
@@ -1475,6 +1500,67 @@ mod tests {
         assert!(st.store.get_spend_state("p2").is_none());
     }
 
+    #[test]
+    fn remote_quota_snapshot_skips_disabled_siblings_and_logs_shared_apply() {
+        let providers = std::collections::BTreeMap::from([
+            (
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url: "https://usage-router.example/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some("https://usage-router.example".to_string()),
+                    group: None,
+                    disabled: false,
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "p2".to_string(),
+                ProviderConfig {
+                    display_name: "P2".to_string(),
+                    base_url: "https://usage-router.example/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some("https://usage-router.example".to_string()),
+                    group: None,
+                    disabled: true,
+                    api_key: String::new(),
+                },
+            ),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "sk-shared").unwrap();
+        secrets.set_provider_key("p2", "sk-shared").unwrap();
+        let st = mk_state_with_providers(
+            providers,
+            vec!["p1".to_string(), "p2".to_string()],
+            secrets,
+        );
+
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.updated_at_unix_ms = 1_739_120_000_000;
+        snap.daily_spent_usd = Some(5.0);
+        snap.producer_node_id = Some("node-owner".to_string());
+        snap.producer_node_name = Some("Owner".to_string());
+
+        apply_remote_quota_snapshot(&st, "p1", &snap, Some("node-owner"), Some("Owner"));
+
+        assert!(st.store.get_quota_snapshot("p1").is_some());
+        assert!(
+            st.store.get_quota_snapshot("p2").is_none(),
+            "disabled sibling should not receive propagated shared quota"
+        );
+        let events = st.store.list_events_range(None, None, Some(10));
+        assert!(
+            events.iter().any(|event| {
+                event.get("code").and_then(|value| value.as_str())
+                    == Some("usage.refresh_shared_applied")
+            }),
+            "requester should see that the shared usage result came back"
+        );
+    }
+
     async fn start_mock_server_token_info() -> (String, tokio::task::JoinHandle<()>) {
         use axum::http::StatusCode;
         use axum::routing::get;
@@ -1635,6 +1721,52 @@ mod tests {
         assert_eq!(snap.remaining.unwrap_or(0.0), 13439.0);
         assert_eq!(snap.today_used.unwrap_or(0.0), 1561.0);
         assert_eq!(snap.today_added.unwrap_or(0.0), 15000.0);
+    }
+
+    #[test]
+    fn shared_provider_fingerprint_ignores_local_shared_provider_id() {
+        let tmp_a = tempfile::tempdir().expect("tempdir a");
+        let tmp_b = tempfile::tempdir().expect("tempdir b");
+        let secrets_a = SecretStore::new(tmp_a.path().join("secrets.json"));
+        let secrets_b = SecretStore::new(tmp_b.path().join("secrets.json"));
+        let cfg = AppConfig {
+            listen: crate::orchestrator::config::ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 4000,
+            },
+            routing: crate::orchestrator::config::RoutingConfig {
+                preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 1,
+                failure_threshold: 1,
+                cooldown_seconds: 600,
+                request_timeout_seconds: 5,
+            },
+            providers: std::collections::BTreeMap::from([(
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url: "https://quota.example/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some("https://quota.example".to_string()),
+                    group: None,
+                    disabled: false,
+                    api_key: String::new(),
+                },
+            )]),
+            provider_order: vec!["p1".to_string()],
+        };
+        secrets_a.set_provider_key("p1", "sk-same").unwrap();
+        secrets_b.set_provider_key("p1", "sk-same").unwrap();
+        secrets_a.set_provider_shared_id("p1", "sp_node_a").unwrap();
+        secrets_b.set_provider_shared_id("p1", "sp_node_b").unwrap();
+
+        let a = shared_provider_fingerprint(&cfg, &secrets_a, "p1").expect("fingerprint a");
+        let b = shared_provider_fingerprint(&cfg, &secrets_b, "p1").expect("fingerprint b");
+
+        assert_eq!(a, b);
     }
 
     #[test]
@@ -1802,11 +1934,19 @@ mod tests {
     }
 
     #[test]
-    fn background_quota_refresh_requires_real_recent_provider_usage() {
-        assert!(!should_run_background_quota_refresh(false, false, true));
-        assert!(!should_run_background_quota_refresh(true, false, true));
-        assert!(!should_run_background_quota_refresh(true, true, false));
-        assert!(should_run_background_quota_refresh(true, true, true));
+    fn background_quota_refresh_requires_credentials_and_quota_source() {
+        assert!(!should_run_background_quota_refresh(false, true));
+        assert!(!should_run_background_quota_refresh(true, false));
+        assert!(should_run_background_quota_refresh(true, true));
+    }
+
+    #[test]
+    fn background_quota_scheduler_requires_recent_activity_without_alive_peers() {
+        let now = 10 * 60 * 1000;
+        assert!(!should_run_background_quota_scheduler(now, 0, false));
+        assert!(!should_run_background_quota_scheduler(now, now.saturating_sub(10 * 60 * 1000), false));
+        assert!(should_run_background_quota_scheduler(now, now - 1_000, false));
+        assert!(should_run_background_quota_scheduler(now, 0, true));
     }
 
     #[test]
@@ -1895,6 +2035,12 @@ mod tests {
         assert_eq!(due.hour(), 12);
         assert_eq!(due.minute(), 58);
         assert_eq!(due.second(), 0);
+
+        let now = tz.with_ymd_and_hms(2026, 3, 10, 23, 58, 0).unwrap();
+        let due = next_packycode_refresh_at(now);
+        assert_eq!(due.hour(), 0);
+        assert_eq!(due.minute(), 1);
+        assert_eq!(due.second(), 0);
     }
 
     #[test]
@@ -1937,6 +2083,31 @@ mod tests {
             PackageExpiryStrategy::Packycode,
         )
         .expect("packycode due without snapshot");
+        let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
+        assert!(due > now_ms);
+        assert_eq!(due_dt.minute(), 58);
+        assert_eq!(due_dt.second(), 0);
+    }
+
+    #[test]
+    fn initial_packycode_refresh_due_retries_even_after_failed_snapshot() {
+        use chrono::{Local, Timelike};
+
+        let now = Local::now();
+        let now_ms = now.timestamp_millis().max(0) as u64;
+        let mut snapshot = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snapshot.updated_at_unix_ms = 0;
+        snapshot.last_error = "initial refresh failed".to_string();
+
+        let due = initial_quota_refresh_due_unix_ms(
+            now_ms,
+            Some(&snapshot),
+            true,
+            true,
+            1,
+            PackageExpiryStrategy::Packycode,
+        )
+        .expect("packycode due after failed snapshot");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
         assert!(due > now_ms);
         assert_eq!(due_dt.minute(), 58);
@@ -2007,9 +2178,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "k1").unwrap();
-        let st = mk_state("https://example.com/v1".to_string(), secrets);
+        let gated_base = "https://manual-refresh-backoff.invalid";
+        let st = mk_state(format!("{gated_base}/v1"), secrets);
         let now = unix_ms();
-        note_usage_base_rate_limited("https://example.com", now, 15 * 60_000);
+        note_usage_base_rate_limited(gated_base, now, 15 * 60_000);
 
         let snap = tokio::time::timeout(
             Duration::from_millis(250),
@@ -2021,7 +2193,7 @@ mod tests {
         assert_eq!(snap.updated_at_unix_ms, 0);
         assert!(
             snap.last_error
-                .starts_with("usage base rate limited: https://example.com"),
+                .starts_with(&format!("usage base rate limited: {gated_base}")),
             "unexpected error: {}",
             snap.last_error
         );
@@ -2204,7 +2376,8 @@ mod tests {
         secrets.set_usage_token("p2", "t2").unwrap();
         let st = mk_state_with_providers(providers, vec!["p1".to_string(), "p2".to_string()], secrets);
 
-        let (ok, err, failed) = refresh_quota_all_with_summary(&st).await;
+        let lan_sync = mk_lan_sync();
+        let (ok, err, failed) = refresh_quota_all_with_summary(&st, &lan_sync).await;
         handle.abort();
         clear_usage_base_refresh_gate();
 
@@ -2253,7 +2426,8 @@ mod tests {
             secrets,
         );
 
-        let (ok, err, failed) = refresh_quota_all_with_summary(&st).await;
+        let lan_sync = mk_lan_sync();
+        let (ok, err, failed) = refresh_quota_all_with_summary(&st, &lan_sync).await;
 
         assert_eq!(ok, 1);
         assert_eq!(err, 0);
@@ -2263,7 +2437,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_quota_all_skips_packycode_providers_even_when_credentials_exist() {
+    async fn refresh_quota_all_includes_packycode_providers_with_credentials() {
         let (base, _h) = start_mock_server(false).await;
         let providers = std::collections::BTreeMap::from([
             (
@@ -2301,18 +2475,104 @@ mod tests {
             secrets,
         );
 
-        let (ok, err, failed) = refresh_quota_all_with_summary(&st).await;
+        let lan_sync = mk_lan_sync();
+        let (ok, err, failed) = refresh_quota_all_with_summary(&st, &lan_sync).await;
 
-        assert_eq!(ok, 1);
+        assert_eq!(ok, 2);
         assert_eq!(err, 0);
         assert!(failed.is_empty());
         assert!(
-            st.store.get_quota_snapshot("packycode").is_none(),
-            "all-provider refresh should not touch packycode"
+            st.store.get_quota_snapshot("packycode").is_some(),
+            "all-provider refresh should include packycode now"
         );
         assert!(
             st.store.get_quota_snapshot("p2").is_some(),
             "non-packycode providers should still refresh"
         );
+    }
+
+    #[tokio::test]
+    async fn refresh_quota_all_skips_disabled_provider_even_with_credentials() {
+        let (base, _h) = start_mock_server(false).await;
+        let providers = std::collections::BTreeMap::from([
+            (
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url: "https://usage-router.example/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some(base.clone()),
+                    group: None,
+                    disabled: false,
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "p2".to_string(),
+                ProviderConfig {
+                    display_name: "P2".to_string(),
+                    base_url: "https://usage-router.example/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some(base),
+                    group: None,
+                    disabled: true,
+                    api_key: String::new(),
+                },
+            ),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_usage_token("p1", "token-1").unwrap();
+        secrets.set_usage_token("p2", "token-2").unwrap();
+        let st = mk_state_with_providers(providers, vec!["p1".to_string(), "p2".to_string()], secrets);
+
+        let lan_sync = mk_lan_sync();
+        let (ok, err, failed) = refresh_quota_all_with_summary(&st, &lan_sync).await;
+
+        assert_eq!(ok, 1);
+        assert_eq!(err, 0);
+        assert!(failed.is_empty());
+        assert!(st.store.get_quota_snapshot("p1").is_some());
+        assert!(
+            st.store.get_quota_snapshot("p2").is_none(),
+            "disabled provider must not be refreshed just because it still has credentials"
+        );
+    }
+
+    #[test]
+    fn followed_source_quota_fallback_target_uses_followed_peer() {
+        let providers = std::collections::BTreeMap::from([(
+            "p1".to_string(),
+            ProviderConfig {
+                display_name: "P1".to_string(),
+                base_url: "https://usage-router.example/v1".to_string(),
+                usage_adapter: String::new(),
+                usage_base_url: Some("https://usage-router.example".to_string()),
+                group: None,
+                disabled: false,
+                api_key: String::new(),
+            },
+        )]);
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "sk-shared").unwrap();
+        secrets.set_lan_node_trusted("node-followed", true).unwrap();
+        secrets
+            .set_followed_config_source_node_id(Some("node-followed"))
+            .unwrap();
+        let st = mk_state_with_providers(providers, vec!["p1".to_string()], secrets.clone());
+        let lan_sync = mk_lan_sync();
+        let cfg = st.cfg.read().clone();
+        let fingerprint =
+            shared_provider_fingerprint(&cfg, &st.secrets, "p1").expect("shared fingerprint");
+        lan_sync.seed_test_peer("node-followed", "followed", None);
+        lan_sync.set_test_peer_provider_fingerprints("node-followed", vec![fingerprint]);
+
+        let owner =
+            followed_source_quota_fallback_target(&st, &lan_sync, "p1").expect("owner decision");
+
+        assert!(!owner.local_is_owner);
+        assert_eq!(owner.owner_node_id, "node-followed");
+        assert_eq!(owner.owner_node_name, "followed");
     }
 }

@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { fmtWhen } from '../utils/format'
 import { UsageStatisticsPanel } from './UsageStatisticsPanel'
 
@@ -5,7 +6,7 @@ type Props = {
   usageProps: any
 }
 
-export function UsageRequestsPanel({ usageProps }: Props) {
+export const UsageRequestsPanel = memo(function UsageRequestsPanel({ usageProps }: Props) {
   return (
     <UsageStatisticsPanel
       {...usageProps}
@@ -14,5 +15,4 @@ export function UsageRequestsPanel({ usageProps }: Props) {
       showFilters={false}
     />
   )
-}
-
+})

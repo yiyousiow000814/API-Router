@@ -20,7 +20,9 @@ type ProviderCrudActions = Pick<
   | 'refreshStatus'
   | 'refreshConfig'
   | 'flashToast'
->
+> & {
+  refreshQuota: (name: string) => Promise<void>
+}
 
 export function useProviderCrudActions({
   config,
@@ -36,6 +38,7 @@ export function useProviderCrudActions({
   setNewProviderBaseUrl,
   setNewProviderKey,
   setNewProviderKeyStorage,
+  refreshQuota,
   refreshStatus,
   refreshConfig,
   flashToast,
@@ -307,6 +310,7 @@ export function useProviderCrudActions({
       })
       if (key) {
         await invoke('set_provider_key', { provider: name, key, storageMode: newProviderKeyStorage })
+        await refreshQuota(name)
       }
       setNewProviderName('')
       setNewProviderBaseUrl('')
@@ -326,6 +330,7 @@ export function useProviderCrudActions({
     newProviderKey,
     newProviderKeyStorage,
     newProviderName,
+    refreshQuota,
     refreshConfig,
     refreshStatus,
     setConfig,

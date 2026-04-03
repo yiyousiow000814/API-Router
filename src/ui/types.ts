@@ -9,6 +9,7 @@ export type ProviderHealth = {
 
 export type Status = {
   listen: { host: string; port: number }
+  config_revision?: string
   wsl_gateway_host?: string
   preferred_provider: string
   manual_override: string | null
@@ -60,9 +61,23 @@ export type Status = {
       package_expires_at_unix_ms?: number | null
       last_error: string
       effective_usage_base?: string | null
+      effective_usage_source?: string | null
+      producer_node_id?: string | null
+      producer_node_name?: string | null
+      applied_from_node_id?: string | null
+      applied_from_node_name?: string | null
+      applied_at_unix_ms?: number
     }
   >
   ledgers: Record<
+    string,
+    {
+      since_last_quota_refresh_requests?: number
+      since_last_quota_refresh_total_tokens: number
+      last_reset_unix_ms: number
+    }
+  >
+  projected_ledgers?: Record<
     string,
     {
       since_last_quota_refresh_requests?: number
@@ -84,6 +99,42 @@ export type Status = {
     unlimited?: boolean | null
     error?: string
   }
+  lan_sync?: {
+    enabled: boolean
+    discovery_port: number
+    heartbeat_interval_ms: number
+    peer_stale_after_ms: number
+    last_peer_heartbeat_received_unix_ms?: number
+    last_peer_heartbeat_source?: string | null
+    local_node: {
+      node_id: string
+      node_name: string
+      listen_addr?: string | null
+      capabilities: string[]
+      provider_fingerprints: string[]
+    }
+    peers: Array<{
+      node_id: string
+      node_name: string
+      listen_addr: string
+      last_heartbeat_unix_ms: number
+      capabilities: string[]
+      provider_fingerprints: string[]
+      followed_source_node_id?: string | null
+      trusted?: boolean
+      pair_state?: 'trusted' | 'incoming_request' | 'requested' | 'pin_required' | null
+      pair_request_id?: string | null
+    }>
+  }
+  shared_quota_owners?: Array<{
+    provider: string
+    shared_provider_id: string
+    shared_provider_fingerprint: string
+    owner_node_id: string
+    owner_node_name: string
+    local_is_owner: boolean
+    contender_count: number
+  }>
 }
 
 export type CodexSwapStatus = {
@@ -144,66 +195,107 @@ export type Config = {
       key_storage?: 'auth_json' | 'config_toml_experimental_bearer_token'
       has_usage_token?: boolean
       has_usage_login?: boolean
+      borrowed?: boolean
+      editable?: boolean
+      source_node_id?: string | null
+      shared_provider_id?: string | null
+      local_copy_state?: 'copied' | 'linked' | null
     }
   >
   provider_order?: string[]
+  config_source?: {
+    mode: 'local' | 'follow'
+    followed_node_id?: string | null
+    sources: Array<{
+      kind: 'local' | 'peer'
+      node_id: string
+      node_name: string
+      active: boolean
+      trusted?: boolean
+      pair_state?: 'trusted' | 'incoming_request' | 'requested' | 'pin_required' | null
+      pair_request_id?: string | null
+      follow_allowed: boolean
+      follow_blocked_reason?: string | null
+      using_count: number
+    }>
+  }
 }
 
-export type UsageStatistics = {
+export type UsageModelStatisticsRow = {
+  model: string
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  share_pct: number
+  estimated_total_cost_usd: number
+  estimated_avg_request_cost_usd: number
+  estimated_cost_request_count: number
+}
+
+export type UsageProviderStatisticsRow = {
+  provider: string
+  api_key_ref?: string | null
+  requests: number
+  total_tokens: number
+  tokens_per_request?: number | null
+  estimated_total_cost_usd: number
+  estimated_avg_request_cost_usd?: number | null
+  usd_per_million_tokens?: number | null
+  estimated_daily_cost_usd?: number | null
+  total_used_cost_usd?: number | null
+  pricing_source?: string | null
+  estimated_cost_request_count: number
+}
+
+export type UsageTimelinePoint = {
+  bucket_unix_ms: number
+  requests: number
+  total_tokens: number
+  cache_creation_tokens?: number
+  cache_read_tokens?: number
+}
+
+export type UsageStatisticsOverview = {
   ok: boolean
   generated_at_unix_ms: number
   window_hours: number
+  bucket_seconds: number
+  summary: {
+    total_requests: number
+    total_tokens: number
+    input_tokens: number
+    output_tokens: number
+    active_window_hours?: number
+    cache_creation_tokens?: number
+    cache_read_tokens?: number
+    unique_models: number
+    top_model?: {
+      model: string
+      requests: number
+      share_pct: number
+    } | null
+    estimated_total_cost_usd: number
+    estimated_daily_cost_usd?: number
+    by_provider: UsageProviderStatisticsRow[]
+    timeline: UsageTimelinePoint[]
+  }
+}
+
+export type UsageStatistics = UsageStatisticsOverview & {
   filter?: {
+    nodes?: string[] | null
     providers?: string[] | null
     models?: string[] | null
     origins?: string[] | null
   }
   catalog?: {
+    nodes?: string[]
     providers: string[]
     models: string[]
     origins?: string[]
   }
-  bucket_seconds: number
-  summary: {
-    total_requests: number
-    total_tokens: number
-    active_window_hours?: number
-    cache_creation_tokens?: number
-    cache_read_tokens?: number
-    unique_models: number
-    estimated_total_cost_usd: number
-    estimated_daily_cost_usd?: number
-    by_model: Array<{
-      model: string
-      requests: number
-      input_tokens: number
-      output_tokens: number
-      total_tokens: number
-      share_pct: number
-      estimated_total_cost_usd: number
-      estimated_avg_request_cost_usd: number
-      estimated_cost_request_count: number
-    }>
-    by_provider: Array<{
-      provider: string
-      api_key_ref?: string | null
-      requests: number
-      total_tokens: number
-      tokens_per_request?: number | null
-      estimated_total_cost_usd: number
-      estimated_avg_request_cost_usd?: number | null
-      usd_per_million_tokens?: number | null
-      estimated_daily_cost_usd?: number | null
-      total_used_cost_usd?: number | null
-      pricing_source?: string | null
-      estimated_cost_request_count: number
-    }>
-    timeline: Array<{
-      bucket_unix_ms: number
-      requests: number
-      total_tokens: number
-      cache_creation_tokens?: number
-      cache_read_tokens?: number
-    }>
+  summary: UsageStatisticsOverview['summary'] & {
+    by_model: UsageModelStatisticsRow[]
   }
 }

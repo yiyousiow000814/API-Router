@@ -1575,9 +1575,9 @@ mod tests {
             .ok()
             .and_then(|guard| guard.clone())
             .expect("captured launch spec");
-        assert_eq!(spec.program, "cmd.exe");
-        assert_eq!(spec.args.first().map(String::as_str), Some("/C"));
-        assert!(spec.args.iter().any(|arg| arg == "powershell.exe"));
+        assert_eq!(spec.program, "powershell.exe");
+        assert_eq!(spec.args.first().map(String::as_str), Some("-NoLogo"));
+        assert!(spec.args.iter().any(|arg| arg == "-NoExit"));
         assert!(spec.args.iter().any(|arg| arg.contains("codex.cmd")));
         assert!(!spec.args.iter().any(|arg| arg.contains("thread-web")));
         assert!(!spec.args.iter().any(|arg| arg.contains("thread-terminal")));
