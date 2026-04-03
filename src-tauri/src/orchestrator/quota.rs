@@ -1314,6 +1314,23 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
         format!("{start}******{end}")
     }
 
+    fn provider_has_request_on_local_day(
+        st: &GatewayState,
+        provider_name: &str,
+        unix_ms: u64,
+    ) -> bool {
+        let Some(local_dt) = chrono::Local.timestamp_millis_opt(unix_ms as i64).single() else {
+            return false;
+        };
+        let day_key = local_dt.format("%Y-%m-%d").to_string();
+        st.store
+            .list_usage_request_day_counts_for_provider(provider_name)
+            .get(&day_key)
+            .copied()
+            .unwrap_or(0)
+            > 0
+    }
+
     if snap.kind != UsageKind::BudgetInfo {
         return;
     }
@@ -1349,13 +1366,19 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
         tracking_started_unix_ms = now;
         open_day_started_at_unix_ms = now;
         last_seen_daily_spent = current_daily_spent;
+        let initial_tracked_spend = if provider_has_request_on_local_day(st, provider_name, now) {
+            current_daily_spent
+        } else {
+            0.0
+        };
         let day = serde_json::json!({
             "provider": provider_name,
             "api_key_ref": api_key_ref.clone(),
             "started_at_unix_ms": open_day_started_at_unix_ms,
             "ended_at_unix_ms": Value::Null,
-            // First snapshot of the day already includes spend that happened before refresh.
-            "tracked_spend_usd": current_daily_spent,
+            // If we have not observed any request on this local day yet, treat the first
+            // non-zero snapshot as a baseline only instead of attributing spend to a zero-request day.
+            "tracked_spend_usd": initial_tracked_spend,
             "last_seen_daily_spent_usd": current_daily_spent,
             "updated_at_unix_ms": now
         });
@@ -1396,13 +1419,20 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
             }
 
             open_day_started_at_unix_ms = now;
+            let next_day_tracked_spend =
+                if provider_has_request_on_local_day(st, provider_name, now) {
+                    current_daily_spent
+                } else {
+                    0.0
+                };
             let day = serde_json::json!({
                 "provider": provider_name,
                 "api_key_ref": api_key_ref.clone(),
                 "started_at_unix_ms": open_day_started_at_unix_ms,
                 "ended_at_unix_ms": Value::Null,
-                // New day baseline can be non-zero if first refresh happens after early usage.
-                "tracked_spend_usd": current_daily_spent,
+                // Same rule as initial bootstrap: only attribute the baseline when this day
+                // already has observed request rows.
+                "tracked_spend_usd": next_day_tracked_spend,
                 "last_seen_daily_spent_usd": current_daily_spent,
                 "updated_at_unix_ms": now
             });

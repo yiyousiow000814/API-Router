@@ -1520,6 +1520,82 @@ mod tests {
     }
 
     #[test]
+    fn track_budget_spend_skips_non_zero_initial_baseline_without_same_day_requests() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://usage.example/v1".to_string(), secrets);
+
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.updated_at_unix_ms = chrono::Local
+            .with_ymd_and_hms(2026, 4, 1, 0, 58, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        snap.daily_spent_usd = Some(17.4690825);
+
+        track_budget_spend(&st, "p1", &snap);
+
+        let spend_days = st.store.list_spend_days("p1");
+        assert_eq!(spend_days.len(), 1);
+        assert_eq!(
+            spend_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(0.0)
+        );
+        assert_eq!(
+            spend_days[0]
+                .get("last_seen_daily_spent_usd")
+                .and_then(|value| value.as_f64()),
+            Some(17.4690825)
+        );
+    }
+
+    #[test]
+    fn track_budget_spend_keeps_non_zero_initial_baseline_when_same_day_requests_exist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://usage.example/v1".to_string(), secrets);
+        let ts = chrono::Local
+            .with_ymd_and_hms(2026, 4, 1, 0, 58, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        st.store.upsert_usage_request_sync_rows(&[crate::orchestrator::store::UsageRequestSyncRow {
+            id: "req-1".to_string(),
+            unix_ms: ts,
+            ingested_at_unix_ms: ts,
+            provider: "p1".to_string(),
+            api_key_ref: "-".to_string(),
+            model: String::new(),
+            origin: "windows".to_string(),
+            session_id: String::new(),
+            node_id: String::new(),
+            node_name: String::new(),
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 100,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        }]);
+
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.updated_at_unix_ms = ts;
+        snap.daily_spent_usd = Some(17.4690825);
+
+        track_budget_spend(&st, "p1", &snap);
+
+        let spend_days = st.store.list_spend_days("p1");
+        assert_eq!(spend_days.len(), 1);
+        assert_eq!(
+            spend_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(17.4690825)
+        );
+    }
+
+    #[test]
     fn track_budget_spend_rebuilds_only_when_state_points_to_missing_open_day() {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));

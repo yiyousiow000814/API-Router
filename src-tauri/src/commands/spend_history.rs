@@ -58,71 +58,6 @@ fn tracked_spend_history_snapshot(day: &Value) -> Option<(String, f64, u64)> {
     Some((day_key, tracked_spend_usd, updated_at_unix_ms))
 }
 
-fn tracked_spend_history_allocations_by_day(
-    day: &Value,
-    request_counts_by_day: &BTreeMap<String, u64>,
-    now_unix_ms: u64,
-) -> BTreeMap<String, f64> {
-    let mut allocations = BTreeMap::new();
-    let tracked = day
-        .get("tracked_spend_usd")
-        .and_then(|value| {
-            value
-                .as_f64()
-                .or_else(|| value.as_i64().map(|n| n as f64))
-                .or_else(|| value.as_u64().map(|n| n as f64))
-        })
-        .unwrap_or(0.0);
-    if !(tracked.is_finite() && tracked > 0.0) {
-        return allocations;
-    }
-
-    let started_at = day.get("started_at_unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
-    if started_at == 0 {
-        return allocations;
-    }
-    let ended_at = day
-        .get("ended_at_unix_ms")
-        .and_then(|v| v.as_u64())
-        .filter(|v| *v > started_at)
-        .unwrap_or(now_unix_ms.max(started_at.saturating_add(1)));
-
-    let start_day_key = local_day_key_from_unix_ms(started_at);
-    let end_day_key = local_day_key_from_unix_ms(ended_at.saturating_sub(1));
-    let counts_by_day: BTreeMap<String, u64> = request_counts_by_day
-        .iter()
-        .filter(|(day_key, count)| {
-            if **count == 0 {
-                return false;
-            }
-            let after_start = match start_day_key.as_ref() {
-                Some(start) => day_key.as_str() >= start.as_str(),
-                None => true,
-            };
-            let before_end = match end_day_key.as_ref() {
-                Some(end) => day_key.as_str() <= end.as_str(),
-                None => true,
-            };
-            after_start && before_end
-        })
-        .map(|(day_key, count)| (day_key.clone(), *count))
-        .collect();
-
-    let total_requests: u64 = counts_by_day.values().copied().sum();
-    if total_requests > 0 {
-        for (day_key, request_count) in counts_by_day {
-            let ratio = request_count as f64 / total_requests as f64;
-            allocations.insert(day_key, tracked * ratio);
-        }
-        return allocations;
-    }
-
-    if let Some(day_key) = tracked_spend_history_day_key(day) {
-        allocations.insert(day_key, tracked);
-    }
-    allocations
-}
-
 fn include_compact_spend_history_row(
     compact_only: bool,
     req_count: u64,
@@ -219,7 +154,6 @@ pub(crate) fn get_spend_history(
                 .or_insert((req_count, total_tokens, updated_at));
         }
         let mut usage_by_day_from_req: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
-        let mut request_counts_by_day: BTreeMap<String, u64> = BTreeMap::new();
         let mut api_key_ref_counts_by_day: BTreeMap<String, BTreeMap<String, u64>> =
             BTreeMap::new();
         for (day_key, api_key_ref, req_count, total_tokens, updated_at) in state
@@ -235,10 +169,6 @@ pub(crate) fn get_spend_history(
                     *u = (*u).max(updated_at);
                 })
                 .or_insert((req_count, total_tokens, updated_at));
-            request_counts_by_day
-                .entry(day_key.clone())
-                .and_modify(|count| *count = count.saturating_add(req_count))
-                .or_insert(req_count);
             if api_key_ref != "-" {
                 api_key_ref_counts_by_day
                     .entry(day_key)
@@ -255,29 +185,22 @@ pub(crate) fn get_spend_history(
         let mut updated_by_day: BTreeMap<String, u64> = BTreeMap::new();
         let mut tracked_day_meta_by_day: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         for day in state.gateway.store.list_spend_days(&provider_name) {
-            let Some((snapshot_day_key, _tracked_spend_usd, updated_at_unix_ms)) =
+            let Some((snapshot_day_key, tracked_spend_usd, updated_at_unix_ms)) =
                 tracked_spend_history_snapshot(&day) else {
                 continue;
             };
-            let allocated_tracked =
-                tracked_spend_history_allocations_by_day(&day, &request_counts_by_day, now);
-            if allocated_tracked.is_empty() {
-                continue;
-            }
-            for (day_key, tracked_spend_usd) in allocated_tracked {
-                tracked_by_day
-                    .entry(day_key.clone())
-                    .and_modify(|current| *current += tracked_spend_usd)
-                    .or_insert(tracked_spend_usd);
-                updated_by_day
-                    .entry(day_key.clone())
-                    .and_modify(|current| *current = (*current).max(updated_at_unix_ms))
-                    .or_insert(updated_at_unix_ms);
-                tracked_day_meta_by_day
-                    .entry(day_key.clone())
-                    .or_default()
-                    .push(day.clone());
-            }
+            tracked_by_day
+                .entry(snapshot_day_key.clone())
+                .and_modify(|current| *current += tracked_spend_usd)
+                .or_insert(tracked_spend_usd);
+            updated_by_day
+                .entry(snapshot_day_key.clone())
+                .and_modify(|current| *current = (*current).max(updated_at_unix_ms))
+                .or_insert(updated_at_unix_ms);
+            tracked_day_meta_by_day
+                .entry(snapshot_day_key.clone())
+                .or_default()
+                .push(day.clone());
             if let Some(key_ref) = day
                 .get("api_key_ref")
                 .and_then(|v| v.as_str())
@@ -619,8 +542,8 @@ mod spend_history_tests {
 
     use super::{
         include_compact_spend_history_row, merge_usage_history_day_counts,
-        spend_history_provider_names, tracked_spend_history_allocations_by_day,
-        tracked_spend_history_day_key, tracked_spend_history_snapshot,
+        spend_history_provider_names, tracked_spend_history_day_key,
+        tracked_spend_history_snapshot,
     };
 
     fn local_unix_ms(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> u64 {
@@ -933,34 +856,6 @@ mod spend_history_tests {
             latest,
             Some(("2026-04-03".to_string(), 93.26, second_updated_at_unix_ms))
         );
-    }
-
-    #[test]
-    fn tracked_spend_allocates_closed_period_to_request_days() {
-        let started_at_unix_ms = local_unix_ms(2026, 4, 2, 12, 0, 0);
-        let ended_at_unix_ms = local_unix_ms(2026, 4, 4, 0, 0, 0);
-        let day = serde_json::json!({
-            "provider": "aigateway",
-            "started_at_unix_ms": started_at_unix_ms,
-            "ended_at_unix_ms": ended_at_unix_ms,
-            "tracked_spend_usd": 94.406078
-        });
-        let request_counts_by_day = BTreeMap::from([
-            ("2026-04-02".to_string(), 2_u64),
-            ("2026-04-03".to_string(), 1_u64),
-        ]);
-
-        let allocations = tracked_spend_history_allocations_by_day(
-            &day,
-            &request_counts_by_day,
-            ended_at_unix_ms,
-        );
-
-        assert_eq!(allocations.len(), 2);
-        let day_02 = allocations.get("2026-04-02").copied().unwrap_or(0.0);
-        let day_03 = allocations.get("2026-04-03").copied().unwrap_or(0.0);
-        assert!(day_02 > day_03);
-        assert!((day_02 + day_03 - 94.406078).abs() < 1e-6);
     }
 
     #[test]
