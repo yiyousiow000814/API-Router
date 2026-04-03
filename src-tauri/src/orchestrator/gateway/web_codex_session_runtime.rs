@@ -298,6 +298,7 @@ mod tests {
 
     #[test]
     fn workspace_runtime_snapshot_registers_default_record() {
+        let _guard = lock_tests();
         _clear_workspace_runtime_registry_for_test();
         let snapshot = workspace_runtime_snapshot(
             Some(WorkspaceTarget::Windows),

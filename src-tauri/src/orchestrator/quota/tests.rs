@@ -1501,6 +1501,133 @@ mod tests {
     }
 
     #[test]
+    fn track_budget_spend_reuses_remote_open_day_after_state_rebuild() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "sk-remote-owner").unwrap();
+        let st = mk_state("https://usage.example/v1".to_string(), secrets);
+
+        st.store.put_spend_day(
+            "p1",
+            1_711_929_600_000,
+            &serde_json::json!({
+                "provider": "p1",
+                "started_at_unix_ms": 1_711_929_600_000u64,
+                "ended_at_unix_ms": Value::Null,
+                "tracked_spend_usd": 17.47,
+                "last_seen_daily_spent_usd": 17.47,
+                "updated_at_unix_ms": 2_222u64,
+                "producer_node_id": "node-remote",
+                "producer_node_name": "remote",
+                "applied_from_node_id": "node-remote",
+                "applied_from_node_name": "remote"
+            }),
+        );
+        assert!(st.store.get_spend_state("p1").is_none());
+
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.updated_at_unix_ms = 3_333;
+        snap.daily_spent_usd = Some(20.0);
+
+        track_budget_spend(&st, "p1", &snap);
+
+        let spend_days = st.store.list_spend_days("p1");
+        assert_eq!(spend_days.len(), 1, "should update existing open row");
+        assert_eq!(
+            spend_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(20.0)
+        );
+        assert_eq!(
+            spend_days[0]
+                .get("last_seen_daily_spent_usd")
+                .and_then(|value| value.as_f64()),
+            Some(20.0)
+        );
+
+        let spend_state = st.store.get_spend_state("p1").expect("rebuilt spend state");
+        assert_eq!(
+            spend_state
+                .get("open_day_started_at_unix_ms")
+                .and_then(|value| value.as_u64()),
+            Some(1_711_929_600_000)
+        );
+        assert_eq!(
+            spend_state
+                .get("last_seen_daily_spent_usd")
+                .and_then(|value| value.as_f64()),
+            Some(20.0)
+        );
+    }
+
+    #[test]
+    fn track_budget_spend_rebuilds_only_when_state_points_to_missing_open_day() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "sk-remote-owner").unwrap();
+        let st = mk_state("https://usage.example/v1".to_string(), secrets);
+
+        st.store.put_spend_day(
+            "p1",
+            1_711_929_600_000,
+            &serde_json::json!({
+                "provider": "p1",
+                "started_at_unix_ms": 1_711_929_600_000u64,
+                "ended_at_unix_ms": Value::Null,
+                "tracked_spend_usd": 17.47,
+                "last_seen_daily_spent_usd": 17.47,
+                "updated_at_unix_ms": 2_222u64,
+            }),
+        );
+        st.store.put_spend_state(
+            "p1",
+            &serde_json::json!({
+                "provider": "p1",
+                "tracking_started_unix_ms": 1_700_000_000_000u64,
+                "open_day_started_at_unix_ms": 1_700_000_000_001u64,
+                "last_seen_daily_spent_usd": 10.0,
+                "updated_at_unix_ms": 1_111u64,
+            }),
+        );
+
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.updated_at_unix_ms = 3_333;
+        snap.daily_spent_usd = Some(20.0);
+
+        track_budget_spend(&st, "p1", &snap);
+
+        let spend_days = st.store.list_spend_days("p1");
+        assert_eq!(spend_days.len(), 1, "should recover onto canonical open row");
+        assert_eq!(
+            spend_days[0]
+                .get("started_at_unix_ms")
+                .and_then(|value| value.as_u64()),
+            Some(1_711_929_600_000)
+        );
+        assert_eq!(
+            spend_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(20.0)
+        );
+
+        let spend_state = st.store.get_spend_state("p1").expect("rebuilt spend state");
+        assert_eq!(
+            spend_state
+                .get("open_day_started_at_unix_ms")
+                .and_then(|value| value.as_u64()),
+            Some(1_711_929_600_000)
+        );
+        assert_eq!(
+            spend_state
+                .get("tracking_started_unix_ms")
+                .and_then(|value| value.as_u64()),
+            Some(1_711_929_600_000)
+        );
+    }
+
+    #[test]
     fn remote_quota_snapshot_skips_disabled_siblings_and_logs_shared_apply() {
         let providers = std::collections::BTreeMap::from([
             (

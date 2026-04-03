@@ -2198,6 +2198,7 @@ fn apply_tracked_spend_day_event(
     gateway
         .store
         .put_spend_day(&provider_name, payload.day_started_at_unix_ms, &row);
+    crate::orchestrator::quota::reconcile_spend_state_from_history(gateway, &provider_name);
     Ok(())
 }
 
@@ -5403,6 +5404,23 @@ mod tests {
                 .get("applied_from_node_id")
                 .and_then(|value| value.as_str()),
             Some("node-remote")
+        );
+        let spend_state = state
+            .gateway
+            .store
+            .get_spend_state("provider_1")
+            .expect("tracked spend state");
+        assert_eq!(
+            spend_state
+                .get("open_day_started_at_unix_ms")
+                .and_then(|value| value.as_u64()),
+            Some(1711929600000)
+        );
+        assert_eq!(
+            spend_state
+                .get("last_seen_daily_spent_usd")
+                .and_then(|value| value.as_f64()),
+            Some(17.47)
         );
     }
 
