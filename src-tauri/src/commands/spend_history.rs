@@ -23,170 +23,16 @@ fn spend_history_provider_names(
 }
 
 fn tracked_spend_history_day_key(day: &Value) -> Option<String> {
-    let ended_at = day.get("ended_at_unix_ms").and_then(|v| v.as_u64());
-    if let Some(ended_at_unix_ms) = ended_at.filter(|v| *v > 0) {
-        return local_day_key_from_unix_ms(ended_at_unix_ms.saturating_sub(1));
-    }
-    let started_at = day.get("started_at_unix_ms").and_then(|v| v.as_u64())?;
-    local_day_key_from_unix_ms(started_at)
+    let updated_at_unix_ms = day
+        .get("updated_at_unix_ms")
+        .and_then(|v| v.as_u64())
+        .or_else(|| day.get("ended_at_unix_ms").and_then(|v| v.as_u64()))
+        .or_else(|| day.get("started_at_unix_ms").and_then(|v| v.as_u64()))?;
+    local_day_key_from_unix_ms(updated_at_unix_ms)
 }
 
-#[derive(Clone)]
-struct TrackedSpendHistoryPeriod {
-    day: Value,
-    started_at_unix_ms: u64,
-    ended_at_unix_ms: u64,
-    updated_at_unix_ms: u64,
-    tracked_spend_usd: f64,
-    ordinal: usize,
-}
-
-fn tracked_spend_history_periods(days: &[Value], now_unix_ms: u64) -> Vec<TrackedSpendHistoryPeriod> {
-    days.iter()
-        .enumerate()
-        .filter_map(|(ordinal, day)| {
-            let tracked_spend_usd = day
-                .get("tracked_spend_usd")
-                .and_then(|value| {
-                    value
-                        .as_f64()
-                        .or_else(|| value.as_i64().map(|n| n as f64))
-                        .or_else(|| value.as_u64().map(|n| n as f64))
-                })
-                .unwrap_or(0.0);
-            if !(tracked_spend_usd.is_finite() && tracked_spend_usd > 0.0) {
-                return None;
-            }
-
-            let started_at_unix_ms = day.get("started_at_unix_ms").and_then(|v| v.as_u64())?;
-            if started_at_unix_ms == 0 {
-                return None;
-            }
-
-            let ended_at_unix_ms = day
-                .get("ended_at_unix_ms")
-                .and_then(|v| v.as_u64())
-                .filter(|v| *v > started_at_unix_ms)
-                .unwrap_or(now_unix_ms.max(started_at_unix_ms.saturating_add(1)));
-            if ended_at_unix_ms <= started_at_unix_ms {
-                return None;
-            }
-
-            let updated_at_unix_ms = day
-                .get("updated_at_unix_ms")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(started_at_unix_ms);
-
-            Some(TrackedSpendHistoryPeriod {
-                day: day.clone(),
-                started_at_unix_ms,
-                ended_at_unix_ms,
-                updated_at_unix_ms,
-                tracked_spend_usd,
-                ordinal,
-            })
-        })
-        .collect()
-}
-
-fn tracked_spend_history_interval_subtract(
-    intervals: Vec<(u64, u64)>,
-    cut_start_unix_ms: u64,
-    cut_end_unix_ms: u64,
-) -> Vec<(u64, u64)> {
-    if cut_end_unix_ms <= cut_start_unix_ms {
-        return intervals;
-    }
-    let mut remaining = Vec::new();
-    for (start_unix_ms, end_unix_ms) in intervals {
-        if end_unix_ms <= cut_start_unix_ms || start_unix_ms >= cut_end_unix_ms {
-            remaining.push((start_unix_ms, end_unix_ms));
-            continue;
-        }
-        if start_unix_ms < cut_start_unix_ms {
-            remaining.push((start_unix_ms, cut_start_unix_ms));
-        }
-        if end_unix_ms > cut_end_unix_ms {
-            remaining.push((cut_end_unix_ms, end_unix_ms));
-        }
-    }
-    remaining
-}
-
-fn tracked_spend_history_period_precedence_cmp(
-    left: &TrackedSpendHistoryPeriod,
-    right: &TrackedSpendHistoryPeriod,
-) -> std::cmp::Ordering {
-    left.updated_at_unix_ms
-        .cmp(&right.updated_at_unix_ms)
-        .then_with(|| left.started_at_unix_ms.cmp(&right.started_at_unix_ms))
-        .then_with(|| left.tracked_spend_usd.total_cmp(&right.tracked_spend_usd))
-        .then_with(|| left.ordinal.cmp(&right.ordinal))
-}
-
-fn tracked_spend_history_visible_intervals(
-    periods: &[TrackedSpendHistoryPeriod],
-    current_index: usize,
-) -> Vec<(u64, u64)> {
-    let current = &periods[current_index];
-    let mut visible_intervals = vec![(current.started_at_unix_ms, current.ended_at_unix_ms)];
-    for (other_index, other) in periods.iter().enumerate() {
-        if other_index == current_index {
-            continue;
-        }
-        if tracked_spend_history_period_precedence_cmp(other, current).is_le() {
-            continue;
-        }
-        visible_intervals = tracked_spend_history_interval_subtract(
-            visible_intervals,
-            other.started_at_unix_ms,
-            other.ended_at_unix_ms,
-        );
-        if visible_intervals.is_empty() {
-            break;
-        }
-    }
-    visible_intervals
-}
-
-fn tracked_spend_history_day_keys_for_intervals(
-    visible_intervals: &[(u64, u64)],
-) -> BTreeSet<String> {
-    let mut day_keys = BTreeSet::new();
-    for (start_unix_ms, end_unix_ms) in visible_intervals {
-        if *end_unix_ms <= *start_unix_ms {
-            continue;
-        }
-        let Some(mut day_cursor) = local_day_key_from_unix_ms(*start_unix_ms) else {
-            continue;
-        };
-        loop {
-            day_keys.insert(day_cursor.clone());
-            let Some((_, day_end_unix_ms)) = local_day_range_from_key(&day_cursor) else {
-                break;
-            };
-            if day_end_unix_ms >= *end_unix_ms {
-                break;
-            }
-            let Some(next_day_cursor) = local_day_key_from_unix_ms(day_end_unix_ms) else {
-                break;
-            };
-            if next_day_cursor == day_cursor {
-                break;
-            }
-            day_cursor = next_day_cursor;
-        }
-    }
-    day_keys
-}
-
-fn tracked_spend_history_allocations_by_day(
-    day: &Value,
-    request_counts_by_day: &BTreeMap<String, u64>,
-    visible_intervals: &[(u64, u64)],
-) -> BTreeMap<String, f64> {
-    let mut allocations = BTreeMap::new();
-    let tracked = day
+fn tracked_spend_history_snapshot(day: &Value) -> Option<(String, f64, u64)> {
+    let tracked_spend_usd = day
         .get("tracked_spend_usd")
         .and_then(|value| {
             value
@@ -194,44 +40,14 @@ fn tracked_spend_history_allocations_by_day(
                 .or_else(|| value.as_i64().map(|n| n as f64))
                 .or_else(|| value.as_u64().map(|n| n as f64))
         })
-        .unwrap_or(0.0);
-    if !(tracked.is_finite() && tracked > 0.0) {
-        return allocations;
-    }
-    if visible_intervals.is_empty() {
-        return allocations;
-    }
-
-    let visible_day_keys = tracked_spend_history_day_keys_for_intervals(visible_intervals);
-    let counts_by_day: BTreeMap<String, u64> = request_counts_by_day
-        .iter()
-        .filter(|(day_key, count)| **count > 0 && visible_day_keys.contains(day_key.as_str()))
-        .map(|(day_key, count)| (day_key.clone(), *count))
-        .collect();
-
-    let total_requests: u64 = counts_by_day.values().copied().sum();
-    if total_requests > 0 {
-        for (day_key, request_count) in counts_by_day {
-            let ratio = request_count as f64 / total_requests as f64;
-            allocations.insert(day_key, tracked * ratio);
-        }
-        return allocations;
-    }
-
-    let fallback_day_key = visible_intervals
-        .last()
-        .and_then(|(_, end_unix_ms)| end_unix_ms.checked_sub(1))
-        .and_then(local_day_key_from_unix_ms)
-        .or_else(|| {
-            visible_intervals
-                .first()
-                .and_then(|(start_unix_ms, _)| local_day_key_from_unix_ms(*start_unix_ms))
-        })
-        .or_else(|| tracked_spend_history_day_key(day));
-    if let Some(day_key) = fallback_day_key {
-        allocations.insert(day_key, tracked);
-    }
-    allocations
+        .filter(|value| value.is_finite() && *value > 0.0)?;
+    let updated_at_unix_ms = day
+        .get("updated_at_unix_ms")
+        .and_then(|v| v.as_u64())
+        .or_else(|| day.get("ended_at_unix_ms").and_then(|v| v.as_u64()))
+        .or_else(|| day.get("started_at_unix_ms").and_then(|v| v.as_u64()))?;
+    let day_key = tracked_spend_history_day_key(day)?;
+    Some((day_key, tracked_spend_usd, updated_at_unix_ms))
 }
 
 #[tauri::command]
@@ -311,7 +127,6 @@ pub(crate) fn get_spend_history(
                 .or_insert((req_count, total_tokens, updated_at));
         }
         let mut usage_by_day_from_req: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
-        let mut request_counts_by_day: BTreeMap<String, u64> = BTreeMap::new();
         let mut api_key_ref_counts_by_day: BTreeMap<String, BTreeMap<String, u64>> =
             BTreeMap::new();
         for (day_key, api_key_ref, req_count, total_tokens, updated_at) in state
@@ -327,10 +142,6 @@ pub(crate) fn get_spend_history(
                     *u = (*u).max(updated_at);
                 })
                 .or_insert((req_count, total_tokens, updated_at));
-            request_counts_by_day
-                .entry(day_key.clone())
-                .and_modify(|count| *count = count.saturating_add(req_count))
-                .or_insert(req_count);
             if api_key_ref != "-" {
                 api_key_ref_counts_by_day
                     .entry(day_key)
@@ -346,52 +157,38 @@ pub(crate) fn get_spend_history(
         let mut tracked_api_key_ref_by_day: BTreeMap<String, String> = BTreeMap::new();
         let mut updated_by_day: BTreeMap<String, u64> = BTreeMap::new();
         let mut tracked_day_meta_by_day: BTreeMap<String, Value> = BTreeMap::new();
-        let tracked_periods =
-            tracked_spend_history_periods(&state.gateway.store.list_spend_days(&provider_name), now);
-        for (tracked_period_index, tracked_period) in tracked_periods.iter().enumerate() {
-            let visible_intervals =
-                tracked_spend_history_visible_intervals(&tracked_periods, tracked_period_index);
-            let allocated_tracked = tracked_spend_history_allocations_by_day(
-                &tracked_period.day,
-                &request_counts_by_day,
-                &visible_intervals,
-            );
-            if allocated_tracked.is_empty() {
+        for day in state.gateway.store.list_spend_days(&provider_name) {
+            let Some((day_key, tracked_spend_usd, updated_at_unix_ms)) =
+                tracked_spend_history_snapshot(&day)
+            else {
+                continue;
+            };
+            let current_updated = updated_by_day.get(&day_key).copied().unwrap_or(0);
+            if current_updated > updated_at_unix_ms {
                 continue;
             }
-            if let Some(key_ref) = tracked_period
-                .day
+            if current_updated == updated_at_unix_ms
+                && tracked_day_meta_by_day
+                    .get(&day_key)
+                    .and_then(|current| current.get("started_at_unix_ms"))
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0)
+                    > day.get("started_at_unix_ms")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0)
+            {
+                continue;
+            }
+            tracked_by_day.insert(day_key.clone(), tracked_spend_usd);
+            updated_by_day.insert(day_key.clone(), updated_at_unix_ms);
+            tracked_day_meta_by_day.insert(day_key.clone(), day.clone());
+            if let Some(key_ref) = day
                 .get("api_key_ref")
                 .and_then(|v| v.as_str())
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty() && *s != "-")
             {
-                for day_key in allocated_tracked.keys() {
-                    tracked_api_key_ref_by_day.insert(day_key.clone(), key_ref.to_string());
-                }
-            }
-            let updated_at = tracked_period.updated_at_unix_ms;
-            for (day_key, tracked) in allocated_tracked {
-                tracked_by_day
-                    .entry(day_key.clone())
-                    .and_modify(|v| *v += tracked)
-                    .or_insert(tracked);
-                updated_by_day
-                    .entry(day_key.clone())
-                    .and_modify(|v| *v = (*v).max(updated_at))
-                    .or_insert(updated_at);
-                tracked_day_meta_by_day
-                    .entry(day_key.clone())
-                    .and_modify(|current| {
-                        let current_updated = current
-                            .get("updated_at_unix_ms")
-                            .and_then(|value| value.as_u64())
-                            .unwrap_or(0);
-                        if updated_at >= current_updated {
-                            *current = tracked_period.day.clone();
-                        }
-                    })
-                    .or_insert(tracked_period.day.clone());
+                tracked_api_key_ref_by_day.insert(day_key, key_ref.to_string());
             }
         }
 
@@ -674,7 +471,6 @@ mod spend_history_tests {
     use std::collections::BTreeMap;
 
     use chrono::{Local, LocalResult, TimeZone};
-    use serde_json::Value;
 
     use crate::orchestrator::secrets::{
         resolve_provider_pricing_config, ProviderPricingConfig, ProviderPricingPeriod,
@@ -683,8 +479,7 @@ mod spend_history_tests {
 
     use super::{
         merge_usage_history_day_counts, spend_history_provider_names,
-        tracked_spend_history_allocations_by_day, tracked_spend_history_day_key,
-        tracked_spend_history_periods, tracked_spend_history_visible_intervals,
+        tracked_spend_history_day_key, tracked_spend_history_snapshot,
     };
 
     fn local_unix_ms(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> u64 {
@@ -910,14 +705,15 @@ mod spend_history_tests {
     }
 
     #[test]
-    fn tracked_spend_uses_ended_day_for_closed_periods() {
+    fn tracked_spend_uses_updated_day_for_history_rows() {
         let started_at_unix_ms = local_unix_ms(2026, 4, 2, 12, 0, 0);
-        let ended_at_unix_ms = local_unix_ms(2026, 4, 4, 0, 0, 0);
+        let updated_at_unix_ms = local_unix_ms(2026, 4, 3, 0, 1, 0);
         let day = serde_json::json!({
             "provider": "aigateway",
             "started_at_unix_ms": started_at_unix_ms,
-            "ended_at_unix_ms": ended_at_unix_ms,
-            "tracked_spend_usd": 94.406078
+            "ended_at_unix_ms": updated_at_unix_ms,
+            "tracked_spend_usd": 94.406078,
+            "updated_at_unix_ms": updated_at_unix_ms
         });
 
         assert_eq!(
@@ -927,113 +723,53 @@ mod spend_history_tests {
     }
 
     #[test]
-    fn tracked_spend_allocates_closed_period_to_request_days() {
-        let started_at_unix_ms = local_unix_ms(2026, 4, 2, 12, 0, 0);
-        let ended_at_unix_ms = local_unix_ms(2026, 4, 4, 0, 0, 0);
+    fn tracked_spend_snapshot_uses_latest_update_day() {
+        let started_at_unix_ms = local_unix_ms(2026, 4, 2, 3, 58, 3);
+        let updated_at_unix_ms = local_unix_ms(2026, 4, 3, 0, 1, 3);
         let day = serde_json::json!({
-            "provider": "aigateway",
+            "provider": "codex-for.me",
             "started_at_unix_ms": started_at_unix_ms,
-            "ended_at_unix_ms": ended_at_unix_ms,
-            "tracked_spend_usd": 94.406078
+            "ended_at_unix_ms": updated_at_unix_ms,
+            "tracked_spend_usd": 153.7,
+            "updated_at_unix_ms": updated_at_unix_ms
         });
-        let request_counts_by_day = BTreeMap::from([
-            ("2026-04-02".to_string(), 2_u64),
-            ("2026-04-03".to_string(), 1_u64),
-        ]);
 
-        let allocations = tracked_spend_history_allocations_by_day(
-            &day,
-            &request_counts_by_day,
-            &[(started_at_unix_ms, ended_at_unix_ms)],
+        assert_eq!(
+            tracked_spend_history_snapshot(&day),
+            Some(("2026-04-03".to_string(), 153.7, updated_at_unix_ms))
         );
-
-        assert_eq!(allocations.len(), 2);
-        let day_02 = allocations.get("2026-04-02").copied().unwrap_or(0.0);
-        let day_03 = allocations.get("2026-04-03").copied().unwrap_or(0.0);
-        assert!(day_02 > day_03);
-        assert!((day_02 + day_03 - 94.406078).abs() < 1e-6);
     }
 
     #[test]
-    fn tracked_spend_latest_visible_period_wins_when_rows_overlap() {
-        let first_started_at_unix_ms = local_unix_ms(2026, 4, 3, 0, 1, 3);
-        let second_started_at_unix_ms = local_unix_ms(2026, 4, 3, 1, 58, 3);
-        let now_unix_ms = local_unix_ms(2026, 4, 3, 18, 0, 0);
-        let request_counts_by_day = BTreeMap::from([("2026-04-03".to_string(), 86_u64)]);
+    fn tracked_spend_same_day_prefers_latest_snapshot() {
+        let first_updated_at_unix_ms = local_unix_ms(2026, 4, 3, 0, 1, 3);
+        let second_updated_at_unix_ms = local_unix_ms(2026, 4, 3, 15, 38, 3);
         let days = vec![
             serde_json::json!({
                 "provider": "codex-for.me",
-                "started_at_unix_ms": first_started_at_unix_ms,
-                "ended_at_unix_ms": Value::Null,
-                "tracked_spend_usd": 85.82,
-                "updated_at_unix_ms": local_unix_ms(2026, 4, 3, 15, 38, 3)
+                "started_at_unix_ms": local_unix_ms(2026, 4, 2, 3, 58, 3),
+                "ended_at_unix_ms": first_updated_at_unix_ms,
+                "tracked_spend_usd": 153.7,
+                "updated_at_unix_ms": first_updated_at_unix_ms
             }),
             serde_json::json!({
                 "provider": "codex-for.me",
-                "started_at_unix_ms": second_started_at_unix_ms,
-                "ended_at_unix_ms": Value::Null,
-                "tracked_spend_usd": 60.87,
-                "updated_at_unix_ms": local_unix_ms(2026, 4, 3, 4, 0, 0)
+                "started_at_unix_ms": first_updated_at_unix_ms,
+                "ended_at_unix_ms": serde_json::Value::Null,
+                "tracked_spend_usd": 93.26,
+                "updated_at_unix_ms": second_updated_at_unix_ms
             }),
         ];
 
-        let periods = tracked_spend_history_periods(&days, now_unix_ms);
-        assert_eq!(periods.len(), 2);
-
-        let first_allocations = tracked_spend_history_allocations_by_day(
-            &periods[0].day,
-            &request_counts_by_day,
-            &tracked_spend_history_visible_intervals(&periods, 0),
-        );
-        let second_allocations = tracked_spend_history_allocations_by_day(
-            &periods[1].day,
-            &request_counts_by_day,
-            &tracked_spend_history_visible_intervals(&periods, 1),
-        );
-
-        assert_eq!(first_allocations.get("2026-04-03").copied(), Some(85.82));
-        assert!(second_allocations.is_empty());
-    }
-
-    #[test]
-    fn tracked_spend_non_overlapping_periods_both_contribute_to_same_day() {
-        let morning_started_at_unix_ms = local_unix_ms(2026, 4, 3, 0, 0, 0);
-        let noon_started_at_unix_ms = local_unix_ms(2026, 4, 3, 12, 0, 0);
-        let day_end_unix_ms = local_unix_ms(2026, 4, 4, 0, 0, 0);
-        let request_counts_by_day = BTreeMap::from([("2026-04-03".to_string(), 10_u64)]);
-        let days = vec![
-            serde_json::json!({
-                "provider": "codex-for.me",
-                "started_at_unix_ms": morning_started_at_unix_ms,
-                "ended_at_unix_ms": noon_started_at_unix_ms,
-                "tracked_spend_usd": 10.0,
-                "updated_at_unix_ms": noon_started_at_unix_ms
-            }),
-            serde_json::json!({
-                "provider": "codex-for.me",
-                "started_at_unix_ms": noon_started_at_unix_ms,
-                "ended_at_unix_ms": day_end_unix_ms,
-                "tracked_spend_usd": 20.0,
-                "updated_at_unix_ms": day_end_unix_ms
-            }),
-        ];
-
-        let periods = tracked_spend_history_periods(&days, day_end_unix_ms);
-        let total_for_day: f64 = periods
+        let latest = days
             .iter()
-            .enumerate()
-            .map(|(index, period)| {
-                tracked_spend_history_allocations_by_day(
-                    &period.day,
-                    &request_counts_by_day,
-                    &tracked_spend_history_visible_intervals(&periods, index),
-                )
-                .get("2026-04-03")
-                .copied()
-                .unwrap_or(0.0)
-            })
-            .sum();
+            .filter_map(tracked_spend_history_snapshot)
+            .filter(|(day_key, _, _)| day_key == "2026-04-03")
+            .max_by_key(|(_, _, updated_at_unix_ms)| *updated_at_unix_ms);
 
-        assert!((total_for_day - 30.0).abs() < 1e-6);
+        assert_eq!(
+            latest,
+            Some(("2026-04-03".to_string(), 93.26, second_updated_at_unix_ms))
+        );
     }
 }
