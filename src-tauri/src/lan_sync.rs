@@ -583,19 +583,6 @@ impl LanSyncRuntime {
         );
     }
 
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn set_test_peer_provider_fingerprints(
-        &self,
-        node_id: &str,
-        provider_fingerprints: Vec<String>,
-    ) {
-        if let Some(peer) = self.peers.write().get_mut(node_id) {
-            peer.provider_fingerprints = provider_fingerprints;
-            peer.last_heartbeat_unix_ms = unix_ms();
-        }
-    }
-
     fn note_peer_heartbeat(&self, packet: LanHeartbeatPacket, source: SocketAddr) {
         if packet.node_id.trim().is_empty() || packet.node_id == self.local_node.node_id {
             return;
