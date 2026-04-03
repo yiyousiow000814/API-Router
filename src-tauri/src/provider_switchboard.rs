@@ -195,6 +195,12 @@ fn app_auth_path(state: &tauri::State<'_, AppState>) -> PathBuf {
     app_auth_path_from_config_path(&state.config_path)
 }
 
+fn load_app_auth_if_signed_in(config_path: &Path) -> Option<serde_json::Value> {
+    let auth = read_json(&app_auth_path_from_config_path(config_path)).ok()?;
+    ensure_signed_in(&auth).ok()?;
+    Some(auth)
+}
+
 fn switchboard_state_path_from_config_path(config_path: &Path) -> PathBuf {
     app_codex_home_from_config_path(config_path).join("provider-switchboard-state.json")
 }
@@ -226,18 +232,32 @@ fn load_switchboard_state_from_config_path(config_path: &Path) -> Option<serde_j
     read_json(&switchboard_state_path_from_config_path(config_path)).ok()
 }
 
-fn ensure_cli_files_exist(cli_home: &Path) -> Result<(), String> {
+fn ensure_cli_auth_exists(
+    cli_home: &Path,
+    fallback_auth: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    let auth = cli_auth_path(cli_home);
+    if auth.exists() {
+        return Ok(());
+    }
+    let Some(app_auth) = fallback_auth else {
+        return Err(format!("Missing auth.json in: {}", cli_home.display()));
+    };
+    write_json(&auth, app_auth).map_err(|e| format!("restore auth.json failed: {e}"))
+}
+
+fn ensure_cli_files_exist(
+    cli_home: &Path,
+    fallback_auth: Option<&serde_json::Value>,
+) -> Result<(), String> {
     if !cli_home.exists() {
         return Err(format!("Codex dir does not exist: {}", cli_home.display()));
     }
-    let auth = cli_auth_path(cli_home);
     let cfg = cli_cfg_path(cli_home);
-    if !auth.exists() {
-        return Err(format!("Missing auth.json in: {}", cli_home.display()));
-    }
     if !cfg.exists() {
         return Err(format!("Missing config.toml in: {}", cli_home.display()));
     }
+    ensure_cli_auth_exists(cli_home, fallback_auth)?;
     Ok(())
 }
 
@@ -268,8 +288,9 @@ fn ensure_signed_in(app_auth_json: &serde_json::Value) -> Result<(), String> {
     Err("Codex is not signed in yet. Click Log in first.".to_string())
 }
 
-fn ensure_backup_exists(cli_home: &Path) -> Result<(), String> {
-    ensure_cli_files_exist(cli_home)?;
+fn ensure_backup_exists(config_path: &Path, cli_home: &Path) -> Result<(), String> {
+    let app_auth = load_app_auth_if_signed_in(config_path);
+    ensure_cli_files_exist(cli_home, app_auth.as_ref())?;
     if home_swap_state(cli_home)? == "swapped" {
         return Ok(());
     }
@@ -282,8 +303,9 @@ fn ensure_backup_exists(cli_home: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn restore_home_original(cli_home: &Path) -> Result<(), String> {
-    ensure_cli_files_exist(cli_home)?;
+fn restore_home_original(config_path: &Path, cli_home: &Path) -> Result<(), String> {
+    let app_auth = load_app_auth_if_signed_in(config_path);
+    ensure_cli_files_exist(cli_home, app_auth.as_ref())?;
     if home_swap_state(cli_home)? != "swapped" {
         return Ok(());
     }
@@ -325,7 +347,8 @@ fn normalize_cfg_for_switchboard_base(cfg: &str) -> String {
 }
 
 fn read_cfg_base_text(config_path: &Path, cli_home: &Path) -> Result<String, String> {
-    ensure_cli_files_exist(cli_home)?;
+    let app_auth = load_app_auth_if_signed_in(config_path);
+    ensure_cli_files_exist(cli_home, app_auth.as_ref())?;
     let state = home_swap_state(cli_home)?;
     if state == "original" {
         if let Some(base_txt) = load_switchboard_base_cfg(config_path, cli_home) {
@@ -405,7 +428,7 @@ fn switch_to_gateway_home_impl(state: &AppState, cli_home: &Path) -> Result<(), 
         None,
     );
     let next_auth = auth_with_openai_key(gateway_token.trim());
-    write_swapped_files(cli_home, &next_auth, &next_cfg)
+    write_swapped_files(&state.config_path, cli_home, &next_auth, &next_cfg)
 }
 
 fn is_wsl_unc_home(cli_home: &Path) -> bool {
@@ -575,11 +598,12 @@ fn auth_without_openai_key() -> serde_json::Value {
 }
 
 fn write_swapped_files(
+    config_path: &Path,
     cli_home: &Path,
     next_auth: &serde_json::Value,
     next_cfg_text: &str,
 ) -> Result<(), String> {
-    ensure_backup_exists(cli_home)?;
+    ensure_backup_exists(config_path, cli_home)?;
     let auth_path = cli_auth_path(cli_home);
     let cfg_path = cli_cfg_path(cli_home);
     let cur_auth = read_bytes(&auth_path)?;
@@ -796,7 +820,8 @@ pub fn get_status(
 
     let mut dirs = Vec::new();
     for h in &homes {
-        ensure_cli_files_exist(h)?;
+        let app_auth = load_app_auth_if_signed_in(&state.config_path);
+        ensure_cli_files_exist(h, app_auth.as_ref())?;
         let cfg_txt = read_text(&cli_cfg_path(h))?;
         let (mode, provider_raw) = home_mode(h)?;
         let provider = if mode == "provider" {
@@ -911,7 +936,7 @@ fn sync_active_provider_target_for_key_impl(
         } else {
             auth_with_openai_key(key.trim())
         };
-        write_swapped_files(h, &next_auth, &next_cfg)?;
+        write_swapped_files(&state.config_path, h, &next_auth, &next_cfg)?;
     }
 
     Ok(())
