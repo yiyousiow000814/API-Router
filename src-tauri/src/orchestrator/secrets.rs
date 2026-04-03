@@ -892,32 +892,6 @@ impl SecretStore {
         self.persist(&data)
     }
 
-    pub fn replace_provider_pricing_config(
-        &self,
-        provider: &str,
-        pricing: Option<ProviderPricingConfig>,
-    ) -> Result<(), String> {
-        let mut data = self.inner.lock();
-        match pricing {
-            Some(pricing) => {
-                data.provider_pricing.insert(
-                    provider.to_string(),
-                    ProviderPricingOverride {
-                        mode: pricing.mode,
-                        amount_usd: pricing.amount_usd,
-                        periods: pricing.periods,
-                        gap_fill_mode: pricing.gap_fill_mode,
-                        gap_fill_amount_usd: pricing.gap_fill_amount_usd,
-                    },
-                );
-            }
-            None => {
-                data.provider_pricing.remove(provider);
-            }
-        }
-        self.persist(&data)
-    }
-
     pub fn set_provider_gap_fill(
         &self,
         provider: &str,

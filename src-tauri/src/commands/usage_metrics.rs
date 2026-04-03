@@ -781,7 +781,23 @@ pub(crate) fn get_usage_statistics(
             let manual_per_req =
                 as_f64(day.get("manual_usd_per_req")).filter(|v| v.is_finite() && *v > 0.0);
             if manual_total.is_some() || manual_per_req.is_some() {
-                manual_by_day.insert(day_key.to_string(), (manual_total, manual_per_req));
+                manual_by_day
+                    .entry(day_key.to_string())
+                    .and_modify(|(current_total, current_per_req)| {
+                        *current_total = match (*current_total, manual_total) {
+                            (Some(left), Some(right)) => Some(left + right),
+                            (Some(left), None) => Some(left),
+                            (None, Some(right)) => Some(right),
+                            (None, None) => None,
+                        };
+                        *current_per_req = match (*current_per_req, manual_per_req) {
+                            (Some(left), Some(right)) => Some(left + right),
+                            (Some(left), None) => Some(left),
+                            (None, Some(right)) => Some(right),
+                            (None, None) => None,
+                        };
+                    })
+                    .or_insert((manual_total, manual_per_req));
             }
         }
 

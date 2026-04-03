@@ -1493,6 +1493,49 @@ fn seed_payload_revision(value: &Value) -> Result<String, String> {
     serde_json::to_string(value).map_err(|err| err.to_string())
 }
 
+fn provider_pricing_entity_id(shared_provider_id: &str, source_node_id: &str) -> String {
+    format!("{shared_provider_id}|{source_node_id}")
+}
+
+fn spend_manual_day_entity_id(
+    shared_provider_id: &str,
+    day_key: &str,
+    source_node_id: &str,
+) -> String {
+    format!("{shared_provider_id}|{day_key}|{source_node_id}")
+}
+
+fn tracked_spend_day_entity_id(
+    shared_provider_id: &str,
+    day_started_at_unix_ms: u64,
+    source_node_id: &str,
+) -> String {
+    format!("{shared_provider_id}|{day_started_at_unix_ms}|{source_node_id}")
+}
+
+fn parse_provider_pricing_entity_id<'a>(
+    entity_id: &'a str,
+    fallback_node_id: &'a str,
+) -> (&'a str, &'a str) {
+    entity_id
+        .split_once('|')
+        .unwrap_or((entity_id, fallback_node_id))
+}
+
+fn parse_day_scoped_entity_id<'a>(
+    entity_id: &'a str,
+    fallback_node_id: &'a str,
+) -> Result<(&'a str, &'a str, &'a str), String> {
+    let parts = entity_id.split('|').collect::<Vec<_>>();
+    match parts.as_slice() {
+        [shared_provider_id, day_scope, source_node_id] => {
+            Ok((shared_provider_id, day_scope, source_node_id))
+        }
+        [shared_provider_id, day_scope] => Ok((shared_provider_id, day_scope, fallback_node_id)),
+        _ => Err(format!("invalid source-scoped entity id: {entity_id}")),
+    }
+}
+
 fn seed_edit_event_if_changed(
     state: &crate::app_state::AppState,
     entity_type: &str,
@@ -1559,10 +1602,12 @@ pub fn ensure_local_edit_seed_state(state: &crate::app_state::AppState) -> Resul
             pricing,
         })
         .map_err(|err| err.to_string())?;
+        let pricing_entity_id =
+            provider_pricing_entity_id(&shared_provider_id, &state.lan_sync.local_node.node_id);
         seed_edit_event_if_changed(
             state,
             "provider_pricing",
-            &shared_provider_id,
+            &pricing_entity_id,
             "replace",
             pricing_payload,
             &provider_pricing_seed_meta_key(&shared_provider_id),
@@ -1584,14 +1629,18 @@ pub fn ensure_local_edit_seed_state(state: &crate::app_state::AppState) -> Resul
             )?;
         }
 
-        for row in state.gateway.store.list_spend_days(&provider) {
+        for row in state.gateway.store.list_local_spend_days(&provider) {
             let Some(day_started_at_unix_ms) = row
                 .get("started_at_unix_ms")
                 .and_then(|value| value.as_u64())
             else {
                 continue;
             };
-            let entity_id = format!("{shared_provider_id}|{day_started_at_unix_ms}");
+            let entity_id = tracked_spend_day_entity_id(
+                &shared_provider_id,
+                day_started_at_unix_ms,
+                &state.lan_sync.local_node.node_id,
+            );
             let tracked_payload = serde_json::to_value(TrackedSpendDaySyncPayload {
                 provider_name: provider.clone(),
                 day_started_at_unix_ms,
@@ -1608,7 +1657,7 @@ pub fn ensure_local_edit_seed_state(state: &crate::app_state::AppState) -> Resul
             )?;
         }
 
-        for row in state.gateway.store.list_spend_manual_days(&provider) {
+        for row in state.gateway.store.list_local_spend_manual_days(&provider) {
             let Some(day_key) = row
                 .get("day_key")
                 .and_then(|value| value.as_str())
@@ -1617,7 +1666,11 @@ pub fn ensure_local_edit_seed_state(state: &crate::app_state::AppState) -> Resul
             else {
                 continue;
             };
-            let entity_id = format!("{shared_provider_id}|{day_key}");
+            let entity_id = spend_manual_day_entity_id(
+                &shared_provider_id,
+                day_key,
+                &state.lan_sync.local_node.node_id,
+            );
             let manual_payload = serde_json::to_value(SpendManualDaySyncPayload {
                 provider_name: provider.clone(),
                 day_key: day_key.to_string(),
@@ -1667,6 +1720,8 @@ pub fn record_provider_pricing_snapshot(
     provider: &str,
 ) -> Result<(), String> {
     let shared_provider_id = shared_provider_id_for_provider(&state.secrets, provider)?;
+    let entity_id =
+        provider_pricing_entity_id(&shared_provider_id, &state.lan_sync.local_node.node_id);
     let mut pricing_map = state.secrets.list_provider_pricing();
     let pricing = pricing_map.remove(provider);
     let payload = serde_json::to_value(ProviderPricingSyncPayload {
@@ -1678,7 +1733,7 @@ pub fn record_provider_pricing_snapshot(
         &state.gateway,
         &state.lan_sync.local_node,
         "provider_pricing",
-        &shared_provider_id,
+        &entity_id,
         "replace",
         payload,
     )?;
@@ -1693,7 +1748,11 @@ pub fn record_spend_manual_day(
     manual_usd_per_req: Option<f64>,
 ) -> Result<(), String> {
     let shared_provider_id = shared_provider_id_for_provider(&state.secrets, provider)?;
-    let entity_id = format!("{shared_provider_id}|{}", day_key.trim());
+    let entity_id = spend_manual_day_entity_id(
+        &shared_provider_id,
+        day_key.trim(),
+        &state.lan_sync.local_node.node_id,
+    );
     let payload = serde_json::to_value(SpendManualDaySyncPayload {
         provider_name: provider.to_string(),
         day_key: day_key.trim().to_string(),
@@ -1749,7 +1808,11 @@ pub fn record_tracked_spend_day_from_gateway(
         return Ok(());
     };
     let shared_provider_id = shared_provider_id_for_provider(secrets, provider)?;
-    let entity_id = format!("{shared_provider_id}|{day_started_at_unix_ms}");
+    let entity_id = tracked_spend_day_entity_id(
+        &shared_provider_id,
+        day_started_at_unix_ms,
+        &local_node.node_id,
+    );
     let payload = serde_json::to_value(TrackedSpendDaySyncPayload {
         provider_name: provider.to_string(),
         day_started_at_unix_ms,
@@ -2060,22 +2123,25 @@ fn apply_provider_definition_tombstone(
 
 fn apply_provider_pricing_event(
     gateway: &crate::orchestrator::gateway::GatewayState,
-    shared_provider_id: &str,
+    entity_id: &str,
     payload: &Value,
+    event: &crate::orchestrator::store::LanEditSyncEvent,
 ) -> Result<(), String> {
     let payload: ProviderPricingSyncPayload =
         serde_json::from_value(payload.clone()).map_err(|err| err.to_string())?;
+    let (shared_provider_id, source_node_id) =
+        parse_provider_pricing_entity_id(entity_id, &event.node_id);
     let provider_name = resolve_provider_name_for_shared_provider_id(
         gateway,
         shared_provider_id,
         &payload.provider_name,
     )?;
-    gateway
-        .secrets
-        .replace_provider_pricing_config(&provider_name, payload.pricing)?;
-    gateway
-        .store
-        .sync_provider_pricing_configs(&gateway.secrets.list_provider_pricing());
+    gateway.store.put_remote_provider_pricing_config(
+        &provider_name,
+        source_node_id,
+        &event.node_name,
+        payload.pricing.as_ref(),
+    );
     Ok(())
 }
 
@@ -2114,21 +2180,23 @@ fn apply_spend_manual_day_event(
     gateway: &crate::orchestrator::gateway::GatewayState,
     entity_id: &str,
     payload: &Value,
+    event: &crate::orchestrator::store::LanEditSyncEvent,
 ) -> Result<(), String> {
     let payload: SpendManualDaySyncPayload =
         serde_json::from_value(payload.clone()).map_err(|err| err.to_string())?;
-    let (shared_provider_id, _) = entity_id
-        .split_once('|')
-        .ok_or_else(|| format!("invalid spend manual entity id: {entity_id}"))?;
+    let (shared_provider_id, _day_scope, source_node_id) =
+        parse_day_scoped_entity_id(entity_id, &event.node_id)?;
     let provider_name = resolve_provider_name_for_shared_provider_id(
         gateway,
         shared_provider_id,
         &payload.provider_name,
     )?;
     if payload.manual_total_usd.is_none() && payload.manual_usd_per_req.is_none() {
-        gateway
-            .store
-            .remove_spend_manual_day(&provider_name, &payload.day_key);
+        gateway.store.remove_remote_spend_manual_day(
+            &provider_name,
+            source_node_id,
+            &payload.day_key,
+        );
     } else {
         let row = serde_json::json!({
             "provider": provider_name,
@@ -2136,10 +2204,19 @@ fn apply_spend_manual_day_event(
             "manual_total_usd": payload.manual_total_usd,
             "manual_usd_per_req": payload.manual_usd_per_req,
             "updated_at_unix_ms": unix_ms(),
+            "producer_node_id": event.node_id,
+            "producer_node_name": event.node_name,
+            "applied_from_node_id": event.node_id,
+            "applied_from_node_name": event.node_name,
+            "applied_at_unix_ms": unix_ms(),
         });
-        gateway
-            .store
-            .put_spend_manual_day(&provider_name, &payload.day_key, &row);
+        gateway.store.put_remote_spend_manual_day(
+            &provider_name,
+            source_node_id,
+            &event.node_name,
+            &payload.day_key,
+            &row,
+        );
     }
     Ok(())
 }
@@ -2152,9 +2229,8 @@ fn apply_tracked_spend_day_event(
 ) -> Result<(), String> {
     let payload: TrackedSpendDaySyncPayload =
         serde_json::from_value(payload.clone()).map_err(|err| err.to_string())?;
-    let (shared_provider_id, _) = entity_id
-        .split_once('|')
-        .ok_or_else(|| format!("invalid tracked spend entity id: {entity_id}"))?;
+    let (shared_provider_id, _day_scope, source_node_id) =
+        parse_day_scoped_entity_id(entity_id, &event.node_id)?;
     let provider_name = resolve_provider_name_for_shared_provider_id(
         gateway,
         shared_provider_id,
@@ -2183,10 +2259,13 @@ fn apply_tracked_spend_day_event(
             serde_json::json!(unix_ms()),
         );
     }
-    gateway
-        .store
-        .put_spend_day(&provider_name, payload.day_started_at_unix_ms, &row);
-    crate::orchestrator::quota::reconcile_spend_state_from_history(gateway, &provider_name);
+    gateway.store.put_remote_spend_day(
+        &provider_name,
+        source_node_id,
+        &event.node_name,
+        payload.day_started_at_unix_ms,
+        &row,
+    );
     Ok(())
 }
 
@@ -2219,13 +2298,13 @@ fn apply_lan_edit_event(
             other => Err(format!("unsupported provider_definition op: {other}")),
         },
         "provider_pricing" => {
-            apply_provider_pricing_event(gateway, &event.entity_id, &event.payload)
+            apply_provider_pricing_event(gateway, &event.entity_id, &event.payload, event)
         }
         "quota_snapshot" => {
             apply_quota_snapshot_event(gateway, &event.entity_id, &event.payload, event)
         }
         "spend_manual_day" => {
-            apply_spend_manual_day_event(gateway, &event.entity_id, &event.payload)
+            apply_spend_manual_day_event(gateway, &event.entity_id, &event.payload, event)
         }
         "tracked_spend_day" => {
             apply_tracked_spend_day_event(gateway, &event.entity_id, &event.payload, event)
@@ -5303,11 +5382,19 @@ mod tests {
         apply_lan_edit_event(&state.gateway, &state.config_path, &tracked_spend_event)
             .expect("apply tracked spend");
 
-        let pricing = state.secrets.list_provider_pricing();
+        let pricing = state.gateway.store.list_provider_pricing_configs();
         let provider_pricing = pricing.get("provider_1").expect("provider pricing");
         assert_eq!(provider_pricing.mode, "per_request");
         assert_eq!(provider_pricing.amount_usd, 0.035);
         assert_eq!(provider_pricing.periods.len(), 1);
+        assert!(
+            state
+                .secrets
+                .list_provider_pricing()
+                .get("provider_1")
+                .is_none(),
+            "remote pricing must not overwrite local provider pricing state"
+        );
 
         let quota_snapshot = state
             .gateway
@@ -5393,22 +5480,9 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("node-remote")
         );
-        let spend_state = state
-            .gateway
-            .store
-            .get_spend_state("provider_1")
-            .expect("tracked spend state");
-        assert_eq!(
-            spend_state
-                .get("open_day_started_at_unix_ms")
-                .and_then(|value| value.as_u64()),
-            Some(1711929600000)
-        );
-        assert_eq!(
-            spend_state
-                .get("last_seen_daily_spent_usd")
-                .and_then(|value| value.as_f64()),
-            Some(17.47)
+        assert!(
+            state.gateway.store.get_spend_state("provider_1").is_none(),
+            "remote tracked spend must not mutate local tracking state"
         );
     }
 

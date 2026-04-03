@@ -253,7 +253,7 @@ pub(crate) fn get_spend_history(
         let mut tracked_by_day: BTreeMap<String, f64> = BTreeMap::new();
         let mut tracked_api_key_ref_by_day: BTreeMap<String, String> = BTreeMap::new();
         let mut updated_by_day: BTreeMap<String, u64> = BTreeMap::new();
-        let mut tracked_day_meta_by_day: BTreeMap<String, Value> = BTreeMap::new();
+        let mut tracked_day_meta_by_day: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         for day in state.gateway.store.list_spend_days(&provider_name) {
             let Some((snapshot_day_key, _tracked_spend_usd, updated_at_unix_ms)) =
                 tracked_spend_history_snapshot(&day) else {
@@ -265,25 +265,18 @@ pub(crate) fn get_spend_history(
                 continue;
             }
             for (day_key, tracked_spend_usd) in allocated_tracked {
-                let current_updated = updated_by_day.get(&day_key).copied().unwrap_or(0);
-                if current_updated > updated_at_unix_ms {
-                    continue;
-                }
-                if current_updated == updated_at_unix_ms
-                    && tracked_day_meta_by_day
-                        .get(&day_key)
-                        .and_then(|current| current.get("started_at_unix_ms"))
-                        .and_then(|value| value.as_u64())
-                        .unwrap_or(0)
-                        > day.get("started_at_unix_ms")
-                            .and_then(|value| value.as_u64())
-                            .unwrap_or(0)
-                {
-                    continue;
-                }
-                tracked_by_day.insert(day_key.clone(), tracked_spend_usd);
-                updated_by_day.insert(day_key.clone(), updated_at_unix_ms);
-                tracked_day_meta_by_day.insert(day_key.clone(), day.clone());
+                tracked_by_day
+                    .entry(day_key.clone())
+                    .and_modify(|current| *current += tracked_spend_usd)
+                    .or_insert(tracked_spend_usd);
+                updated_by_day
+                    .entry(day_key.clone())
+                    .and_modify(|current| *current = (*current).max(updated_at_unix_ms))
+                    .or_insert(updated_at_unix_ms);
+                tracked_day_meta_by_day
+                    .entry(day_key.clone())
+                    .or_default()
+                    .push(day.clone());
             }
             if let Some(key_ref) = day
                 .get("api_key_ref")
@@ -308,10 +301,24 @@ pub(crate) fn get_spend_history(
                 .get("updated_at_unix_ms")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            manual_by_day.insert(
-                day_key.to_string(),
-                (manual_total, manual_per_req, updated_at),
-            );
+            manual_by_day
+                .entry(day_key.to_string())
+                .and_modify(|(current_total, current_per_req, current_updated_at)| {
+                    *current_updated_at = (*current_updated_at).max(updated_at);
+                    *current_total = match (*current_total, manual_total) {
+                        (Some(left), Some(right)) => Some(left + right),
+                        (Some(left), None) => Some(left),
+                        (None, Some(right)) => Some(right),
+                        (None, None) => None,
+                    };
+                    *current_per_req = match (*current_per_req, manual_per_req) {
+                        (Some(left), Some(right)) => Some(left + right),
+                        (Some(left), None) => Some(left),
+                        (None, Some(right)) => Some(right),
+                        (None, None) => None,
+                    };
+                })
+                .or_insert((manual_total, manual_per_req, updated_at));
         }
         let mut day_keys: BTreeSet<String> = BTreeSet::new();
         day_keys.extend(usage_by_day.keys().cloned());
@@ -345,7 +352,19 @@ pub(crate) fn get_spend_history(
             );
             let package_profile = package_profile_for_day(pricing_cfg, day_start);
             let tracked_total = tracked_by_day.get(&day_key).copied();
-            let tracked_day = tracked_day_meta_by_day.get(&day_key);
+            let tracked_days = tracked_day_meta_by_day.get(&day_key);
+            let tracked_day = tracked_days.and_then(|days| {
+                days.iter().max_by_key(|day| {
+                    (
+                        day.get("updated_at_unix_ms")
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or(0),
+                        day.get("started_at_unix_ms")
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or(0),
+                    )
+                })
+            });
             let scheduled_total = package_total_schedule_by_day(pricing_cfg, day_start, day_end)
                 .remove(&day_key)
                 .filter(|value| value.is_finite() && *value > 0.0);
@@ -442,7 +461,20 @@ pub(crate) fn get_spend_history(
                 "tracked_producer_node_name": tracked_day.as_ref().and_then(|day| day.get("producer_node_name")).and_then(|value| value.as_str()),
                 "tracked_applied_from_node_id": tracked_day.as_ref().and_then(|day| day.get("applied_from_node_id")).and_then(|value| value.as_str()),
                 "tracked_applied_from_node_name": tracked_day.as_ref().and_then(|day| day.get("applied_from_node_name")).and_then(|value| value.as_str()),
-                "tracked_applied_at_unix_ms": tracked_day.as_ref().and_then(|day| day.get("applied_at_unix_ms")).and_then(|value| value.as_u64())
+                "tracked_applied_at_unix_ms": tracked_day.as_ref().and_then(|day| day.get("applied_at_unix_ms")).and_then(|value| value.as_u64()),
+                "tracked_source_nodes": tracked_days
+                    .map(|days| {
+                        days.iter()
+                            .filter_map(|day| {
+                                let node_id = day.get("producer_node_id").and_then(|value| value.as_str())?;
+                                Some(serde_json::json!({
+                                    "node_id": node_id,
+                                    "node_name": day.get("producer_node_name").and_then(|value| value.as_str()).unwrap_or("")
+                                }))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
             }));
         }
     }

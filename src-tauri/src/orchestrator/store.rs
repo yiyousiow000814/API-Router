@@ -358,6 +358,16 @@ impl Store {
             );
             CREATE INDEX IF NOT EXISTS idx_spend_days_provider_started_at
               ON spend_days(provider, day_started_at_unix_ms ASC);
+            CREATE TABLE IF NOT EXISTS spend_days_remote(
+              provider TEXT NOT NULL,
+              source_node_id TEXT NOT NULL,
+              source_node_name TEXT NOT NULL,
+              day_started_at_unix_ms INTEGER NOT NULL,
+              row_json TEXT NOT NULL,
+              PRIMARY KEY(provider, source_node_id, day_started_at_unix_ms)
+            );
+            CREATE INDEX IF NOT EXISTS idx_spend_days_remote_provider_started_at
+              ON spend_days_remote(provider, day_started_at_unix_ms ASC, source_node_id ASC);
             CREATE TABLE IF NOT EXISTS spend_manual_days(
               provider TEXT NOT NULL,
               day_key TEXT NOT NULL,
@@ -366,10 +376,28 @@ impl Store {
             );
             CREATE INDEX IF NOT EXISTS idx_spend_manual_days_provider_day
               ON spend_manual_days(provider, day_key ASC);
+            CREATE TABLE IF NOT EXISTS spend_manual_days_remote(
+              provider TEXT NOT NULL,
+              source_node_id TEXT NOT NULL,
+              source_node_name TEXT NOT NULL,
+              day_key TEXT NOT NULL,
+              row_json TEXT NOT NULL,
+              PRIMARY KEY(provider, source_node_id, day_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_spend_manual_days_remote_provider_day
+              ON spend_manual_days_remote(provider, day_key ASC, source_node_id ASC);
             CREATE TABLE IF NOT EXISTS provider_pricing_configs(
               provider TEXT PRIMARY KEY,
               pricing_json TEXT NOT NULL,
               updated_at_unix_ms INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS provider_pricing_configs_remote(
+              provider TEXT NOT NULL,
+              source_node_id TEXT NOT NULL,
+              source_node_name TEXT NOT NULL,
+              pricing_json TEXT NOT NULL,
+              updated_at_unix_ms INTEGER NOT NULL,
+              PRIMARY KEY(provider, source_node_id)
             );
             CREATE INDEX IF NOT EXISTS idx_usage_request_day_provider_day_key
               ON usage_request_day_provider_totals(day_key ASC);

@@ -1095,7 +1095,7 @@ pub(crate) fn reconcile_spend_state_from_history(
     provider_name: &str,
 ) -> Option<Value> {
     let previous_state = st.store.get_spend_state(provider_name);
-    let spend_days = st.store.list_spend_days(provider_name);
+    let spend_days = st.store.list_local_spend_days(provider_name);
     let mut tracking_started_unix_ms: Option<u64> = None;
     let mut canonical_open_row: Option<(u64, u64, f64)> = None;
 
