@@ -1,5 +1,6 @@
 use crate::app_state::AppState;
 use crate::constants::{GATEWAY_MODEL_PROVIDER_ID, GATEWAY_WINDOWS_HOST};
+use crate::orchestrator::config::AppConfig;
 use crate::orchestrator::store::unix_ms;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -258,6 +259,21 @@ fn ensure_cli_files_exist(
         return Err(format!("Missing config.toml in: {}", cli_home.display()));
     }
     ensure_cli_auth_exists(cli_home, fallback_auth)?;
+    Ok(())
+}
+
+fn ensure_cli_files_exist_read_only(cli_home: &Path) -> Result<(), String> {
+    if !cli_home.exists() {
+        return Err(format!("Codex dir does not exist: {}", cli_home.display()));
+    }
+    let auth = cli_auth_path(cli_home);
+    let cfg = cli_cfg_path(cli_home);
+    if !auth.exists() {
+        return Err(format!("Missing auth.json in: {}", cli_home.display()));
+    }
+    if !cfg.exists() {
+        return Err(format!("Missing config.toml in: {}", cli_home.display()));
+    }
     Ok(())
 }
 
@@ -811,6 +827,7 @@ pub fn get_status(
 ) -> Result<serde_json::Value, String> {
     let homes = resolve_cli_homes(cli_homes)?;
     let app_cfg = state.gateway.cfg.read().clone();
+    let dirs = collect_status_dirs(&homes, &app_cfg)?;
     let provider_options = app_cfg
         .provider_order
         .iter()
@@ -818,16 +835,22 @@ pub fn get_status(
         .cloned()
         .collect::<Vec<_>>();
 
+    build_status_response(dirs, provider_options)
+}
+
+fn collect_status_dirs(
+    homes: &[PathBuf],
+    app_cfg: &AppConfig,
+) -> Result<Vec<serde_json::Value>, String> {
     let mut dirs = Vec::new();
-    for h in &homes {
-        let app_auth = load_app_auth_if_signed_in(&state.config_path);
-        ensure_cli_files_exist(h, app_auth.as_ref())?;
+    for h in homes {
+        ensure_cli_files_exist_read_only(h)?;
         let cfg_txt = read_text(&cli_cfg_path(h))?;
         let (mode, provider_raw) = home_mode(h)?;
         let provider = if mode == "provider" {
             provider_raw.and_then(|pid| {
                 model_provider_section_base_url(&cfg_txt, &pid)
-                    .and_then(|u| provider_name_by_base_url(&app_cfg, &u))
+                    .and_then(|u| provider_name_by_base_url(app_cfg, &u))
                     .or(Some(pid))
             })
         } else {
@@ -840,6 +863,13 @@ pub fn get_status(
         }));
     }
 
+    Ok(dirs)
+}
+
+fn build_status_response(
+    dirs: Vec<serde_json::Value>,
+    provider_options: Vec<String>,
+) -> Result<serde_json::Value, String> {
     let unique_modes = dirs
         .iter()
         .filter_map(|d| d.get("mode").and_then(|x| x.as_str()))

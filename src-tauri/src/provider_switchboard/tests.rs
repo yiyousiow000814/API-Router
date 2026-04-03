@@ -85,6 +85,36 @@ mod tests {
     }
 
     #[test]
+    fn collect_status_dirs_does_not_restore_missing_cli_auth() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+        let app_auth = json!({
+            "tokens": {
+                "access_token": "token-1"
+            }
+        });
+        write_json(&app_auth_path_from_config_path(&config_path), &app_auth).expect("write app auth");
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(cli_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+
+        let app_cfg = state.gateway.cfg.read().clone();
+        let err =
+            collect_status_dirs(std::slice::from_ref(&cli_home), &app_cfg).expect_err("status should stay read-only");
+
+        assert!(err.contains("Missing auth.json"));
+        assert!(
+            !cli_auth_path(&cli_home).exists(),
+            "status collection should not create auth.json"
+        );
+    }
+
+    #[test]
     fn switch_to_gateway_home_writes_gateway_even_if_base_save_fails() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_path = tmp.path().join("user-data").join("config.toml");
