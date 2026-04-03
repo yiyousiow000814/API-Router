@@ -1205,6 +1205,74 @@ fn annotate_local_tracked_spend_day_in_place(day: &mut Value) {
     );
 }
 
+pub(crate) fn reconcile_spend_state_from_history(
+    st: &GatewayState,
+    provider_name: &str,
+) -> Option<Value> {
+    let previous_state = st.store.get_spend_state(provider_name);
+    let spend_days = st.store.list_spend_days(provider_name);
+    let mut tracking_started_unix_ms: Option<u64> = None;
+    let mut canonical_open_row: Option<(u64, u64, f64)> = None;
+
+    for day in spend_days {
+        let Some(started_at_unix_ms) = day.get("started_at_unix_ms").and_then(Value::as_u64) else {
+            continue;
+        };
+        if started_at_unix_ms == 0 {
+            continue;
+        }
+        tracking_started_unix_ms = Some(
+            tracking_started_unix_ms
+                .map(|current| current.min(started_at_unix_ms))
+                .unwrap_or(started_at_unix_ms),
+        );
+
+        let ended_at_unix_ms = day.get("ended_at_unix_ms").and_then(Value::as_u64);
+        if ended_at_unix_ms.is_some_and(|ended| ended > started_at_unix_ms) {
+            continue;
+        }
+
+        let updated_at_unix_ms = day
+            .get("updated_at_unix_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(started_at_unix_ms);
+        let last_seen_daily_spent_usd = as_f64(day.get("last_seen_daily_spent_usd"))
+            .or_else(|| as_f64(day.get("tracked_spend_usd")))
+            .unwrap_or(0.0);
+        let next = (
+            started_at_unix_ms,
+            updated_at_unix_ms,
+            last_seen_daily_spent_usd,
+        );
+        let should_replace = canonical_open_row
+            .as_ref()
+            .map(|current| (next.1, next.0, next.2) > (current.1, current.0, current.2))
+            .unwrap_or(true);
+        if should_replace {
+            canonical_open_row = Some(next);
+        }
+    }
+
+    let Some((open_day_started_at_unix_ms, updated_at_unix_ms, last_seen_daily_spent_usd)) =
+        canonical_open_row
+    else {
+        if previous_state.is_some() {
+            st.store.remove_spend_state(provider_name);
+        }
+        return None;
+    };
+
+    let state = serde_json::json!({
+        "provider": provider_name,
+        "tracking_started_unix_ms": tracking_started_unix_ms.unwrap_or(open_day_started_at_unix_ms),
+        "open_day_started_at_unix_ms": open_day_started_at_unix_ms,
+        "last_seen_daily_spent_usd": last_seen_daily_spent_usd,
+        "updated_at_unix_ms": updated_at_unix_ms,
+    });
+    st.store.put_spend_state(provider_name, &state);
+    Some(state)
+}
+
 fn quota_refresh_error_log_key(err: &str) -> String {
     let trimmed = err.trim();
     if let Some(rest) = trimmed.strip_prefix("usage base rate limited: ") {
@@ -1355,7 +1423,7 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
 
     let now = snap.updated_at_unix_ms;
     let api_key_ref = api_key_ref_from_raw(st.secrets.get_provider_key(provider_name).as_deref());
-    let existing_state = st.store.get_spend_state(provider_name);
+    let existing_state = reconcile_spend_state_from_history(st, provider_name);
 
     let mut tracking_started_unix_ms = existing_state
         .as_ref()

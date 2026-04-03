@@ -196,6 +196,12 @@ impl Store {
         let _ = self.db.flush();
     }
 
+    pub fn remove_spend_state(&self, provider: &str) {
+        let key = format!("spend_state:{provider}");
+        let _ = self.db.remove(key.as_bytes());
+        let _ = self.db.flush();
+    }
+
     pub fn get_spend_day(&self, provider: &str, day_started_at_unix_ms: u64) -> Option<Value> {
         if let Ok(day_started_at_i64) = i64::try_from(day_started_at_unix_ms) {
             let conn = self.events_db.lock();
