@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildUsageRefreshRevision,
   buildUsageHistoryQuotaRefreshToken,
+  shouldRefreshUsageHistoryFromQuotaToken,
   shouldRefreshUsageSilently,
   usageRefreshMode,
   usageStatisticsRefreshIntervalMs,
@@ -85,6 +86,37 @@ describe('useAppUsageEffects', () => {
     })
 
     expect(after).not.toBe(before)
+  })
+
+  it('only refreshes history from quota changes after the modal has loaded once', () => {
+    expect(
+      shouldRefreshUsageHistoryFromQuotaToken({
+        usageHistoryModalOpen: false,
+        usageHistoryLoaded: true,
+        usageHistoryQuotaRefreshToken: 'aigateway:1:1:1',
+      }),
+    ).toBe(false)
+    expect(
+      shouldRefreshUsageHistoryFromQuotaToken({
+        usageHistoryModalOpen: true,
+        usageHistoryLoaded: false,
+        usageHistoryQuotaRefreshToken: 'aigateway:1:1:1',
+      }),
+    ).toBe(false)
+    expect(
+      shouldRefreshUsageHistoryFromQuotaToken({
+        usageHistoryModalOpen: true,
+        usageHistoryLoaded: true,
+        usageHistoryQuotaRefreshToken: '',
+      }),
+    ).toBe(false)
+    expect(
+      shouldRefreshUsageHistoryFromQuotaToken({
+        usageHistoryModalOpen: true,
+        usageHistoryLoaded: true,
+        usageHistoryQuotaRefreshToken: 'aigateway:1:1:1',
+      }),
+    ).toBe(true)
   })
 
   it('normalizes usage refresh revision inputs so equivalent selections stay stable', () => {

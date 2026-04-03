@@ -110,6 +110,21 @@ export function buildUsageHistoryQuotaRefreshToken(
     .join('|')
 }
 
+export function shouldRefreshUsageHistoryFromQuotaToken(params: {
+  usageHistoryModalOpen: boolean
+  usageHistoryLoaded: boolean
+  usageHistoryQuotaRefreshToken: string
+}): boolean {
+  const {
+    usageHistoryModalOpen,
+    usageHistoryLoaded,
+    usageHistoryQuotaRefreshToken,
+  } = params
+  if (!usageHistoryModalOpen) return false
+  if (!usageHistoryLoaded) return false
+  return Boolean(usageHistoryQuotaRefreshToken)
+}
+
 function normalizeUsageRefreshRevisionValues(values: string[]): string {
   return values
     .map((value) => value.trim())
@@ -403,11 +418,17 @@ export function useAppUsageEffects(params: Params) {
   }, [usageHistoryModalOpen, resetUsageHistoryScrollbarState, clearUsageHistoryScrollbarTimers])
 
   useEffect(() => {
-    if (!usageHistoryModalOpen) return
-    if (!usageHistoryLoadedRef.current) return
-    if (!usageHistoryQuotaRefreshToken) return
-    void refreshUsageHistory({ silent: true })
-  }, [usageHistoryModalOpen, usageHistoryQuotaRefreshToken, refreshUsageHistory])
+    if (
+      !shouldRefreshUsageHistoryFromQuotaToken({
+        usageHistoryModalOpen,
+        usageHistoryLoaded: usageHistoryLoadedRef.current,
+        usageHistoryQuotaRefreshToken,
+      })
+    ) {
+      return
+    }
+    void refreshUsageHistoryRef.current({ silent: true })
+  }, [usageHistoryModalOpen, usageHistoryQuotaRefreshToken])
 
   useEffect(() => {
     if (!usageHistoryModalOpen || typeof window === 'undefined') return
