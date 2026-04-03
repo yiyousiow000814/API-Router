@@ -128,7 +128,6 @@ describe('ProviderGroupManagerModal', () => {
         onClearUsageAuth={async () => undefined}
         onSetHardCap={async () => undefined}
         onOpenProviderEmailModal={() => undefined}
-        onOpenPackycodeLogin={async () => undefined}
         onOpenUsageAuthModal={async () => undefined}
       />,
     )

@@ -82,7 +82,6 @@ type Props = {
   usageBaseModal: UsageBaseModalState
   setUsageBaseModal: Dispatch<SetStateAction<UsageBaseModalState>>
   saveUsageBaseUrl: () => Promise<void>
-  openPackycodeLogin: (provider: string) => Promise<void>
   instructionModalOpen: boolean
   setInstructionModalOpen: Dispatch<SetStateAction<boolean>>
   openRawConfigModal: (options?: { reopenGettingStartedOnFail?: boolean }) => Promise<void>
@@ -266,7 +265,6 @@ export function AppModals(props: Props) {
     usageBaseModal,
     setUsageBaseModal,
     saveUsageBaseUrl,
-    openPackycodeLogin,
     instructionModalOpen,
     setInstructionModalOpen,
     openRawConfigModal,
@@ -464,8 +462,6 @@ export function AppModals(props: Props) {
         provider={usageBaseModal.provider}
         value={usageBaseModal.value}
         effectiveValue={usageBaseModal.effectiveValue}
-        showPackycodeLogin={usageBaseModal.showPackycodeLogin}
-        hasUsageLogin={usageBaseModal.hasUsageLogin}
         onChange={(value) =>
           setUsageBaseModal((m) => ({
             ...m,
@@ -480,8 +476,6 @@ export function AppModals(props: Props) {
             provider: '',
             baseUrl: '',
             showUrlInput: true,
-            showPackycodeLogin: false,
-            hasUsageLogin: false,
             value: '',
             auto: false,
             explicitValue: '',
@@ -502,20 +496,6 @@ export function AppModals(props: Props) {
           }))
         }
         onSave={() => void saveUsageBaseUrl()}
-        onAuthAction={
-          usageBaseModal.showPackycodeLogin
-            ? () => {
-                const provider = usageBaseModal.provider
-                if (!provider) return
-                if (usageBaseModal.hasUsageLogin) {
-                  void clearUsageAuth(provider)
-                  setUsageBaseModal((m) => ({ ...m, hasUsageLogin: false }))
-                } else {
-                  void openPackycodeLogin(provider)
-                }
-              }
-            : null
-        }
       />
 
       <UsageAuthModal

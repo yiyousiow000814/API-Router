@@ -18,12 +18,7 @@ type Props = {
   onClearUsageAuth: (provider: string) => Promise<void>
   onSetHardCap: (provider: string, field: QuotaHardCapField, enabled: boolean) => Promise<void>
   onOpenProviderEmailModal: (provider: string, current: string | null | undefined) => void
-  onOpenPackycodeLogin: (provider: string) => Promise<void>
   onOpenUsageAuthModal: (provider: string) => Promise<void>
-}
-
-function isPackycodeProviderBase(baseUrl: string | null | undefined): boolean {
-  return `${baseUrl ?? ''}`.trim().toLowerCase().includes('packycode')
 }
 
 function isCodexForProviderBase(baseUrl: string | null | undefined): boolean {
@@ -56,7 +51,6 @@ export function ProviderGroupManagerModal({
   onClearUsageAuth,
   onSetHardCap,
   onOpenProviderEmailModal,
-  onOpenPackycodeLogin,
   onOpenUsageAuthModal,
 }: Props) {
   const openInitKeyRef = useRef<string | null>(null)
@@ -338,8 +332,7 @@ export function ProviderGroupManagerModal({
                         {visibleMembers.map((provider) => {
                           const providerConfig = config.providers?.[provider]
                           const providerBaseUrl = providerConfig?.base_url ?? ''
-                          const supportsProviderLogin =
-                            isPackycodeProviderBase(providerBaseUrl) || isCodexForProviderBase(providerBaseUrl)
+                          const supportsProviderLogin = isCodexForProviderBase(providerBaseUrl)
                           const hasLogin = hasProviderUsageLogin(providerConfig)
                           return (
                             <div key={`group-member-row-${name}-${provider}`} className="aoGroupManagerMemberRow">
@@ -364,9 +357,7 @@ export function ProviderGroupManagerModal({
                                     onClick={() =>
                                       void (hasLogin
                                         ? onClearUsageAuth(provider)
-                                        : isPackycodeProviderBase(providerBaseUrl)
-                                          ? onOpenPackycodeLogin(provider)
-                                          : onOpenUsageAuthModal(provider))
+                                        : onOpenUsageAuthModal(provider))
                                     }
                                   >
                                     {hasLogin ? 'Logout' : 'Login'}
