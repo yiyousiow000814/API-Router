@@ -28,6 +28,9 @@ use crate::orchestrator::secrets::SecretStore;
 use crate::orchestrator::store::unix_ms;
 
 mod local_state;
+mod build_info {
+    include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
+}
 
 pub use local_state::{
     apply_followed_provider_state, load_local_provider_copy_state,
@@ -100,12 +103,8 @@ fn lan_heartbeat_capabilities() -> Vec<String> {
 pub(crate) fn current_build_identity() -> LanBuildIdentitySnapshot {
     LanBuildIdentitySnapshot {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
-        build_git_sha: option_env!("API_ROUTER_BUILD_GIT_SHA")
-            .unwrap_or("unknown")
-            .to_string(),
-        build_git_short_sha: option_env!("API_ROUTER_BUILD_GIT_SHORT_SHA")
-            .unwrap_or("unknown")
-            .to_string(),
+        build_git_sha: build_info::API_ROUTER_BUILD_GIT_SHA.to_string(),
+        build_git_short_sha: build_info::API_ROUTER_BUILD_GIT_SHORT_SHA.to_string(),
     }
 }
 

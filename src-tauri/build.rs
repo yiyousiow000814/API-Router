@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(windows)]
 use std::{env, fs};
+#[cfg(not(windows))]
+use std::{env, fs};
 
 fn repo_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -114,6 +116,16 @@ fn main() {
     let git_short_sha = git_output(&repo_root, &["rev-parse", "--short=8", "HEAD"])
         .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=API_ROUTER_BUILD_GIT_SHORT_SHA={git_short_sha}");
+
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
+    let build_info_rs = out_dir.join("build_info.rs");
+    let build_info = format!(
+        "pub const API_ROUTER_BUILD_GIT_SHA: &str = {:?};\n\
+         pub const API_ROUTER_BUILD_GIT_SHORT_SHA: &str = {:?};\n",
+        git_sha, git_short_sha
+    );
+    fs::write(&build_info_rs, build_info).expect("write build_info.rs");
+    println!("cargo:rerun-if-changed={}", build_info_rs.display());
 
     #[cfg(windows)]
     configure_windows_resource_toolchain();
