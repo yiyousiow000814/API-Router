@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { ConfigModal } from './ConfigModal'
+import { ConfigModal, diagnosticsWhyText } from './ConfigModal'
 import type { Config } from '../types'
 
 function buildConfig(): Config {
@@ -254,7 +254,33 @@ describe('ConfigModal', () => {
       />,
     )
 
-    expect(html).toContain('Update required on 1 peer')
     expect(html).toContain('Desk B is on a different build.')
+    expect(html).toContain('Use Update required to sync this peer to the current machine build.')
+  })
+
+  it('prefers concrete diagnostics why text over generic paused copy', () => {
+    const whyText = diagnosticsWhyText({
+      kind: 'peer',
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      follow_blocked_reason: null,
+      using_count: 0,
+      version_sync_required: true,
+      version_sync_reason: 'Sync paused until both devices run compatible builds.',
+      same_version_update_allowed: false,
+      same_version_update_blocked_reason: 'Local git worktree is dirty.',
+      sync_blocked_domains: ['provider_definitions', 'usage_history', 'usage_requests'],
+      build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: 'abc',
+        build_git_short_sha: 'abc',
+      },
+      build_matches_local: false,
+    })
+
+    expect(whyText).toBe('Local git worktree is dirty.')
   })
 })

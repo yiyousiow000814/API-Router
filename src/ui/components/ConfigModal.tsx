@@ -83,11 +83,33 @@ function compactUpdateStatusLabel(
   return source.same_version_update_allowed ? 'Update required' : 'Update blocked'
 }
 
-function compactReason(source: NonNullable<Config['config_source']>['sources'][number]): string {
+export function syncDomainLabel(domain: string): string {
+  return domain.replace(/_/g, ' ')
+}
+
+function isGenericVersionSyncReason(reason: string): boolean {
+  const normalized = reason.trim().toLowerCase()
+  return (
+    normalized.includes('sync paused for') &&
+    normalized.includes('until both devices run compatible builds')
+  )
+}
+
+export function diagnosticsWhyText(
+  source: NonNullable<Config['config_source']>['sources'][number],
+): string {
   if (source.version_sync_required) {
-    return source.version_sync_reason?.trim() || source.same_version_update_blocked_reason?.trim() || ''
+    const updateBlockedReason = source.same_version_update_blocked_reason?.trim()
+    if (updateBlockedReason && !source.same_version_update_allowed) {
+      return updateBlockedReason
+    }
+    const versionReason = source.version_sync_reason?.trim()
+    if (versionReason && !isGenericVersionSyncReason(versionReason)) return versionReason
+  } else {
+    const followReason = source.follow_blocked_reason?.trim()
+    if (followReason) return followReason
   }
-  return source.follow_blocked_reason?.trim() || ''
+  return ''
 }
 
 export function ConfigModal({
@@ -563,34 +585,24 @@ export function ConfigModal({
                 <div className="aoHint">No LAN peers detected.</div>
               ) : (
                 peerSources.map((source) => {
-                  const syncDomains = source.sync_blocked_domains?.join(', ') || 'none'
+                  const syncDomains = source.sync_blocked_domains?.map(syncDomainLabel).join(', ') || 'none'
                   const buildLabel = source.build_identity
                     ? `v${source.build_identity.app_version} · ${source.build_identity.build_git_short_sha}`
                     : 'unknown'
-                  const reason = compactReason(source)
+                  const pausedDomains = source.sync_blocked_domains?.map(syncDomainLabel) ?? []
+                  const whyText = diagnosticsWhyText(source)
                   return (
-                    <div
-                      key={source.node_id}
-                      className="aoCard"
-                      style={{ padding: 14, display: 'grid', gap: 8 }}
-                    >
-                      <div
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          gap: 12,
-                        }}
-                      >
-                        <div>
-                          <div className="aoMiniTitle" style={{ marginBottom: 2 }}>
-                            {source.node_name}
-                          </div>
-                          <div className="aoHint">
-                            {compactPeerStateLabel(source)}
+                    <div key={source.node_id} className="aoCard aoConfigDiagCard">
+                      <div className="aoConfigDiagCardHead">
+                        <div className="aoConfigDiagPeerBlock">
+                          <div className="aoConfigDiagPeerName">{source.node_name}</div>
+                          <div className="aoConfigDiagPeerMeta">
+                            <span>{compactPeerStateLabel(source)}</span>
+                            <span>·</span>
+                            <span>{source.build_matches_local ? 'Same build' : 'Different build'}</span>
                           </div>
                         </div>
-                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                        <div className="aoConfigDiagBadgeRow">
                           <span className="aoConfigDiagBadge">
                             {compactFollowStatusLabel(source)}
                           </span>
@@ -603,22 +615,34 @@ export function ConfigModal({
                           </span>
                         </div>
                       </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '6px 12px' }}>
-                        <div className="aoHint">Build</div>
-                        <div>{buildLabel}</div>
-                        <div className="aoHint">Local match</div>
-                        <div>{source.build_matches_local ? 'Same build' : 'Different build'}</div>
-                        {(source.sync_blocked_domains?.length ?? 0) > 0 ? (
-                          <>
-                            <div className="aoHint">Blocked</div>
-                            <div>{syncDomains}</div>
-                          </>
+                      <div className="aoConfigDiagBody">
+                        <div className="aoConfigDiagSection">
+                          <div className="aoConfigDiagSectionLabel">Build</div>
+                          <div className="aoConfigDiagBuildValue">{buildLabel}</div>
+                        </div>
+                        {whyText ? (
+                          <div className="aoConfigDiagSection">
+                            <div className="aoConfigDiagSectionLabel">Why</div>
+                            <div className="aoConfigDiagWhyText">{whyText}</div>
+                          </div>
                         ) : null}
-                        {reason ? (
-                          <>
-                            <div className="aoHint">Why</div>
-                            <div>{reason}</div>
-                          </>
+                        {pausedDomains.length > 0 ? (
+                          <div className="aoConfigDiagSection">
+                            <div className="aoConfigDiagSectionLabel">Paused</div>
+                            <div className="aoConfigDiagPausedWrap">
+                              {pausedDomains.length > 1 ? (
+                                <div className="aoConfigDiagPausedList">
+                                  {pausedDomains.map((domain) => (
+                                    <div key={domain} className="aoConfigDiagPausedItem">
+                                      {domain}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="aoConfigDiagPausedSingle">{syncDomains}</div>
+                              )}
+                            </div>
+                          </div>
                         ) : null}
                       </div>
                     </div>

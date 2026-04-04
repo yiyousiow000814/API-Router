@@ -206,6 +206,118 @@
   color: rgba(145, 47, 30, 0.92);
 }
 
+.aoConfigDiagCard {
+  padding: 15px 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.aoConfigDiagCardHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.aoConfigDiagPeerBlock {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.aoConfigDiagPeerName {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: rgba(13, 18, 32, 0.96);
+}
+
+.aoConfigDiagPeerMeta {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.56);
+}
+
+.aoConfigDiagBadgeRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.aoConfigDiagBuildValue {
+  font-size: 14px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.86);
+  font-variant-numeric: tabular-nums;
+}
+
+.aoConfigDiagBody {
+  display: grid;
+  gap: 10px;
+}
+
+.aoConfigDiagSection {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.aoConfigDiagSectionLabel {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.46);
+  padding-top: 2px;
+}
+
+.aoConfigDiagWhyText {
+  font-family:
+    "Segoe UI Variable Text",
+    "Segoe UI Variable",
+    "Segoe UI",
+    "Helvetica Neue",
+    sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.45;
+  letter-spacing: 0.002em;
+  color: rgba(13, 18, 32, 0.84);
+}
+
+.aoConfigDiagPausedWrap {
+  min-width: 0;
+}
+
+.aoConfigDiagPausedList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.aoConfigDiagPausedItem {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(145, 47, 30, 0.16);
+  background: rgba(255, 243, 239, 0.76);
+  color: rgba(145, 47, 30, 0.92);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.aoConfigDiagPausedSingle {
+  color: rgba(13, 18, 32, 0.84);
+}
+
 .aoConfigSourceTrigger {
   display: inline-flex;
   align-items: center;
