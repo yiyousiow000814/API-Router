@@ -1,8 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
-#[cfg(windows)]
-use std::{env, fs};
-#[cfg(not(windows))]
 use std::{env, fs};
 
 fn repo_root() -> PathBuf {

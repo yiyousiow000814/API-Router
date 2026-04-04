@@ -87,7 +87,11 @@ async function main() {
       env.PATH = `${nodeDir};${env.PATH || ""}`;
     }
     const cargoDir = join(env.USERPROFILE || "", ".cargo", "bin");
-    if (cargoDir && !pathParts.some((part) => part.toLowerCase() === cargoDir.toLowerCase())) {
+    const pathPartsForCargo = String(env.PATH || "").split(";").filter(Boolean);
+    if (
+      cargoDir &&
+      !pathPartsForCargo.some((part) => part.toLowerCase() === cargoDir.toLowerCase())
+    ) {
       env.PATH = `${cargoDir};${env.PATH || ""}`;
     }
     const rcDir = await findRcDir();
