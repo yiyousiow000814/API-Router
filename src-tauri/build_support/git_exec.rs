@@ -61,8 +61,7 @@ pub fn new_git_command() -> Command {
 
 #[cfg(not(any(target_os = "windows", windows)))]
 pub fn new_git_command() -> Command {
-    let cmd = git_command_base();
-    cmd
+    git_command_base()
 }
 
 #[cfg(test)]
