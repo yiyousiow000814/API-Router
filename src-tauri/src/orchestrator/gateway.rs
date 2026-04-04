@@ -498,6 +498,10 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
             "/lan-sync/remote-update",
             post(crate::lan_sync::lan_sync_remote_update_http),
         )
+        .route(
+            "/lan-sync/debug/tracked-spend-history",
+            post(crate::lan_sync::lan_sync_tracked_spend_history_debug_http),
+        )
         .route("/v1/models", get(models))
         .route("/v1/responses", post(responses))
         .route("/responses", post(responses))
