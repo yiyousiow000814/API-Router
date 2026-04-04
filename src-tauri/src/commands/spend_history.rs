@@ -600,7 +600,7 @@ fn remove_tracked_spend_history_entries_impl(
         .map(|node| node.node_id)
         .unwrap_or_default();
     let mut removed = 0usize;
-    let mut removed_entries: Vec<(String, u64)> = Vec::new();
+    let mut removed_entries = std::collections::BTreeSet::<(String, u64)>::new();
 
     for day in state.gateway.store.list_local_spend_days(provider) {
         let Some(day_started_at_unix_ms) = day.get("started_at_unix_ms").and_then(Value::as_u64)
@@ -614,19 +614,16 @@ fn remove_tracked_spend_history_entries_impl(
                 .store
                 .remove_spend_day(provider, day_started_at_unix_ms);
             removed = removed.saturating_add(1);
-            removed_entries.push((local_node_id.clone(), day_started_at_unix_ms));
+            removed_entries.insert((local_node_id.clone(), day_started_at_unix_ms));
         }
     }
 
-    for day in state.gateway.store.list_spend_days(provider) {
+    for day in state.gateway.store.list_remote_spend_days(provider) {
         let Some(day_started_at_unix_ms) = day.get("started_at_unix_ms").and_then(Value::as_u64)
         else {
             continue;
         };
         let producer_node_id = tracked_spend_day_source_node_id(&day, &local_node_id).to_string();
-        if producer_node_id == local_node_id {
-            continue;
-        }
         if tracked_spend_day_matches_history_target(
             &day,
             &day_key,
@@ -640,7 +637,7 @@ fn remove_tracked_spend_history_entries_impl(
                 day_started_at_unix_ms,
             );
             removed = removed.saturating_add(1);
-            removed_entries.push((producer_node_id, day_started_at_unix_ms));
+            removed_entries.insert((producer_node_id, day_started_at_unix_ms));
         }
     }
 
@@ -1234,5 +1231,48 @@ mod spend_history_tests {
             .collect::<std::collections::BTreeSet<_>>();
         assert!(deletes.iter().any(|entity_id| entity_id.ends_with("|node-local")));
         assert!(deletes.iter().any(|entity_id| entity_id.ends_with("|node-remote")));
+    }
+
+    #[test]
+    fn remove_tracked_spend_history_entries_also_deletes_local_source_rows_stored_in_remote_table() {
+        let (_tmp, state) = build_test_state();
+        let provider = "official";
+        let local_node_id = crate::lan_sync::current_local_node_identity()
+            .map(|node| node.node_id)
+            .unwrap_or_else(|| "node-local".to_string());
+        let local_started_at = local_unix_ms(2026, 4, 1, 8, 0, 0);
+        state.gateway.store.put_remote_spend_day(
+            provider,
+            &local_node_id,
+            "Local Node",
+            local_started_at,
+            &serde_json::json!({
+                "provider": provider,
+                "started_at_unix_ms": local_started_at,
+                "tracked_spend_usd": 64.802289,
+                "updated_at_unix_ms": local_started_at,
+                "producer_node_id": local_node_id,
+                "producer_node_name": "Local Node"
+            }),
+        );
+
+        let result = remove_tracked_spend_history_entries_impl(&state, provider, "2026-04-01");
+
+        assert!(
+            result.is_ok(),
+            "local-source rows in spend_days_remote should still be removable"
+        );
+        let remaining = state.gateway.store.list_spend_days(provider);
+        assert!(!remaining.iter().any(|day| {
+            day.get("started_at_unix_ms").and_then(|value| value.as_u64()) == Some(local_started_at)
+                && day.get("producer_node_id").and_then(|value| value.as_str())
+                    == Some(local_node_id.as_str())
+        }));
+        let (events, _has_more) = state.gateway.store.list_lan_edit_events_batch(0, None, 20);
+        assert!(events.iter().any(|event| {
+            event.entity_type == "tracked_spend_day"
+                && event.op == "delete"
+                && event.entity_id.ends_with(&format!("|{local_node_id}"))
+        }));
     }
 }

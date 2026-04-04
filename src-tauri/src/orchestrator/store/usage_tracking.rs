@@ -356,6 +356,38 @@ impl Store {
         );
     }
 
+    pub fn list_remote_spend_days(&self, provider: &str) -> Vec<Value> {
+        self.with_events_read_conn(|conn| {
+            let mut parsed = Vec::new();
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT source_node_id, source_node_name, row_json
+                 FROM spend_days_remote
+                 WHERE provider = ?1
+                 ORDER BY day_started_at_unix_ms ASC, source_node_id ASC",
+            ) {
+                if let Ok(rows) = stmt.query_map([provider], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                }) {
+                    for (source_node_id, source_node_name, row_json) in rows.flatten() {
+                        if let Ok(mut value) = serde_json::from_str::<Value>(&row_json) {
+                            merge_json_source_fields(
+                                &mut value,
+                                &source_node_id,
+                                &source_node_name,
+                            );
+                            parsed.push(value);
+                        }
+                    }
+                }
+            }
+            parsed
+        })
+    }
+
     pub fn list_spend_days(&self, provider: &str) -> Vec<Value> {
         self.with_events_read_conn(|conn| {
             let mut parsed = list_json_rows_from_conn(
