@@ -77,6 +77,7 @@ const LAN_EDIT_ENTITY_PROVIDER_PRICING: &str = "provider_pricing";
 const LAN_EDIT_ENTITY_QUOTA_SNAPSHOT: &str = "quota_snapshot";
 const LAN_EDIT_ENTITY_SPEND_MANUAL_DAY: &str = "spend_manual_day";
 const LAN_EDIT_ENTITY_TRACKED_SPEND_DAY: &str = "tracked_spend_day";
+const LAN_EDIT_ENTITY_TRACKED_SPEND_DAY_HISTORY_DELETE: &str = "tracked_spend_day_history_delete";
 
 static GATEWAY_STATUS_RUNTIME: OnceLock<RwLock<Option<LanSyncRuntime>>> = OnceLock::new();
 
@@ -87,7 +88,7 @@ fn gateway_status_runtime() -> &'static RwLock<Option<LanSyncRuntime>> {
 fn local_sync_contracts() -> BTreeMap<String, u32> {
     BTreeMap::from([
         (SYNC_DOMAIN_USAGE_REQUESTS.to_string(), 1),
-        (SYNC_DOMAIN_USAGE_HISTORY.to_string(), 2),
+        (SYNC_DOMAIN_USAGE_HISTORY.to_string(), 3),
         (SYNC_DOMAIN_PROVIDER_DEFINITIONS.to_string(), 1),
         (SYNC_DOMAIN_SHARED_HEALTH.to_string(), 1),
     ])
@@ -282,7 +283,7 @@ fn local_version_sync_target_ref(
     Ok(target_ref)
 }
 
-const LAN_EDIT_ENTITY_DOMAIN_REGISTRY: [(&str, &str); 5] = [
+const LAN_EDIT_ENTITY_DOMAIN_REGISTRY: [(&str, &str); 6] = [
     (
         LAN_EDIT_ENTITY_PROVIDER_DEFINITION,
         SYNC_DOMAIN_PROVIDER_DEFINITIONS,
@@ -291,6 +292,10 @@ const LAN_EDIT_ENTITY_DOMAIN_REGISTRY: [(&str, &str); 5] = [
     (LAN_EDIT_ENTITY_QUOTA_SNAPSHOT, SYNC_DOMAIN_USAGE_HISTORY),
     (LAN_EDIT_ENTITY_SPEND_MANUAL_DAY, SYNC_DOMAIN_USAGE_HISTORY),
     (LAN_EDIT_ENTITY_TRACKED_SPEND_DAY, SYNC_DOMAIN_USAGE_HISTORY),
+    (
+        LAN_EDIT_ENTITY_TRACKED_SPEND_DAY_HISTORY_DELETE,
+        SYNC_DOMAIN_USAGE_HISTORY,
+    ),
 ];
 
 fn lan_edit_entity_sync_domain(entity_type: &str) -> Option<&'static str> {
@@ -368,6 +373,13 @@ fn usage_history_contract_samples() -> Vec<(&'static str, Value)> {
                     "last_seen_daily_spent_usd": 17.47,
                     "updated_at_unix_ms": 2222u64
                 }
+            }),
+        ),
+        (
+            LAN_EDIT_ENTITY_TRACKED_SPEND_DAY_HISTORY_DELETE,
+            serde_json::json!({
+                "provider_name": "provider_1",
+                "day_key": "2026-04-02"
             }),
         ),
     ]
@@ -639,6 +651,12 @@ pub(crate) struct LanTrackedSpendHistoryDebugResponsePacket {
     pub remote_rows: Vec<LanTrackedSpendHistoryDiagnosticRow>,
     pub recent_edit_events: Vec<crate::orchestrator::store::LanEditSyncEvent>,
     pub recent_remove_events: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct TrackedSpendHistoryDayDeleteSyncPayload {
+    provider_name: String,
+    day_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1655,31 +1673,41 @@ fn tracked_spend_debug_event_matches_day(
     shared_provider_id: &str,
     day_key: &str,
 ) -> bool {
-    if event.entity_type != LAN_EDIT_ENTITY_TRACKED_SPEND_DAY {
-        return false;
+    match event.entity_type.as_str() {
+        LAN_EDIT_ENTITY_TRACKED_SPEND_DAY => {
+            let Ok((event_shared_provider_id, day_scope, _source_node_id)) =
+                parse_day_scoped_entity_id(&event.entity_id, &event.node_id)
+            else {
+                return false;
+            };
+            if event_shared_provider_id != shared_provider_id {
+                return false;
+            }
+            if day_scope == day_key {
+                return true;
+            }
+            day_scope
+                .parse::<u64>()
+                .ok()
+                .and_then(|started_at_unix_ms| {
+                    let dt = chrono::Local
+                        .timestamp_millis_opt(i64::try_from(started_at_unix_ms).ok()?)
+                        .single()?;
+                    Some(dt.format("%Y-%m-%d").to_string())
+                })
+                .as_deref()
+                == Some(day_key)
+        }
+        LAN_EDIT_ENTITY_TRACKED_SPEND_DAY_HISTORY_DELETE => {
+            let Ok((event_shared_provider_id, event_day_key)) =
+                parse_provider_day_entity_id(&event.entity_id)
+            else {
+                return false;
+            };
+            event_shared_provider_id == shared_provider_id && event_day_key == day_key
+        }
+        _ => false,
     }
-    let Ok((event_shared_provider_id, day_scope, _source_node_id)) =
-        parse_day_scoped_entity_id(&event.entity_id, &event.node_id)
-    else {
-        return false;
-    };
-    if event_shared_provider_id != shared_provider_id {
-        return false;
-    }
-    if day_scope == day_key {
-        return true;
-    }
-    day_scope
-        .parse::<u64>()
-        .ok()
-        .and_then(|started_at_unix_ms| {
-            let dt = chrono::Local
-                .timestamp_millis_opt(i64::try_from(started_at_unix_ms).ok()?)
-                .single()?;
-            Some(dt.format("%Y-%m-%d").to_string())
-        })
-        .as_deref()
-        == Some(day_key)
 }
 
 pub(crate) async fn lan_sync_tracked_spend_history_debug_http(
@@ -2288,6 +2316,16 @@ fn parse_day_scoped_entity_id<'a>(
     }
 }
 
+fn tracked_spend_history_day_delete_entity_id(shared_provider_id: &str, day_key: &str) -> String {
+    format!("{shared_provider_id}|{day_key}")
+}
+
+fn parse_provider_day_entity_id(entity_id: &str) -> Result<(&str, &str), String> {
+    entity_id
+        .split_once('|')
+        .ok_or_else(|| format!("invalid provider-day entity id: {entity_id}"))
+}
+
 fn seed_edit_event_if_changed(
     state: &crate::app_state::AppState,
     entity_type: &str,
@@ -2582,36 +2620,73 @@ pub fn record_tracked_spend_day_from_gateway(
     Ok(())
 }
 
-pub fn record_tracked_spend_day_removal_from_gateway(
+pub fn remove_tracked_spend_history_day_from_gateway(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    provider: &str,
+    day_key: &str,
+) -> Result<usize, String> {
+    let normalized_day_key = day_key.trim();
+    if normalized_day_key.is_empty() {
+        return Err("day_key is required".to_string());
+    }
+    let local_node_id = current_local_node_identity()
+        .map(|node| node.node_id)
+        .unwrap_or_default();
+    let mut removed = 0usize;
+    for day in gateway.store.list_local_spend_days(provider) {
+        let Some(day_started_at_unix_ms) = day.get("started_at_unix_ms").and_then(Value::as_u64)
+        else {
+            continue;
+        };
+        if tracked_spend_history_day_key_for_debug(&day).as_deref() == Some(normalized_day_key) {
+            gateway
+                .store
+                .remove_spend_day(provider, day_started_at_unix_ms);
+            removed = removed.saturating_add(1);
+        }
+    }
+    for day in gateway.store.list_remote_spend_days(provider) {
+        let Some(day_started_at_unix_ms) = day.get("started_at_unix_ms").and_then(Value::as_u64)
+        else {
+            continue;
+        };
+        if tracked_spend_history_day_key_for_debug(&day).as_deref() != Some(normalized_day_key) {
+            continue;
+        }
+        let producer_node_id = day
+            .get("producer_node_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(local_node_id.as_str());
+        gateway
+            .store
+            .remove_remote_spend_day(provider, producer_node_id, day_started_at_unix_ms);
+        removed = removed.saturating_add(1);
+    }
+    Ok(removed)
+}
+
+pub fn record_tracked_spend_history_day_removal_from_gateway(
     gateway: &crate::orchestrator::gateway::GatewayState,
     secrets: &SecretStore,
     provider: &str,
-    day_started_at_unix_ms: u64,
-    source_node_id: Option<&str>,
+    day_key: &str,
 ) -> Result<(), String> {
     let Some(local_node) = local_node_identity_for_edit_recording() else {
         return Ok(());
     };
     let shared_provider_id = shared_provider_id_for_provider(secrets, provider)?;
-    let target_source_node_id = source_node_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(local_node.node_id.as_str());
-    let entity_id = tracked_spend_day_entity_id(
-        &shared_provider_id,
-        day_started_at_unix_ms,
-        target_source_node_id,
-    );
-    let payload = serde_json::to_value(TrackedSpendDaySyncPayload {
+    let entity_id = tracked_spend_history_day_delete_entity_id(&shared_provider_id, day_key.trim());
+    let payload = serde_json::to_value(TrackedSpendHistoryDayDeleteSyncPayload {
         provider_name: provider.to_string(),
-        day_started_at_unix_ms,
-        row: Value::Null,
+        day_key: day_key.trim().to_string(),
     })
     .map_err(|err| err.to_string())?;
     let _ = record_edit_event(
         gateway,
         &local_node,
-        "tracked_spend_day",
+        LAN_EDIT_ENTITY_TRACKED_SPEND_DAY_HISTORY_DELETE,
         &entity_id,
         "delete",
         payload,
@@ -3075,6 +3150,29 @@ fn apply_tracked_spend_day_event(
     Ok(())
 }
 
+fn apply_tracked_spend_history_day_delete_event(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    entity_id: &str,
+    payload: &Value,
+) -> Result<(), String> {
+    let payload: TrackedSpendHistoryDayDeleteSyncPayload =
+        serde_json::from_value(payload.clone()).map_err(|err| err.to_string())?;
+    let (shared_provider_id, day_key) = parse_provider_day_entity_id(entity_id)?;
+    let provider_name = resolve_provider_name_for_shared_provider_id(
+        gateway,
+        shared_provider_id,
+        &payload.provider_name,
+    )?;
+    if payload.day_key.trim() != day_key {
+        return Err(format!(
+            "tracked spend day delete payload mismatch: entity_id day_key={day_key} payload day_key={}",
+            payload.day_key
+        ));
+    }
+    let _ = remove_tracked_spend_history_day_from_gateway(gateway, &provider_name, day_key)?;
+    Ok(())
+}
+
 fn apply_lan_edit_event(
     gateway: &crate::orchestrator::gateway::GatewayState,
     config_path: &Path,
@@ -3114,6 +3212,9 @@ fn apply_lan_edit_event(
         }
         LAN_EDIT_ENTITY_TRACKED_SPEND_DAY => {
             apply_tracked_spend_day_event(gateway, &event.entity_id, &event.payload, event)
+        }
+        LAN_EDIT_ENTITY_TRACKED_SPEND_DAY_HISTORY_DELETE => {
+            apply_tracked_spend_history_day_delete_event(gateway, &event.entity_id, &event.payload)
         }
         other => Err(format!("unsupported edit entity type: {other}")),
     }
@@ -5973,7 +6074,7 @@ mod tests {
         )
         .expect("mismatch reason");
         assert!(reason.contains("usage_history"));
-        assert!(reason.contains("local=v2"));
+        assert!(reason.contains("local=v3"));
         assert!(reason.contains("peer=v1"));
         assert!(peer_supports_http_sync(&incompatible_peer, "edit_sync_v1"));
     }
@@ -6011,7 +6112,7 @@ mod tests {
             .find(|item| item.domain == super::SYNC_DOMAIN_USAGE_HISTORY)
             .expect("usage_history diagnostics");
         assert_eq!(blocked.status, "blocked");
-        assert_eq!(blocked.local_contract_version, 2);
+        assert_eq!(blocked.local_contract_version, 3);
         assert_eq!(blocked.peer_contract_version, 1);
         assert!(blocked
             .blocked_reason
@@ -6055,7 +6156,13 @@ mod tests {
                 .map(String::as_str),
             Some(super::SYNC_DOMAIN_USAGE_HISTORY)
         );
-        assert_eq!(mappings.len(), 5);
+        assert_eq!(
+            mappings
+                .get(super::LAN_EDIT_ENTITY_TRACKED_SPEND_DAY_HISTORY_DELETE)
+                .map(String::as_str),
+            Some(super::SYNC_DOMAIN_USAGE_HISTORY)
+        );
+        assert_eq!(mappings.len(), 6);
     }
 
     #[test]
@@ -6065,11 +6172,11 @@ mod tests {
                 &super::local_sync_contracts(),
                 super::SYNC_DOMAIN_USAGE_HISTORY
             ),
-            2,
+            3,
             "usage_history payload shape changed; update samples and bump contract if semantics changed"
         );
         let samples = super::usage_history_contract_samples();
-        assert_eq!(samples.len(), 4);
+        assert_eq!(samples.len(), 5);
         for (entity_type, payload) in samples {
             assert_eq!(
                 super::lan_edit_entity_sync_domain(entity_type),
@@ -7219,6 +7326,53 @@ mod tests {
                 .get_spend_day("provider_1", day_started_at_unix_ms)
                 .is_none(),
             "delete event should remove the local owner row when source node matches local node"
+        );
+    }
+
+    #[test]
+    fn tracked_spend_day_history_delete_event_removes_peer_only_stale_rows() {
+        let (_tmp, state) = build_test_state();
+        super::register_gateway_status_runtime(state.lan_sync.clone());
+        let shared_provider_id = state
+            .secrets
+            .ensure_provider_shared_id("provider_1")
+            .expect("shared id");
+        let day_started_at_unix_ms = 1_711_929_600_000u64;
+        state.gateway.store.put_remote_spend_day(
+            "provider_1",
+            &state.lan_sync.local_node_id(),
+            &state.lan_sync.local_node_name(),
+            day_started_at_unix_ms,
+            &serde_json::json!({
+                "provider": "provider_1",
+                "started_at_unix_ms": day_started_at_unix_ms,
+                "ended_at_unix_ms": day_started_at_unix_ms + 1000,
+                "tracked_spend_usd": 17.47,
+                "updated_at_unix_ms": day_started_at_unix_ms + 1000,
+                "producer_node_id": state.lan_sync.local_node_id(),
+                "producer_node_name": state.lan_sync.local_node_name()
+            }),
+        );
+        let event = crate::orchestrator::store::LanEditSyncEvent {
+            event_id: "edit_delete_history_day".to_string(),
+            node_id: "node-remote".to_string(),
+            node_name: "remote".to_string(),
+            created_at_unix_ms: 6,
+            lamport_ts: 6,
+            entity_type: "tracked_spend_day_history_delete".to_string(),
+            entity_id: format!("{shared_provider_id}|2024-04-01"),
+            op: "delete".to_string(),
+            payload: serde_json::json!({
+                "provider_name": "provider_1",
+                "day_key": "2024-04-01"
+            }),
+        };
+
+        apply_lan_edit_event(&state.gateway, &state.config_path, &event).expect("apply delete");
+
+        assert!(
+            state.gateway.store.list_spend_days("provider_1").is_empty(),
+            "day delete event should remove remote-table rows that only remain on the peer"
         );
     }
 

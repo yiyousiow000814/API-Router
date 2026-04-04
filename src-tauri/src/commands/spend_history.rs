@@ -478,6 +478,7 @@ fn merge_usage_history_day_counts(
     }
 }
 
+#[cfg(test)]
 fn tracked_spend_day_source_node_id<'a>(day: &'a Value, local_node_id: &'a str) -> &'a str {
     day.get("producer_node_id")
         .and_then(Value::as_str)
@@ -486,6 +487,7 @@ fn tracked_spend_day_source_node_id<'a>(day: &'a Value, local_node_id: &'a str) 
         .unwrap_or(local_node_id)
 }
 
+#[cfg(test)]
 fn tracked_spend_day_matches_history_target(
     day: &Value,
     target_day_key: &str,
@@ -596,75 +598,21 @@ fn remove_tracked_spend_history_entries_impl(
     if local_day_range_from_key(&day_key).is_none() {
         return Err("day_key must be YYYY-MM-DD".to_string());
     }
-    let local_node_id = crate::lan_sync::current_local_node_identity()
-        .map(|node| node.node_id)
-        .unwrap_or_default();
-    let mut removed = 0usize;
-    let mut removed_entries = std::collections::BTreeSet::<(String, u64)>::new();
-
-    for day in state.gateway.store.list_local_spend_days(provider) {
-        let Some(day_started_at_unix_ms) = day.get("started_at_unix_ms").and_then(Value::as_u64)
-        else {
-            continue;
-        };
-        if tracked_spend_day_matches_history_target(&day, &day_key, &local_node_id, &local_node_id)
-        {
-            state
-                .gateway
-                .store
-                .remove_spend_day(provider, day_started_at_unix_ms);
-            removed = removed.saturating_add(1);
-            removed_entries.insert((local_node_id.clone(), day_started_at_unix_ms));
-        }
-    }
-
-    for day in state.gateway.store.list_remote_spend_days(provider) {
-        let Some(day_started_at_unix_ms) = day.get("started_at_unix_ms").and_then(Value::as_u64)
-        else {
-            continue;
-        };
-        let producer_node_id = tracked_spend_day_source_node_id(&day, &local_node_id).to_string();
-        if tracked_spend_day_matches_history_target(
-            &day,
-            &day_key,
-            &producer_node_id,
-            &local_node_id,
-        )
-        {
-            state.gateway.store.remove_remote_spend_day(
-                provider,
-                &producer_node_id,
-                day_started_at_unix_ms,
-            );
-            removed = removed.saturating_add(1);
-            removed_entries.insert((producer_node_id, day_started_at_unix_ms));
-        }
-    }
-
-    if removed == 0 {
-        return Err(format!("no tracked spend entries matched {provider} {day_key}"));
-    }
-
-    for (source_node_id, day_started_at_unix_ms) in removed_entries {
-        if let Err(err) = crate::lan_sync::record_tracked_spend_day_removal_from_gateway(
-            &state.gateway,
-            &state.secrets,
+    let removed =
+        crate::lan_sync::remove_tracked_spend_history_day_from_gateway(&state.gateway, provider, &day_key)?;
+    if let Err(err) = crate::lan_sync::record_tracked_spend_history_day_removal_from_gateway(
+        &state.gateway,
+        &state.secrets,
+        provider,
+        &day_key,
+    ) {
+        state.gateway.store.add_event(
             provider,
-            day_started_at_unix_ms,
-            Some(&source_node_id),
-        ) {
-            state.gateway.store.add_event(
-                    provider,
-                    "error",
-                    "lan.edit_sync_record_failed",
-                &format!("failed to record tracked spend removal for LAN sync: {err}"),
-                serde_json::json!({
-                    "day_key": day_key,
-                    "source_node_id": source_node_id,
-                    "day_started_at_unix_ms": day_started_at_unix_ms
-                }),
-            );
-        }
+            "error",
+            "lan.edit_sync_record_failed",
+            &format!("failed to record tracked spend day removal for LAN sync: {err}"),
+            serde_json::json!({ "day_key": day_key }),
+        );
     }
 
     state.gateway.store.add_event(
@@ -1226,11 +1174,13 @@ mod spend_history_tests {
         let (events, _has_more) = state.gateway.store.list_lan_edit_events_batch(0, None, 20);
         let deletes = events
             .iter()
-            .filter(|event| event.entity_type == "tracked_spend_day" && event.op == "delete")
+            .filter(|event| {
+                event.entity_type == "tracked_spend_day_history_delete" && event.op == "delete"
+            })
             .map(|event| event.entity_id.clone())
             .collect::<std::collections::BTreeSet<_>>();
-        assert!(deletes.iter().any(|entity_id| entity_id.ends_with("|node-local")));
-        assert!(deletes.iter().any(|entity_id| entity_id.ends_with("|node-remote")));
+        assert_eq!(deletes.len(), 1);
+        assert!(deletes.iter().any(|entity_id| entity_id.ends_with("|2026-04-01")));
     }
 
     #[test]
@@ -1270,9 +1220,9 @@ mod spend_history_tests {
         }));
         let (events, _has_more) = state.gateway.store.list_lan_edit_events_batch(0, None, 20);
         assert!(events.iter().any(|event| {
-            event.entity_type == "tracked_spend_day"
+            event.entity_type == "tracked_spend_day_history_delete"
                 && event.op == "delete"
-                && event.entity_id.ends_with(&format!("|{local_node_id}"))
+                && event.entity_id.ends_with("|2026-04-01")
         }));
     }
 }
