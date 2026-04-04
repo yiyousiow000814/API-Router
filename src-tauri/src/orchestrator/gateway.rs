@@ -731,7 +731,7 @@ pub(crate) fn ensure_runtime_gateway_listener_bindings(
     let mut pending = Vec::new();
     let mut newly_bound = Vec::new();
     {
-        let mut bound_listener_addrs = runtime_bound_listener_addrs().lock();
+        let bound_listener_addrs = runtime_bound_listener_addrs().lock();
         for addr in addrs {
             if bound_listener_addrs.contains(addr) {
                 continue;
@@ -744,14 +744,12 @@ pub(crate) fn ensure_runtime_gateway_listener_bindings(
                 }
             };
             listener.set_nonblocking(true)?;
-            bound_listener_addrs.insert(*addr);
             pending.push((*addr, listener));
-            newly_bound.push(*addr);
         }
     }
 
     if pending.is_empty() {
-        return Ok(newly_bound);
+        return Ok(Vec::new());
     }
 
     write_gateway_startup_diag(
@@ -768,6 +766,8 @@ pub(crate) fn ensure_runtime_gateway_listener_bindings(
     let app = build_router(state.clone());
     for (addr, listener) in pending {
         let listener = tokio::net::TcpListener::from_std(listener)?;
+        runtime_bound_listener_addrs().lock().insert(addr);
+        newly_bound.push(addr);
         let app_for_addr = app.clone();
         let state_for_addr = state.clone();
         tauri::async_runtime::spawn(async move {
