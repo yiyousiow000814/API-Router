@@ -755,6 +755,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn explicit_usage_endpoint_prefers_aigateway_usage_today_cost_over_subscription_daily_usage() {
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        let payload = serde_json::json!({
+            "isValid": true,
+            "mode": "unrestricted",
+            "planName": "轻享卡 3天",
+            "remaining": 121.9059165,
+            "subscription": {
+                "daily_limit_usd": 200,
+                "daily_usage_usd": 78.0940835,
+                "expires_at": "2026-04-06T14:02:27.679994+08:00"
+            },
+            "unit": "USD",
+            "usage": {
+                "today": {
+                    "actual_cost": 0,
+                    "cost": 0,
+                    "requests": 0,
+                    "total_tokens": 0
+                }
+            }
+        });
+
+        apply_explicit_usage_endpoint_payload(
+            &mut snap,
+            &payload,
+            "https://aigateway.chat/v1/usage",
+            1_700_000_000_000,
+        )
+        .expect("aigateway usage payload should parse");
+
+        assert_eq!(snap.daily_budget_usd, Some(200.0));
+        assert_eq!(snap.remaining, Some(121.9059165));
+        assert_eq!(
+            snap.daily_spent_usd,
+            Some(0.0),
+            "aigateway today usage should come from usage.today, not subscription.daily_usage_usd"
+        );
+    }
+
     #[tokio::test]
     async fn explicit_usage_endpoint_fetches_yunyi_budget_info_via_provider_key() {
         let (base, handle) = start_yunyi_me_mock_server().await;

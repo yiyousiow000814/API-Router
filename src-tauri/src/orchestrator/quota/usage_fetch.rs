@@ -218,8 +218,15 @@ fn apply_explicit_usage_endpoint_payload(
             root.pointer("/subscription/daily_limit_usd")
                 .and_then(|value| as_f64(Some(value)))
         });
-    let daily_spent_usd = root
-        .pointer("/quota/daily_spent")
+    let usage_today_cost = root
+        .pointer("/usage/today/actual_cost")
+        .and_then(|value| as_f64(Some(value)))
+        .or_else(|| {
+            root.pointer("/usage/today/cost")
+                .and_then(|value| as_f64(Some(value)))
+        });
+    let daily_spent_usd = usage_today_cost.or_else(|| {
+        root.pointer("/quota/daily_spent")
         .and_then(|value| as_f64(Some(value)))
         .or_else(|| {
             root.pointer("/quota/daily_total_spent")
@@ -244,7 +251,8 @@ fn apply_explicit_usage_endpoint_payload(
         .or_else(|| {
             root.pointer("/subscription/daily_usage_usd")
                 .and_then(|value| as_f64(Some(value)))
-        });
+        })
+    });
     let remaining = root
         .pointer("/quota/daily_remaining")
         .and_then(|value| as_f64(Some(value)))

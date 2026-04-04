@@ -23,16 +23,16 @@ fn spend_history_provider_names(
 }
 
 fn tracked_spend_history_day_key(day: &Value) -> Option<String> {
-    let updated_at_unix_ms = day
-        .get("updated_at_unix_ms")
+    let started_at_unix_ms = day
+        .get("started_at_unix_ms")
         .and_then(|v| v.as_u64())
         .or_else(|| {
             day.get("ended_at_unix_ms")
                 .and_then(|v| v.as_u64())
                 .map(|value| value.saturating_sub(1))
         })
-        .or_else(|| day.get("started_at_unix_ms").and_then(|v| v.as_u64()))?;
-    local_day_key_from_unix_ms(updated_at_unix_ms)
+        .or_else(|| day.get("updated_at_unix_ms").and_then(|v| v.as_u64()))?;
+    local_day_key_from_unix_ms(started_at_unix_ms)
 }
 
 fn tracked_spend_history_snapshot(day: &Value) -> Option<(String, f64, u64)> {
@@ -971,7 +971,7 @@ mod spend_history_tests {
     }
 
     #[test]
-    fn tracked_spend_uses_updated_day_for_history_rows() {
+    fn tracked_spend_uses_started_day_for_history_rows() {
         let started_at_unix_ms = local_unix_ms(2026, 4, 2, 12, 0, 0);
         let updated_at_unix_ms = local_unix_ms(2026, 4, 3, 0, 1, 0);
         let day = serde_json::json!({
@@ -984,12 +984,12 @@ mod spend_history_tests {
 
         assert_eq!(
             tracked_spend_history_day_key(&day).as_deref(),
-            Some("2026-04-03")
+            Some("2026-04-02")
         );
     }
 
     #[test]
-    fn tracked_spend_snapshot_uses_latest_update_day() {
+    fn tracked_spend_snapshot_uses_started_day_with_latest_update_metadata() {
         let started_at_unix_ms = local_unix_ms(2026, 4, 2, 3, 58, 3);
         let updated_at_unix_ms = local_unix_ms(2026, 4, 3, 0, 1, 3);
         let day = serde_json::json!({
@@ -1002,12 +1002,12 @@ mod spend_history_tests {
 
         assert_eq!(
             tracked_spend_history_snapshot(&day),
-            Some(("2026-04-03".to_string(), 153.7, updated_at_unix_ms))
+            Some(("2026-04-02".to_string(), 153.7, updated_at_unix_ms))
         );
     }
 
     #[test]
-    fn tracked_spend_ended_at_midnight_falls_back_to_previous_day() {
+    fn tracked_spend_ended_at_midnight_still_uses_started_day() {
         let started_at_unix_ms = local_unix_ms(2026, 4, 2, 3, 58, 3);
         let ended_at_unix_ms = local_unix_ms(2026, 4, 4, 0, 0, 0);
         let day = serde_json::json!({
@@ -1019,11 +1019,11 @@ mod spend_history_tests {
 
         assert_eq!(
             tracked_spend_history_day_key(&day).as_deref(),
-            Some("2026-04-03")
+            Some("2026-04-02")
         );
         assert_eq!(
             tracked_spend_history_snapshot(&day),
-            Some(("2026-04-03".to_string(), 153.7, ended_at_unix_ms.saturating_sub(1)))
+            Some(("2026-04-02".to_string(), 153.7, ended_at_unix_ms.saturating_sub(1)))
         );
     }
 
@@ -1154,9 +1154,39 @@ mod spend_history_tests {
     }
 
     #[test]
+    fn tracked_spend_target_match_uses_started_day_for_cross_midnight_rows() {
+        let started_at_unix_ms = local_unix_ms(2026, 4, 4, 0, 1, 1);
+        let updated_at_unix_ms = local_unix_ms(2026, 4, 5, 0, 1, 2);
+        let day = serde_json::json!({
+            "provider": "ailongjuanfeng",
+            "started_at_unix_ms": started_at_unix_ms,
+            "ended_at_unix_ms": updated_at_unix_ms,
+            "updated_at_unix_ms": updated_at_unix_ms,
+            "tracked_spend_usd": 1.55,
+            "producer_node_id": "node-remote"
+        });
+
+        assert!(tracked_spend_day_matches_history_target(
+            &day,
+            "2026-04-04",
+            "node-remote",
+            "node-local"
+        ));
+        assert!(!tracked_spend_day_matches_history_target(
+            &day,
+            "2026-04-05",
+            "node-remote",
+            "node-local"
+        ));
+    }
+
+    #[test]
     fn remove_tracked_spend_history_entries_removes_entire_daily_row_and_records_delete_events() {
         let (_tmp, state) = build_test_state();
         let provider = "official";
+        let local_node_id = crate::lan_sync::current_local_node_identity()
+            .map(|node| node.node_id)
+            .unwrap_or_else(|| "node-local".to_string());
         let local_started_at = local_unix_ms(2026, 4, 1, 2, 0, 0);
         let remote_started_at = local_unix_ms(2026, 4, 1, 6, 0, 0);
         state.gateway.store.put_spend_day(
@@ -1167,7 +1197,7 @@ mod spend_history_tests {
                 "started_at_unix_ms": local_started_at,
                 "tracked_spend_usd": 10.0,
                 "updated_at_unix_ms": local_started_at,
-                "producer_node_id": "node-local",
+                "producer_node_id": local_node_id,
                 "producer_node_name": "Local Node"
             }),
         );
@@ -1188,7 +1218,14 @@ mod spend_history_tests {
             remove_tracked_spend_history_entries_impl(&state, provider, "2026-04-01").expect("remove row");
 
         assert_eq!(removed, 2);
-        assert!(state.gateway.store.list_spend_days(provider).is_empty());
+        let remaining = state.gateway.store.list_spend_days(provider);
+        assert!(!remaining.iter().any(|day| {
+            day.get("started_at_unix_ms").and_then(|value| value.as_u64()) == Some(local_started_at)
+        }));
+        assert!(!remaining.iter().any(|day| {
+            day.get("started_at_unix_ms").and_then(|value| value.as_u64()) == Some(remote_started_at)
+                && day.get("producer_node_id").and_then(|value| value.as_str()) == Some("node-remote")
+        }));
         let (events, _has_more) = state.gateway.store.list_lan_edit_events_batch(0, None, 20);
         let deletes = events
             .iter()

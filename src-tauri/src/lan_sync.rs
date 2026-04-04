@@ -6791,6 +6791,9 @@ mod tests {
     fn tracked_spend_delete_event_removes_local_owner_row_when_source_matches_local_node() {
         let (_tmp, state) = build_test_state();
         super::register_gateway_status_runtime(state.lan_sync.clone());
+        let local_node_id = super::current_local_node_identity()
+            .map(|node| node.node_id)
+            .unwrap_or_else(|| state.lan_sync.local_node_id());
         let shared_provider_id = state
             .secrets
             .ensure_provider_shared_id("provider_1")
@@ -6810,7 +6813,7 @@ mod tests {
         );
         let event = crate::orchestrator::store::LanEditSyncEvent {
             event_id: "edit_delete_local_owned_row".to_string(),
-            node_id: "node-remote".to_string(),
+            node_id: local_node_id.clone(),
             node_name: "remote".to_string(),
             created_at_unix_ms: 5,
             lamport_ts: 5,
@@ -6818,7 +6821,7 @@ mod tests {
             entity_id: tracked_spend_day_entity_id(
                 &shared_provider_id,
                 day_started_at_unix_ms,
-                &state.lan_sync.local_node_id(),
+                &local_node_id,
             ),
             op: "delete".to_string(),
             payload: serde_json::json!({
