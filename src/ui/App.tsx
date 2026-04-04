@@ -1352,18 +1352,20 @@ export default function App() {
       },
     })
   }
-  async function requestLanRemoteUpdateSameVersion(nodeId: string) {
-    try {
-      if (isDevPreview) {
-        flashToast(`Requested ${nodeId} to sync to this build [TEST]`)
-        return
+    async function requestLanRemoteUpdateSameVersion(nodeId: string) {
+      try {
+        if (isDevPreview) {
+          flashToast(`Requested ${nodeId} to sync to this build [TEST]`)
+          return
+        }
+        await invoke('request_lan_remote_update_same_version', { nodeId })
+        flashToast('Peer version sync requested')
+        await refreshStatus()
+        await refreshConfig({ refreshProviderSwitchStatus: false, force: true })
+      } catch (error) {
+        flashToast(String(error), 'error')
       }
-      await invoke('request_lan_remote_update_same_version', { nodeId })
-      flashToast('Peer version sync requested')
-    } catch (error) {
-      flashToast(String(error), 'error')
     }
-  }
   async function copyProviderFromConfigSource(sourceNodeId: string, sharedProviderId: string) {
     try {
       if (isDevPreview) {
@@ -1450,7 +1452,7 @@ export default function App() {
     const prevSignature = lastLanConfigSyncSignatureRef.current
     lastLanConfigSyncSignatureRef.current = nextSignature
     if (!prevSignature || prevSignature === nextSignature) return
-    void refreshConfig({ refreshProviderSwitchStatus: false })
+    void refreshConfig({ refreshProviderSwitchStatus: false, force: true })
   }, [isDevPreview, refreshConfig, status])
   useEffect(() => {
     if (!isDevPreview) return

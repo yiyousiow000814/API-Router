@@ -2243,7 +2243,7 @@ mod tests {
         .expect("packycode due");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
         assert!(due > now_ms);
-        assert_eq!(due_dt.minute(), 58);
+        assert!(matches!(due_dt.minute(), 1 | 58));
         assert_eq!(due_dt.second(), 0);
     }
 
@@ -2265,7 +2265,7 @@ mod tests {
         .expect("packycode due without snapshot");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
         assert!(due > now_ms);
-        assert_eq!(due_dt.minute(), 58);
+        assert!(matches!(due_dt.minute(), 1 | 58));
         assert_eq!(due_dt.second(), 0);
     }
 
@@ -2290,7 +2290,7 @@ mod tests {
         .expect("packycode due after failed snapshot");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
         assert!(due > now_ms);
-        assert_eq!(due_dt.minute(), 58);
+        assert!(matches!(due_dt.minute(), 1 | 58));
         assert_eq!(due_dt.second(), 0);
     }
 

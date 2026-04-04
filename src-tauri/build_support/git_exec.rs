@@ -1,4 +1,3 @@
-use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -6,9 +5,9 @@ use std::process::Command;
 fn windows_git_path_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     for base in [
-        env::var_os("ProgramFiles"),
-        env::var_os("ProgramFiles(x86)"),
-        env::var_os("LocalAppData"),
+        std::env::var_os("ProgramFiles"),
+        std::env::var_os("ProgramFiles(x86)"),
+        std::env::var_os("LocalAppData"),
     ]
     .into_iter()
     .flatten()
@@ -43,17 +42,26 @@ pub fn resolve_git_executable() -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-pub fn new_git_command() -> Command {
-    let mut cmd = if let Some(path) = resolve_git_executable() {
+fn git_command_base() -> Command {
+    if let Some(path) = resolve_git_executable() {
         Command::new(path)
     } else {
         Command::new("git")
-    };
-    #[cfg(any(target_os = "windows", windows))]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
     }
+}
+
+#[cfg(any(target_os = "windows", windows))]
+pub fn new_git_command() -> Command {
+    use std::os::windows::process::CommandExt;
+
+    let mut cmd = git_command_base();
+    cmd.creation_flags(0x08000000);
+    cmd
+}
+
+#[cfg(not(any(target_os = "windows", windows)))]
+pub fn new_git_command() -> Command {
+    let cmd = git_command_base();
     cmd
 }
 

@@ -243,7 +243,9 @@ fn current_local_remote_update_readiness() -> LanRemoteUpdateReadinessSnapshot {
 }
 
 pub(crate) fn peer_remote_update_blocked_reason(peer: &LanPeerSnapshot) -> Option<String> {
-    if !peer_supports_http_sync(peer, LAN_REMOTE_UPDATE_CAPABILITY) {
+    let peer_advertises_remote_update = peer_supports_http_sync(peer, LAN_REMOTE_UPDATE_CAPABILITY)
+        || peer.remote_update_readiness.is_some();
+    if !peer_advertises_remote_update {
         return Some(format!(
             "{} does not support remote update yet. Update that machine manually first.",
             peer.node_name
@@ -3549,7 +3551,7 @@ pub(crate) fn peer_version_sync_reason(peer: &LanPeerSnapshot) -> Option<String>
         return None;
     }
     Some(format!(
-        "{} is on a different build. Sync this peer to the current machine build before following or trusting its data.",
+        "{} is on a different build. Remote update can sync it to the current machine build if needed.",
         peer.node_name
     ))
 }
@@ -4650,6 +4652,19 @@ mod tests {
             super::peer_remote_update_blocked_reason(&peer).as_deref(),
             Some("peer worktree is dirty")
         );
+    }
+
+    #[test]
+    fn peer_remote_update_readiness_implies_support_when_capability_list_is_stale() {
+        let mut peer = test_peer_snapshot();
+        peer.capabilities.clear();
+        peer.remote_update_readiness = Some(LanRemoteUpdateReadinessSnapshot {
+            ready: true,
+            blocked_reason: None,
+            checked_at_unix_ms: 1,
+        });
+
+        assert_eq!(super::peer_remote_update_blocked_reason(&peer), None);
     }
 
     #[test]

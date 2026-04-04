@@ -402,9 +402,10 @@ export function useSwitchboardStatusActions({
   }
 
   async function refreshConfig(
-    options?: { refreshProviderSwitchStatus?: boolean } & RefreshApplyOptions,
+    options?: { refreshProviderSwitchStatus?: boolean; force?: boolean } & RefreshApplyOptions,
   ) {
     const shouldRefreshProviderSwitchStatus = options?.refreshProviderSwitchStatus ?? true
+    const force = options?.force ?? false
     if (isDevPreview) {
       setConfig(devConfig)
       setBaselineBaseUrls(Object.fromEntries(Object.entries(devConfig.providers).map(([name, p]) => [name, p.base_url])))
@@ -426,9 +427,10 @@ export function useSwitchboardStatusActions({
       recordStartupStage('frontend_config_refresh_requested')
     }
     try {
-      const c = await runSingleFlight(configInFlightRef.current, 'config', () =>
-        invoke<Config>('get_config'),
-      )
+      const loadConfig = () => invoke<Config>('get_config')
+      const c = force
+        ? await loadConfig()
+        : await runSingleFlight(configInFlightRef.current, 'config', loadConfig)
       if (shouldTraceStartup) {
         recordStartupStage(
           'frontend_config_refresh_resolved',

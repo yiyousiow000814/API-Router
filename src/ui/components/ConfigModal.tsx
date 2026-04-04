@@ -83,7 +83,7 @@ function compactUpdateStatusLabel(
   source: ConfigSource,
 ): string {
   if (!source.version_sync_required) return 'No update needed'
-  return source.same_version_update_allowed ? 'Update required' : 'Update blocked'
+  return source.same_version_update_allowed ? 'Update available' : 'Update blocked'
 }
 
 export function formatBuildLabel(buildIdentity: BuildIdentity): string {
@@ -205,7 +205,10 @@ export function ConfigModal({
         : `${selectedUsingCount} follow`
       : ''
   const updateRequiredSources = configSources.filter(
-    (source) => source.kind === 'peer' && source.version_sync_required,
+    (source) =>
+      source.kind === 'peer' &&
+      (((source.sync_blocked_domains?.length ?? 0) > 0) ||
+        (source.version_sync_required && !source.same_version_update_allowed)),
   )
   const localSource = configSources.find((source) => source.kind === 'local') ?? null
   const peerSources = configSources.filter((source) => source.kind === 'peer')

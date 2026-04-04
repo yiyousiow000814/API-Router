@@ -187,7 +187,7 @@ describe('ConfigModal', () => {
     expect(html).toContain('1 using')
   })
 
-  it('shows update required warning for peer version mismatch', () => {
+  it('shows update available warning copy for peer version mismatch', () => {
     const config = buildConfig()
     config.config_source = {
       mode: 'follow',
@@ -216,7 +216,7 @@ describe('ConfigModal', () => {
           follow_blocked_reason: null,
           using_count: 1,
           version_sync_required: true,
-          version_sync_reason: 'Desk B is on a different build.',
+          version_sync_reason: 'Desk B is on a different build. Remote update can sync it to the current machine build if needed.',
           same_version_update_allowed: true,
           same_version_update_blocked_reason: null,
         },
@@ -254,7 +254,7 @@ describe('ConfigModal', () => {
       />,
     )
 
-    expect(html).toContain('Desk B is on a different build.')
+    expect(html).toContain('Desk B is on a different build. Remote update can sync it to the current machine build if needed.')
     expect(html).toContain('Choose Update peer in Config source to sync this peer to the current machine build.')
   })
 
