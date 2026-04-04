@@ -37,6 +37,9 @@ type PairDialogState =
   | { mode: 'show_pin'; nodeId: string; nodeName: string; pinCode: string }
   | { mode: 'paired'; nodeId: string; nodeName: string }
 
+type ConfigSource = NonNullable<Config['config_source']>['sources'][number]
+type BuildIdentity = NonNullable<ConfigSource['build_identity']>
+
 function normalizePinInput(value: string): string {
   return value.replace(/\D+/g, '').slice(0, 6)
 }
@@ -57,7 +60,7 @@ function formatPairDialogError(error: unknown): string {
 }
 
 function compactPeerStateLabel(
-  source: NonNullable<Config['config_source']>['sources'][number],
+  source: ConfigSource,
 ): string {
   if (source.trusted) return 'Trusted'
   if (source.pair_state === 'incoming_request') return 'Needs approval'
@@ -67,7 +70,7 @@ function compactPeerStateLabel(
 }
 
 function compactFollowStatusLabel(
-  source: NonNullable<Config['config_source']>['sources'][number],
+  source: ConfigSource,
 ): string {
   if (source.active) return 'Following'
   if (source.follow_allowed) return 'Ready to follow'
@@ -77,10 +80,28 @@ function compactFollowStatusLabel(
 }
 
 function compactUpdateStatusLabel(
-  source: NonNullable<Config['config_source']>['sources'][number],
+  source: ConfigSource,
 ): string {
   if (!source.version_sync_required) return 'No update needed'
   return source.same_version_update_allowed ? 'Update required' : 'Update blocked'
+}
+
+export function formatBuildLabel(buildIdentity: BuildIdentity): string {
+  const version = buildIdentity?.app_version?.trim() || 'unknown'
+  const sha = buildIdentity?.build_git_short_sha?.trim() || 'unknown'
+  return `v${version} · ${sha}`
+}
+
+export function formatCommitDate(unixMs?: number | null): string {
+  if (!Number.isFinite(unixMs) || !unixMs) return 'Unknown'
+  const date = new Date(unixMs)
+  if (Number.isNaN(date.getTime())) return 'Unknown'
+  const day = String(date.getUTCDate()).padStart(2, '0')
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0')
+  const year = date.getUTCFullYear()
+  const hours = String(date.getUTCHours()).padStart(2, '0')
+  const minutes = String(date.getUTCMinutes()).padStart(2, '0')
+  return `${day}-${month}-${year} ${hours}:${minutes} UTC`
 }
 
 export function syncDomainLabel(domain: string): string {
@@ -186,6 +207,7 @@ export function ConfigModal({
   const updateRequiredSources = configSources.filter(
     (source) => source.kind === 'peer' && source.version_sync_required,
   )
+  const localSource = configSources.find((source) => source.kind === 'local') ?? null
   const peerSources = configSources.filter((source) => source.kind === 'peer')
 
   useEffect(() => {
@@ -584,70 +606,113 @@ export function ConfigModal({
               {peerSources.length === 0 ? (
                 <div className="aoHint">No LAN peers detected.</div>
               ) : (
-                peerSources.map((source) => {
-                  const syncDomains = source.sync_blocked_domains?.map(syncDomainLabel).join(', ') || 'none'
-                  const buildLabel = source.build_identity
-                    ? `v${source.build_identity.app_version} · ${source.build_identity.build_git_short_sha}`
-                    : 'unknown'
-                  const pausedDomains = source.sync_blocked_domains?.map(syncDomainLabel) ?? []
-                  const whyText = diagnosticsWhyText(source)
-                  return (
-                    <div key={source.node_id} className="aoCard aoConfigDiagCard">
-                      <div className="aoConfigDiagCardHead">
-                        <div className="aoConfigDiagPeerBlock">
-                          <div className="aoConfigDiagPeerName">{source.node_name}</div>
-                          <div className="aoConfigDiagPeerMeta">
-                            <span>{compactPeerStateLabel(source)}</span>
-                            <span>·</span>
-                            <span>{source.build_matches_local ? 'Same build' : 'Different build'}</span>
-                          </div>
+                <>
+                  <div className="aoCard aoConfigDiagLocalCard">
+                    <div className="aoConfigDiagLocalHead">
+                      <div className="aoConfigDiagPeerBlock">
+                        <div className="aoConfigDiagPeerName">Current machine</div>
+                        <div className="aoConfigDiagPeerMeta">
+                          <span>{localSource?.node_name ?? 'Local'}</span>
+                          <span>·</span>
+                          <span>Reference build for peer comparisons</span>
                         </div>
-                        <div className="aoConfigDiagBadgeRow">
-                          <span className="aoConfigDiagBadge">
-                            {compactFollowStatusLabel(source)}
-                          </span>
-                          <span
-                            className={`aoConfigDiagBadge${
-                              source.version_sync_required ? ' is-alert' : ''
-                            }`}
-                          >
-                            {compactUpdateStatusLabel(source)}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="aoConfigDiagBody">
-                        <div className="aoConfigDiagSection">
-                          <div className="aoConfigDiagSectionLabel">Build</div>
-                          <div className="aoConfigDiagBuildValue">{buildLabel}</div>
-                        </div>
-                        {whyText ? (
-                          <div className="aoConfigDiagSection">
-                            <div className="aoConfigDiagSectionLabel">Why</div>
-                            <div className="aoConfigDiagWhyText">{whyText}</div>
-                          </div>
-                        ) : null}
-                        {pausedDomains.length > 0 ? (
-                          <div className="aoConfigDiagSection">
-                            <div className="aoConfigDiagSectionLabel">Paused</div>
-                            <div className="aoConfigDiagPausedWrap">
-                              {pausedDomains.length > 1 ? (
-                                <div className="aoConfigDiagPausedList">
-                                  {pausedDomains.map((domain) => (
-                                    <div key={domain} className="aoConfigDiagPausedItem">
-                                      {domain}
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : (
-                                <div className="aoConfigDiagPausedSingle">{syncDomains}</div>
-                              )}
-                            </div>
-                          </div>
-                        ) : null}
                       </div>
                     </div>
-                  )
-                })
+                    <div className="aoConfigDiagBody">
+                      <div className="aoConfigDiagSection">
+                        <div className="aoConfigDiagSectionLabel">Build</div>
+                        <div className="aoConfigDiagBuildValue">
+                          {localSource?.build_identity ? formatBuildLabel(localSource.build_identity) : 'Unknown'}
+                        </div>
+                      </div>
+                      <div className="aoConfigDiagSection">
+                        <div className="aoConfigDiagSectionLabel">Commit</div>
+                        <div className="aoConfigDiagCompareValue">
+                          {formatCommitDate(localSource?.build_identity?.build_git_commit_unix_ms ?? null)}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  {peerSources.map((source) => {
+                    const syncDomains = source.sync_blocked_domains?.map(syncDomainLabel).join(', ') || 'none'
+                    const pausedDomains = source.sync_blocked_domains?.map(syncDomainLabel) ?? []
+                    const whyText = diagnosticsWhyText(source)
+                    const peerBuildLabel = source.build_identity
+                      ? formatBuildLabel(source.build_identity)
+                      : 'Unknown'
+                    const peerCommitLabel = formatCommitDate(
+                      source.build_identity?.build_git_commit_unix_ms ?? null,
+                    )
+                    return (
+                      <div key={source.node_id} className="aoCard aoConfigDiagCard">
+                        <div className="aoConfigDiagCardHead">
+                          <div className="aoConfigDiagPeerBlock">
+                            <div className="aoConfigDiagPeerName">{source.node_name}</div>
+                            <div className="aoConfigDiagPeerMeta">
+                              <span>{compactPeerStateLabel(source)}</span>
+                              <span>·</span>
+                              <span>{source.build_matches_local ? 'Same build' : 'Different build'}</span>
+                            </div>
+                          </div>
+                          <div className="aoConfigDiagBadgeRow">
+                            <span className="aoConfigDiagBadge">
+                              {compactFollowStatusLabel(source)}
+                            </span>
+                            <span
+                              className={`aoConfigDiagBadge${
+                                source.version_sync_required ? ' is-alert' : ''
+                              }`}
+                            >
+                              {compactUpdateStatusLabel(source)}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="aoConfigDiagBody">
+                          <div className="aoConfigDiagSection">
+                            <div className="aoConfigDiagSectionLabel">Build</div>
+                            <div className="aoConfigDiagBuildValue">{peerBuildLabel}</div>
+                          </div>
+                          <div className="aoConfigDiagSection">
+                            <div className="aoConfigDiagSectionLabel">Commit</div>
+                            <div className="aoConfigDiagCompareValue">{peerCommitLabel}</div>
+                          </div>
+                          <div className="aoConfigDiagSection">
+                            <div className="aoConfigDiagSectionLabel">Local</div>
+                            <div className="aoConfigDiagCompareValue">
+                              {source.build_matches_local
+                                ? 'Matches current machine build'
+                                : 'Does not match current machine build'}
+                            </div>
+                          </div>
+                          {whyText ? (
+                            <div className="aoConfigDiagSection">
+                              <div className="aoConfigDiagSectionLabel">Why</div>
+                              <div className="aoConfigDiagWhyText">{whyText}</div>
+                            </div>
+                          ) : null}
+                          {pausedDomains.length > 0 ? (
+                            <div className="aoConfigDiagSection">
+                              <div className="aoConfigDiagSectionLabel">Paused</div>
+                              <div className="aoConfigDiagPausedWrap">
+                                {pausedDomains.length > 1 ? (
+                                  <div className="aoConfigDiagPausedList">
+                                    {pausedDomains.map((domain) => (
+                                      <div key={domain} className="aoConfigDiagPausedItem">
+                                        {domain}
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <div className="aoConfigDiagPausedSingle">{syncDomains}</div>
+                                )}
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </>
               )}
             </div>
           </div>

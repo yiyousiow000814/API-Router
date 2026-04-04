@@ -3,7 +3,6 @@ use std::error::Error;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::Path;
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -105,6 +104,7 @@ pub(crate) fn current_build_identity() -> LanBuildIdentitySnapshot {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         build_git_sha: build_info::API_ROUTER_BUILD_GIT_SHA.to_string(),
         build_git_short_sha: build_info::API_ROUTER_BUILD_GIT_SHORT_SHA.to_string(),
+        build_git_commit_unix_ms: build_info::API_ROUTER_BUILD_GIT_COMMIT_UNIX_MS,
     }
 }
 
@@ -124,7 +124,7 @@ fn normalized_local_build_target_ref() -> Option<String> {
 }
 
 fn probe_git_worktree_clean(repo_root: &Path) -> Result<bool, String> {
-    let output = Command::new("git")
+    let output = crate::platform::git_exec::new_git_command()
         .arg("status")
         .arg("--porcelain=v1")
         .current_dir(repo_root)
@@ -305,6 +305,8 @@ pub struct LanBuildIdentitySnapshot {
     pub app_version: String,
     pub build_git_sha: String,
     pub build_git_short_sha: String,
+    #[serde(default)]
+    pub build_git_commit_unix_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

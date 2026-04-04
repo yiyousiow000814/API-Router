@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { ConfigModal, diagnosticsWhyText } from './ConfigModal'
+import { ConfigModal, diagnosticsWhyText, formatBuildLabel, formatCommitDate } from './ConfigModal'
 import type { Config } from '../types'
 
 function buildConfig(): Config {
@@ -277,10 +277,32 @@ describe('ConfigModal', () => {
         app_version: '0.4.0',
         build_git_sha: 'abc',
         build_git_short_sha: 'abc',
+        build_git_commit_unix_ms: 1775312828000,
       },
       build_matches_local: false,
     })
 
     expect(whyText).toBe('Local git worktree is dirty.')
+  })
+
+  it('formats diagnostics build compare values', () => {
+    expect(
+      formatBuildLabel({
+        app_version: '0.4.0',
+        build_git_sha: 'fc1078f04a67355e98571c295bfbb5a2c3578560',
+        build_git_short_sha: 'fc1078f0',
+        build_git_commit_unix_ms: 1775312828000,
+      }),
+    ).toBe('v0.4.0 · fc1078f0')
+    expect(
+      formatBuildLabel({
+        app_version: '0.4.0',
+        build_git_sha: 'unknown',
+        build_git_short_sha: 'unknown',
+        build_git_commit_unix_ms: null,
+      }),
+    ).toBe('v0.4.0 · unknown')
+    expect(formatCommitDate(1775312828000)).toBe('04-04-2026 14:27 UTC')
+    expect(formatCommitDate(null)).toBe('Unknown')
   })
 })

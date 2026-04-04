@@ -115,6 +115,7 @@ export type Status = {
         app_version: string
         build_git_sha: string
         build_git_short_sha: string
+        build_git_commit_unix_ms?: number | null
       }
       version_sync?: {
         target_ref?: string | null
@@ -135,6 +136,7 @@ export type Status = {
         app_version: string
         build_git_sha: string
         build_git_short_sha: string
+        build_git_commit_unix_ms?: number | null
       }
       sync_contracts?: Record<string, number>
       provider_fingerprints: string[]
@@ -248,6 +250,7 @@ export type Config = {
         app_version: string
         build_git_sha: string
         build_git_short_sha: string
+        build_git_commit_unix_ms?: number | null
       } | null
       build_matches_local?: boolean
       sync_blocked_domains?: string[]

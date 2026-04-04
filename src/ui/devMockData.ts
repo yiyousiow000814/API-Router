@@ -487,6 +487,7 @@ export const devStatus: Status = {
         app_version: '0.4.0',
         build_git_sha: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
         build_git_short_sha: 'a1b2c3d',
+        build_git_commit_unix_ms: 1775312828000,
       },
       version_sync: {
         target_ref: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
@@ -514,6 +515,7 @@ export const devStatus: Status = {
           app_version: '0.3.9',
           build_git_sha: '99887766554433221100ffeeddccbbaa12345678',
           build_git_short_sha: '9988776',
+          build_git_commit_unix_ms: 1775226428000,
         },
         sync_contracts: {
           usage_requests: 1,
@@ -555,6 +557,7 @@ export const devStatus: Status = {
           app_version: '0.4.0',
           build_git_sha: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
           build_git_short_sha: 'a1b2c3d',
+          build_git_commit_unix_ms: 1775312828000,
         },
         sync_contracts: {
           usage_requests: 1,
@@ -651,6 +654,7 @@ export const devConfig: Config = {
           app_version: '0.4.0',
           build_git_sha: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
           build_git_short_sha: 'a1b2c3d',
+          build_git_commit_unix_ms: 1775312828000,
         },
         build_matches_local: true,
         sync_blocked_domains: [],
@@ -676,6 +680,7 @@ export const devConfig: Config = {
           app_version: '0.3.9',
           build_git_sha: '99887766554433221100ffeeddccbbaa12345678',
           build_git_short_sha: '9988776',
+          build_git_commit_unix_ms: 1775226428000,
         },
         build_matches_local: false,
         sync_blocked_domains: ['usage_history', 'provider_definitions'],
@@ -701,6 +706,7 @@ export const devConfig: Config = {
           app_version: '0.4.0',
           build_git_sha: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
           build_git_short_sha: 'a1b2c3d',
+          build_git_commit_unix_ms: 1775312828000,
         },
         build_matches_local: true,
         sync_blocked_domains: [],

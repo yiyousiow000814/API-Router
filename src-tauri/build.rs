@@ -1,5 +1,7 @@
+#[path = "build_support/git_exec.rs"]
+mod git_exec;
+
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::{env, fs};
 
 fn repo_root() -> PathBuf {
@@ -11,7 +13,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn git_output(repo_root: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
+    let output = git_exec::new_git_command()
         .args(args)
         .current_dir(repo_root)
         .output()
@@ -113,13 +115,17 @@ fn main() {
     let git_short_sha = git_output(&repo_root, &["rev-parse", "--short=8", "HEAD"])
         .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=API_ROUTER_BUILD_GIT_SHORT_SHA={git_short_sha}");
+    let git_commit_unix_ms = git_output(&repo_root, &["show", "-s", "--format=%ct", "HEAD"])
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|value| value.saturating_mul(1000));
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
     let build_info_rs = out_dir.join("build_info.rs");
     let build_info = format!(
         "pub const API_ROUTER_BUILD_GIT_SHA: &str = {:?};\n\
-         pub const API_ROUTER_BUILD_GIT_SHORT_SHA: &str = {:?};\n",
-        git_sha, git_short_sha
+         pub const API_ROUTER_BUILD_GIT_SHORT_SHA: &str = {:?};\n\
+         pub const API_ROUTER_BUILD_GIT_COMMIT_UNIX_MS: Option<u64> = {:?};\n",
+        git_sha, git_short_sha, git_commit_unix_ms
     );
     fs::write(&build_info_rs, build_info).expect("write build_info.rs");
     println!("cargo:rerun-if-changed={}", build_info_rs.display());

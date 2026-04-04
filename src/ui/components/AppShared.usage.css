@@ -201,6 +201,21 @@
   gap: 12px;
 }
 
+.aoConfigDiagLocalCard {
+  padding: 15px 16px;
+  display: grid;
+  gap: 12px;
+  border-style: dashed;
+  background: linear-gradient(180deg, rgba(251, 252, 255, 0.96), rgba(247, 249, 252, 0.92));
+}
+
+.aoConfigDiagLocalHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
 .aoConfigDiagCardHead {
   display: flex;
   align-items: flex-start;
@@ -241,6 +256,13 @@
   font-size: 14px;
   font-weight: 700;
   color: rgba(13, 18, 32, 0.86);
+  font-variant-numeric: tabular-nums;
+}
+
+.aoConfigDiagCompareValue {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(13, 18, 32, 0.72);
   font-variant-numeric: tabular-nums;
 }
 
