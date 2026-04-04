@@ -134,18 +134,20 @@ pub(crate) async fn tailscale_status(
     };
     let (connected, dns_name, ipv4) = parse_tailscale_summary(&parsed);
     let listen_port = state.gateway.cfg.read().listen.port;
-    let initial_reachable_ipv4 = if connected {
-        resolve_reachable_gateway_ipv4(&ipv4, listen_port, probe_gateway_addr)
-    } else {
-        Vec::new()
-    };
     #[cfg(windows)]
-    maybe_refresh_runtime_tailscale_listener(
-        &state,
-        connected,
-        &ipv4,
-        !initial_reachable_ipv4.is_empty(),
-    );
+    {
+        let initial_reachable_ipv4 = if connected {
+            resolve_reachable_gateway_ipv4(&ipv4, listen_port, probe_gateway_addr)
+        } else {
+            Vec::new()
+        };
+        maybe_refresh_runtime_tailscale_listener(
+            &state,
+            connected,
+            &ipv4,
+            !initial_reachable_ipv4.is_empty(),
+        );
+    }
     let reachable_ipv4 = if connected {
         resolve_reachable_gateway_ipv4(&ipv4, listen_port, probe_gateway_addr)
     } else {
