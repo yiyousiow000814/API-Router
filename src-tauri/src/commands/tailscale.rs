@@ -1,7 +1,7 @@
 #[cfg(windows)]
 const TAILSCALE_CREATE_NO_WINDOW: u32 = 0x08000000;
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 use std::net::IpAddr;
 use std::net::{SocketAddr, TcpStream};
 
@@ -83,7 +83,7 @@ fn resolve_reachable_gateway_ipv4(
         .collect()
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn parse_tailscale_ipv4_addrs(ipv4: &[String]) -> Vec<IpAddr> {
     ipv4.iter()
         .filter_map(|ip| ip.parse::<IpAddr>().ok())
@@ -197,7 +197,7 @@ fn reachable_gateway_ipv4_only_keeps_probeable_addrs() {
     assert_eq!(reachable, vec!["100.64.208.117"]);
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 #[test]
 fn parse_tailscale_ipv4_addrs_skips_invalid_rows() {
     let parsed = parse_tailscale_ipv4_addrs(&[
