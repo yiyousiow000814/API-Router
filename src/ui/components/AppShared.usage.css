@@ -46,6 +46,49 @@
   font-weight: 600;
 }
 
+.aoTrackedRemovalConfirmSummary {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  background: rgba(13, 18, 32, 0.03);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aoTrackedRemovalConfirmSummaryRow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+}
+
+.aoTrackedRemovalConfirmSummaryItem {
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.aoTrackedRemovalConfirmSummaryLabel {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.5);
+}
+
+.aoTrackedRemovalConfirmSummaryValue {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.84);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .aoTrackedRemovalConfirmActions {
   display: flex;
   justify-content: flex-end;

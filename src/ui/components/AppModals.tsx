@@ -710,6 +710,36 @@ requires_openai_auth = true`}
                   (pendingTrackedRemoval.sourceNodeId === '__local__' ? 'Local' : pendingTrackedRemoval.sourceNodeId)}
               </span>
             </div>
+            <div className="aoTrackedRemovalConfirmSummary" aria-label="Tracked row summary">
+              <div className="aoTrackedRemovalConfirmSummaryRow">
+                <span className="aoTrackedRemovalConfirmSummaryItem">
+                  <span className="aoTrackedRemovalConfirmSummaryLabel">Req</span>
+                  <span className="aoTrackedRemovalConfirmSummaryValue">
+                    {(pendingTrackedRemoval.row.req_count ?? 0).toLocaleString()}
+                  </span>
+                </span>
+                <span className="aoTrackedRemovalConfirmSummaryItem">
+                  <span className="aoTrackedRemovalConfirmSummaryLabel">Tokens</span>
+                  <span className="aoTrackedRemovalConfirmSummaryValue">
+                    {(pendingTrackedRemoval.row.total_tokens ?? 0).toLocaleString()}
+                  </span>
+                </span>
+              </div>
+              <div className="aoTrackedRemovalConfirmSummaryRow">
+                <span className="aoTrackedRemovalConfirmSummaryItem">
+                  <span className="aoTrackedRemovalConfirmSummaryLabel">Tracked $</span>
+                  <span className="aoTrackedRemovalConfirmSummaryValue">
+                    {formatUsdMaybe(pendingTrackedRemoval.row.tracked_total_usd ?? null)}
+                  </span>
+                </span>
+                <span className="aoTrackedRemovalConfirmSummaryItem">
+                  <span className="aoTrackedRemovalConfirmSummaryLabel">Effective $</span>
+                  <span className="aoTrackedRemovalConfirmSummaryValue">
+                    {formatUsdMaybe(pendingTrackedRemoval.row.effective_total_usd ?? null)}
+                  </span>
+                </span>
+              </div>
+            </div>
             <div className="aoTrackedRemovalConfirmActions">
               <button className="aoBtn" onClick={() => setPendingTrackedRemoval(null)}>
                 Cancel

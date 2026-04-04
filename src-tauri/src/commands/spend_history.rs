@@ -387,9 +387,17 @@ pub(crate) fn get_spend_history(
                 "tracked_applied_at_unix_ms": tracked_day.as_ref().and_then(|day| day.get("applied_at_unix_ms")).and_then(|value| value.as_u64()),
                 "tracked_source_nodes": tracked_days
                     .map(|days| {
+                        let mut seen = std::collections::BTreeSet::new();
                         days.iter()
                             .filter_map(|day| {
-                                let node_id = day.get("producer_node_id").and_then(|value| value.as_str())?;
+                                let node_id = day
+                                    .get("producer_node_id")
+                                    .and_then(|value| value.as_str())
+                                    .map(str::trim)
+                                    .filter(|value| !value.is_empty())?;
+                                if !seen.insert(node_id.to_string()) {
+                                    return None;
+                                }
                                 Some(serde_json::json!({
                                     "node_id": node_id,
                                     "node_name": day.get("producer_node_name").and_then(|value| value.as_str()).unwrap_or("")
@@ -979,6 +987,54 @@ mod spend_history_tests {
         assert_eq!(
             latest,
             Some(("2026-04-03".to_string(), 93.26, second_updated_at_unix_ms))
+        );
+    }
+
+    #[test]
+    fn tracked_source_nodes_are_unique_per_source_node() {
+        let days = vec![
+            serde_json::json!({
+                "producer_node_id": "node-local",
+                "producer_node_name": "Local Node",
+            }),
+            serde_json::json!({
+                "producer_node_id": "node-local",
+                "producer_node_name": "Local Node",
+            }),
+            serde_json::json!({
+                "producer_node_id": "node-remote",
+                "producer_node_name": "Remote Node",
+            }),
+        ];
+
+        let mut seen = std::collections::BTreeSet::new();
+        let tracked_source_nodes = days
+            .iter()
+            .filter_map(|day| {
+                let node_id = day
+                    .get("producer_node_id")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())?;
+                if !seen.insert(node_id.to_string()) {
+                    return None;
+                }
+                Some((
+                    node_id.to_string(),
+                    day.get("producer_node_name")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            tracked_source_nodes,
+            vec![
+                ("node-local".to_string(), "Local Node".to_string()),
+                ("node-remote".to_string(), "Remote Node".to_string())
+            ]
         );
     }
 
