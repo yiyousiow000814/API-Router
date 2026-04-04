@@ -138,6 +138,11 @@ export type Status = {
         build_git_short_sha: string
         build_git_commit_unix_ms?: number | null
       }
+      remote_update_readiness?: {
+        ready: boolean
+        blocked_reason?: string | null
+        checked_at_unix_ms?: number
+      } | null
       sync_contracts?: Record<string, number>
       provider_fingerprints: string[]
       followed_source_node_id?: string | null

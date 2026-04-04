@@ -116,6 +116,14 @@ pub struct LanLocalVersionSyncSnapshot {
     pub blocked_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LanRemoteUpdateReadinessSnapshot {
+    pub ready: bool,
+    pub blocked_reason: Option<String>,
+    #[serde(default)]
+    pub checked_at_unix_ms: u64,
+}
+
 fn normalized_local_build_target_ref() -> Option<String> {
     let build_identity = current_build_identity();
     let target_ref = build_identity.build_git_sha.trim();
@@ -155,42 +163,52 @@ fn compute_local_version_sync_snapshot() -> LanLocalVersionSyncSnapshot {
             ),
         };
     };
+    let git_worktree_clean = match resolve_repo_root_for_self_update() {
+        Ok(repo_root) => probe_git_worktree_clean(&repo_root).unwrap_or_default(),
+        Err(_) => false,
+    };
+    LanLocalVersionSyncSnapshot {
+        target_ref: Some(target_ref),
+        git_worktree_clean,
+        update_to_local_build_allowed: true,
+        blocked_reason: None,
+    }
+}
+
+fn compute_local_remote_update_readiness() -> LanRemoteUpdateReadinessSnapshot {
+    let checked_at_unix_ms = unix_ms();
     let repo_root = match resolve_repo_root_for_self_update() {
         Ok(repo_root) => repo_root,
         Err(err) => {
-            return LanLocalVersionSyncSnapshot {
-                target_ref: Some(target_ref),
-                git_worktree_clean: false,
-                update_to_local_build_allowed: false,
+            return LanRemoteUpdateReadinessSnapshot {
+                ready: false,
                 blocked_reason: Some(format!(
-                    "Cannot verify local git worktree before syncing peers: {err}"
+                    "This machine cannot resolve the repo root needed for remote update: {err}"
                 )),
+                checked_at_unix_ms,
             };
         }
     };
     match probe_git_worktree_clean(&repo_root) {
-        Ok(true) => LanLocalVersionSyncSnapshot {
-            target_ref: Some(target_ref),
-            git_worktree_clean: true,
-            update_to_local_build_allowed: true,
+        Ok(true) => LanRemoteUpdateReadinessSnapshot {
+            ready: true,
             blocked_reason: None,
+            checked_at_unix_ms,
         },
-        Ok(false) => LanLocalVersionSyncSnapshot {
-            target_ref: Some(target_ref),
-            git_worktree_clean: false,
-            update_to_local_build_allowed: false,
+        Ok(false) => LanRemoteUpdateReadinessSnapshot {
+            ready: false,
             blocked_reason: Some(
-                "Local git worktree is dirty. Commit or stash local changes before syncing peers to this build."
+                "This machine's git worktree is dirty. Commit or stash local changes there before remote update can run."
                     .to_string(),
             ),
+            checked_at_unix_ms,
         },
-        Err(err) => LanLocalVersionSyncSnapshot {
-            target_ref: Some(target_ref),
-            git_worktree_clean: false,
-            update_to_local_build_allowed: false,
+        Err(err) => LanRemoteUpdateReadinessSnapshot {
+            ready: false,
             blocked_reason: Some(format!(
-                "Cannot verify local git worktree before syncing peers: {err}"
+                "This machine cannot verify its git worktree for remote update: {err}"
             )),
+            checked_at_unix_ms,
         },
     }
 }
@@ -207,6 +225,55 @@ pub(crate) fn current_local_version_sync_snapshot() -> LanLocalVersionSyncSnapsh
     let snapshot = compute_local_version_sync_snapshot();
     *cache.write() = Some((now, snapshot.clone()));
     snapshot
+}
+
+fn current_local_remote_update_readiness() -> LanRemoteUpdateReadinessSnapshot {
+    static CACHE: OnceLock<RwLock<Option<(u64, LanRemoteUpdateReadinessSnapshot)>>> =
+        OnceLock::new();
+    let cache = CACHE.get_or_init(|| RwLock::new(None));
+    let now = unix_ms();
+    if let Some((captured_at, snapshot)) = cache.read().clone() {
+        if now.saturating_sub(captured_at) < 30_000 {
+            return snapshot;
+        }
+    }
+    let snapshot = compute_local_remote_update_readiness();
+    *cache.write() = Some((now, snapshot.clone()));
+    snapshot
+}
+
+pub(crate) fn peer_remote_update_blocked_reason(peer: &LanPeerSnapshot) -> Option<String> {
+    if !peer_supports_http_sync(peer, LAN_REMOTE_UPDATE_CAPABILITY) {
+        return Some(format!(
+            "{} does not support remote update yet. Update that machine manually first.",
+            peer.node_name
+        ));
+    }
+    let readiness = peer.remote_update_readiness.as_ref()?;
+    if readiness.ready {
+        return None;
+    }
+    Some(
+        readiness.blocked_reason.clone().unwrap_or_else(|| {
+            format!("{} is not ready to run remote update yet.", peer.node_name)
+        }),
+    )
+}
+
+fn local_version_sync_target_ref(
+    version_sync: &LanLocalVersionSyncSnapshot,
+) -> Result<&str, String> {
+    let Some(target_ref) = version_sync.target_ref.as_deref() else {
+        return Err(version_sync.blocked_reason.clone().unwrap_or_else(|| {
+            "local build git sha is unknown; cannot coordinate same-version update".to_string()
+        }));
+    };
+    if !version_sync.update_to_local_build_allowed {
+        return Err(version_sync.blocked_reason.clone().unwrap_or_else(|| {
+            "current machine cannot expose a safe build target for peer update".to_string()
+        }));
+    }
+    Ok(target_ref)
 }
 
 const LAN_EDIT_ENTITY_DOMAIN_REGISTRY: [(&str, &str); 5] = [
@@ -352,6 +419,7 @@ pub struct LanPeerSnapshot {
     pub trusted: bool,
     pub pair_state: Option<String>,
     pub pair_request_id: Option<String>,
+    pub remote_update_readiness: Option<LanRemoteUpdateReadinessSnapshot>,
     pub sync_blocked_domains: Vec<String>,
     pub sync_diagnostics: Vec<LanSyncDomainDiagnosticSnapshot>,
     pub build_matches_local: bool,
@@ -412,6 +480,7 @@ struct LanPeerRuntime {
     last_heartbeat_unix_ms: u64,
     capabilities: Vec<String>,
     build_identity: LanBuildIdentitySnapshot,
+    remote_update_readiness: Option<LanRemoteUpdateReadinessSnapshot>,
     sync_contracts: BTreeMap<String, u32>,
     provider_fingerprints: Vec<String>,
     provider_definitions_revision: String,
@@ -451,6 +520,8 @@ struct LanHeartbeatPacket {
     capabilities: Vec<String>,
     #[serde(default = "current_build_identity")]
     build_identity: LanBuildIdentitySnapshot,
+    #[serde(default)]
+    remote_update_readiness: Option<LanRemoteUpdateReadinessSnapshot>,
     #[serde(default)]
     sync_contracts: BTreeMap<String, u32>,
     provider_fingerprints: Vec<String>,
@@ -861,6 +932,7 @@ impl LanSyncRuntime {
                 last_heartbeat_unix_ms: unix_ms(),
                 capabilities: lan_heartbeat_capabilities(),
                 build_identity: current_build_identity(),
+                remote_update_readiness: Some(current_local_remote_update_readiness()),
                 sync_contracts: local_sync_contracts(),
                 provider_fingerprints: Vec::new(),
                 provider_definitions_revision: String::new(),
@@ -886,6 +958,7 @@ impl LanSyncRuntime {
                 last_heartbeat_unix_ms: unix_ms(),
                 capabilities: packet.capabilities,
                 build_identity: packet.build_identity,
+                remote_update_readiness: packet.remote_update_readiness,
                 sync_contracts: packet.sync_contracts,
                 provider_fingerprints: packet.provider_fingerprints,
                 provider_definitions_revision: packet.provider_definitions_revision,
@@ -910,6 +983,7 @@ impl LanSyncRuntime {
                     last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
                     capabilities: peer.capabilities.clone(),
                     build_identity: peer.build_identity.clone(),
+                    remote_update_readiness: peer.remote_update_readiness.clone(),
                     sync_contracts: peer.sync_contracts.clone(),
                     provider_fingerprints: peer.provider_fingerprints.clone(),
                     provider_definitions_revision: peer.provider_definitions_revision.clone(),
@@ -934,6 +1008,7 @@ impl LanSyncRuntime {
                     last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
                     capabilities: peer.capabilities.clone(),
                     build_identity: peer.build_identity.clone(),
+                    remote_update_readiness: peer.remote_update_readiness.clone(),
                     sync_contracts: peer.sync_contracts.clone(),
                     provider_fingerprints: peer.provider_fingerprints.clone(),
                     provider_definitions_revision: peer.provider_definitions_revision.clone(),
@@ -1185,10 +1260,8 @@ impl LanSyncRuntime {
         let peer = self
             .live_peer_by_node_id(normalized_node_id)
             .ok_or_else(|| format!("peer is not reachable on LAN: {normalized_node_id}"))?;
-        if !peer_supports_http_sync(&peer, LAN_REMOTE_UPDATE_CAPABILITY) {
-            return Err(format!(
-                "peer does not support remote update coordination: {normalized_node_id}"
-            ));
+        if let Some(reason) = peer_remote_update_blocked_reason(&peer) {
+            return Err(reason);
         }
         let base_url = peer_http_base_url(&peer)
             .ok_or_else(|| format!("peer has no valid LAN address: {normalized_node_id}"))?;
@@ -1241,14 +1314,7 @@ impl LanSyncRuntime {
         node_id: &str,
     ) -> Result<(), String> {
         let version_sync = current_local_version_sync_snapshot();
-        let Some(target_ref) = version_sync.target_ref.as_deref() else {
-            return Err(version_sync.blocked_reason.unwrap_or_else(|| {
-                "local build git sha is unknown; cannot coordinate same-version update".to_string()
-            }));
-        };
-        if let Some(reason) = version_sync.blocked_reason {
-            return Err(reason);
-        }
+        let target_ref = local_version_sync_target_ref(&version_sync)?;
         self.request_peer_remote_update(gateway, node_id, target_ref)
             .await
     }
@@ -2925,6 +2991,7 @@ fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::Ga
             sent_at_unix_ms: unix_ms(),
             capabilities: lan_heartbeat_capabilities(),
             build_identity: current_build_identity(),
+            remote_update_readiness: Some(current_local_remote_update_readiness()),
             sync_contracts: local_sync_contracts(),
             provider_fingerprints,
             provider_definitions_revision: provider_definitions_revision(
@@ -4479,13 +4546,14 @@ mod tests {
     use super::{
         apply_followed_provider_state, apply_lan_edit_event, deserialize_wire_packet,
         incoming_event_is_newer, lan_sync_edit_http, lan_sync_provider_definitions_http,
-        lan_sync_usage_http, note_entity_version, peer_is_stale, peer_supports_http_sync,
-        replace_remote_provider_definition_snapshots, restore_local_provider_state,
-        sanitize_node_name, serialize_wire_packet, tracked_spend_day_entity_id,
-        LanEditSyncRequestPacket, LanHeartbeatPacket, LanNodeIdentity,
-        LanProviderDefinitionSyncItem, LanProviderDefinitionsRequestPacket, LanSyncPacket,
-        LanSyncRuntime, LanUsageSyncRequestPacket, LAN_PEER_STALE_AFTER_MS,
-        LAN_SYNC_AUTH_NODE_ID_HEADER, LAN_SYNC_AUTH_SECRET_HEADER,
+        lan_sync_usage_http, local_version_sync_target_ref, note_entity_version, peer_is_stale,
+        peer_supports_http_sync, replace_remote_provider_definition_snapshots,
+        restore_local_provider_state, sanitize_node_name, serialize_wire_packet,
+        tracked_spend_day_entity_id, LanEditSyncRequestPacket, LanHeartbeatPacket,
+        LanLocalVersionSyncSnapshot, LanNodeIdentity, LanPeerSnapshot,
+        LanProviderDefinitionSyncItem, LanProviderDefinitionsRequestPacket,
+        LanRemoteUpdateReadinessSnapshot, LanSyncPacket, LanSyncRuntime, LanUsageSyncRequestPacket,
+        LAN_PEER_STALE_AFTER_MS, LAN_SYNC_AUTH_NODE_ID_HEADER, LAN_SYNC_AUTH_SECRET_HEADER,
     };
     use crate::orchestrator::store::{LanEditSyncEvent, UsageRequestSyncRow};
     use axum::body::to_bytes;
@@ -4530,6 +4598,58 @@ mod tests {
             HeaderValue::from_str(trust_secret).expect("trust secret header"),
         );
         headers
+    }
+
+    fn test_peer_snapshot() -> LanPeerSnapshot {
+        LanPeerSnapshot {
+            node_id: "node-peer".to_string(),
+            node_name: "Peer".to_string(),
+            listen_addr: "192.168.1.10:4000".to_string(),
+            last_heartbeat_unix_ms: 1,
+            capabilities: super::lan_heartbeat_capabilities(),
+            build_identity: super::current_build_identity(),
+            remote_update_readiness: None,
+            provider_fingerprints: Vec::new(),
+            provider_definitions_revision: String::new(),
+            sync_contracts: super::local_sync_contracts(),
+            followed_source_node_id: None,
+            trusted: true,
+            pair_state: None,
+            pair_request_id: None,
+            sync_blocked_domains: Vec::new(),
+            sync_diagnostics: Vec::new(),
+            build_matches_local: true,
+        }
+    }
+
+    #[test]
+    fn local_version_sync_target_ref_allows_dirty_build_when_sha_exists() {
+        let snapshot = LanLocalVersionSyncSnapshot {
+            target_ref: Some("abc123".to_string()),
+            git_worktree_clean: false,
+            update_to_local_build_allowed: true,
+            blocked_reason: Some("local worktree is dirty".to_string()),
+        };
+
+        assert_eq!(
+            local_version_sync_target_ref(&snapshot).expect("target ref should stay usable"),
+            "abc123"
+        );
+    }
+
+    #[test]
+    fn peer_remote_update_blocked_reason_reports_peer_dirty_state() {
+        let mut peer = test_peer_snapshot();
+        peer.remote_update_readiness = Some(LanRemoteUpdateReadinessSnapshot {
+            ready: false,
+            blocked_reason: Some("peer worktree is dirty".to_string()),
+            checked_at_unix_ms: 1,
+        });
+
+        assert_eq!(
+            super::peer_remote_update_blocked_reason(&peer).as_deref(),
+            Some("peer worktree is dirty")
+        );
     }
 
     #[test]
@@ -4955,6 +5075,7 @@ mod tests {
                 sent_at_unix_ms: 1,
                 capabilities: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
                 sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: vec![],
                 provider_definitions_revision: String::new(),
@@ -5530,6 +5651,7 @@ mod tests {
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
             build_identity: super::current_build_identity(),
+            remote_update_readiness: None,
             provider_fingerprints: Vec::new(),
             provider_definitions_revision: String::new(),
             sync_contracts: super::local_sync_contracts(),
@@ -5564,6 +5686,7 @@ mod tests {
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
             build_identity: super::current_build_identity(),
+            remote_update_readiness: None,
             provider_fingerprints: Vec::new(),
             provider_definitions_revision: String::new(),
             sync_contracts: std::collections::BTreeMap::from([
@@ -5601,6 +5724,7 @@ mod tests {
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
             build_identity: super::current_build_identity(),
+            remote_update_readiness: None,
             provider_fingerprints: Vec::new(),
             provider_definitions_revision: String::new(),
             sync_contracts: std::collections::BTreeMap::from([
@@ -5710,6 +5834,7 @@ mod tests {
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
             build_identity: super::current_build_identity(),
+            remote_update_readiness: None,
             provider_fingerprints: Vec::new(),
             provider_definitions_revision: String::new(),
             sync_contracts: std::collections::BTreeMap::from([
@@ -5847,6 +5972,7 @@ mod tests {
                 last_heartbeat_unix_ms: 100_000,
                 capabilities: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
                 sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: vec![],
                 provider_definitions_revision: String::new(),
@@ -5862,6 +5988,7 @@ mod tests {
                 last_heartbeat_unix_ms: 100_000_u64.saturating_sub(LAN_PEER_STALE_AFTER_MS + 1),
                 capabilities: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
                 sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: vec![],
                 provider_definitions_revision: String::new(),
@@ -5905,6 +6032,7 @@ mod tests {
                 sent_at_unix_ms: 1000,
                 capabilities: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
                 sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: Vec::new(),
                 provider_definitions_revision: String::new(),
@@ -5938,6 +6066,7 @@ mod tests {
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
             build_identity: super::current_build_identity(),
+            remote_update_readiness: None,
             provider_fingerprints: Vec::new(),
             provider_definitions_revision: String::new(),
             sync_contracts: super::local_sync_contracts(),
@@ -5986,6 +6115,7 @@ mod tests {
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
             build_identity: super::current_build_identity(),
+            remote_update_readiness: None,
             provider_fingerprints: Vec::new(),
             provider_definitions_revision: String::new(),
             sync_contracts: super::local_sync_contracts(),
@@ -6161,6 +6291,7 @@ mod tests {
                 sent_at_unix_ms: 1,
                 capabilities: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
                 sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: vec![],
                 provider_definitions_revision: String::new(),
@@ -6191,6 +6322,7 @@ mod tests {
                 last_heartbeat_unix_ms: now,
                 capabilities: super::lan_heartbeat_capabilities(),
                 build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
                 sync_contracts: super::local_sync_contracts(),
                 provider_fingerprints: vec!["fp-1".to_string()],
                 provider_definitions_revision: String::new(),
@@ -6223,6 +6355,7 @@ mod tests {
                 last_heartbeat_unix_ms: now,
                 capabilities: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
                 sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: vec!["fp-1".to_string()],
                 provider_definitions_revision: String::new(),
@@ -6554,6 +6687,7 @@ mod tests {
                 last_heartbeat_unix_ms: crate::orchestrator::store::unix_ms(),
                 capabilities: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
                 sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: vec![fingerprint.clone()],
                 provider_definitions_revision: String::new(),

@@ -371,6 +371,8 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
     })
     .chain(lan_snapshot.peers.iter().map(|peer| {
         let version_sync_reason = crate::lan_sync::peer_version_sync_reason(peer);
+        let peer_remote_update_blocked_reason =
+            crate::lan_sync::peer_remote_update_blocked_reason(peer);
         ConfigSourceSnapshot {
             kind: "peer",
             node_id: peer.node_id.clone(),
@@ -411,8 +413,15 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
             sync_blocked_domains: peer.sync_blocked_domains.clone(),
             version_sync_required: version_sync_reason.is_some(),
             version_sync_reason,
-            same_version_update_allowed: local_version_sync.update_to_local_build_allowed,
-            same_version_update_blocked_reason: local_version_sync.blocked_reason.clone(),
+            same_version_update_allowed: local_version_sync.update_to_local_build_allowed
+                && peer_remote_update_blocked_reason.is_none(),
+            same_version_update_blocked_reason: if !local_version_sync
+                .update_to_local_build_allowed
+            {
+                local_version_sync.blocked_reason.clone()
+            } else {
+                peer_remote_update_blocked_reason
+            },
         }
     }))
     .collect::<Vec<_>>();

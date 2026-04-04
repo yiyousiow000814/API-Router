@@ -271,7 +271,8 @@ describe('ConfigModal', () => {
       version_sync_required: true,
       version_sync_reason: 'Sync paused until both devices run compatible builds.',
       same_version_update_allowed: false,
-      same_version_update_blocked_reason: 'Local git worktree is dirty.',
+      same_version_update_blocked_reason:
+        "This machine's git worktree is dirty. Commit or stash local changes there before remote update can run.",
       sync_blocked_domains: ['provider_definitions', 'usage_history', 'usage_requests'],
       build_identity: {
         app_version: '0.4.0',
@@ -282,7 +283,9 @@ describe('ConfigModal', () => {
       build_matches_local: false,
     })
 
-    expect(whyText).toBe('Local git worktree is dirty.')
+    expect(whyText).toBe(
+      "This machine's git worktree is dirty. Commit or stash local changes there before remote update can run.",
+    )
   })
 
   it('formats diagnostics build compare values', () => {
