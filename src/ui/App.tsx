@@ -18,7 +18,7 @@ import {
   fmtUsdMaybe as formatUsdMaybe,
   fmtUsageBucketLabel as formatUsageBucketLabel,
 } from './utils/usageDisplay'
-import { devConfig, devStatus, evolveDevStatus, parseDevFlag, type SpendHistoryRow } from './devMockData'
+import type { SpendHistoryRow } from './devMockData'
 import type {
   ProviderScheduleDraft,
   UsageHistoryDraft,
@@ -55,7 +55,6 @@ import { useUsageOpsBridge } from './hooks/useUsageOpsBridge'
 import { useUsageUiDerived } from './hooks/useUsageUiDerived'
 import { useMainContentCallbacks } from './hooks/useMainContentCallbacks'
 import { useTopNavIntentPrefetch } from './hooks/useTopNavIntentPrefetch'
-import { buildUsageStatisticsOverviewFromFull } from './utils/usageStatisticsOverview'
 import type {
   KeyModalState,
   ProviderBaseUrlModalState,
@@ -106,54 +105,57 @@ const RAW_DRAFT_WSL_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.wsl2.v1'
 const USAGE_PROVIDER_SHOW_DETAILS_KEY = 'ao.usage.provider.showDetails.v1'
 const EVENT_LOG_PRELOAD_REFRESH_MS = 15_000
 const EVENT_LOG_PRELOAD_LIMIT = 5000
-const STATUS_CACHE_STORAGE_KEY = 'ao.startup.status.v1'
-const CONFIG_CACHE_STORAGE_KEY = 'ao.startup.config.v1'
-const TOKEN_CACHE_STORAGE_KEY = 'ao.startup.gatewayTokenPreview.v1'
-const USAGE_OVERVIEW_CACHE_STORAGE_KEY = 'ao.startup.usageOverview.v1'
-const USAGE_STATS_CACHE_STORAGE_KEY = 'ao.startup.usageStatistics.v1'
 
 type CopyProviderResult = {
   target_name: string
   local_copy_state: 'copied' | 'linked'
 }
 
+type DevPreviewModule = typeof import('./devMockData')
+
+function parseDevFlag(raw: string | null): boolean {
+  const normalized = String(raw ?? '').trim().toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on'
+}
+
+function createEmptyDevStatus(): Status {
+  return {
+    listen: { host: '127.0.0.1', port: 4000 },
+    preferred_provider: '',
+    manual_override: null,
+    providers: {},
+    metrics: {},
+    recent_events: [],
+    quota: {},
+    ledgers: {},
+    last_activity_unix_ms: 0,
+    codex_account: { ok: false, signed_in: false },
+  }
+}
+
+function createEmptyDevConfig(): Config {
+  return {
+    listen: { host: '127.0.0.1', port: 4000 },
+    routing: {
+      preferred_provider: '',
+      session_preferred_providers: {},
+      auto_return_to_preferred: true,
+      preferred_stable_seconds: 30,
+      failure_threshold: 2,
+      cooldown_seconds: 60,
+      request_timeout_seconds: 300,
+    },
+    providers: {},
+    provider_order: [],
+  }
+}
+
 recordStartupStage('frontend_app_module_loaded')
-
-function readStartupCache<T>(key: string): T | null {
-  if (typeof window === 'undefined') return null
-  try {
-    const raw = window.localStorage.getItem(key)
-    if (!raw) return null
-    return JSON.parse(raw) as T
-  } catch {
-    return null
-  }
-}
-
-function writeStartupCache(key: string, value: unknown) {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value))
-  } catch {
-    // Ignore cache write failures; startup cache is best-effort only.
-  }
-}
-
 
 export default function App() {
   useEffect(() => {
     recordStartupStage('frontend_app_component_mounted')
   }, [])
-  const cachedUsageStatistics = useMemo(
-    () => readStartupCache<UsageStatistics>(USAGE_STATS_CACHE_STORAGE_KEY),
-    [],
-  )
-  const cachedUsageOverview = useMemo(
-    () =>
-      readStartupCache<UsageStatisticsOverview>(USAGE_OVERVIEW_CACHE_STORAGE_KEY) ??
-      buildUsageStatisticsOverviewFromFull(cachedUsageStatistics),
-    [cachedUsageStatistics],
-  )
   const isDevPreview = useMemo(() => {
     if (!import.meta.env.DEV) return false
     if (typeof window === 'undefined') return false
@@ -164,11 +166,14 @@ export default function App() {
     if (typeof window === 'undefined') return new URLSearchParams()
     return new URLSearchParams(window.location.search)
   }, [])
+  const [devPreviewModule, setDevPreviewModule] = useState<DevPreviewModule | null>(null)
   const devMockHistoryEnabled = useMemo(() => parseDevFlag(devFlags.get('mockHistory')), [devFlags])
   const devAutoOpenHistory = useMemo(() => parseDevFlag(devFlags.get('openHistory')), [devFlags])
   const rawConfigTestMode = useMemo(() => parseDevFlag(devFlags.get('test')), [devFlags])
-  const [status, setStatus] = useState<Status | null>(() => readStartupCache<Status>(STATUS_CACHE_STORAGE_KEY))
-  const [config, setConfig] = useState<Config | null>(() => readStartupCache<Config>(CONFIG_CACHE_STORAGE_KEY))
+  const devStatus = useMemo(() => devPreviewModule?.devStatus ?? createEmptyDevStatus(), [devPreviewModule])
+  const devConfig = useMemo(() => devPreviewModule?.devConfig ?? createEmptyDevConfig(), [devPreviewModule])
+  const [status, setStatus] = useState<Status | null>(null)
+  const [config, setConfig] = useState<Config | null>(null)
   const [, setBaselineBaseUrls] = useState<Record<string, string>>({})
   const [toast, setToast] = useState<string>('')
   const [override, setOverride] = useState<string>('') // '' => auto
@@ -221,9 +226,7 @@ export default function App() {
     value: '',
   })
   const overrideDirtyRef = useRef<boolean>(false)
-  const [gatewayTokenPreview, setGatewayTokenPreview] = useState<string>(
-    () => readStartupCache<string>(TOKEN_CACHE_STORAGE_KEY) ?? '',
-  )
+  const [gatewayTokenPreview, setGatewayTokenPreview] = useState<string>('')
   const [gatewayTokenReveal, setGatewayTokenReveal] = useState<string>('')
   const [gatewayModalOpen, setGatewayModalOpen] = useState<boolean>(false)
   const [configModalOpen, setConfigModalOpen] = useState<boolean>(false)
@@ -261,12 +264,8 @@ export default function App() {
   const [providerSwitchStatus, setProviderSwitchStatus] = useState<ProviderSwitchboardStatus | null>(null)
   const [providerGroupManagerOpen, setProviderGroupManagerOpen] = useState<boolean>(false)
   const [providerGroupManagerFocusProvider, setProviderGroupManagerFocusProvider] = useState<string | null>(null)
-  const [usageOverview, setUsageOverview] = useState<UsageStatisticsOverview | null>(
-    cachedUsageOverview,
-  )
-  const [usageStatistics, setUsageStatistics] = useState<UsageStatistics | null>(
-    cachedUsageStatistics,
-  )
+  const [usageOverview, setUsageOverview] = useState<UsageStatisticsOverview | null>(null)
+  const [usageStatistics, setUsageStatistics] = useState<UsageStatistics | null>(null)
   const [usageWindowHours, setUsageWindowHours] = useState<number>(24)
   const [usageFilterNodes, setUsageFilterNodes] = useState<string[]>([])
   const [usageFilterProviders, setUsageFilterProviders] = useState<string[]>([])
@@ -482,25 +481,24 @@ export default function App() {
     }
   }, [eventLogSeedEvents, handleOpenLastErrorInEventLog])
   useEffect(() => {
-    if (!status) return
-    writeStartupCache(STATUS_CACHE_STORAGE_KEY, status)
-  }, [status])
-  useEffect(() => {
-    if (!config) return
-    writeStartupCache(CONFIG_CACHE_STORAGE_KEY, config)
-  }, [config])
-  useEffect(() => {
-    if (!gatewayTokenPreview.trim()) return
-    writeStartupCache(TOKEN_CACHE_STORAGE_KEY, gatewayTokenPreview)
-  }, [gatewayTokenPreview])
-  useEffect(() => {
-    if (!usageOverview) return
-    writeStartupCache(USAGE_OVERVIEW_CACHE_STORAGE_KEY, usageOverview)
-  }, [usageOverview])
-  useEffect(() => {
-    if (!usageStatistics) return
-    writeStartupCache(USAGE_STATS_CACHE_STORAGE_KEY, usageStatistics)
-  }, [usageStatistics])
+    if (!isDevPreview) return
+    let cancelled = false
+    void import('./devMockData').then((module) => {
+      if (cancelled) return
+      setDevPreviewModule(module)
+      setStatus(module.devStatus)
+      setConfig(module.devConfig)
+      setBaselineBaseUrls(
+        Object.fromEntries(
+          Object.entries(module.devConfig.providers).map(([name, provider]) => [name, provider.base_url]),
+        ),
+      )
+      setGatewayTokenPreview('ao_dev********7f2a')
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [isDevPreview])
   useEffect(() => {
     if (activePage !== 'event_log') return
     let cancelled = false
@@ -935,8 +933,9 @@ export default function App() {
     })
   }, [config, setBaselineBaseUrls])
   const onDevPreviewTick = useCallback(() => {
-    setStatus((prev) => evolveDevStatus(prev))
-  }, [])
+    if (!devPreviewModule) return
+    setStatus((prev) => devPreviewModule.evolveDevStatus(prev))
+  }, [devPreviewModule])
   const codexSwapBadge = useMemo(() => {
     const windowsHome = codexSwapUseWindows ? codexSwapDir1.trim() : ''
     const wslHome = codexSwapUseWsl ? codexSwapDir2.trim() : ''

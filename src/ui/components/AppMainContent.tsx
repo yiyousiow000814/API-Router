@@ -247,7 +247,7 @@ function AppMainContentInner(props: Props) {
         compact
         eyebrow="Dashboard"
         title="Preparing live status"
-        detail="Restoring the last known snapshot and syncing the latest gateway state."
+        detail="Waiting for the latest gateway state before rendering the dashboard."
       />
     )
   }
