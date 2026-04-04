@@ -373,7 +373,7 @@ export function ConfigModal({
                               : 'Use local'
                             : versionSyncRequired
                               ? source.same_version_update_allowed
-                                ? 'Update required'
+                                ? 'Update peer'
                                 : 'Update blocked'
                               : source.active
                               ? 'Following'
@@ -463,7 +463,9 @@ export function ConfigModal({
                               <span className="aoConfigSourceMenuLabel">{label}</span>
                               {source.kind === 'peer' ? (
                                 <span className="aoConfigSourceMenuSub">
-                                  {source.using_count > 0
+                                  {versionSyncRequired && source.same_version_update_allowed
+                                    ? 'Sync to this build'
+                                    : source.using_count > 0
                                     ? `${source.using_count} device${source.using_count === 1 ? '' : 's'}`
                                     : 'LAN peer'}
                                 </span>
@@ -514,7 +516,7 @@ export function ConfigModal({
                       {selectedConfigSource.version_sync_reason}
                       {selectedConfigSource.same_version_update_blocked_reason
                         ? ` ${selectedConfigSource.same_version_update_blocked_reason}`
-                        : ' Use Update required to sync this peer to the current machine build.'}
+                        : ' Choose Update peer in Config source to sync this peer to the current machine build.'}
                     </div>
                   ) : null}
                   <div className="aoMiniTitle">Add provider</div>

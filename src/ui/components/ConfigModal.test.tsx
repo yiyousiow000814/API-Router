@@ -255,7 +255,7 @@ describe('ConfigModal', () => {
     )
 
     expect(html).toContain('Desk B is on a different build.')
-    expect(html).toContain('Use Update required to sync this peer to the current machine build.')
+    expect(html).toContain('Choose Update peer in Config source to sync this peer to the current machine build.')
   })
 
   it('prefers concrete diagnostics why text over generic paused copy', () => {
