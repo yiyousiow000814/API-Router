@@ -8,7 +8,12 @@ mod tests {
     use crate::orchestrator::upstream::UpstreamClient;
     use parking_lot::RwLock;
     use std::sync::atomic::AtomicU64;
-    use std::sync::Arc;
+    use std::sync::{Arc, OnceLock};
+
+    fn usage_base_gate_test_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
 
     fn mk_lan_sync() -> crate::lan_sync::LanSyncRuntime {
         crate::lan_sync::LanSyncRuntime::new(crate::lan_sync::LanNodeIdentity {
@@ -1045,6 +1050,8 @@ mod tests {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
 
+        let _guard = usage_base_gate_test_lock().lock().await;
+
         #[derive(Clone)]
         struct MockState {
             user_info_hits: Arc<AtomicU64>,
@@ -1132,6 +1139,8 @@ mod tests {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
 
+        let _guard = usage_base_gate_test_lock().lock().await;
+
         clear_usage_base_refresh_gate();
 
         #[derive(Clone)]
@@ -1209,6 +1218,8 @@ mod tests {
         use axum::{Json, Router};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
+
+        let _guard = usage_base_gate_test_lock().lock().await;
 
         let user_info_hits = Arc::new(AtomicU64::new(0));
         let subscriptions_hits = Arc::new(AtomicU64::new(0));
@@ -1308,6 +1319,8 @@ mod tests {
         use axum::{Json, Router};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
+
+        let _guard = usage_base_gate_test_lock().lock().await;
 
         clear_usage_base_refresh_gate();
 
@@ -2329,6 +2342,7 @@ mod tests {
 
     #[tokio::test]
     async fn manual_refresh_does_not_block_on_long_rate_limit_backoff() {
+        let _guard = usage_base_gate_test_lock().lock().await;
         clear_usage_base_refresh_gate();
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
@@ -2462,6 +2476,8 @@ mod tests {
         use axum::{Json, Router};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
+
+        let _guard = usage_base_gate_test_lock().lock().await;
 
         clear_usage_base_refresh_gate();
         let last_hit_at_ms = Arc::new(AtomicU64::new(0));
