@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -69,6 +69,12 @@ pub struct GatewayState {
     pub usage_base_speed_cache: Arc<RwLock<HashMap<String, UsageBaseSpeedCacheEntry>>>,
     pub prev_id_support_cache: Arc<RwLock<HashMap<String, bool>>>,
     pub client_sessions: Arc<RwLock<HashMap<String, ClientSessionRuntime>>>,
+}
+
+static RUNTIME_BOUND_LISTENER_ADDRS: OnceLock<Mutex<HashSet<SocketAddr>>> = OnceLock::new();
+
+fn runtime_bound_listener_addrs() -> &'static Mutex<HashSet<SocketAddr>> {
+    RUNTIME_BOUND_LISTENER_ADDRS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 #[derive(Clone, Debug)]
@@ -677,6 +683,10 @@ pub async fn serve_in_background(
         .join(", ");
     {
         state.cfg.write().listen.port = prepared.listen_port;
+        let mut bound_listener_addrs = runtime_bound_listener_addrs().lock();
+        for (addr, _) in &prepared.listeners {
+            bound_listener_addrs.insert(*addr);
+        }
     }
     write_gateway_startup_diag("binding", diag_addr, Some(&diag_binding));
 
@@ -711,6 +721,96 @@ pub async fn serve_in_background(
         }
     }
     Ok(())
+}
+
+pub(crate) fn ensure_runtime_gateway_listener_bindings(
+    state: GatewayState,
+    addrs: &[SocketAddr],
+) -> anyhow::Result<Vec<SocketAddr>> {
+    let mut pending = Vec::new();
+    let mut newly_bound = Vec::new();
+    {
+        let mut bound_listener_addrs = runtime_bound_listener_addrs().lock();
+        for addr in addrs {
+            if bound_listener_addrs.contains(addr) {
+                continue;
+            }
+            let listener = match std::net::TcpListener::bind(addr) {
+                Ok(listener) => listener,
+                Err(err) => {
+                    state.gateway_event_optional_overlay_bind_skip(*addr, &err.to_string());
+                    continue;
+                }
+            };
+            listener.set_nonblocking(true)?;
+            bound_listener_addrs.insert(*addr);
+            pending.push((*addr, listener));
+            newly_bound.push(*addr);
+        }
+    }
+
+    if pending.is_empty() {
+        return Ok(newly_bound);
+    }
+
+    write_gateway_startup_diag(
+        "runtime_listener_bound",
+        pending.first().map(|(addr, _)| *addr),
+        Some(
+            &pending
+                .iter()
+                .map(|(addr, _)| addr.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+    );
+    let app = build_router(state.clone());
+    for (addr, listener) in pending {
+        let listener = tokio::net::TcpListener::from_std(listener)?;
+        let app_for_addr = app.clone();
+        let state_for_addr = state.clone();
+        tauri::async_runtime::spawn(async move {
+            let result = axum::serve(
+                listener,
+                app_for_addr.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await;
+            runtime_bound_listener_addrs().lock().remove(&addr);
+            if let Err(err) = result {
+                write_gateway_startup_diag(
+                    "runtime_listener_failed",
+                    Some(addr),
+                    Some(&err.to_string()),
+                );
+                state_for_addr.store.add_event(
+                    "gateway",
+                    "warning",
+                    "gateway.runtime_listener_failed",
+                    &format!("runtime gateway listener exited on {addr}: {err}"),
+                    json!({ "listen_addr": addr.to_string() }),
+                );
+            }
+        });
+    }
+
+    Ok(newly_bound)
+}
+
+trait GatewayRuntimeListenerEventExt {
+    fn gateway_event_optional_overlay_bind_skip(&self, addr: SocketAddr, detail: &str);
+}
+
+impl GatewayRuntimeListenerEventExt for GatewayState {
+    fn gateway_event_optional_overlay_bind_skip(&self, addr: SocketAddr, detail: &str) {
+        write_gateway_startup_diag("runtime_listener_skipped", Some(addr), Some(detail));
+        self.store.add_event(
+            "gateway",
+            "info",
+            "gateway.runtime_listener_skipped",
+            &format!("Skipped runtime gateway listener bind for {addr}: {detail}"),
+            json!({ "listen_addr": addr.to_string(), "detail": detail }),
+        );
+    }
 }
 
 include!("gateway/store_recovery.rs");

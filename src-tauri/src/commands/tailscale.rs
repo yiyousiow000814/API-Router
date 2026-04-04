@@ -1,6 +1,8 @@
 #[cfg(windows)]
 const TAILSCALE_CREATE_NO_WINDOW: u32 = 0x08000000;
 
+#[cfg(windows)]
+use std::net::IpAddr;
 use std::net::{SocketAddr, TcpStream};
 
 fn tailscale_hidden_command(program: &str) -> std::process::Command {
@@ -81,6 +83,40 @@ fn resolve_reachable_gateway_ipv4(
         .collect()
 }
 
+#[cfg(windows)]
+fn parse_tailscale_ipv4_addrs(ipv4: &[String]) -> Vec<IpAddr> {
+    ipv4.iter()
+        .filter_map(|ip| ip.parse::<IpAddr>().ok())
+        .collect()
+}
+
+fn maybe_refresh_runtime_tailscale_listener(
+    state: &crate::app_state::AppState,
+    connected: bool,
+    ipv4: &[String],
+    gateway_reachable: bool,
+) {
+    if !connected || ipv4.is_empty() || gateway_reachable {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        let listen = state.gateway.cfg.read().listen.clone();
+        let parsed_ips = parse_tailscale_ipv4_addrs(ipv4);
+        let Ok(addrs) = crate::orchestrator::gateway_bootstrap::tailscale_overlay_listener_addrs(
+            &listen.host,
+            listen.port,
+            &parsed_ips,
+        ) else {
+            return;
+        };
+        let _ = crate::orchestrator::gateway::ensure_runtime_gateway_listener_bindings(
+            state.gateway.clone(),
+            &addrs,
+        );
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn tailscale_status(
     state: tauri::State<'_, crate::app_state::AppState>,
@@ -102,6 +138,13 @@ pub(crate) async fn tailscale_status(
     };
     let (connected, dns_name, ipv4) = parse_tailscale_summary(&parsed);
     let listen_port = state.gateway.cfg.read().listen.port;
+    let initial_reachable_ipv4 = if connected {
+        resolve_reachable_gateway_ipv4(&ipv4, listen_port, probe_gateway_addr)
+    } else {
+        Vec::new()
+    };
+    let initial_gateway_reachable = !initial_reachable_ipv4.is_empty();
+    maybe_refresh_runtime_tailscale_listener(&state, connected, &ipv4, initial_gateway_reachable);
     let reachable_ipv4 = if connected {
         resolve_reachable_gateway_ipv4(&ipv4, listen_port, probe_gateway_addr)
     } else {
@@ -149,4 +192,16 @@ fn reachable_gateway_ipv4_only_keeps_probeable_addrs() {
     );
 
     assert_eq!(reachable, vec!["100.64.208.117"]);
+}
+
+#[cfg(test)]
+#[test]
+fn parse_tailscale_ipv4_addrs_skips_invalid_rows() {
+    let parsed = parse_tailscale_ipv4_addrs(&[
+        "100.64.208.117".to_string(),
+        "not-an-ip".to_string(),
+        "100.118.0.115".to_string(),
+    ]);
+    let rendered = parsed.iter().map(ToString::to_string).collect::<Vec<_>>();
+    assert_eq!(rendered, vec!["100.64.208.117", "100.118.0.115"]);
 }
