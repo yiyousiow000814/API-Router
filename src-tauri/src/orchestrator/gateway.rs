@@ -723,6 +723,7 @@ pub async fn serve_in_background(
     Ok(())
 }
 
+#[cfg(windows)]
 pub(crate) fn ensure_runtime_gateway_listener_bindings(
     state: GatewayState,
     addrs: &[SocketAddr],
@@ -796,10 +797,12 @@ pub(crate) fn ensure_runtime_gateway_listener_bindings(
     Ok(newly_bound)
 }
 
+#[cfg(windows)]
 trait GatewayRuntimeListenerEventExt {
     fn gateway_event_optional_overlay_bind_skip(&self, addr: SocketAddr, detail: &str);
 }
 
+#[cfg(windows)]
 impl GatewayRuntimeListenerEventExt for GatewayState {
     fn gateway_event_optional_overlay_bind_skip(&self, addr: SocketAddr, detail: &str) {
         write_gateway_startup_diag("runtime_listener_skipped", Some(addr), Some(detail));

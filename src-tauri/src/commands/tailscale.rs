@@ -90,6 +90,7 @@ fn parse_tailscale_ipv4_addrs(ipv4: &[String]) -> Vec<IpAddr> {
         .collect()
 }
 
+#[cfg(windows)]
 fn maybe_refresh_runtime_tailscale_listener(
     state: &crate::app_state::AppState,
     connected: bool,
@@ -99,22 +100,17 @@ fn maybe_refresh_runtime_tailscale_listener(
     if !connected || ipv4.is_empty() || gateway_reachable {
         return;
     }
-    #[cfg(windows)]
-    {
-        let listen = state.gateway.cfg.read().listen.clone();
-        let parsed_ips = parse_tailscale_ipv4_addrs(ipv4);
-        let Ok(addrs) = crate::orchestrator::gateway_bootstrap::tailscale_overlay_listener_addrs(
-            &listen.host,
-            listen.port,
-            &parsed_ips,
-        ) else {
-            return;
-        };
-        let _ = crate::orchestrator::gateway::ensure_runtime_gateway_listener_bindings(
-            state.gateway.clone(),
-            &addrs,
-        );
-    }
+    let listen = state.gateway.cfg.read().listen.clone();
+    let parsed_ips = parse_tailscale_ipv4_addrs(ipv4);
+    let Ok(addrs) = crate::orchestrator::gateway_bootstrap::tailscale_overlay_listener_addrs(
+        &listen.host,
+        listen.port,
+        &parsed_ips,
+    ) else {
+        return;
+    };
+    let _ =
+        crate::orchestrator::gateway::ensure_runtime_gateway_listener_bindings(state.gateway.clone(), &addrs);
 }
 
 #[tauri::command]
@@ -144,6 +140,7 @@ pub(crate) async fn tailscale_status(
         Vec::new()
     };
     let initial_gateway_reachable = !initial_reachable_ipv4.is_empty();
+    #[cfg(windows)]
     maybe_refresh_runtime_tailscale_listener(&state, connected, &ipv4, initial_gateway_reachable);
     let reachable_ipv4 = if connected {
         resolve_reachable_gateway_ipv4(&ipv4, listen_port, probe_gateway_addr)
