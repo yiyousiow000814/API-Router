@@ -3,6 +3,5 @@
     "allow": [
       "Bash(gh *)"
     ]
-  },
-  "$version": 3
+  }
 }
