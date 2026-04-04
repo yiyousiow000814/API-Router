@@ -2272,15 +2272,20 @@ pub fn record_tracked_spend_day_removal_from_gateway(
     secrets: &SecretStore,
     provider: &str,
     day_started_at_unix_ms: u64,
+    source_node_id: Option<&str>,
 ) -> Result<(), String> {
     let Some(local_node) = local_node_identity_for_edit_recording() else {
         return Ok(());
     };
     let shared_provider_id = shared_provider_id_for_provider(secrets, provider)?;
+    let target_source_node_id = source_node_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(local_node.node_id.as_str());
     let entity_id = tracked_spend_day_entity_id(
         &shared_provider_id,
         day_started_at_unix_ms,
-        &local_node.node_id,
+        target_source_node_id,
     );
     let payload = serde_json::to_value(TrackedSpendDaySyncPayload {
         provider_name: provider.to_string(),
@@ -2706,11 +2711,20 @@ fn apply_tracked_spend_day_event(
         &payload.provider_name,
     )?;
     if event.op == "delete" {
-        gateway.store.remove_remote_spend_day(
-            &provider_name,
-            source_node_id,
-            payload.day_started_at_unix_ms,
-        );
+        let local_node_id = current_local_node_identity()
+            .map(|node| node.node_id)
+            .unwrap_or_default();
+        if source_node_id == local_node_id {
+            gateway
+                .store
+                .remove_spend_day(&provider_name, payload.day_started_at_unix_ms);
+        } else {
+            gateway.store.remove_remote_spend_day(
+                &provider_name,
+                source_node_id,
+                payload.day_started_at_unix_ms,
+            );
+        }
         return Ok(());
     }
     let mut row = payload.row.clone();
@@ -4466,9 +4480,10 @@ mod tests {
         incoming_event_is_newer, lan_sync_edit_http, lan_sync_provider_definitions_http,
         lan_sync_usage_http, note_entity_version, peer_is_stale, peer_supports_http_sync,
         replace_remote_provider_definition_snapshots, restore_local_provider_state,
-        sanitize_node_name, serialize_wire_packet, LanEditSyncRequestPacket, LanHeartbeatPacket,
-        LanNodeIdentity, LanProviderDefinitionSyncItem, LanProviderDefinitionsRequestPacket,
-        LanSyncPacket, LanSyncRuntime, LanUsageSyncRequestPacket, LAN_PEER_STALE_AFTER_MS,
+        sanitize_node_name, serialize_wire_packet, tracked_spend_day_entity_id,
+        LanEditSyncRequestPacket, LanHeartbeatPacket, LanNodeIdentity,
+        LanProviderDefinitionSyncItem, LanProviderDefinitionsRequestPacket, LanSyncPacket,
+        LanSyncRuntime, LanUsageSyncRequestPacket, LAN_PEER_STALE_AFTER_MS,
         LAN_SYNC_AUTH_NODE_ID_HEADER, LAN_SYNC_AUTH_SECRET_HEADER,
     };
     use crate::orchestrator::store::{LanEditSyncEvent, UsageRequestSyncRow};
@@ -6620,6 +6635,59 @@ mod tests {
             .expect("deleted snapshot");
         assert!(record.deleted);
         assert!(record.provider_name.starts_with("shared_"));
+    }
+
+    #[test]
+    fn tracked_spend_delete_event_removes_local_owner_row_when_source_matches_local_node() {
+        let (_tmp, state) = build_test_state();
+        super::register_gateway_status_runtime(state.lan_sync.clone());
+        let shared_provider_id = state
+            .secrets
+            .ensure_provider_shared_id("provider_1")
+            .expect("shared id");
+        let day_started_at_unix_ms = 1_711_929_600_000u64;
+        state.gateway.store.put_spend_day(
+            "provider_1",
+            day_started_at_unix_ms,
+            &serde_json::json!({
+                "provider": "provider_1",
+                "started_at_unix_ms": day_started_at_unix_ms,
+                "tracked_spend_usd": 17.47,
+                "updated_at_unix_ms": day_started_at_unix_ms,
+                "producer_node_id": state.lan_sync.local_node_id(),
+                "producer_node_name": state.lan_sync.local_node_name()
+            }),
+        );
+        let event = crate::orchestrator::store::LanEditSyncEvent {
+            event_id: "edit_delete_local_owned_row".to_string(),
+            node_id: "node-remote".to_string(),
+            node_name: "remote".to_string(),
+            created_at_unix_ms: 5,
+            lamport_ts: 5,
+            entity_type: "tracked_spend_day".to_string(),
+            entity_id: tracked_spend_day_entity_id(
+                &shared_provider_id,
+                day_started_at_unix_ms,
+                &state.lan_sync.local_node_id(),
+            ),
+            op: "delete".to_string(),
+            payload: serde_json::json!({
+                "provider_name": "provider_1",
+                "day_started_at_unix_ms": day_started_at_unix_ms,
+                "row": serde_json::Value::Null
+            }),
+        };
+
+        apply_lan_edit_event(&state.gateway, &state.config_path, &event).expect("apply delete");
+
+        assert!(
+            state
+                .gateway
+                .store
+                .get_spend_day("provider_1", day_started_at_unix_ms)
+                .is_none(),
+            "delete event should remove the local owner row when source node matches local node"
+        );
     }
 
     #[test]

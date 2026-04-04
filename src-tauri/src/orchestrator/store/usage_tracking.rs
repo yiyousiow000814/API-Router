@@ -29,6 +29,22 @@ fn merge_json_source_fields(row: &mut Value, source_node_id: &str, source_node_n
     }
 }
 
+fn list_json_rows_from_conn(
+    conn: &rusqlite::Connection,
+    query: &str,
+    provider: &str,
+) -> Vec<Value> {
+    if let Ok(mut stmt) = conn.prepare(query) {
+        if let Ok(rows) = stmt.query_map([provider], |row| row.get::<_, String>(0)) {
+            return rows
+                .flatten()
+                .filter_map(|row_json| serde_json::from_str::<Value>(&row_json).ok())
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
 impl Store {
     pub fn list_usage_request_stats_rows_window(
         &self,
@@ -254,20 +270,14 @@ impl Store {
 
     pub fn list_local_spend_days(&self, provider: &str) -> Vec<Value> {
         self.with_events_read_conn(|conn| {
-            if let Ok(mut stmt) = conn.prepare(
+            list_json_rows_from_conn(
+                conn,
                 "SELECT row_json
                  FROM spend_days
                  WHERE provider = ?1
                  ORDER BY day_started_at_unix_ms ASC",
-            ) {
-                if let Ok(rows) = stmt.query_map([provider], |row| row.get::<_, String>(0)) {
-                    return rows
-                        .flatten()
-                        .filter_map(|row_json| serde_json::from_str::<Value>(&row_json).ok())
-                        .collect();
-                }
-            }
-            Vec::new()
+                provider,
+            )
         })
     }
 
@@ -348,7 +358,14 @@ impl Store {
 
     pub fn list_spend_days(&self, provider: &str) -> Vec<Value> {
         self.with_events_read_conn(|conn| {
-            let mut parsed = self.list_local_spend_days(provider);
+            let mut parsed = list_json_rows_from_conn(
+                conn,
+                "SELECT row_json
+                 FROM spend_days
+                 WHERE provider = ?1
+                 ORDER BY day_started_at_unix_ms ASC",
+                provider,
+            );
             if let Ok(mut stmt) = conn.prepare(
                 "SELECT source_node_id, source_node_name, row_json
                  FROM spend_days_remote
@@ -444,26 +461,27 @@ impl Store {
 
     pub fn list_local_spend_manual_days(&self, provider: &str) -> Vec<Value> {
         self.with_events_read_conn(|conn| {
-            if let Ok(mut stmt) = conn.prepare(
+            list_json_rows_from_conn(
+                conn,
                 "SELECT row_json
                  FROM spend_manual_days
                  WHERE provider = ?1
                  ORDER BY day_key ASC",
-            ) {
-                if let Ok(rows) = stmt.query_map([provider], |row| row.get::<_, String>(0)) {
-                    return rows
-                        .flatten()
-                        .filter_map(|row_json| serde_json::from_str::<Value>(&row_json).ok())
-                        .collect();
-                }
-            }
-            Vec::new()
+                provider,
+            )
         })
     }
 
     pub fn list_spend_manual_days(&self, provider: &str) -> Vec<Value> {
         self.with_events_read_conn(|conn| {
-            let mut parsed = self.list_local_spend_manual_days(provider);
+            let mut parsed = list_json_rows_from_conn(
+                conn,
+                "SELECT row_json
+                 FROM spend_manual_days
+                 WHERE provider = ?1
+                 ORDER BY day_key ASC",
+                provider,
+            );
             if let Ok(mut stmt) = conn.prepare(
                 "SELECT source_node_id, source_node_name, row_json
                  FROM spend_manual_days_remote

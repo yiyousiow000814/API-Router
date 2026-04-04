@@ -31,7 +31,7 @@ type Props = {
     options?: { silent?: boolean; keepEditCell?: boolean; field?: 'effective' | 'per_req' },
   ) => Promise<void>
   onClearRow: (row: SpendHistoryRow) => Promise<void>
-  onRemoveTrackedRow: (row: SpendHistoryRow, sourceNodeId: string, sourceNodeName?: string | null) => Promise<void>
+  onRemoveTrackedRow: (row: SpendHistoryRow) => Promise<void>
   usageHistoryTableSurfaceRef: RefObject<HTMLDivElement | null>
   usageHistoryTableWrapRef: RefObject<HTMLDivElement | null>
   usageHistoryScrollbarOverlayRef: RefObject<HTMLDivElement | null>

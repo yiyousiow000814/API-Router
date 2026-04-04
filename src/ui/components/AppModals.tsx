@@ -67,8 +67,6 @@ type ScheduleCurrencyMenuState = {
 
 type PendingTrackedRemoval = {
   row: SpendHistoryRow
-  sourceNodeId: string
-  sourceNodeName?: string | null
 } | null
 
 type Props = {
@@ -682,8 +680,8 @@ requires_openai_auth = true`}
             flashToast(String(e), 'error')
           }
         }}
-        onRemoveTrackedRow={async (row, sourceNodeId, sourceNodeName) => {
-          setPendingTrackedRemoval({ row, sourceNodeId, sourceNodeName })
+        onRemoveTrackedRow={async (row) => {
+          setPendingTrackedRemoval({ row })
         }}
         usageHistoryTableSurfaceRef={usageHistoryTableSurfaceRef}
         usageHistoryTableWrapRef={usageHistoryTableWrapRef}
@@ -703,13 +701,7 @@ requires_openai_auth = true`}
             <div className="aoTrackedRemovalConfirmText">
               {pendingTrackedRemoval.row.provider} {pendingTrackedRemoval.row.day_key}
             </div>
-            <div className="aoTrackedRemovalConfirmSub">
-              <span className="aoTrackedRemovalConfirmLabel">Source:</span>
-              <span className="aoTrackedRemovalConfirmValuePlain">
-                {pendingTrackedRemoval.sourceNodeName?.trim() ||
-                  (pendingTrackedRemoval.sourceNodeId === '__local__' ? 'Local' : pendingTrackedRemoval.sourceNodeId)}
-              </span>
-            </div>
+            <div className="aoTrackedRemovalConfirmSub">This removes all tracked entries merged into this daily row.</div>
             <div className="aoTrackedRemovalConfirmSummary" aria-label="Tracked row summary">
               <div className="aoTrackedRemovalConfirmSummaryRow">
                 <span className="aoTrackedRemovalConfirmSummaryItem">
@@ -747,9 +739,7 @@ requires_openai_auth = true`}
               <button
                 className="aoBtn aoBtnDanger"
                 onClick={async () => {
-                  const { row, sourceNodeId, sourceNodeName } = pendingTrackedRemoval
-                  const sourceLabel =
-                    sourceNodeName?.trim() || (sourceNodeId === '__local__' ? 'Local' : sourceNodeId)
+                  const { row } = pendingTrackedRemoval
                   try {
                     setUsageHistoryEditCell(null)
                     const key = `${row.provider}|${row.day_key}`
@@ -762,16 +752,15 @@ requires_openai_auth = true`}
                         delete next[key]
                         return next
                       })
-                      flashToast(`Removed tracked row: ${row.provider} ${row.day_key} ${sourceLabel}`)
+                      flashToast(`Removed tracked row: ${row.provider} ${row.day_key}`)
                     } else {
                       const removed = await invoke<number>('remove_tracked_spend_history_entries', {
                         provider: row.provider,
                         dayKey: row.day_key,
-                        sourceNodeId,
                       })
                       await refreshUsageHistory({ silent: true })
                       await refreshUsageStatistics({ silent: true })
-                      flashToast(`Removed ${removed} tracked row(s): ${row.provider} ${row.day_key} ${sourceLabel}`)
+                      flashToast(`Removed ${removed} tracked entry(s): ${row.provider} ${row.day_key}`)
                     }
                     setPendingTrackedRemoval(null)
                   } catch (e) {

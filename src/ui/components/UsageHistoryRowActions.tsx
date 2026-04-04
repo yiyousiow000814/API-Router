@@ -3,17 +3,11 @@ import type { SpendHistoryRow } from '../devMockData'
 type Props = {
   row: SpendHistoryRow
   onClearRow: (row: SpendHistoryRow) => void
-  onRemoveTrackedRow: (row: SpendHistoryRow, sourceNodeId: string, sourceNodeName?: string | null) => void
+  onRemoveTrackedRow: (row: SpendHistoryRow) => void
 }
 
 export function UsageHistoryRowActions({ row, onClearRow, onRemoveTrackedRow }: Props) {
-  const explicitTrackedSources = (row.tracked_source_nodes ?? []).filter((source) => source?.node_id)
-  const trackedSources =
-    explicitTrackedSources.length > 0
-      ? explicitTrackedSources
-      : row.tracked_total_usd != null && (row.source ?? '').includes('tracked')
-        ? [{ node_id: '__local__', node_name: 'Local' }]
-        : []
+  const hasTrackedRow = row.tracked_total_usd != null && (row.source ?? '').includes('tracked')
   return (
     <div className="aoUsageHistoryActions">
       <button
@@ -24,19 +18,18 @@ export function UsageHistoryRowActions({ row, onClearRow, onRemoveTrackedRow }: 
       >
         Clear
       </button>
-      {trackedSources.map((source) => (
+      {hasTrackedRow ? (
         <button
-          key={source.node_id}
           className="aoUsageHistoryRemoveBtn"
-          title={trackedSources.length > 1 ? `Remove tracked: ${source.node_name || source.node_id}` : 'Remove tracked'}
-          aria-label={trackedSources.length > 1 ? `Remove tracked: ${source.node_name || source.node_id}` : 'Remove tracked'}
+          title="Remove tracked"
+          aria-label="Remove tracked"
           onClick={() => {
-            void onRemoveTrackedRow(row, source.node_id, source.node_name)
+            void onRemoveTrackedRow(row)
           }}
         >
           ×
         </button>
-      ))}
+      ) : null}
     </div>
   )
 }

@@ -791,12 +791,12 @@ async fn fetch_budget_info_any(
     st: &GatewayState,
     provider_name: &str,
     bases: &[String],
-    api_key: Option<&str>,
+    usage_token: Option<&str>,
     package_expiry_strategy: PackageExpiryStrategy,
 ) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
-    let Some(api_key) = api_key.map(str::trim).filter(|value| !value.is_empty()) else {
-        out.last_error = "missing provider key".to_string();
+    let Some(usage_token) = usage_token.map(str::trim).filter(|value| !value.is_empty()) else {
+        out.last_error = "missing usage token".to_string();
         return out;
     };
     if bases.is_empty() {
@@ -829,7 +829,7 @@ async fn fetch_budget_info_any(
         }
         match client
             .get(&url)
-            .header(reqwest::header::AUTHORIZATION, format!("Bearer {api_key}"))
+            .header(reqwest::header::AUTHORIZATION, format!("Bearer {usage_token}"))
             .timeout(Duration::from_secs(15))
             .send()
             .await
@@ -870,7 +870,7 @@ async fn fetch_budget_info_any(
                     st,
                     provider_name,
                     bases,
-                    api_key,
+                    usage_token,
                     Some(base),
                     Some(root),
                 )
@@ -910,4 +910,26 @@ fn as_f64(v: Option<&Value>) -> Option<f64> {
                 }
             })
         })
+}
+
+#[cfg(test)]
+mod usage_fetch_tests {
+    #[tokio::test]
+    async fn budget_info_without_usage_token_reports_missing_usage_token() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        let state = crate::app_state::build_state(config_path, data_dir).expect("build state");
+
+        let snapshot = super::fetch_budget_info_any(
+            &state.gateway,
+            "official",
+            &["https://usage.example.test".to_string()],
+            None,
+            crate::orchestrator::quota::PackageExpiryStrategy::None,
+        )
+        .await;
+
+        assert_eq!(snapshot.last_error, "missing usage token");
+    }
 }
