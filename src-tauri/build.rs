@@ -1,9 +1,22 @@
+use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(windows)]
-use std::{env, fs, path::PathBuf};
+use std::{env, fs};
 
-fn git_output(args: &[&str]) -> Option<String> {
-    let output = Command::new("git").args(args).output().ok()?;
+fn repo_root() -> PathBuf {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or(manifest_dir)
+}
+
+fn git_output(repo_root: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -85,14 +98,21 @@ fn configure_windows_resource_toolchain() {
 }
 
 fn main() {
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/refs");
+    let repo_root = repo_root();
+    let git_dir = repo_root.join(".git");
+    println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
+    println!("cargo:rerun-if-changed={}", git_dir.join("refs").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        git_dir.join("packed-refs").display()
+    );
 
-    let git_sha = git_output(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
+    let git_sha =
+        git_output(&repo_root, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=API_ROUTER_BUILD_GIT_SHA={git_sha}");
 
-    let git_short_sha =
-        git_output(&["rev-parse", "--short=8", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
+    let git_short_sha = git_output(&repo_root, &["rev-parse", "--short=8", "HEAD"])
+        .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=API_ROUTER_BUILD_GIT_SHORT_SHA={git_short_sha}");
 
     #[cfg(windows)]
