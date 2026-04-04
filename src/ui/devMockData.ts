@@ -23,6 +23,9 @@ export type SpendHistoryRow = {
   effective_usd_per_req?: number | null
   source?: string | null
   updated_at_unix_ms?: number
+  tracked_producer_node_id?: string | null
+  tracked_producer_node_name?: string | null
+  tracked_source_nodes?: Array<{ node_id: string; node_name: string }>
 }
 
 const DEV_NOW = Date.now()
@@ -480,24 +483,92 @@ export const devStatus: Status = {
       node_name: 'DESKTOP-KK6SA2D',
       listen_addr: '192.168.3.210:4000',
       capabilities: ['follow', 'copy', 'sync'],
+      build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+        build_git_short_sha: 'a1b2c3d',
+      },
+      version_sync: {
+        target_ref: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+        git_worktree_clean: false,
+        update_to_local_build_allowed: false,
+        blocked_reason:
+          'Local git worktree is dirty. Commit or stash local changes before syncing peers to this build.',
+      },
+      sync_contracts: {
+        usage_requests: 1,
+        usage_history: 2,
+        provider_definitions: 1,
+        shared_health: 1,
+      },
       provider_fingerprints: ['fp-provider-1', 'fp-provider-2'],
     },
     peers: [
       {
-        node_id: 'node_5173',
-        node_name: 'DESKTOP-5173',
+        node_id: 'node-desk-b',
+        node_name: 'Desk B',
         listen_addr: '192.168.3.211:4000',
         last_heartbeat_unix_ms: DEV_NOW - 5000,
-        capabilities: ['follow', 'copy'],
+        capabilities: ['follow', 'copy', 'sync'],
+        build_identity: {
+          app_version: '0.3.9',
+          build_git_sha: '99887766554433221100ffeeddccbbaa12345678',
+          build_git_short_sha: '9988776',
+        },
+        sync_contracts: {
+          usage_requests: 1,
+          usage_history: 1,
+          provider_definitions: 1,
+          shared_health: 1,
+        },
         provider_fingerprints: ['fp-provider-1'],
+        trusted: true,
+        pair_state: 'trusted',
+        pair_request_id: null,
+        sync_blocked_domains: ['usage_history'],
+        sync_diagnostics: [
+          {
+            domain: 'usage_requests',
+            status: 'ok',
+            local_contract_version: 1,
+            peer_contract_version: 1,
+            blocked_reason: null,
+          },
+          {
+            domain: 'usage_history',
+            status: 'blocked',
+            local_contract_version: 2,
+            peer_contract_version: 1,
+            blocked_reason:
+              'Rejected LAN usage_history sync from Desk B because sync contract version does not match (local=v2, peer=v1). Update both devices to the same compatible build. Sync will resume automatically once versions match.',
+          },
+        ],
+        build_matches_local: false,
       },
       {
-        node_id: 'node_5174',
-        node_name: 'DESKTOP-5174',
+        node_id: 'node-laptop-c',
+        node_name: 'Laptop C',
         listen_addr: '192.168.3.212:4000',
         last_heartbeat_unix_ms: DEV_NOW - 9000,
         capabilities: ['follow'],
+        build_identity: {
+          app_version: '0.4.0',
+          build_git_sha: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+          build_git_short_sha: 'a1b2c3d',
+        },
+        sync_contracts: {
+          usage_requests: 1,
+          usage_history: 2,
+          provider_definitions: 1,
+          shared_health: 1,
+        },
         provider_fingerprints: ['fp-provider-2'],
+        trusted: false,
+        pair_state: 'incoming_request',
+        pair_request_id: 'pair_node-laptop-c',
+        sync_blocked_domains: [],
+        sync_diagnostics: [],
+        build_matches_local: true,
       },
     ],
   },
@@ -576,18 +647,44 @@ export const devConfig: Config = {
         follow_allowed: false,
         follow_blocked_reason: null,
         using_count: 2,
+        build_identity: {
+          app_version: '0.4.0',
+          build_git_sha: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+          build_git_short_sha: 'a1b2c3d',
+        },
+        build_matches_local: true,
+        sync_blocked_domains: [],
+        version_sync_required: false,
+        version_sync_reason: null,
+        same_version_update_allowed: false,
+        same_version_update_blocked_reason:
+          'Local git worktree is dirty. Commit or stash local changes before syncing peers to this build.',
       },
       {
         kind: 'peer',
         node_id: 'node-desk-b',
         node_name: 'Desk B',
         active: false,
-        trusted: false,
-        pair_state: null,
+        trusted: true,
+        pair_state: 'trusted',
         pair_request_id: null,
-        follow_allowed: true,
-        follow_blocked_reason: null,
+        follow_allowed: false,
+        follow_blocked_reason:
+          'Rejected LAN provider_definitions sync from Desk B because sync contract version does not match (local=v1, peer=v0). Update both devices to the same compatible build. Sync will resume automatically once versions match.',
         using_count: 1,
+        build_identity: {
+          app_version: '0.3.9',
+          build_git_sha: '99887766554433221100ffeeddccbbaa12345678',
+          build_git_short_sha: '9988776',
+        },
+        build_matches_local: false,
+        sync_blocked_domains: ['usage_history', 'provider_definitions'],
+        version_sync_required: true,
+        version_sync_reason:
+          'Sync paused for usage_history, provider_definitions on Desk B until both devices run compatible builds.',
+        same_version_update_allowed: false,
+        same_version_update_blocked_reason:
+          'Local git worktree is dirty. Commit or stash local changes before syncing peers to this build.',
       },
       {
         kind: 'peer',
@@ -600,6 +697,18 @@ export const devConfig: Config = {
         follow_allowed: false,
         follow_blocked_reason: 'pair this device before following its config',
         using_count: 0,
+        build_identity: {
+          app_version: '0.4.0',
+          build_git_sha: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+          build_git_short_sha: 'a1b2c3d',
+        },
+        build_matches_local: true,
+        sync_blocked_domains: [],
+        version_sync_required: false,
+        version_sync_reason: null,
+        same_version_update_allowed: false,
+        same_version_update_blocked_reason:
+          'Local git worktree is dirty. Commit or stash local changes before syncing peers to this build.',
       },
       {
         kind: 'peer',
@@ -612,6 +721,13 @@ export const devConfig: Config = {
         follow_allowed: false,
         follow_blocked_reason: 'Mini D is already following this local node',
         using_count: 0,
+        build_matches_local: true,
+        sync_blocked_domains: [],
+        version_sync_required: false,
+        version_sync_reason: null,
+        same_version_update_allowed: false,
+        same_version_update_blocked_reason:
+          'Local git worktree is dirty. Commit or stash local changes before syncing peers to this build.',
       },
     ],
   },

@@ -470,6 +470,7 @@ pub async fn effective_usage_base(st: &GatewayState, provider_name: &str) -> Opt
 }
 
 fn usage_request_key(
+    provider: &ProviderConfig,
     bases: &[String],
     provider_key: &Option<String>,
     usage_token: &Option<String>,
@@ -488,7 +489,7 @@ fn usage_request_key(
     } else {
         normalized.join("|")
     };
-    let auth_key = usage_auth_key(provider_key, usage_token, usage_login);
+    let auth_key = usage_auth_key_for_provider(provider, provider_key, usage_token, usage_login);
     UsageRequestKey {
         bases_key,
         auth_key,
@@ -497,13 +498,14 @@ fn usage_request_key(
 }
 
 fn usage_shared_key(
+    provider: &ProviderConfig,
     base: &str,
     provider_key: &Option<String>,
     usage_token: &Option<String>,
     usage_login: &Option<UsageLoginConfig>,
 ) -> UsageSharedKey {
     let base_key = base.trim().trim_end_matches('/').to_string();
-    let auth_key = usage_auth_key(provider_key, usage_token, usage_login);
+    let auth_key = usage_auth_key_for_provider(provider, provider_key, usage_token, usage_login);
     UsageSharedKey { base_key, auth_key }
 }
 
@@ -522,6 +524,18 @@ fn usage_auth_key(
         })
 }
 
+fn usage_auth_key_for_provider(
+    provider: &ProviderConfig,
+    provider_key: &Option<String>,
+    usage_token: &Option<String>,
+    usage_login: &Option<UsageLoginConfig>,
+) -> Option<String> {
+    if detect_package_expiry_strategy(&provider.base_url) == PackageExpiryStrategy::Packycode {
+        return provider_key.clone();
+    }
+    usage_auth_key(provider_key, usage_token, usage_login)
+}
+
 fn stable_shared_fingerprint_component(input: &str) -> String {
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in input.trim().as_bytes() {
@@ -538,7 +552,13 @@ pub fn provider_runtime_identity(
     usage_login: &Option<UsageLoginConfig>,
 ) -> Option<String> {
     let shared_base = candidate_quota_bases(provider).first()?.clone();
-    let shared_key = usage_shared_key(&shared_base, provider_key, usage_token, usage_login);
+    let shared_key = usage_shared_key(
+        provider,
+        &shared_base,
+        provider_key,
+        usage_token,
+        usage_login,
+    );
     let auth_component = shared_key
         .auth_key
         .as_deref()
@@ -634,7 +654,7 @@ async fn compute_quota_snapshot(
             st,
             provider_name,
             bases,
-            credentials.usage_token,
+            credentials.provider_key,
             strategies.package_expiry_fetch_strategy,
         )
         .await;
@@ -910,7 +930,16 @@ pub(crate) fn apply_remote_quota_snapshot(
     else {
         return;
     };
-    let shared_key = usage_shared_key(&shared_base, &provider_key, &usage_token, &usage_login);
+    let Some(source_provider) = cfg.providers.get(provider_name) else {
+        return;
+    };
+    let shared_key = usage_shared_key(
+        source_provider,
+        &shared_base,
+        &provider_key,
+        &usage_token,
+        &usage_login,
+    );
     for (name, provider) in cfg.providers.iter() {
         if name == provider_name {
             continue;
@@ -919,6 +948,7 @@ pub(crate) fn apply_remote_quota_snapshot(
             continue;
         }
         let other_key = usage_shared_key(
+            provider,
             candidate_quota_bases(provider)
                 .first()
                 .map(String::as_str)
@@ -1203,6 +1233,7 @@ fn is_quota_refresh_config_gap(err: &str) -> bool {
         "missing credentials for quota refresh"
             | "missing usage auth"
             | "missing usage token"
+            | "missing provider key"
             | "missing quota base"
             | "missing base_url"
             | "usage endpoint not found (set Usage base URL)"
@@ -1236,7 +1267,7 @@ fn can_refresh_quota_for_provider(
     let usage_token = st.secrets.get_usage_token(provider_name);
     let usage_login = st.secrets.get_usage_login(provider_name);
     if detect_package_expiry_strategy(&provider.base_url) == PackageExpiryStrategy::Packycode {
-        return usage_token.is_some();
+        return provider_key.is_some();
     }
     if is_codex_for_me_base(provider_name, &bases) {
         return usage_token.is_some() || usage_login.is_some();
@@ -1523,7 +1554,7 @@ async fn propagate_quota_snapshot_shared(
         let Some(shared_base) = bases.first().map(|s| s.as_str()) else {
             continue;
         };
-        let shared = usage_shared_key(shared_base, &provider_key, &usage_token, &usage_login);
+        let shared = usage_shared_key(p, shared_base, &provider_key, &usage_token, &usage_login);
         if &shared != source_shared_key {
             continue;
         }
@@ -1577,7 +1608,7 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
     } else {
         provider_strategy
     };
-    let shared_key = usage_shared_key(&shared_base, &provider_key, &usage_token, &usage_login);
+    let shared_key = usage_shared_key(p, &shared_base, &provider_key, &usage_token, &usage_login);
     let mut snap = compute_quota_snapshot(
         st,
         provider_name,
@@ -1642,8 +1673,8 @@ async fn refresh_quota_for_provider_cached(
     } else {
         provider_strategy
     };
-    let key = usage_request_key(&bases, &provider_key, &usage_token, &usage_login, kind);
-    let shared_key = usage_shared_key(&shared_base, &provider_key, &usage_token, &usage_login);
+    let key = usage_request_key(p, &bases, &provider_key, &usage_token, &usage_login, kind);
+    let shared_key = usage_shared_key(p, &shared_base, &provider_key, &usage_token, &usage_login);
     let snap = if let Some(existing) = cache.get(&key) {
         existing.clone()
     } else {
@@ -1691,6 +1722,7 @@ fn usage_shared_key_for_provider(st: &GatewayState, provider_name: &str) -> Opti
     let bases = candidate_quota_bases(p);
     let shared_base = bases.first()?.as_str();
     Some(usage_shared_key(
+        p,
         shared_base,
         &provider_key,
         &usage_token,

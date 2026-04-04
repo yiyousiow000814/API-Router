@@ -452,6 +452,27 @@ pub fn run() {
             {
                 let st = app.state::<app_state::AppState>();
                 crate::lan_sync::register_gateway_status_runtime(st.lan_sync.clone());
+                if let Some(local_node) = crate::lan_sync::current_local_node_identity() {
+                    if let Ok((migrated_spend_days, migrated_manual_days)) = st
+                        .gateway
+                        .store
+                        .migrate_legacy_remote_usage_sources_if_needed(&local_node.node_id)
+                    {
+                        if migrated_spend_days > 0 || migrated_manual_days > 0 {
+                            st.gateway.store.add_event(
+                                "gateway",
+                                "info",
+                                "lan.legacy_usage_sources_migrated",
+                                "Migrated legacy LAN usage history into source-scoped remote storage",
+                                serde_json::json!({
+                                    "migrated_spend_days": migrated_spend_days,
+                                    "migrated_manual_days": migrated_manual_days,
+                                    "local_node_id": local_node.node_id,
+                                }),
+                            );
+                        }
+                    }
+                }
             }
             if !is_ui_tauri {
                 let st = app.state::<app_state::AppState>();
@@ -662,6 +683,8 @@ pub fn run() {
             commands::request_lan_pair,
             commands::approve_lan_pair,
             commands::submit_lan_pair_pin,
+            commands::request_lan_remote_update,
+            commands::request_lan_remote_update_same_version,
             commands::set_followed_config_source,
             commands::clear_followed_config_source,
             commands::copy_provider_from_config_source,
@@ -722,7 +745,8 @@ pub fn run() {
             commands::get_usage_request_summary,
             commands::get_usage_request_daily_totals,
             commands::get_spend_history,
-            commands::set_spend_history_entry
+            commands::set_spend_history_entry,
+            commands::remove_tracked_spend_history_entries
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

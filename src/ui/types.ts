@@ -111,6 +111,18 @@ export type Status = {
       node_name: string
       listen_addr?: string | null
       capabilities: string[]
+      build_identity?: {
+        app_version: string
+        build_git_sha: string
+        build_git_short_sha: string
+      }
+      version_sync?: {
+        target_ref?: string | null
+        git_worktree_clean: boolean
+        update_to_local_build_allowed: boolean
+        blocked_reason?: string | null
+      }
+      sync_contracts?: Record<string, number>
       provider_fingerprints: string[]
     }
     peers: Array<{
@@ -119,11 +131,26 @@ export type Status = {
       listen_addr: string
       last_heartbeat_unix_ms: number
       capabilities: string[]
+      build_identity?: {
+        app_version: string
+        build_git_sha: string
+        build_git_short_sha: string
+      }
+      sync_contracts?: Record<string, number>
       provider_fingerprints: string[]
       followed_source_node_id?: string | null
       trusted?: boolean
       pair_state?: 'trusted' | 'incoming_request' | 'requested' | 'pin_required' | null
       pair_request_id?: string | null
+      sync_blocked_domains?: string[]
+      sync_diagnostics?: Array<{
+        domain: string
+        status: 'ok' | 'blocked' | string
+        local_contract_version: number
+        peer_contract_version: number
+        blocked_reason?: string | null
+      }>
+      build_matches_local?: boolean
     }>
   }
   shared_quota_owners?: Array<{
@@ -217,6 +244,17 @@ export type Config = {
       follow_allowed: boolean
       follow_blocked_reason?: string | null
       using_count: number
+      build_identity?: {
+        app_version: string
+        build_git_sha: string
+        build_git_short_sha: string
+      } | null
+      build_matches_local?: boolean
+      sync_blocked_domains?: string[]
+      version_sync_required?: boolean
+      version_sync_reason?: string | null
+      same_version_update_allowed?: boolean
+      same_version_update_blocked_reason?: string | null
     }>
   }
 }

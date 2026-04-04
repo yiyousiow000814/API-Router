@@ -1353,6 +1353,18 @@ export default function App() {
       },
     })
   }
+  async function requestLanRemoteUpdateSameVersion(nodeId: string) {
+    try {
+      if (isDevPreview) {
+        flashToast(`Requested ${nodeId} to sync to this build [TEST]`)
+        return
+      }
+      await invoke('request_lan_remote_update_same_version', { nodeId })
+      flashToast('Peer version sync requested')
+    } catch (error) {
+      flashToast(String(error), 'error')
+    }
+  }
   async function copyProviderFromConfigSource(sourceNodeId: string, sharedProviderId: string) {
     try {
       if (isDevPreview) {
@@ -1794,6 +1806,7 @@ export default function App() {
             requestLanPair={requestLanPair}
             approveLanPair={approveLanPair}
             submitLanPairPin={submitLanPairPin}
+            requestLanRemoteUpdateSameVersion={requestLanRemoteUpdateSameVersion}
             openProviderGroupManager={openProviderGroupManager}
             setConfigModalOpen={setConfigModalOpen}
             rawConfigModalOpen={rawConfigModalOpen}
@@ -1823,12 +1836,13 @@ export default function App() {
             setGatewayTokenPreview={setGatewayTokenPreview}
             flashToast={flashToast}
             usageHistoryModalOpen={usageHistoryModalOpen}
-            setUsageHistoryModalOpen={setUsageHistoryModalOpen}
-            usageHistoryLoading={usageHistoryLoading}
-            usageHistoryRows={usageHistoryRows}
-            usageHistoryDrafts={usageHistoryDrafts}
-            usageHistoryEditCell={usageHistoryEditCell}
-            setUsageHistoryDrafts={setUsageHistoryDrafts}
+        setUsageHistoryModalOpen={setUsageHistoryModalOpen}
+        usageHistoryLoading={usageHistoryLoading}
+        usageHistoryRows={usageHistoryRows}
+        setUsageHistoryRows={setUsageHistoryRows}
+        usageHistoryDrafts={usageHistoryDrafts}
+        usageHistoryEditCell={usageHistoryEditCell}
+        setUsageHistoryDrafts={setUsageHistoryDrafts}
             setUsageHistoryEditCell={setUsageHistoryEditCell}
             historyDraftFromRow={historyDraftFromRow}
             historyPerReqDisplayValue={historyPerReqDisplayValue}

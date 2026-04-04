@@ -48,6 +48,13 @@ struct ConfigSourceSnapshot {
     follow_allowed: bool,
     follow_blocked_reason: Option<String>,
     using_count: usize,
+    build_identity: Option<crate::lan_sync::LanBuildIdentitySnapshot>,
+    build_matches_local: bool,
+    sync_blocked_domains: Vec<String>,
+    version_sync_required: bool,
+    version_sync_reason: Option<String>,
+    same_version_update_allowed: bool,
+    same_version_update_blocked_reason: Option<String>,
 }
 
 fn offline_followed_config_source_snapshot(
@@ -71,6 +78,15 @@ fn offline_followed_config_source_snapshot(
         follow_allowed: false,
         follow_blocked_reason: Some("that node is offline; switch back to Local to edit or keep using the last synced config".to_string()),
         using_count: 1,
+        build_identity: None,
+        build_matches_local: true,
+        sync_blocked_domains: Vec::new(),
+        version_sync_required: false,
+        version_sync_reason: None,
+        same_version_update_allowed: false,
+        same_version_update_blocked_reason: Some(
+            "that node is offline; reconnect it before syncing versions".to_string(),
+        ),
     })
 }
 
@@ -328,6 +344,7 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
         })
         .collect();
     let lan_snapshot = state.lan_sync.snapshot(cfg.listen.port, &cfg, &state.secrets);
+    let local_version_sync = lan_snapshot.local_node.version_sync.clone();
     let local_followers = lan_snapshot
         .peers
         .iter()
@@ -344,34 +361,59 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
         follow_allowed: false,
         follow_blocked_reason: None,
         using_count: local_followers,
+        build_identity: Some(lan_snapshot.local_node.build_identity.clone()),
+        build_matches_local: true,
+        sync_blocked_domains: Vec::new(),
+        version_sync_required: false,
+        version_sync_reason: None,
+        same_version_update_allowed: local_version_sync.update_to_local_build_allowed,
+        same_version_update_blocked_reason: local_version_sync.blocked_reason.clone(),
     })
-    .chain(lan_snapshot.peers.iter().map(|peer| ConfigSourceSnapshot {
-        kind: "peer",
-        node_id: peer.node_id.clone(),
-        node_name: peer.node_name.clone(),
-        active: followed_source_node_id.as_deref() == Some(peer.node_id.as_str()),
-        trusted: peer.trusted,
-        pair_state: peer.pair_state.clone(),
-        pair_request_id: peer.pair_request_id.clone(),
-        follow_allowed: peer.trusted
-            && peer.followed_source_node_id.as_deref()
-                != Some(lan_snapshot.local_node.node_id.as_str()),
-        follow_blocked_reason: if !peer.trusted {
-            Some("pair this device before following its config".to_string())
-        } else if peer.followed_source_node_id.as_deref()
-            == Some(lan_snapshot.local_node.node_id.as_str())
-        {
-            Some("that node is already following this local node".to_string())
-        } else {
-            None
-        },
-        using_count: usize::from(
-            followed_source_node_id.as_deref() == Some(peer.node_id.as_str())
-        ) + lan_snapshot
-            .peers
-            .iter()
-            .filter(|other| other.followed_source_node_id.as_deref() == Some(peer.node_id.as_str()))
-            .count(),
+    .chain(lan_snapshot.peers.iter().map(|peer| {
+        let version_sync_reason = crate::lan_sync::peer_version_sync_reason(peer);
+        ConfigSourceSnapshot {
+            kind: "peer",
+            node_id: peer.node_id.clone(),
+            node_name: peer.node_name.clone(),
+            active: followed_source_node_id.as_deref() == Some(peer.node_id.as_str()),
+            trusted: peer.trusted,
+            pair_state: peer.pair_state.clone(),
+            pair_request_id: peer.pair_request_id.clone(),
+            follow_allowed: peer.trusted
+                && !peer
+                    .sync_blocked_domains
+                    .iter()
+                    .any(|domain| domain == "provider_definitions")
+                && peer.followed_source_node_id.as_deref()
+                    != Some(lan_snapshot.local_node.node_id.as_str()),
+            follow_blocked_reason: if !peer.trusted {
+                Some("pair this device before following its config".to_string())
+            } else if let Some(reason) =
+                crate::lan_sync::sync_contract_block_reason_for_domain(peer, "provider_definitions")
+            {
+                Some(reason)
+            } else if peer.followed_source_node_id.as_deref()
+                == Some(lan_snapshot.local_node.node_id.as_str())
+            {
+                Some("that node is already following this local node".to_string())
+            } else {
+                None
+            },
+            using_count: usize::from(
+                followed_source_node_id.as_deref() == Some(peer.node_id.as_str())
+            ) + lan_snapshot
+                .peers
+                .iter()
+                .filter(|other| other.followed_source_node_id.as_deref() == Some(peer.node_id.as_str()))
+                .count(),
+            build_identity: Some(peer.build_identity.clone()),
+            build_matches_local: peer.build_matches_local,
+            sync_blocked_domains: peer.sync_blocked_domains.clone(),
+            version_sync_required: version_sync_reason.is_some(),
+            version_sync_reason,
+            same_version_update_allowed: local_version_sync.update_to_local_build_allowed,
+            same_version_update_blocked_reason: local_version_sync.blocked_reason.clone(),
+        }
     }))
     .collect::<Vec<_>>();
     if let Some(followed_node_id) = followed_source_node_id.as_deref() {
@@ -425,6 +467,29 @@ pub(crate) fn submit_lan_pair_pin(
     state
         .lan_sync
         .submit_pair_pin(&state.gateway, &node_id, &request_id, &pin_code)
+}
+
+#[tauri::command]
+pub(crate) async fn request_lan_remote_update(
+    state: tauri::State<'_, app_state::AppState>,
+    node_id: String,
+    target_ref: String,
+) -> Result<(), String> {
+    state
+        .lan_sync
+        .request_peer_remote_update(&state.gateway, &node_id, &target_ref)
+        .await
+}
+
+#[tauri::command]
+pub(crate) async fn request_lan_remote_update_same_version(
+    state: tauri::State<'_, app_state::AppState>,
+    node_id: String,
+) -> Result<(), String> {
+    state
+        .lan_sync
+        .request_peer_remote_update_to_local_build(&state.gateway, &node_id)
+        .await
 }
 
 #[tauri::command]

@@ -791,12 +791,12 @@ async fn fetch_budget_info_any(
     st: &GatewayState,
     provider_name: &str,
     bases: &[String],
-    jwt: Option<&str>,
+    api_key: Option<&str>,
     package_expiry_strategy: PackageExpiryStrategy,
 ) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
-    let Some(token) = jwt else {
-        out.last_error = "missing usage token".to_string();
+    let Some(api_key) = api_key.map(str::trim).filter(|value| !value.is_empty()) else {
+        out.last_error = "missing provider key".to_string();
         return out;
     };
     if bases.is_empty() {
@@ -829,7 +829,7 @@ async fn fetch_budget_info_any(
         }
         match client
             .get(&url)
-            .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(reqwest::header::AUTHORIZATION, format!("Bearer {api_key}"))
             .timeout(Duration::from_secs(15))
             .send()
             .await
@@ -870,7 +870,7 @@ async fn fetch_budget_info_any(
                     st,
                     provider_name,
                     bases,
-                    token,
+                    api_key,
                     Some(base),
                     Some(root),
                 )

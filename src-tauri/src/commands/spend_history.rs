@@ -443,6 +443,26 @@ fn merge_usage_history_day_counts(
     }
 }
 
+fn tracked_spend_day_source_node_id<'a>(day: &'a Value, local_node_id: &'a str) -> &'a str {
+    day.get("producer_node_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(local_node_id)
+}
+
+fn tracked_spend_day_matches_history_target(
+    day: &Value,
+    target_day_key: &str,
+    target_source_node_id: &str,
+    local_node_id: &str,
+) -> bool {
+    tracked_spend_history_snapshot(day)
+        .map(|(day_key, _, _)| day_key == target_day_key)
+        .unwrap_or(false)
+        && tracked_spend_day_source_node_id(day, local_node_id) == target_source_node_id
+}
+
 #[tauri::command]
 pub(crate) fn set_spend_history_entry(
     state: tauri::State<'_, app_state::AppState>,
@@ -529,6 +549,110 @@ pub(crate) fn set_spend_history_entry(
     Ok(())
 }
 
+#[tauri::command]
+pub(crate) fn remove_tracked_spend_history_entries(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+    day_key: String,
+    source_node_id: String,
+) -> Result<usize, String> {
+    if !state.gateway.cfg.read().providers.contains_key(&provider) {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    let day_key = day_key.trim().to_string();
+    if local_day_range_from_key(&day_key).is_none() {
+        return Err("day_key must be YYYY-MM-DD".to_string());
+    }
+    let local_node_id = crate::lan_sync::current_local_node_identity()
+        .map(|node| node.node_id)
+        .unwrap_or_default();
+    let source_node_id = match source_node_id.trim() {
+        "" => return Err("source_node_id is required".to_string()),
+        "__local__" => local_node_id.clone(),
+        other => other.to_string(),
+    };
+    let mut removed = 0usize;
+    let mut removed_local_started_at: Vec<u64> = Vec::new();
+
+    for day in state.gateway.store.list_local_spend_days(&provider) {
+        let Some(day_started_at_unix_ms) = day.get("started_at_unix_ms").and_then(Value::as_u64)
+        else {
+            continue;
+        };
+        if tracked_spend_day_matches_history_target(&day, &day_key, &source_node_id, &local_node_id)
+        {
+            state
+                .gateway
+                .store
+                .remove_spend_day(&provider, day_started_at_unix_ms);
+            removed = removed.saturating_add(1);
+            removed_local_started_at.push(day_started_at_unix_ms);
+        }
+    }
+
+    for day in state.gateway.store.list_spend_days(&provider) {
+        let Some(day_started_at_unix_ms) = day.get("started_at_unix_ms").and_then(Value::as_u64)
+        else {
+            continue;
+        };
+        let producer_node_id = tracked_spend_day_source_node_id(&day, &local_node_id).to_string();
+        if producer_node_id == local_node_id {
+            continue;
+        }
+        if tracked_spend_day_matches_history_target(&day, &day_key, &source_node_id, &local_node_id)
+        {
+            state.gateway.store.remove_remote_spend_day(
+                &provider,
+                &producer_node_id,
+                day_started_at_unix_ms,
+            );
+            removed = removed.saturating_add(1);
+        }
+    }
+
+    if removed == 0 {
+        return Err(format!(
+            "no tracked spend entries matched {provider} {day_key} source={source_node_id}"
+        ));
+    }
+
+    if source_node_id == local_node_id {
+        for day_started_at_unix_ms in removed_local_started_at {
+            if let Err(err) = crate::lan_sync::record_tracked_spend_day_removal_from_gateway(
+                &state.gateway,
+                &state.secrets,
+                &provider,
+                day_started_at_unix_ms,
+            ) {
+                state.gateway.store.add_event(
+                    &provider,
+                    "error",
+                    "lan.edit_sync_record_failed",
+                    &format!("failed to record tracked spend removal for LAN sync: {err}"),
+                    serde_json::json!({
+                        "day_key": day_key,
+                        "source_node_id": source_node_id,
+                        "day_started_at_unix_ms": day_started_at_unix_ms
+                    }),
+                );
+            }
+        }
+    }
+
+    state.gateway.store.add_event(
+        &provider,
+        "warning",
+        "usage.tracked_spend_history_entries_removed",
+        "tracked spend history entries removed",
+        serde_json::json!({
+            "day_key": day_key,
+            "source_node_id": source_node_id,
+            "removed": removed
+        }),
+    );
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod spend_history_tests {
     use std::collections::BTreeMap;
@@ -542,8 +666,8 @@ mod spend_history_tests {
 
     use super::{
         include_compact_spend_history_row, merge_usage_history_day_counts,
-        spend_history_provider_names, tracked_spend_history_day_key,
-        tracked_spend_history_snapshot,
+        spend_history_provider_names, tracked_spend_day_matches_history_target,
+        tracked_spend_history_day_key, tracked_spend_history_snapshot,
     };
 
     fn local_unix_ms(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> u64 {
@@ -869,6 +993,37 @@ mod spend_history_tests {
         ));
         assert!(!include_compact_spend_history_row(
             true, 0, None, None, None
+        ));
+    }
+
+    #[test]
+    fn tracked_spend_target_match_uses_history_day_and_source_node() {
+        let updated_at_unix_ms = local_unix_ms(2026, 4, 1, 4, 41, 20);
+        let day = serde_json::json!({
+            "provider": "aigateway",
+            "started_at_unix_ms": local_unix_ms(2026, 4, 1, 0, 58, 0),
+            "updated_at_unix_ms": updated_at_unix_ms,
+            "tracked_spend_usd": 17.4690825,
+            "producer_node_id": "node-local"
+        });
+
+        assert!(tracked_spend_day_matches_history_target(
+            &day,
+            "2026-04-01",
+            "node-local",
+            "node-local"
+        ));
+        assert!(!tracked_spend_day_matches_history_target(
+            &day,
+            "2026-03-31",
+            "node-local",
+            "node-local"
+        ));
+        assert!(!tracked_spend_day_matches_history_target(
+            &day,
+            "2026-04-01",
+            "node-remote",
+            "node-local"
         ));
     }
 }

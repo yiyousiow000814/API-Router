@@ -31,6 +31,7 @@ type Props = {
     options?: { silent?: boolean; keepEditCell?: boolean; field?: 'effective' | 'per_req' },
   ) => Promise<void>
   onClearRow: (row: SpendHistoryRow) => Promise<void>
+  onRemoveTrackedRow: (row: SpendHistoryRow, sourceNodeId: string, sourceNodeName?: string | null) => Promise<void>
   usageHistoryTableSurfaceRef: RefObject<HTMLDivElement | null>
   usageHistoryTableWrapRef: RefObject<HTMLDivElement | null>
   usageHistoryScrollbarOverlayRef: RefObject<HTMLDivElement | null>
@@ -61,6 +62,7 @@ export function UsageHistoryModal({
   clearAutoSaveTimer,
   saveUsageHistoryRow,
   onClearRow,
+  onRemoveTrackedRow,
   usageHistoryTableSurfaceRef,
   usageHistoryTableWrapRef,
   usageHistoryScrollbarOverlayRef,
@@ -153,7 +155,11 @@ export function UsageHistoryModal({
                             <td>{formatUsdMaybe(row.scheduled_package_total_usd ?? null)}</td>
                             <td>{formatHistorySource(row.source)}</td>
                             <td>
-                              <UsageHistoryRowActions row={row} onClearRow={onClearRow} />
+                              <UsageHistoryRowActions
+                                row={row}
+                                onClearRow={onClearRow}
+                                onRemoveTrackedRow={onRemoveTrackedRow}
+                              />
                             </td>
                           </tr>
                         )

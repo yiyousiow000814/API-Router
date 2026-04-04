@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::Path;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -51,7 +52,7 @@ const LAN_PAIR_REQUEST_THROTTLE_MS: u64 = 60 * 1000;
 const LAN_PAIR_APPROVAL_TTL_MS: u64 = 5 * 60 * 1000;
 const LAN_SYNC_AUTH_NODE_ID_HEADER: &str = "x-api-router-lan-node-id";
 const LAN_SYNC_AUTH_SECRET_HEADER: &str = "x-api-router-lan-secret";
-const LAN_HEARTBEAT_CAPABILITIES: [&str; 7] = [
+const LAN_HEARTBEAT_CAPABILITIES: [&str; 8] = [
     "heartbeat_v1",
     "status_v1",
     "usage_sync_v1",
@@ -59,12 +60,261 @@ const LAN_HEARTBEAT_CAPABILITIES: [&str; 7] = [
     "provider_definitions_v1",
     "config_source_v1",
     "quota_refresh_v1",
+    "sync_contract_v2",
 ];
+const LAN_REMOTE_UPDATE_CAPABILITY: &str = "remote_update_v1";
+const SYNC_DOMAIN_USAGE_REQUESTS: &str = "usage_requests";
+const SYNC_DOMAIN_USAGE_HISTORY: &str = "usage_history";
+const SYNC_DOMAIN_PROVIDER_DEFINITIONS: &str = "provider_definitions";
+const SYNC_DOMAIN_SHARED_HEALTH: &str = "shared_health";
+const LAN_EDIT_ENTITY_PROVIDER_DEFINITION: &str = "provider_definition";
+const LAN_EDIT_ENTITY_PROVIDER_PRICING: &str = "provider_pricing";
+const LAN_EDIT_ENTITY_QUOTA_SNAPSHOT: &str = "quota_snapshot";
+const LAN_EDIT_ENTITY_SPEND_MANUAL_DAY: &str = "spend_manual_day";
+const LAN_EDIT_ENTITY_TRACKED_SPEND_DAY: &str = "tracked_spend_day";
 
 static GATEWAY_STATUS_RUNTIME: OnceLock<RwLock<Option<LanSyncRuntime>>> = OnceLock::new();
 
 fn gateway_status_runtime() -> &'static RwLock<Option<LanSyncRuntime>> {
     GATEWAY_STATUS_RUNTIME.get_or_init(|| RwLock::new(None))
+}
+
+fn local_sync_contracts() -> BTreeMap<String, u32> {
+    BTreeMap::from([
+        (SYNC_DOMAIN_USAGE_REQUESTS.to_string(), 1),
+        (SYNC_DOMAIN_USAGE_HISTORY.to_string(), 2),
+        (SYNC_DOMAIN_PROVIDER_DEFINITIONS.to_string(), 1),
+        (SYNC_DOMAIN_SHARED_HEALTH.to_string(), 1),
+    ])
+}
+
+fn lan_heartbeat_capabilities() -> Vec<String> {
+    let mut values = LAN_HEARTBEAT_CAPABILITIES
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+    values.push(LAN_REMOTE_UPDATE_CAPABILITY.to_string());
+    values
+}
+
+pub(crate) fn current_build_identity() -> LanBuildIdentitySnapshot {
+    LanBuildIdentitySnapshot {
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        build_git_sha: option_env!("API_ROUTER_BUILD_GIT_SHA")
+            .unwrap_or("unknown")
+            .to_string(),
+        build_git_short_sha: option_env!("API_ROUTER_BUILD_GIT_SHORT_SHA")
+            .unwrap_or("unknown")
+            .to_string(),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct LanLocalVersionSyncSnapshot {
+    pub target_ref: Option<String>,
+    pub git_worktree_clean: bool,
+    pub update_to_local_build_allowed: bool,
+    pub blocked_reason: Option<String>,
+}
+
+fn normalized_local_build_target_ref() -> Option<String> {
+    let build_identity = current_build_identity();
+    let target_ref = build_identity.build_git_sha.trim();
+    (!target_ref.is_empty() && !target_ref.eq_ignore_ascii_case("unknown"))
+        .then(|| target_ref.to_string())
+}
+
+fn probe_git_worktree_clean(repo_root: &Path) -> Result<bool, String> {
+    let output = Command::new("git")
+        .arg("status")
+        .arg("--porcelain=v1")
+        .current_dir(repo_root)
+        .output()
+        .map_err(|err| format!("git status failed: {err}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            return Err(format!("git status exited with {}", output.status));
+        }
+        return Err(format!(
+            "git status exited with {}: {stderr}",
+            output.status
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().is_empty())
+}
+
+fn compute_local_version_sync_snapshot() -> LanLocalVersionSyncSnapshot {
+    let Some(target_ref) = normalized_local_build_target_ref() else {
+        return LanLocalVersionSyncSnapshot {
+            target_ref: None,
+            git_worktree_clean: false,
+            update_to_local_build_allowed: false,
+            blocked_reason: Some(
+                "Current build does not expose a git commit sha; cannot safely sync peers to this build."
+                    .to_string(),
+            ),
+        };
+    };
+    let repo_root = match resolve_repo_root_for_self_update() {
+        Ok(repo_root) => repo_root,
+        Err(err) => {
+            return LanLocalVersionSyncSnapshot {
+                target_ref: Some(target_ref),
+                git_worktree_clean: false,
+                update_to_local_build_allowed: false,
+                blocked_reason: Some(format!(
+                    "Cannot verify local git worktree before syncing peers: {err}"
+                )),
+            };
+        }
+    };
+    match probe_git_worktree_clean(&repo_root) {
+        Ok(true) => LanLocalVersionSyncSnapshot {
+            target_ref: Some(target_ref),
+            git_worktree_clean: true,
+            update_to_local_build_allowed: true,
+            blocked_reason: None,
+        },
+        Ok(false) => LanLocalVersionSyncSnapshot {
+            target_ref: Some(target_ref),
+            git_worktree_clean: false,
+            update_to_local_build_allowed: false,
+            blocked_reason: Some(
+                "Local git worktree is dirty. Commit or stash local changes before syncing peers to this build."
+                    .to_string(),
+            ),
+        },
+        Err(err) => LanLocalVersionSyncSnapshot {
+            target_ref: Some(target_ref),
+            git_worktree_clean: false,
+            update_to_local_build_allowed: false,
+            blocked_reason: Some(format!(
+                "Cannot verify local git worktree before syncing peers: {err}"
+            )),
+        },
+    }
+}
+
+pub(crate) fn current_local_version_sync_snapshot() -> LanLocalVersionSyncSnapshot {
+    static CACHE: OnceLock<RwLock<Option<(u64, LanLocalVersionSyncSnapshot)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| RwLock::new(None));
+    let now = unix_ms();
+    if let Some((captured_at, snapshot)) = cache.read().clone() {
+        if now.saturating_sub(captured_at) < 5_000 {
+            return snapshot;
+        }
+    }
+    let snapshot = compute_local_version_sync_snapshot();
+    *cache.write() = Some((now, snapshot.clone()));
+    snapshot
+}
+
+const LAN_EDIT_ENTITY_DOMAIN_REGISTRY: [(&str, &str); 5] = [
+    (
+        LAN_EDIT_ENTITY_PROVIDER_DEFINITION,
+        SYNC_DOMAIN_PROVIDER_DEFINITIONS,
+    ),
+    (LAN_EDIT_ENTITY_PROVIDER_PRICING, SYNC_DOMAIN_USAGE_HISTORY),
+    (LAN_EDIT_ENTITY_QUOTA_SNAPSHOT, SYNC_DOMAIN_USAGE_HISTORY),
+    (LAN_EDIT_ENTITY_SPEND_MANUAL_DAY, SYNC_DOMAIN_USAGE_HISTORY),
+    (LAN_EDIT_ENTITY_TRACKED_SPEND_DAY, SYNC_DOMAIN_USAGE_HISTORY),
+];
+
+fn lan_edit_entity_sync_domain(entity_type: &str) -> Option<&'static str> {
+    LAN_EDIT_ENTITY_DOMAIN_REGISTRY
+        .iter()
+        .find_map(|(registered_type, domain)| (*registered_type == entity_type).then_some(*domain))
+}
+
+#[cfg(test)]
+fn usage_history_contract_samples() -> Vec<(&'static str, Value)> {
+    vec![
+        (
+            LAN_EDIT_ENTITY_PROVIDER_PRICING,
+            serde_json::json!({
+                "provider_name": "provider_1",
+                "pricing": {
+                    "mode": "per_request",
+                    "amount_usd": 0.02,
+                    "periods": [{
+                        "id": "period-1",
+                        "mode": "per_request",
+                        "amount_usd": 0.02,
+                        "api_key_ref": "-",
+                        "started_at_unix_ms": 1000,
+                        "ended_at_unix_ms": null
+                    }],
+                    "gap_fill_mode": null,
+                    "gap_fill_amount_usd": null
+                }
+            }),
+        ),
+        (
+            LAN_EDIT_ENTITY_QUOTA_SNAPSHOT,
+            serde_json::json!({
+                "provider_name": "provider_1",
+                "snapshot": {
+                    "kind": "budget_info",
+                    "updated_at_unix_ms": 2222,
+                    "remaining": null,
+                    "today_used": null,
+                    "today_added": null,
+                    "daily_spent_usd": 17.47,
+                    "daily_budget_usd": 200.0,
+                    "weekly_spent_usd": null,
+                    "weekly_budget_usd": null,
+                    "monthly_spent_usd": null,
+                    "monthly_budget_usd": null,
+                    "package_expires_at_unix_ms": null,
+                    "last_error": "",
+                    "effective_usage_base": "https://example.com/v1",
+                    "effective_usage_source": "remote"
+                }
+            }),
+        ),
+        (
+            LAN_EDIT_ENTITY_SPEND_MANUAL_DAY,
+            serde_json::json!({
+                "provider_name": "provider_1",
+                "day_key": "2026-03-30",
+                "manual_total_usd": 12.5,
+                "manual_usd_per_req": null
+            }),
+        ),
+        (
+            LAN_EDIT_ENTITY_TRACKED_SPEND_DAY,
+            serde_json::json!({
+                "provider_name": "provider_1",
+                "day_started_at_unix_ms": 1711929600000u64,
+                "row": {
+                    "provider": "provider_1",
+                    "api_key_ref": "sk-abc******wxyz",
+                    "started_at_unix_ms": 1711929600000u64,
+                    "ended_at_unix_ms": null,
+                    "tracked_spend_usd": 17.47,
+                    "last_seen_daily_spent_usd": 17.47,
+                    "updated_at_unix_ms": 2222u64
+                }
+            }),
+        ),
+    ]
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LanBuildIdentitySnapshot {
+    pub app_version: String,
+    pub build_git_sha: String,
+    pub build_git_short_sha: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LanSyncDomainDiagnosticSnapshot {
+    pub domain: String,
+    pub status: String,
+    pub local_contract_version: u32,
+    pub peer_contract_version: u32,
+    pub blocked_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -79,6 +329,9 @@ pub struct LanLocalNodeSnapshot {
     pub node_name: String,
     pub listen_addr: Option<String>,
     pub capabilities: Vec<String>,
+    pub build_identity: LanBuildIdentitySnapshot,
+    pub version_sync: LanLocalVersionSyncSnapshot,
+    pub sync_contracts: BTreeMap<String, u32>,
     pub provider_fingerprints: Vec<String>,
     pub provider_definitions_revision: String,
 }
@@ -90,12 +343,17 @@ pub struct LanPeerSnapshot {
     pub listen_addr: String,
     pub last_heartbeat_unix_ms: u64,
     pub capabilities: Vec<String>,
+    pub build_identity: LanBuildIdentitySnapshot,
     pub provider_fingerprints: Vec<String>,
     pub provider_definitions_revision: String,
+    pub sync_contracts: BTreeMap<String, u32>,
     pub followed_source_node_id: Option<String>,
     pub trusted: bool,
     pub pair_state: Option<String>,
     pub pair_request_id: Option<String>,
+    pub sync_blocked_domains: Vec<String>,
+    pub sync_diagnostics: Vec<LanSyncDomainDiagnosticSnapshot>,
+    pub build_matches_local: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,6 +410,8 @@ struct LanPeerRuntime {
     listen_addr: String,
     last_heartbeat_unix_ms: u64,
     capabilities: Vec<String>,
+    build_identity: LanBuildIdentitySnapshot,
+    sync_contracts: BTreeMap<String, u32>,
     provider_fingerprints: Vec<String>,
     provider_definitions_revision: String,
     followed_source_node_id: Option<String>,
@@ -188,6 +448,10 @@ struct LanHeartbeatPacket {
     listen_port: u16,
     sent_at_unix_ms: u64,
     capabilities: Vec<String>,
+    #[serde(default = "current_build_identity")]
+    build_identity: LanBuildIdentitySnapshot,
+    #[serde(default)]
+    sync_contracts: BTreeMap<String, u32>,
     provider_fingerprints: Vec<String>,
     #[serde(default)]
     provider_definitions_revision: String,
@@ -249,6 +513,20 @@ pub(crate) struct LanEditSyncBatchPacket {
 pub(crate) struct LanProviderDefinitionsRequestPacket {
     version: u8,
     node_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LanRemoteUpdateRequestPacket {
+    version: u8,
+    node_id: String,
+    target_ref: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LanRemoteUpdateAcceptedPacket {
+    accepted: bool,
+    target_ref: String,
+    worker_script: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -481,6 +759,9 @@ impl LanSyncRuntime {
             if !trusted_node_ids.contains(&peer.node_id) {
                 continue;
             }
+            if sync_contract_mismatch_detail(&peer, SYNC_DOMAIN_SHARED_HEALTH).is_some() {
+                continue;
+            }
             if !peer
                 .provider_fingerprints
                 .iter()
@@ -508,6 +789,8 @@ impl LanSyncRuntime {
         secrets: &SecretStore,
     ) -> LanSyncStatusSnapshot {
         let now = unix_ms();
+        let local_build_identity = current_build_identity();
+        let local_version_sync = current_local_version_sync_snapshot();
         self.prune_pair_state(now);
         let trusted_node_ids = secrets.trusted_lan_node_ids();
         let inbound_requests = self.inbound_pair_requests.read().clone();
@@ -525,6 +808,9 @@ impl LanSyncRuntime {
                 );
                 peer.pair_request_id =
                     peer_pair_request_id(&peer.node_id, &inbound_requests, &outbound_requests);
+                peer.sync_blocked_domains = sync_domains_blocked_for_peer(&peer);
+                peer.sync_diagnostics = sync_domain_diagnostics_for_peer(&peer);
+                peer.build_matches_local = peer.build_identity == local_build_identity;
                 peer
             })
             .collect();
@@ -545,10 +831,10 @@ impl LanSyncRuntime {
                 node_id: self.local_node.node_id.clone(),
                 node_name: self.local_node.node_name.clone(),
                 listen_addr: detect_local_listen_addr(listen_port),
-                capabilities: LAN_HEARTBEAT_CAPABILITIES
-                    .iter()
-                    .map(|value| value.to_string())
-                    .collect(),
+                capabilities: lan_heartbeat_capabilities(),
+                build_identity: local_build_identity,
+                version_sync: local_version_sync,
+                sync_contracts: local_sync_contracts(),
                 provider_fingerprints: local_provider_fingerprints,
                 provider_definitions_revision: provider_definitions_revision(
                     &local_provider_definition_sync_items_from_config(cfg, secrets),
@@ -572,10 +858,9 @@ impl LanSyncRuntime {
                 node_name: sanitize_node_name(node_name),
                 listen_addr: "192.168.1.10:4000".to_string(),
                 last_heartbeat_unix_ms: unix_ms(),
-                capabilities: LAN_HEARTBEAT_CAPABILITIES
-                    .iter()
-                    .map(|value| value.to_string())
-                    .collect(),
+                capabilities: lan_heartbeat_capabilities(),
+                build_identity: current_build_identity(),
+                sync_contracts: local_sync_contracts(),
                 provider_fingerprints: Vec::new(),
                 provider_definitions_revision: String::new(),
                 followed_source_node_id: followed_source_node_id.map(ToString::to_string),
@@ -599,6 +884,8 @@ impl LanSyncRuntime {
                 listen_addr,
                 last_heartbeat_unix_ms: unix_ms(),
                 capabilities: packet.capabilities,
+                build_identity: packet.build_identity,
+                sync_contracts: packet.sync_contracts,
                 provider_fingerprints: packet.provider_fingerprints,
                 provider_definitions_revision: packet.provider_definitions_revision,
                 followed_source_node_id: packet.followed_source_node_id,
@@ -621,12 +908,17 @@ impl LanSyncRuntime {
                     listen_addr: peer.listen_addr.clone(),
                     last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
                     capabilities: peer.capabilities.clone(),
+                    build_identity: peer.build_identity.clone(),
+                    sync_contracts: peer.sync_contracts.clone(),
                     provider_fingerprints: peer.provider_fingerprints.clone(),
                     provider_definitions_revision: peer.provider_definitions_revision.clone(),
                     followed_source_node_id: peer.followed_source_node_id.clone(),
                     trusted: false,
                     pair_state: None,
                     pair_request_id: None,
+                    sync_blocked_domains: Vec::new(),
+                    sync_diagnostics: Vec::new(),
+                    build_matches_local: false,
                 })
                 .collect::<Vec<_>>()
         } else {
@@ -640,12 +932,17 @@ impl LanSyncRuntime {
                     listen_addr: peer.listen_addr.clone(),
                     last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
                     capabilities: peer.capabilities.clone(),
+                    build_identity: peer.build_identity.clone(),
+                    sync_contracts: peer.sync_contracts.clone(),
                     provider_fingerprints: peer.provider_fingerprints.clone(),
                     provider_definitions_revision: peer.provider_definitions_revision.clone(),
                     followed_source_node_id: peer.followed_source_node_id.clone(),
                     trusted: false,
                     pair_state: None,
                     pair_request_id: None,
+                    sync_blocked_domains: Vec::new(),
+                    sync_diagnostics: Vec::new(),
+                    build_matches_local: false,
                 })
                 .collect::<Vec<_>>()
         };
@@ -870,6 +1167,91 @@ impl LanSyncRuntime {
         )
     }
 
+    pub async fn request_peer_remote_update(
+        &self,
+        gateway: &crate::orchestrator::gateway::GatewayState,
+        node_id: &str,
+        target_ref: &str,
+    ) -> Result<(), String> {
+        let normalized_node_id = node_id.trim();
+        if normalized_node_id.is_empty() {
+            return Err("node_id is required".to_string());
+        }
+        let normalized_target_ref = target_ref.trim();
+        if normalized_target_ref.is_empty() {
+            return Err("target_ref is required".to_string());
+        }
+        let peer = self
+            .live_peer_by_node_id(normalized_node_id)
+            .ok_or_else(|| format!("peer is not reachable on LAN: {normalized_node_id}"))?;
+        if !peer_supports_http_sync(&peer, LAN_REMOTE_UPDATE_CAPABILITY) {
+            return Err(format!(
+                "peer does not support remote update coordination: {normalized_node_id}"
+            ));
+        }
+        let base_url = peer_http_base_url(&peer)
+            .ok_or_else(|| format!("peer has no valid LAN address: {normalized_node_id}"))?;
+        let trust_secret = current_lan_trust_secret(gateway)?;
+        let response = lan_sync_http_client()
+            .post(format!("{base_url}/lan-sync/remote-update"))
+            .header(
+                LAN_SYNC_AUTH_NODE_ID_HEADER,
+                self.local_node.node_id.clone(),
+            )
+            .header(LAN_SYNC_AUTH_SECRET_HEADER, trust_secret)
+            .json(&LanRemoteUpdateRequestPacket {
+                version: 1,
+                node_id: self.local_node.node_id.clone(),
+                target_ref: normalized_target_ref.to_string(),
+            })
+            .send()
+            .await
+            .map_err(|err| format!("remote update request failed: {err}"))?;
+        if !response.status().is_success() {
+            let detail = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unknown remote update error".to_string());
+            return Err(format!(
+                "remote update request rejected by {}: {detail}",
+                peer.node_name
+            ));
+        }
+        gateway.store.add_event(
+            "gateway",
+            "info",
+            "lan.remote_update_requested",
+            &format!(
+                "Requested {} to self-update to {normalized_target_ref}",
+                peer.node_name
+            ),
+            serde_json::json!({
+                "peer_node_id": peer.node_id,
+                "peer_node_name": peer.node_name,
+                "target_ref": normalized_target_ref,
+            }),
+        );
+        Ok(())
+    }
+
+    pub async fn request_peer_remote_update_to_local_build(
+        &self,
+        gateway: &crate::orchestrator::gateway::GatewayState,
+        node_id: &str,
+    ) -> Result<(), String> {
+        let version_sync = current_local_version_sync_snapshot();
+        let Some(target_ref) = version_sync.target_ref.as_deref() else {
+            return Err(version_sync.blocked_reason.unwrap_or_else(|| {
+                "local build git sha is unknown; cannot coordinate same-version update".to_string()
+            }));
+        };
+        if let Some(reason) = version_sync.blocked_reason {
+            return Err(reason);
+        }
+        self.request_peer_remote_update(gateway, node_id, target_ref)
+            .await
+    }
+
     pub fn local_node_id(&self) -> String {
         self.local_node.node_id.clone()
     }
@@ -1031,6 +1413,61 @@ pub(crate) async fn lan_sync_provider_definitions_http(
         "definitions": definitions,
     }))
     .into_response()
+}
+
+pub(crate) async fn lan_sync_remote_update_http(
+    State(gateway): State<crate::orchestrator::gateway::GatewayState>,
+    headers: HeaderMap,
+    Json(packet): Json<LanRemoteUpdateRequestPacket>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize_lan_sync_http_request(&gateway, &headers, &packet.node_id) {
+        return err.into_response();
+    }
+    let normalized_target_ref = packet.target_ref.trim();
+    if normalized_target_ref.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": "target_ref is required",
+            })),
+        )
+            .into_response();
+    }
+    match spawn_remote_update_worker(normalized_target_ref) {
+        Ok(worker_script) => {
+            gateway.store.add_event(
+                "gateway",
+                "warning",
+                "lan.remote_update_accepted",
+                &format!(
+                    "Accepted remote update request to {normalized_target_ref}; local self-update worker started"
+                ),
+                serde_json::json!({
+                    "requester_node_id": packet.node_id,
+                    "target_ref": normalized_target_ref,
+                    "worker_script": worker_script,
+                }),
+            );
+            (
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!(LanRemoteUpdateAcceptedPacket {
+                    accepted: true,
+                    target_ref: normalized_target_ref.to_string(),
+                    worker_script,
+                })),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": err,
+            })),
+        )
+            .into_response(),
+    }
 }
 
 fn lan_cipher(secret: &str) -> ChaCha20Poly1305 {
@@ -1830,6 +2267,38 @@ pub fn record_tracked_spend_day_from_gateway(
     Ok(())
 }
 
+pub fn record_tracked_spend_day_removal_from_gateway(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    secrets: &SecretStore,
+    provider: &str,
+    day_started_at_unix_ms: u64,
+) -> Result<(), String> {
+    let Some(local_node) = local_node_identity_for_edit_recording() else {
+        return Ok(());
+    };
+    let shared_provider_id = shared_provider_id_for_provider(secrets, provider)?;
+    let entity_id = tracked_spend_day_entity_id(
+        &shared_provider_id,
+        day_started_at_unix_ms,
+        &local_node.node_id,
+    );
+    let payload = serde_json::to_value(TrackedSpendDaySyncPayload {
+        provider_name: provider.to_string(),
+        day_started_at_unix_ms,
+        row: Value::Null,
+    })
+    .map_err(|err| err.to_string())?;
+    let _ = record_edit_event(
+        gateway,
+        &local_node,
+        "tracked_spend_day",
+        &entity_id,
+        "delete",
+        payload,
+    )?;
+    Ok(())
+}
+
 fn record_edit_event(
     gateway: &crate::orchestrator::gateway::GatewayState,
     local_node: &LanNodeIdentity,
@@ -2236,6 +2705,14 @@ fn apply_tracked_spend_day_event(
         shared_provider_id,
         &payload.provider_name,
     )?;
+    if event.op == "delete" {
+        gateway.store.remove_remote_spend_day(
+            &provider_name,
+            source_node_id,
+            payload.day_started_at_unix_ms,
+        );
+        return Ok(());
+    }
     let mut row = payload.row.clone();
     if let Some(map) = row.as_object_mut() {
         map.insert(
@@ -2275,7 +2752,7 @@ fn apply_lan_edit_event(
     event: &crate::orchestrator::store::LanEditSyncEvent,
 ) -> Result<(), String> {
     match event.entity_type.as_str() {
-        "provider_definition" => match event.op.as_str() {
+        LAN_EDIT_ENTITY_PROVIDER_DEFINITION => match event.op.as_str() {
             "patch" => apply_provider_definition_patch(
                 gateway,
                 config_path,
@@ -2297,16 +2774,16 @@ fn apply_lan_edit_event(
             ),
             other => Err(format!("unsupported provider_definition op: {other}")),
         },
-        "provider_pricing" => {
+        LAN_EDIT_ENTITY_PROVIDER_PRICING => {
             apply_provider_pricing_event(gateway, &event.entity_id, &event.payload, event)
         }
-        "quota_snapshot" => {
+        LAN_EDIT_ENTITY_QUOTA_SNAPSHOT => {
             apply_quota_snapshot_event(gateway, &event.entity_id, &event.payload, event)
         }
-        "spend_manual_day" => {
+        LAN_EDIT_ENTITY_SPEND_MANUAL_DAY => {
             apply_spend_manual_day_event(gateway, &event.entity_id, &event.payload, event)
         }
-        "tracked_spend_day" => {
+        LAN_EDIT_ENTITY_TRACKED_SPEND_DAY => {
             apply_tracked_spend_day_event(gateway, &event.entity_id, &event.payload, event)
         }
         other => Err(format!("unsupported edit entity type: {other}")),
@@ -2431,10 +2908,9 @@ fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::Ga
             node_name: runtime.local_node.node_name.clone(),
             listen_port: cfg_snapshot.listen.port,
             sent_at_unix_ms: unix_ms(),
-            capabilities: LAN_HEARTBEAT_CAPABILITIES
-                .iter()
-                .map(|value| value.to_string())
-                .collect(),
+            capabilities: lan_heartbeat_capabilities(),
+            build_identity: current_build_identity(),
+            sync_contracts: local_sync_contracts(),
             provider_fingerprints,
             provider_definitions_revision: provider_definitions_revision(
                 &provider_definition_items,
@@ -2459,6 +2935,15 @@ fn apply_shared_health_packet(
 ) {
     if packet.node_id.trim().is_empty() || packet.node_id == runtime.local_node.node_id {
         return;
+    }
+    if let Some(mut peer) = runtime.live_peer_by_node_id(&packet.node_id) {
+        peer.trusted = gateway
+            .secrets
+            .trusted_lan_node_ids()
+            .contains(&peer.node_id);
+        if sync_contract_mismatch_detail(&peer, SYNC_DOMAIN_SHARED_HEALTH).is_some() {
+            return;
+        }
     }
     let cfg = gateway.cfg.read().clone();
     let shared = crate::orchestrator::router::SharedHealthSyncSnapshot {
@@ -2813,8 +3298,233 @@ fn format_lan_sync_reqwest_error(err: &reqwest::Error) -> String {
     parts.join("; ")
 }
 
+fn resolve_repo_root_for_self_update() -> Result<std::path::PathBuf, String> {
+    if let Ok(explicit) = std::env::var("API_ROUTER_REPO_ROOT") {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            let path = std::path::PathBuf::from(trimmed);
+            if path.join("package.json").is_file() {
+                return Ok(path);
+            }
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let path = parent.to_path_buf();
+            if path.join("package.json").is_file() {
+                return Ok(path);
+            }
+        }
+    }
+    let manifest_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_root
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "failed to resolve repo root".to_string())?;
+    if repo_root.join("package.json").is_file() {
+        Ok(repo_root)
+    } else {
+        Err("repo root does not contain package.json".to_string())
+    }
+}
+
+fn build_remote_update_worker_command(
+    target_ref: &str,
+) -> Result<(String, Vec<String>, String), String> {
+    let normalized_target_ref = target_ref.trim();
+    if normalized_target_ref.is_empty() {
+        return Err("target_ref is required".to_string());
+    }
+    let repo_root = resolve_repo_root_for_self_update()?;
+    #[cfg(target_os = "windows")]
+    {
+        let script = repo_root.join("scripts").join("lan-remote-update.ps1");
+        if !script.is_file() {
+            return Err(format!(
+                "missing remote update script: {}",
+                script.display()
+            ));
+        }
+        let args = vec![
+            "-NoProfile".to_string(),
+            "-ExecutionPolicy".to_string(),
+            "Bypass".to_string(),
+            "-File".to_string(),
+            script.display().to_string(),
+            "-TargetRef".to_string(),
+            normalized_target_ref.to_string(),
+        ];
+        Ok((
+            "powershell.exe".to_string(),
+            args,
+            script.display().to_string(),
+        ))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let script = repo_root.join("scripts").join("lan-remote-update.sh");
+        if !script.is_file() {
+            return Err(format!(
+                "missing remote update script: {}",
+                script.display()
+            ));
+        }
+        let args = vec![
+            script.display().to_string(),
+            normalized_target_ref.to_string(),
+        ];
+        Ok(("bash".to_string(), args, script.display().to_string()))
+    }
+}
+
+fn spawn_remote_update_worker(target_ref: &str) -> Result<String, String> {
+    let (program, args, script) = build_remote_update_worker_command(target_ref)?;
+    let repo_root = resolve_repo_root_for_self_update()?;
+    let mut command = std::process::Command::new(program);
+    command.args(args).current_dir(repo_root);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0000_0008 | 0x0000_0200);
+    }
+    command
+        .spawn()
+        .map_err(|err| format!("failed to start remote update worker: {err}"))?;
+    Ok(script)
+}
+
 fn peer_supports_http_sync(peer: &LanPeerSnapshot, capability: &str) -> bool {
     peer.trusted && peer.capabilities.iter().any(|value| value == capability)
+}
+
+fn sync_contract_version(contracts: &BTreeMap<String, u32>, domain: &str) -> u32 {
+    contracts.get(domain).copied().unwrap_or(0)
+}
+
+fn sync_contract_mismatch_detail(peer: &LanPeerSnapshot, domain: &str) -> Option<(u32, u32)> {
+    if !peer.trusted {
+        return None;
+    }
+    let local_version = sync_contract_version(&local_sync_contracts(), domain);
+    let peer_version = sync_contract_version(&peer.sync_contracts, domain);
+    if local_version == peer_version {
+        return None;
+    }
+    Some((local_version, peer_version))
+}
+
+fn sync_contract_mismatch_reason(peer: &LanPeerSnapshot, domain: &str) -> Option<String> {
+    let (local_version, peer_version) = sync_contract_mismatch_detail(peer, domain)?;
+    Some(format!(
+        "Rejected LAN {domain} sync from {} because sync contract version does not match (local=v{local_version}, peer=v{peer_version}). Update both devices to the same compatible build. Sync will resume automatically once versions match.",
+        peer.node_name
+    ))
+}
+
+fn sync_domain_diagnostics_for_peer(
+    peer: &LanPeerSnapshot,
+) -> Vec<LanSyncDomainDiagnosticSnapshot> {
+    local_sync_contracts()
+        .keys()
+        .map(|domain| {
+            let local_contract_version = sync_contract_version(&local_sync_contracts(), domain);
+            let peer_contract_version = sync_contract_version(&peer.sync_contracts, domain);
+            let blocked_reason = sync_contract_mismatch_reason(peer, domain);
+            LanSyncDomainDiagnosticSnapshot {
+                domain: domain.clone(),
+                status: if blocked_reason.is_some() {
+                    "blocked".to_string()
+                } else {
+                    "ok".to_string()
+                },
+                local_contract_version,
+                peer_contract_version,
+                blocked_reason,
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn sync_contract_block_reason_for_domain(
+    peer: &LanPeerSnapshot,
+    domain: &str,
+) -> Option<String> {
+    sync_contract_mismatch_reason(peer, domain)
+}
+
+pub(crate) fn peer_version_sync_reason(peer: &LanPeerSnapshot) -> Option<String> {
+    if !peer.trusted {
+        return None;
+    }
+    if !peer.sync_blocked_domains.is_empty() {
+        let domains = peer.sync_blocked_domains.join(", ");
+        return Some(format!(
+            "Sync paused for {domains} on {} until both devices run compatible builds.",
+            peer.node_name
+        ));
+    }
+    if peer.build_matches_local {
+        return None;
+    }
+    Some(format!(
+        "{} is on a different build. Sync this peer to the current machine build before following or trusting its data.",
+        peer.node_name
+    ))
+}
+
+fn sync_domains_blocked_for_peer(peer: &LanPeerSnapshot) -> Vec<String> {
+    local_sync_contracts()
+        .keys()
+        .filter(|domain| sync_contract_mismatch_detail(peer, domain).is_some())
+        .cloned()
+        .collect()
+}
+
+fn ensure_peer_sync_contract(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    peer: &LanPeerSnapshot,
+    domain: &str,
+    reported: &mut HashMap<String, String>,
+) -> bool {
+    let key = format!("{}:{domain}", peer.node_id);
+    let Some(reason) = sync_contract_mismatch_reason(peer, domain) else {
+        if reported.remove(&key).is_some() {
+            gateway.store.add_event(
+                "gateway",
+                "info",
+                "lan.sync_contract_recovered",
+                &format!(
+                    "LAN {domain} sync with {} is compatible again and has resumed",
+                    peer.node_name
+                ),
+                serde_json::json!({
+                    "peer_node_id": peer.node_id,
+                    "peer_node_name": peer.node_name,
+                    "domain": domain,
+                    "local_sync_contracts": local_sync_contracts(),
+                    "peer_sync_contracts": peer.sync_contracts,
+                }),
+            );
+        }
+        return true;
+    };
+    if reported.get(&key) != Some(&reason) {
+        gateway.store.add_event(
+            "gateway",
+            "warning",
+            "lan.sync_contract_mismatch",
+            &reason,
+            serde_json::json!({
+                "peer_node_id": peer.node_id,
+                "peer_node_name": peer.node_name,
+                "domain": domain,
+                "local_sync_contracts": local_sync_contracts(),
+                "peer_sync_contracts": peer.sync_contracts,
+            }),
+        );
+        reported.insert(key, reason);
+    }
+    false
 }
 
 fn lan_sync_http_client() -> &'static reqwest::Client {
@@ -3243,6 +3953,7 @@ fn apply_edit_sync_batch(
     runtime: &LanSyncRuntime,
     gateway: &crate::orchestrator::gateway::GatewayState,
     config_path: &Path,
+    peer: &LanPeerSnapshot,
     packet: LanEditSyncBatchPacket,
 ) {
     if packet.node_id.trim().is_empty() || packet.node_id == runtime.local_node.node_id {
@@ -3253,6 +3964,27 @@ fn apply_edit_sync_batch(
     }
     let mut applied = 0usize;
     for event in &packet.events {
+        let Some(domain) = lan_edit_entity_sync_domain(&event.entity_type) else {
+            gateway.store.add_event(
+                "gateway",
+                "warning",
+                "lan.edit_sync_entity_domain_missing",
+                &format!(
+                    "Rejected LAN edit sync entity {} from {} because it is not mapped to a sync domain",
+                    event.entity_type, peer.node_name
+                ),
+                serde_json::json!({
+                    "peer_node_id": peer.node_id,
+                    "peer_node_name": peer.node_name,
+                    "entity_type": event.entity_type,
+                    "event_id": event.event_id,
+                }),
+            );
+            continue;
+        };
+        if sync_contract_mismatch_detail(peer, domain).is_some() {
+            continue;
+        }
         gateway.store.note_lan_edit_lamport_ts(event.lamport_ts);
         if !gateway.store.insert_lan_edit_event(event) {
             continue;
@@ -3293,12 +4025,21 @@ fn run_usage_sync_loop(
     runtime: LanSyncRuntime,
     gateway: crate::orchestrator::gateway::GatewayState,
 ) {
+    let mut reported_sync_blocks: HashMap<String, String> = HashMap::new();
     loop {
         let peers = runtime.collect_live_peers(unix_ms());
         let trusted_node_ids = gateway.secrets.trusted_lan_node_ids();
         for peer in peers {
             let mut peer = peer;
             peer.trusted = trusted_node_ids.contains(&peer.node_id);
+            if !ensure_peer_sync_contract(
+                &gateway,
+                &peer,
+                SYNC_DOMAIN_USAGE_REQUESTS,
+                &mut reported_sync_blocks,
+            ) {
+                continue;
+            }
             if !peer_supports_http_sync(&peer, "usage_sync_v1") {
                 continue;
             }
@@ -3342,6 +4083,7 @@ fn run_edit_sync_loop(
     let mut last_live_peer_ids = std::collections::BTreeSet::new();
     let mut attempted_followed_revisions: HashMap<String, String> = HashMap::new();
     let mut applied_followed_revisions: HashMap<String, String> = HashMap::new();
+    let mut reported_sync_blocks: HashMap<String, String> = HashMap::new();
     loop {
         let peers = runtime.collect_live_peers(unix_ms());
         let trusted_node_ids = gateway.secrets.trusted_lan_node_ids();
@@ -3355,6 +4097,12 @@ fn run_edit_sync_loop(
             peer.trusted = trusted_node_ids.contains(&peer.node_id);
             let became_live = !last_live_peer_ids.contains(&peer.node_id);
             if followed_source_node_id.as_deref() == Some(peer.node_id.as_str())
+                && ensure_peer_sync_contract(
+                    &gateway,
+                    &peer,
+                    SYNC_DOMAIN_PROVIDER_DEFINITIONS,
+                    &mut reported_sync_blocks,
+                )
                 && peer_supports_http_sync(&peer, "provider_definitions_v1")
             {
                 let revision = peer.provider_definitions_revision.trim().to_string();
@@ -3391,6 +4139,14 @@ fn run_edit_sync_loop(
                     }
                 }
             }
+            if !ensure_peer_sync_contract(
+                &gateway,
+                &peer,
+                SYNC_DOMAIN_USAGE_HISTORY,
+                &mut reported_sync_blocks,
+            ) {
+                continue;
+            }
             if !peer_supports_http_sync(&peer, "edit_sync_v1") {
                 continue;
             }
@@ -3416,7 +4172,7 @@ fn run_edit_sync_loop(
                 if batch.events.is_empty() {
                     break;
                 }
-                apply_edit_sync_batch(&runtime, &gateway, &config_path, batch);
+                apply_edit_sync_batch(&runtime, &gateway, &config_path, &peer, batch);
                 if !has_more {
                     break;
                 }
@@ -4182,6 +4938,8 @@ mod tests {
                 listen_port: 4000,
                 sent_at_unix_ms: 1,
                 capabilities: vec!["heartbeat_v1".to_string()],
+                build_identity: super::current_build_identity(),
+                sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: vec![],
                 provider_definitions_revision: String::new(),
                 followed_source_node_id: None,
@@ -4754,13 +5512,18 @@ mod tests {
             node_name: "Node A".to_string(),
             listen_addr: "192.168.1.10:4000".to_string(),
             last_heartbeat_unix_ms: 1,
-            capabilities: vec!["edit_sync_v1".to_string()],
+            capabilities: super::lan_heartbeat_capabilities(),
+            build_identity: super::current_build_identity(),
             provider_fingerprints: Vec::new(),
             provider_definitions_revision: String::new(),
+            sync_contracts: super::local_sync_contracts(),
             followed_source_node_id: None,
             trusted: true,
             pair_state: None,
             pair_request_id: None,
+            sync_blocked_domains: Vec::new(),
+            sync_diagnostics: Vec::new(),
+            build_matches_local: true,
         };
         assert!(peer_supports_http_sync(&trusted_peer, "edit_sync_v1"));
 
@@ -4774,6 +5537,231 @@ mod tests {
             &missing_capability_peer,
             "edit_sync_v1"
         ));
+    }
+
+    #[test]
+    fn sync_contract_reason_detects_domain_mismatch() {
+        let incompatible_peer = super::LanPeerSnapshot {
+            node_id: "node-a".to_string(),
+            node_name: "Node A".to_string(),
+            listen_addr: "192.168.1.10:4000".to_string(),
+            last_heartbeat_unix_ms: 1,
+            capabilities: super::lan_heartbeat_capabilities(),
+            build_identity: super::current_build_identity(),
+            provider_fingerprints: Vec::new(),
+            provider_definitions_revision: String::new(),
+            sync_contracts: std::collections::BTreeMap::from([
+                (super::SYNC_DOMAIN_USAGE_REQUESTS.to_string(), 1),
+                (super::SYNC_DOMAIN_USAGE_HISTORY.to_string(), 1),
+                (super::SYNC_DOMAIN_PROVIDER_DEFINITIONS.to_string(), 1),
+                (super::SYNC_DOMAIN_SHARED_HEALTH.to_string(), 1),
+            ]),
+            followed_source_node_id: None,
+            trusted: true,
+            pair_state: None,
+            pair_request_id: None,
+            sync_blocked_domains: Vec::new(),
+            sync_diagnostics: Vec::new(),
+            build_matches_local: true,
+        };
+
+        let reason = super::sync_contract_block_reason_for_domain(
+            &incompatible_peer,
+            super::SYNC_DOMAIN_USAGE_HISTORY,
+        )
+        .expect("mismatch reason");
+        assert!(reason.contains("usage_history"));
+        assert!(reason.contains("local=v2"));
+        assert!(reason.contains("peer=v1"));
+        assert!(peer_supports_http_sync(&incompatible_peer, "edit_sync_v1"));
+    }
+
+    #[test]
+    fn sync_domain_diagnostics_expose_blocked_domain_versions() {
+        let peer = super::LanPeerSnapshot {
+            node_id: "node-a".to_string(),
+            node_name: "Node A".to_string(),
+            listen_addr: "192.168.1.10:4000".to_string(),
+            last_heartbeat_unix_ms: 1,
+            capabilities: super::lan_heartbeat_capabilities(),
+            build_identity: super::current_build_identity(),
+            provider_fingerprints: Vec::new(),
+            provider_definitions_revision: String::new(),
+            sync_contracts: std::collections::BTreeMap::from([
+                (super::SYNC_DOMAIN_USAGE_REQUESTS.to_string(), 1),
+                (super::SYNC_DOMAIN_USAGE_HISTORY.to_string(), 1),
+                (super::SYNC_DOMAIN_PROVIDER_DEFINITIONS.to_string(), 1),
+                (super::SYNC_DOMAIN_SHARED_HEALTH.to_string(), 1),
+            ]),
+            followed_source_node_id: None,
+            trusted: true,
+            pair_state: None,
+            pair_request_id: None,
+            sync_blocked_domains: Vec::new(),
+            sync_diagnostics: Vec::new(),
+            build_matches_local: true,
+        };
+
+        let diagnostics = super::sync_domain_diagnostics_for_peer(&peer);
+        let blocked = diagnostics
+            .into_iter()
+            .find(|item| item.domain == super::SYNC_DOMAIN_USAGE_HISTORY)
+            .expect("usage_history diagnostics");
+        assert_eq!(blocked.status, "blocked");
+        assert_eq!(blocked.local_contract_version, 2);
+        assert_eq!(blocked.peer_contract_version, 1);
+        assert!(blocked
+            .blocked_reason
+            .as_deref()
+            .is_some_and(|value| value.contains("usage_history")));
+    }
+
+    #[test]
+    fn lan_edit_entity_domain_registry_covers_all_supported_entities() {
+        let mappings = super::LAN_EDIT_ENTITY_DOMAIN_REGISTRY
+            .iter()
+            .map(|(entity_type, domain)| ((*entity_type).to_string(), (*domain).to_string()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            mappings
+                .get(super::LAN_EDIT_ENTITY_PROVIDER_DEFINITION)
+                .map(String::as_str),
+            Some(super::SYNC_DOMAIN_PROVIDER_DEFINITIONS)
+        );
+        assert_eq!(
+            mappings
+                .get(super::LAN_EDIT_ENTITY_PROVIDER_PRICING)
+                .map(String::as_str),
+            Some(super::SYNC_DOMAIN_USAGE_HISTORY)
+        );
+        assert_eq!(
+            mappings
+                .get(super::LAN_EDIT_ENTITY_QUOTA_SNAPSHOT)
+                .map(String::as_str),
+            Some(super::SYNC_DOMAIN_USAGE_HISTORY)
+        );
+        assert_eq!(
+            mappings
+                .get(super::LAN_EDIT_ENTITY_SPEND_MANUAL_DAY)
+                .map(String::as_str),
+            Some(super::SYNC_DOMAIN_USAGE_HISTORY)
+        );
+        assert_eq!(
+            mappings
+                .get(super::LAN_EDIT_ENTITY_TRACKED_SPEND_DAY)
+                .map(String::as_str),
+            Some(super::SYNC_DOMAIN_USAGE_HISTORY)
+        );
+        assert_eq!(mappings.len(), 5);
+    }
+
+    #[test]
+    fn usage_history_contract_samples_match_current_contract_version() {
+        assert_eq!(
+            super::sync_contract_version(
+                &super::local_sync_contracts(),
+                super::SYNC_DOMAIN_USAGE_HISTORY
+            ),
+            2,
+            "usage_history payload shape changed; update samples and bump contract if semantics changed"
+        );
+        let samples = super::usage_history_contract_samples();
+        assert_eq!(samples.len(), 4);
+        for (entity_type, payload) in samples {
+            assert_eq!(
+                super::lan_edit_entity_sync_domain(entity_type),
+                Some(super::SYNC_DOMAIN_USAGE_HISTORY),
+                "usage_history sample entity must stay mapped to usage_history"
+            );
+            assert!(
+                payload.is_object(),
+                "usage_history contract sample for {entity_type} must stay object-shaped"
+            );
+        }
+    }
+
+    #[test]
+    fn apply_edit_sync_batch_skips_events_for_blocked_entity_domain() {
+        let (_tmp, state) = build_test_state();
+        let runtime = super::LanSyncRuntime::new(super::LanNodeIdentity {
+            node_id: "node-self".to_string(),
+            node_name: "self".to_string(),
+        });
+        let peer = super::LanPeerSnapshot {
+            node_id: "node-remote".to_string(),
+            node_name: "remote".to_string(),
+            listen_addr: "192.168.1.10:4000".to_string(),
+            last_heartbeat_unix_ms: 1,
+            capabilities: super::lan_heartbeat_capabilities(),
+            build_identity: super::current_build_identity(),
+            provider_fingerprints: Vec::new(),
+            provider_definitions_revision: String::new(),
+            sync_contracts: std::collections::BTreeMap::from([
+                (super::SYNC_DOMAIN_USAGE_REQUESTS.to_string(), 1),
+                (super::SYNC_DOMAIN_USAGE_HISTORY.to_string(), 2),
+                (super::SYNC_DOMAIN_PROVIDER_DEFINITIONS.to_string(), 0),
+                (super::SYNC_DOMAIN_SHARED_HEALTH.to_string(), 1),
+            ]),
+            followed_source_node_id: None,
+            trusted: true,
+            pair_state: None,
+            pair_request_id: None,
+            sync_blocked_domains: Vec::new(),
+            sync_diagnostics: Vec::new(),
+            build_matches_local: false,
+        };
+        let shared_provider_id = state
+            .secrets
+            .ensure_provider_shared_id("provider_1")
+            .expect("shared id");
+        let batch = super::LanEditSyncBatchPacket {
+            version: 1,
+            node_id: peer.node_id.clone(),
+            events: vec![crate::orchestrator::store::LanEditSyncEvent {
+                event_id: "evt-provider-definition".to_string(),
+                node_id: peer.node_id.clone(),
+                node_name: peer.node_name.clone(),
+                created_at_unix_ms: 1,
+                lamport_ts: 1,
+                entity_type: super::LAN_EDIT_ENTITY_PROVIDER_DEFINITION.to_string(),
+                entity_id: shared_provider_id.clone(),
+                op: "patch".to_string(),
+                payload: serde_json::json!({
+                    "name": "provider_1",
+                    "display_name": "Blocked Name",
+                    "base_url": "https://blocked.example/v1"
+                }),
+            }],
+            has_more: false,
+        };
+
+        super::apply_edit_sync_batch(&runtime, &state.gateway, &state.config_path, &peer, batch);
+
+        assert!(
+            state
+                .gateway
+                .store
+                .get_lan_provider_definition_snapshot("node-remote", &shared_provider_id)
+                .is_none(),
+            "provider_definition event must be skipped when provider_definitions domain is blocked"
+        );
+    }
+
+    #[test]
+    fn build_remote_update_worker_command_points_at_repo_script() {
+        let (program, args, script) =
+            super::build_remote_update_worker_command("main").expect("worker command");
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(program, "powershell.exe");
+            assert!(args.iter().any(|value| value == "-File"));
+            assert!(script.ends_with("scripts\\lan-remote-update.ps1"));
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(program, "bash");
+            assert!(script.ends_with("scripts/lan-remote-update.sh"));
+        }
     }
 
     #[test]
@@ -4842,6 +5830,8 @@ mod tests {
                 listen_addr: "192.168.1.10:4000".to_string(),
                 last_heartbeat_unix_ms: 100_000,
                 capabilities: vec!["heartbeat_v1".to_string()],
+                build_identity: super::current_build_identity(),
+                sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: vec![],
                 provider_definitions_revision: String::new(),
                 followed_source_node_id: None,
@@ -4855,6 +5845,8 @@ mod tests {
                 listen_addr: "192.168.1.11:4000".to_string(),
                 last_heartbeat_unix_ms: 100_000_u64.saturating_sub(LAN_PEER_STALE_AFTER_MS + 1),
                 capabilities: vec!["heartbeat_v1".to_string()],
+                build_identity: super::current_build_identity(),
+                sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: vec![],
                 provider_definitions_revision: String::new(),
                 followed_source_node_id: None,
@@ -4896,6 +5888,8 @@ mod tests {
                 listen_port: 4000,
                 sent_at_unix_ms: 1000,
                 capabilities: vec!["heartbeat_v1".to_string()],
+                build_identity: super::current_build_identity(),
+                sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: Vec::new(),
                 provider_definitions_revision: String::new(),
                 followed_source_node_id: None,
@@ -4926,13 +5920,18 @@ mod tests {
             node_name: "Peer".to_string(),
             listen_addr: "192.168.1.50:4000".to_string(),
             last_heartbeat_unix_ms: 1,
-            capabilities: vec!["edit_sync_v1".to_string()],
+            capabilities: super::lan_heartbeat_capabilities(),
+            build_identity: super::current_build_identity(),
             provider_fingerprints: Vec::new(),
             provider_definitions_revision: String::new(),
+            sync_contracts: super::local_sync_contracts(),
             followed_source_node_id: None,
             trusted: true,
             pair_state: None,
             pair_request_id: None,
+            sync_blocked_domains: Vec::new(),
+            sync_diagnostics: Vec::new(),
+            build_matches_local: true,
         };
         runtime.note_http_sync_probe(
             &peer,
@@ -4969,13 +5968,18 @@ mod tests {
             node_name: "Peer".to_string(),
             listen_addr: "192.168.1.50:4000".to_string(),
             last_heartbeat_unix_ms: 1,
-            capabilities: vec!["edit_sync_v1".to_string()],
+            capabilities: super::lan_heartbeat_capabilities(),
+            build_identity: super::current_build_identity(),
             provider_fingerprints: Vec::new(),
             provider_definitions_revision: String::new(),
+            sync_contracts: super::local_sync_contracts(),
             followed_source_node_id: None,
             trusted: true,
             pair_state: None,
             pair_request_id: None,
+            sync_blocked_domains: Vec::new(),
+            sync_diagnostics: Vec::new(),
+            build_matches_local: true,
         };
         runtime.note_http_sync_probe(
             &peer,
@@ -5140,6 +6144,8 @@ mod tests {
                 listen_port: 4000,
                 sent_at_unix_ms: 1,
                 capabilities: vec!["heartbeat_v1".to_string()],
+                build_identity: super::current_build_identity(),
+                sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: vec![],
                 provider_definitions_revision: String::new(),
                 followed_source_node_id: None,
@@ -5167,7 +6173,9 @@ mod tests {
                 node_name: "peer-a".to_string(),
                 listen_addr: "192.168.1.10:4000".to_string(),
                 last_heartbeat_unix_ms: now,
-                capabilities: vec!["heartbeat_v1".to_string()],
+                capabilities: super::lan_heartbeat_capabilities(),
+                build_identity: super::current_build_identity(),
+                sync_contracts: super::local_sync_contracts(),
                 provider_fingerprints: vec!["fp-1".to_string()],
                 provider_definitions_revision: String::new(),
                 followed_source_node_id: None,
@@ -5198,6 +6206,8 @@ mod tests {
                 listen_addr: "192.168.1.10:4000".to_string(),
                 last_heartbeat_unix_ms: now,
                 capabilities: vec!["heartbeat_v1".to_string()],
+                build_identity: super::current_build_identity(),
+                sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: vec!["fp-1".to_string()],
                 provider_definitions_revision: String::new(),
                 followed_source_node_id: None,
@@ -5527,6 +6537,8 @@ mod tests {
                 listen_addr: "192.168.1.21:4000".to_string(),
                 last_heartbeat_unix_ms: crate::orchestrator::store::unix_ms(),
                 capabilities: vec!["heartbeat_v1".to_string()],
+                build_identity: super::current_build_identity(),
+                sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: vec![fingerprint.clone()],
                 provider_definitions_revision: String::new(),
                 followed_source_node_id: None,

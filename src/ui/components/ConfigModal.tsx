@@ -20,6 +20,7 @@ type Props = {
   onRequestPair: (nodeId: string) => Promise<string | null | void> | string | null | void
   onApprovePair: (requestId: string) => Promise<string | null | void> | string | null | void
   onSubmitPairPin: (nodeId: string, requestId: string, pinCode: string) => Promise<void> | void
+  onSyncPeerVersion: (nodeId: string) => Promise<void> | void
   onOpenGroupManager: () => void
   onClose: () => void
   providerListRef: React.RefObject<HTMLDivElement | null>
@@ -55,6 +56,40 @@ function formatPairDialogError(error: unknown): string {
   return text || 'Pairing failed.'
 }
 
+function compactPeerStateLabel(
+  source: NonNullable<Config['config_source']>['sources'][number],
+): string {
+  if (source.trusted) return 'Trusted'
+  if (source.pair_state === 'incoming_request') return 'Needs approval'
+  if (source.pair_state === 'pin_required') return 'PIN required'
+  if (source.pair_state === 'requested') return 'Pending'
+  return 'Unpaired'
+}
+
+function compactFollowStatusLabel(
+  source: NonNullable<Config['config_source']>['sources'][number],
+): string {
+  if (source.active) return 'Following'
+  if (source.follow_allowed) return 'Ready to follow'
+  if (!source.trusted) return 'Pair required'
+  if ((source.sync_blocked_domains?.length ?? 0) > 0) return 'Blocked by sync contract'
+  return 'Unavailable'
+}
+
+function compactUpdateStatusLabel(
+  source: NonNullable<Config['config_source']>['sources'][number],
+): string {
+  if (!source.version_sync_required) return 'No update needed'
+  return source.same_version_update_allowed ? 'Update required' : 'Update blocked'
+}
+
+function compactReason(source: NonNullable<Config['config_source']>['sources'][number]): string {
+  if (source.version_sync_required) {
+    return source.version_sync_reason?.trim() || source.same_version_update_blocked_reason?.trim() || ''
+  }
+  return source.follow_blocked_reason?.trim() || ''
+}
+
 export function ConfigModal({
   open,
   config,
@@ -73,6 +108,7 @@ export function ConfigModal({
   onRequestPair,
   onApprovePair,
   onSubmitPairPin,
+  onSyncPeerVersion,
   onOpenGroupManager,
   onClose,
   providerListRef,
@@ -83,6 +119,7 @@ export function ConfigModal({
   renderProviderCard,
 }: Props) {
   const [sourceMenuOpen, setSourceMenuOpen] = useState(false)
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
   const [pairDialog, setPairDialog] = useState<PairDialogState | null>(null)
   const [pairPinDigits, setPairPinDigits] = useState<string[]>(() => emptyPairPinDigits())
   const [pairDialogBusy, setPairDialogBusy] = useState(false)
@@ -103,6 +140,10 @@ export function ConfigModal({
             follow_allowed: false,
             follow_blocked_reason: null,
             using_count: 0,
+            version_sync_required: false,
+            version_sync_reason: null,
+            same_version_update_allowed: false,
+            same_version_update_blocked_reason: null,
           },
         ]
   const showConfigSourceChooser = configSources.length > 1
@@ -120,6 +161,10 @@ export function ConfigModal({
         ? `${selectedUsingCount} using`
         : `${selectedUsingCount} follow`
       : ''
+  const updateRequiredSources = configSources.filter(
+    (source) => source.kind === 'peer' && source.version_sync_required,
+  )
+  const peerSources = configSources.filter((source) => source.kind === 'peer')
 
   useEffect(() => {
     if (!sourceMenuOpen) return
@@ -232,140 +277,173 @@ export function ConfigModal({
           </div>
           <div className="aoConfigHeaderSource" aria-label="Config source">
             {showConfigSourceChooser ? (
-              <div className="aoActionsMenuWrap aoConfigSourceMenuWrap" ref={sourceMenuRef}>
-              <button
-                type="button"
-                className={`aoSelect aoConfigSourceSelect aoConfigSourceTrigger${sourceMenuOpen ? ' is-open' : ''}`}
-                aria-label="Config source"
-                aria-haspopup="menu"
-                aria-expanded={sourceMenuOpen}
-                onClick={() => setSourceMenuOpen((openValue) => !openValue)}
-              >
-                <span className="aoConfigSourceTriggerIcon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <rect x="4" y="5" width="16" height="10" rx="2" />
-                    <path d="M9 19h6" />
-                    <path d="M12 15v4" />
-                  </svg>
-                </span>
-                <span className="aoConfigSourceTriggerLabel">
-                  {selectedConfigSource?.kind === 'local' ? 'Local' : selectedConfigSource?.node_name}
-                </span>
-                {selectedUsingLabel ? (
-                  <span className="aoConfigSourceTriggerMeta">{selectedUsingLabel}</span>
-                ) : null}
-                <span className="aoConfigSourceChevron" aria-hidden="true">
-                  ▾
-                </span>
-              </button>
-              {sourceMenuOpen ? (
-                <div className="aoMenu aoMenuCompact aoConfigSourceMenu" role="menu" aria-label="Config source options">
-                  {configSources.map((source) => {
-                    const label = source.kind === 'local' ? 'Local' : source.node_name
-                    const blockedReason = source.follow_blocked_reason?.trim() || ''
-                    const pairState = source.pair_state ?? null
-                    const pairActionAvailable =
-                      source.kind === 'peer' &&
-                      (!source.trusted ||
-                        (source.trusted && source.follow_allowed && !source.active))
-                    const disabled = source.kind === 'peer' && !pairActionAvailable
-                    const actionLabel =
-                      source.kind === 'local'
-                        ? source.active
-                          ? 'Current'
-                          : 'Use local'
-                        : source.active
-                          ? 'Following'
-                          : !source.trusted && pairState === 'incoming_request'
-                            ? 'Approve'
-                          : !source.trusted && pairState === 'pin_required'
-                            ? 'Enter PIN'
-                          : !source.trusted && pairState === 'requested'
-                            ? 'Requested'
-                          : !source.trusted
-                            ? 'Pair'
-                          : disabled
-                            ? 'Unavailable'
-                            : 'Follow'
-                    return (
-                      <button
-                        key={source.node_id}
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={source.node_id === selectedConfigSourceValue}
-                        className={`aoMenuItem aoConfigSourceMenuItem${
-                          source.node_id === selectedConfigSourceValue ? ' is-current' : ''
-                        }`}
-                        disabled={disabled}
-                        title={blockedReason || label}
-                        onClick={async () => {
-                          setSourceMenuOpen(false)
-                          if (source.kind === 'local') {
-                            await onClearFollowSource()
-                            return
-                          }
-                          if (!source.trusted && pairState === 'incoming_request' && source.pair_request_id) {
-                            const pinCode = await onApprovePair(source.pair_request_id)
-                            if (pinCode) {
-                              setPairDialogError('')
-                              setPairDialog({
-                                mode: 'show_pin',
-                                nodeId: source.node_id,
-                                nodeName: label,
-                                pinCode,
-                              })
+              <div className="aoConfigSourceControls">
+                <div className="aoActionsMenuWrap aoConfigSourceMenuWrap" ref={sourceMenuRef}>
+                  <button
+                    type="button"
+                    className={`aoSelect aoConfigSourceSelect aoConfigSourceTrigger${sourceMenuOpen ? ' is-open' : ''}`}
+                    aria-label="Config source"
+                    aria-haspopup="menu"
+                    aria-expanded={sourceMenuOpen}
+                    onClick={() => setSourceMenuOpen((openValue) => !openValue)}
+                  >
+                    <span className="aoConfigSourceTriggerIcon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24">
+                        <rect x="4" y="5" width="16" height="10" rx="2" />
+                        <path d="M9 19h6" />
+                        <path d="M12 15v4" />
+                      </svg>
+                    </span>
+                    <span className="aoConfigSourceTriggerLabel">
+                      {selectedConfigSource?.kind === 'local' ? 'Local' : selectedConfigSource?.node_name}
+                    </span>
+                    {selectedUsingLabel ? (
+                      <span className="aoConfigSourceTriggerMeta">{selectedUsingLabel}</span>
+                    ) : null}
+                    <span className="aoConfigSourceChevron" aria-hidden="true">
+                      ▾
+                    </span>
+                  </button>
+                  {sourceMenuOpen ? (
+                    <div className="aoMenu aoMenuCompact aoConfigSourceMenu" role="menu" aria-label="Config source options">
+                      {configSources.map((source) => {
+                        const label = source.kind === 'local' ? 'Local' : source.node_name
+                        const blockedReason = source.follow_blocked_reason?.trim() || ''
+                        const pairState = source.pair_state ?? null
+                        const versionSyncRequired =
+                          source.kind === 'peer' && Boolean(source.version_sync_required)
+                        const versionSyncBlockedReason =
+                          source.same_version_update_blocked_reason?.trim() || ''
+                        const versionSyncActionAvailable =
+                          versionSyncRequired && Boolean(source.same_version_update_allowed)
+                        const pairActionAvailable =
+                          source.kind === 'peer' &&
+                          (!source.trusted ||
+                            (source.trusted && source.follow_allowed && !source.active))
+                        const disabled =
+                          source.kind === 'peer' && !pairActionAvailable && !versionSyncActionAvailable
+                        const actionLabel =
+                          source.kind === 'local'
+                            ? source.active
+                              ? 'Current'
+                              : 'Use local'
+                            : versionSyncRequired
+                              ? source.same_version_update_allowed
+                                ? 'Update required'
+                                : 'Update blocked'
+                              : source.active
+                              ? 'Following'
+                              : !source.trusted && pairState === 'incoming_request'
+                                ? 'Approve'
+                              : !source.trusted && pairState === 'pin_required'
+                                ? 'Enter PIN'
+                              : !source.trusted && pairState === 'requested'
+                                ? 'Requested'
+                              : !source.trusted
+                                ? 'Pair'
+                                : disabled
+                                  ? 'Unavailable'
+                                  : 'Follow'
+                        return (
+                          <button
+                            key={source.node_id}
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={source.node_id === selectedConfigSourceValue}
+                            className={`aoMenuItem aoConfigSourceMenuItem${
+                              source.node_id === selectedConfigSourceValue ? ' is-current' : ''
+                            }`}
+                            disabled={disabled}
+                            title={
+                              versionSyncBlockedReason ||
+                              source.version_sync_reason?.trim() ||
+                              blockedReason ||
+                              label
                             }
-                            return
-                          }
-                          if (!source.trusted && pairState === 'pin_required' && source.pair_request_id) {
-                            setPairPinDigits(emptyPairPinDigits())
-                            setPairDialogError('')
-                            setPairDialog({
-                              mode: 'enter_pin',
-                              nodeId: source.node_id,
-                              nodeName: label,
-                              requestId: source.pair_request_id,
-                            })
-                            return
-                          }
-                          if (!source.trusted) {
-                            const requestId = await onRequestPair(source.node_id)
-                            if (requestId) {
-                              setPairDialogError('')
-                              setPairDialog({
-                                mode: 'waiting_approval',
-                                nodeId: source.node_id,
-                                nodeName: label,
-                                requestId,
-                              })
-                            }
-                            return
-                          }
-                          if (disabled || source.active) return
-                          await onFollowSource(source.node_id)
-                        }}
-                      >
-                        <span className="aoConfigSourceMenuCheck" aria-hidden="true">
-                          {source.node_id === selectedConfigSourceValue ? '✓' : ''}
-                        </span>
-                        <span className="aoConfigSourceMenuText">
-                          <span className="aoConfigSourceMenuLabel">{label}</span>
-                          {source.kind === 'peer' ? (
-                            <span className="aoConfigSourceMenuSub">
-                              {source.using_count > 0
-                                ? `${source.using_count} device${source.using_count === 1 ? '' : 's'}`
-                                : 'LAN peer'}
+                            onClick={async () => {
+                              setSourceMenuOpen(false)
+                              if (source.kind === 'local') {
+                                await onClearFollowSource()
+                                return
+                              }
+                              if (!source.trusted && pairState === 'incoming_request' && source.pair_request_id) {
+                                const pinCode = await onApprovePair(source.pair_request_id)
+                                if (pinCode) {
+                                  setPairDialogError('')
+                                  setPairDialog({
+                                    mode: 'show_pin',
+                                    nodeId: source.node_id,
+                                    nodeName: label,
+                                    pinCode,
+                                  })
+                                }
+                                return
+                              }
+                              if (!source.trusted && pairState === 'pin_required' && source.pair_request_id) {
+                                setPairPinDigits(emptyPairPinDigits())
+                                setPairDialogError('')
+                                setPairDialog({
+                                  mode: 'enter_pin',
+                                  nodeId: source.node_id,
+                                  nodeName: label,
+                                  requestId: source.pair_request_id,
+                                })
+                                return
+                              }
+                              if (!source.trusted) {
+                                const requestId = await onRequestPair(source.node_id)
+                                if (requestId) {
+                                  setPairDialogError('')
+                                  setPairDialog({
+                                    mode: 'waiting_approval',
+                                    nodeId: source.node_id,
+                                    nodeName: label,
+                                    requestId,
+                                  })
+                                }
+                                return
+                              }
+                              if (versionSyncRequired) {
+                                if (!source.same_version_update_allowed) return
+                                await onSyncPeerVersion(source.node_id)
+                                return
+                              }
+                              if (disabled || source.active) return
+                              await onFollowSource(source.node_id)
+                            }}
+                          >
+                            <span className="aoConfigSourceMenuCheck" aria-hidden="true">
+                              {source.node_id === selectedConfigSourceValue ? '✓' : ''}
                             </span>
-                          ) : null}
-                        </span>
-                        <span className="aoConfigSourceMenuMeta">
-                          {actionLabel}
-                        </span>
-                      </button>
-                    )
-                  })}
+                            <span className="aoConfigSourceMenuText">
+                              <span className="aoConfigSourceMenuLabel">{label}</span>
+                              {source.kind === 'peer' ? (
+                                <span className="aoConfigSourceMenuSub">
+                                  {source.using_count > 0
+                                    ? `${source.using_count} device${source.using_count === 1 ? '' : 's'}`
+                                    : 'LAN peer'}
+                                </span>
+                              ) : null}
+                            </span>
+                            <span className="aoConfigSourceMenuMeta">
+                              {actionLabel}
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  ) : null}
                 </div>
-              ) : null}
+                {peerSources.length > 0 ? (
+                  <button
+                    type="button"
+                    className={`aoConfigDiagPill${updateRequiredSources.length > 0 ? ' is-alert' : ''}`}
+                    onClick={() => setDiagnosticsOpen(true)}
+                  >
+                    <span>LAN</span>
+                    <span>{updateRequiredSources.length > 0 ? `${updateRequiredSources.length} issue${updateRequiredSources.length === 1 ? '' : 's'}` : 'healthy'}</span>
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -384,6 +462,17 @@ export function ConfigModal({
             <div className="aoCard aoConfigCard">
               <div className="aoConfigDeck">
                 <div className="aoConfigPanel">
+                  {selectedConfigSource?.kind === 'peer' && selectedConfigSource.version_sync_required ? (
+                    <div
+                      className="aoHint aoHintWarning"
+                      style={{ marginBottom: 10, color: 'rgba(145, 12, 43, 0.92)' }}
+                    >
+                      {selectedConfigSource.version_sync_reason}
+                      {selectedConfigSource.same_version_update_blocked_reason
+                        ? ` ${selectedConfigSource.same_version_update_blocked_reason}`
+                        : ' Use Update required to sync this peer to the current machine build.'}
+                    </div>
+                  ) : null}
                   <div className="aoMiniTitle">Add provider</div>
                   <div className="aoAddProviderRow">
                     <input
@@ -451,6 +540,95 @@ export function ConfigModal({
           </div>
         </div>
       </div>
+      {diagnosticsOpen ? (
+        <ModalBackdrop className="aoModalBackdrop aoModalBackdropTop" onClose={() => setDiagnosticsOpen(false)}>
+          <div
+            className="aoModal"
+            style={{ width: 'min(860px, calc(100vw - 40px))' }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="aoModalHeader">
+              <div>
+                <div className="aoModalTitle">LAN / Sync Diagnostics</div>
+                <div className="aoModalSub">
+                  Per-peer pairing, build, and sync contract diagnostics. Use this when follow/update behavior looks wrong.
+                </div>
+              </div>
+              <button className="aoBtn" onClick={() => setDiagnosticsOpen(false)}>
+                Close
+              </button>
+            </div>
+            <div className="aoModalBody" style={{ display: 'grid', gap: 12 }}>
+              {peerSources.length === 0 ? (
+                <div className="aoHint">No LAN peers detected.</div>
+              ) : (
+                peerSources.map((source) => {
+                  const syncDomains = source.sync_blocked_domains?.join(', ') || 'none'
+                  const buildLabel = source.build_identity
+                    ? `v${source.build_identity.app_version} · ${source.build_identity.build_git_short_sha}`
+                    : 'unknown'
+                  const reason = compactReason(source)
+                  return (
+                    <div
+                      key={source.node_id}
+                      className="aoCard"
+                      style={{ padding: 14, display: 'grid', gap: 8 }}
+                    >
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 12,
+                        }}
+                      >
+                        <div>
+                          <div className="aoMiniTitle" style={{ marginBottom: 2 }}>
+                            {source.node_name}
+                          </div>
+                          <div className="aoHint">
+                            {compactPeerStateLabel(source)}
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                          <span className="aoConfigDiagBadge">
+                            {compactFollowStatusLabel(source)}
+                          </span>
+                          <span
+                            className={`aoConfigDiagBadge${
+                              source.version_sync_required ? ' is-alert' : ''
+                            }`}
+                          >
+                            {compactUpdateStatusLabel(source)}
+                          </span>
+                        </div>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '6px 12px' }}>
+                        <div className="aoHint">Build</div>
+                        <div>{buildLabel}</div>
+                        <div className="aoHint">Local match</div>
+                        <div>{source.build_matches_local ? 'Same build' : 'Different build'}</div>
+                        {(source.sync_blocked_domains?.length ?? 0) > 0 ? (
+                          <>
+                            <div className="aoHint">Blocked</div>
+                            <div>{syncDomains}</div>
+                          </>
+                        ) : null}
+                        {reason ? (
+                          <>
+                            <div className="aoHint">Why</div>
+                            <div>{reason}</div>
+                          </>
+                        ) : null}
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </div>
+        </ModalBackdrop>
+      ) : null}
       {pairDialog ? (
         <ModalBackdrop className="aoModalBackdrop aoModalBackdropTop" onClose={() => setPairDialog(null)}>
           <div className="aoModal aoPairModal" onClick={(event) => event.stopPropagation()}>

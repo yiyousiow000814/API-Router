@@ -540,6 +540,15 @@ mod tests {
 
     #[test]
     fn usage_request_key_normalizes_bases_order() {
+        let provider = ProviderConfig {
+            display_name: "Test".to_string(),
+            base_url: "https://usage-router.example/v1".to_string(),
+            group: None,
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        };
         let bases_a = vec![
             "https://code.ppchat.vip".to_string(),
             "https://code.pumpkinai.vip".to_string(),
@@ -549,6 +558,7 @@ mod tests {
             "https://code.ppchat.vip/".to_string(),
         ];
         let key_a = usage_request_key(
+            &provider,
             &bases_a,
             &Some("sk-test".to_string()),
             &None,
@@ -556,6 +566,7 @@ mod tests {
             UsageKind::TokenStats,
         );
         let key_b = usage_request_key(
+            &provider,
             &bases_b,
             &Some("sk-test".to_string()),
             &None,
@@ -594,12 +605,14 @@ mod tests {
         assert_eq!(bases_pumpkin.first().unwrap(), "https://his.ppchat.vip");
 
         let k1 = usage_shared_key(
+            &pp,
             bases_pp.first().unwrap(),
             &Some("k".to_string()),
             &None,
             &None,
         );
         let k2 = usage_shared_key(
+            &pumpkin,
             bases_pumpkin.first().unwrap(),
             &Some("k".to_string()),
             &None,
@@ -843,14 +856,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn packycode_quota_refresh_requires_usage_token() {
+    async fn packycode_quota_refresh_requires_provider_key() {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "api-key").unwrap();
         let st = mk_state("https://codex.packycode.com/v1".to_string(), secrets);
         let cfg = st.cfg.read().clone();
         let provider = cfg.providers.get("p1").unwrap();
-        assert!(!can_refresh_quota_for_provider(&st, "p1", provider));
+        assert!(can_refresh_quota_for_provider(&st, "p1", provider));
     }
 
     #[tokio::test]
@@ -915,7 +928,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "k1").unwrap();
-        secrets.set_usage_token("p1", "t1").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
         {
             let mut cfg = st.cfg.write();
@@ -1004,7 +1016,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "k1").unwrap();
-        secrets.set_usage_token("p1", "jwt-token").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
         {
             let mut cfg = st.cfg.write();
@@ -1026,7 +1037,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn packycode_budget_info_uses_usage_token_api_only() {
+    async fn packycode_budget_info_uses_provider_key_only() {
         use axum::extract::State;
         use axum::http::{HeaderMap, StatusCode};
         use axum::routing::get;
@@ -1054,13 +1065,7 @@ mod tests {
                             .get(axum::http::header::AUTHORIZATION)
                             .and_then(|value| value.to_str().ok())
                             .unwrap_or_default();
-                        if auth == "Bearer api-key" {
-                            return (
-                                StatusCode::TOO_MANY_REQUESTS,
-                                Json(serde_json::json!({ "error": "rate limited" })),
-                            );
-                        }
-                        if auth != "Bearer jwt-token" {
+                        if auth != "Bearer api-key" {
                             return (
                                 StatusCode::UNAUTHORIZED,
                                 Json(serde_json::json!({ "error": "invalid token" })),
@@ -1096,7 +1101,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "api-key").unwrap();
-        secrets.set_usage_token("p1", "jwt-token").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
         {
             let mut cfg = st.cfg.write();
@@ -1148,7 +1152,7 @@ mod tests {
                         .get(axum::http::header::AUTHORIZATION)
                         .and_then(|value| value.to_str().ok())
                         .unwrap_or_default();
-                    let status = if auth == "Bearer jwt-token" {
+                    let status = if auth == "Bearer api-key" {
                         StatusCode::UNAUTHORIZED
                     } else {
                         StatusCode::TOO_MANY_REQUESTS
@@ -1180,7 +1184,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "api-key").unwrap();
-        secrets.set_usage_token("p1", "jwt-token").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
         {
             let mut cfg = st.cfg.write();
@@ -1390,8 +1393,6 @@ mod tests {
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "k-shared").unwrap();
         secrets.set_provider_key("p2", "k-shared").unwrap();
-        secrets.set_usage_token("p1", "t-shared").unwrap();
-        secrets.set_usage_token("p2", "t-shared").unwrap();
 
         let providers = std::collections::BTreeMap::from([
             (
@@ -2621,7 +2622,7 @@ mod tests {
         ]);
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
-        secrets.set_usage_token("packycode", "packy-token").unwrap();
+        secrets.set_provider_key("packycode", "packy-key").unwrap();
         secrets.set_usage_token("p2", "p2-token").unwrap();
         let st = mk_state_with_providers(
             providers,
@@ -2646,7 +2647,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_quota_all_skips_packycode_without_usage_token() {
+    async fn refresh_quota_all_skips_packycode_without_provider_key() {
         let (base, _h) = start_mock_server(false).await;
         let providers = std::collections::BTreeMap::from([(
             "packycode".to_string(),
@@ -2662,7 +2663,6 @@ mod tests {
         )]);
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
-        secrets.set_provider_key("packycode", "packy-key").unwrap();
         let st = mk_state_with_providers(providers, vec!["packycode".to_string()], secrets);
 
         let lan_sync = mk_lan_sync();
@@ -2673,7 +2673,7 @@ mod tests {
         assert!(failed.is_empty());
         assert!(
             st.store.get_quota_snapshot("packycode").is_none(),
-            "packycode refresh should require usage token"
+            "packycode refresh should require provider key"
         );
     }
 

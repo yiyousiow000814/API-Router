@@ -287,6 +287,17 @@ impl Store {
         }
     }
 
+    pub fn remove_spend_day(&self, provider: &str, day_started_at_unix_ms: u64) {
+        let Ok(day_started_at_i64) = i64::try_from(day_started_at_unix_ms) else {
+            return;
+        };
+        let conn = self.events_db.lock();
+        let _ = conn.execute(
+            "DELETE FROM spend_days WHERE provider = ?1 AND day_started_at_unix_ms = ?2",
+            params![provider, day_started_at_i64],
+        );
+    }
+
     pub fn put_remote_spend_day(
         &self,
         provider: &str,
@@ -315,6 +326,23 @@ impl Store {
                 day_started_at_i64,
                 serde_json::to_string(&row).unwrap_or_else(|_| "{}".to_string())
             ],
+        );
+    }
+
+    pub fn remove_remote_spend_day(
+        &self,
+        provider: &str,
+        source_node_id: &str,
+        day_started_at_unix_ms: u64,
+    ) {
+        let Ok(day_started_at_i64) = i64::try_from(day_started_at_unix_ms) else {
+            return;
+        };
+        let conn = self.events_db.lock();
+        let _ = conn.execute(
+            "DELETE FROM spend_days_remote
+             WHERE provider = ?1 AND source_node_id = ?2 AND day_started_at_unix_ms = ?3",
+            params![provider, source_node_id, day_started_at_i64],
         );
     }
 
@@ -621,6 +649,158 @@ impl Store {
             );
         }
         let _ = tx.commit();
+    }
+
+    pub fn migrate_legacy_remote_usage_sources_if_needed(
+        &self,
+        local_node_id: &str,
+    ) -> anyhow::Result<(usize, usize)> {
+        const LEGACY_REMOTE_SOURCES_MIGRATION_KEY: &str = "legacy_remote_usage_sources_migrated_v1";
+        if self
+            .get_event_meta(LEGACY_REMOTE_SOURCES_MIGRATION_KEY)?
+            .as_deref()
+            == Some("1")
+        {
+            return Ok((0, 0));
+        }
+
+        let normalized_local_node_id = local_node_id.trim();
+        if normalized_local_node_id.is_empty() {
+            return Ok((0, 0));
+        }
+
+        let conn = self.events_db.lock();
+        let tx = conn.unchecked_transaction()?;
+        let mut migrated_spend_days = 0_usize;
+        let mut migrated_manual_days = 0_usize;
+
+        {
+            let mut stmt = tx.prepare(
+                "SELECT provider, day_started_at_unix_ms, row_json
+                 FROM spend_days
+                 ORDER BY provider ASC, day_started_at_unix_ms ASC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            for (provider, day_started_at_i64, row_json) in rows.flatten() {
+                let Ok(mut row) = serde_json::from_str::<Value>(&row_json) else {
+                    continue;
+                };
+                let source_node_id = row
+                    .get("applied_from_node_id")
+                    .and_then(Value::as_str)
+                    .or_else(|| row.get("producer_node_id").and_then(Value::as_str))
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty() && *value != normalized_local_node_id)
+                    .map(ToString::to_string);
+                let Some(source_node_id) = source_node_id else {
+                    continue;
+                };
+                let source_node_name = row
+                    .get("applied_from_node_name")
+                    .and_then(Value::as_str)
+                    .or_else(|| row.get("producer_node_name").and_then(Value::as_str))
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or(source_node_id.as_str())
+                    .to_string();
+                merge_json_source_fields(&mut row, &source_node_id, &source_node_name);
+                tx.execute(
+                    "INSERT INTO spend_days_remote(
+                        provider, source_node_id, source_node_name, day_started_at_unix_ms, row_json
+                     ) VALUES(?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(provider, source_node_id, day_started_at_unix_ms) DO UPDATE SET
+                        source_node_name = excluded.source_node_name,
+                        row_json = excluded.row_json",
+                    params![
+                        provider,
+                        source_node_id,
+                        source_node_name,
+                        day_started_at_i64,
+                        serde_json::to_string(&row).unwrap_or_else(|_| "{}".to_string()),
+                    ],
+                )?;
+                tx.execute(
+                    "DELETE FROM spend_days
+                     WHERE provider = ?1 AND day_started_at_unix_ms = ?2",
+                    params![provider, day_started_at_i64],
+                )?;
+                migrated_spend_days = migrated_spend_days.saturating_add(1);
+            }
+        }
+
+        {
+            let mut stmt = tx.prepare(
+                "SELECT provider, day_key, row_json
+                 FROM spend_manual_days
+                 ORDER BY provider ASC, day_key ASC",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            for (provider, day_key, row_json) in rows.flatten() {
+                let Ok(mut row) = serde_json::from_str::<Value>(&row_json) else {
+                    continue;
+                };
+                let source_node_id = row
+                    .get("applied_from_node_id")
+                    .and_then(Value::as_str)
+                    .or_else(|| row.get("producer_node_id").and_then(Value::as_str))
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty() && *value != normalized_local_node_id)
+                    .map(ToString::to_string);
+                let Some(source_node_id) = source_node_id else {
+                    continue;
+                };
+                let source_node_name = row
+                    .get("applied_from_node_name")
+                    .and_then(Value::as_str)
+                    .or_else(|| row.get("producer_node_name").and_then(Value::as_str))
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or(source_node_id.as_str())
+                    .to_string();
+                merge_json_source_fields(&mut row, &source_node_id, &source_node_name);
+                tx.execute(
+                    "INSERT INTO spend_manual_days_remote(
+                        provider, source_node_id, source_node_name, day_key, row_json
+                     ) VALUES(?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(provider, source_node_id, day_key) DO UPDATE SET
+                        source_node_name = excluded.source_node_name,
+                        row_json = excluded.row_json",
+                    params![
+                        provider,
+                        source_node_id,
+                        source_node_name,
+                        day_key,
+                        serde_json::to_string(&row).unwrap_or_else(|_| "{}".to_string()),
+                    ],
+                )?;
+                tx.execute(
+                    "DELETE FROM spend_manual_days
+                     WHERE provider = ?1 AND day_key = ?2",
+                    params![provider, day_key],
+                )?;
+                migrated_manual_days = migrated_manual_days.saturating_add(1);
+            }
+        }
+
+        tx.execute(
+            "INSERT INTO event_meta(key, value) VALUES(?1, '1')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [LEGACY_REMOTE_SOURCES_MIGRATION_KEY],
+        )?;
+        tx.commit()?;
+        Ok((migrated_spend_days, migrated_manual_days))
     }
 
     pub fn migrate_spend_history_from_sled_if_needed(&self) -> anyhow::Result<()> {
@@ -1097,6 +1277,82 @@ mod tests {
                 .sum::<f64>(),
             4.0
         );
+    }
+
+    #[test]
+    fn migrate_legacy_remote_usage_sources_moves_remote_rows_out_of_local_tables() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+
+        store.put_spend_day(
+            "provider_1",
+            1_700_000_000_000,
+            &serde_json::json!({
+                "provider": "provider_1",
+                "started_at_unix_ms": 1_700_000_000_000u64,
+                "tracked_spend_usd": 3.0,
+                "producer_node_id": "node-local",
+                "producer_node_name": "Local Node",
+                "applied_from_node_id": "node-local",
+                "applied_from_node_name": "Local Node"
+            }),
+        );
+        store.put_spend_day(
+            "provider_1",
+            1_700_000_000_001,
+            &serde_json::json!({
+                "provider": "provider_1",
+                "started_at_unix_ms": 1_700_000_000_001u64,
+                "tracked_spend_usd": 7.0,
+                "producer_node_id": "node-remote",
+                "producer_node_name": "Remote Node",
+                "applied_from_node_id": "node-remote",
+                "applied_from_node_name": "Remote Node"
+            }),
+        );
+        store.put_spend_manual_day(
+            "provider_1",
+            "2026-04-03",
+            &serde_json::json!({
+                "provider": "provider_1",
+                "day_key": "2026-04-03",
+                "manual_total_usd": 2.5,
+                "producer_node_id": "node-remote",
+                "producer_node_name": "Remote Node",
+                "applied_from_node_id": "node-remote",
+                "applied_from_node_name": "Remote Node"
+            }),
+        );
+
+        let (migrated_spend_days, migrated_manual_days) = store
+            .migrate_legacy_remote_usage_sources_if_needed("node-local")
+            .expect("migrate legacy remote usage");
+
+        assert_eq!(migrated_spend_days, 1);
+        assert_eq!(migrated_manual_days, 1);
+        let spend_days = store.list_spend_days("provider_1");
+        assert_eq!(spend_days.len(), 2);
+        assert_eq!(
+            spend_days
+                .iter()
+                .filter_map(|row| row.get("producer_node_id").and_then(Value::as_str))
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from(["node-local", "node-remote"])
+        );
+        assert_eq!(
+            store.list_local_spend_days("provider_1").len(),
+            1,
+            "remote-attributed spend rows should be removed from the local table"
+        );
+        assert_eq!(
+            store.list_spend_manual_days("provider_1").len(),
+            1,
+            "remote-attributed manual rows should remain available via the merged reader"
+        );
+        let second = store
+            .migrate_legacy_remote_usage_sources_if_needed("node-local")
+            .expect("idempotent migration");
+        assert_eq!(second, (0, 0));
     }
 
     #[test]

@@ -9,6 +9,50 @@
   border-color: rgba(255, 94, 125, 0.32);
 }
 
+.aoTrackedRemovalConfirmModal {
+  width: min(332px, calc(100vw - 40px));
+  padding: 16px 16px 14px;
+}
+
+.aoTrackedRemovalConfirmTitle {
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: rgba(13, 18, 32, 0.96);
+}
+
+.aoTrackedRemovalConfirmText {
+  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.82);
+}
+
+.aoTrackedRemovalConfirmSub {
+  margin-top: 7px;
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.6);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aoTrackedRemovalConfirmLabel {
+  color: rgba(13, 18, 32, 0.48);
+}
+
+.aoTrackedRemovalConfirmValuePlain {
+  color: rgba(13, 18, 32, 0.74);
+  font-weight: 600;
+}
+
+.aoTrackedRemovalConfirmActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .aoConfigModalBody {
   display: flex;
   flex-direction: column;
@@ -53,6 +97,12 @@
   justify-self: center;
 }
 
+.aoConfigSourceControls {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .aoConfigSourceSelect {
   min-width: 248px;
   max-width: min(360px, 100%);
@@ -65,6 +115,52 @@
 
 .aoConfigSourceMenuWrap {
   justify-content: center;
+}
+
+.aoConfigDiagPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  background: rgba(255, 255, 255, 0.78);
+  color: rgba(13, 18, 32, 0.72);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.aoConfigDiagPill:hover {
+  border-color: rgba(13, 18, 32, 0.16);
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.aoConfigDiagPill.is-alert {
+  border-color: rgba(176, 63, 44, 0.18);
+  background: rgba(255, 243, 239, 0.92);
+  color: rgba(145, 47, 30, 0.92);
+}
+
+.aoConfigDiagBadge {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(13, 18, 32, 0.06);
+  color: rgba(13, 18, 32, 0.7);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.aoConfigDiagBadge.is-alert {
+  background: rgba(255, 243, 239, 0.92);
+  color: rgba(145, 47, 30, 0.92);
 }
 
 .aoConfigSourceTrigger {

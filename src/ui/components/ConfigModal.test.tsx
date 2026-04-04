@@ -34,6 +34,10 @@ function buildConfig(): Config {
           follow_allowed: false,
           follow_blocked_reason: null,
           using_count: 1,
+          version_sync_required: false,
+          version_sync_reason: null,
+          same_version_update_allowed: true,
+          same_version_update_blocked_reason: null,
         },
       ],
     },
@@ -61,6 +65,7 @@ describe('ConfigModal', () => {
         onRequestPair={() => undefined}
         onApprovePair={() => undefined}
         onSubmitPairPin={() => undefined}
+        onSyncPeerVersion={() => undefined}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}
         providerListRef={{ current: null }}
@@ -97,6 +102,7 @@ describe('ConfigModal', () => {
         onRequestPair={() => undefined}
         onApprovePair={() => undefined}
         onSubmitPairPin={() => undefined}
+        onSyncPeerVersion={() => undefined}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}
         providerListRef={{ current: null }}
@@ -126,6 +132,10 @@ describe('ConfigModal', () => {
           follow_allowed: false,
           follow_blocked_reason: null,
           using_count: 1,
+          version_sync_required: false,
+          version_sync_reason: null,
+          same_version_update_allowed: true,
+          same_version_update_blocked_reason: null,
         },
         {
           kind: 'peer',
@@ -135,6 +145,10 @@ describe('ConfigModal', () => {
           follow_allowed: true,
           follow_blocked_reason: null,
           using_count: 2,
+          version_sync_required: false,
+          version_sync_reason: null,
+          same_version_update_allowed: true,
+          same_version_update_blocked_reason: null,
         },
       ],
     }
@@ -158,6 +172,7 @@ describe('ConfigModal', () => {
         onRequestPair={() => undefined}
         onApprovePair={() => undefined}
         onSubmitPairPin={() => undefined}
+        onSyncPeerVersion={() => undefined}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}
         providerListRef={{ current: null }}
@@ -170,5 +185,76 @@ describe('ConfigModal', () => {
     )
 
     expect(html).toContain('1 using')
+  })
+
+  it('shows update required warning for peer version mismatch', () => {
+    const config = buildConfig()
+    config.config_source = {
+      mode: 'follow',
+      followed_node_id: 'node-b',
+      sources: [
+        {
+          kind: 'local',
+          node_id: 'node-local',
+          node_name: 'Desk',
+          active: false,
+          follow_allowed: false,
+          follow_blocked_reason: null,
+          using_count: 0,
+          version_sync_required: false,
+          version_sync_reason: null,
+          same_version_update_allowed: true,
+          same_version_update_blocked_reason: null,
+        },
+        {
+          kind: 'peer',
+          node_id: 'node-b',
+          node_name: 'Desk B',
+          active: true,
+          trusted: true,
+          follow_allowed: false,
+          follow_blocked_reason: null,
+          using_count: 1,
+          version_sync_required: true,
+          version_sync_reason: 'Desk B is on a different build.',
+          same_version_update_allowed: true,
+          same_version_update_blocked_reason: null,
+        },
+      ],
+    }
+
+    const html = renderToStaticMarkup(
+      <ConfigModal
+        open
+        config={config}
+        newProviderName=""
+        newProviderBaseUrl=""
+        newProviderKey=""
+        newProviderKeyStorage="auth_json"
+        nextProviderPlaceholder="provider1"
+        setNewProviderName={() => undefined}
+        setNewProviderBaseUrl={() => undefined}
+        setNewProviderKey={() => undefined}
+        setNewProviderKeyStorage={() => undefined}
+        onAddProvider={() => undefined}
+        onFollowSource={() => undefined}
+        onClearFollowSource={() => undefined}
+        onRequestPair={() => undefined}
+        onApprovePair={() => undefined}
+        onSubmitPairPin={() => undefined}
+        onSyncPeerVersion={() => undefined}
+        onOpenGroupManager={() => undefined}
+        onClose={() => undefined}
+        providerListRef={{ current: null }}
+        orderedConfigProviders={['p1']}
+        dragPreviewOrder={null}
+        draggingProvider={null}
+        dragCardHeight={0}
+        renderProviderCard={() => null}
+      />,
+    )
+
+    expect(html).toContain('Update required on 1 peer')
+    expect(html).toContain('Desk B is on a different build.')
   })
 })
