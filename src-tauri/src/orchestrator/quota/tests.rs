@@ -533,6 +533,7 @@ mod tests {
             "p1",
             &[base.clone()],
             Some("test-token"),
+            "usage token",
             PackageExpiryStrategy::None,
         )
         .await;
@@ -869,6 +870,17 @@ mod tests {
         let cfg = st.cfg.read().clone();
         let provider = cfg.providers.get("p1").unwrap();
         assert!(can_refresh_quota_for_provider(&st, "p1", provider));
+    }
+
+    #[tokio::test]
+    async fn packycode_budget_info_without_provider_key_reports_missing_provider_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://codex.packycode.com/v1".to_string(), secrets);
+
+        let snap = refresh_quota_for_provider(&st, "p1").await;
+
+        assert_eq!(snap.last_error, "missing provider key");
     }
 
     #[tokio::test]

@@ -791,12 +791,16 @@ async fn fetch_budget_info_any(
     st: &GatewayState,
     provider_name: &str,
     bases: &[String],
-    usage_token: Option<&str>,
+    credential_value: Option<&str>,
+    missing_credential_label: &str,
     package_expiry_strategy: PackageExpiryStrategy,
 ) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
-    let Some(usage_token) = usage_token.map(str::trim).filter(|value| !value.is_empty()) else {
-        out.last_error = "missing usage token".to_string();
+    let Some(usage_token) = credential_value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        out.last_error = format!("missing {missing_credential_label}");
         return out;
     };
     if bases.is_empty() {
@@ -926,6 +930,7 @@ mod usage_fetch_tests {
             "official",
             &["https://usage.example.test".to_string()],
             None,
+            "usage token",
             crate::orchestrator::quota::PackageExpiryStrategy::None,
         )
         .await;

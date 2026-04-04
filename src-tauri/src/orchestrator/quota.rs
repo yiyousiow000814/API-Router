@@ -655,6 +655,7 @@ async fn compute_quota_snapshot(
             provider_name,
             bases,
             credentials.provider_key,
+            "provider key",
             strategies.package_expiry_fetch_strategy,
         )
         .await;
@@ -704,6 +705,7 @@ async fn compute_quota_snapshot(
                 provider_name,
                 bases,
                 credentials.usage_token,
+                "usage token",
                 strategies.package_expiry_fetch_strategy,
             )
             .await
@@ -738,6 +740,7 @@ async fn compute_quota_snapshot(
                         provider_name,
                         bases,
                         credentials.usage_token,
+                        "usage token",
                         strategies.package_expiry_fetch_strategy,
                     )
                     .await
@@ -761,6 +764,7 @@ async fn compute_quota_snapshot(
                     provider_name,
                     bases,
                     credentials.usage_token,
+                    "usage token",
                     strategies.package_expiry_fetch_strategy,
                 )
                 .await

@@ -135,6 +135,25 @@ fn request_window_ratio(day_req_total: f64, day_req_in_window: f64) -> f64 {
     0.0
 }
 
+fn merge_manual_per_req_for_usage_metrics_day(
+    current_per_req: &mut Option<f64>,
+    current_per_req_updated_at: &mut u64,
+    manual_per_req: Option<f64>,
+    updated_at: u64,
+) {
+    let Some(candidate) = manual_per_req else {
+        return;
+    };
+    let should_replace = current_per_req.is_none()
+        || updated_at > *current_per_req_updated_at
+        || (updated_at == *current_per_req_updated_at
+            && candidate > current_per_req.unwrap_or_default());
+    if should_replace {
+        *current_per_req = Some(candidate);
+        *current_per_req_updated_at = updated_at;
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum UsageStatisticsDetailLevel {
     Full,
@@ -771,7 +790,8 @@ pub(crate) fn get_usage_statistics(
             &mut req_by_day,
             provider_req_by_day_all_from_req.get(provider),
         );
-        let mut manual_by_day: BTreeMap<String, (Option<f64>, Option<f64>)> = BTreeMap::new();
+        let mut manual_by_day: BTreeMap<String, (Option<f64>, Option<f64>, u64)> =
+            BTreeMap::new();
         for day in state.gateway.store.list_spend_manual_days(provider) {
             let Some(day_key) = day.get("day_key").and_then(|v| v.as_str()) else {
                 continue;
@@ -780,24 +800,28 @@ pub(crate) fn get_usage_statistics(
                 as_f64(day.get("manual_total_usd")).filter(|v| v.is_finite() && *v != 0.0);
             let manual_per_req =
                 as_f64(day.get("manual_usd_per_req")).filter(|v| v.is_finite() && *v > 0.0);
+            let updated_at = day
+                .get("updated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             if manual_total.is_some() || manual_per_req.is_some() {
                 manual_by_day
                     .entry(day_key.to_string())
-                    .and_modify(|(current_total, current_per_req)| {
+                    .and_modify(|(current_total, current_per_req, current_per_req_updated_at)| {
                         *current_total = match (*current_total, manual_total) {
                             (Some(left), Some(right)) => Some(left + right),
                             (Some(left), None) => Some(left),
                             (None, Some(right)) => Some(right),
                             (None, None) => None,
                         };
-                        *current_per_req = match (*current_per_req, manual_per_req) {
-                            (Some(left), Some(right)) => Some(left + right),
-                            (Some(left), None) => Some(left),
-                            (None, Some(right)) => Some(right),
-                            (None, None) => None,
-                        };
+                        merge_manual_per_req_for_usage_metrics_day(
+                            current_per_req,
+                            current_per_req_updated_at,
+                            manual_per_req,
+                            updated_at,
+                        );
                     })
-                    .or_insert((manual_total, manual_per_req));
+                    .or_insert((manual_total, manual_per_req, updated_at));
             }
         }
 
@@ -875,7 +899,7 @@ pub(crate) fn get_usage_statistics(
                         }
 
                         let manual_window = manual_by_day.get(&day_key).and_then(
-                            |(manual_total, manual_per_req)| {
+                            |(manual_total, manual_per_req, _)| {
                                 let (day_start, day_end) = local_day_range_from_key(&day_key)?;
                                 let overlap_start = day_start.max(since_unix_ms);
                                 let overlap_end = day_end.min(now);
@@ -991,7 +1015,7 @@ pub(crate) fn get_usage_statistics(
                 }
 
                 let mut manual_additional_in_window = 0.0_f64;
-                for (day_key, (manual_total, manual_per_req)) in manual_by_day.iter() {
+                for (day_key, (manual_total, manual_per_req, _)) in manual_by_day.iter() {
                     let Some((day_start, day_end)) = local_day_range_from_key(day_key) else {
                         continue;
                     };
@@ -1378,7 +1402,8 @@ mod usage_metrics_tests {
     use super::{
         effective_provider_filter, latest_day_budget_fallback_allowed,
         list_usage_requests_for_statistics_window,
-        merge_usage_metrics_day_counts, normalize_usage_origin,
+        merge_manual_per_req_for_usage_metrics_day, merge_usage_metrics_day_counts,
+        normalize_usage_origin,
         parse_usage_statistics_detail_level,
         projection_hours_for_day_estimate, request_window_ratio,
         resolve_budget_or_token_rate_cost, UsageStatisticsDetailLevel,
@@ -1458,6 +1483,30 @@ mod usage_metrics_tests {
     fn request_window_ratio_is_zero_when_day_has_no_requests() {
         assert_eq!(request_window_ratio(0.0, 71.0), 0.0);
         assert!((request_window_ratio(86.0, 71.0) - (71.0 / 86.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn manual_per_req_prefers_latest_source_value_for_metrics() {
+        let mut current_per_req = Some(0.05);
+        let mut current_updated_at = 100;
+
+        merge_manual_per_req_for_usage_metrics_day(
+            &mut current_per_req,
+            &mut current_updated_at,
+            Some(0.03),
+            90,
+        );
+        assert_eq!(current_per_req, Some(0.05));
+        assert_eq!(current_updated_at, 100);
+
+        merge_manual_per_req_for_usage_metrics_day(
+            &mut current_per_req,
+            &mut current_updated_at,
+            Some(0.03),
+            110,
+        );
+        assert_eq!(current_per_req, Some(0.03));
+        assert_eq!(current_updated_at, 110);
     }
 
     #[test]

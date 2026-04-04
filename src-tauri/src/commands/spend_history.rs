@@ -77,6 +77,25 @@ fn include_compact_spend_history_row(
     manual_total.is_some() || manual_per_req.is_some()
 }
 
+fn merge_manual_per_req_for_spend_history_day(
+    current_per_req: &mut Option<f64>,
+    current_per_req_updated_at: &mut u64,
+    manual_per_req: Option<f64>,
+    updated_at: u64,
+) {
+    let Some(candidate) = manual_per_req else {
+        return;
+    };
+    let should_replace = current_per_req.is_none()
+        || updated_at > *current_per_req_updated_at
+        || (updated_at == *current_per_req_updated_at
+            && candidate > current_per_req.unwrap_or_default());
+    if should_replace {
+        *current_per_req = Some(candidate);
+        *current_per_req_updated_at = updated_at;
+    }
+}
+
 #[tauri::command]
 pub(crate) fn get_spend_history(
     state: tauri::State<'_, app_state::AppState>,
@@ -211,7 +230,8 @@ pub(crate) fn get_spend_history(
             }
         }
 
-        let mut manual_by_day: BTreeMap<String, (Option<f64>, Option<f64>, u64)> = BTreeMap::new();
+        let mut manual_by_day: BTreeMap<String, (Option<f64>, Option<f64>, u64, u64)> =
+            BTreeMap::new();
         for day in state.gateway.store.list_spend_manual_days(&provider_name) {
             let Some(day_key) = day.get("day_key").and_then(|v| v.as_str()) else {
                 continue;
@@ -226,22 +246,29 @@ pub(crate) fn get_spend_history(
                 .unwrap_or(0);
             manual_by_day
                 .entry(day_key.to_string())
-                .and_modify(|(current_total, current_per_req, current_updated_at)| {
-                    *current_updated_at = (*current_updated_at).max(updated_at);
-                    *current_total = match (*current_total, manual_total) {
-                        (Some(left), Some(right)) => Some(left + right),
-                        (Some(left), None) => Some(left),
-                        (None, Some(right)) => Some(right),
-                        (None, None) => None,
-                    };
-                    *current_per_req = match (*current_per_req, manual_per_req) {
-                        (Some(left), Some(right)) => Some(left + right),
-                        (Some(left), None) => Some(left),
-                        (None, Some(right)) => Some(right),
-                        (None, None) => None,
-                    };
-                })
-                .or_insert((manual_total, manual_per_req, updated_at));
+                .and_modify(
+                    |(
+                        current_total,
+                        current_per_req,
+                        current_updated_at,
+                        current_per_req_updated_at,
+                    )| {
+                        *current_updated_at = (*current_updated_at).max(updated_at);
+                        *current_total = match (*current_total, manual_total) {
+                            (Some(left), Some(right)) => Some(left + right),
+                            (Some(left), None) => Some(left),
+                            (None, Some(right)) => Some(right),
+                            (None, None) => None,
+                        };
+                        merge_manual_per_req_for_spend_history_day(
+                            current_per_req,
+                            current_per_req_updated_at,
+                            manual_per_req,
+                            updated_at,
+                        );
+                    },
+                )
+                .or_insert((manual_total, manual_per_req, updated_at, updated_at));
         }
         let mut day_keys: BTreeSet<String> = BTreeSet::new();
         day_keys.extend(usage_by_day.keys().cloned());
@@ -300,10 +327,10 @@ pub(crate) fn get_spend_history(
             };
             let scheduled_package_total_usd =
                 package_profile.as_ref().map(|(amount, _, _)| *amount);
-            let (manual_total, manual_per_req, manual_updated_at) = manual_by_day
+            let (manual_total, manual_per_req, manual_updated_at, _) = manual_by_day
                 .get(&day_key)
                 .copied()
-                .unwrap_or((None, None, 0));
+                .unwrap_or((None, None, 0, 0));
             let has_scheduled = scheduled_total.is_some()
                 || scheduled_package_total_usd.is_some()
                 || per_request_total.is_some();
@@ -678,7 +705,8 @@ mod spend_history_tests {
     };
 
     use super::{
-        include_compact_spend_history_row, merge_usage_history_day_counts,
+        include_compact_spend_history_row, merge_manual_per_req_for_spend_history_day,
+        merge_usage_history_day_counts,
         remove_tracked_spend_history_entries_impl, spend_history_provider_names,
         tracked_spend_day_matches_history_target,
         tracked_spend_history_day_key, tracked_spend_history_snapshot,
@@ -795,6 +823,30 @@ mod spend_history_tests {
             usage_by_day.get("2026-04-01").copied(),
             Some((5_u64, 1234_u64, 30_u64))
         );
+    }
+
+    #[test]
+    fn manual_per_req_prefers_latest_source_value_for_day() {
+        let mut current_per_req = Some(0.05);
+        let mut current_updated_at = 100;
+
+        merge_manual_per_req_for_spend_history_day(
+            &mut current_per_req,
+            &mut current_updated_at,
+            Some(0.03),
+            90,
+        );
+        assert_eq!(current_per_req, Some(0.05));
+        assert_eq!(current_updated_at, 100);
+
+        merge_manual_per_req_for_spend_history_day(
+            &mut current_per_req,
+            &mut current_updated_at,
+            Some(0.03),
+            110,
+        );
+        assert_eq!(current_per_req, Some(0.03));
+        assert_eq!(current_updated_at, 110);
     }
 
     #[test]
