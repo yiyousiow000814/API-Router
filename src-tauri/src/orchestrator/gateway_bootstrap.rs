@@ -1,5 +1,5 @@
 use std::io::ErrorKind;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 use std::net::IpAddr;
 use std::net::SocketAddr;
 #[cfg(windows)]
@@ -17,14 +17,14 @@ struct GatewayListenerBindPlan {
     optional: Vec<SocketAddr>,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn push_unique_addr(addrs: &mut Vec<SocketAddr>, addr: SocketAddr) {
     if !addrs.contains(&addr) {
         addrs.push(addr);
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 pub(crate) fn tailscale_overlay_listener_addrs(
     listen_host: &str,
     listen_port: u16,
@@ -43,7 +43,7 @@ pub(crate) fn tailscale_overlay_listener_addrs(
     Ok(addrs)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn gateway_listen_addrs_with_overlays(
     listen_host: &str,
     listen_port: u16,
