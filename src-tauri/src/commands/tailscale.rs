@@ -83,6 +83,17 @@ fn resolve_reachable_gateway_ipv4(
         .collect()
 }
 
+async fn resolve_reachable_gateway_ipv4_blocking(
+    ipv4: Vec<String>,
+    listen_port: u16,
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        resolve_reachable_gateway_ipv4(&ipv4, listen_port, probe_gateway_addr)
+    })
+    .await
+    .map_err(|err| format!("tailscale_probe_join_failed: {err}"))
+}
+
 #[cfg(windows)]
 fn parse_tailscale_ipv4_addrs(ipv4: &[String]) -> Vec<IpAddr> {
     ipv4.iter()
@@ -117,7 +128,9 @@ fn maybe_refresh_runtime_tailscale_listener(
 pub(crate) async fn tailscale_status(
     state: tauri::State<'_, crate::app_state::AppState>,
 ) -> Result<Value, String> {
-    let parsed = tailscale_status_json();
+    let parsed = tauri::async_runtime::spawn_blocking(tailscale_status_json)
+        .await
+        .map_err(|err| format!("tailscale_status_join_failed: {err}"))?;
     let Ok(parsed) = parsed else {
         let err = parsed.err().unwrap_or_default();
         return Ok(serde_json::json!({
@@ -137,7 +150,7 @@ pub(crate) async fn tailscale_status(
     #[cfg(windows)]
     {
         let initial_reachable_ipv4 = if connected {
-            resolve_reachable_gateway_ipv4(&ipv4, listen_port, probe_gateway_addr)
+            resolve_reachable_gateway_ipv4_blocking(ipv4.clone(), listen_port).await?
         } else {
             Vec::new()
         };
@@ -149,7 +162,7 @@ pub(crate) async fn tailscale_status(
         );
     }
     let reachable_ipv4 = if connected {
-        resolve_reachable_gateway_ipv4(&ipv4, listen_port, probe_gateway_addr)
+        resolve_reachable_gateway_ipv4_blocking(ipv4.clone(), listen_port).await?
     } else {
         Vec::new()
     };
