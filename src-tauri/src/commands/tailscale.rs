@@ -139,9 +139,13 @@ pub(crate) async fn tailscale_status(
     } else {
         Vec::new()
     };
-    let initial_gateway_reachable = !initial_reachable_ipv4.is_empty();
     #[cfg(windows)]
-    maybe_refresh_runtime_tailscale_listener(&state, connected, &ipv4, initial_gateway_reachable);
+    maybe_refresh_runtime_tailscale_listener(
+        &state,
+        connected,
+        &ipv4,
+        !initial_reachable_ipv4.is_empty(),
+    );
     let reachable_ipv4 = if connected {
         resolve_reachable_gateway_ipv4(&ipv4, listen_port, probe_gateway_addr)
     } else {
