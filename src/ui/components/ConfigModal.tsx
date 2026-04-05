@@ -78,7 +78,7 @@ function compactFollowStatusLabel(
   if (source.follow_allowed) return 'Ready to follow'
   if (!source.trusted) return 'Pair required'
   if ((source.sync_blocked_domains?.length ?? 0) > 0) return 'Blocked by sync contract'
-  return 'Unavailable'
+  return 'Idle'
 }
 
 function compactUpdateStatusLabel(
@@ -156,7 +156,7 @@ function remoteUpdateDetailText(source: ConfigSource): string {
   if (status.state === 'superseded') {
     return (
       detail ||
-      `Queued remote update to ${formatReadableCommitRefs(status.target_ref)} was replaced by a newer installed build.`
+      'Previous remote update was replaced by a newer installed build.'
     )
   }
   return detail
