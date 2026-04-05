@@ -128,6 +128,14 @@ function hasRemoteDebugDetails(
   )
 }
 
+function remoteDebugStatusRecordText(remoteUpdateDebug: LanRemoteUpdateDebugResponse): string {
+  return remoteUpdateDebug.status_file_exists ? 'Remote status record: present' : 'Remote status record: missing'
+}
+
+function remoteDebugLogRecordText(remoteUpdateDebug: LanRemoteUpdateDebugResponse): string {
+  return remoteUpdateDebug.log_file_exists ? 'Remote update log: present' : 'Remote update log: missing'
+}
+
 function remoteUpdateDetailText(source: ConfigSource): string {
   const status = source.remote_update_status
   if (!status) return ''
@@ -975,16 +983,12 @@ export function ConfigModal({
                                     {showDebugReadinessReason ? (
                                       <div className="aoConfigDiagRemoteUpdateDetail">{debugReadinessReason}</div>
                                     ) : null}
-                                    {remoteUpdateDebug.status_path ? (
-                                      <div className="aoConfigDiagRemoteUpdateDetail">
-                                        Status file: {remoteUpdateDebug.status_file_exists ? remoteUpdateDebug.status_path : `${remoteUpdateDebug.status_path} (missing)`}
-                                      </div>
-                                    ) : null}
-                                    {remoteUpdateDebug.log_path ? (
-                                      <div className="aoConfigDiagRemoteUpdateDetail">
-                                        Log file: {remoteUpdateDebug.log_file_exists ? remoteUpdateDebug.log_path : `${remoteUpdateDebug.log_path} (missing)`}
-                                      </div>
-                                    ) : null}
+                                    <div className="aoConfigDiagRemoteUpdateDetail">
+                                      {remoteDebugStatusRecordText(remoteUpdateDebug)}
+                                    </div>
+                                    <div className="aoConfigDiagRemoteUpdateDetail">
+                                      {remoteDebugLogRecordText(remoteUpdateDebug)}
+                                    </div>
                                     {debugLogTail ? (
                                       <pre
                                         className="aoConfigDiagWhyText"
