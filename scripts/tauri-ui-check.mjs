@@ -163,7 +163,14 @@ async function main() {
   const buildMode = keepVisible ? 'debug' : 'release'
   console.log(`[ui:tauri] Building Tauri ${buildMode} binary (--no-bundle)...`)
   // Windows: npm entrypoint is npm.cmd.
-  const tauriBuildArgs = ['scripts/run-with-win-sdk.mjs', 'tauri', 'build', ...(buildMode === 'debug' ? ['--debug'] : []), '--no-bundle']
+  const tauriBuildArgs = [
+    'scripts/run-with-win-sdk.mjs',
+    'node',
+    'node_modules/@tauri-apps/cli/tauri.js',
+    'build',
+    ...(buildMode === 'debug' ? ['--debug'] : []),
+    '--no-bundle',
+  ]
   if (keepVisible) {
     runOrThrow('node', tauriBuildArgs, { cwd: repoRoot })
   } else {
