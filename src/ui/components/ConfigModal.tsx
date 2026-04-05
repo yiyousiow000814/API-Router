@@ -399,15 +399,15 @@ export function ConfigModal({
     let cancelled = false
     const loadDebug = async (nodeId: string) => {
       setRemoteUpdateDebugLoadingByNode((prev) => ({ ...prev, [nodeId]: true }))
-      setRemoteUpdateDebugErrorByNode((prev) => {
-        const next = { ...prev }
-        delete next[nodeId]
-        return next
-      })
       try {
         const payload = await invoke<LanRemoteUpdateDebugResponse>('fetch_lan_peer_remote_update_debug', { nodeId })
         if (cancelled) return
         setRemoteUpdateDebugByNode((prev) => ({ ...prev, [nodeId]: payload }))
+        setRemoteUpdateDebugErrorByNode((prev) => {
+          const next = { ...prev }
+          delete next[nodeId]
+          return next
+        })
       } catch (error) {
         if (cancelled) return
         setRemoteUpdateDebugErrorByNode((prev) => ({ ...prev, [nodeId]: String(error) }))
@@ -910,8 +910,11 @@ export function ConfigModal({
                             <div className="aoConfigDiagSection">
                               <div className="aoConfigDiagSectionLabel">Debug</div>
                               <div className="aoConfigDiagRemoteUpdateBlock">
-                                {remoteUpdateDebugLoading ? (
+                                {remoteUpdateDebugLoading && !remoteUpdateDebug && !remoteUpdateDebugError ? (
                                   <div className="aoConfigDiagRemoteUpdateDetail">Checking peer remote update state...</div>
+                                ) : null}
+                                {remoteUpdateDebugLoading && (remoteUpdateDebug || remoteUpdateDebugError) ? (
+                                  <div className="aoConfigDiagRemoteUpdateTime">Refreshing…</div>
                                 ) : null}
                                 {remoteUpdateDebugError ? (
                                   <div className="aoConfigDiagWhyText">{remoteUpdateDebugError}</div>

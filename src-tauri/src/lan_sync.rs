@@ -177,10 +177,38 @@ fn lan_remote_update_log_path() -> Option<std::path::PathBuf> {
     )
 }
 
+fn normalize_remote_update_status(
+    mut status: LanRemoteUpdateStatusSnapshot,
+) -> LanRemoteUpdateStatusSnapshot {
+    let current_target_ref = normalized_local_build_target_ref();
+    let status_target_ref = status.target_ref.trim();
+    let state = status.state.trim();
+    if matches!(state, "accepted" | "running")
+        && current_target_ref.as_deref() == Some(status_target_ref)
+    {
+        let finished_at_unix_ms = unix_ms();
+        status.state = "succeeded".to_string();
+        status.detail = Some(
+            "Current build already matches the queued target; cleared stale remote update status after restart/manual update."
+                .to_string(),
+        );
+        status
+            .finished_at_unix_ms
+            .get_or_insert(finished_at_unix_ms);
+        status.updated_at_unix_ms = finished_at_unix_ms;
+    }
+    status
+}
+
 fn load_lan_remote_update_status() -> Option<LanRemoteUpdateStatusSnapshot> {
     let path = lan_remote_update_status_path()?;
     let bytes = std::fs::read(path).ok()?;
-    serde_json::from_slice::<LanRemoteUpdateStatusSnapshot>(&bytes).ok()
+    let status = serde_json::from_slice::<LanRemoteUpdateStatusSnapshot>(&bytes).ok()?;
+    let normalized = normalize_remote_update_status(status.clone());
+    if normalized != status {
+        let _ = write_lan_remote_update_status(&normalized);
+    }
+    Some(normalized)
 }
 
 pub(crate) fn load_lan_remote_update_status_public() -> Option<LanRemoteUpdateStatusSnapshot> {
@@ -1554,12 +1582,6 @@ impl LanSyncRuntime {
         let peer = self
             .live_peer_by_node_id(normalized_node_id)
             .ok_or_else(|| format!("peer is not reachable on LAN: {normalized_node_id}"))?;
-        if !peer_supports_http_sync(&peer, LAN_DEBUG_CAPABILITY) {
-            return Err(format!(
-                "{} does not support LAN debug yet. Update that machine first.",
-                peer.node_name
-            ));
-        }
         let base_url = peer_http_base_url(&peer)
             .ok_or_else(|| format!("peer has no valid LAN address: {normalized_node_id}"))?;
         let trust_secret = current_lan_trust_secret(gateway)?;
@@ -1589,6 +1611,26 @@ impl LanSyncRuntime {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
+            if status == reqwest::StatusCode::NOT_FOUND {
+                let detail = if peer.build_identity == current_build_identity() {
+                    format!(
+                        "{} is still running a process without LAN remote update debug. Restart that machine and wait for a fresh heartbeat.",
+                        peer.node_name
+                    )
+                } else {
+                    format!(
+                        "{} does not expose LAN remote update debug yet. Update and restart that machine first.",
+                        peer.node_name
+                    )
+                };
+                self.note_http_sync_probe(
+                    &peer,
+                    "/lan-sync/debug/remote-update",
+                    "http_error",
+                    &detail,
+                );
+                return Err(detail);
+            }
             let detail = format!("LAN remote update debug http {status}: {body}");
             self.note_http_sync_probe(
                 &peer,
@@ -5582,6 +5624,38 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("fatal: git fetch failed"));
+    }
+
+    #[test]
+    fn load_remote_update_status_marks_matching_pending_target_as_succeeded() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let user_data_dir = tmp.path().join("user-data");
+        std::fs::create_dir_all(&user_data_dir).expect("create user-data dir");
+        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        let target_ref = super::normalized_local_build_target_ref().expect("local target ref");
+        super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
+            state: "accepted".to_string(),
+            target_ref: target_ref.clone(),
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: None,
+            detail: Some("Queued remote self-update worker".to_string()),
+            accepted_at_unix_ms: 1,
+            started_at_unix_ms: None,
+            finished_at_unix_ms: None,
+            updated_at_unix_ms: 1,
+        })
+        .expect("write accepted status");
+
+        let loaded = super::load_lan_remote_update_status().expect("load status");
+        assert_eq!(loaded.state, "succeeded");
+        assert_eq!(loaded.target_ref, target_ref);
+        assert!(loaded
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("cleared stale remote update status"));
+        assert!(loaded.finished_at_unix_ms.is_some());
     }
 
     #[test]
