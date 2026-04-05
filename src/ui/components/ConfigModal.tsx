@@ -245,6 +245,16 @@ export function remoteUpdateActionState(
   }
 }
 
+export function shouldShowRemoteUpdateMenuDetail(
+  source: ConfigSource,
+  actionState: { actionDetail: string | null; spinning: boolean } | null,
+): boolean {
+  if (!actionState?.actionDetail?.trim()) return false
+  if (actionState.spinning) return true
+  const remoteState = source.remote_update_status?.state?.trim()
+  return remoteState === 'failed'
+}
+
 export function keepSourceMenuOpenAfterAction(source: ConfigSource): boolean {
   return source.kind === 'peer' && Boolean(source.version_sync_required)
 }
@@ -588,6 +598,9 @@ export function ConfigModal({
                             ? remoteUpdateActionState(source, versionSyncPendingStage)
                             : null
                         const versionSyncPending = Boolean(versionSyncActionState?.spinning)
+                        const showVersionSyncDetail =
+                          versionSyncRequired &&
+                          shouldShowRemoteUpdateMenuDetail(source, versionSyncActionState)
                         const pairActionAvailable =
                           source.kind === 'peer' &&
                           (!source.trusted ||
@@ -691,13 +704,20 @@ export function ConfigModal({
                             <span className="aoConfigSourceMenuText">
                               <span className="aoConfigSourceMenuLabel">{label}</span>
                             </span>
-                            <span className="aoConfigSourceMenuMeta">
-                              {versionSyncPending ? (
-                                <span className="aoConfigSourceMenuSpinnerWrap" aria-hidden="true">
-                                  <span className="aoPairWaitingSpinner aoConfigSourceMenuSpinner" />
+                            <span className="aoConfigSourceMenuMetaBlock">
+                              <span className="aoConfigSourceMenuMeta">
+                                {versionSyncPending ? (
+                                  <span className="aoConfigSourceMenuSpinnerWrap" aria-hidden="true">
+                                    <span className="aoPairWaitingSpinner aoConfigSourceMenuSpinner" />
+                                  </span>
+                                ) : null}
+                                {actionLabel}
+                              </span>
+                              {showVersionSyncDetail ? (
+                                <span className="aoConfigSourceMenuMetaDetail">
+                                  {versionSyncActionState?.actionDetail}
                                 </span>
                               ) : null}
-                              {actionLabel}
                             </span>
                           </button>
                         )

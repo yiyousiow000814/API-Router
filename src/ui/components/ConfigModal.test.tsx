@@ -7,6 +7,7 @@ import {
   formatCommitDate,
   keepSourceMenuOpenAfterAction,
   remoteUpdateActionState,
+  shouldShowRemoteUpdateMenuDetail,
   syncPauseSummaryLabel,
 } from './ConfigModal'
 import type { Config } from '../types'
@@ -349,6 +350,9 @@ describe('ConfigModal', () => {
       actionDetail: 'Waiting for peer to accept',
       spinning: true,
     })
+    expect(
+      shouldShowRemoteUpdateMenuDetail(source, remoteUpdateActionState(source, 'requesting')),
+    ).toBe(true)
   })
 
   it('shows queued stage while peer has accepted the remote update request', () => {
@@ -379,6 +383,9 @@ describe('ConfigModal', () => {
       actionDetail: 'Queued remote self-update worker',
       spinning: true,
     })
+    expect(
+      shouldShowRemoteUpdateMenuDetail(source, remoteUpdateActionState(source, undefined)),
+    ).toBe(true)
   })
 
   it('keeps the source menu open for peer update actions only', () => {
@@ -491,6 +498,9 @@ describe('ConfigModal', () => {
       actionDetail: 'Fetching from origin: git fetch failed',
       spinning: false,
     })
+    expect(
+      shouldShowRemoteUpdateMenuDetail(source, remoteUpdateActionState(source, undefined)),
+    ).toBe(true)
   })
 
   it('shows replaced stage after a queued update was superseded by another installed build', () => {
@@ -521,6 +531,36 @@ describe('ConfigModal', () => {
       actionDetail: 'Previous remote update was replaced',
       spinning: false,
     })
+    expect(
+      shouldShowRemoteUpdateMenuDetail(source, remoteUpdateActionState(source, undefined)),
+    ).toBe(false)
+  })
+
+  it('keeps idle update rows visually quiet', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+    }
+
+    expect(remoteUpdateActionState(source, undefined)).toEqual({
+      actionLabel: 'Update peer',
+      actionDetail: 'Sync to this build',
+      spinning: false,
+    })
+    expect(
+      shouldShowRemoteUpdateMenuDetail(source, remoteUpdateActionState(source, undefined)),
+    ).toBe(false)
   })
 
   it('only shows a paused summary badge when more than one sync domain is paused', () => {

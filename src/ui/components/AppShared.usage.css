@@ -480,6 +480,22 @@
   font-weight: 700;
 }
 
+.aoConfigSourceMenuMetaBlock {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.aoConfigSourceMenuMetaDetail {
+  max-width: 230px;
+  text-align: right;
+  font-size: 10px;
+  line-height: 1.25;
+  color: rgba(13, 18, 32, 0.5);
+}
+
 .aoConfigSourceMenuSpinnerWrap {
   display: inline-flex;
   align-items: center;

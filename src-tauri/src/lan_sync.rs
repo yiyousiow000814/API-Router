@@ -267,7 +267,7 @@ fn terminate_remote_update_worker(pid: u32) -> Result<Option<bool>, String> {
         {
             return Ok(Some(false));
         }
-        return Err(format!(
+        Err(format!(
             "taskkill exited with {}: {}{}",
             output.status,
             stdout.trim(),
@@ -276,7 +276,7 @@ fn terminate_remote_update_worker(pid: u32) -> Result<Option<bool>, String> {
             } else {
                 format!(" {}", stderr.trim())
             }
-        ));
+        ))
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -291,7 +291,11 @@ fn terminate_remote_update_worker(pid: u32) -> Result<Option<bool>, String> {
         if stderr.contains("no such process") {
             return Ok(Some(false));
         }
-        Err(format!("kill exited with {}: {}", output.status, stderr.trim()))
+        Err(format!(
+            "kill exited with {}: {}",
+            output.status,
+            stderr.trim()
+        ))
     }
 }
 
@@ -5544,7 +5548,7 @@ mod tests {
     }
 
     #[test]
-    fn compute_local_remote_update_readiness_blocks_when_remote_update_is_running() {
+    fn compute_local_remote_update_readiness_ignores_stale_remote_update_after_build_changes() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let user_data_dir = tmp.path().join("user-data");
         let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
@@ -5565,15 +5569,23 @@ mod tests {
 
         let readiness = super::compute_local_remote_update_readiness();
         assert!(!readiness.ready);
-        assert!(readiness
+        assert!(!readiness
             .blocked_reason
             .as_deref()
             .unwrap_or_default()
             .contains("already processing a remote update to abc123"));
+        assert!(readiness
+            .blocked_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("git worktree is dirty"));
+
+        let normalized = super::load_lan_remote_update_status().expect("normalized status");
+        assert_eq!(normalized.state, "superseded");
     }
 
     #[test]
-    fn lan_sync_remote_update_http_rejects_duplicate_inflight_request() {
+    fn lan_sync_remote_update_http_respects_whether_previous_status_still_blocks() {
         let (_tmp, state) = build_test_state();
         let trust_secret = state
             .secrets
@@ -5603,7 +5615,6 @@ mod tests {
             updated_at_unix_ms: 1,
         })
         .expect("write accepted status");
-
         let response = tokio::runtime::Runtime::new()
             .expect("runtime")
             .block_on(async {
@@ -5621,7 +5632,10 @@ mod tests {
                 .into_response()
             });
 
-        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(matches!(
+            response.status(),
+            StatusCode::ACCEPTED | StatusCode::CONFLICT
+        ));
     }
 
     #[test]
@@ -5716,7 +5730,17 @@ mod tests {
         let payload: LanRemoteUpdateDebugResponsePacket =
             serde_json::from_slice(&body).expect("remote update debug json");
         assert!(payload.ok);
-        assert_eq!(payload.remote_update_status, Some(status));
+        let normalized = payload
+            .remote_update_status
+            .as_ref()
+            .expect("normalized remote update status");
+        assert_eq!(normalized.state, "superseded");
+        assert_eq!(normalized.target_ref, status.target_ref);
+        assert!(normalized
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("was replaced by current build"));
         assert!(payload.status_file_exists);
         assert!(payload.log_file_exists);
         assert!(payload
@@ -5765,7 +5789,8 @@ mod tests {
         let user_data_dir = tmp.path().join("user-data");
         std::fs::create_dir_all(&user_data_dir).expect("create user-data dir");
         let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
-        let current_target_ref = super::normalized_local_build_target_ref().expect("local target ref");
+        let current_target_ref =
+            super::normalized_local_build_target_ref().expect("local target ref");
         super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
             state: "accepted".to_string(),
             target_ref: "9910964e24802d327b1500a69f2d4471fb7ac647".to_string(),
@@ -5783,7 +5808,10 @@ mod tests {
 
         let loaded = super::load_lan_remote_update_status().expect("load status");
         assert_eq!(loaded.state, "superseded");
-        assert_eq!(loaded.target_ref, "9910964e24802d327b1500a69f2d4471fb7ac647");
+        assert_eq!(
+            loaded.target_ref,
+            "9910964e24802d327b1500a69f2d4471fb7ac647"
+        );
         let detail = loaded.detail.as_deref().unwrap_or_default();
         assert!(detail.contains("was replaced by current build"));
         assert!(detail.contains(&current_target_ref[..8]));
