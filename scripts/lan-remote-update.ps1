@@ -70,6 +70,7 @@ function Write-RemoteUpdateStatus {
     requester_node_id = if ($env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_ID) { $env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_ID } else { $null }
     requester_node_name = if ($env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_NAME) { $env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_NAME } else { $null }
     worker_script = $PSCommandPath
+    worker_pid = $PID
     detail = if ($Detail) { $Detail } else { $null }
     accepted_at_unix_ms = $acceptedAt
     started_at_unix_ms = if ($StartedAtUnixMs -ne $null) { [int64]$StartedAtUnixMs } else { $null }

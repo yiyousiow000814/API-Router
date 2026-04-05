@@ -100,6 +100,7 @@ payload = {
     "requester_node_id": normalize(requester_node_id),
     "requester_node_name": normalize(requester_node_name),
     "worker_script": worker_script,
+    "worker_pid": int(__import__("os").getpid()),
     "detail": normalize(detail),
     "accepted_at_unix_ms": int(accepted_at),
     "started_at_unix_ms": normalize_int(started_at),

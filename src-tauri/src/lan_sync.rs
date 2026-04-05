@@ -140,6 +140,8 @@ pub struct LanRemoteUpdateStatusSnapshot {
     #[serde(default)]
     pub worker_script: Option<String>,
     #[serde(default)]
+    pub worker_pid: Option<u32>,
+    #[serde(default)]
     pub detail: Option<String>,
     #[serde(default)]
     pub accepted_at_unix_ms: u64,
@@ -191,13 +193,18 @@ fn normalize_remote_update_status(
         return status;
     };
 
+    let worker_cleanup_detail = cleanup_remote_update_worker(status.worker_pid);
+
     if current_target_ref == status_target_ref {
         let finished_at_unix_ms = unix_ms();
         status.state = "succeeded".to_string();
-        status.detail = Some(
-            "Current build already matches the queued target; cleared stale remote update status after restart/manual update."
+        status.detail = Some(match worker_cleanup_detail {
+            Some(detail) => format!(
+                "Current build already matches the queued target; cleared stale remote update status after restart/manual update. {detail}"
+            ),
+            None => "Current build already matches the queued target; cleared stale remote update status after restart/manual update."
                 .to_string(),
-        );
+        });
         status
             .finished_at_unix_ms
             .get_or_insert(finished_at_unix_ms);
@@ -207,16 +214,85 @@ fn normalize_remote_update_status(
 
     let finished_at_unix_ms = unix_ms();
     status.state = "superseded".to_string();
-    status.detail = Some(format!(
-        "Queued remote update to {} was replaced by current build {} after restart/manual update.",
-        display_target_ref(status_target_ref),
-        display_target_ref(current_target_ref),
-    ));
+    status.detail = Some(match worker_cleanup_detail {
+        Some(detail) => format!(
+            "Queued remote update to {} was replaced by current build {} after restart/manual update. {detail}",
+            display_target_ref(status_target_ref),
+            display_target_ref(current_target_ref),
+        ),
+        None => format!(
+            "Queued remote update to {} was replaced by current build {} after restart/manual update.",
+            display_target_ref(status_target_ref),
+            display_target_ref(current_target_ref),
+        ),
+    });
     status
         .finished_at_unix_ms
         .get_or_insert(finished_at_unix_ms);
     status.updated_at_unix_ms = finished_at_unix_ms;
     status
+}
+
+fn cleanup_remote_update_worker(worker_pid: Option<u32>) -> Option<String> {
+    let pid = worker_pid?;
+    match terminate_remote_update_worker(pid) {
+        Ok(Some(true)) => Some(format!("Stopped stale remote update worker PID {pid}.")),
+        Ok(Some(false)) => Some(format!("Remote update worker PID {pid} was already gone.")),
+        Ok(None) => None,
+        Err(err) => Some(format!(
+            "Tried to stop stale remote update worker PID {pid}, but failed: {err}"
+        )),
+    }
+}
+
+fn terminate_remote_update_worker(pid: u32) -> Result<Option<bool>, String> {
+    if pid == 0 {
+        return Ok(None);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let output = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output()
+            .map_err(|err| format!("taskkill failed: {err}"))?;
+        if output.status.success() {
+            return Ok(Some(true));
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+        let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+        if stderr.contains("not found")
+            || stderr.contains("no running instance")
+            || stdout.contains("not found")
+            || stdout.contains("no running instance")
+        {
+            return Ok(Some(false));
+        }
+        return Err(format!(
+            "taskkill exited with {}: {}{}",
+            output.status,
+            stdout.trim(),
+            if stderr.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" {}", stderr.trim())
+            }
+        ));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let output = std::process::Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .output()
+            .map_err(|err| format!("kill failed: {err}"))?;
+        if output.status.success() {
+            return Ok(Some(true));
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+        if stderr.contains("no such process") {
+            return Ok(Some(false));
+        }
+        Err(format!("kill exited with {}: {}", output.status, stderr.trim()))
+    }
 }
 
 fn load_lan_remote_update_status() -> Option<LanRemoteUpdateStatusSnapshot> {
@@ -1881,6 +1957,7 @@ pub(crate) async fn lan_sync_remote_update_http(
             .filter(|value| !value.is_empty())
             .map(ToString::to_string),
         worker_script: None,
+        worker_pid: None,
         detail: Some("Queued remote self-update worker".to_string()),
         accepted_at_unix_ms,
         started_at_unix_ms: None,
@@ -5477,6 +5554,7 @@ mod tests {
             requester_node_id: Some("node-remote".to_string()),
             requester_node_name: Some("Desk Remote".to_string()),
             worker_script: Some("scripts/lan-remote-update.ps1".to_string()),
+            worker_pid: None,
             detail: Some("Remote self-update worker started".to_string()),
             accepted_at_unix_ms: 1,
             started_at_unix_ms: Some(2),
@@ -5517,6 +5595,7 @@ mod tests {
             requester_node_id: Some("node-prev".to_string()),
             requester_node_name: Some("Desk Prev".to_string()),
             worker_script: None,
+            worker_pid: None,
             detail: Some("Queued remote self-update worker".to_string()),
             accepted_at_unix_ms: 1,
             started_at_unix_ms: None,
@@ -5564,6 +5643,7 @@ mod tests {
             requester_node_id: Some("node-remote".to_string()),
             requester_node_name: Some("Desk Remote".to_string()),
             worker_script: Some("scripts/lan-remote-update.ps1".to_string()),
+            worker_pid: None,
             detail: Some("git fetch failed".to_string()),
             accepted_at_unix_ms: 1,
             started_at_unix_ms: Some(2),
@@ -5599,6 +5679,7 @@ mod tests {
             requester_node_id: Some("node-remote".to_string()),
             requester_node_name: Some("Desk Remote".to_string()),
             worker_script: Some("scripts/lan-remote-update.ps1".to_string()),
+            worker_pid: None,
             detail: Some("Fetching from origin".to_string()),
             accepted_at_unix_ms: 1,
             started_at_unix_ms: Some(2),
@@ -5658,6 +5739,7 @@ mod tests {
             requester_node_id: Some("node-remote".to_string()),
             requester_node_name: Some("Desk Remote".to_string()),
             worker_script: None,
+            worker_pid: None,
             detail: Some("Queued remote self-update worker".to_string()),
             accepted_at_unix_ms: 1,
             started_at_unix_ms: None,
@@ -5690,6 +5772,7 @@ mod tests {
             requester_node_id: Some("node-remote".to_string()),
             requester_node_name: Some("Desk Remote".to_string()),
             worker_script: None,
+            worker_pid: None,
             detail: Some("Queued remote self-update worker".to_string()),
             accepted_at_unix_ms: 1,
             started_at_unix_ms: None,
