@@ -518,7 +518,7 @@ describe('ConfigModal', () => {
 
     expect(remoteUpdateActionState(source, undefined)).toEqual({
       actionLabel: 'Update peer',
-      actionDetail: 'Queued remote update to 9910964e was replaced by current build ce542b7 after restart/manual update.',
+      actionDetail: 'Previous remote update was replaced',
       spinning: false,
     })
   })

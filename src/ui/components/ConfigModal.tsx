@@ -173,6 +173,18 @@ function remoteUpdateTimestampLabel(source: ConfigSource): string {
   return formatCommitDate(unixMs ?? null)
 }
 
+function remoteUpdateMenuDetailText(source: ConfigSource): string {
+  const status = source.remote_update_status
+  if (!status) return 'Sync to this build'
+  const state = status.state?.trim()
+  if (state === 'accepted') return 'Queued remote update'
+  if (state === 'running') return 'Remote update in progress'
+  if (state === 'failed') return 'Last remote update failed'
+  if (state === 'succeeded') return 'Peer matches this build'
+  if (state === 'superseded') return 'Previous remote update was replaced'
+  return 'Sync to this build'
+}
+
 export function remoteUpdateActionState(
   source: ConfigSource,
   pendingStage: 'requesting' | undefined,
@@ -220,8 +232,7 @@ export function remoteUpdateActionState(
   if (remoteState === 'superseded') {
     return {
       actionLabel: source.same_version_update_allowed ? 'Update peer' : 'Update blocked',
-      actionDetail:
-        remoteUpdateProgressDetail(source) || 'Last queued update was replaced by another installed build',
+      actionDetail: remoteUpdateMenuDetailText(source),
       spinning: false,
     }
   }
