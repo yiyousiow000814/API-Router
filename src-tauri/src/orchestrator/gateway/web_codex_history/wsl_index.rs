@@ -589,8 +589,13 @@ mod tests {
     #[test]
     fn wait_for_child_output_times_out_and_kills_stuck_process() {
         let mut command = if cfg!(windows) {
-            let mut cmd = Command::new("cmd.exe");
-            cmd.args(["/C", "ping -n 6 127.0.0.1 > nul"]);
+            let powershell = std::env::var("WINDIR")
+                .map(|windir| format!(r"{windir}\System32\WindowsPowerShell\v1.0\powershell.exe"))
+                .unwrap_or_else(|_| {
+                    String::from(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+                });
+            let mut cmd = Command::new(powershell);
+            cmd.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 5"]);
             cmd
         } else {
             let mut cmd = Command::new("sh");

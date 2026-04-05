@@ -1,13 +1,25 @@
+#[path = "build_support/git_exec.rs"]
+mod git_exec;
 #[path = "src/platform/git_layout.rs"]
 mod git_layout;
 
-use std::path::PathBuf;
-use std::process::Command;
-#[cfg(windows)]
+use std::path::{Path, PathBuf};
 use std::{env, fs};
 
-fn git_output(args: &[&str]) -> Option<String> {
-    let output = Command::new("git").args(args).output().ok()?;
+fn repo_root() -> PathBuf {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or(manifest_dir)
+}
+
+fn git_output(repo_root: &Path, args: &[&str]) -> Option<String> {
+    let output = git_exec::new_git_command()
+        .args(args)
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -89,20 +101,32 @@ fn configure_windows_resource_toolchain() {
 }
 
 fn main() {
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    let repo_root = repo_root();
     for path in git_layout::git_watch_paths(&repo_root) {
         println!("cargo:rerun-if-changed={}", path.display());
     }
 
-    let git_sha = git_output(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
+    let git_sha =
+        git_output(&repo_root, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=API_ROUTER_BUILD_GIT_SHA={git_sha}");
 
-    let git_short_sha =
-        git_output(&["rev-parse", "--short=8", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
+    let git_short_sha = git_output(&repo_root, &["rev-parse", "--short=8", "HEAD"])
+        .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=API_ROUTER_BUILD_GIT_SHORT_SHA={git_short_sha}");
+    let git_commit_unix_ms = git_output(&repo_root, &["show", "-s", "--format=%ct", "HEAD"])
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|value| value.saturating_mul(1000));
+
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
+    let build_info_rs = out_dir.join("build_info.rs");
+    let build_info = format!(
+        "pub const API_ROUTER_BUILD_GIT_SHA: &str = {:?};\n\
+         pub const API_ROUTER_BUILD_GIT_SHORT_SHA: &str = {:?};\n\
+         pub const API_ROUTER_BUILD_GIT_COMMIT_UNIX_MS: Option<u64> = {:?};\n",
+        git_sha, git_short_sha, git_commit_unix_ms
+    );
+    fs::write(&build_info_rs, build_info).expect("write build_info.rs");
+    println!("cargo:rerun-if-changed={}", build_info_rs.display());
 
     #[cfg(windows)]
     configure_windows_resource_toolchain();

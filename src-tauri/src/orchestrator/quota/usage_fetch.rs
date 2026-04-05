@@ -218,8 +218,15 @@ fn apply_explicit_usage_endpoint_payload(
             root.pointer("/subscription/daily_limit_usd")
                 .and_then(|value| as_f64(Some(value)))
         });
-    let daily_spent_usd = root
-        .pointer("/quota/daily_spent")
+    let usage_today_cost = root
+        .pointer("/usage/today/actual_cost")
+        .and_then(|value| as_f64(Some(value)))
+        .or_else(|| {
+            root.pointer("/usage/today/cost")
+                .and_then(|value| as_f64(Some(value)))
+        });
+    let daily_spent_usd = usage_today_cost.or_else(|| {
+        root.pointer("/quota/daily_spent")
         .and_then(|value| as_f64(Some(value)))
         .or_else(|| {
             root.pointer("/quota/daily_total_spent")
@@ -244,7 +251,8 @@ fn apply_explicit_usage_endpoint_payload(
         .or_else(|| {
             root.pointer("/subscription/daily_usage_usd")
                 .and_then(|value| as_f64(Some(value)))
-        });
+        })
+    });
     let remaining = root
         .pointer("/quota/daily_remaining")
         .and_then(|value| as_f64(Some(value)))
@@ -791,12 +799,16 @@ async fn fetch_budget_info_any(
     st: &GatewayState,
     provider_name: &str,
     bases: &[String],
-    jwt: Option<&str>,
+    credential_value: Option<&str>,
+    missing_credential_label: &str,
     package_expiry_strategy: PackageExpiryStrategy,
 ) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
-    let Some(token) = jwt else {
-        out.last_error = "missing usage token".to_string();
+    let Some(usage_token) = credential_value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        out.last_error = format!("missing {missing_credential_label}");
         return out;
     };
     if bases.is_empty() {
@@ -829,7 +841,7 @@ async fn fetch_budget_info_any(
         }
         match client
             .get(&url)
-            .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(reqwest::header::AUTHORIZATION, format!("Bearer {usage_token}"))
             .timeout(Duration::from_secs(15))
             .send()
             .await
@@ -870,7 +882,7 @@ async fn fetch_budget_info_any(
                     st,
                     provider_name,
                     bases,
-                    token,
+                    usage_token,
                     Some(base),
                     Some(root),
                 )
@@ -910,4 +922,27 @@ fn as_f64(v: Option<&Value>) -> Option<f64> {
                 }
             })
         })
+}
+
+#[cfg(test)]
+mod usage_fetch_tests {
+    #[tokio::test]
+    async fn budget_info_without_usage_token_reports_missing_usage_token() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        let state = crate::app_state::build_state(config_path, data_dir).expect("build state");
+
+        let snapshot = super::fetch_budget_info_any(
+            &state.gateway,
+            "official",
+            &["https://usage.example.test".to_string()],
+            None,
+            "usage token",
+            crate::orchestrator::quota::PackageExpiryStrategy::None,
+        )
+        .await;
+
+        assert_eq!(snapshot.last_error, "missing usage token");
+    }
 }

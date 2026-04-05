@@ -357,6 +357,7 @@ async fn refresh_usage_once_after_first_failure(
         let err = snap.last_error.trim();
         let is_config_gap = err == "missing credentials for quota refresh"
             || err == "missing usage token"
+            || err == "missing provider key"
             || err == "missing quota base"
             || err == "missing base_url"
             || err == "usage endpoint not found (set Usage base URL)";
@@ -492,6 +493,18 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         .route(
             "/lan-sync/provider-definitions",
             post(crate::lan_sync::lan_sync_provider_definitions_http),
+        )
+        .route(
+            "/lan-sync/remote-update",
+            post(crate::lan_sync::lan_sync_remote_update_http),
+        )
+        .route(
+            "/lan-sync/debug/tracked-spend-history",
+            post(crate::lan_sync::lan_sync_tracked_spend_history_debug_http),
+        )
+        .route(
+            "/lan-sync/debug/remote-update",
+            post(crate::lan_sync::lan_sync_remote_update_debug_http),
         )
         .route("/v1/models", get(models))
         .route("/v1/responses", post(responses))

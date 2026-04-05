@@ -111,6 +111,41 @@ export type Status = {
       node_name: string
       listen_addr?: string | null
       capabilities: string[]
+      build_identity?: {
+        app_version: string
+        build_git_sha: string
+        build_git_short_sha: string
+        build_git_commit_unix_ms?: number | null
+      }
+      version_sync?: {
+        target_ref?: string | null
+        git_worktree_clean: boolean
+        update_to_local_build_allowed: boolean
+        blocked_reason?: string | null
+      }
+      remote_update_status?: {
+        state: 'accepted' | 'running' | 'failed' | 'succeeded' | string
+        target_ref: string
+        request_id?: string | null
+        reason_code?: string | null
+        requester_node_id?: string | null
+        requester_node_name?: string | null
+        worker_script?: string | null
+        detail?: string | null
+        accepted_at_unix_ms?: number
+        started_at_unix_ms?: number | null
+        finished_at_unix_ms?: number | null
+        updated_at_unix_ms?: number
+        timeline?: Array<{
+          unix_ms?: number
+          phase?: string | null
+          label?: string | null
+          detail?: string | null
+          source?: string | null
+          state?: string | null
+        }>
+      } | null
+      sync_contracts?: Record<string, number>
       provider_fingerprints: string[]
     }
     peers: Array<{
@@ -119,11 +154,54 @@ export type Status = {
       listen_addr: string
       last_heartbeat_unix_ms: number
       capabilities: string[]
+      build_identity?: {
+        app_version: string
+        build_git_sha: string
+        build_git_short_sha: string
+        build_git_commit_unix_ms?: number | null
+      }
+      remote_update_readiness?: {
+        ready: boolean
+        blocked_reason?: string | null
+        checked_at_unix_ms?: number
+      } | null
+      remote_update_status?: {
+        state: 'accepted' | 'running' | 'failed' | 'succeeded' | string
+        target_ref: string
+        request_id?: string | null
+        reason_code?: string | null
+        requester_node_id?: string | null
+        requester_node_name?: string | null
+        worker_script?: string | null
+        detail?: string | null
+        accepted_at_unix_ms?: number
+        started_at_unix_ms?: number | null
+        finished_at_unix_ms?: number | null
+        updated_at_unix_ms?: number
+        timeline?: Array<{
+          unix_ms?: number
+          phase?: string | null
+          label?: string | null
+          detail?: string | null
+          source?: string | null
+          state?: string | null
+        }>
+      } | null
+      sync_contracts?: Record<string, number>
       provider_fingerprints: string[]
       followed_source_node_id?: string | null
       trusted?: boolean
       pair_state?: 'trusted' | 'incoming_request' | 'requested' | 'pin_required' | null
       pair_request_id?: string | null
+      sync_blocked_domains?: string[]
+      sync_diagnostics?: Array<{
+        domain: string
+        status: 'ok' | 'blocked' | string
+        local_contract_version: number
+        peer_contract_version: number
+        blocked_reason?: string | null
+      }>
+      build_matches_local?: boolean
     }>
   }
   shared_quota_owners?: Array<{
@@ -156,6 +234,57 @@ export type ProviderSwitchboardStatus = {
     model_provider?: string | null
   }>
   provider_options?: string[]
+}
+
+export type LanRemoteUpdateDebugResponse = {
+  ok: boolean
+  version: number
+  node_id: string
+  node_name: string
+  remote_update_readiness: {
+    ready: boolean
+    blocked_reason?: string | null
+    checked_at_unix_ms?: number
+  }
+  remote_update_status?: {
+    state: 'accepted' | 'running' | 'failed' | 'succeeded' | string
+    target_ref: string
+    request_id?: string | null
+    reason_code?: string | null
+    requester_node_id?: string | null
+    requester_node_name?: string | null
+    worker_script?: string | null
+    detail?: string | null
+    accepted_at_unix_ms?: number
+    started_at_unix_ms?: number | null
+    finished_at_unix_ms?: number | null
+    updated_at_unix_ms?: number
+    timeline?: Array<{
+      unix_ms?: number
+      phase?: string | null
+      label?: string | null
+      detail?: string | null
+      source?: string | null
+      state?: string | null
+    }>
+  } | null
+  status_path?: string | null
+  status_file_exists: boolean
+  log_path?: string | null
+  log_file_exists: boolean
+  log_tail?: string | null
+  local_build_identity: {
+    app_version: string
+    build_git_sha: string
+    build_git_short_sha: string
+    build_git_commit_unix_ms?: number | null
+  }
+  local_version_sync: {
+    target_ref?: string | null
+    git_worktree_clean: boolean
+    update_to_local_build_allowed: boolean
+    blocked_reason?: string | null
+  }
 }
 
 export type Config = {
@@ -217,6 +346,40 @@ export type Config = {
       follow_allowed: boolean
       follow_blocked_reason?: string | null
       using_count: number
+      build_identity?: {
+        app_version: string
+        build_git_sha: string
+        build_git_short_sha: string
+        build_git_commit_unix_ms?: number | null
+      } | null
+      build_matches_local?: boolean
+      remote_update_status?: {
+        state: 'accepted' | 'running' | 'failed' | 'succeeded' | string
+        target_ref: string
+        request_id?: string | null
+        reason_code?: string | null
+        requester_node_id?: string | null
+        requester_node_name?: string | null
+        worker_script?: string | null
+        detail?: string | null
+        accepted_at_unix_ms?: number
+        started_at_unix_ms?: number | null
+        finished_at_unix_ms?: number | null
+        updated_at_unix_ms?: number
+        timeline?: Array<{
+          unix_ms?: number
+          phase?: string | null
+          label?: string | null
+          detail?: string | null
+          source?: string | null
+          state?: string | null
+        }>
+      } | null
+      sync_blocked_domains?: string[]
+      version_sync_required?: boolean
+      version_sync_reason?: string | null
+      same_version_update_allowed?: boolean
+      same_version_update_blocked_reason?: string | null
     }>
   }
 }
