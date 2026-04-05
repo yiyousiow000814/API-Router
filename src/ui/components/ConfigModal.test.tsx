@@ -299,6 +299,33 @@ describe('ConfigModal', () => {
     )
   })
 
+  it('hides why text for healthy active followed peers', () => {
+    const whyText = diagnosticsWhyText({
+      kind: 'peer',
+      node_id: 'node-b',
+      node_name: 'SYB',
+      active: true,
+      trusted: true,
+      follow_allowed: false,
+      follow_blocked_reason: 'that node is already following this local node',
+      using_count: 1,
+      version_sync_required: false,
+      version_sync_reason: null,
+      same_version_update_allowed: false,
+      same_version_update_blocked_reason: null,
+      sync_blocked_domains: [],
+      build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: 'abc',
+        build_git_short_sha: 'abc',
+        build_git_commit_unix_ms: 1775312828000,
+      },
+      build_matches_local: true,
+    })
+
+    expect(whyText).toBe('')
+  })
+
   it('shows sending stage while peer remote update request is still local pending', () => {
     const config = buildConfig()
     const source = {

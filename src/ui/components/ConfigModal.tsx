@@ -230,6 +230,9 @@ export function diagnosticsWhyText(
     const versionReason = source.version_sync_reason?.trim()
     if (versionReason && !isGenericVersionSyncReason(versionReason)) return versionReason
   } else {
+    if (source.active && source.trusted) {
+      return ''
+    }
     const followReason = source.follow_blocked_reason?.trim()
     if (followReason) return followReason
   }
