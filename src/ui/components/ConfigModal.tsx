@@ -255,7 +255,7 @@ export function remoteUpdateActionState(
       spinning: false,
     }
   }
-  if (remoteState === 'succeeded' && !source.version_sync_required) {
+  if (remoteState === 'succeeded') {
     return {
       actionLabel: 'Updated',
       actionDetail: 'Peer matches this build',

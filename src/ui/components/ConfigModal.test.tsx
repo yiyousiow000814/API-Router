@@ -509,6 +509,36 @@ describe('ConfigModal', () => {
     ).toBe(true)
   })
 
+  it('keeps succeeded remote updates in updated state until version sync flags catch up', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'succeeded',
+        target_ref: 'abc123',
+        detail: 'Completed: Remote self-update completed successfully.',
+        finished_at_unix_ms: 1775312828000,
+      },
+    }
+
+    expect(remoteUpdateActionState(source, undefined)).toEqual({
+      actionLabel: 'Updated',
+      actionDetail: 'Peer matches this build',
+      spinning: false,
+    })
+  })
+
   it('shows expired-before-start stage after a queued update never launched', () => {
     const config = buildConfig()
     const source = {
@@ -620,6 +650,19 @@ describe('ConfigModal', () => {
   })
 
   it('formats diagnostics build compare values', () => {
+    const commitDate = new Date(1775312828000)
+    const day = String(commitDate.getDate()).padStart(2, '0')
+    const month = String(commitDate.getMonth() + 1).padStart(2, '0')
+    const year = commitDate.getFullYear()
+    const hours = String(commitDate.getHours()).padStart(2, '0')
+    const minutes = String(commitDate.getMinutes()).padStart(2, '0')
+    const offsetMinutes = -commitDate.getTimezoneOffset()
+    const sign = offsetMinutes >= 0 ? '+' : '-'
+    const absOffsetMinutes = Math.abs(offsetMinutes)
+    const offsetHours = String(Math.floor(absOffsetMinutes / 60)).padStart(2, '0')
+    const offsetRemainderMinutes = String(absOffsetMinutes % 60).padStart(2, '0')
+    const expectedCommitDate = `${day}-${month}-${year} ${hours}:${minutes} UTC${sign}${offsetHours}:${offsetRemainderMinutes}`
+
     expect(
       formatBuildLabel({
         app_version: '0.4.0',
@@ -636,7 +679,7 @@ describe('ConfigModal', () => {
         build_git_commit_unix_ms: null,
       }),
     ).toBe('v0.4.0 · unknown')
-    expect(formatCommitDate(1775312828000)).toBe('04-04-2026 22:27 UTC+08:00')
+    expect(formatCommitDate(1775312828000)).toBe(expectedCommitDate)
     expect(formatCommitDate(null)).toBe('Unknown')
   })
 })

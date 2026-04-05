@@ -150,7 +150,7 @@ function Step-Detail([string]$Label, [string]$Detail = '') {
   return $Label
 }
 
-$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
 Set-Location $RepoRoot
 
 Start-Sleep -Seconds 1
@@ -175,36 +175,36 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $currentStep = 'Resolving target ref'
-Write-RemoteUpdateLog "$currentStep: $TargetRef"
+Write-RemoteUpdateLog "${currentStep}: $TargetRef"
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep "Target $TargetRef") -Phase 'resolve_target' -Label 'Resolving target ref' -StartedAtUnixMs $startedAtUnixMs
 $target = Resolve-CheckoutTarget $TargetRef
 if ($target.Mode -eq 'local_branch') {
   $currentStep = 'Checking out local branch'
-  Write-RemoteUpdateLog "$currentStep: $($target.Value)"
+  Write-RemoteUpdateLog "${currentStep}: $($target.Value)"
   Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $target.Value) -Phase 'checkout_local_branch' -Label 'Checking out local branch' -StartedAtUnixMs $startedAtUnixMs
   & git checkout $target.Value
   if ($LASTEXITCODE -ne 0) { throw "git checkout failed: $($target.Value)" }
   $currentStep = 'Pulling latest branch'
-  Write-RemoteUpdateLog "$currentStep: $($target.Value)"
+  Write-RemoteUpdateLog "${currentStep}: $($target.Value)"
   Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $target.Value) -Phase 'pull_branch' -Label 'Pulling latest branch' -StartedAtUnixMs $startedAtUnixMs
   & git pull --ff-only origin $target.Value
   if ($LASTEXITCODE -ne 0) { throw "git pull failed: $($target.Value)" }
 } elseif ($target.Mode -eq 'remote_branch') {
   $currentStep = 'Checking out remote branch'
-  Write-RemoteUpdateLog "$currentStep: $($target.Value)"
+  Write-RemoteUpdateLog "${currentStep}: $($target.Value)"
   Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $target.Value) -Phase 'checkout_remote_branch' -Label 'Checking out remote branch' -StartedAtUnixMs $startedAtUnixMs
   & git checkout -B $target.Value "refs/remotes/origin/$($target.Value)"
   if ($LASTEXITCODE -ne 0) { throw "git checkout -B failed: $($target.Value)" }
 } else {
   $currentStep = 'Checking out commit'
-  Write-RemoteUpdateLog "$currentStep: $($target.Value)"
+  Write-RemoteUpdateLog "${currentStep}: $($target.Value)"
   Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $target.Value) -Phase 'checkout_commit' -Label 'Checking out commit' -StartedAtUnixMs $startedAtUnixMs
   & git checkout --detach $target.Value
   if ($LASTEXITCODE -ne 0) { throw "git checkout --detach failed: $($target.Value)" }
 }
 
 $currentStep = 'Building checked EXE'
-Write-RemoteUpdateLog "$currentStep: npm run build:root-exe:checked"
+Write-RemoteUpdateLog "${currentStep}: npm run build:root-exe:checked"
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep 'Running npm run build:root-exe:checked') -Phase 'build_checked_exe' -Label 'Building checked EXE' -StartedAtUnixMs $startedAtUnixMs
 & npm.cmd run build:root-exe:checked
 if ($LASTEXITCODE -ne 0) {
