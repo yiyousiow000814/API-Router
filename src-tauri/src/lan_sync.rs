@@ -251,7 +251,7 @@ fn current_remote_update_status_block_reason() -> Option<String> {
     if !remote_update_status_blocks_new_request(&status) {
         return None;
     }
-    let target_ref = status.target_ref.trim();
+    let target_ref = display_target_ref(status.target_ref.trim());
     let detail = status.detail.as_deref().unwrap_or_default().trim();
     Some(if detail.is_empty() {
         format!(
@@ -264,8 +264,8 @@ fn current_remote_update_status_block_reason() -> Option<String> {
 
 fn display_target_ref(target_ref: &str) -> &str {
     let trimmed = target_ref.trim();
-    if trimmed.len() > 12 {
-        &trimmed[..12]
+    if trimmed.len() > 8 {
+        &trimmed[..8]
     } else {
         trimmed
     }

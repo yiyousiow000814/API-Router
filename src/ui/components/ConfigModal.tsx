@@ -105,7 +105,11 @@ function remoteUpdateStateLabel(source: ConfigSource): string | null {
 }
 
 function remoteUpdateProgressDetail(source: ConfigSource): string {
-  return source.remote_update_status?.detail?.trim() || ''
+  return formatReadableCommitRefs(source.remote_update_status?.detail?.trim() || '')
+}
+
+function formatReadableCommitRefs(value: string): string {
+  return value.replace(/\b[0-9a-f]{12,40}\b/gi, (match) => match.slice(0, 8))
 }
 
 function remoteUpdateDetailText(source: ConfigSource): string {
@@ -123,7 +127,7 @@ function remoteUpdateDetailText(source: ConfigSource): string {
     return detail || `Remote update requested by ${requester} failed.`
   }
   if (status.state === 'succeeded') {
-    return detail || `Remote update to ${status.target_ref} completed.`
+    return detail || `Remote update to ${formatReadableCommitRefs(status.target_ref)} completed.`
   }
   return detail
 }
@@ -846,8 +850,14 @@ export function ConfigModal({
                     const debugStatus = remoteUpdateDebug?.remote_update_status ?? null
                     const debugStatusTime = formatCommitDate(debugStatus?.updated_at_unix_ms ?? null)
                     const debugReadinessReason =
-                      remoteUpdateDebug?.remote_update_readiness.blocked_reason?.trim() ?? ''
+                      formatReadableCommitRefs(
+                        remoteUpdateDebug?.remote_update_readiness.blocked_reason?.trim() ?? '',
+                      )
                     const debugLogTail = remoteUpdateDebug?.log_tail?.trim() ?? ''
+                    const formattedDebugError = formatReadableCommitRefs(remoteUpdateDebugError)
+                    const formattedWhyText = formatReadableCommitRefs(whyText)
+                    const showDebugReadinessReason =
+                      Boolean(debugReadinessReason) && debugReadinessReason !== formattedWhyText
                     return (
                       <div key={source.node_id} className="aoCard aoConfigDiagCard">
                         <div className="aoConfigDiagCardHead">
@@ -913,11 +923,8 @@ export function ConfigModal({
                                 {remoteUpdateDebugLoading && !remoteUpdateDebug && !remoteUpdateDebugError ? (
                                   <div className="aoConfigDiagRemoteUpdateDetail">Checking peer remote update state...</div>
                                 ) : null}
-                                {remoteUpdateDebugLoading && (remoteUpdateDebug || remoteUpdateDebugError) ? (
-                                  <div className="aoConfigDiagRemoteUpdateTime">Refreshing…</div>
-                                ) : null}
-                                {remoteUpdateDebugError ? (
-                                  <div className="aoConfigDiagWhyText">{remoteUpdateDebugError}</div>
+                                {formattedDebugError ? (
+                                  <div className="aoConfigDiagWhyText">{formattedDebugError}</div>
                                 ) : null}
                                 {remoteUpdateDebug ? (
                                   <>
@@ -925,12 +932,14 @@ export function ConfigModal({
                                       {debugStatus?.state?.trim() ? `Peer reports ${debugStatus.state}` : 'Peer reports no active remote update'}
                                     </div>
                                     {debugStatus?.detail?.trim() ? (
-                                      <div className="aoConfigDiagRemoteUpdateDetail">{debugStatus.detail.trim()}</div>
+                                      <div className="aoConfigDiagRemoteUpdateDetail">
+                                        {formatReadableCommitRefs(debugStatus.detail.trim())}
+                                      </div>
                                     ) : null}
                                     {debugStatusTime && debugStatusTime !== 'Unknown' ? (
                                       <div className="aoConfigDiagRemoteUpdateTime">{debugStatusTime}</div>
                                     ) : null}
-                                    {debugReadinessReason ? (
+                                    {showDebugReadinessReason ? (
                                       <div className="aoConfigDiagRemoteUpdateDetail">{debugReadinessReason}</div>
                                     ) : null}
                                     {remoteUpdateDebug.status_path ? (
@@ -966,7 +975,7 @@ export function ConfigModal({
                           {whyText ? (
                             <div className="aoConfigDiagSection">
                               <div className="aoConfigDiagSectionLabel">Why</div>
-                              <div className="aoConfigDiagWhyText">{whyText}</div>
+                              <div className="aoConfigDiagWhyText">{formattedWhyText}</div>
                             </div>
                           ) : null}
                           {pausedDomains.length > 0 ? (
