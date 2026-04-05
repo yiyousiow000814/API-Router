@@ -1465,6 +1465,7 @@ export default function App() {
   useAppPolling({
     activePage,
     isDevPreview,
+    configModalOpen,
     codexSwapModalOpen,
     codexSwapDir1,
     codexSwapDir2,

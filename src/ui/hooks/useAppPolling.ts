@@ -12,6 +12,7 @@ type TopPage =
 type UseAppPollingOptions = {
   activePage: TopPage
   isDevPreview: boolean
+  configModalOpen: boolean
   codexSwapModalOpen: boolean
   codexSwapDir1: string
   codexSwapDir2: string
@@ -59,6 +60,10 @@ export function statusPollIntervalMs(activePage: TopPage, isDocumentVisible: boo
   return 5_000
 }
 
+export function configPollIntervalMs(isDocumentVisible: boolean): number {
+  return isDocumentVisible ? 2_000 : 15_000
+}
+
 export function statusPollDetailLevel(activePage: TopPage): 'dashboard' | 'full' {
   return activePage === 'dashboard' ? 'dashboard' : 'full'
 }
@@ -73,6 +78,7 @@ export function shouldPollSwapStatusOnStatusRefresh(
 export function useAppPolling({
   activePage,
   isDevPreview,
+  configModalOpen,
   codexSwapModalOpen,
   codexSwapDir1,
   codexSwapDir2,
@@ -264,6 +270,35 @@ export function useAppPolling({
       window.clearInterval(codexRefresh)
     }
   }, [activePage, codexSwapModalOpen, isDevPreview, isDocumentVisible])
+
+  useEffect(() => {
+    if (isDevPreview || !configModalOpen) return
+    void runPrimaryRefreshRef.current('config:modal-poll', 'any', (guard) =>
+      runTrackedRefresh('config', configRefreshInFlightCountRef, () =>
+        refreshConfigRef.current({
+          refreshProviderSwitchStatus: false,
+          applyGuard: guard,
+          interactive: false,
+        }),
+      ),
+    )
+    const timer = window.setInterval(
+      () =>
+        void runPrimaryRefreshRef.current('config:modal-poll', 'any', (guard) =>
+          runTrackedRefresh('config', configRefreshInFlightCountRef, () =>
+            refreshConfigRef.current({
+              refreshProviderSwitchStatus: false,
+              applyGuard: guard,
+              interactive: false,
+            }),
+          ),
+        ),
+      configPollIntervalMs(isDocumentVisible),
+    )
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [configModalOpen, isDevPreview, isDocumentVisible])
 
   useEffect(() => {
     if (isDevPreview) return
