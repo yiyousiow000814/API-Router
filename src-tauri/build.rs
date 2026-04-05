@@ -1,6 +1,10 @@
+#[path = "src/platform/git_layout.rs"]
+mod git_layout;
+
+use std::path::PathBuf;
 use std::process::Command;
 #[cfg(windows)]
-use std::{env, fs, path::PathBuf};
+use std::{env, fs};
 
 fn git_output(args: &[&str]) -> Option<String> {
     let output = Command::new("git").args(args).output().ok()?;
@@ -85,8 +89,13 @@ fn configure_windows_resource_toolchain() {
 }
 
 fn main() {
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/refs");
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    for path in git_layout::git_watch_paths(&repo_root) {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
 
     let git_sha = git_output(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=API_ROUTER_BUILD_GIT_SHA={git_sha}");
