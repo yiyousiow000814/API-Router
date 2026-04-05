@@ -1353,7 +1353,7 @@ export default function App() {
     })
   }
   const [lanRemoteUpdatePendingByNode, setLanRemoteUpdatePendingByNode] = useState<
-    Record<string, 'requesting'>
+    Record<string, { stage: 'requesting' | 'refreshing'; detail: string; startedAtUnixMs: number }>
   >({})
 
   useEffect(() => {
@@ -1375,7 +1375,14 @@ export default function App() {
 
   async function requestLanRemoteUpdateSameVersion(nodeId: string) {
     if (lanRemoteUpdatePendingByNode[nodeId]) return
-    setLanRemoteUpdatePendingByNode((prev) => ({ ...prev, [nodeId]: 'requesting' }))
+    setLanRemoteUpdatePendingByNode((prev) => ({
+      ...prev,
+      [nodeId]: {
+        stage: 'requesting',
+        detail: 'Sending update request to peer',
+        startedAtUnixMs: Date.now(),
+      },
+    }))
     try {
       if (isDevPreview) {
         flashToast(`Requested ${nodeId} to sync to this build [TEST]`)
@@ -1387,6 +1394,14 @@ export default function App() {
         return
       }
       await invoke('request_lan_remote_update_same_version', { nodeId })
+      setLanRemoteUpdatePendingByNode((prev) => ({
+        ...prev,
+        [nodeId]: {
+          stage: 'refreshing',
+          detail: 'Peer accepted request. Refreshing remote progress',
+          startedAtUnixMs: prev[nodeId]?.startedAtUnixMs ?? Date.now(),
+        },
+      }))
       flashToast('Peer version sync requested')
       await refreshStatus()
       await refreshConfig({ refreshProviderSwitchStatus: false, force: true })

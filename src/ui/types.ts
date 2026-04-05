@@ -126,6 +126,8 @@ export type Status = {
       remote_update_status?: {
         state: 'accepted' | 'running' | 'failed' | 'succeeded' | string
         target_ref: string
+        request_id?: string | null
+        reason_code?: string | null
         requester_node_id?: string | null
         requester_node_name?: string | null
         worker_script?: string | null
@@ -134,6 +136,14 @@ export type Status = {
         started_at_unix_ms?: number | null
         finished_at_unix_ms?: number | null
         updated_at_unix_ms?: number
+        timeline?: Array<{
+          unix_ms?: number
+          phase?: string | null
+          label?: string | null
+          detail?: string | null
+          source?: string | null
+          state?: string | null
+        }>
       } | null
       sync_contracts?: Record<string, number>
       provider_fingerprints: string[]
@@ -158,6 +168,8 @@ export type Status = {
       remote_update_status?: {
         state: 'accepted' | 'running' | 'failed' | 'succeeded' | string
         target_ref: string
+        request_id?: string | null
+        reason_code?: string | null
         requester_node_id?: string | null
         requester_node_name?: string | null
         worker_script?: string | null
@@ -166,6 +178,14 @@ export type Status = {
         started_at_unix_ms?: number | null
         finished_at_unix_ms?: number | null
         updated_at_unix_ms?: number
+        timeline?: Array<{
+          unix_ms?: number
+          phase?: string | null
+          label?: string | null
+          detail?: string | null
+          source?: string | null
+          state?: string | null
+        }>
       } | null
       sync_contracts?: Record<string, number>
       provider_fingerprints: string[]
@@ -229,6 +249,8 @@ export type LanRemoteUpdateDebugResponse = {
   remote_update_status?: {
     state: 'accepted' | 'running' | 'failed' | 'succeeded' | string
     target_ref: string
+    request_id?: string | null
+    reason_code?: string | null
     requester_node_id?: string | null
     requester_node_name?: string | null
     worker_script?: string | null
@@ -237,6 +259,14 @@ export type LanRemoteUpdateDebugResponse = {
     started_at_unix_ms?: number | null
     finished_at_unix_ms?: number | null
     updated_at_unix_ms?: number
+    timeline?: Array<{
+      unix_ms?: number
+      phase?: string | null
+      label?: string | null
+      detail?: string | null
+      source?: string | null
+      state?: string | null
+    }>
   } | null
   status_path?: string | null
   status_file_exists: boolean
@@ -326,6 +356,8 @@ export type Config = {
       remote_update_status?: {
         state: 'accepted' | 'running' | 'failed' | 'succeeded' | string
         target_ref: string
+        request_id?: string | null
+        reason_code?: string | null
         requester_node_id?: string | null
         requester_node_name?: string | null
         worker_script?: string | null
@@ -334,6 +366,14 @@ export type Config = {
         started_at_unix_ms?: number | null
         finished_at_unix_ms?: number | null
         updated_at_unix_ms?: number
+        timeline?: Array<{
+          unix_ms?: number
+          phase?: string | null
+          label?: string | null
+          detail?: string | null
+          source?: string | null
+          state?: string | null
+        }>
       } | null
       sync_blocked_domains?: string[]
       version_sync_required?: boolean

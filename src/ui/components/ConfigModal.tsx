@@ -22,7 +22,10 @@ type Props = {
   onApprovePair: (requestId: string) => Promise<string | null | void> | string | null | void
   onSubmitPairPin: (nodeId: string, requestId: string, pinCode: string) => Promise<void> | void
   onSyncPeerVersion: (nodeId: string) => Promise<void> | void
-  remoteUpdatePendingByNode: Record<string, 'requesting'>
+  remoteUpdatePendingByNode: Record<
+    string,
+    { stage: 'requesting' | 'refreshing'; detail: string; startedAtUnixMs: number }
+  >
   onOpenGroupManager: () => void
   onClose: () => void
   providerListRef: React.RefObject<HTMLDivElement | null>
@@ -96,11 +99,14 @@ export function syncPauseSummaryLabel(source: ConfigSource): string | null {
 
 function remoteUpdateStateLabel(source: ConfigSource): string | null {
   const state = source.remote_update_status?.state?.trim()
+  const reasonCode = source.remote_update_status?.reason_code?.trim()
   if (!state) return null
   if (state === 'accepted') return 'Queued'
   if (state === 'running') return 'Updating'
   if (state === 'failed') return 'Update failed'
   if (state === 'succeeded') return 'Updated'
+  if (state === 'superseded' && reasonCode === 'peer_build_changed_before_start') return 'Expired before start'
+  if (state === 'superseded' && reasonCode === 'peer_build_changed_after_start') return 'Build changed'
   if (state === 'superseded') return 'Replaced'
   return state
 }
@@ -156,10 +162,13 @@ function remoteUpdateDetailText(source: ConfigSource): string {
     return detail || `Remote update to ${formatReadableCommitRefs(status.target_ref)} completed.`
   }
   if (status.state === 'superseded') {
-    return (
-      detail ||
-      'Previous remote update was replaced by a newer installed build.'
-    )
+    if (status.reason_code === 'peer_build_changed_before_start') {
+      return detail || 'Queued remote update expired before the worker started.'
+    }
+    if (status.reason_code === 'peer_build_changed_after_start') {
+      return detail || 'Peer build changed while the remote update was running.'
+    }
+    return detail || 'Previous remote update was replaced by a newer installed build.'
   }
   return detail
 }
@@ -175,31 +184,53 @@ function remoteUpdateTimestampLabel(source: ConfigSource): string {
   return formatCommitDate(unixMs ?? null)
 }
 
+function remoteUpdateTimelineEntries(source: ConfigSource) {
+  return [...(source.remote_update_status?.timeline ?? [])]
+    .filter((entry) => (entry.label?.trim() || entry.detail?.trim() || entry.phase?.trim()))
+    .sort((a, b) => (a.unix_ms ?? 0) - (b.unix_ms ?? 0))
+}
+
 function remoteUpdateMenuDetailText(source: ConfigSource): string {
   const status = source.remote_update_status
   if (!status) return 'Sync to this build'
   const state = status.state?.trim()
+  const reasonCode = status.reason_code?.trim()
   if (state === 'accepted') return 'Queued remote update'
   if (state === 'running') return 'Remote update in progress'
   if (state === 'failed') return 'Last remote update failed'
   if (state === 'succeeded') return 'Peer matches this build'
+  if (state === 'superseded' && reasonCode === 'peer_build_changed_before_start') {
+    return 'Queued update expired before the worker started'
+  }
+  if (state === 'superseded' && reasonCode === 'peer_build_changed_after_start') {
+    return 'Peer changed build while the update was running'
+  }
   if (state === 'superseded') return 'Previous remote update was replaced'
   return 'Sync to this build'
 }
 
 export function remoteUpdateActionState(
   source: ConfigSource,
-  pendingStage: 'requesting' | undefined,
+  pendingStage:
+    | { stage: 'requesting' | 'refreshing'; detail: string; startedAtUnixMs: number }
+    | undefined,
 ): {
   actionLabel: string
   actionDetail: string | null
   spinning: boolean
 } {
   const remoteState = source.remote_update_status?.state?.trim()
-  if (pendingStage === 'requesting' && !remoteState) {
+  if (pendingStage?.stage === 'requesting') {
     return {
       actionLabel: 'Sending...',
-      actionDetail: 'Waiting for peer to accept',
+      actionDetail: pendingStage.detail || 'Waiting for peer to accept',
+      spinning: true,
+    }
+  }
+  if (pendingStage?.stage === 'refreshing' && !remoteState) {
+    return {
+      actionLabel: 'Queued',
+      actionDetail: pendingStage.detail || 'Peer accepted update request',
       spinning: true,
     }
   }
@@ -914,6 +945,7 @@ export function ConfigModal({
                     const remoteUpdateStatusLabel = remoteUpdateStateLabel(source)
                     const remoteUpdateDetail = remoteUpdateDetailText(source)
                     const remoteUpdateTime = remoteUpdateTimestampLabel(source)
+                    const remoteUpdateTimeline = remoteUpdateTimelineEntries(source)
                     const remoteUpdateDebug = remoteUpdateDebugByNode[source.node_id]
                     const remoteUpdateDebugLoading = Boolean(remoteUpdateDebugLoadingByNode[source.node_id])
                     const remoteUpdateDebugError = remoteUpdateDebugErrorByNode[source.node_id] ?? ''
@@ -988,6 +1020,33 @@ export function ConfigModal({
                                 ) : null}
                                 {remoteUpdateTime && remoteUpdateTime !== 'Unknown' ? (
                                   <div className="aoConfigDiagRemoteUpdateTime">{remoteUpdateTime}</div>
+                                ) : null}
+                                {source.remote_update_status?.request_id ? (
+                                  <div className="aoConfigDiagRemoteUpdateDetail">
+                                    Request: {source.remote_update_status.request_id}
+                                  </div>
+                                ) : null}
+                                {remoteUpdateTimeline.length > 0 ? (
+                                  <div
+                                    style={{
+                                      display: 'grid',
+                                      gap: 6,
+                                      marginTop: 8,
+                                      paddingTop: 8,
+                                      borderTop: '1px solid rgba(10, 16, 28, 0.08)',
+                                    }}
+                                  >
+                                    {remoteUpdateTimeline.map((entry, index) => (
+                                      <div key={`${entry.phase ?? 'phase'}-${entry.unix_ms ?? index}-${index}`}>
+                                        <div className="aoConfigDiagRemoteUpdateDetail">
+                                          {formatCommitDate(entry.unix_ms ?? null)} · {entry.label?.trim() || entry.phase?.trim() || 'Step'}
+                                        </div>
+                                        {entry.detail?.trim() ? (
+                                          <div className="aoConfigDiagWhyText">{formatReadableCommitRefs(entry.detail.trim())}</div>
+                                        ) : null}
+                                      </div>
+                                    ))}
+                                  </div>
                                 ) : null}
                               </div>
                             </div>

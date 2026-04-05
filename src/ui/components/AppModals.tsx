@@ -108,7 +108,10 @@ type Props = {
   approveLanPair: (requestId: string) => Promise<string | null>
   submitLanPairPin: (nodeId: string, requestId: string, pinCode: string) => Promise<void>
   requestLanRemoteUpdateSameVersion: (nodeId: string) => Promise<void>
-  lanRemoteUpdatePendingByNode: Record<string, 'requesting'>
+  lanRemoteUpdatePendingByNode: Record<
+    string,
+    { stage: 'requesting' | 'refreshing'; detail: string; startedAtUnixMs: number }
+  >
   openProviderGroupManager: (provider?: string) => void
   setConfigModalOpen: Dispatch<SetStateAction<boolean>>
   rawConfigModalOpen: boolean

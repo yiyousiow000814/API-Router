@@ -345,13 +345,19 @@ describe('ConfigModal', () => {
       same_version_update_blocked_reason: null,
     }
 
-    expect(remoteUpdateActionState(source, 'requesting')).toEqual({
+    const pendingState = {
+      stage: 'requesting' as const,
+      detail: 'Sending update request to peer',
+      startedAtUnixMs: 1775312828000,
+    }
+
+    expect(remoteUpdateActionState(source, pendingState)).toEqual({
       actionLabel: 'Sending...',
-      actionDetail: 'Waiting for peer to accept',
+      actionDetail: 'Sending update request to peer',
       spinning: true,
     })
     expect(
-      shouldShowRemoteUpdateMenuDetail(source, remoteUpdateActionState(source, 'requesting')),
+      shouldShowRemoteUpdateMenuDetail(source, remoteUpdateActionState(source, pendingState)),
     ).toBe(true)
   })
 
@@ -503,7 +509,7 @@ describe('ConfigModal', () => {
     ).toBe(true)
   })
 
-  it('shows replaced stage after a queued update was superseded by another installed build', () => {
+  it('shows expired-before-start stage after a queued update never launched', () => {
     const config = buildConfig()
     const source = {
       ...config.config_source!.sources[0],
@@ -520,15 +526,16 @@ describe('ConfigModal', () => {
       same_version_update_blocked_reason: null,
       remote_update_status: {
         state: 'superseded',
+        reason_code: 'peer_build_changed_before_start',
         target_ref: '9910964e24802d327b1500a69f2d4471fb7ac647',
-        detail: 'Queued remote update to 9910964e was replaced by current build ce542b7 after restart/manual update.',
+        detail: 'Queued remote update to 9910964e never started; peer is currently on build ce542b7.',
         finished_at_unix_ms: 1775312828000,
       },
     }
 
     expect(remoteUpdateActionState(source, undefined)).toEqual({
       actionLabel: 'Update peer',
-      actionDetail: 'Previous remote update was replaced',
+      actionDetail: 'Queued update expired before the worker started',
       spinning: false,
     })
     expect(
