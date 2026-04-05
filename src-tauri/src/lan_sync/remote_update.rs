@@ -491,6 +491,11 @@ fn current_remote_update_status_block_reason() -> Option<String> {
     })
 }
 
+fn remote_update_request_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
 pub(crate) fn compute_local_remote_update_readiness() -> LanRemoteUpdateReadinessSnapshot {
     let checked_at_unix_ms = unix_ms();
     if let Some(reason) = current_remote_update_status_block_reason() {
@@ -764,6 +769,9 @@ pub(crate) async fn lan_sync_remote_update_http(
         )
             .into_response();
     }
+    let _request_lock = remote_update_request_lock()
+        .lock()
+        .expect("remote update request mutex poisoned");
     if let Some(reason) = current_remote_update_status_block_reason() {
         return (
             StatusCode::CONFLICT,

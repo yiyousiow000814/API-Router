@@ -737,7 +737,9 @@ impl Store {
                     row.get::<_, String>(2)?,
                 ))
             })?;
-            for (provider, day_started_at_i64, row_json) in rows.flatten() {
+            let spend_rows: Vec<_> = rows.flatten().collect();
+            drop(stmt);
+            for (provider, day_started_at_i64, row_json) in spend_rows {
                 let Ok(mut row) = serde_json::from_str::<Value>(&row_json) else {
                     continue;
                 };
@@ -797,7 +799,9 @@ impl Store {
                     row.get::<_, String>(2)?,
                 ))
             })?;
-            for (provider, day_key, row_json) in rows.flatten() {
+            let manual_rows: Vec<_> = rows.flatten().collect();
+            drop(stmt);
+            for (provider, day_key, row_json) in manual_rows {
                 let Ok(mut row) = serde_json::from_str::<Value>(&row_json) else {
                     continue;
                 };
@@ -1403,6 +1407,83 @@ mod tests {
             .migrate_legacy_remote_usage_sources_if_needed("node-local")
             .expect("idempotent migration");
         assert_eq!(second, (0, 0));
+    }
+
+    #[test]
+    fn migrate_legacy_remote_usage_sources_keeps_multiple_remote_rows_from_same_provider() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+
+        store.put_spend_day(
+            "provider_1",
+            1_700_000_000_001,
+            &serde_json::json!({
+                "provider": "provider_1",
+                "started_at_unix_ms": 1_700_000_000_001u64,
+                "tracked_spend_usd": 4.0,
+                "producer_node_id": "node-remote-a",
+                "producer_node_name": "Remote Node A",
+                "applied_from_node_id": "node-remote-a",
+                "applied_from_node_name": "Remote Node A"
+            }),
+        );
+        store.put_spend_day(
+            "provider_1",
+            1_700_000_000_002,
+            &serde_json::json!({
+                "provider": "provider_1",
+                "started_at_unix_ms": 1_700_000_000_002u64,
+                "tracked_spend_usd": 6.0,
+                "producer_node_id": "node-remote-b",
+                "producer_node_name": "Remote Node B",
+                "applied_from_node_id": "node-remote-b",
+                "applied_from_node_name": "Remote Node B"
+            }),
+        );
+        store.put_spend_manual_day(
+            "provider_1",
+            "2026-04-03",
+            &serde_json::json!({
+                "provider": "provider_1",
+                "day_key": "2026-04-03",
+                "manual_total_usd": 2.5,
+                "producer_node_id": "node-remote-a",
+                "producer_node_name": "Remote Node A",
+                "applied_from_node_id": "node-remote-a",
+                "applied_from_node_name": "Remote Node A"
+            }),
+        );
+        store.put_spend_manual_day(
+            "provider_1",
+            "2026-04-04",
+            &serde_json::json!({
+                "provider": "provider_1",
+                "day_key": "2026-04-04",
+                "manual_total_usd": 3.5,
+                "producer_node_id": "node-remote-b",
+                "producer_node_name": "Remote Node B",
+                "applied_from_node_id": "node-remote-b",
+                "applied_from_node_name": "Remote Node B"
+            }),
+        );
+
+        let migrated = store
+            .migrate_legacy_remote_usage_sources_if_needed("node-local")
+            .expect("migrate legacy remote usage");
+
+        assert_eq!(migrated, (2, 2));
+        assert!(store.list_local_spend_days("provider_1").is_empty());
+        assert!(store.list_local_spend_manual_days("provider_1").is_empty());
+        assert_eq!(store.list_remote_spend_days("provider_1").len(), 2);
+        assert_eq!(store.list_spend_manual_days("provider_1").len(), 2);
+        assert_eq!(
+            store
+                .list_remote_spend_days("provider_1")
+                .iter()
+                .filter_map(|row| row.get("producer_node_id").and_then(Value::as_str))
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from(["node-remote-a", "node-remote-b"])
+        );
     }
 
     #[test]

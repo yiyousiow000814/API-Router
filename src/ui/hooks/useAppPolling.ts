@@ -192,6 +192,30 @@ export function useAppPolling({
     }
   }
 
+  const scheduleStatusRefresh = (
+    source: 'status_poll_bootstrap' | 'status_poll_interval',
+    interactive: boolean,
+  ) => {
+    if (statusRefreshInFlightCountRef.current > 0) {
+      return
+    }
+    void runPrimaryRefreshRef.current('status:poll', 'any', (guard) =>
+      runTrackedRefresh('status', statusRefreshInFlightCountRef, () =>
+        refreshStatusRef.current({
+          source,
+          applyGuard: guard,
+          interactive,
+          detailLevel: statusPollDetailLevel(activePageRef.current),
+          refreshSwapStatus: shouldPollSwapStatusOnStatusRefresh(
+            activePageRef.current,
+            codexSwapModalOpen,
+          ),
+          swapStatusSource: `${source}:swap`,
+        }),
+      ),
+    )
+  }
+
   useEffect(() => {
     if (isDevPreview) return
     const timer = window.setInterval(() => {
@@ -225,39 +249,10 @@ export function useAppPolling({
     statusBootstrappedRef.current = true
     previousVisibleRef.current = isDocumentVisible
     if (shouldRunImmediateStatusRefresh) {
-      void runPrimaryRefreshRef.current('status:poll', 'any', (guard) =>
-        runTrackedRefresh('status', statusRefreshInFlightCountRef, () =>
-          refreshStatusRef.current({
-            source: 'status_poll_bootstrap',
-            applyGuard: guard,
-            interactive: false,
-            detailLevel: statusPollDetailLevel(activePageRef.current),
-            refreshSwapStatus: shouldPollSwapStatusOnStatusRefresh(
-              activePageRef.current,
-              codexSwapModalOpen,
-            ),
-            swapStatusSource: 'status_poll_bootstrap:swap',
-          }),
-        ),
-      )
+      scheduleStatusRefresh('status_poll_bootstrap', false)
     }
     const t = setInterval(
-      () =>
-        void runPrimaryRefreshRef.current('status:poll', 'any', (guard) =>
-          runTrackedRefresh('status', statusRefreshInFlightCountRef, () =>
-            refreshStatusRef.current({
-              source: 'status_poll_interval',
-              applyGuard: guard,
-              interactive: false,
-              detailLevel: statusPollDetailLevel(activePageRef.current),
-              refreshSwapStatus: shouldPollSwapStatusOnStatusRefresh(
-                activePageRef.current,
-                codexSwapModalOpen,
-              ),
-              swapStatusSource: 'status_poll_interval:swap',
-            }),
-          ),
-        ),
+      () => scheduleStatusRefresh('status_poll_interval', false),
       statusPollIntervalMs(activePage, isDocumentVisible),
     )
     const codexRefresh = window.setInterval(() => {
