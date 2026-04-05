@@ -133,7 +133,9 @@ function remoteDebugStatusRecordText(remoteUpdateDebug: LanRemoteUpdateDebugResp
 }
 
 function remoteDebugLogRecordText(remoteUpdateDebug: LanRemoteUpdateDebugResponse): string {
-  return remoteUpdateDebug.log_file_exists ? 'Remote update log: present' : 'Remote update log: missing'
+  return remoteUpdateDebug.log_file_exists
+    ? 'Remote update log: available'
+    : 'No remote update log available from peer'
 }
 
 function remoteUpdateDetailText(source: ConfigSource): string {
@@ -688,15 +690,6 @@ export function ConfigModal({
                             </span>
                             <span className="aoConfigSourceMenuText">
                               <span className="aoConfigSourceMenuLabel">{label}</span>
-                              {source.kind === 'peer' ? (
-                                <span className="aoConfigSourceMenuSub">
-                                  {versionSyncRequired
-                                    ? versionSyncActionState?.actionDetail || 'Sync to this build'
-                                    : source.using_count > 0
-                                    ? `${source.using_count} device${source.using_count === 1 ? '' : 's'}`
-                                    : 'LAN peer'}
-                                </span>
-                              ) : null}
                             </span>
                             <span className="aoConfigSourceMenuMeta">
                               {versionSyncPending ? (
