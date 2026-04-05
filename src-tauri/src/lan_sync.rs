@@ -4659,14 +4659,23 @@ mod tests {
         LOCK.get_or_init(|| parking_lot::Mutex::new(()))
     }
 
-    struct RemoteUpdateUserDataDirGuard {
+    struct RemoteUpdateEnvGuard {
         _lock: parking_lot::MutexGuard<'static, ()>,
-        previous: Option<std::ffi::OsString>,
+        previous_user_data_dir: Option<std::ffi::OsString>,
+        previous_repo_root: Option<std::ffi::OsString>,
     }
 
-    impl Drop for RemoteUpdateUserDataDirGuard {
+    impl Drop for RemoteUpdateEnvGuard {
         fn drop(&mut self) {
-            match self.previous.as_ref() {
+            match self.previous_repo_root.as_ref() {
+                Some(value) => unsafe {
+                    std::env::set_var("API_ROUTER_REPO_ROOT", value);
+                },
+                None => unsafe {
+                    std::env::remove_var("API_ROUTER_REPO_ROOT");
+                },
+            }
+            match self.previous_user_data_dir.as_ref() {
                 Some(value) => unsafe {
                     std::env::set_var("API_ROUTER_USER_DATA_DIR", value);
                 },
@@ -4677,49 +4686,27 @@ mod tests {
         }
     }
 
-    fn set_remote_update_user_data_dir_for_test(
-        user_data_dir: &std::path::Path,
-    ) -> RemoteUpdateUserDataDirGuard {
+    fn set_remote_update_env_for_test(
+        user_data_dir: Option<&std::path::Path>,
+        repo_root: Option<&std::path::Path>,
+    ) -> RemoteUpdateEnvGuard {
         let lock = remote_update_env_lock().lock();
-        let previous = std::env::var_os("API_ROUTER_USER_DATA_DIR");
+        let previous_user_data_dir = std::env::var_os("API_ROUTER_USER_DATA_DIR");
+        let previous_repo_root = std::env::var_os("API_ROUTER_REPO_ROOT");
         unsafe {
-            std::env::set_var("API_ROUTER_USER_DATA_DIR", user_data_dir);
-        }
-        RemoteUpdateUserDataDirGuard {
-            _lock: lock,
-            previous,
-        }
-    }
-
-    struct RemoteUpdateRepoRootGuard {
-        _lock: parking_lot::MutexGuard<'static, ()>,
-        previous: Option<std::ffi::OsString>,
-    }
-
-    impl Drop for RemoteUpdateRepoRootGuard {
-        fn drop(&mut self) {
-            match self.previous.as_ref() {
-                Some(value) => unsafe {
-                    std::env::set_var("API_ROUTER_REPO_ROOT", value);
-                },
-                None => unsafe {
-                    std::env::remove_var("API_ROUTER_REPO_ROOT");
-                },
+            match user_data_dir {
+                Some(path) => std::env::set_var("API_ROUTER_USER_DATA_DIR", path),
+                None => std::env::remove_var("API_ROUTER_USER_DATA_DIR"),
+            }
+            match repo_root {
+                Some(path) => std::env::set_var("API_ROUTER_REPO_ROOT", path),
+                None => std::env::remove_var("API_ROUTER_REPO_ROOT"),
             }
         }
-    }
-
-    fn set_remote_update_repo_root_for_test(
-        repo_root: &std::path::Path,
-    ) -> RemoteUpdateRepoRootGuard {
-        let lock = remote_update_env_lock().lock();
-        let previous = std::env::var_os("API_ROUTER_REPO_ROOT");
-        unsafe {
-            std::env::set_var("API_ROUTER_REPO_ROOT", repo_root);
-        }
-        RemoteUpdateRepoRootGuard {
+        RemoteUpdateEnvGuard {
             _lock: lock,
-            previous,
+            previous_user_data_dir,
+            previous_repo_root,
         }
     }
 
@@ -4806,7 +4793,6 @@ mod tests {
     fn compute_local_remote_update_readiness_ignores_stale_remote_update_after_build_changes() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let user_data_dir = tmp.path().join("user-data");
-        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
         let repo_root = tmp.path().join("repo");
         std::fs::create_dir_all(&repo_root).expect("create repo root");
         std::fs::write(
@@ -4820,7 +4806,7 @@ mod tests {
             .output()
             .expect("git init");
         std::fs::write(repo_root.join("dirty.txt"), "dirty\n").expect("write dirty file");
-        let _repo_guard = set_remote_update_repo_root_for_test(&repo_root);
+        let _guard = set_remote_update_env_for_test(Some(&user_data_dir), Some(&repo_root));
         super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
             state: "running".to_string(),
             target_ref: "abc123".to_string(),
@@ -4874,7 +4860,7 @@ mod tests {
             .parent()
             .expect("config parent")
             .to_path_buf();
-        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
         super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
             state: "accepted".to_string(),
             target_ref: "abc123".to_string(),
@@ -4927,7 +4913,7 @@ mod tests {
         std::fs::create_dir_all(&user_data_dir).expect("create user-data dir");
         let secrets =
             crate::orchestrator::secrets::SecretStore::new(user_data_dir.join("secrets.json"));
-        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
         let status = LanRemoteUpdateStatusSnapshot {
             state: "failed".to_string(),
             target_ref: "abc123".to_string(),
@@ -4968,7 +4954,7 @@ mod tests {
             .parent()
             .expect("config parent")
             .to_path_buf();
-        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
         let status = LanRemoteUpdateStatusSnapshot {
             state: "running".to_string(),
             target_ref: "abc123".to_string(),
@@ -5046,7 +5032,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let user_data_dir = tmp.path().join("user-data");
         std::fs::create_dir_all(&user_data_dir).expect("create user-data dir");
-        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
         let target_ref = super::normalized_local_build_target_ref().expect("local target ref");
         super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
             state: "accepted".to_string(),
@@ -5086,7 +5072,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let user_data_dir = tmp.path().join("user-data");
         std::fs::create_dir_all(&user_data_dir).expect("create user-data dir");
-        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
         let current_target_ref =
             super::normalized_local_build_target_ref().expect("local target ref");
         super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
@@ -5128,7 +5114,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let user_data_dir = tmp.path().join("user-data");
         std::fs::create_dir_all(&user_data_dir).expect("create user-data dir");
-        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
         let fresh_unix_ms = crate::orchestrator::store::unix_ms();
         super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
             state: "accepted".to_string(),

@@ -11,6 +11,10 @@ import {
   shouldShowRemoteUpdateMenuDetail,
   syncPauseSummaryLabel,
 } from './ConfigModal'
+import {
+  isRemoteUpdateStatusCurrentForPending,
+  remoteUpdateStatusObservedAtUnixMs,
+} from '../utils/remoteUpdateStatus'
 import type { Config } from '../types'
 
 function buildConfig(): Config {
@@ -392,6 +396,77 @@ describe('ConfigModal', () => {
     })
     expect(
       shouldShowRemoteUpdateMenuDetail(source, remoteUpdateActionState(source, undefined)),
+    ).toBe(true)
+  })
+
+  it('keeps local queued animation when only an older remote update status is available', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'superseded',
+        reason_code: 'peer_build_changed_before_start',
+        target_ref: 'older-target',
+        detail: 'Queued remote update to older-target never started.',
+        finished_at_unix_ms: 1775312828000,
+      },
+    }
+    const pendingState = {
+      stage: 'refreshing' as const,
+      detail: 'Peer accepted request. Refreshing remote progress',
+      startedAtUnixMs: 1775312830000,
+    }
+
+    expect(isRemoteUpdateStatusCurrentForPending(source, pendingState)).toBe(false)
+    expect(remoteUpdateActionState(source, pendingState)).toEqual({
+      actionLabel: 'Queued',
+      actionDetail: 'Peer accepted request. Refreshing remote progress',
+      spinning: true,
+    })
+  })
+
+  it('uses the newest remote update timestamp when comparing pending progress freshness', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'running',
+        target_ref: 'abc123',
+        accepted_at_unix_ms: 1775312827000,
+        started_at_unix_ms: 1775312829000,
+        updated_at_unix_ms: 1775312831000,
+      },
+    }
+
+    expect(remoteUpdateStatusObservedAtUnixMs(source)).toBe(1775312831000)
+    expect(
+      isRemoteUpdateStatusCurrentForPending(source, {
+        stage: 'refreshing',
+        detail: 'Peer accepted request. Refreshing remote progress',
+        startedAtUnixMs: 1775312830000,
+      }),
     ).toBe(true)
   })
 

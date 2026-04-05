@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useRef, useState } from 'react'
 import { ModalBackdrop } from './ModalBackdrop'
 import type { Config, LanRemoteUpdateDebugResponse } from '../types'
+import { isRemoteUpdateStatusCurrentForPending, type RemoteUpdatePendingStage } from '../utils/remoteUpdateStatus'
 
 type Props = {
   open: boolean
@@ -22,10 +23,7 @@ type Props = {
   onApprovePair: (requestId: string) => Promise<string | null | void> | string | null | void
   onSubmitPairPin: (nodeId: string, requestId: string, pinCode: string) => Promise<void> | void
   onSyncPeerVersion: (nodeId: string) => Promise<void> | void
-  remoteUpdatePendingByNode: Record<
-    string,
-    { stage: 'requesting' | 'refreshing'; detail: string; startedAtUnixMs: number }
-  >
+  remoteUpdatePendingByNode: Record<string, RemoteUpdatePendingStage>
   onOpenGroupManager: () => void
   onClose: () => void
   providerListRef: React.RefObject<HTMLDivElement | null>
@@ -220,15 +218,14 @@ function remoteUpdateMenuDetailText(source: ConfigSource): string {
 
 export function remoteUpdateActionState(
   source: ConfigSource,
-  pendingStage:
-    | { stage: 'requesting' | 'refreshing'; detail: string; startedAtUnixMs: number }
-    | undefined,
+  pendingStage: RemoteUpdatePendingStage | undefined,
 ): {
   actionLabel: string
   actionDetail: string | null
   spinning: boolean
 } {
   const remoteState = source.remote_update_status?.state?.trim()
+  const remoteStatusCurrentForPending = isRemoteUpdateStatusCurrentForPending(source, pendingStage)
   if (pendingStage?.stage === 'requesting') {
     return {
       actionLabel: 'Sending...',
@@ -236,7 +233,7 @@ export function remoteUpdateActionState(
       spinning: true,
     }
   }
-  if (pendingStage?.stage === 'refreshing' && !remoteState) {
+  if (pendingStage?.stage === 'refreshing' && (!remoteState || !remoteStatusCurrentForPending)) {
     return {
       actionLabel: 'Queued',
       actionDetail: pendingStage.detail || 'Peer accepted update request',
@@ -874,8 +871,7 @@ export function ConfigModal({
       {diagnosticsOpen ? (
         <ModalBackdrop className="aoModalBackdrop aoModalBackdropTop" onClose={() => setDiagnosticsOpen(false)}>
           <div
-            className="aoModal"
-            style={{ width: 'min(860px, calc(100vw - 40px))' }}
+            className="aoModal aoConfigDiagnosticsModal"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="aoModalHeader">

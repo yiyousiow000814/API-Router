@@ -66,6 +66,7 @@ import {
   resolveCliHomes,
 } from './utils/switchboard'
 import { usageProviderRowKey } from './utils/usageStatisticsView'
+import { isRemoteUpdateStatusCurrentForPending } from './utils/remoteUpdateStatus'
 import {
   USAGE_REQUESTS_CANONICAL_QUERY_KEY,
   primeUsageRequestsPrefetchCache,
@@ -1300,7 +1301,11 @@ export default function App() {
       for (const nodeId of Object.keys(prev)) {
         const source = sources.find((item) => item.node_id === nodeId && item.kind === 'peer')
         if (!source) continue
-        if (source.remote_update_status?.state?.trim() || !source.version_sync_required) {
+        const pendingStage = prev[nodeId]
+        const hasCurrentRemoteUpdateStatus =
+          Boolean(source.remote_update_status?.state?.trim()) &&
+          isRemoteUpdateStatusCurrentForPending(source, pendingStage)
+        if (hasCurrentRemoteUpdateStatus || !source.version_sync_required) {
           delete next[nodeId]
           changed = true
         }
