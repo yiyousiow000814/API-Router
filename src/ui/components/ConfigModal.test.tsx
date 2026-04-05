@@ -7,6 +7,7 @@ import {
   formatCommitDate,
   keepSourceMenuOpenAfterAction,
   remoteUpdateActionState,
+  shouldShowDiagnosticsRemoteUpdateStatus,
   shouldShowRemoteUpdateMenuDetail,
   syncPauseSummaryLabel,
 } from './ConfigModal'
@@ -571,6 +572,62 @@ describe('ConfigModal', () => {
     expect(
       shouldShowRemoteUpdateMenuDetail(source, remoteUpdateActionState(source, undefined)),
     ).toBe(false)
+  })
+
+  it('hides stale superseded diagnostics once the peer no longer needs an update', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: false,
+      version_sync_reason: null,
+      build_matches_local: true,
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'superseded',
+        reason_code: 'peer_build_changed_after_start',
+        target_ref: '9910964e24802d327b1500a69f2d4471fb7ac647',
+        detail: 'Queued remote update to 9910964e stopped after the peer changed to build ce542b7.',
+        finished_at_unix_ms: 1775312828000,
+      },
+    }
+
+    expect(shouldShowDiagnosticsRemoteUpdateStatus(source)).toBe(false)
+  })
+
+  it('keeps superseded diagnostics visible while a peer still needs an update', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      build_matches_local: false,
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'superseded',
+        reason_code: 'peer_build_changed_after_start',
+        target_ref: '9910964e24802d327b1500a69f2d4471fb7ac647',
+        detail: 'Queued remote update to 9910964e stopped after the peer changed to build ce542b7.',
+        finished_at_unix_ms: 1775312828000,
+      },
+    }
+
+    expect(shouldShowDiagnosticsRemoteUpdateStatus(source)).toBe(true)
   })
 
   it('keeps idle update rows visually quiet', () => {

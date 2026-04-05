@@ -111,6 +111,13 @@ function remoteUpdateStateLabel(source: ConfigSource): string | null {
   return state
 }
 
+export function shouldShowDiagnosticsRemoteUpdateStatus(source: ConfigSource): boolean {
+  const state = source.remote_update_status?.state?.trim()
+  if (!state) return false
+  if (state !== 'superseded') return true
+  return Boolean(source.version_sync_required)
+}
+
 function remoteUpdateProgressDetail(source: ConfigSource): string {
   return formatReadableCommitRefs(source.remote_update_status?.detail?.trim() || '')
 }
@@ -135,7 +142,9 @@ function hasRemoteDebugDetails(
 }
 
 function remoteDebugStatusRecordText(remoteUpdateDebug: LanRemoteUpdateDebugResponse): string {
-  return remoteUpdateDebug.status_file_exists ? 'Remote status record: present' : 'Remote status record: missing'
+  return remoteUpdateDebug.status_file_exists
+    ? 'Remote status record available from peer'
+    : 'Peer has not written a remote update status record yet'
 }
 
 function remoteDebugLogRecordText(remoteUpdateDebug: LanRemoteUpdateDebugResponse): string {
@@ -886,7 +895,10 @@ export function ConfigModal({
               ) : (
                 <>
                   {(() => {
-                    const localRemoteUpdateStatusLabel = localSource ? remoteUpdateStateLabel(localSource) : null
+                    const localRemoteUpdateStatusLabel =
+                      localSource && shouldShowDiagnosticsRemoteUpdateStatus(localSource)
+                        ? remoteUpdateStateLabel(localSource)
+                        : null
                     const localRemoteUpdateDetail = localSource ? remoteUpdateDetailText(localSource) : ''
                     const localRemoteUpdateTime = localSource ? remoteUpdateTimestampLabel(localSource) : ''
                     return (
@@ -942,7 +954,9 @@ export function ConfigModal({
                     const peerCommitLabel = formatCommitDate(
                       source.build_identity?.build_git_commit_unix_ms ?? null,
                     )
-                    const remoteUpdateStatusLabel = remoteUpdateStateLabel(source)
+                    const remoteUpdateStatusLabel = shouldShowDiagnosticsRemoteUpdateStatus(source)
+                      ? remoteUpdateStateLabel(source)
+                      : null
                     const remoteUpdateDetail = remoteUpdateDetailText(source)
                     const remoteUpdateTime = remoteUpdateTimestampLabel(source)
                     const remoteUpdateTimeline = remoteUpdateTimelineEntries(source)
