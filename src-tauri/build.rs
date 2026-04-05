@@ -1,5 +1,7 @@
 #[path = "build_support/git_exec.rs"]
 mod git_exec;
+#[path = "src/platform/git_layout.rs"]
+mod git_layout;
 
 use std::path::{Path, PathBuf};
 use std::{env, fs};
@@ -100,13 +102,9 @@ fn configure_windows_resource_toolchain() {
 
 fn main() {
     let repo_root = repo_root();
-    let git_dir = repo_root.join(".git");
-    println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
-    println!("cargo:rerun-if-changed={}", git_dir.join("refs").display());
-    println!(
-        "cargo:rerun-if-changed={}",
-        git_dir.join("packed-refs").display()
-    );
+    for path in git_layout::git_watch_paths(&repo_root) {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
 
     let git_sha =
         git_output(&repo_root, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());

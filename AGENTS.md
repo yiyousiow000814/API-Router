@@ -2,7 +2,7 @@
 
 ## Agent Defaults (Repository-Wide)
 - **Document language**: Write instructions in English. Examples may include other languages when clarity improves.
-- **Replies**: Default to Simplified Chinese. If a request is prefixed with `[EN]`, respond in English.
+- **Replies**: Match the primary language the user is using in the current conversation. If the conversation is mixed-language, follow the language used for the actionable part; if still unclear, mirror the user's current conversational language.
 - **Terminology**: Do not translate proper nouns such as `Tauri`, `Rust`, `Codex`, `OpenAI`, or provider names.
 - **Date/Time format**: Always use day-month-year ordering; never use month-day-year in outputs or docs.
 - **Agent capacity fallback**: If spawning a new agent fails because capacity is full, first clean up agents that are not actively in progress/in use, then retry spawning.
@@ -10,8 +10,9 @@
 ## Git / GitHub Workflow
 - **Branch-first**: Never commit directly to `main`. Use branches such as `feat/*`, `fix/*`, `docs/*`, `chore/*`.
 - **PR-first**: Ship changes through a pull request (default to draft).
+- **User-specified PR number rule (required)**: If the user references a specific PR number (for example "push to PR 165" or "open PR 165"), first verify whether that PR already exists and report the result before taking action. If that PR number is already taken, do not silently open a different PR number. Ask whether to update the existing PR, close/reuse another PR, or proceed with a new PR.
 - **No PR comments** unless explicitly requested.
-- **Titles**: PR and issue titles stay in English. Descriptions and regular comments default to Simplified Chinese (unless `[EN]`).
+- **Titles**: PR and issue titles stay in English. PR descriptions and regular comments should match the primary language of the surrounding conversation or thread.
 - **PR title prefix**: PR titles must start with one of `feat:`, `fix:`, `docs:`, `chore:`.
 - **PR title length**: Keep PR titles at 8 words or fewer. Avoid symbols like `+` in titles.
 - **PR body format**: PR bodies must include `## What`, `## Why`, `## Changes`, `## Verify`. If the PR is long, add `## TL;DR` at the very top.
