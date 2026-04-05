@@ -108,6 +108,7 @@ type Props = {
   approveLanPair: (requestId: string) => Promise<string | null>
   submitLanPairPin: (nodeId: string, requestId: string, pinCode: string) => Promise<void>
   requestLanRemoteUpdateSameVersion: (nodeId: string) => Promise<void>
+  lanRemoteUpdatePendingByNode: Record<string, 'requesting'>
   openProviderGroupManager: (provider?: string) => void
   setConfigModalOpen: Dispatch<SetStateAction<boolean>>
   rawConfigModalOpen: boolean
@@ -294,6 +295,7 @@ export function AppModals(props: Props) {
     approveLanPair,
     submitLanPairPin,
     requestLanRemoteUpdateSameVersion,
+    lanRemoteUpdatePendingByNode,
     openProviderGroupManager,
     setConfigModalOpen,
     rawConfigModalOpen,
@@ -590,6 +592,7 @@ requires_openai_auth = true`}
         onApprovePair={approveLanPair}
         onSubmitPairPin={submitLanPairPin}
         onSyncPeerVersion={(nodeId) => void requestLanRemoteUpdateSameVersion(nodeId)}
+        remoteUpdatePendingByNode={lanRemoteUpdatePendingByNode}
         onOpenGroupManager={() => openProviderGroupManager()}
         onClose={() => setConfigModalOpen(false)}
         providerListRef={providerListRef}

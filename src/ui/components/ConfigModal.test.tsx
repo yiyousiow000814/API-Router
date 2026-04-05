@@ -1,6 +1,13 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { ConfigModal, diagnosticsWhyText, formatBuildLabel, formatCommitDate } from './ConfigModal'
+import {
+  ConfigModal,
+  diagnosticsWhyText,
+  formatBuildLabel,
+  formatCommitDate,
+  remoteUpdateActionState,
+  syncPauseSummaryLabel,
+} from './ConfigModal'
 import type { Config } from '../types'
 
 function buildConfig(): Config {
@@ -66,6 +73,7 @@ describe('ConfigModal', () => {
         onApprovePair={() => undefined}
         onSubmitPairPin={() => undefined}
         onSyncPeerVersion={() => undefined}
+        remoteUpdatePendingByNode={{}}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}
         providerListRef={{ current: null }}
@@ -103,6 +111,7 @@ describe('ConfigModal', () => {
         onApprovePair={() => undefined}
         onSubmitPairPin={() => undefined}
         onSyncPeerVersion={() => undefined}
+        remoteUpdatePendingByNode={{}}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}
         providerListRef={{ current: null }}
@@ -173,6 +182,7 @@ describe('ConfigModal', () => {
         onApprovePair={() => undefined}
         onSubmitPairPin={() => undefined}
         onSyncPeerVersion={() => undefined}
+        remoteUpdatePendingByNode={{}}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}
         providerListRef={{ current: null }}
@@ -243,6 +253,7 @@ describe('ConfigModal', () => {
         onApprovePair={() => undefined}
         onSubmitPairPin={() => undefined}
         onSyncPeerVersion={() => undefined}
+        remoteUpdatePendingByNode={{}}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}
         providerListRef={{ current: null }}
@@ -286,6 +297,169 @@ describe('ConfigModal', () => {
     expect(whyText).toBe(
       "This machine's git worktree is dirty. Commit or stash local changes there before remote update can run.",
     )
+  })
+
+  it('shows sending stage while peer remote update request is still local pending', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+    }
+
+    expect(remoteUpdateActionState(source, 'requesting')).toEqual({
+      actionLabel: 'Sending...',
+      actionDetail: 'Waiting for peer to accept',
+      spinning: true,
+    })
+  })
+
+  it('shows queued stage while peer has accepted the remote update request', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'accepted',
+        target_ref: 'abc123',
+        detail: 'Queued remote self-update worker',
+        accepted_at_unix_ms: 1775312828000,
+      },
+    }
+
+    expect(remoteUpdateActionState(source, undefined)).toEqual({
+      actionLabel: 'Queued',
+      actionDetail: 'Queued remote self-update worker',
+      spinning: true,
+    })
+  })
+
+  it('shows concrete running step details while peer update is executing', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'running',
+        target_ref: 'abc123',
+        detail: 'Building checked EXE: Running npm run build:root-exe:checked',
+        started_at_unix_ms: 1775312828000,
+      },
+    }
+
+    expect(remoteUpdateActionState(source, undefined)).toEqual({
+      actionLabel: 'Updating',
+      actionDetail: 'Building checked EXE: Running npm run build:root-exe:checked',
+      spinning: true,
+    })
+  })
+
+  it('shows concrete failure step details after a remote update error', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'failed',
+        target_ref: 'abc123',
+        detail: 'Fetching from origin: git fetch failed',
+        finished_at_unix_ms: 1775312828000,
+      },
+    }
+
+    expect(remoteUpdateActionState(source, undefined)).toEqual({
+      actionLabel: 'Retry update',
+      actionDetail: 'Fetching from origin: git fetch failed',
+      spinning: false,
+    })
+  })
+
+  it('only shows a paused summary badge when more than one sync domain is paused', () => {
+    const config = buildConfig()
+    const baseSource = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: false,
+      version_sync_reason: null,
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+    }
+
+    expect(syncPauseSummaryLabel({
+      ...baseSource,
+      sync_blocked_domains: ['usage_history'],
+    })).toBeNull()
+    expect(syncPauseSummaryLabel({
+      ...baseSource,
+      sync_blocked_domains: ['usage_history', 'provider_definitions'],
+    })).toBe('2 domains paused')
+  })
+
+  it('keeps single paused domain visible instead of collapsing it away', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: false,
+      version_sync_reason: null,
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      sync_blocked_domains: ['usage_history'],
+    }
+
+    expect(syncPauseSummaryLabel(source)).toBeNull()
+    expect(source.sync_blocked_domains?.map((domain) => domain)).toEqual(['usage_history'])
   })
 
   it('formats diagnostics build compare values', () => {

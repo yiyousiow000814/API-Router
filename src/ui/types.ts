@@ -123,6 +123,18 @@ export type Status = {
         update_to_local_build_allowed: boolean
         blocked_reason?: string | null
       }
+      remote_update_status?: {
+        state: 'accepted' | 'running' | 'failed' | 'succeeded' | string
+        target_ref: string
+        requester_node_id?: string | null
+        requester_node_name?: string | null
+        worker_script?: string | null
+        detail?: string | null
+        accepted_at_unix_ms?: number
+        started_at_unix_ms?: number | null
+        finished_at_unix_ms?: number | null
+        updated_at_unix_ms?: number
+      } | null
       sync_contracts?: Record<string, number>
       provider_fingerprints: string[]
     }
@@ -142,6 +154,18 @@ export type Status = {
         ready: boolean
         blocked_reason?: string | null
         checked_at_unix_ms?: number
+      } | null
+      remote_update_status?: {
+        state: 'accepted' | 'running' | 'failed' | 'succeeded' | string
+        target_ref: string
+        requester_node_id?: string | null
+        requester_node_name?: string | null
+        worker_script?: string | null
+        detail?: string | null
+        accepted_at_unix_ms?: number
+        started_at_unix_ms?: number | null
+        finished_at_unix_ms?: number | null
+        updated_at_unix_ms?: number
       } | null
       sync_contracts?: Record<string, number>
       provider_fingerprints: string[]
@@ -258,6 +282,18 @@ export type Config = {
         build_git_commit_unix_ms?: number | null
       } | null
       build_matches_local?: boolean
+      remote_update_status?: {
+        state: 'accepted' | 'running' | 'failed' | 'succeeded' | string
+        target_ref: string
+        requester_node_id?: string | null
+        requester_node_name?: string | null
+        worker_script?: string | null
+        detail?: string | null
+        accepted_at_unix_ms?: number
+        started_at_unix_ms?: number | null
+        finished_at_unix_ms?: number | null
+        updated_at_unix_ms?: number
+      } | null
       sync_blocked_domains?: string[]
       version_sync_required?: boolean
       version_sync_reason?: string | null

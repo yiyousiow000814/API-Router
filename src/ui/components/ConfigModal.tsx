@@ -21,6 +21,7 @@ type Props = {
   onApprovePair: (requestId: string) => Promise<string | null | void> | string | null | void
   onSubmitPairPin: (nodeId: string, requestId: string, pinCode: string) => Promise<void> | void
   onSyncPeerVersion: (nodeId: string) => Promise<void> | void
+  remoteUpdatePendingByNode: Record<string, 'requesting'>
   onOpenGroupManager: () => void
   onClose: () => void
   providerListRef: React.RefObject<HTMLDivElement | null>
@@ -84,6 +85,108 @@ function compactUpdateStatusLabel(
 ): string {
   if (!source.version_sync_required) return 'No update needed'
   return source.same_version_update_allowed ? 'Update available' : 'Update blocked'
+}
+
+export function syncPauseSummaryLabel(source: ConfigSource): string | null {
+  const pausedCount = source.sync_blocked_domains?.length ?? 0
+  if (pausedCount <= 1) return null
+  return pausedCount === 2 ? '2 domains paused' : `${pausedCount} domains paused`
+}
+
+function remoteUpdateStateLabel(source: ConfigSource): string | null {
+  const state = source.remote_update_status?.state?.trim()
+  if (!state) return null
+  if (state === 'accepted') return 'Queued'
+  if (state === 'running') return 'Updating'
+  if (state === 'failed') return 'Update failed'
+  if (state === 'succeeded') return 'Updated'
+  return state
+}
+
+function remoteUpdateProgressDetail(source: ConfigSource): string {
+  return source.remote_update_status?.detail?.trim() || ''
+}
+
+function remoteUpdateDetailText(source: ConfigSource): string {
+  const status = source.remote_update_status
+  if (!status) return ''
+  const requester = status.requester_node_name?.trim() || status.requester_node_id?.trim() || 'remote peer'
+  const detail = remoteUpdateProgressDetail(source)
+  if (status.state === 'accepted') {
+    return detail || `Accepted update request from ${requester}.`
+  }
+  if (status.state === 'running') {
+    return detail || `Running remote update requested by ${requester}.`
+  }
+  if (status.state === 'failed') {
+    return detail || `Remote update requested by ${requester} failed.`
+  }
+  if (status.state === 'succeeded') {
+    return detail || `Remote update to ${status.target_ref} completed.`
+  }
+  return detail
+}
+
+function remoteUpdateTimestampLabel(source: ConfigSource): string {
+  const status = source.remote_update_status
+  if (!status) return ''
+  const unixMs =
+    status.finished_at_unix_ms ??
+    status.started_at_unix_ms ??
+    status.updated_at_unix_ms ??
+    status.accepted_at_unix_ms
+  return formatCommitDate(unixMs ?? null)
+}
+
+export function remoteUpdateActionState(
+  source: ConfigSource,
+  pendingStage: 'requesting' | undefined,
+): {
+  actionLabel: string
+  actionDetail: string | null
+  spinning: boolean
+} {
+  const remoteState = source.remote_update_status?.state?.trim()
+  if (pendingStage === 'requesting' && !remoteState) {
+    return {
+      actionLabel: 'Sending...',
+      actionDetail: 'Waiting for peer to accept',
+      spinning: true,
+    }
+  }
+  if (remoteState === 'accepted') {
+    return {
+      actionLabel: 'Queued',
+      actionDetail: remoteUpdateProgressDetail(source) || 'Peer accepted update request',
+      spinning: true,
+    }
+  }
+  if (remoteState === 'running') {
+    return {
+      actionLabel: 'Updating',
+      actionDetail: remoteUpdateProgressDetail(source) || 'Peer is applying this build',
+      spinning: true,
+    }
+  }
+  if (remoteState === 'failed') {
+    return {
+      actionLabel: source.same_version_update_allowed ? 'Retry update' : 'Update blocked',
+      actionDetail: remoteUpdateProgressDetail(source) || 'Last remote update failed',
+      spinning: false,
+    }
+  }
+  if (remoteState === 'succeeded' && !source.version_sync_required) {
+    return {
+      actionLabel: 'Updated',
+      actionDetail: 'Peer matches this build',
+      spinning: false,
+    }
+  }
+  return {
+    actionLabel: source.same_version_update_allowed ? 'Update peer' : 'Update blocked',
+    actionDetail: 'Sync to this build',
+    spinning: false,
+  }
 }
 
 export function formatBuildLabel(buildIdentity: BuildIdentity): string {
@@ -152,6 +255,7 @@ export function ConfigModal({
   onApprovePair,
   onSubmitPairPin,
   onSyncPeerVersion,
+  remoteUpdatePendingByNode,
   onOpenGroupManager,
   onClose,
   providerListRef,
@@ -363,21 +467,27 @@ export function ConfigModal({
                           source.same_version_update_blocked_reason?.trim() || ''
                         const versionSyncActionAvailable =
                           versionSyncRequired && Boolean(source.same_version_update_allowed)
+                        const versionSyncPendingStage =
+                          source.kind === 'peer' ? remoteUpdatePendingByNode[source.node_id] : undefined
+                        const versionSyncActionState =
+                          versionSyncRequired && source.kind === 'peer'
+                            ? remoteUpdateActionState(source, versionSyncPendingStage)
+                            : null
+                        const versionSyncPending = Boolean(versionSyncActionState?.spinning)
                         const pairActionAvailable =
                           source.kind === 'peer' &&
                           (!source.trusted ||
                             (source.trusted && source.follow_allowed && !source.active))
                         const disabled =
-                          source.kind === 'peer' && !pairActionAvailable && !versionSyncActionAvailable
+                          (source.kind === 'peer' && !pairActionAvailable && !versionSyncActionAvailable) ||
+                          versionSyncPending
                         const actionLabel =
                           source.kind === 'local'
                             ? source.active
                               ? 'Current'
                               : 'Use local'
                             : versionSyncRequired
-                              ? source.same_version_update_allowed
-                                ? 'Update peer'
-                                : 'Update blocked'
+                              ? versionSyncActionState?.actionLabel || 'Update peer'
                               : source.active
                               ? 'Following'
                               : !source.trusted && pairState === 'incoming_request'
@@ -451,7 +561,7 @@ export function ConfigModal({
                                 return
                               }
                               if (versionSyncRequired) {
-                                if (!source.same_version_update_allowed) return
+                                if (versionSyncPending || !source.same_version_update_allowed) return
                                 await onSyncPeerVersion(source.node_id)
                                 return
                               }
@@ -466,8 +576,8 @@ export function ConfigModal({
                               <span className="aoConfigSourceMenuLabel">{label}</span>
                               {source.kind === 'peer' ? (
                                 <span className="aoConfigSourceMenuSub">
-                                  {versionSyncRequired && source.same_version_update_allowed
-                                    ? 'Sync to this build'
+                                  {versionSyncRequired
+                                    ? versionSyncActionState?.actionDetail || 'Sync to this build'
                                     : source.using_count > 0
                                     ? `${source.using_count} device${source.using_count === 1 ? '' : 's'}`
                                     : 'LAN peer'}
@@ -475,6 +585,11 @@ export function ConfigModal({
                               ) : null}
                             </span>
                             <span className="aoConfigSourceMenuMeta">
+                              {versionSyncPending ? (
+                                <span className="aoConfigSourceMenuSpinnerWrap" aria-hidden="true">
+                                  <span className="aoPairWaitingSpinner aoConfigSourceMenuSpinner" />
+                                </span>
+                              ) : null}
                               {actionLabel}
                             </span>
                           </button>
@@ -612,6 +727,11 @@ export function ConfigModal({
                 <div className="aoHint">No LAN peers detected.</div>
               ) : (
                 <>
+                  {(() => {
+                    const localRemoteUpdateStatusLabel = localSource ? remoteUpdateStateLabel(localSource) : null
+                    const localRemoteUpdateDetail = localSource ? remoteUpdateDetailText(localSource) : ''
+                    const localRemoteUpdateTime = localSource ? remoteUpdateTimestampLabel(localSource) : ''
+                    return (
                   <div className="aoCard aoConfigDiagLocalCard">
                     <div className="aoConfigDiagLocalHead">
                       <div className="aoConfigDiagPeerBlock">
@@ -636,11 +756,27 @@ export function ConfigModal({
                           {formatCommitDate(localSource?.build_identity?.build_git_commit_unix_ms ?? null)}
                         </div>
                       </div>
+                      {localRemoteUpdateStatusLabel ? (
+                        <div className="aoConfigDiagSection">
+                          <div className="aoConfigDiagSectionLabel">Update</div>
+                          <div className="aoConfigDiagRemoteUpdateBlock">
+                            <div className="aoConfigDiagRemoteUpdateState">{localRemoteUpdateStatusLabel}</div>
+                            {localRemoteUpdateDetail ? (
+                              <div className="aoConfigDiagRemoteUpdateDetail">{localRemoteUpdateDetail}</div>
+                            ) : null}
+                            {localRemoteUpdateTime && localRemoteUpdateTime !== 'Unknown' ? (
+                              <div className="aoConfigDiagRemoteUpdateTime">{localRemoteUpdateTime}</div>
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
+                    )
+                  })()}
                   {peerSources.map((source) => {
-                    const syncDomains = source.sync_blocked_domains?.map(syncDomainLabel).join(', ') || 'none'
                     const pausedDomains = source.sync_blocked_domains?.map(syncDomainLabel) ?? []
+                    const pausedSummary = syncPauseSummaryLabel(source)
                     const whyText = diagnosticsWhyText(source)
                     const peerBuildLabel = source.build_identity
                       ? formatBuildLabel(source.build_identity)
@@ -648,6 +784,9 @@ export function ConfigModal({
                     const peerCommitLabel = formatCommitDate(
                       source.build_identity?.build_git_commit_unix_ms ?? null,
                     )
+                    const remoteUpdateStatusLabel = remoteUpdateStateLabel(source)
+                    const remoteUpdateDetail = remoteUpdateDetailText(source)
+                    const remoteUpdateTime = remoteUpdateTimestampLabel(source)
                     return (
                       <div key={source.node_id} className="aoCard aoConfigDiagCard">
                         <div className="aoConfigDiagCardHead">
@@ -663,6 +802,9 @@ export function ConfigModal({
                             <span className="aoConfigDiagBadge">
                               {compactFollowStatusLabel(source)}
                             </span>
+                            {pausedSummary ? (
+                              <span className="aoConfigDiagBadge">{pausedSummary}</span>
+                            ) : null}
                             <span
                               className={`aoConfigDiagBadge${
                                 source.version_sync_required ? ' is-alert' : ''
@@ -689,6 +831,20 @@ export function ConfigModal({
                                 : 'Does not match current machine build'}
                             </div>
                           </div>
+                          {remoteUpdateStatusLabel ? (
+                            <div className="aoConfigDiagSection">
+                              <div className="aoConfigDiagSectionLabel">Update</div>
+                              <div className="aoConfigDiagRemoteUpdateBlock">
+                                <div className="aoConfigDiagRemoteUpdateState">{remoteUpdateStatusLabel}</div>
+                                {remoteUpdateDetail ? (
+                                  <div className="aoConfigDiagRemoteUpdateDetail">{remoteUpdateDetail}</div>
+                                ) : null}
+                                {remoteUpdateTime && remoteUpdateTime !== 'Unknown' ? (
+                                  <div className="aoConfigDiagRemoteUpdateTime">{remoteUpdateTime}</div>
+                                ) : null}
+                              </div>
+                            </div>
+                          ) : null}
                           {whyText ? (
                             <div className="aoConfigDiagSection">
                               <div className="aoConfigDiagSectionLabel">Why</div>
@@ -699,17 +855,13 @@ export function ConfigModal({
                             <div className="aoConfigDiagSection">
                               <div className="aoConfigDiagSectionLabel">Paused</div>
                               <div className="aoConfigDiagPausedWrap">
-                                {pausedDomains.length > 1 ? (
-                                  <div className="aoConfigDiagPausedList">
-                                    {pausedDomains.map((domain) => (
-                                      <div key={domain} className="aoConfigDiagPausedItem">
-                                        {domain}
-                                      </div>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <div className="aoConfigDiagPausedSingle">{syncDomains}</div>
-                                )}
+                                <div className="aoConfigDiagPausedList">
+                                  {pausedDomains.map((domain) => (
+                                    <div key={domain} className="aoConfigDiagPausedItem">
+                                      {domain}
+                                    </div>
+                                  ))}
+                                </div>
                               </div>
                             </div>
                           ) : null}

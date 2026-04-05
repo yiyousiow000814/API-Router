@@ -1352,20 +1352,53 @@ export default function App() {
       },
     })
   }
-    async function requestLanRemoteUpdateSameVersion(nodeId: string) {
-      try {
-        if (isDevPreview) {
-          flashToast(`Requested ${nodeId} to sync to this build [TEST]`)
-          return
+  const [lanRemoteUpdatePendingByNode, setLanRemoteUpdatePendingByNode] = useState<
+    Record<string, 'requesting'>
+  >({})
+
+  useEffect(() => {
+    const sources = config?.config_source?.sources ?? []
+    setLanRemoteUpdatePendingByNode((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const nodeId of Object.keys(prev)) {
+        const source = sources.find((item) => item.node_id === nodeId && item.kind === 'peer')
+        if (!source) continue
+        if (source.remote_update_status?.state?.trim() || !source.version_sync_required) {
+          delete next[nodeId]
+          changed = true
         }
-        await invoke('request_lan_remote_update_same_version', { nodeId })
-        flashToast('Peer version sync requested')
-        await refreshStatus()
-        await refreshConfig({ refreshProviderSwitchStatus: false, force: true })
-      } catch (error) {
-        flashToast(String(error), 'error')
       }
+      return changed ? next : prev
+    })
+  }, [config])
+
+  async function requestLanRemoteUpdateSameVersion(nodeId: string) {
+    if (lanRemoteUpdatePendingByNode[nodeId]) return
+    setLanRemoteUpdatePendingByNode((prev) => ({ ...prev, [nodeId]: 'requesting' }))
+    try {
+      if (isDevPreview) {
+        flashToast(`Requested ${nodeId} to sync to this build [TEST]`)
+        setLanRemoteUpdatePendingByNode((prev) => {
+          const next = { ...prev }
+          delete next[nodeId]
+          return next
+        })
+        return
+      }
+      await invoke('request_lan_remote_update_same_version', { nodeId })
+      flashToast('Peer version sync requested')
+      await refreshStatus()
+      await refreshConfig({ refreshProviderSwitchStatus: false, force: true })
+    } catch (error) {
+      setLanRemoteUpdatePendingByNode((prev) => {
+        const next = { ...prev }
+        delete next[nodeId]
+        return next
+      })
+      flashToast(String(error), 'error')
     }
+  }
   async function copyProviderFromConfigSource(sourceNodeId: string, sharedProviderId: string) {
     try {
       if (isDevPreview) {
@@ -1808,6 +1841,7 @@ export default function App() {
             approveLanPair={approveLanPair}
             submitLanPairPin={submitLanPairPin}
             requestLanRemoteUpdateSameVersion={requestLanRemoteUpdateSameVersion}
+            lanRemoteUpdatePendingByNode={lanRemoteUpdatePendingByNode}
             openProviderGroupManager={openProviderGroupManager}
             setConfigModalOpen={setConfigModalOpen}
             rawConfigModalOpen={rawConfigModalOpen}

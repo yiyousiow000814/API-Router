@@ -129,6 +129,86 @@ pub struct LanRemoteUpdateReadinessSnapshot {
     pub checked_at_unix_ms: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LanRemoteUpdateStatusSnapshot {
+    pub state: String,
+    pub target_ref: String,
+    #[serde(default)]
+    pub requester_node_id: Option<String>,
+    #[serde(default)]
+    pub requester_node_name: Option<String>,
+    #[serde(default)]
+    pub worker_script: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub accepted_at_unix_ms: u64,
+    #[serde(default)]
+    pub started_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub finished_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub updated_at_unix_ms: u64,
+}
+
+fn lan_remote_update_status_path() -> Option<std::path::PathBuf> {
+    let user_data_dir = std::env::var("API_ROUTER_USER_DATA_DIR").ok()?;
+    let trimmed = user_data_dir.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(
+        std::path::PathBuf::from(trimmed)
+            .join("diagnostics")
+            .join("lan-remote-update-status.json"),
+    )
+}
+
+fn load_lan_remote_update_status() -> Option<LanRemoteUpdateStatusSnapshot> {
+    let path = lan_remote_update_status_path()?;
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice::<LanRemoteUpdateStatusSnapshot>(&bytes).ok()
+}
+
+pub(crate) fn load_lan_remote_update_status_public() -> Option<LanRemoteUpdateStatusSnapshot> {
+    load_lan_remote_update_status()
+}
+
+fn write_lan_remote_update_status(status: &LanRemoteUpdateStatusSnapshot) -> Result<(), String> {
+    let Some(path) = lan_remote_update_status_path() else {
+        return Err("API_ROUTER_USER_DATA_DIR is not set".to_string());
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create remote update status dir: {err}"))?;
+    }
+    let bytes = serde_json::to_vec_pretty(status)
+        .map_err(|err| format!("failed to serialize remote update status: {err}"))?;
+    std::fs::write(&path, bytes)
+        .map_err(|err| format!("failed to write remote update status: {err}"))?;
+    Ok(())
+}
+
+fn remote_update_status_blocks_new_request(status: &LanRemoteUpdateStatusSnapshot) -> bool {
+    matches!(status.state.as_str(), "accepted" | "running")
+}
+
+fn current_remote_update_status_block_reason() -> Option<String> {
+    let status = load_lan_remote_update_status()?;
+    if !remote_update_status_blocks_new_request(&status) {
+        return None;
+    }
+    let target_ref = status.target_ref.trim();
+    let detail = status.detail.as_deref().unwrap_or_default().trim();
+    Some(if detail.is_empty() {
+        format!(
+            "This machine is already processing a remote update to {target_ref}. Wait for it to finish before sending another request."
+        )
+    } else {
+        format!("This machine is already processing a remote update to {target_ref}: {detail}")
+    })
+}
+
 fn normalized_local_build_target_ref() -> Option<String> {
     let build_identity = current_build_identity();
     let target_ref = build_identity.build_git_sha.trim();
@@ -182,6 +262,13 @@ fn compute_local_version_sync_snapshot() -> LanLocalVersionSyncSnapshot {
 
 fn compute_local_remote_update_readiness() -> LanRemoteUpdateReadinessSnapshot {
     let checked_at_unix_ms = unix_ms();
+    if let Some(reason) = current_remote_update_status_block_reason() {
+        return LanRemoteUpdateReadinessSnapshot {
+            ready: false,
+            blocked_reason: Some(reason),
+            checked_at_unix_ms,
+        };
+    }
     let repo_root = match resolve_repo_root_for_self_update() {
         Ok(repo_root) => repo_root,
         Err(err) => {
@@ -417,6 +504,7 @@ pub struct LanLocalNodeSnapshot {
     pub capabilities: Vec<String>,
     pub build_identity: LanBuildIdentitySnapshot,
     pub version_sync: LanLocalVersionSyncSnapshot,
+    pub remote_update_status: Option<LanRemoteUpdateStatusSnapshot>,
     pub sync_contracts: BTreeMap<String, u32>,
     pub provider_fingerprints: Vec<String>,
     pub provider_definitions_revision: String,
@@ -438,6 +526,7 @@ pub struct LanPeerSnapshot {
     pub pair_state: Option<String>,
     pub pair_request_id: Option<String>,
     pub remote_update_readiness: Option<LanRemoteUpdateReadinessSnapshot>,
+    pub remote_update_status: Option<LanRemoteUpdateStatusSnapshot>,
     pub sync_blocked_domains: Vec<String>,
     pub sync_diagnostics: Vec<LanSyncDomainDiagnosticSnapshot>,
     pub build_matches_local: bool,
@@ -499,6 +588,7 @@ struct LanPeerRuntime {
     capabilities: Vec<String>,
     build_identity: LanBuildIdentitySnapshot,
     remote_update_readiness: Option<LanRemoteUpdateReadinessSnapshot>,
+    remote_update_status: Option<LanRemoteUpdateStatusSnapshot>,
     sync_contracts: BTreeMap<String, u32>,
     provider_fingerprints: Vec<String>,
     provider_definitions_revision: String,
@@ -540,6 +630,8 @@ struct LanHeartbeatPacket {
     build_identity: LanBuildIdentitySnapshot,
     #[serde(default)]
     remote_update_readiness: Option<LanRemoteUpdateReadinessSnapshot>,
+    #[serde(default)]
+    remote_update_status: Option<LanRemoteUpdateStatusSnapshot>,
     #[serde(default)]
     sync_contracts: BTreeMap<String, u32>,
     provider_fingerprints: Vec<String>,
@@ -609,6 +701,8 @@ pub(crate) struct LanProviderDefinitionsRequestPacket {
 pub(crate) struct LanRemoteUpdateRequestPacket {
     version: u8,
     node_id: String,
+    #[serde(default)]
+    node_name: Option<String>,
     target_ref: String,
 }
 
@@ -732,7 +826,7 @@ struct LanPairTrustBundlePacket {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum LanSyncPacket {
-    Heartbeat(LanHeartbeatPacket),
+    Heartbeat(Box<LanHeartbeatPacket>),
     SharedHealth(LanSharedHealthPacket),
     QuotaRefreshRequest(LanQuotaRefreshRequestPacket),
 }
@@ -748,7 +842,7 @@ struct LanProtectedPacket {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "wire_kind", rename_all = "snake_case")]
 enum LanWirePacket {
-    Heartbeat(LanHeartbeatPacket),
+    Heartbeat(Box<LanHeartbeatPacket>),
     Protected(LanProtectedPacket),
     PairRequest(LanPairRequestPacket),
     PairApprovalReady(LanPairApprovalReadyPacket),
@@ -971,6 +1065,7 @@ impl LanSyncRuntime {
                 capabilities: lan_heartbeat_capabilities(),
                 build_identity: local_build_identity,
                 version_sync: local_version_sync,
+                remote_update_status: load_lan_remote_update_status(),
                 sync_contracts: local_sync_contracts(),
                 provider_fingerprints: local_provider_fingerprints,
                 provider_definitions_revision: provider_definitions_revision(
@@ -998,6 +1093,7 @@ impl LanSyncRuntime {
                 capabilities: lan_heartbeat_capabilities(),
                 build_identity: current_build_identity(),
                 remote_update_readiness: Some(current_local_remote_update_readiness()),
+                remote_update_status: load_lan_remote_update_status(),
                 sync_contracts: local_sync_contracts(),
                 provider_fingerprints: Vec::new(),
                 provider_definitions_revision: String::new(),
@@ -1024,6 +1120,7 @@ impl LanSyncRuntime {
                 capabilities: packet.capabilities,
                 build_identity: packet.build_identity,
                 remote_update_readiness: packet.remote_update_readiness,
+                remote_update_status: packet.remote_update_status,
                 sync_contracts: packet.sync_contracts,
                 provider_fingerprints: packet.provider_fingerprints,
                 provider_definitions_revision: packet.provider_definitions_revision,
@@ -1049,6 +1146,7 @@ impl LanSyncRuntime {
                     capabilities: peer.capabilities.clone(),
                     build_identity: peer.build_identity.clone(),
                     remote_update_readiness: peer.remote_update_readiness.clone(),
+                    remote_update_status: peer.remote_update_status.clone(),
                     sync_contracts: peer.sync_contracts.clone(),
                     provider_fingerprints: peer.provider_fingerprints.clone(),
                     provider_definitions_revision: peer.provider_definitions_revision.clone(),
@@ -1074,6 +1172,7 @@ impl LanSyncRuntime {
                     capabilities: peer.capabilities.clone(),
                     build_identity: peer.build_identity.clone(),
                     remote_update_readiness: peer.remote_update_readiness.clone(),
+                    remote_update_status: peer.remote_update_status.clone(),
                     sync_contracts: peer.sync_contracts.clone(),
                     provider_fingerprints: peer.provider_fingerprints.clone(),
                     provider_definitions_revision: peer.provider_definitions_revision.clone(),
@@ -1341,6 +1440,7 @@ impl LanSyncRuntime {
             .json(&LanRemoteUpdateRequestPacket {
                 version: 1,
                 node_id: self.local_node.node_id.clone(),
+                node_name: Some(self.local_node.node_name.clone()),
                 target_ref: normalized_target_ref.to_string(),
             })
             .send()
@@ -1566,8 +1666,55 @@ pub(crate) async fn lan_sync_remote_update_http(
         )
             .into_response();
     }
-    match spawn_remote_update_worker(normalized_target_ref) {
+    if let Some(reason) = current_remote_update_status_block_reason() {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": reason,
+            })),
+        )
+            .into_response();
+    }
+    let accepted_at_unix_ms = unix_ms();
+    let accepted_status = LanRemoteUpdateStatusSnapshot {
+        state: "accepted".to_string(),
+        target_ref: normalized_target_ref.to_string(),
+        requester_node_id: Some(packet.node_id.clone()),
+        requester_node_name: packet
+            .node_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string),
+        worker_script: None,
+        detail: Some("Queued remote self-update worker".to_string()),
+        accepted_at_unix_ms,
+        started_at_unix_ms: None,
+        finished_at_unix_ms: None,
+        updated_at_unix_ms: accepted_at_unix_ms,
+    };
+    if let Err(err) = write_lan_remote_update_status(&accepted_status) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": err,
+            })),
+        )
+            .into_response();
+    }
+    match spawn_remote_update_worker(
+        normalized_target_ref,
+        &packet.node_id,
+        packet.node_name.as_deref(),
+    ) {
         Ok(worker_script) => {
+            let _ = write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
+                worker_script: Some(worker_script.clone()),
+                detail: Some("Remote self-update worker started".to_string()),
+                ..accepted_status
+            });
             gateway.store.add_event(
                 "gateway",
                 "warning",
@@ -1591,14 +1738,24 @@ pub(crate) async fn lan_sync_remote_update_http(
             )
                 .into_response()
         }
-        Err(err) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "ok": false,
-                "error": err,
-            })),
-        )
-            .into_response(),
+        Err(err) => {
+            let failed_at_unix_ms = unix_ms();
+            let _ = write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
+                state: "failed".to_string(),
+                detail: Some(err.clone()),
+                finished_at_unix_ms: Some(failed_at_unix_ms),
+                updated_at_unix_ms: failed_at_unix_ms,
+                ..accepted_status
+            });
+            (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "ok": false,
+                    "error": err,
+                })),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -2004,7 +2161,7 @@ fn broadcast_shared_health_packet(
 
 fn send_heartbeat_broadcast(packet: &LanHeartbeatPacket) -> Result<(), String> {
     let target = SocketAddr::from((Ipv4Addr::BROADCAST, LAN_DISCOVERY_PORT));
-    let bytes = serde_json::to_vec(&LanWirePacket::Heartbeat(packet.clone()))
+    let bytes = serde_json::to_vec(&LanWirePacket::Heartbeat(Box::new(packet.clone())))
         .map_err(|err| err.to_string())?;
     send_wire_bytes(target, &bytes)
 }
@@ -3276,7 +3433,7 @@ fn run_listener(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::
                     };
                     match wire_packet {
                         LanWirePacket::Heartbeat(packet) => {
-                            runtime.note_peer_heartbeat(packet, source)
+                            runtime.note_peer_heartbeat(*packet, source)
                         }
                         LanWirePacket::Protected(packet) => {
                             let Some(decoded) = deserialize_wire_packet(
@@ -3289,7 +3446,7 @@ fn run_listener(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::
                             };
                             match decoded {
                                 LanSyncPacket::Heartbeat(packet) => {
-                                    runtime.note_peer_heartbeat(packet, source)
+                                    runtime.note_peer_heartbeat(*packet, source)
                                 }
                                 LanSyncPacket::SharedHealth(packet) => {
                                     apply_shared_health_packet(&runtime, &gateway, packet);
@@ -3332,7 +3489,7 @@ fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::Ga
         let provider_fingerprints = build_provider_fingerprints(&cfg_snapshot, &gateway.secrets);
         let provider_definition_items = local_provider_definition_sync_items(&gateway);
         *runtime.local_provider_fingerprints.write() = provider_fingerprints.clone();
-        let packet = LanSyncPacket::Heartbeat(LanHeartbeatPacket {
+        let packet = LanSyncPacket::Heartbeat(Box::new(LanHeartbeatPacket {
             version: 1,
             node_id: runtime.local_node.node_id.clone(),
             node_name: runtime.local_node.node_name.clone(),
@@ -3341,13 +3498,14 @@ fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::Ga
             capabilities: lan_heartbeat_capabilities(),
             build_identity: current_build_identity(),
             remote_update_readiness: Some(current_local_remote_update_readiness()),
+            remote_update_status: load_lan_remote_update_status(),
             sync_contracts: local_sync_contracts(),
             provider_fingerprints,
             provider_definitions_revision: provider_definitions_revision(
                 &provider_definition_items,
             ),
             followed_source_node_id: gateway.secrets.get_followed_config_source_node_id(),
-        });
+        }));
         if let LanSyncPacket::Heartbeat(ref heartbeat) = packet {
             if let Err(err) = send_heartbeat_broadcast(heartbeat) {
                 log::warn!("lan sync sender heartbeat failed: {err}");
@@ -3808,11 +3966,30 @@ fn build_remote_update_worker_command(
     }
 }
 
-fn spawn_remote_update_worker(target_ref: &str) -> Result<String, String> {
+fn spawn_remote_update_worker(
+    target_ref: &str,
+    requester_node_id: &str,
+    requester_node_name: Option<&str>,
+) -> Result<String, String> {
     let (program, args, script) = build_remote_update_worker_command(target_ref)?;
     let repo_root = resolve_repo_root_for_self_update()?;
+    let status_path = lan_remote_update_status_path();
     let mut command = std::process::Command::new(program);
     command.args(args).current_dir(repo_root);
+    if let Some(path) = status_path {
+        command.env("API_ROUTER_REMOTE_UPDATE_STATUS_PATH", path);
+    }
+    command.env("API_ROUTER_REMOTE_UPDATE_TARGET_REF", target_ref);
+    command.env(
+        "API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_ID",
+        requester_node_id,
+    );
+    if let Some(name) = requester_node_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        command.env("API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_NAME", name);
+    }
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -4895,13 +5072,15 @@ mod tests {
     use super::{
         apply_followed_provider_state, apply_lan_edit_event, deserialize_wire_packet,
         incoming_event_is_newer, lan_sync_edit_http, lan_sync_provider_definitions_http,
-        lan_sync_tracked_spend_history_debug_http, lan_sync_usage_http,
-        local_version_sync_target_ref, note_entity_version, peer_is_stale, peer_supports_http_sync,
-        replace_remote_provider_definition_snapshots, restore_local_provider_state,
-        sanitize_node_name, serialize_wire_packet, tracked_spend_day_entity_id,
-        LanEditSyncRequestPacket, LanHeartbeatPacket, LanLocalVersionSyncSnapshot, LanNodeIdentity,
-        LanPeerSnapshot, LanProviderDefinitionSyncItem, LanProviderDefinitionsRequestPacket,
-        LanRemoteUpdateReadinessSnapshot, LanSyncPacket, LanSyncRuntime,
+        lan_sync_remote_update_http, lan_sync_tracked_spend_history_debug_http,
+        lan_sync_usage_http, local_version_sync_target_ref, note_entity_version, peer_is_stale,
+        peer_supports_http_sync, replace_remote_provider_definition_snapshots,
+        restore_local_provider_state, sanitize_node_name, serialize_wire_packet,
+        tracked_spend_day_entity_id, LanEditSyncRequestPacket, LanHeartbeatPacket,
+        LanLocalVersionSyncSnapshot, LanNodeIdentity, LanPeerSnapshot,
+        LanProviderDefinitionSyncItem, LanProviderDefinitionsRequestPacket,
+        LanRemoteUpdateReadinessSnapshot, LanRemoteUpdateRequestPacket,
+        LanRemoteUpdateStatusSnapshot, LanSyncPacket, LanSyncRuntime,
         LanTrackedSpendHistoryDebugRequestPacket, LanTrackedSpendHistoryDebugResponsePacket,
         LanUsageSyncRequestPacket, LAN_PEER_STALE_AFTER_MS, LAN_SYNC_AUTH_NODE_ID_HEADER,
         LAN_SYNC_AUTH_SECRET_HEADER,
@@ -4938,6 +5117,43 @@ mod tests {
         (tmp, state)
     }
 
+    fn remote_update_env_lock() -> &'static parking_lot::Mutex<()> {
+        static LOCK: std::sync::OnceLock<parking_lot::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| parking_lot::Mutex::new(()))
+    }
+
+    struct RemoteUpdateUserDataDirGuard {
+        _lock: parking_lot::MutexGuard<'static, ()>,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for RemoteUpdateUserDataDirGuard {
+        fn drop(&mut self) {
+            match self.previous.as_ref() {
+                Some(value) => unsafe {
+                    std::env::set_var("API_ROUTER_USER_DATA_DIR", value);
+                },
+                None => unsafe {
+                    std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+                },
+            }
+        }
+    }
+
+    fn set_remote_update_user_data_dir_for_test(
+        user_data_dir: &std::path::Path,
+    ) -> RemoteUpdateUserDataDirGuard {
+        let lock = remote_update_env_lock().lock();
+        let previous = std::env::var_os("API_ROUTER_USER_DATA_DIR");
+        unsafe {
+            std::env::set_var("API_ROUTER_USER_DATA_DIR", user_data_dir);
+        }
+        RemoteUpdateUserDataDirGuard {
+            _lock: lock,
+            previous,
+        }
+    }
+
     fn lan_sync_headers(node_id: &str, trust_secret: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -4960,6 +5176,7 @@ mod tests {
             capabilities: super::lan_heartbeat_capabilities(),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
+            remote_update_status: None,
             provider_fingerprints: Vec::new(),
             provider_definitions_revision: String::new(),
             sync_contracts: super::local_sync_contracts(),
@@ -5014,6 +5231,116 @@ mod tests {
         });
 
         assert_eq!(super::peer_remote_update_blocked_reason(&peer), None);
+    }
+
+    #[test]
+    fn compute_local_remote_update_readiness_blocks_when_remote_update_is_running() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let user_data_dir = tmp.path().join("user-data");
+        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
+            state: "running".to_string(),
+            target_ref: "abc123".to_string(),
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some("scripts/lan-remote-update.ps1".to_string()),
+            detail: Some("Remote self-update worker started".to_string()),
+            accepted_at_unix_ms: 1,
+            started_at_unix_ms: Some(2),
+            finished_at_unix_ms: None,
+            updated_at_unix_ms: 2,
+        })
+        .expect("write remote update status");
+
+        let readiness = super::compute_local_remote_update_readiness();
+        assert!(!readiness.ready);
+        assert!(readiness
+            .blocked_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("already processing a remote update to abc123"));
+    }
+
+    #[test]
+    fn lan_sync_remote_update_http_rejects_duplicate_inflight_request() {
+        let (_tmp, state) = build_test_state();
+        let trust_secret = state
+            .secrets
+            .ensure_lan_trust_secret()
+            .expect("trust secret");
+        state
+            .secrets
+            .set_lan_node_trusted("node-remote", true)
+            .expect("trust peer");
+        let user_data_dir = state
+            .config_path
+            .parent()
+            .expect("config parent")
+            .to_path_buf();
+        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
+            state: "accepted".to_string(),
+            target_ref: "abc123".to_string(),
+            requester_node_id: Some("node-prev".to_string()),
+            requester_node_name: Some("Desk Prev".to_string()),
+            worker_script: None,
+            detail: Some("Queued remote self-update worker".to_string()),
+            accepted_at_unix_ms: 1,
+            started_at_unix_ms: None,
+            finished_at_unix_ms: None,
+            updated_at_unix_ms: 1,
+        })
+        .expect("write accepted status");
+
+        let response = tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(async {
+                lan_sync_remote_update_http(
+                    State(state.gateway.clone()),
+                    lan_sync_headers("node-remote", &trust_secret),
+                    Json(LanRemoteUpdateRequestPacket {
+                        version: 1,
+                        node_id: "node-remote".to_string(),
+                        node_name: Some("Desk Remote".to_string()),
+                        target_ref: "def456".to_string(),
+                    }),
+                )
+                .await
+                .into_response()
+            });
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn snapshot_exposes_local_remote_update_status() {
+        let runtime = LanSyncRuntime::new(LanNodeIdentity {
+            node_id: "node-self".to_string(),
+            node_name: "self".to_string(),
+        });
+        let cfg = crate::orchestrator::config::AppConfig::default_config();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let user_data_dir = tmp.path().join("user-data");
+        std::fs::create_dir_all(&user_data_dir).expect("create user-data dir");
+        let secrets =
+            crate::orchestrator::secrets::SecretStore::new(user_data_dir.join("secrets.json"));
+        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "failed".to_string(),
+            target_ref: "abc123".to_string(),
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some("scripts/lan-remote-update.ps1".to_string()),
+            detail: Some("git fetch failed".to_string()),
+            accepted_at_unix_ms: 1,
+            started_at_unix_ms: Some(2),
+            finished_at_unix_ms: Some(3),
+            updated_at_unix_ms: 3,
+        };
+        super::write_lan_remote_update_status(&status).expect("write remote update status");
+
+        let snapshot = runtime.snapshot(4_000, &cfg, &secrets);
+        assert_eq!(snapshot.local_node.remote_update_status, Some(status));
     }
 
     #[test]
@@ -5431,7 +5758,7 @@ mod tests {
         let (_tmp, state) = build_test_state();
         let bytes = serialize_wire_packet(
             &state.gateway,
-            &LanSyncPacket::Heartbeat(LanHeartbeatPacket {
+            &LanSyncPacket::Heartbeat(Box::new(LanHeartbeatPacket {
                 version: 1,
                 node_id: "node-x".to_string(),
                 node_name: "Desk".to_string(),
@@ -5440,11 +5767,12 @@ mod tests {
                 capabilities: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
+                remote_update_status: None,
                 sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: vec![],
                 provider_definitions_revision: String::new(),
                 followed_source_node_id: None,
-            }),
+            })),
         )
         .expect("serialize heartbeat");
 
@@ -6016,6 +6344,7 @@ mod tests {
             capabilities: super::lan_heartbeat_capabilities(),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
+            remote_update_status: None,
             provider_fingerprints: Vec::new(),
             provider_definitions_revision: String::new(),
             sync_contracts: super::local_sync_contracts(),
@@ -6051,6 +6380,7 @@ mod tests {
             capabilities: super::lan_heartbeat_capabilities(),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
+            remote_update_status: None,
             provider_fingerprints: Vec::new(),
             provider_definitions_revision: String::new(),
             sync_contracts: std::collections::BTreeMap::from([
@@ -6089,6 +6419,7 @@ mod tests {
             capabilities: super::lan_heartbeat_capabilities(),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
+            remote_update_status: None,
             provider_fingerprints: Vec::new(),
             provider_definitions_revision: String::new(),
             sync_contracts: std::collections::BTreeMap::from([
@@ -6205,6 +6536,7 @@ mod tests {
             capabilities: super::lan_heartbeat_capabilities(),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
+            remote_update_status: None,
             provider_fingerprints: Vec::new(),
             provider_definitions_revision: String::new(),
             sync_contracts: std::collections::BTreeMap::from([
@@ -6343,6 +6675,7 @@ mod tests {
                 capabilities: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
+                remote_update_status: None,
                 sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: vec![],
                 provider_definitions_revision: String::new(),
@@ -6359,6 +6692,7 @@ mod tests {
                 capabilities: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
+                remote_update_status: None,
                 sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: vec![],
                 provider_definitions_revision: String::new(),
@@ -6403,6 +6737,7 @@ mod tests {
                 capabilities: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
+                remote_update_status: None,
                 sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: Vec::new(),
                 provider_definitions_revision: String::new(),
@@ -6437,6 +6772,7 @@ mod tests {
             capabilities: super::lan_heartbeat_capabilities(),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
+            remote_update_status: None,
             provider_fingerprints: Vec::new(),
             provider_definitions_revision: String::new(),
             sync_contracts: super::local_sync_contracts(),
@@ -6486,6 +6822,7 @@ mod tests {
             capabilities: super::lan_heartbeat_capabilities(),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
+            remote_update_status: None,
             provider_fingerprints: Vec::new(),
             provider_definitions_revision: String::new(),
             sync_contracts: super::local_sync_contracts(),
@@ -6662,6 +6999,7 @@ mod tests {
                 capabilities: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
+                remote_update_status: None,
                 sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: vec![],
                 provider_definitions_revision: String::new(),
@@ -6693,6 +7031,7 @@ mod tests {
                 capabilities: super::lan_heartbeat_capabilities(),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
+                remote_update_status: None,
                 sync_contracts: super::local_sync_contracts(),
                 provider_fingerprints: vec!["fp-1".to_string()],
                 provider_definitions_revision: String::new(),
@@ -6726,6 +7065,7 @@ mod tests {
                 capabilities: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
+                remote_update_status: None,
                 sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: vec!["fp-1".to_string()],
                 provider_definitions_revision: String::new(),
@@ -7058,6 +7398,7 @@ mod tests {
                 capabilities: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
+                remote_update_status: None,
                 sync_contracts: std::collections::BTreeMap::new(),
                 provider_fingerprints: vec![fingerprint.clone()],
                 provider_definitions_revision: String::new(),

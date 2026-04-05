@@ -50,11 +50,18 @@ struct ConfigSourceSnapshot {
     using_count: usize,
     build_identity: Option<crate::lan_sync::LanBuildIdentitySnapshot>,
     build_matches_local: bool,
+    remote_update_status: Option<crate::lan_sync::LanRemoteUpdateStatusSnapshot>,
     sync_blocked_domains: Vec<String>,
     version_sync_required: bool,
     version_sync_reason: Option<String>,
     same_version_update_allowed: bool,
     same_version_update_blocked_reason: Option<String>,
+}
+
+fn load_lan_remote_update_status_for_config_source(
+) -> Option<crate::lan_sync::LanRemoteUpdateStatusSnapshot> {
+    let status = crate::lan_sync::load_lan_remote_update_status_public()?;
+    (!status.state.trim().is_empty()).then_some(status)
 }
 
 fn offline_followed_config_source_snapshot(
@@ -80,6 +87,7 @@ fn offline_followed_config_source_snapshot(
         using_count: 1,
         build_identity: None,
         build_matches_local: true,
+        remote_update_status: None,
         sync_blocked_domains: Vec::new(),
         version_sync_required: false,
         version_sync_reason: None,
@@ -363,6 +371,7 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
         using_count: local_followers,
         build_identity: Some(lan_snapshot.local_node.build_identity.clone()),
         build_matches_local: true,
+        remote_update_status: load_lan_remote_update_status_for_config_source(),
         sync_blocked_domains: Vec::new(),
         version_sync_required: false,
         version_sync_reason: None,
@@ -410,6 +419,7 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
                 .count(),
             build_identity: Some(peer.build_identity.clone()),
             build_matches_local: peer.build_matches_local,
+            remote_update_status: peer.remote_update_status.clone(),
             sync_blocked_domains: peer.sync_blocked_domains.clone(),
             version_sync_required: version_sync_reason.is_some(),
             version_sync_reason,

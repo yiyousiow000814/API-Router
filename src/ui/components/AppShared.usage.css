@@ -266,6 +266,31 @@
   font-variant-numeric: tabular-nums;
 }
 
+.aoConfigDiagRemoteUpdateBlock {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.aoConfigDiagRemoteUpdateState {
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.84);
+}
+
+.aoConfigDiagRemoteUpdateDetail {
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(13, 18, 32, 0.7);
+}
+
+.aoConfigDiagRemoteUpdateTime {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(13, 18, 32, 0.5);
+  font-variant-numeric: tabular-nums;
+}
+
 .aoConfigDiagBody {
   display: grid;
   gap: 10px;
@@ -323,10 +348,6 @@
   font-size: 12px;
   font-weight: 650;
   line-height: 1;
-}
-
-.aoConfigDiagPausedSingle {
-  color: rgba(13, 18, 32, 0.84);
 }
 
 .aoConfigSourceTrigger {
@@ -450,10 +471,25 @@
 }
 
 .aoConfigSourceMenuMeta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   flex: 0 0 auto;
   font-size: 11px;
   color: rgba(13, 18, 32, 0.46);
   font-weight: 700;
+}
+
+.aoConfigSourceMenuSpinnerWrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.aoConfigSourceMenuSpinner {
+  width: 12px;
+  height: 12px;
+  border-width: 1.75px;
 }
 
 .aoConfigHeaderBtn {

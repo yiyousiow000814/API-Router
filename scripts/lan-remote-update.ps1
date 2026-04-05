@@ -6,6 +6,56 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+function Get-RemoteUpdateStatusPath {
+  $explicit = $env:API_ROUTER_REMOTE_UPDATE_STATUS_PATH
+  if ($explicit) { return $explicit }
+  if (-not $env:API_ROUTER_USER_DATA_DIR) { return $null }
+  return Join-Path $env:API_ROUTER_USER_DATA_DIR 'diagnostics\lan-remote-update-status.json'
+}
+
+function Write-RemoteUpdateStatus {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$State,
+    [Parameter(Mandatory = $true)]
+    [string]$TargetRef,
+    [string]$Detail = '',
+    [Nullable[Int64]]$StartedAtUnixMs = $null,
+    [Nullable[Int64]]$FinishedAtUnixMs = $null
+  )
+
+  $statusPath = Get-RemoteUpdateStatusPath
+  if (-not $statusPath) { return }
+  $parent = Split-Path -Parent $statusPath
+  if ($parent) {
+    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+  }
+  $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+  $acceptedAt = $now
+  if (Test-Path $statusPath) {
+    try {
+      $existing = Get-Content $statusPath -Raw | ConvertFrom-Json
+      if ($existing.accepted_at_unix_ms) {
+        $acceptedAt = [int64]$existing.accepted_at_unix_ms
+      }
+    } catch {
+    }
+  }
+  $payload = [ordered]@{
+    state = $State
+    target_ref = $TargetRef
+    requester_node_id = if ($env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_ID) { $env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_ID } else { $null }
+    requester_node_name = if ($env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_NAME) { $env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_NAME } else { $null }
+    worker_script = $PSCommandPath
+    detail = if ($Detail) { $Detail } else { $null }
+    accepted_at_unix_ms = $acceptedAt
+    started_at_unix_ms = if ($StartedAtUnixMs -ne $null) { [int64]$StartedAtUnixMs } else { $null }
+    finished_at_unix_ms = if ($FinishedAtUnixMs -ne $null) { [int64]$FinishedAtUnixMs } else { $null }
+    updated_at_unix_ms = $now
+  }
+  $payload | ConvertTo-Json -Depth 4 | Set-Content -Path $statusPath -Encoding UTF8
+}
+
 function Assert-CleanWorktree {
   $statusLines = & git status --porcelain=v1
   if ($LASTEXITCODE -ne 0) {
@@ -29,33 +79,68 @@ function Resolve-CheckoutTarget([string]$Ref) {
   throw "cannot resolve git ref: $Ref"
 }
 
+function Step-Detail([string]$Label, [string]$Detail = '') {
+  if ($Detail) {
+    return "${Label}: $Detail"
+  }
+  return $Label
+}
+
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $RepoRoot
 
 Start-Sleep -Seconds 1
 
+$startedAtUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+$currentStep = 'Preparing worker'
+Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep "Starting remote self-update worker.") -StartedAtUnixMs $startedAtUnixMs
+
+try {
+$currentStep = 'Checking git worktree'
+Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep) -StartedAtUnixMs $startedAtUnixMs
 Assert-CleanWorktree
 
+$currentStep = 'Fetching from origin'
+Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep) -StartedAtUnixMs $startedAtUnixMs
 & git fetch origin --prune --tags
 if ($LASTEXITCODE -ne 0) {
   throw 'git fetch failed'
 }
 
+$currentStep = 'Resolving target ref'
+Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep "Target $TargetRef") -StartedAtUnixMs $startedAtUnixMs
 $target = Resolve-CheckoutTarget $TargetRef
 if ($target.Mode -eq 'local_branch') {
+  $currentStep = 'Checking out local branch'
+  Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $target.Value) -StartedAtUnixMs $startedAtUnixMs
   & git checkout $target.Value
   if ($LASTEXITCODE -ne 0) { throw "git checkout failed: $($target.Value)" }
+  $currentStep = 'Pulling latest branch'
+  Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $target.Value) -StartedAtUnixMs $startedAtUnixMs
   & git pull --ff-only origin $target.Value
   if ($LASTEXITCODE -ne 0) { throw "git pull failed: $($target.Value)" }
 } elseif ($target.Mode -eq 'remote_branch') {
+  $currentStep = 'Checking out remote branch'
+  Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $target.Value) -StartedAtUnixMs $startedAtUnixMs
   & git checkout -B $target.Value "refs/remotes/origin/$($target.Value)"
   if ($LASTEXITCODE -ne 0) { throw "git checkout -B failed: $($target.Value)" }
 } else {
+  $currentStep = 'Checking out commit'
+  Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $target.Value) -StartedAtUnixMs $startedAtUnixMs
   & git checkout --detach $target.Value
   if ($LASTEXITCODE -ne 0) { throw "git checkout --detach failed: $($target.Value)" }
 }
 
+$currentStep = 'Building checked EXE'
+Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep 'Running npm run build:root-exe:checked') -StartedAtUnixMs $startedAtUnixMs
 & npm.cmd run build:root-exe:checked
 if ($LASTEXITCODE -ne 0) {
   throw 'npm run build:root-exe:checked failed'
+}
+$currentStep = 'Completed'
+Write-RemoteUpdateStatus -State 'succeeded' -TargetRef $TargetRef -Detail (Step-Detail $currentStep 'Remote self-update completed successfully.') -StartedAtUnixMs $startedAtUnixMs -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+} catch {
+  $message = $_.Exception.Message
+  Write-RemoteUpdateStatus -State 'failed' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $message) -StartedAtUnixMs $startedAtUnixMs -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+  throw
 }
