@@ -4691,6 +4691,38 @@ mod tests {
         }
     }
 
+    struct RemoteUpdateRepoRootGuard {
+        _lock: parking_lot::MutexGuard<'static, ()>,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for RemoteUpdateRepoRootGuard {
+        fn drop(&mut self) {
+            match self.previous.as_ref() {
+                Some(value) => unsafe {
+                    std::env::set_var("API_ROUTER_REPO_ROOT", value);
+                },
+                None => unsafe {
+                    std::env::remove_var("API_ROUTER_REPO_ROOT");
+                },
+            }
+        }
+    }
+
+    fn set_remote_update_repo_root_for_test(
+        repo_root: &std::path::Path,
+    ) -> RemoteUpdateRepoRootGuard {
+        let lock = remote_update_env_lock().lock();
+        let previous = std::env::var_os("API_ROUTER_REPO_ROOT");
+        unsafe {
+            std::env::set_var("API_ROUTER_REPO_ROOT", repo_root);
+        }
+        RemoteUpdateRepoRootGuard {
+            _lock: lock,
+            previous,
+        }
+    }
+
     fn lan_sync_headers(node_id: &str, trust_secret: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -4775,6 +4807,20 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let user_data_dir = tmp.path().join("user-data");
         let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        let repo_root = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_root).expect("create repo root");
+        std::fs::write(
+            repo_root.join("package.json"),
+            "{\n  \"name\": \"api-router-test\"\n}\n",
+        )
+        .expect("write package.json");
+        crate::platform::git_exec::new_git_command()
+            .args(["init"])
+            .current_dir(&repo_root)
+            .output()
+            .expect("git init");
+        std::fs::write(repo_root.join("dirty.txt"), "dirty\n").expect("write dirty file");
+        let _repo_guard = set_remote_update_repo_root_for_test(&repo_root);
         super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
             state: "running".to_string(),
             target_ref: "abc123".to_string(),
@@ -7330,7 +7376,8 @@ mod tests {
                 version: 1,
                 node_id: "node-remote".to_string(),
                 provider: "provider_1".to_string(),
-                day_key: "2026-04-01".to_string(),
+                day_key: super::tracked_spend_history_day_key_for_debug(&local_row)
+                    .expect("local day key"),
                 limit: 20,
             }),
         )
@@ -7343,8 +7390,10 @@ mod tests {
             .expect("debug body");
         let payload: LanTrackedSpendHistoryDebugResponsePacket =
             serde_json::from_slice(&body).expect("debug json");
+        let expected_day_key =
+            super::tracked_spend_history_day_key_for_debug(&local_row).expect("local day key");
         assert_eq!(payload.provider, "provider_1");
-        assert_eq!(payload.day_key, "2026-04-01");
+        assert_eq!(payload.day_key, expected_day_key);
         assert_eq!(payload.local_rows.len(), 1);
         assert_eq!(payload.remote_rows.len(), 1);
         assert_eq!(payload.remote_rows[0].producer_node_id, "node-syb");
