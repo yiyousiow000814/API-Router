@@ -589,7 +589,7 @@ describe('ConfigModal', () => {
         build_git_commit_unix_ms: null,
       }),
     ).toBe('v0.4.0 · unknown')
-    expect(formatCommitDate(1775312828000)).toBe('04-04-2026 14:27 UTC')
+    expect(formatCommitDate(1775312828000)).toBe('04-04-2026 22:27 UTC+08:00')
     expect(formatCommitDate(null)).toBe('Unknown')
   })
 })
