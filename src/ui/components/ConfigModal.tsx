@@ -112,6 +112,21 @@ function formatReadableCommitRefs(value: string): string {
   return value.replace(/\b[0-9a-f]{12,40}\b/gi, (match) => match.slice(0, 8))
 }
 
+function hasRemoteDebugDetails(
+  debugError: string,
+  debugReadinessReason: string,
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+  debugLogTail: string,
+): boolean {
+  return Boolean(
+    debugError ||
+      debugReadinessReason ||
+      remoteUpdateDebug?.status_path ||
+      remoteUpdateDebug?.log_path ||
+      debugLogTail,
+  )
+}
+
 function remoteUpdateDetailText(source: ConfigSource): string {
   const status = source.remote_update_status
   if (!status) return ''
@@ -231,6 +246,9 @@ function isGenericVersionSyncReason(reason: string): boolean {
 export function diagnosticsWhyText(
   source: NonNullable<Config['config_source']>['sources'][number],
 ): string {
+  if (source.remote_update_status?.state?.trim()) {
+    return ''
+  }
   if (source.version_sync_required) {
     const updateBlockedReason = source.same_version_update_blocked_reason?.trim()
     if (updateBlockedReason && !source.same_version_update_allowed) {
@@ -847,8 +865,6 @@ export function ConfigModal({
                     const remoteUpdateDebug = remoteUpdateDebugByNode[source.node_id]
                     const remoteUpdateDebugLoading = Boolean(remoteUpdateDebugLoadingByNode[source.node_id])
                     const remoteUpdateDebugError = remoteUpdateDebugErrorByNode[source.node_id] ?? ''
-                    const debugStatus = remoteUpdateDebug?.remote_update_status ?? null
-                    const debugStatusTime = formatCommitDate(debugStatus?.updated_at_unix_ms ?? null)
                     const debugReadinessReason =
                       formatReadableCommitRefs(
                         remoteUpdateDebug?.remote_update_readiness.blocked_reason?.trim() ?? '',
@@ -858,6 +874,14 @@ export function ConfigModal({
                     const formattedWhyText = formatReadableCommitRefs(whyText)
                     const showDebugReadinessReason =
                       Boolean(debugReadinessReason) && debugReadinessReason !== formattedWhyText
+                    const showDebugSection =
+                      remoteUpdateDebugLoading ||
+                      hasRemoteDebugDetails(
+                        formattedDebugError,
+                        showDebugReadinessReason ? debugReadinessReason : '',
+                        remoteUpdateDebug,
+                        debugLogTail,
+                      )
                     return (
                       <div key={source.node_id} className="aoCard aoConfigDiagCard">
                         <div className="aoConfigDiagCardHead">
@@ -916,7 +940,7 @@ export function ConfigModal({
                               </div>
                             </div>
                           ) : null}
-                          {remoteUpdateDebugLoading || remoteUpdateDebugError || remoteUpdateDebug ? (
+                          {showDebugSection ? (
                             <div className="aoConfigDiagSection">
                               <div className="aoConfigDiagSectionLabel">Debug</div>
                               <div className="aoConfigDiagRemoteUpdateBlock">
@@ -928,17 +952,6 @@ export function ConfigModal({
                                 ) : null}
                                 {remoteUpdateDebug ? (
                                   <>
-                                    <div className="aoConfigDiagRemoteUpdateState">
-                                      {debugStatus?.state?.trim() ? `Peer reports ${debugStatus.state}` : 'Peer reports no active remote update'}
-                                    </div>
-                                    {debugStatus?.detail?.trim() ? (
-                                      <div className="aoConfigDiagRemoteUpdateDetail">
-                                        {formatReadableCommitRefs(debugStatus.detail.trim())}
-                                      </div>
-                                    ) : null}
-                                    {debugStatusTime && debugStatusTime !== 'Unknown' ? (
-                                      <div className="aoConfigDiagRemoteUpdateTime">{debugStatusTime}</div>
-                                    ) : null}
                                     {showDebugReadinessReason ? (
                                       <div className="aoConfigDiagRemoteUpdateDetail">{debugReadinessReason}</div>
                                     ) : null}
