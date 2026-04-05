@@ -10,6 +10,7 @@
 ## Git / GitHub Workflow
 - **Branch-first**: Never commit directly to `main`. Use branches such as `feat/*`, `fix/*`, `docs/*`, `chore/*`.
 - **PR-first**: Ship changes through a pull request (default to draft).
+- **User-specified PR number rule (required)**: If the user references a specific PR number (for example "push to PR 165" or "open PR 165"), first verify whether that PR already exists and report the result before taking action. If that PR number is already taken, do not silently open a different PR number. Ask whether to update the existing PR, close/reuse another PR, or proceed with a new PR.
 - **No PR comments** unless explicitly requested.
 - **Titles**: PR and issue titles stay in English. PR descriptions and regular comments should match the primary language of the surrounding conversation or thread.
 - **PR title prefix**: PR titles must start with one of `feat:`, `fix:`, `docs:`, `chore:`.
