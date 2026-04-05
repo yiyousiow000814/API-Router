@@ -58,6 +58,7 @@ import { useTopNavIntentPrefetch } from './hooks/useTopNavIntentPrefetch'
 import { buildUsageStatisticsOverviewFromFull } from './utils/usageStatisticsOverview'
 import type {
   KeyModalState,
+  ProviderAdvancedModalState,
   ProviderBaseUrlModalState,
   ProviderEmailModalState,
   UsageAuthModalState,
@@ -189,6 +190,11 @@ export default function App() {
     open: false,
     provider: '',
     value: '',
+  })
+  const [providerAdvancedModal, setProviderAdvancedModal] = useState<ProviderAdvancedModalState>({
+    open: false,
+    provider: '',
+    supportsWebsockets: false,
   })
   const [usageBaseModal, setUsageBaseModal] = useState<UsageBaseModalState>({
     open: false,
@@ -1163,10 +1169,10 @@ export default function App() {
     usageOriginFilterOptions,
   })
   const {
-    setProviderDisabled, deleteProvider, saveKey, clearKey, saveProviderBaseUrl, refreshQuota,
+    setProviderDisabled, deleteProvider, saveKey, clearKey, saveProviderBaseUrl, saveProviderAdvanced, refreshQuota,
     saveUsageBaseUrl, saveUsageAuth, clearUsageAuth, saveProviderEmail, clearProviderEmail,
     setUsageBaseUrl, clearUsageBaseUrl, setProviderQuotaHardCap,
-    openKeyModal, openProviderBaseUrlModal, openUsageBaseModal, openUsageAuthModal, openProviderEmailModal, addProvider,
+    openKeyModal, openProviderBaseUrlModal, openProviderAdvancedModal, openUsageBaseModal, openUsageAuthModal, openProviderEmailModal, addProvider,
     setProvidersGroup,
   } = useProviderActions({
     config,
@@ -1176,6 +1182,7 @@ export default function App() {
     setConfig,
     keyModal,
     providerBaseUrlModal,
+    providerAdvancedModal,
     providerEmailModal,
     usageBaseModal,
     usageAuthModal,
@@ -1185,6 +1192,7 @@ export default function App() {
     newProviderKeyStorage,
     setKeyModal,
     setProviderBaseUrlModal,
+    setProviderAdvancedModal,
     setProviderEmailModal,
     setUsageBaseModal,
     setUsageAuthModal,
@@ -1517,6 +1525,7 @@ export default function App() {
     copyProviderFromConfigSource,
     openKeyModal,
     openProviderBaseUrlModal,
+    openProviderAdvancedModal,
     clearKey,
     openUsageBaseModal,
     openUsageAuthModal,
@@ -1529,6 +1538,7 @@ export default function App() {
   const shouldRenderAppModals =
     keyModal.open ||
     providerBaseUrlModal.open ||
+    providerAdvancedModal.open ||
     usageBaseModal.open ||
     usageAuthModal.open ||
     providerEmailModal.open ||
@@ -1763,6 +1773,9 @@ export default function App() {
             providerBaseUrlModal={providerBaseUrlModal}
             setProviderBaseUrlModal={setProviderBaseUrlModal}
             saveProviderBaseUrl={saveProviderBaseUrl}
+            providerAdvancedModal={providerAdvancedModal}
+            setProviderAdvancedModal={setProviderAdvancedModal}
+            saveProviderAdvanced={saveProviderAdvanced}
             providerEmailModal={providerEmailModal}
             setProviderEmailModal={setProviderEmailModal}
             saveProviderEmail={saveProviderEmail}

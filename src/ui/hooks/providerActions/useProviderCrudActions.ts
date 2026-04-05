@@ -8,11 +8,13 @@ type ProviderCrudActions = Pick<
   | 'isDevPreview'
   | 'setConfig'
   | 'providerBaseUrlModal'
+  | 'providerAdvancedModal'
   | 'newProviderName'
   | 'newProviderBaseUrl'
   | 'newProviderKey'
   | 'newProviderKeyStorage'
   | 'setProviderBaseUrlModal'
+  | 'setProviderAdvancedModal'
   | 'setNewProviderName'
   | 'setNewProviderBaseUrl'
   | 'setNewProviderKey'
@@ -29,11 +31,13 @@ export function useProviderCrudActions({
   isDevPreview,
   setConfig,
   providerBaseUrlModal,
+  providerAdvancedModal,
   newProviderName,
   newProviderBaseUrl,
   newProviderKey,
   newProviderKeyStorage,
   setProviderBaseUrlModal,
+  setProviderAdvancedModal,
   setNewProviderName,
   setNewProviderBaseUrl,
   setNewProviderKey,
@@ -52,6 +56,17 @@ export function useProviderCrudActions({
       })
     },
     [setProviderBaseUrlModal],
+  )
+
+  const openProviderAdvancedModal = useCallback(
+    (provider: string, supportsWebsockets: boolean) => {
+      setProviderAdvancedModal({
+        open: true,
+        provider,
+        supportsWebsockets,
+      })
+    },
+    [setProviderAdvancedModal],
   )
 
   const saveProviderBaseUrl = useCallback(async () => {
@@ -103,6 +118,54 @@ export function useProviderCrudActions({
     refreshStatus,
     setConfig,
     setProviderBaseUrlModal,
+  ])
+
+  const saveProviderAdvanced = useCallback(async () => {
+    const provider = providerAdvancedModal.provider.trim()
+    const supportsWebsockets = providerAdvancedModal.supportsWebsockets
+    if (!provider || !config?.providers?.[provider]) return
+
+    if (isDevPreview) {
+      setConfig((prev) => {
+        if (!prev?.providers?.[provider]) return prev
+        return {
+          ...prev,
+          providers: {
+            ...prev.providers,
+            [provider]: {
+              ...prev.providers[provider],
+              supports_websockets: supportsWebsockets || undefined,
+            },
+          },
+        }
+      })
+      setProviderAdvancedModal({ open: false, provider: '', supportsWebsockets: false })
+      flashToast(`[TEST] Advanced settings updated: ${provider}`)
+      return
+    }
+
+    try {
+      await invoke('set_provider_supports_websockets', {
+        provider,
+        enabled: supportsWebsockets,
+      })
+      setProviderAdvancedModal({ open: false, provider: '', supportsWebsockets: false })
+      flashToast(`Advanced settings updated: ${provider}`)
+      await refreshStatus()
+      await refreshConfig()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
+  }, [
+    config?.providers,
+    flashToast,
+    isDevPreview,
+    providerAdvancedModal.provider,
+    providerAdvancedModal.supportsWebsockets,
+    refreshConfig,
+    refreshStatus,
+    setConfig,
+    setProviderAdvancedModal,
   ])
 
   const setProviderGroup = useCallback(
@@ -280,6 +343,7 @@ export function useProviderCrudActions({
               display_name: name,
               base_url: baseUrl,
               group: null,
+              supports_websockets: undefined,
               usage_base_url: null,
               quota_hard_cap: {
                 daily: true,
@@ -343,11 +407,13 @@ export function useProviderCrudActions({
   return {
     saveProvider,
     saveProviderBaseUrl,
+    saveProviderAdvanced,
     setProviderGroup,
     setProvidersGroup,
     setProviderDisabled,
     deleteProvider,
     openProviderBaseUrlModal,
+    openProviderAdvancedModal,
     addProvider,
   }
 }

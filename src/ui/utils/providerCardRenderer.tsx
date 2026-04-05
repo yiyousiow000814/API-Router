@@ -22,6 +22,7 @@ type CreateProviderCardRendererOptions = {
   setProviderDisabled: (name: string, disabled: boolean) => Promise<void>
   openProviderGroupManager: (provider: string) => void
   openProviderBaseUrlModal: (provider: string, current: string) => void
+  openProviderAdvancedModal: (provider: string, supportsWebsockets: boolean) => void
   openKeyModal: (provider: string) => Promise<void>
   clearKey: (provider: string) => Promise<void>
   deleteProvider: (provider: string) => Promise<void>
@@ -127,6 +128,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   <>
                     {groupName ? <span className="aoProviderGroupTag">{groupName}</span> : null}
                     <span className="aoProviderName">{name}</span>
+                    {p.supports_websockets ? <span className="aoProviderCapabilityTag">WS</span> : null}
                     <button
                       className="aoIconGhost"
                       title="Rename"
@@ -143,6 +145,22 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 )}
               </div>
               <div className="aoProviderHeadActions">
+                <button
+                  className="aoIconGhost"
+                  title="Advanced settings"
+                  aria-label="Advanced settings"
+                  disabled={!editable}
+                  onClick={() => options.openProviderAdvancedModal(name, Boolean(p.supports_websockets))}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 7h16" />
+                    <path d="M4 12h16" />
+                    <path d="M4 17h16" />
+                    <circle cx="9" cy="7" r="2" fill="currentColor" stroke="none" />
+                    <circle cx="15" cy="12" r="2" fill="currentColor" stroke="none" />
+                    <circle cx="11" cy="17" r="2" fill="currentColor" stroke="none" />
+                  </svg>
+                </button>
                 <button
                   className="aoActionBtn aoProviderHeadBtn"
                   title="Set base URL"

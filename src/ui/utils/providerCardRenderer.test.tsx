@@ -110,6 +110,7 @@ function renderCardHtml(config: Config, status: Status): string {
     setProviderDisabled: async () => undefined,
     openProviderGroupManager: () => undefined,
     openProviderBaseUrlModal: () => undefined,
+    openProviderAdvancedModal: () => undefined,
     openKeyModal: async () => undefined,
     clearKey: async () => undefined,
     deleteProvider: async () => undefined,
@@ -153,6 +154,17 @@ describe('provider usage controls rendering', () => {
     expect(html).toContain('Email')
     expect(html).toContain('Open Group Manager')
     expect(html).not.toContain('Current group: alpha')
+  })
+
+  it('shows websocket badge when provider supports websockets', () => {
+    const config = buildConfig(null)
+    config.providers.p1 = {
+      ...config.providers.p1,
+      supports_websockets: true,
+    }
+    const html = renderCardHtml(config, buildStatus())
+    expect(html).toContain('WS')
+    expect(html).toContain('Advanced settings')
   })
 
   it('disables grouped controls on borrowed providers', () => {

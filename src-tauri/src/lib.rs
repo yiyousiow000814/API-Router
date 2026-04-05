@@ -673,6 +673,7 @@ pub fn run() {
             commands::set_session_preferred_provider,
             commands::clear_session_preferred_provider,
             commands::upsert_provider,
+            commands::set_provider_supports_websockets,
             commands::set_provider_disabled,
             commands::set_provider_group,
             commands::set_providers_group,

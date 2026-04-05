@@ -23,6 +23,7 @@ type Params = {
   setProviderDisabled: (name: string, disabled: boolean) => Promise<void>
   deleteProvider: (name: string) => Promise<void>
   openProviderBaseUrlModal: (provider: string, current: string) => void
+  openProviderAdvancedModal: (provider: string, supportsWebsockets: boolean) => void
   openKeyModal: (provider: string) => Promise<void>
   clearKey: (provider: string) => Promise<void>
   copyProviderFromConfigSource: (sourceNodeId: string, sharedProviderId: string) => Promise<void>
@@ -58,6 +59,7 @@ export function useProviderPanelUi(params: Params) {
     setProviderDisabled,
     deleteProvider,
     openProviderBaseUrlModal,
+    openProviderAdvancedModal,
     openKeyModal,
     clearKey,
     copyProviderFromConfigSource,
@@ -113,6 +115,7 @@ export function useProviderPanelUi(params: Params) {
         setProviderDisabled,
         deleteProvider,
         openProviderBaseUrlModal,
+        openProviderAdvancedModal,
         openKeyModal,
         clearKey,
         copyProviderFromConfigSource,
@@ -140,6 +143,7 @@ export function useProviderPanelUi(params: Params) {
       setProviderDisabled,
       deleteProvider,
       openProviderBaseUrlModal,
+      openProviderAdvancedModal,
       openKeyModal,
       clearKey,
       copyProviderFromConfigSource,

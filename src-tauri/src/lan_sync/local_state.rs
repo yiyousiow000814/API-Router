@@ -230,6 +230,7 @@ fn build_followed_provider_state(
                 base_url: payload.base_url.clone(),
                 group: payload.group.clone(),
                 disabled: payload.disabled,
+                supports_websockets: payload.supports_websockets,
                 usage_adapter: payload.usage_adapter.clone(),
                 usage_base_url: payload.usage_base_url.clone(),
                 api_key: String::new(),

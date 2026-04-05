@@ -26,12 +26,14 @@ import type {
 import type {
   KeyModalState,
   ProviderBaseUrlModalState,
+  ProviderAdvancedModalState,
   ProviderEmailModalState,
   UsageAuthModalState,
   UsageBaseModalState,
 } from '../hooks/providerActions/types'
 import { KeyModal } from './KeyModal'
 import { ProviderBaseUrlModal } from './ProviderBaseUrlModal'
+import { ProviderAdvancedModal } from './ProviderAdvancedModal'
 import { ProviderEmailModal } from './ProviderEmailModal'
 import { UsageAuthModal } from './UsageAuthModal'
 import { UsageBaseModal } from './UsageBaseModal'
@@ -71,6 +73,9 @@ type Props = {
   providerBaseUrlModal: ProviderBaseUrlModalState
   setProviderBaseUrlModal: Dispatch<SetStateAction<ProviderBaseUrlModalState>>
   saveProviderBaseUrl: () => Promise<void>
+  providerAdvancedModal: ProviderAdvancedModalState
+  setProviderAdvancedModal: Dispatch<SetStateAction<ProviderAdvancedModalState>>
+  saveProviderAdvanced: () => Promise<void>
   providerEmailModal: ProviderEmailModalState
   setProviderEmailModal: Dispatch<SetStateAction<ProviderEmailModalState>>
   saveProviderEmail: () => Promise<void>
@@ -254,6 +259,9 @@ export function AppModals(props: Props) {
     providerBaseUrlModal,
     setProviderBaseUrlModal,
     saveProviderBaseUrl,
+    providerAdvancedModal,
+    setProviderAdvancedModal,
+    saveProviderAdvanced,
     providerEmailModal,
     setProviderEmailModal,
     saveProviderEmail,
@@ -442,6 +450,17 @@ export function AppModals(props: Props) {
         onChange={(value) => setProviderBaseUrlModal((modal) => ({ ...modal, value }))}
         onCancel={() => setProviderBaseUrlModal({ open: false, provider: '', value: '' })}
         onSave={() => void saveProviderBaseUrl()}
+      />
+
+      <ProviderAdvancedModal
+        open={providerAdvancedModal.open}
+        provider={providerAdvancedModal.provider}
+        supportsWebsockets={providerAdvancedModal.supportsWebsockets}
+        onToggleSupportsWebsockets={(supportsWebsockets) =>
+          setProviderAdvancedModal((modal) => ({ ...modal, supportsWebsockets }))
+        }
+        onCancel={() => setProviderAdvancedModal({ open: false, provider: '', supportsWebsockets: false })}
+        onSave={() => void saveProviderAdvanced()}
       />
 
       <ProviderEmailModal

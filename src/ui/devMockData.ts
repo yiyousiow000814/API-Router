@@ -530,6 +530,7 @@ export const devConfig: Config = {
     provider_1: {
       display_name: 'provider_1',
       base_url: 'https://code.ppchat.vip/v1',
+      supports_websockets: true,
       usage_adapter: 'ppchat',
       usage_base_url: 'https://code.ppchat.vip',
       has_key: true,

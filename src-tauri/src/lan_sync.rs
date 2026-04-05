@@ -1271,6 +1271,8 @@ pub struct ProviderDefinitionSnapshotPayload {
     #[serde(default)]
     pub disabled: bool,
     #[serde(default)]
+    pub supports_websockets: bool,
+    #[serde(default)]
     pub usage_adapter: String,
     #[serde(default)]
     pub usage_base_url: Option<String>,
@@ -1365,6 +1367,7 @@ fn provider_definition_snapshot_payload(
         base_url: provider_cfg.base_url.clone(),
         group: provider_cfg.group.clone(),
         disabled: provider_cfg.disabled,
+        supports_websockets: provider_cfg.supports_websockets,
         usage_adapter: provider_cfg.usage_adapter.clone(),
         usage_base_url: provider_cfg.usage_base_url.clone(),
         key: gateway.secrets.get_provider_key(provider),
@@ -1412,6 +1415,9 @@ fn merge_provider_definition_snapshot_payload(
     }
     if let Some(disabled) = payload_bool_field(payload, "disabled") {
         next.disabled = disabled;
+    }
+    if let Some(supports_websockets) = payload_bool_field(payload, "supports_websockets") {
+        next.supports_websockets = supports_websockets;
     }
     if let Some(Some(value)) = payload_string_field(payload, "usage_adapter") {
         next.usage_adapter = value;
@@ -3607,6 +3613,7 @@ fn local_provider_definition_sync_items_from_config(
                     base_url: provider_cfg.base_url.clone(),
                     group: provider_cfg.group.clone(),
                     disabled: provider_cfg.disabled,
+                    supports_websockets: provider_cfg.supports_websockets,
                     usage_adapter: provider_cfg.usage_adapter.clone(),
                     usage_base_url: provider_cfg.usage_base_url.clone(),
                     key: secrets.get_provider_key(&provider_name),
@@ -4033,6 +4040,7 @@ mod tests {
                     usage_base_url: Some("https://quota.example".to_string()),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     api_key: String::new(),
                 },
             )]),
