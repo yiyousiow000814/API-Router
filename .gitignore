@@ -41,3 +41,4 @@ mcp/target/
 *.njsproj
 *.sln
 *.sw?
+*.orig

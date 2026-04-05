@@ -17,7 +17,7 @@ async fn fetch_package_expiry_for_strategy(
     st: &GatewayState,
     provider_name: &str,
     bases: &[String],
-    token: &str,
+    api_key: &str,
     preferred_base: Option<&str>,
     budget_root: Option<&Value>,
 ) -> Option<u64> {
@@ -28,7 +28,7 @@ async fn fetch_package_expiry_for_strategy(
                 st,
                 provider_name,
                 bases,
-                token,
+                api_key,
                 preferred_base,
                 budget_root,
             )
@@ -41,7 +41,7 @@ async fn fetch_packycode_package_expiry(
     st: &GatewayState,
     provider_name: &str,
     bases: &[String],
-    token: &str,
+    api_key: &str,
     preferred_base: Option<&str>,
     budget_root: Option<&Value>,
 ) -> Option<u64> {
@@ -73,13 +73,13 @@ async fn fetch_packycode_package_expiry(
     for base in ordered_bases {
         if !fetched_budget_root {
             if let Some(found) =
-                fetch_packycode_expiry_from_user_info(st, provider_name, &base, token).await
+                fetch_packycode_expiry_from_user_info(st, provider_name, &base, api_key).await
             {
                 return Some(found);
             }
         }
         if let Some(found) =
-            fetch_packycode_expiry_from_subscriptions(st, provider_name, &base, token).await
+            fetch_packycode_expiry_from_subscriptions(st, provider_name, &base, api_key).await
         {
             return Some(found);
         }
@@ -91,14 +91,14 @@ async fn fetch_packycode_expiry_from_user_info(
     st: &GatewayState,
     provider_name: &str,
     base: &str,
-    token: &str,
+    api_key: &str,
 ) -> Option<u64> {
     const PACKAGE_EXPIRY_TIMEOUT_SECS: u64 = 8;
     let client = build_usage_http_client(st, provider_name).ok()?;
     let url = format!("{base}/api/backend/users/info");
     let resp = client
         .get(url)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {api_key}"))
         .timeout(Duration::from_secs(PACKAGE_EXPIRY_TIMEOUT_SECS))
         .send()
         .await
@@ -120,14 +120,14 @@ async fn fetch_packycode_expiry_from_subscriptions(
     st: &GatewayState,
     provider_name: &str,
     base: &str,
-    token: &str,
+    api_key: &str,
 ) -> Option<u64> {
     const PACKAGE_EXPIRY_TIMEOUT_SECS: u64 = 8;
     let client = build_usage_http_client(st, provider_name).ok()?;
     let url = format!("{base}/api/backend/subscriptions?page=1&per_page=50");
     let resp = client
         .get(url)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {api_key}"))
         .timeout(Duration::from_secs(PACKAGE_EXPIRY_TIMEOUT_SECS))
         .send()
         .await

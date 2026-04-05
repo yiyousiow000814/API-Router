@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const args = process.argv.slice(2);
 if (!args.length) {
@@ -17,6 +17,21 @@ async function exists(path) {
   } catch {
     return false;
   }
+}
+
+async function resolveLocalNodeBin(command) {
+  if (!command || command.includes("\\") || command.includes("/") || command.includes(":")) {
+    return command;
+  }
+  const suffixes =
+    process.platform === "win32"
+      ? [".cmd", ".exe", ".bat", ".ps1", ""]
+      : [""];
+  for (const suffix of suffixes) {
+    const candidate = join(process.cwd(), "node_modules", ".bin", `${command}${suffix}`);
+    if (await exists(candidate)) return candidate;
+  }
+  return command;
 }
 
 async function findRcDir() {
@@ -63,8 +78,22 @@ async function findWinSdkTool(toolName) {
 async function main() {
   const [command, ...commandArgs] = args;
   const env = { ...process.env };
+  const resolvedCommand = await resolveLocalNodeBin(command);
 
   if (process.platform === "win32") {
+    const nodeDir = dirname(process.execPath);
+    const pathParts = String(env.PATH || "").split(";").filter(Boolean);
+    if (!pathParts.some((part) => part.toLowerCase() === nodeDir.toLowerCase())) {
+      env.PATH = `${nodeDir};${env.PATH || ""}`;
+    }
+    const cargoDir = join(env.USERPROFILE || "", ".cargo", "bin");
+    const pathPartsForCargo = String(env.PATH || "").split(";").filter(Boolean);
+    if (
+      cargoDir &&
+      !pathPartsForCargo.some((part) => part.toLowerCase() === cargoDir.toLowerCase())
+    ) {
+      env.PATH = `${cargoDir};${env.PATH || ""}`;
+    }
     const rcDir = await findRcDir();
     if (rcDir) {
       const parts = String(env.PATH || "").split(";").filter(Boolean);
@@ -80,9 +109,11 @@ async function main() {
 
   const launch = (cmd) =>
     new Promise((resolve, reject) => {
+      const useShell =
+        process.platform === "win32" && /[.](cmd|bat|ps1)$/i.test(String(cmd));
       const child = spawn(cmd, commandArgs, {
         stdio: "inherit",
-        shell: false,
+        shell: useShell,
         env,
       });
       child.on("error", reject);
@@ -102,20 +133,24 @@ async function main() {
     });
 
   try {
-    const result = await launch(command);
+    const result = await launch(resolvedCommand);
     if (result.signal) {
       process.kill(process.pid, result.signal);
       return;
     }
     process.exit(result.code ?? 1);
   } catch (error) {
-    if (process.platform === "win32" && error?.code === "ENOENT" && !/[.](cmd|exe|bat)$/i.test(command)) {
+    if (
+      process.platform === "win32" &&
+      error?.code === "ENOENT" &&
+      !/[.](cmd|exe|bat)$/i.test(resolvedCommand)
+    ) {
       let result;
       try {
-        result = await launch(`${command}.cmd`);
+        result = await launch(`${resolvedCommand}.cmd`);
       } catch (inner) {
         if (inner?.code === "EINVAL") {
-          result = await launchWithShell(`${command}.cmd`);
+          result = await launchWithShell(`${resolvedCommand}.cmd`);
         } else {
           throw inner;
         }

@@ -174,6 +174,8 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
   const querySeqRef = useRef(0)
   const yearQuerySeqRef = useRef(0)
   const dailyStatsSeqRef = useRef(0)
+  const eventEntriesInFlightRef = useRef(false)
+  const dailyStatsInFlightRef = useRef(false)
   const focusHydrateSeqRef = useRef(0)
   const focusHydrateNonceRef = useRef<number | null>(null)
   const handledFocusNonceRef = useRef<number | null>(null)
@@ -222,9 +224,11 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
     })
   }, [])
   const fetchEventLogDailyStats = useCallback(async (fromDay: number | null, toDay: number | null) => {
+    if (dailyStatsInFlightRef.current) return
     const fromUnixMs = fromDay == null ? null : fromDay
     const toUnixMs = toDay == null ? null : addDays(toDay, 1) - 1
     const reqId = ++dailyStatsSeqRef.current
+    dailyStatsInFlightRef.current = true
     try {
       const rows = await invoke<EventLogDailyStat[]>('get_event_log_daily_stats', { fromUnixMs, toUnixMs })
       if (dailyStatsSeqRef.current !== reqId) return
@@ -255,14 +259,18 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
       })
     } catch {
       // Keep existing daily aggregates if refresh fails transiently.
+    } finally {
+      dailyStatsInFlightRef.current = false
     }
   }, [])
 
   const fetchEventLogEntries = useCallback(async (fromDay: number | null, toDay: number | null) => {
+    if (eventEntriesInFlightRef.current) return
     const fromUnixMs = fromDay == null ? null : fromDay
     const toUnixMs = toDay == null ? null : addDays(toDay, 1) - 1
     const limit = fromDay != null || toDay != null ? EVENT_LOG_FETCH_FILTERED_LIMIT : EVENT_LOG_FETCH_DEFAULT_LIMIT
     const reqId = ++querySeqRef.current
+    eventEntriesInFlightRef.current = true
     try {
       const rows = await invoke<EventLogEntry[]>('get_event_log_entries', {
         fromUnixMs,
@@ -275,6 +283,8 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
       mergeKnownYears(rows)
     } catch {
       // Keep the latest successful snapshot to avoid UI flicker when fetch transiently fails.
+    } finally {
+      eventEntriesInFlightRef.current = false
     }
   }, [mergeKnownYears])
   const fetchFocusWindowEntries = useCallback(async (focus: EventLogFocusRequest) => {

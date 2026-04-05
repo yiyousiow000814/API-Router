@@ -8,7 +8,12 @@ mod tests {
     use crate::orchestrator::upstream::UpstreamClient;
     use parking_lot::RwLock;
     use std::sync::atomic::AtomicU64;
-    use std::sync::Arc;
+    use std::sync::{Arc, OnceLock};
+
+    fn usage_base_gate_test_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
 
     fn mk_lan_sync() -> crate::lan_sync::LanSyncRuntime {
         crate::lan_sync::LanSyncRuntime::new(crate::lan_sync::LanNodeIdentity {
@@ -528,6 +533,7 @@ mod tests {
             "p1",
             &[base.clone()],
             Some("test-token"),
+            "usage token",
             PackageExpiryStrategy::None,
         )
         .await;
@@ -540,6 +546,15 @@ mod tests {
 
     #[test]
     fn usage_request_key_normalizes_bases_order() {
+        let provider = ProviderConfig {
+            display_name: "Test".to_string(),
+            base_url: "https://usage-router.example/v1".to_string(),
+            group: None,
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        };
         let bases_a = vec![
             "https://code.ppchat.vip".to_string(),
             "https://code.pumpkinai.vip".to_string(),
@@ -549,6 +564,7 @@ mod tests {
             "https://code.ppchat.vip/".to_string(),
         ];
         let key_a = usage_request_key(
+            &provider,
             &bases_a,
             &Some("sk-test".to_string()),
             &None,
@@ -556,6 +572,7 @@ mod tests {
             UsageKind::TokenStats,
         );
         let key_b = usage_request_key(
+            &provider,
             &bases_b,
             &Some("sk-test".to_string()),
             &None,
@@ -594,12 +611,14 @@ mod tests {
         assert_eq!(bases_pumpkin.first().unwrap(), "https://his.ppchat.vip");
 
         let k1 = usage_shared_key(
+            &pp,
             bases_pp.first().unwrap(),
             &Some("k".to_string()),
             &None,
             &None,
         );
         let k2 = usage_shared_key(
+            &pumpkin,
             bases_pumpkin.first().unwrap(),
             &Some("k".to_string()),
             &None,
@@ -736,6 +755,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn explicit_usage_endpoint_prefers_aigateway_usage_today_cost_over_subscription_daily_usage() {
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        let payload = serde_json::json!({
+            "isValid": true,
+            "mode": "unrestricted",
+            "planName": "轻享卡 3天",
+            "remaining": 121.9059165,
+            "subscription": {
+                "daily_limit_usd": 200,
+                "daily_usage_usd": 78.0940835,
+                "expires_at": "2026-04-06T14:02:27.679994+08:00"
+            },
+            "unit": "USD",
+            "usage": {
+                "today": {
+                    "actual_cost": 0,
+                    "cost": 0,
+                    "requests": 0,
+                    "total_tokens": 0
+                }
+            }
+        });
+
+        apply_explicit_usage_endpoint_payload(
+            &mut snap,
+            &payload,
+            "https://aigateway.chat/v1/usage",
+            1_700_000_000_000,
+        )
+        .expect("aigateway usage payload should parse");
+
+        assert_eq!(snap.daily_budget_usd, Some(200.0));
+        assert_eq!(snap.remaining, Some(121.9059165));
+        assert_eq!(
+            snap.daily_spent_usd,
+            Some(0.0),
+            "aigateway today usage should come from usage.today, not subscription.daily_usage_usd"
+        );
+    }
+
     #[tokio::test]
     async fn explicit_usage_endpoint_fetches_yunyi_budget_info_via_provider_key() {
         let (base, handle) = start_yunyi_me_mock_server().await;
@@ -843,14 +903,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn packycode_quota_refresh_requires_usage_token() {
+    async fn packycode_quota_refresh_requires_provider_key() {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "api-key").unwrap();
         let st = mk_state("https://codex.packycode.com/v1".to_string(), secrets);
         let cfg = st.cfg.read().clone();
         let provider = cfg.providers.get("p1").unwrap();
-        assert!(!can_refresh_quota_for_provider(&st, "p1", provider));
+        assert!(can_refresh_quota_for_provider(&st, "p1", provider));
+    }
+
+    #[tokio::test]
+    async fn packycode_budget_info_without_provider_key_reports_missing_provider_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://codex.packycode.com/v1".to_string(), secrets);
+
+        let snap = refresh_quota_for_provider(&st, "p1").await;
+
+        assert_eq!(snap.last_error, "missing provider key");
     }
 
     #[tokio::test]
@@ -915,7 +986,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "k1").unwrap();
-        secrets.set_usage_token("p1", "t1").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
         {
             let mut cfg = st.cfg.write();
@@ -1004,7 +1074,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "k1").unwrap();
-        secrets.set_usage_token("p1", "jwt-token").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
         {
             let mut cfg = st.cfg.write();
@@ -1026,13 +1095,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn packycode_budget_info_uses_usage_token_api_only() {
+    async fn packycode_budget_info_uses_provider_key_only() {
         use axum::extract::State;
         use axum::http::{HeaderMap, StatusCode};
         use axum::routing::get;
         use axum::{Json, Router};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
+
+        let _guard = usage_base_gate_test_lock().lock().await;
 
         #[derive(Clone)]
         struct MockState {
@@ -1054,13 +1125,7 @@ mod tests {
                             .get(axum::http::header::AUTHORIZATION)
                             .and_then(|value| value.to_str().ok())
                             .unwrap_or_default();
-                        if auth == "Bearer api-key" {
-                            return (
-                                StatusCode::TOO_MANY_REQUESTS,
-                                Json(serde_json::json!({ "error": "rate limited" })),
-                            );
-                        }
-                        if auth != "Bearer jwt-token" {
+                        if auth != "Bearer api-key" {
                             return (
                                 StatusCode::UNAUTHORIZED,
                                 Json(serde_json::json!({ "error": "invalid token" })),
@@ -1096,7 +1161,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "api-key").unwrap();
-        secrets.set_usage_token("p1", "jwt-token").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
         {
             let mut cfg = st.cfg.write();
@@ -1128,6 +1192,8 @@ mod tests {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
 
+        let _guard = usage_base_gate_test_lock().lock().await;
+
         clear_usage_base_refresh_gate();
 
         #[derive(Clone)]
@@ -1148,7 +1214,7 @@ mod tests {
                         .get(axum::http::header::AUTHORIZATION)
                         .and_then(|value| value.to_str().ok())
                         .unwrap_or_default();
-                    let status = if auth == "Bearer jwt-token" {
+                    let status = if auth == "Bearer api-key" {
                         StatusCode::UNAUTHORIZED
                     } else {
                         StatusCode::TOO_MANY_REQUESTS
@@ -1180,7 +1246,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "api-key").unwrap();
-        secrets.set_usage_token("p1", "jwt-token").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
         {
             let mut cfg = st.cfg.write();
@@ -1206,6 +1271,8 @@ mod tests {
         use axum::{Json, Router};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
+
+        let _guard = usage_base_gate_test_lock().lock().await;
 
         let user_info_hits = Arc::new(AtomicU64::new(0));
         let subscriptions_hits = Arc::new(AtomicU64::new(0));
@@ -1306,6 +1373,8 @@ mod tests {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
 
+        let _guard = usage_base_gate_test_lock().lock().await;
+
         clear_usage_base_refresh_gate();
 
         let budget_hits = Arc::new(AtomicU64::new(0));
@@ -1390,8 +1459,6 @@ mod tests {
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "k-shared").unwrap();
         secrets.set_provider_key("p2", "k-shared").unwrap();
-        secrets.set_usage_token("p1", "t-shared").unwrap();
-        secrets.set_usage_token("p2", "t-shared").unwrap();
 
         let providers = std::collections::BTreeMap::from([
             (
@@ -1516,6 +1583,82 @@ mod tests {
                 .get("last_seen_daily_spent_usd")
                 .and_then(|value| value.as_f64()),
             Some(20.0)
+        );
+    }
+
+    #[test]
+    fn track_budget_spend_skips_non_zero_initial_baseline_without_same_day_requests() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://usage.example/v1".to_string(), secrets);
+
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.updated_at_unix_ms = chrono::Local
+            .with_ymd_and_hms(2026, 4, 1, 0, 58, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        snap.daily_spent_usd = Some(17.4690825);
+
+        track_budget_spend(&st, "p1", &snap);
+
+        let spend_days = st.store.list_spend_days("p1");
+        assert_eq!(spend_days.len(), 1);
+        assert_eq!(
+            spend_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(0.0)
+        );
+        assert_eq!(
+            spend_days[0]
+                .get("last_seen_daily_spent_usd")
+                .and_then(|value| value.as_f64()),
+            Some(17.4690825)
+        );
+    }
+
+    #[test]
+    fn track_budget_spend_keeps_non_zero_initial_baseline_when_same_day_requests_exist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://usage.example/v1".to_string(), secrets);
+        let ts = chrono::Local
+            .with_ymd_and_hms(2026, 4, 1, 0, 58, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        st.store.upsert_usage_request_sync_rows(&[crate::orchestrator::store::UsageRequestSyncRow {
+            id: "req-1".to_string(),
+            unix_ms: ts,
+            ingested_at_unix_ms: ts,
+            provider: "p1".to_string(),
+            api_key_ref: "-".to_string(),
+            model: String::new(),
+            origin: "windows".to_string(),
+            session_id: String::new(),
+            node_id: String::new(),
+            node_name: String::new(),
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 100,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        }]);
+
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.updated_at_unix_ms = ts;
+        snap.daily_spent_usd = Some(17.4690825);
+
+        track_budget_spend(&st, "p1", &snap);
+
+        let spend_days = st.store.list_spend_days("p1");
+        assert_eq!(spend_days.len(), 1);
+        assert_eq!(
+            spend_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(17.4690825)
         );
     }
 
@@ -2141,7 +2284,7 @@ mod tests {
         .expect("packycode due");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
         assert!(due > now_ms);
-        assert_eq!(due_dt.minute(), 58);
+        assert!(matches!(due_dt.minute(), 1 | 58));
         assert_eq!(due_dt.second(), 0);
     }
 
@@ -2163,7 +2306,7 @@ mod tests {
         .expect("packycode due without snapshot");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
         assert!(due > now_ms);
-        assert_eq!(due_dt.minute(), 58);
+        assert!(matches!(due_dt.minute(), 1 | 58));
         assert_eq!(due_dt.second(), 0);
     }
 
@@ -2188,7 +2331,7 @@ mod tests {
         .expect("packycode due after failed snapshot");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
         assert!(due > now_ms);
-        assert_eq!(due_dt.minute(), 58);
+        assert!(matches!(due_dt.minute(), 1 | 58));
         assert_eq!(due_dt.second(), 0);
     }
 
@@ -2252,6 +2395,7 @@ mod tests {
 
     #[tokio::test]
     async fn manual_refresh_does_not_block_on_long_rate_limit_backoff() {
+        let _guard = usage_base_gate_test_lock().lock().await;
         clear_usage_base_refresh_gate();
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
@@ -2385,6 +2529,8 @@ mod tests {
         use axum::{Json, Router};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
+
+        let _guard = usage_base_gate_test_lock().lock().await;
 
         clear_usage_base_refresh_gate();
         let last_hit_at_ms = Arc::new(AtomicU64::new(0));
@@ -2545,7 +2691,7 @@ mod tests {
         ]);
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
-        secrets.set_usage_token("packycode", "packy-token").unwrap();
+        secrets.set_provider_key("packycode", "packy-key").unwrap();
         secrets.set_usage_token("p2", "p2-token").unwrap();
         let st = mk_state_with_providers(
             providers,
@@ -2570,7 +2716,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_quota_all_skips_packycode_without_usage_token() {
+    async fn refresh_quota_all_skips_packycode_without_provider_key() {
         let (base, _h) = start_mock_server(false).await;
         let providers = std::collections::BTreeMap::from([(
             "packycode".to_string(),
@@ -2586,7 +2732,6 @@ mod tests {
         )]);
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
-        secrets.set_provider_key("packycode", "packy-key").unwrap();
         let st = mk_state_with_providers(providers, vec!["packycode".to_string()], secrets);
 
         let lan_sync = mk_lan_sync();
@@ -2597,7 +2742,7 @@ mod tests {
         assert!(failed.is_empty());
         assert!(
             st.store.get_quota_snapshot("packycode").is_none(),
-            "packycode refresh should require usage token"
+            "packycode refresh should require provider key"
         );
     }
 

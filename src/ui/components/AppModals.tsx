@@ -43,6 +43,7 @@ import { GatewayTokenModal } from './GatewayTokenModal'
 import { ConfigModal } from './ConfigModal'
 import { RawConfigModal } from './RawConfigModal'
 import { CodexSwapModal } from './CodexSwapModal'
+import { ModalBackdrop } from './ModalBackdrop'
 
 type RotateGatewayTokenResult = {
   token: string
@@ -62,6 +63,10 @@ type ScheduleCurrencyMenuState = {
   left: number
   top: number
   width: number
+} | null
+
+type PendingTrackedRemoval = {
+  row: SpendHistoryRow
 } | null
 
 type Props = {
@@ -102,6 +107,11 @@ type Props = {
   requestLanPair: (nodeId: string) => Promise<string | null>
   approveLanPair: (requestId: string) => Promise<string | null>
   submitLanPairPin: (nodeId: string, requestId: string, pinCode: string) => Promise<void>
+  requestLanRemoteUpdateSameVersion: (nodeId: string) => Promise<void>
+  lanRemoteUpdatePendingByNode: Record<
+    string,
+    { stage: 'requesting' | 'refreshing'; detail: string; startedAtUnixMs: number }
+  >
   openProviderGroupManager: (provider?: string) => void
   setConfigModalOpen: Dispatch<SetStateAction<boolean>>
   rawConfigModalOpen: boolean
@@ -134,6 +144,7 @@ type Props = {
   setUsageHistoryModalOpen: Dispatch<SetStateAction<boolean>>
   usageHistoryLoading: boolean
   usageHistoryRows: SpendHistoryRow[]
+  setUsageHistoryRows: Dispatch<SetStateAction<SpendHistoryRow[]>>
   usageHistoryDrafts: Record<string, UsageHistoryDraft>
   usageHistoryEditCell: string | null
   setUsageHistoryDrafts: Dispatch<SetStateAction<Record<string, UsageHistoryDraft>>>
@@ -245,6 +256,7 @@ export function AppModals(props: Props) {
   const [draftCodexSwapDir2, setDraftCodexSwapDir2] = useState('')
   const [draftCodexSwapUseWindows, setDraftCodexSwapUseWindows] = useState(false)
   const [draftCodexSwapUseWsl, setDraftCodexSwapUseWsl] = useState(false)
+  const [pendingTrackedRemoval, setPendingTrackedRemoval] = useState<PendingTrackedRemoval>(null)
   const gatewayPort = normalizeGatewayPort(props.listenPort)
   const codexSwapModalWasOpenRef = useRef(false)
   const {
@@ -285,6 +297,8 @@ export function AppModals(props: Props) {
     requestLanPair,
     approveLanPair,
     submitLanPairPin,
+    requestLanRemoteUpdateSameVersion,
+    lanRemoteUpdatePendingByNode,
     openProviderGroupManager,
     setConfigModalOpen,
     rawConfigModalOpen,
@@ -317,6 +331,7 @@ export function AppModals(props: Props) {
     setUsageHistoryModalOpen,
     usageHistoryLoading,
     usageHistoryRows,
+    setUsageHistoryRows,
     usageHistoryDrafts,
     usageHistoryEditCell,
     setUsageHistoryDrafts,
@@ -579,6 +594,8 @@ requires_openai_auth = true`}
         onRequestPair={requestLanPair}
         onApprovePair={approveLanPair}
         onSubmitPairPin={submitLanPairPin}
+        onSyncPeerVersion={(nodeId) => void requestLanRemoteUpdateSameVersion(nodeId)}
+        remoteUpdatePendingByNode={lanRemoteUpdatePendingByNode}
         onOpenGroupManager={() => openProviderGroupManager()}
         onClose={() => setConfigModalOpen(false)}
         providerListRef={providerListRef}
@@ -669,6 +686,9 @@ requires_openai_auth = true`}
             flashToast(String(e), 'error')
           }
         }}
+        onRemoveTrackedRow={async (row) => {
+          setPendingTrackedRemoval({ row })
+        }}
         usageHistoryTableSurfaceRef={usageHistoryTableSurfaceRef}
         usageHistoryTableWrapRef={usageHistoryTableWrapRef}
         usageHistoryScrollbarOverlayRef={usageHistoryScrollbarOverlayRef}
@@ -680,6 +700,86 @@ requires_openai_auth = true`}
         onUsageHistoryScrollbarPointerUp={onUsageHistoryScrollbarPointerUp}
         onUsageHistoryScrollbarLostPointerCapture={onUsageHistoryScrollbarLostPointerCapture}
       />
+      {pendingTrackedRemoval ? (
+        <ModalBackdrop className="aoModalBackdrop aoModalBackdropTop" onClose={() => setPendingTrackedRemoval(null)}>
+          <div className="aoModal aoTrackedRemovalConfirmModal" onClick={(e) => e.stopPropagation()}>
+            <div className="aoTrackedRemovalConfirmTitle">Remove tracked row?</div>
+            <div className="aoTrackedRemovalConfirmText">
+              {pendingTrackedRemoval.row.provider} {pendingTrackedRemoval.row.day_key}
+            </div>
+            <div className="aoTrackedRemovalConfirmSub">This removes all tracked entries merged into this daily row.</div>
+            <div className="aoTrackedRemovalConfirmSummary" aria-label="Tracked row summary">
+              <div className="aoTrackedRemovalConfirmSummaryRow">
+                <span className="aoTrackedRemovalConfirmSummaryItem">
+                  <span className="aoTrackedRemovalConfirmSummaryLabel">Req</span>
+                  <span className="aoTrackedRemovalConfirmSummaryValue">
+                    {(pendingTrackedRemoval.row.req_count ?? 0).toLocaleString()}
+                  </span>
+                </span>
+                <span className="aoTrackedRemovalConfirmSummaryItem">
+                  <span className="aoTrackedRemovalConfirmSummaryLabel">Tokens</span>
+                  <span className="aoTrackedRemovalConfirmSummaryValue">
+                    {(pendingTrackedRemoval.row.total_tokens ?? 0).toLocaleString()}
+                  </span>
+                </span>
+              </div>
+              <div className="aoTrackedRemovalConfirmSummaryRow">
+                <span className="aoTrackedRemovalConfirmSummaryItem">
+                  <span className="aoTrackedRemovalConfirmSummaryLabel">Tracked $</span>
+                  <span className="aoTrackedRemovalConfirmSummaryValue">
+                    {formatUsdMaybe(pendingTrackedRemoval.row.tracked_total_usd ?? null)}
+                  </span>
+                </span>
+                <span className="aoTrackedRemovalConfirmSummaryItem">
+                  <span className="aoTrackedRemovalConfirmSummaryLabel">Effective $</span>
+                  <span className="aoTrackedRemovalConfirmSummaryValue">
+                    {formatUsdMaybe(pendingTrackedRemoval.row.effective_total_usd ?? null)}
+                  </span>
+                </span>
+              </div>
+            </div>
+            <div className="aoTrackedRemovalConfirmActions">
+              <button className="aoBtn" onClick={() => setPendingTrackedRemoval(null)}>
+                Cancel
+              </button>
+              <button
+                className="aoBtn aoBtnDanger"
+                onClick={async () => {
+                  const { row } = pendingTrackedRemoval
+                  try {
+                    setUsageHistoryEditCell(null)
+                    const key = `${row.provider}|${row.day_key}`
+                    if (isDevPreview) {
+                      setUsageHistoryRows((prev) =>
+                        prev.filter((entry) => !(entry.provider === row.provider && entry.day_key === row.day_key)),
+                      )
+                      setUsageHistoryDrafts((prev) => {
+                        const next = { ...prev }
+                        delete next[key]
+                        return next
+                      })
+                      flashToast(`Removed tracked row: ${row.provider} ${row.day_key}`)
+                    } else {
+                      const removed = await invoke<number>('remove_tracked_spend_history_entries', {
+                        provider: row.provider,
+                        dayKey: row.day_key,
+                      })
+                      await refreshUsageHistory({ silent: true })
+                      await refreshUsageStatistics({ silent: true })
+                      flashToast(`Removed ${removed} tracked entry(s): ${row.provider} ${row.day_key}`)
+                    }
+                    setPendingTrackedRemoval(null)
+                  } catch (e) {
+                    flashToast(String(e), 'error')
+                  }
+                }}
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+        </ModalBackdrop>
+      ) : null}
 
       <UsagePricingModal
         open={usagePricingModalOpen}
