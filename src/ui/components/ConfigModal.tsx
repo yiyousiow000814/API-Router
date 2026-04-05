@@ -101,6 +101,7 @@ function remoteUpdateStateLabel(source: ConfigSource): string | null {
   if (state === 'running') return 'Updating'
   if (state === 'failed') return 'Update failed'
   if (state === 'succeeded') return 'Updated'
+  if (state === 'superseded') return 'Replaced'
   return state
 }
 
@@ -143,6 +144,12 @@ function remoteUpdateDetailText(source: ConfigSource): string {
   }
   if (status.state === 'succeeded') {
     return detail || `Remote update to ${formatReadableCommitRefs(status.target_ref)} completed.`
+  }
+  if (status.state === 'superseded') {
+    return (
+      detail ||
+      `Queued remote update to ${formatReadableCommitRefs(status.target_ref)} was replaced by a newer installed build.`
+    )
   }
   return detail
 }
@@ -199,6 +206,14 @@ export function remoteUpdateActionState(
     return {
       actionLabel: 'Updated',
       actionDetail: 'Peer matches this build',
+      spinning: false,
+    }
+  }
+  if (remoteState === 'superseded') {
+    return {
+      actionLabel: source.same_version_update_allowed ? 'Update peer' : 'Update blocked',
+      actionDetail:
+        remoteUpdateProgressDetail(source) || 'Last queued update was replaced by another installed build',
       spinning: false,
     }
   }

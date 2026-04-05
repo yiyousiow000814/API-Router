@@ -493,6 +493,36 @@ describe('ConfigModal', () => {
     })
   })
 
+  it('shows replaced stage after a queued update was superseded by another installed build', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'superseded',
+        target_ref: '9910964e24802d327b1500a69f2d4471fb7ac647',
+        detail: 'Queued remote update to 9910964e was replaced by current build ce542b7 after restart/manual update.',
+        finished_at_unix_ms: 1775312828000,
+      },
+    }
+
+    expect(remoteUpdateActionState(source, undefined)).toEqual({
+      actionLabel: 'Update peer',
+      actionDetail: 'Queued remote update to 9910964e was replaced by current build ce542b7 after restart/manual update.',
+      spinning: false,
+    })
+  })
+
   it('only shows a paused summary badge when more than one sync domain is paused', () => {
     const config = buildConfig()
     const baseSource = {

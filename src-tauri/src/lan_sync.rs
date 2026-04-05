@@ -183,9 +183,15 @@ fn normalize_remote_update_status(
     let current_target_ref = normalized_local_build_target_ref();
     let status_target_ref = status.target_ref.trim();
     let state = status.state.trim();
-    if matches!(state, "accepted" | "running")
-        && current_target_ref.as_deref() == Some(status_target_ref)
-    {
+    if !matches!(state, "accepted" | "running") {
+        return status;
+    }
+
+    let Some(current_target_ref) = current_target_ref.as_deref() else {
+        return status;
+    };
+
+    if current_target_ref == status_target_ref {
         let finished_at_unix_ms = unix_ms();
         status.state = "succeeded".to_string();
         status.detail = Some(
@@ -196,7 +202,20 @@ fn normalize_remote_update_status(
             .finished_at_unix_ms
             .get_or_insert(finished_at_unix_ms);
         status.updated_at_unix_ms = finished_at_unix_ms;
+        return status;
     }
+
+    let finished_at_unix_ms = unix_ms();
+    status.state = "superseded".to_string();
+    status.detail = Some(format!(
+        "Queued remote update to {} was replaced by current build {} after restart/manual update.",
+        display_target_ref(status_target_ref),
+        display_target_ref(current_target_ref),
+    ));
+    status
+        .finished_at_unix_ms
+        .get_or_insert(finished_at_unix_ms);
+    status.updated_at_unix_ms = finished_at_unix_ms;
     status
 }
 
@@ -5655,6 +5674,36 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("cleared stale remote update status"));
+        assert!(loaded.finished_at_unix_ms.is_some());
+    }
+
+    #[test]
+    fn load_remote_update_status_marks_mismatched_pending_target_as_superseded() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let user_data_dir = tmp.path().join("user-data");
+        std::fs::create_dir_all(&user_data_dir).expect("create user-data dir");
+        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        let current_target_ref = super::normalized_local_build_target_ref().expect("local target ref");
+        super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
+            state: "accepted".to_string(),
+            target_ref: "9910964e24802d327b1500a69f2d4471fb7ac647".to_string(),
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: None,
+            detail: Some("Queued remote self-update worker".to_string()),
+            accepted_at_unix_ms: 1,
+            started_at_unix_ms: None,
+            finished_at_unix_ms: None,
+            updated_at_unix_ms: 1,
+        })
+        .expect("write accepted status");
+
+        let loaded = super::load_lan_remote_update_status().expect("load status");
+        assert_eq!(loaded.state, "superseded");
+        assert_eq!(loaded.target_ref, "9910964e24802d327b1500a69f2d4471fb7ac647");
+        let detail = loaded.detail.as_deref().unwrap_or_default();
+        assert!(detail.contains("was replaced by current build"));
+        assert!(detail.contains(&current_target_ref[..8]));
         assert!(loaded.finished_at_unix_ms.is_some());
     }
 
