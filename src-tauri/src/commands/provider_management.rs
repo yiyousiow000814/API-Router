@@ -512,6 +512,17 @@ pub(crate) async fn request_lan_remote_update_same_version(
 }
 
 #[tauri::command]
+pub(crate) async fn fetch_lan_peer_remote_update_debug(
+    state: tauri::State<'_, app_state::AppState>,
+    node_id: String,
+) -> Result<crate::lan_sync::LanRemoteUpdateDebugResponsePacket, String> {
+    state
+        .lan_sync
+        .fetch_peer_remote_update_debug(&state.gateway, &node_id)
+        .await
+}
+
+#[tauri::command]
 pub(crate) fn set_followed_config_source(
     state: tauri::State<'_, app_state::AppState>,
     node_id: String,

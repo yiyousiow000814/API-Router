@@ -1,6 +1,7 @@
+import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useRef, useState } from 'react'
 import { ModalBackdrop } from './ModalBackdrop'
-import type { Config } from '../types'
+import type { Config, LanRemoteUpdateDebugResponse } from '../types'
 
 type Props = {
   open: boolean
@@ -189,6 +190,10 @@ export function remoteUpdateActionState(
   }
 }
 
+export function keepSourceMenuOpenAfterAction(source: ConfigSource): boolean {
+  return source.kind === 'peer' && Boolean(source.version_sync_required)
+}
+
 export function formatBuildLabel(buildIdentity: BuildIdentity): string {
   const version = buildIdentity?.app_version?.trim() || 'unknown'
   const sha = buildIdentity?.build_git_short_sha?.trim() || 'unknown'
@@ -270,6 +275,9 @@ export function ConfigModal({
 }: Props) {
   const [sourceMenuOpen, setSourceMenuOpen] = useState(false)
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
+  const [remoteUpdateDebugByNode, setRemoteUpdateDebugByNode] = useState<Record<string, LanRemoteUpdateDebugResponse>>({})
+  const [remoteUpdateDebugLoadingByNode, setRemoteUpdateDebugLoadingByNode] = useState<Record<string, boolean>>({})
+  const [remoteUpdateDebugErrorByNode, setRemoteUpdateDebugErrorByNode] = useState<Record<string, string>>({})
   const [pairDialog, setPairDialog] = useState<PairDialogState | null>(null)
   const [pairPinDigits, setPairPinDigits] = useState<string[]>(() => emptyPairPinDigits())
   const [pairDialogBusy, setPairDialogBusy] = useState(false)
@@ -319,6 +327,7 @@ export function ConfigModal({
   )
   const localSource = configSources.find((source) => source.kind === 'local') ?? null
   const peerSources = configSources.filter((source) => source.kind === 'peer')
+  const peerDebugNodeIds = peerSources.map((source) => source.node_id).join('|')
 
   useEffect(() => {
     if (!sourceMenuOpen) return
@@ -384,6 +393,45 @@ export function ConfigModal({
     }, 1000)
     return () => window.clearTimeout(timer)
   }, [pairDialog])
+
+  useEffect(() => {
+    if (!diagnosticsOpen || peerSources.length === 0) return
+    let cancelled = false
+    const loadDebug = async (nodeId: string) => {
+      setRemoteUpdateDebugLoadingByNode((prev) => ({ ...prev, [nodeId]: true }))
+      setRemoteUpdateDebugErrorByNode((prev) => {
+        const next = { ...prev }
+        delete next[nodeId]
+        return next
+      })
+      try {
+        const payload = await invoke<LanRemoteUpdateDebugResponse>('fetch_lan_peer_remote_update_debug', { nodeId })
+        if (cancelled) return
+        setRemoteUpdateDebugByNode((prev) => ({ ...prev, [nodeId]: payload }))
+      } catch (error) {
+        if (cancelled) return
+        setRemoteUpdateDebugErrorByNode((prev) => ({ ...prev, [nodeId]: String(error) }))
+      } finally {
+        if (cancelled) return
+        setRemoteUpdateDebugLoadingByNode((prev) => {
+          const next = { ...prev }
+          delete next[nodeId]
+          return next
+        })
+      }
+    }
+    const refreshAll = () => {
+      peerSources.forEach((source) => {
+        void loadDebug(source.node_id)
+      })
+    }
+    refreshAll()
+    const timer = window.setInterval(refreshAll, 3000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [diagnosticsOpen, peerDebugNodeIds])
 
   async function submitPairPinFromDialog() {
     if (pairDialog?.mode !== 'enter_pin') return
@@ -521,7 +569,9 @@ export function ConfigModal({
                               label
                             }
                             onClick={async () => {
-                              setSourceMenuOpen(false)
+                              if (!keepSourceMenuOpenAfterAction(source)) {
+                                setSourceMenuOpen(false)
+                              }
                               if (source.kind === 'local') {
                                 await onClearFollowSource()
                                 return
@@ -790,6 +840,14 @@ export function ConfigModal({
                     const remoteUpdateStatusLabel = remoteUpdateStateLabel(source)
                     const remoteUpdateDetail = remoteUpdateDetailText(source)
                     const remoteUpdateTime = remoteUpdateTimestampLabel(source)
+                    const remoteUpdateDebug = remoteUpdateDebugByNode[source.node_id]
+                    const remoteUpdateDebugLoading = Boolean(remoteUpdateDebugLoadingByNode[source.node_id])
+                    const remoteUpdateDebugError = remoteUpdateDebugErrorByNode[source.node_id] ?? ''
+                    const debugStatus = remoteUpdateDebug?.remote_update_status ?? null
+                    const debugStatusTime = formatCommitDate(debugStatus?.updated_at_unix_ms ?? null)
+                    const debugReadinessReason =
+                      remoteUpdateDebug?.remote_update_readiness.blocked_reason?.trim() ?? ''
+                    const debugLogTail = remoteUpdateDebug?.log_tail?.trim() ?? ''
                     return (
                       <div key={source.node_id} className="aoCard aoConfigDiagCard">
                         <div className="aoConfigDiagCardHead">
@@ -844,6 +902,60 @@ export function ConfigModal({
                                 ) : null}
                                 {remoteUpdateTime && remoteUpdateTime !== 'Unknown' ? (
                                   <div className="aoConfigDiagRemoteUpdateTime">{remoteUpdateTime}</div>
+                                ) : null}
+                              </div>
+                            </div>
+                          ) : null}
+                          {remoteUpdateDebugLoading || remoteUpdateDebugError || remoteUpdateDebug ? (
+                            <div className="aoConfigDiagSection">
+                              <div className="aoConfigDiagSectionLabel">Debug</div>
+                              <div className="aoConfigDiagRemoteUpdateBlock">
+                                {remoteUpdateDebugLoading ? (
+                                  <div className="aoConfigDiagRemoteUpdateDetail">Checking peer remote update state...</div>
+                                ) : null}
+                                {remoteUpdateDebugError ? (
+                                  <div className="aoConfigDiagWhyText">{remoteUpdateDebugError}</div>
+                                ) : null}
+                                {remoteUpdateDebug ? (
+                                  <>
+                                    <div className="aoConfigDiagRemoteUpdateState">
+                                      {debugStatus?.state?.trim() ? `Peer reports ${debugStatus.state}` : 'Peer reports no active remote update'}
+                                    </div>
+                                    {debugStatus?.detail?.trim() ? (
+                                      <div className="aoConfigDiagRemoteUpdateDetail">{debugStatus.detail.trim()}</div>
+                                    ) : null}
+                                    {debugStatusTime && debugStatusTime !== 'Unknown' ? (
+                                      <div className="aoConfigDiagRemoteUpdateTime">{debugStatusTime}</div>
+                                    ) : null}
+                                    {debugReadinessReason ? (
+                                      <div className="aoConfigDiagRemoteUpdateDetail">{debugReadinessReason}</div>
+                                    ) : null}
+                                    {remoteUpdateDebug.status_path ? (
+                                      <div className="aoConfigDiagRemoteUpdateDetail">
+                                        Status file: {remoteUpdateDebug.status_file_exists ? remoteUpdateDebug.status_path : `${remoteUpdateDebug.status_path} (missing)`}
+                                      </div>
+                                    ) : null}
+                                    {remoteUpdateDebug.log_path ? (
+                                      <div className="aoConfigDiagRemoteUpdateDetail">
+                                        Log file: {remoteUpdateDebug.log_file_exists ? remoteUpdateDebug.log_path : `${remoteUpdateDebug.log_path} (missing)`}
+                                      </div>
+                                    ) : null}
+                                    {debugLogTail ? (
+                                      <pre
+                                        className="aoConfigDiagWhyText"
+                                        style={{
+                                          margin: '8px 0 0',
+                                          padding: '10px 12px',
+                                          whiteSpace: 'pre-wrap',
+                                          overflowWrap: 'anywhere',
+                                          background: 'rgba(10, 16, 28, 0.04)',
+                                          borderRadius: 10,
+                                        }}
+                                      >
+                                        {debugLogTail}
+                                      </pre>
+                                    ) : null}
+                                  </>
                                 ) : null}
                               </div>
                             </div>

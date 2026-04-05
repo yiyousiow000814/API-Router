@@ -13,6 +13,29 @@ function Get-RemoteUpdateStatusPath {
   return Join-Path $env:API_ROUTER_USER_DATA_DIR 'diagnostics\lan-remote-update-status.json'
 }
 
+function Get-RemoteUpdateLogPath {
+  $explicit = $env:API_ROUTER_REMOTE_UPDATE_LOG_PATH
+  if ($explicit) { return $explicit }
+  if (-not $env:API_ROUTER_USER_DATA_DIR) { return $null }
+  return Join-Path $env:API_ROUTER_USER_DATA_DIR 'diagnostics\lan-remote-update.log'
+}
+
+function Write-RemoteUpdateLog {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Message
+  )
+
+  $logPath = Get-RemoteUpdateLogPath
+  if (-not $logPath) { return }
+  $parent = Split-Path -Parent $logPath
+  if ($parent) {
+    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+  }
+  $timestamp = [DateTimeOffset]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss.fff UTC')
+  Add-Content -Path $logPath -Value "[$timestamp] $Message" -Encoding UTF8
+}
+
 function Write-RemoteUpdateStatus {
   param(
     [Parameter(Mandatory = $true)]
@@ -93,14 +116,17 @@ Start-Sleep -Seconds 1
 
 $startedAtUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $currentStep = 'Preparing worker'
+Write-RemoteUpdateLog "Starting remote self-update for target ref $TargetRef"
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep "Starting remote self-update worker.") -StartedAtUnixMs $startedAtUnixMs
 
 try {
 $currentStep = 'Checking git worktree'
+Write-RemoteUpdateLog $currentStep
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep) -StartedAtUnixMs $startedAtUnixMs
 Assert-CleanWorktree
 
 $currentStep = 'Fetching from origin'
+Write-RemoteUpdateLog $currentStep
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep) -StartedAtUnixMs $startedAtUnixMs
 & git fetch origin --prune --tags
 if ($LASTEXITCODE -ne 0) {
@@ -108,39 +134,47 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $currentStep = 'Resolving target ref'
+Write-RemoteUpdateLog "$currentStep: $TargetRef"
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep "Target $TargetRef") -StartedAtUnixMs $startedAtUnixMs
 $target = Resolve-CheckoutTarget $TargetRef
 if ($target.Mode -eq 'local_branch') {
   $currentStep = 'Checking out local branch'
+  Write-RemoteUpdateLog "$currentStep: $($target.Value)"
   Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $target.Value) -StartedAtUnixMs $startedAtUnixMs
   & git checkout $target.Value
   if ($LASTEXITCODE -ne 0) { throw "git checkout failed: $($target.Value)" }
   $currentStep = 'Pulling latest branch'
+  Write-RemoteUpdateLog "$currentStep: $($target.Value)"
   Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $target.Value) -StartedAtUnixMs $startedAtUnixMs
   & git pull --ff-only origin $target.Value
   if ($LASTEXITCODE -ne 0) { throw "git pull failed: $($target.Value)" }
 } elseif ($target.Mode -eq 'remote_branch') {
   $currentStep = 'Checking out remote branch'
+  Write-RemoteUpdateLog "$currentStep: $($target.Value)"
   Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $target.Value) -StartedAtUnixMs $startedAtUnixMs
   & git checkout -B $target.Value "refs/remotes/origin/$($target.Value)"
   if ($LASTEXITCODE -ne 0) { throw "git checkout -B failed: $($target.Value)" }
 } else {
   $currentStep = 'Checking out commit'
+  Write-RemoteUpdateLog "$currentStep: $($target.Value)"
   Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $target.Value) -StartedAtUnixMs $startedAtUnixMs
   & git checkout --detach $target.Value
   if ($LASTEXITCODE -ne 0) { throw "git checkout --detach failed: $($target.Value)" }
 }
 
 $currentStep = 'Building checked EXE'
+Write-RemoteUpdateLog "$currentStep: npm run build:root-exe:checked"
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep 'Running npm run build:root-exe:checked') -StartedAtUnixMs $startedAtUnixMs
 & npm.cmd run build:root-exe:checked
 if ($LASTEXITCODE -ne 0) {
   throw 'npm run build:root-exe:checked failed'
 }
 $currentStep = 'Completed'
+Write-RemoteUpdateLog 'Remote self-update completed successfully.'
 Write-RemoteUpdateStatus -State 'succeeded' -TargetRef $TargetRef -Detail (Step-Detail $currentStep 'Remote self-update completed successfully.') -StartedAtUnixMs $startedAtUnixMs -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
 } catch {
   $message = $_.Exception.Message
+  Write-RemoteUpdateLog "$currentStep failed: $message"
   Write-RemoteUpdateStatus -State 'failed' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $message) -StartedAtUnixMs $startedAtUnixMs -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
   throw
 }

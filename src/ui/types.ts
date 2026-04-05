@@ -216,6 +216,47 @@ export type ProviderSwitchboardStatus = {
   provider_options?: string[]
 }
 
+export type LanRemoteUpdateDebugResponse = {
+  ok: boolean
+  version: number
+  node_id: string
+  node_name: string
+  remote_update_readiness: {
+    ready: boolean
+    blocked_reason?: string | null
+    checked_at_unix_ms?: number
+  }
+  remote_update_status?: {
+    state: 'accepted' | 'running' | 'failed' | 'succeeded' | string
+    target_ref: string
+    requester_node_id?: string | null
+    requester_node_name?: string | null
+    worker_script?: string | null
+    detail?: string | null
+    accepted_at_unix_ms?: number
+    started_at_unix_ms?: number | null
+    finished_at_unix_ms?: number | null
+    updated_at_unix_ms?: number
+  } | null
+  status_path?: string | null
+  status_file_exists: boolean
+  log_path?: string | null
+  log_file_exists: boolean
+  log_tail?: string | null
+  local_build_identity: {
+    app_version: string
+    build_git_sha: string
+    build_git_short_sha: string
+    build_git_commit_unix_ms?: number | null
+  }
+  local_version_sync: {
+    target_ref?: string | null
+    git_worktree_clean: boolean
+    update_to_local_build_allowed: boolean
+    blocked_reason?: string | null
+  }
+}
+
 export type Config = {
   listen: { host: string; port: number }
   routing: {

@@ -685,6 +685,7 @@ pub fn run() {
             commands::submit_lan_pair_pin,
             commands::request_lan_remote_update,
             commands::request_lan_remote_update_same_version,
+            commands::fetch_lan_peer_remote_update_debug,
             commands::set_followed_config_source,
             commands::clear_followed_config_source,
             commands::copy_provider_from_config_source,

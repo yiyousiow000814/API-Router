@@ -113,7 +113,7 @@ pub(crate) fn current_build_identity() -> LanBuildIdentitySnapshot {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LanLocalVersionSyncSnapshot {
     pub target_ref: Option<String>,
     pub git_worktree_clean: bool,
@@ -164,6 +164,19 @@ fn lan_remote_update_status_path() -> Option<std::path::PathBuf> {
     )
 }
 
+fn lan_remote_update_log_path() -> Option<std::path::PathBuf> {
+    let user_data_dir = std::env::var("API_ROUTER_USER_DATA_DIR").ok()?;
+    let trimmed = user_data_dir.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(
+        std::path::PathBuf::from(trimmed)
+            .join("diagnostics")
+            .join("lan-remote-update.log"),
+    )
+}
+
 fn load_lan_remote_update_status() -> Option<LanRemoteUpdateStatusSnapshot> {
     let path = lan_remote_update_status_path()?;
     let bytes = std::fs::read(path).ok()?;
@@ -172,6 +185,18 @@ fn load_lan_remote_update_status() -> Option<LanRemoteUpdateStatusSnapshot> {
 
 pub(crate) fn load_lan_remote_update_status_public() -> Option<LanRemoteUpdateStatusSnapshot> {
     load_lan_remote_update_status()
+}
+
+fn read_remote_update_log_tail(max_bytes: usize) -> Option<String> {
+    let path = lan_remote_update_log_path()?;
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let start = bytes.len().saturating_sub(max_bytes.max(1));
+    let text = String::from_utf8_lossy(&bytes[start..]).to_string();
+    let trimmed = text.trim().to_string();
+    (!trimmed.is_empty()).then_some(trimmed)
 }
 
 fn write_lan_remote_update_status(status: &LanRemoteUpdateStatusSnapshot) -> Result<(), String> {
@@ -207,6 +232,15 @@ fn current_remote_update_status_block_reason() -> Option<String> {
     } else {
         format!("This machine is already processing a remote update to {target_ref}: {detail}")
     })
+}
+
+fn display_target_ref(target_ref: &str) -> &str {
+    let trimmed = target_ref.trim();
+    if trimmed.len() > 12 {
+        &trimmed[..12]
+    } else {
+        trimmed
+    }
 }
 
 fn normalized_local_build_target_ref() -> Option<String> {
@@ -716,6 +750,12 @@ pub(crate) struct LanTrackedSpendHistoryDebugRequestPacket {
     limit: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LanRemoteUpdateDebugRequestPacket {
+    version: u8,
+    node_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct LanTrackedSpendHistoryDiagnosticRow {
     pub producer_node_id: String,
@@ -745,6 +785,23 @@ pub(crate) struct LanTrackedSpendHistoryDebugResponsePacket {
     pub remote_rows: Vec<LanTrackedSpendHistoryDiagnosticRow>,
     pub recent_edit_events: Vec<crate::orchestrator::store::LanEditSyncEvent>,
     pub recent_remove_events: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct LanRemoteUpdateDebugResponsePacket {
+    pub ok: bool,
+    pub version: u8,
+    pub node_id: String,
+    pub node_name: String,
+    pub remote_update_readiness: LanRemoteUpdateReadinessSnapshot,
+    pub remote_update_status: Option<LanRemoteUpdateStatusSnapshot>,
+    pub status_path: Option<String>,
+    pub status_file_exists: bool,
+    pub log_path: Option<String>,
+    pub log_file_exists: bool,
+    pub log_tail: Option<String>,
+    pub local_build_identity: LanBuildIdentitySnapshot,
+    pub local_version_sync: LanLocalVersionSyncSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1456,12 +1513,13 @@ impl LanSyncRuntime {
                 peer.node_name
             ));
         }
+        let display_target_ref = display_target_ref(normalized_target_ref);
         gateway.store.add_event(
             "gateway",
             "info",
             "lan.remote_update_requested",
             &format!(
-                "Requested {} to self-update to {normalized_target_ref}",
+                "Requested {} to self-update to {display_target_ref}",
                 peer.node_name
             ),
             serde_json::json!({
@@ -1482,6 +1540,80 @@ impl LanSyncRuntime {
         let target_ref = local_version_sync_target_ref(&version_sync)?;
         self.request_peer_remote_update(gateway, node_id, target_ref)
             .await
+    }
+
+    pub async fn fetch_peer_remote_update_debug(
+        &self,
+        gateway: &crate::orchestrator::gateway::GatewayState,
+        node_id: &str,
+    ) -> Result<LanRemoteUpdateDebugResponsePacket, String> {
+        let normalized_node_id = node_id.trim();
+        if normalized_node_id.is_empty() {
+            return Err("node_id is required".to_string());
+        }
+        let peer = self
+            .live_peer_by_node_id(normalized_node_id)
+            .ok_or_else(|| format!("peer is not reachable on LAN: {normalized_node_id}"))?;
+        if !peer_supports_http_sync(&peer, LAN_DEBUG_CAPABILITY) {
+            return Err(format!(
+                "{} does not support LAN debug yet. Update that machine first.",
+                peer.node_name
+            ));
+        }
+        let base_url = peer_http_base_url(&peer)
+            .ok_or_else(|| format!("peer has no valid LAN address: {normalized_node_id}"))?;
+        let trust_secret = current_lan_trust_secret(gateway)?;
+        let response = lan_sync_http_client()
+            .post(format!("{base_url}/lan-sync/debug/remote-update"))
+            .header(
+                LAN_SYNC_AUTH_NODE_ID_HEADER,
+                self.local_node.node_id.clone(),
+            )
+            .header(LAN_SYNC_AUTH_SECRET_HEADER, trust_secret)
+            .json(&LanRemoteUpdateDebugRequestPacket {
+                version: 1,
+                node_id: self.local_node.node_id.clone(),
+            })
+            .send()
+            .await
+            .map_err(|err| {
+                let detail = format_lan_sync_reqwest_error(&err);
+                self.note_http_sync_probe(
+                    &peer,
+                    "/lan-sync/debug/remote-update",
+                    "request_error",
+                    &detail,
+                );
+                format!("LAN remote update debug request failed: {detail}")
+            })?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            let detail = format!("LAN remote update debug http {status}: {body}");
+            self.note_http_sync_probe(
+                &peer,
+                "/lan-sync/debug/remote-update",
+                "http_error",
+                &detail,
+            );
+            return Err(detail);
+        }
+        let packet = response
+            .json::<LanRemoteUpdateDebugResponsePacket>()
+            .await
+            .map_err(|err| {
+                let detail = format_lan_sync_reqwest_error(&err);
+                self.note_http_sync_probe(
+                    &peer,
+                    "/lan-sync/debug/remote-update",
+                    "decode_error",
+                    &detail,
+                );
+                format!("LAN remote update debug response decode failed: {detail}")
+            })?;
+        let _ =
+            self.note_http_sync_probe(&peer, "/lan-sync/debug/remote-update", "ok", "HTTP sync ok");
+        Ok(packet)
     }
 
     pub fn local_node_id(&self) -> String {
@@ -1710,6 +1842,7 @@ pub(crate) async fn lan_sync_remote_update_http(
         packet.node_name.as_deref(),
     ) {
         Ok(worker_script) => {
+            let display_target_ref = display_target_ref(normalized_target_ref);
             let _ = write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
                 worker_script: Some(worker_script.clone()),
                 detail: Some("Remote self-update worker started".to_string()),
@@ -1720,7 +1853,7 @@ pub(crate) async fn lan_sync_remote_update_http(
                 "warning",
                 "lan.remote_update_accepted",
                 &format!(
-                    "Accepted remote update request to {normalized_target_ref}; local self-update worker started"
+                    "Accepted remote update request to {display_target_ref}; local self-update worker started"
                 ),
                 serde_json::json!({
                     "requester_node_id": packet.node_id,
@@ -1757,6 +1890,41 @@ pub(crate) async fn lan_sync_remote_update_http(
                 .into_response()
         }
     }
+}
+
+pub(crate) async fn lan_sync_remote_update_debug_http(
+    State(gateway): State<crate::orchestrator::gateway::GatewayState>,
+    headers: HeaderMap,
+    Json(packet): Json<LanRemoteUpdateDebugRequestPacket>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize_lan_sync_http_request(&gateway, &headers, &packet.node_id) {
+        return err.into_response();
+    }
+    let node = gateway.secrets.get_lan_node_identity();
+    let status_path = lan_remote_update_status_path();
+    let log_path = lan_remote_update_log_path();
+    Json(serde_json::json!(LanRemoteUpdateDebugResponsePacket {
+        ok: true,
+        version: 1,
+        node_id: node
+            .as_ref()
+            .map(|value| value.node_id.clone())
+            .unwrap_or_default(),
+        node_name: node
+            .as_ref()
+            .map(|value| value.node_name.clone())
+            .unwrap_or_default(),
+        remote_update_readiness: current_local_remote_update_readiness(),
+        remote_update_status: load_lan_remote_update_status(),
+        status_file_exists: status_path.as_ref().is_some_and(|path| path.is_file()),
+        status_path: status_path.map(|path| path.display().to_string()),
+        log_file_exists: log_path.as_ref().is_some_and(|path| path.is_file()),
+        log_path: log_path.map(|path| path.display().to_string()),
+        log_tail: read_remote_update_log_tail(6_000),
+        local_build_identity: current_build_identity(),
+        local_version_sync: current_local_version_sync_snapshot(),
+    }))
+    .into_response()
 }
 
 fn tracked_spend_history_day_key_for_debug(day: &Value) -> Option<String> {
@@ -3979,6 +4147,9 @@ fn spawn_remote_update_worker(
     if let Some(path) = status_path {
         command.env("API_ROUTER_REMOTE_UPDATE_STATUS_PATH", path);
     }
+    if let Some(path) = lan_remote_update_log_path() {
+        command.env("API_ROUTER_REMOTE_UPDATE_LOG_PATH", path);
+    }
     command.env("API_ROUTER_REMOTE_UPDATE_TARGET_REF", target_ref);
     command.env(
         "API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_ID",
@@ -5079,6 +5250,7 @@ mod tests {
         tracked_spend_day_entity_id, LanEditSyncRequestPacket, LanHeartbeatPacket,
         LanLocalVersionSyncSnapshot, LanNodeIdentity, LanPeerSnapshot,
         LanProviderDefinitionSyncItem, LanProviderDefinitionsRequestPacket,
+        LanRemoteUpdateDebugRequestPacket, LanRemoteUpdateDebugResponsePacket,
         LanRemoteUpdateReadinessSnapshot, LanRemoteUpdateRequestPacket,
         LanRemoteUpdateStatusSnapshot, LanSyncPacket, LanSyncRuntime,
         LanTrackedSpendHistoryDebugRequestPacket, LanTrackedSpendHistoryDebugResponsePacket,
@@ -5341,6 +5513,75 @@ mod tests {
 
         let snapshot = runtime.snapshot(4_000, &cfg, &secrets);
         assert_eq!(snapshot.local_node.remote_update_status, Some(status));
+    }
+
+    #[test]
+    fn remote_update_debug_http_returns_status_and_log_tail() {
+        let (_tmp, state) = build_test_state();
+        let trust_secret = state
+            .secrets
+            .ensure_lan_trust_secret()
+            .expect("trust secret");
+        state
+            .secrets
+            .set_lan_node_trusted("node-remote", true)
+            .expect("trust peer");
+        let user_data_dir = state
+            .config_path
+            .parent()
+            .expect("config parent")
+            .to_path_buf();
+        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "running".to_string(),
+            target_ref: "abc123".to_string(),
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some("scripts/lan-remote-update.ps1".to_string()),
+            detail: Some("Fetching from origin".to_string()),
+            accepted_at_unix_ms: 1,
+            started_at_unix_ms: Some(2),
+            finished_at_unix_ms: None,
+            updated_at_unix_ms: 3,
+        };
+        super::write_lan_remote_update_status(&status).expect("write remote update status");
+        let log_path = super::lan_remote_update_log_path().expect("log path");
+        std::fs::create_dir_all(log_path.parent().expect("log dir")).expect("create log dir");
+        std::fs::write(&log_path, "step 1\nstep 2\nfatal: git fetch failed\n").expect("write log");
+
+        let response = tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(async {
+                super::lan_sync_remote_update_debug_http(
+                    State(state.gateway.clone()),
+                    lan_sync_headers("node-remote", &trust_secret),
+                    Json(LanRemoteUpdateDebugRequestPacket {
+                        version: 1,
+                        node_id: "node-remote".to_string(),
+                    }),
+                )
+                .await
+                .into_response()
+            });
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(async {
+                to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("body")
+            });
+        let payload: LanRemoteUpdateDebugResponsePacket =
+            serde_json::from_slice(&body).expect("remote update debug json");
+        assert!(payload.ok);
+        assert_eq!(payload.remote_update_status, Some(status));
+        assert!(payload.status_file_exists);
+        assert!(payload.log_file_exists);
+        assert!(payload
+            .log_tail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("fatal: git fetch failed"));
     }
 
     #[test]

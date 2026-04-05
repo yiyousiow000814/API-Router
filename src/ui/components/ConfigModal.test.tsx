@@ -5,6 +5,7 @@ import {
   diagnosticsWhyText,
   formatBuildLabel,
   formatCommitDate,
+  keepSourceMenuOpenAfterAction,
   remoteUpdateActionState,
   syncPauseSummaryLabel,
 } from './ConfigModal'
@@ -378,6 +379,58 @@ describe('ConfigModal', () => {
       actionDetail: 'Queued remote self-update worker',
       spinning: true,
     })
+  })
+
+  it('keeps the source menu open for peer update actions only', () => {
+    expect(
+      keepSourceMenuOpenAfterAction({
+        kind: 'peer',
+        node_id: 'node-b',
+        node_name: 'Desk B',
+        active: false,
+        trusted: true,
+        follow_allowed: false,
+        follow_blocked_reason: null,
+        using_count: 1,
+        version_sync_required: true,
+        version_sync_reason: 'Desk B requires update.',
+        same_version_update_allowed: true,
+        same_version_update_blocked_reason: null,
+      }),
+    ).toBe(true)
+
+    expect(
+      keepSourceMenuOpenAfterAction({
+        kind: 'peer',
+        node_id: 'node-c',
+        node_name: 'Desk C',
+        active: false,
+        trusted: true,
+        follow_allowed: true,
+        follow_blocked_reason: null,
+        using_count: 0,
+        version_sync_required: false,
+        version_sync_reason: null,
+        same_version_update_allowed: false,
+        same_version_update_blocked_reason: null,
+      }),
+    ).toBe(false)
+
+    expect(
+      keepSourceMenuOpenAfterAction({
+        kind: 'local',
+        node_id: 'node-local',
+        node_name: 'Local',
+        active: true,
+        follow_allowed: false,
+        follow_blocked_reason: null,
+        using_count: 1,
+        version_sync_required: false,
+        version_sync_reason: null,
+        same_version_update_allowed: false,
+        same_version_update_blocked_reason: null,
+      }),
+    ).toBe(false)
   })
 
   it('shows concrete running step details while peer update is executing', () => {
