@@ -5,6 +5,7 @@ import type { Config, LanRemoteUpdateDebugResponse } from '../types'
 import {
   isRemoteUpdateStatusCurrentForPending,
   remoteUpdateStatusObservedAtUnixMs,
+  remoteUpdateStatusObservedAtUnixMsFromStatus,
   type RemoteUpdatePendingStage,
 } from '../utils/remoteUpdateStatus'
 
@@ -46,6 +47,7 @@ type PairDialogState =
 
 type ConfigSource = NonNullable<Config['config_source']>['sources'][number]
 type BuildIdentity = NonNullable<ConfigSource['build_identity']>
+type RemoteUpdateStatusSnapshot = NonNullable<ConfigSource['remote_update_status']>
 
 function normalizePinInput(value: string): string {
   return value.replace(/\D+/g, '').slice(0, 6)
@@ -173,6 +175,30 @@ export function shouldShowDiagnosticsRemoteUpdateStatus(
 
 function remoteUpdateProgressDetail(source: ConfigSource): string {
   return formatReadableCommitRefs(source.remote_update_status?.detail?.trim() || '')
+}
+
+export function effectiveRemoteUpdateStatus(
+  source: ConfigSource,
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+): RemoteUpdateStatusSnapshot | null {
+  const sourceStatus = source.remote_update_status ?? null
+  const debugStatus = remoteUpdateDebug?.remote_update_status ?? null
+  if (!debugStatus?.state?.trim()) return sourceStatus
+  const sourceObservedAtUnixMs = remoteUpdateStatusObservedAtUnixMsFromStatus(sourceStatus)
+  const debugObservedAtUnixMs = remoteUpdateStatusObservedAtUnixMsFromStatus(debugStatus)
+  return debugObservedAtUnixMs >= sourceObservedAtUnixMs ? debugStatus : sourceStatus
+}
+
+export function withEffectiveRemoteUpdateStatus(
+  source: ConfigSource,
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+): ConfigSource {
+  const nextStatus = effectiveRemoteUpdateStatus(source, remoteUpdateDebug)
+  if (nextStatus === source.remote_update_status) return source
+  return {
+    ...source,
+    remote_update_status: nextStatus,
+  }
 }
 
 function latestRemoteUpdateTimelineEntry(
@@ -726,6 +752,13 @@ export function ConfigModal({
     'local-fallback'
   const selectedConfigSource =
     configSources.find((source) => source.node_id === selectedConfigSourceValue) ?? configSources[0]
+  const effectiveSelectedConfigSource =
+    selectedConfigSource?.kind === 'peer'
+      ? withEffectiveRemoteUpdateStatus(
+          selectedConfigSource,
+          remoteUpdateDebugByNode[selectedConfigSource.node_id],
+        )
+      : selectedConfigSource
   const selectedUsingCount = selectedConfigSource?.using_count ?? 0
   const selectedUsingLabel =
     selectedUsingCount > 0
@@ -735,15 +768,21 @@ export function ConfigModal({
       : ''
   const localSource = configSources.find((source) => source.kind === 'local') ?? null
   const localBuildSha = localSource?.build_identity?.build_git_sha ?? null
-  const issueSources = configSources.filter(
+  const peerSources = configSources.filter((source) => source.kind === 'peer')
+  const effectivePeerSources = peerSources.map((source) =>
+    withEffectiveRemoteUpdateStatus(source, remoteUpdateDebugByNode[source.node_id]),
+  )
+  const issueSources = effectivePeerSources.filter(
     (source) =>
-      source.kind === 'peer' &&
       (((source.sync_blocked_domains?.length ?? 0) > 0) ||
         (source.version_sync_required && !source.same_version_update_allowed) ||
         remoteUpdateIndicatesIssue(source, localBuildSha)),
   )
-  const peerSources = configSources.filter((source) => source.kind === 'peer')
   const peerDebugNodeIds = peerSources.map((source) => source.node_id).join('|')
+  const pendingPeerDebugNodeIds = peerSources
+    .filter((source) => Boolean(remoteUpdatePendingByNode[source.node_id]))
+    .map((source) => source.node_id)
+    .join('|')
 
   useEffect(() => {
     if (!sourceMenuOpen) return
@@ -811,7 +850,8 @@ export function ConfigModal({
   }, [pairDialog])
 
   useEffect(() => {
-    if (!diagnosticsOpen || peerSources.length === 0) return
+    if (peerSources.length === 0) return
+    if (!diagnosticsOpen && !sourceMenuOpen && pendingPeerDebugNodeIds.length === 0) return
     let cancelled = false
     const loadDebug = async (nodeId: string) => {
       setRemoteUpdateDebugLoadingByNode((prev) => ({ ...prev, [nodeId]: true }))
@@ -842,12 +882,12 @@ export function ConfigModal({
       })
     }
     refreshAll()
-    const timer = window.setInterval(refreshAll, 3000)
+    const timer = window.setInterval(refreshAll, pendingPeerDebugNodeIds.length > 0 ? 1000 : 3000)
     return () => {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [diagnosticsOpen, peerDebugNodeIds])
+  }, [diagnosticsOpen, sourceMenuOpen, peerDebugNodeIds, pendingPeerDebugNodeIds])
 
   async function submitPairPinFromDialog() {
     if (pairDialog?.mode !== 'enter_pin') return
@@ -925,37 +965,43 @@ export function ConfigModal({
                   {sourceMenuOpen ? (
                     <div className="aoMenu aoMenuCompact aoConfigSourceMenu" role="menu" aria-label="Config source options">
                       {configSources.map((source) => {
+                        const effectiveSource =
+                          source.kind === 'peer'
+                            ? withEffectiveRemoteUpdateStatus(source, remoteUpdateDebugByNode[source.node_id])
+                            : source
                         const label = source.kind === 'local' ? 'Local' : source.node_name
-                        const blockedReason = source.follow_blocked_reason?.trim() || ''
-                        const pairState = source.pair_state ?? null
+                        const blockedReason = effectiveSource.follow_blocked_reason?.trim() || ''
+                        const pairState = effectiveSource.pair_state ?? null
                         const versionSyncRequired =
-                          source.kind === 'peer' && Boolean(source.version_sync_required)
+                          effectiveSource.kind === 'peer' && Boolean(effectiveSource.version_sync_required)
                         const versionSyncBlockedReason =
-                          source.same_version_update_blocked_reason?.trim() || ''
+                          effectiveSource.same_version_update_blocked_reason?.trim() || ''
                         const versionSyncActionAvailable =
-                          versionSyncRequired && Boolean(source.same_version_update_allowed)
+                          versionSyncRequired && Boolean(effectiveSource.same_version_update_allowed)
                         const versionSyncPendingStage =
-                          source.kind === 'peer' ? remoteUpdatePendingByNode[source.node_id] : undefined
+                          effectiveSource.kind === 'peer'
+                            ? remoteUpdatePendingByNode[effectiveSource.node_id]
+                            : undefined
                         const versionSyncActionState =
-                          versionSyncRequired && source.kind === 'peer'
-                            ? remoteUpdateActionState(source, versionSyncPendingStage, localBuildSha)
+                          versionSyncRequired && effectiveSource.kind === 'peer'
+                            ? remoteUpdateActionState(effectiveSource, versionSyncPendingStage, localBuildSha)
                             : null
                         const versionSyncPending = Boolean(versionSyncActionState?.spinning)
                         const pairActionAvailable =
-                          source.kind === 'peer' &&
-                          (!source.trusted ||
-                            (source.trusted && source.follow_allowed && !source.active))
+                          effectiveSource.kind === 'peer' &&
+                          (!effectiveSource.trusted ||
+                            (effectiveSource.trusted && effectiveSource.follow_allowed && !effectiveSource.active))
                         const disabled =
-                          (source.kind === 'peer' && !pairActionAvailable && !versionSyncActionAvailable) ||
+                          (effectiveSource.kind === 'peer' && !pairActionAvailable && !versionSyncActionAvailable) ||
                           versionSyncPending
                         const actionLabel =
-                          source.kind === 'local'
-                            ? source.active
+                          effectiveSource.kind === 'local'
+                            ? effectiveSource.active
                               ? 'Current'
                               : 'Use local'
                             : versionSyncRequired
-                              ? remoteUpdateMenuActionLabel(source, versionSyncPendingStage, localBuildSha)
-                              : source.active
+                              ? remoteUpdateMenuActionLabel(effectiveSource, versionSyncPendingStage, localBuildSha)
+                              : effectiveSource.active
                               ? 'Following'
                               : !source.trusted && pairState === 'incoming_request'
                                 ? 'Approve'
@@ -980,49 +1026,49 @@ export function ConfigModal({
                             disabled={disabled}
                             title={
                               versionSyncBlockedReason ||
-                              source.version_sync_reason?.trim() ||
+                              effectiveSource.version_sync_reason?.trim() ||
                               blockedReason ||
                               label
                             }
                             onClick={async () => {
-                              if (!keepSourceMenuOpenAfterAction(source)) {
+                              if (!keepSourceMenuOpenAfterAction(effectiveSource)) {
                                 setSourceMenuOpen(false)
                               }
-                              if (source.kind === 'local') {
+                              if (effectiveSource.kind === 'local') {
                                 await onClearFollowSource()
                                 return
                               }
-                              if (!source.trusted && pairState === 'incoming_request' && source.pair_request_id) {
-                                const pinCode = await onApprovePair(source.pair_request_id)
+                              if (!effectiveSource.trusted && pairState === 'incoming_request' && effectiveSource.pair_request_id) {
+                                const pinCode = await onApprovePair(effectiveSource.pair_request_id)
                                 if (pinCode) {
                                   setPairDialogError('')
                                   setPairDialog({
                                     mode: 'show_pin',
-                                    nodeId: source.node_id,
+                                    nodeId: effectiveSource.node_id,
                                     nodeName: label,
                                     pinCode,
                                   })
                                 }
                                 return
                               }
-                              if (!source.trusted && pairState === 'pin_required' && source.pair_request_id) {
+                              if (!effectiveSource.trusted && pairState === 'pin_required' && effectiveSource.pair_request_id) {
                                 setPairPinDigits(emptyPairPinDigits())
                                 setPairDialogError('')
                                 setPairDialog({
                                   mode: 'enter_pin',
-                                  nodeId: source.node_id,
+                                  nodeId: effectiveSource.node_id,
                                   nodeName: label,
-                                  requestId: source.pair_request_id,
+                                  requestId: effectiveSource.pair_request_id,
                                 })
                                 return
                               }
-                              if (!source.trusted) {
-                                const requestId = await onRequestPair(source.node_id)
+                              if (!effectiveSource.trusted) {
+                                const requestId = await onRequestPair(effectiveSource.node_id)
                                 if (requestId) {
                                   setPairDialogError('')
                                   setPairDialog({
                                     mode: 'waiting_approval',
-                                    nodeId: source.node_id,
+                                    nodeId: effectiveSource.node_id,
                                     nodeName: label,
                                     requestId,
                                   })
@@ -1030,12 +1076,12 @@ export function ConfigModal({
                                 return
                               }
                               if (versionSyncRequired) {
-                                if (versionSyncPending || !source.same_version_update_allowed) return
-                                await onSyncPeerVersion(source.node_id)
+                                if (versionSyncPending || !effectiveSource.same_version_update_allowed) return
+                                await onSyncPeerVersion(effectiveSource.node_id)
                                 return
                               }
-                              if (disabled || source.active) return
-                              await onFollowSource(source.node_id)
+                              if (disabled || effectiveSource.active) return
+                              await onFollowSource(effectiveSource.node_id)
                             }}
                           >
                             <span className="aoConfigSourceMenuCheck" aria-hidden="true">
@@ -1088,14 +1134,14 @@ export function ConfigModal({
             <div className="aoCard aoConfigCard">
               <div className="aoConfigDeck">
                 <div className="aoConfigPanel">
-                  {selectedConfigSource?.kind === 'peer' && selectedConfigSource.version_sync_required ? (
+                  {effectiveSelectedConfigSource?.kind === 'peer' && effectiveSelectedConfigSource.version_sync_required ? (
                     <div
                       className="aoHint aoHintWarning"
                       style={{ marginBottom: 10, color: 'rgba(145, 12, 43, 0.92)' }}
                     >
-                      {selectedConfigSource.version_sync_reason}
-                      {selectedConfigSource.same_version_update_blocked_reason
-                        ? ` ${selectedConfigSource.same_version_update_blocked_reason}`
+                      {effectiveSelectedConfigSource.version_sync_reason}
+                      {effectiveSelectedConfigSource.same_version_update_blocked_reason
+                        ? ` ${effectiveSelectedConfigSource.same_version_update_blocked_reason}`
                         : ' Choose Update peer in Config source to sync this peer to the current machine build.'}
                     </div>
                   ) : null}
@@ -1243,26 +1289,27 @@ export function ConfigModal({
                     )
                   })()}
                   {peerSources.map((source) => {
-                    const pausedDomains = source.sync_blocked_domains?.map(syncDomainLabel) ?? []
-                    const pausedSummary = syncPauseSummaryLabel(source)
-                    const whyText = diagnosticsWhyText(source, localBuildSha)
+                    const remoteUpdateDebug = remoteUpdateDebugByNode[source.node_id]
+                    const effectiveSource = withEffectiveRemoteUpdateStatus(source, remoteUpdateDebug)
+                    const pausedDomains = effectiveSource.sync_blocked_domains?.map(syncDomainLabel) ?? []
+                    const pausedSummary = syncPauseSummaryLabel(effectiveSource)
+                    const whyText = diagnosticsWhyText(effectiveSource, localBuildSha)
                     const pendingStage = remoteUpdatePendingByNode[source.node_id]
                     const remoteUpdateDisplay = diagnosticsRemoteUpdateDisplay(
-                      source,
+                      effectiveSource,
                       pendingStage,
                       localBuildSha,
                     )
-                    const peerBuildLabel = source.build_identity
-                      ? formatBuildLabel(source.build_identity)
+                    const peerBuildLabel = effectiveSource.build_identity
+                      ? formatBuildLabel(effectiveSource.build_identity)
                       : 'Unknown'
                     const peerCommitLabel = formatCommitDate(
-                      source.build_identity?.build_git_commit_unix_ms ?? null,
+                      effectiveSource.build_identity?.build_git_commit_unix_ms ?? null,
                     )
                     const remoteUpdateStatusLabel = remoteUpdateDisplay.label
                     const remoteUpdateDetail = remoteUpdateDisplay.detail
                     const remoteUpdateTime = remoteUpdateDisplay.time
                     const remoteUpdateTimeline = remoteUpdateDisplay.timeline
-                    const remoteUpdateDebug = remoteUpdateDebugByNode[source.node_id]
                     const remoteUpdateDebugLoading = Boolean(remoteUpdateDebugLoadingByNode[source.node_id])
                     const remoteUpdateDebugError = remoteUpdateDebugErrorByNode[source.node_id] ?? ''
                     const debugReadinessReason = remoteDebugReadinessReasonText(remoteUpdateDebug)
@@ -1270,7 +1317,7 @@ export function ConfigModal({
                     const { recent: recentDebugLogTail, older: olderDebugLogTail } =
                       splitRemoteDebugLogTail(debugLogTail)
                     const debugLogCurrentForBuild = isRemoteDebugStatusRelevantToCurrentBuild(
-                      source,
+                      effectiveSource,
                       remoteUpdateDebug,
                       localBuildSha,
                     )
@@ -1304,24 +1351,24 @@ export function ConfigModal({
                           <div className="aoConfigDiagPeerBlock">
                             <div className="aoConfigDiagPeerName">{source.node_name}</div>
                             <div className="aoConfigDiagPeerMeta">
-                              <span>{compactPeerStateLabel(source)}</span>
+                              <span>{compactPeerStateLabel(effectiveSource)}</span>
                               <span>·</span>
-                              <span>{source.build_matches_local ? 'Same build' : 'Different build'}</span>
+                              <span>{effectiveSource.build_matches_local ? 'Same build' : 'Different build'}</span>
                             </div>
                           </div>
                           <div className="aoConfigDiagBadgeRow">
                             <span className="aoConfigDiagBadge">
-                              {compactFollowStatusLabel(source)}
+                              {compactFollowStatusLabel(effectiveSource)}
                             </span>
                             {pausedSummary ? (
                               <span className="aoConfigDiagBadge">{pausedSummary}</span>
                             ) : null}
                             <span
                               className={`aoConfigDiagBadge${
-                                source.version_sync_required ? ' is-alert' : ''
+                                effectiveSource.version_sync_required ? ' is-alert' : ''
                               }`}
                             >
-                              {compactUpdateStatusLabel(source)}
+                              {compactUpdateStatusLabel(effectiveSource)}
                             </span>
                           </div>
                         </div>
@@ -1337,7 +1384,7 @@ export function ConfigModal({
                           <div className="aoConfigDiagSection">
                             <div className="aoConfigDiagSectionLabel">Local</div>
                             <div className="aoConfigDiagCompareValue">
-                              {source.build_matches_local
+                              {effectiveSource.build_matches_local
                                 ? 'Matches current machine build'
                                 : 'Does not match current machine build'}
                             </div>
@@ -1353,9 +1400,9 @@ export function ConfigModal({
                                 {remoteUpdateTime && remoteUpdateTime !== 'Unknown' ? (
                                   <div className="aoConfigDiagRemoteUpdateTime">{remoteUpdateTime}</div>
                                 ) : null}
-                                {source.remote_update_status?.request_id ? (
+                                {effectiveSource.remote_update_status?.request_id ? (
                                   <div className="aoConfigDiagRemoteUpdateDetail">
-                                    Request: {source.remote_update_status.request_id}
+                                    Request: {effectiveSource.remote_update_status.request_id}
                                   </div>
                                 ) : null}
                                 {remoteUpdateTimeline.length > 0 ? (
@@ -1408,7 +1455,7 @@ export function ConfigModal({
                                       {remoteDebugStatusRecordText(remoteUpdateDebug)}
                                     </div>
                                     {collapsedDebugLogTail ? (
-                                      <details style={{ marginTop: 8 }} open={debugLogCurrentForBuild}>
+                                      <details style={{ marginTop: 8 }}>
                                         <summary className="aoConfigDiagRemoteUpdateDetail">
                                           {debugLogSummaryText}
                                         </summary>

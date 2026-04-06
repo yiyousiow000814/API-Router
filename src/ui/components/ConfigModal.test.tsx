@@ -5,6 +5,7 @@ import {
   diagnosticsRemoteUpdateDisplay,
   ConfigModal,
   diagnosticsWhyText,
+  effectiveRemoteUpdateStatus,
   formatBuildLabel,
   formatCommitDate,
   isRemoteUpdateStatusRelevantToCurrentBuild,
@@ -17,12 +18,13 @@ import {
   shouldShowDiagnosticsRemoteUpdateStatus,
   shouldShowRemoteUpdateMenuDetail,
   syncPauseSummaryLabel,
+  withEffectiveRemoteUpdateStatus,
 } from './ConfigModal'
 import {
   isRemoteUpdateStatusCurrentForPending,
   remoteUpdateStatusObservedAtUnixMs,
 } from '../utils/remoteUpdateStatus'
-import type { Config } from '../types'
+import type { Config, LanRemoteUpdateDebugResponse } from '../types'
 
 function buildConfig(): Config {
   return {
@@ -527,6 +529,122 @@ describe('ConfigModal', () => {
         same_version_update_blocked_reason: null,
       }),
     ).toBe(false)
+  })
+
+  it('prefers fresher remote debug status for action and diagnostics progress', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'accepted',
+        target_ref: 'abc12345',
+        detail: 'Queued remote self-update worker',
+        accepted_at_unix_ms: 1775312828000,
+        updated_at_unix_ms: 1775312828000,
+        timeline: [
+          {
+            unix_ms: 1775312828000,
+            phase: 'request_accepted',
+            label: 'Peer accepted request',
+            detail: 'Queued remote self-update worker',
+            source: 'launcher',
+            state: 'accepted',
+          },
+        ],
+      },
+    }
+    const remoteUpdateDebug: LanRemoteUpdateDebugResponse = {
+      ok: true,
+      version: 1,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      remote_update_readiness: {
+        ready: true,
+        blocked_reason: null,
+        checked_at_unix_ms: 1775312827000,
+      },
+      remote_update_status: {
+        state: 'running',
+        target_ref: 'abc12345',
+        detail: 'Running build:root-exe',
+        accepted_at_unix_ms: 1775312828000,
+        started_at_unix_ms: 1775312829000,
+        updated_at_unix_ms: 1775312831000,
+        finished_at_unix_ms: null,
+        request_id: 'req-1',
+        reason_code: null,
+        requester_node_id: 'node-a',
+        requester_node_name: 'Desk A',
+        worker_script: null,
+        timeline: [
+          {
+            unix_ms: 1775312828000,
+            phase: 'request_accepted',
+            label: 'Peer accepted request',
+            detail: 'Queued remote self-update worker',
+            source: 'launcher',
+            state: 'accepted',
+          },
+          {
+            unix_ms: 1775312829000,
+            phase: 'worker_started',
+            label: 'Worker started',
+            detail: 'Bootstrapping remote self-update worker.',
+            source: 'worker',
+            state: 'running',
+          },
+          {
+            unix_ms: 1775312831000,
+            phase: 'build_exe',
+            label: 'Building release executable',
+            detail: 'Running build:root-exe',
+            source: 'worker',
+            state: 'running',
+          },
+        ],
+      },
+      status_path: 'C:\\status.json',
+      status_file_exists: true,
+      log_path: 'C:\\log.txt',
+      log_file_exists: true,
+      log_tail_source: 'timeline',
+      log_tail: 'Running build:root-exe',
+      worker_bootstrap_observed: true,
+      worker_script_probe: null,
+      local_build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: 'abc12345ffff',
+        build_git_short_sha: 'abc12345',
+        build_git_commit_unix_ms: 1775312800000,
+      },
+      local_version_sync: {
+        git_worktree_clean: true,
+        update_to_local_build_allowed: true,
+        blocked_reason: null,
+      },
+    }
+
+    expect(effectiveRemoteUpdateStatus(source, remoteUpdateDebug)?.state).toBe('running')
+
+    const effectiveSource = withEffectiveRemoteUpdateStatus(source, remoteUpdateDebug)
+
+    expect(remoteUpdateActionState(effectiveSource, undefined, 'abc12345ffff')).toEqual({
+      actionLabel: 'Building',
+      actionDetail: 'Running build:root-exe',
+      spinning: true,
+    })
+    expect(diagnosticsRemoteUpdateDisplay(effectiveSource, undefined, 'abc12345ffff').label).toBe('Building')
   })
 
   it('shows concrete running step details while peer update is executing', () => {

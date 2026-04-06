@@ -8,8 +8,14 @@ export type RemoteUpdatePendingStage = {
   startedAtUnixMs: number
 }
 
-export function remoteUpdateStatusObservedAtUnixMs(source: ConfigSource): number {
-  const status = source.remote_update_status
+type RemoteUpdateStatusLike = {
+  finished_at_unix_ms?: number | null
+  started_at_unix_ms?: number | null
+  updated_at_unix_ms?: number | null
+  accepted_at_unix_ms?: number | null
+}
+
+export function remoteUpdateStatusObservedAtUnixMsFromStatus(status: RemoteUpdateStatusLike | null | undefined): number {
   if (!status) return 0
   return Math.max(
     status.finished_at_unix_ms ?? 0,
@@ -17,6 +23,10 @@ export function remoteUpdateStatusObservedAtUnixMs(source: ConfigSource): number
     status.updated_at_unix_ms ?? 0,
     status.accepted_at_unix_ms ?? 0,
   )
+}
+
+export function remoteUpdateStatusObservedAtUnixMs(source: ConfigSource): number {
+  return remoteUpdateStatusObservedAtUnixMsFromStatus(source.remote_update_status)
 }
 
 export function isRemoteUpdateStatusCurrentForPending(

@@ -5004,12 +5004,12 @@ mod tests {
             .contains("stopped after the peer build changed"));
         assert!(payload.status_file_exists);
         assert!(payload.log_file_exists);
-        assert_eq!(payload.log_tail_source, "file");
+        assert_eq!(payload.log_tail_source, "timeline");
         assert!(payload
             .log_tail
             .as_deref()
             .unwrap_or_default()
-            .contains("fatal: git fetch failed"));
+            .contains("Status normalized to replaced after start"));
     }
 
     #[test]

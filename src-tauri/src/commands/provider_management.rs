@@ -255,6 +255,7 @@ pub(crate) fn set_manual_override(
 
 #[tauri::command]
 pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value {
+    crate::lan_sync::reconcile_remote_update_terminal_event(&state.gateway);
     let cfg = state.gateway.cfg.read().clone();
     let pricing = state.secrets.list_provider_pricing();
     let quota_hard_caps = state.secrets.list_provider_quota_hard_cap();

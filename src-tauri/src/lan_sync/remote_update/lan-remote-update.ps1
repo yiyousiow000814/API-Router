@@ -163,7 +163,13 @@ function Step-Detail([string]$Label, [string]$Detail = '') {
 
 function Format-CommandOutputSummary($Output) {
   if ($null -eq $Output) { return '' }
-  $text = (($Output | ForEach-Object { (Normalize-CommandOutputLine $_.ToString()).Trim() }) -join ' ').Trim()
+  $lines = @(
+    $Output |
+      ForEach-Object { Normalize-CommandOutputLine $_.ToString() } |
+      Where-Object { $_ }
+  )
+  if ($lines.Count -eq 0) { return '' }
+  $text = ($lines | Select-Object -Last 6) -join ' | '
   if (-not $text) { return '' }
   $text = [regex]::Replace($text, '\s+', ' ')
   if ($text.Length -gt 800) {

@@ -1493,13 +1493,16 @@ pub(crate) async fn lan_sync_remote_update_debug_http(
         .is_some_and(remote_update_worker_bootstrap_observed);
     let worker_script_probe = probe_remote_update_worker_script();
     let file_log_tail = read_remote_update_log_tail(6_000);
-    let (log_tail_source, log_tail) = if let Some(log_tail) = file_log_tail {
-        ("file".to_string(), Some(log_tail))
-    } else if let Some(status) = remote_update_status.as_ref() {
+    let (log_tail_source, log_tail) = if let Some(status) = remote_update_status.as_ref() {
         match synthesize_remote_update_log_tail_from_status(status, 6_000) {
             Some(log_tail) => ("timeline".to_string(), Some(log_tail)),
-            None => ("none".to_string(), None),
+            None => match file_log_tail {
+                Some(log_tail) => ("file".to_string(), Some(log_tail)),
+                None => ("none".to_string(), None),
+            },
         }
+    } else if let Some(log_tail) = file_log_tail {
+        ("file".to_string(), Some(log_tail))
     } else {
         ("none".to_string(), None)
     };
