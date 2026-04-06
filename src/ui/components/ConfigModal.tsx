@@ -420,9 +420,10 @@ export function remoteUpdateMenuActionLabel(
   pendingStage: RemoteUpdatePendingStage | undefined,
   localBuildSha?: string | null,
 ): string {
+  const remoteStateLabel = remoteUpdateStateLabel(source, localBuildSha)
+  if (remoteStateLabel) return remoteStateLabel
   const actionState = remoteUpdateActionState(source, pendingStage, localBuildSha)
-  if (actionState.spinning) return actionState.actionLabel
-  return source.same_version_update_allowed ? 'Update peer' : 'Update blocked'
+  return actionState.actionLabel
 }
 
 export function shouldShowRemoteUpdateMenuDetail(

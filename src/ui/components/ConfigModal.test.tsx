@@ -930,7 +930,7 @@ describe('ConfigModal', () => {
     ).toBe(false)
   })
 
-  it('keeps dropdown remote update labels action-only after a superseded update', () => {
+  it('shows terminal superseded state in dropdown after a superseded update', () => {
     const config = buildConfig()
     const source = {
       ...config.config_source!.sources[0],
@@ -959,7 +959,7 @@ describe('ConfigModal', () => {
       actionDetail: 'Peer changed build while the update was running',
       spinning: false,
     })
-    expect(remoteUpdateMenuActionLabel(source, undefined)).toBe('Update peer')
+    expect(remoteUpdateMenuActionLabel(source, undefined)).toBe('Build changed')
   })
 
   it('keeps dropdown remote update labels on live progress while pending', () => {
@@ -986,6 +986,58 @@ describe('ConfigModal', () => {
     }
 
     expect(remoteUpdateMenuActionLabel(source, undefined)).toBe('Queued')
+  })
+
+  it('shows failed state in dropdown instead of immediately reverting to update peer', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'failed',
+        target_ref: '45a389c0',
+        detail: 'Remote update worker PID 116572 exited without recording completion for target 45a389c0.',
+        finished_at_unix_ms: 1775483940000,
+      },
+    }
+
+    expect(remoteUpdateMenuActionLabel(source, undefined, '45a389c0abcdef')).toBe('Update failed')
+  })
+
+  it('shows succeeded state in dropdown instead of immediately reverting to update peer', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'succeeded',
+        target_ref: '45a389c0',
+        detail: 'Remote update to 45a389c0 completed.',
+        finished_at_unix_ms: 1775483940000,
+      },
+    }
+
+    expect(remoteUpdateMenuActionLabel(source, undefined, '45a389c0abcdef')).toBe('Updated')
   })
 
   it('shows local pending remote update details in diagnostics before peer status catches up', () => {
