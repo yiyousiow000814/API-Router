@@ -800,17 +800,17 @@ fn monitor_remote_update_worker_exit(
     target_ref: String,
 ) {
     std::thread::spawn(move || {
-        let current_status = read_lan_remote_update_status_raw();
         let exit_detail = match child.wait() {
             Ok(status) => match status.code() {
                 Some(0)
-                    if current_status.as_ref().is_some_and(|snapshot| {
+                    if read_lan_remote_update_status_raw().as_ref().is_some_and(|snapshot| {
                         !matches!(snapshot.state.trim(), "accepted" | "running")
                     }) =>
                 {
                     return;
                 }
-                Some(0) => format!(
+                Some(0)
+                => format!(
                     "Remote update worker PID {worker_pid} exited without recording completion for target {}.",
                     display_target_ref(&target_ref)
                 ),
