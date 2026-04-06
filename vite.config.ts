@@ -35,6 +35,9 @@ function resolveGatewayTokenFromSecrets(): string {
 }
 
 export default defineConfig({
+  optimizeDeps: {
+    entries: ['index.html', 'codex-web.html'],
+  },
   resolve: {
     alias: {
       '@tauri-apps/api/core': path.resolve(process.cwd(), 'src', 'ui', 'tauriCore.ts'),

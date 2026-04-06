@@ -79,6 +79,8 @@ pub struct LanRemoteUpdateStatusSnapshot {
     #[serde(default)]
     pub worker_pid: Option<u32>,
     #[serde(default)]
+    pub worker_exit_code: Option<i32>,
+    #[serde(default)]
     pub detail: Option<String>,
     #[serde(default)]
     pub accepted_at_unix_ms: u64,
@@ -728,6 +730,7 @@ fn build_worker_started_status(
         state: "running".to_string(),
         worker_script: Some(worker_script.to_string()),
         worker_pid: Some(worker_pid),
+        worker_exit_code: None,
         detail: Some("Remote self-update worker started".to_string()),
         reason_code: Some("worker_spawned".to_string()),
         started_at_unix_ms: Some(started_at_unix_ms),
@@ -739,12 +742,14 @@ fn build_worker_started_status(
 fn build_worker_exited_early_status(
     current_status: &LanRemoteUpdateStatusSnapshot,
     worker_pid: u32,
+    worker_exit_code: Option<i32>,
     exit_detail: &str,
     finished_at_unix_ms: u64,
 ) -> LanRemoteUpdateStatusSnapshot {
     LanRemoteUpdateStatusSnapshot {
         state: "failed".to_string(),
         worker_pid: Some(worker_pid),
+        worker_exit_code,
         reason_code: Some("worker_exited_early".to_string()),
         detail: Some(exit_detail.to_string()),
         finished_at_unix_ms: Some(finished_at_unix_ms),
@@ -757,6 +762,7 @@ fn record_remote_update_worker_exit(
     gateway: &crate::orchestrator::gateway::GatewayState,
     request_id: &str,
     worker_pid: u32,
+    worker_exit_code: Option<i32>,
     exit_detail: &str,
     finished_at_unix_ms: u64,
 ) {
@@ -775,6 +781,7 @@ fn record_remote_update_worker_exit(
     let failed_status = build_worker_exited_early_status(
         &current_status,
         worker_pid,
+        worker_exit_code,
         exit_detail,
         finished_at_unix_ms,
     );
@@ -796,6 +803,7 @@ fn record_remote_update_worker_exit(
             "request_id": request_id,
             "target_ref": current_status.target_ref,
             "worker_pid": worker_pid,
+            "worker_exit_code": worker_exit_code,
             "reason_code": "worker_exited_early",
             "error": exit_detail,
         }),
@@ -810,7 +818,7 @@ fn monitor_remote_update_worker_exit(
     target_ref: String,
 ) {
     std::thread::spawn(move || {
-        let exit_detail = match child.wait() {
+        let (worker_exit_code, exit_detail) = match child.wait() {
             Ok(status) => match status.code() {
                 Some(0)
                     if read_lan_remote_update_status_raw().as_ref().is_some_and(|snapshot| {
@@ -819,22 +827,33 @@ fn monitor_remote_update_worker_exit(
                 {
                     return;
                 }
-                Some(0)
-                => format!(
+                Some(0) => (
+                    Some(0),
+                    format!(
                     "Remote update worker PID {worker_pid} exited without recording completion for target {}.",
                     display_target_ref(&target_ref)
                 ),
-                Some(code) => format!(
+                ),
+                Some(code) => (
+                    Some(code),
+                    format!(
                     "Remote update worker PID {worker_pid} exited before completion with code {code} for target {}.",
                     display_target_ref(&target_ref)
                 ),
-                None => format!(
+                ),
+                None => (
+                    None,
+                    format!(
                     "Remote update worker PID {worker_pid} exited before completion for target {}.",
                     display_target_ref(&target_ref)
                 ),
+                ),
             },
-            Err(err) => format!(
+            Err(err) => (
+                None,
+                format!(
                 "Remote update worker PID {worker_pid} could not be monitored after spawn: {err}"
+            ),
             ),
         };
         append_remote_update_log_message(&exit_detail);
@@ -842,6 +861,7 @@ fn monitor_remote_update_worker_exit(
             &gateway,
             &request_id,
             worker_pid,
+            worker_exit_code,
             &exit_detail,
             unix_ms(),
         );
@@ -1091,6 +1111,7 @@ pub(crate) async fn lan_sync_remote_update_http(
             .map(ToString::to_string),
         worker_script: None,
         worker_pid: None,
+        worker_exit_code: None,
         detail: Some("Queued remote self-update worker".to_string()),
         accepted_at_unix_ms,
         started_at_unix_ms: None,
@@ -1431,6 +1452,7 @@ mod tests {
             requester_node_name: Some("Desk Remote".to_string()),
             worker_script: None,
             worker_pid: None,
+            worker_exit_code: None,
             detail: Some("Queued remote self-update worker".to_string()),
             accepted_at_unix_ms: 10,
             started_at_unix_ms: None,
@@ -1505,6 +1527,7 @@ mod tests {
             Some("Remote self-update worker started")
         );
         assert_eq!(running_status.worker_pid, Some(4242));
+        assert_eq!(running_status.worker_exit_code, None);
         assert_eq!(
             running_status.worker_script.as_deref(),
             Some("src-tauri/src/lan_sync/remote_update/lan-remote-update.ps1")
@@ -1526,6 +1549,7 @@ mod tests {
         let failed_status = build_worker_exited_early_status(
             &running_status,
             4242,
+            Some(9),
             "Remote update worker PID 4242 exited before completion with code 9 for target abc123.",
             40,
         );
@@ -1542,6 +1566,7 @@ mod tests {
             )
         );
         assert_eq!(failed_status.worker_pid, Some(4242));
+        assert_eq!(failed_status.worker_exit_code, Some(9));
         assert_eq!(
             failed_status.worker_script.as_deref(),
             Some("src-tauri/src/lan_sync/remote_update/lan-remote-update.ps1")
@@ -1569,6 +1594,7 @@ mod tests {
                 .as_deref()
                 .expect("request id should exist"),
             4242,
+            Some(7),
             "Remote update worker PID 4242 exited before completion with code 7 for target abc123.",
             40,
         );
@@ -1577,6 +1603,7 @@ mod tests {
             read_lan_remote_update_status_raw().expect("worker exit should be recorded");
         assert_eq!(final_status.state, "failed");
         assert_eq!(final_status.worker_pid, Some(4242));
+        assert_eq!(final_status.worker_exit_code, Some(7));
         assert!(final_status
             .detail
             .as_deref()

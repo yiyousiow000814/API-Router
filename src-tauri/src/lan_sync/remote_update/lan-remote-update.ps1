@@ -186,8 +186,31 @@ function Invoke-RemoteUpdateCommand {
     [scriptblock]$Command
   )
 
-  $output = & $Command 2>&1
-  $exitCode = $LASTEXITCODE
+  $output = @()
+  $exitCode = $null
+  $previousErrorActionPreference = $ErrorActionPreference
+  $nativeErrorActionPreferenceVariable = Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue
+  $previousNativeErrorActionPreference = $null
+  try {
+    $ErrorActionPreference = 'Continue'
+    if ($nativeErrorActionPreferenceVariable) {
+      $previousNativeErrorActionPreference = [bool]$nativeErrorActionPreferenceVariable.Value
+      $script:PSNativeCommandUseErrorActionPreference = $false
+    }
+    $output = & $Command 2>&1
+    $exitCode = $LASTEXITCODE
+  } catch {
+    $summary = Format-CommandOutputSummary @($output + $_.Exception.Message)
+    if ($summary) {
+      throw "${FailureMessage}. Output: $summary"
+    }
+    throw $FailureMessage
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+    if ($nativeErrorActionPreferenceVariable) {
+      $script:PSNativeCommandUseErrorActionPreference = $previousNativeErrorActionPreference
+    }
+  }
   Write-CommandOutputLog $output
   if ($exitCode -ne 0) {
     $summary = Format-CommandOutputSummary $output
@@ -198,17 +221,20 @@ function Invoke-RemoteUpdateCommand {
   }
 }
 
-$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
-Set-Location $RepoRoot
-
-Start-Sleep -Seconds 1
-
 $startedAtUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-$currentStep = 'Preparing worker'
-Write-RemoteUpdateLog "Starting remote self-update for target ref $TargetRef"
-Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep "Starting remote self-update worker.") -Phase 'worker_started' -Label 'Worker started' -StartedAtUnixMs $startedAtUnixMs
+$currentStep = 'Bootstrapping worker'
+$RepoRoot = $null
 
 try {
+Write-RemoteUpdateLog "Starting remote self-update for target ref $TargetRef"
+Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep "Bootstrapping remote self-update worker.") -Phase 'bootstrap' -Label 'Bootstrapping worker' -StartedAtUnixMs $startedAtUnixMs
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
+Set-Location $RepoRoot
+Start-Sleep -Seconds 1
+
+$currentStep = 'Preparing worker'
+Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep "Starting remote self-update worker.") -Phase 'worker_started' -Label 'Worker started' -StartedAtUnixMs $startedAtUnixMs
+
 $currentStep = 'Checking git worktree'
 Write-RemoteUpdateLog $currentStep
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep) -Phase 'git_status' -Label 'Checking git worktree' -StartedAtUnixMs $startedAtUnixMs
