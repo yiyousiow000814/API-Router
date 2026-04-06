@@ -141,6 +141,9 @@ export function isRemoteUpdateStatusRelevantToCurrentBuild(
   const status = source.remote_update_status
   if (!status?.state?.trim()) return false
   const terminalState = ['failed', 'succeeded', 'superseded'].includes(status.state.trim())
+  if (terminalState && source.build_matches_local && !source.version_sync_required) {
+    return false
+  }
   const targetMatchesPeerBuild = remoteUpdateTargetMatchesBuild(source, source.build_identity?.build_git_sha)
   const targetMatchesLocalBuild = remoteUpdateTargetMatchesBuild(source, localBuildSha)
   if (
@@ -261,6 +264,9 @@ export function isRemoteDebugStatusRelevantToCurrentBuild(
   const status = remoteUpdateDebug?.remote_update_status
   if (!status?.state?.trim()) return true
   const terminalState = ['failed', 'succeeded', 'superseded'].includes(status.state.trim())
+  if (terminalState && source.build_matches_local && !source.version_sync_required) {
+    return false
+  }
   const targetRef = normalizedTargetRef(status.target_ref)
   const peerBuildSha = normalizedBuildSha(source.build_identity?.build_git_sha)
   const normalizedLocalBuildSha = normalizedBuildSha(localBuildSha)
@@ -1208,7 +1214,7 @@ export function ConfigModal({
                       .filter((part) => part.trim().length > 0)
                       .join('\n')
                     const debugLogSummaryText = collapsedDebugLogTail
-                      ? `Remote update log: ${debugLogCurrentForBuild ? 'current' : 'older'}`
+                      ? `Remote update log: ${debugLogCurrentForBuild ? 'current' : 'previous'}`
                       : remoteDebugLogRecordText(remoteUpdateDebug)
                     const debugBootstrapText = remoteUpdateDebug
                       ? remoteDebugBootstrapText(remoteUpdateDebug)

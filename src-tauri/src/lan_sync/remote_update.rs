@@ -1464,7 +1464,7 @@ fn spawn_remote_update_worker(
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0000_0008 | 0x0000_0200);
+        command.creation_flags(windows_remote_update_creation_flags());
     }
     command.stdin(Stdio::null());
     if let Some(path) = log_path.as_ref() {
@@ -1514,6 +1514,14 @@ fn spawn_remote_update_worker(
         target_ref.to_string(),
     );
     Ok((script, worker_pid))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_remote_update_creation_flags() -> u32 {
+    // Keep the worker headless, but do not detach it from the parent process.
+    // Detached PowerShell launches can exit before the script bootstrap runs when
+    // stdout/stderr are redirected to files from the running API Router process.
+    0x0000_0200
 }
 
 #[cfg(test)]
@@ -1795,5 +1803,13 @@ mod tests {
             std::fs::read_to_string(&linux_script).expect("read Linux remote update script");
         assert!(linux_contents.contains("git fetch origin --prune"));
         assert!(!linux_contents.contains("git fetch origin --prune --tags"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_remote_update_worker_does_not_use_detached_process() {
+        let flags = windows_remote_update_creation_flags();
+        assert_eq!(flags & 0x0000_0200, 0x0000_0200);
+        assert_eq!(flags & 0x0000_0008, 0);
     }
 }
