@@ -114,9 +114,29 @@ function remoteUpdateStateLabel(source: ConfigSource): string | null {
   return state
 }
 
+function normalizedBuildSha(value: string | undefined | null): string {
+  const normalized = value?.trim().toLowerCase() || ''
+  if (!normalized || normalized === 'unknown') return ''
+  return normalized
+}
+
+function normalizedTargetRef(value: string | undefined | null): string {
+  return value?.trim().toLowerCase() || ''
+}
+
+function remoteUpdateTargetMatchesCurrentBuild(source: ConfigSource): boolean | null {
+  const buildSha = normalizedBuildSha(source.build_identity?.build_git_sha)
+  const targetRef = normalizedTargetRef(source.remote_update_status?.target_ref)
+  if (!buildSha || !targetRef) return null
+  return buildSha.startsWith(targetRef) || targetRef.startsWith(buildSha)
+}
+
 export function isRemoteUpdateStatusRelevantToCurrentBuild(source: ConfigSource): boolean {
   const status = source.remote_update_status
   if (!status?.state?.trim()) return false
+  const terminalState = ['failed', 'succeeded', 'superseded'].includes(status.state.trim())
+  const targetMatchesCurrentBuild = remoteUpdateTargetMatchesCurrentBuild(source)
+  if (terminalState && targetMatchesCurrentBuild === false) return false
   const buildCommitUnixMs = source.build_identity?.build_git_commit_unix_ms ?? null
   if (!Number.isFinite(buildCommitUnixMs) || !buildCommitUnixMs) return true
   const statusObservedAtUnixMs = remoteUpdateStatusObservedAtUnixMs(source)

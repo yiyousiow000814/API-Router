@@ -815,6 +815,46 @@ describe('ConfigModal', () => {
     expect(whyText).toBe('Desk B requires update.')
   })
 
+  it('hides failed remote update diagnostics once the peer is already on a different newer build', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: '368ce27fbbb47a851d0f89588085539465954111',
+        build_git_short_sha: '368ce27f',
+        build_git_commit_unix_ms: 1775477100000,
+      },
+      remote_update_status: {
+        state: 'failed',
+        reason_code: 'worker_exited_early',
+        target_ref: '25e785b0',
+        detail: 'Remote update worker PID 117016 exited without recording completion for target 25e785b0.',
+        finished_at_unix_ms: 1775477340000,
+      },
+    }
+
+    expect(isRemoteUpdateStatusRelevantToCurrentBuild(source)).toBe(false)
+    expect(shouldShowDiagnosticsRemoteUpdateStatus(source)).toBe(false)
+    expect(remoteUpdateDetailText(source)).toBe('')
+    expect(remoteUpdateActionState(source, undefined)).toEqual({
+      actionLabel: 'Update peer',
+      actionDetail: 'Sync to this build',
+      spinning: false,
+    })
+  })
+
   it('keeps idle update rows visually quiet', () => {
     const config = buildConfig()
     const source = {
