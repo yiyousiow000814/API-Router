@@ -11,6 +11,7 @@ import {
   keepSourceMenuOpenAfterAction,
   remoteUpdateActionState,
   remoteUpdateDetailText,
+  splitRemoteDebugLogTail,
   shouldShowDiagnosticsRemoteUpdateStatus,
   shouldShowRemoteUpdateMenuDetail,
   syncPauseSummaryLabel,
@@ -1126,6 +1127,24 @@ describe('ConfigModal', () => {
         phase: 'fetching',
       },
     ])
+  })
+
+  it('keeps the newest remote debug log lines expanded and collapses older ones', () => {
+    expect(
+      splitRemoteDebugLogTail(
+        ['line 1', 'line 2', 'line 3', 'line 4', 'line 5', 'line 6'].join('\n'),
+      ),
+    ).toEqual({
+      older: ['line 1', 'line 2'].join('\n'),
+      recent: ['line 3', 'line 4', 'line 5', 'line 6'].join('\n'),
+    })
+  })
+
+  it('keeps short remote debug logs fully expanded', () => {
+    expect(splitRemoteDebugLogTail(['line 1', 'line 2'].join('\n'))).toEqual({
+      older: '',
+      recent: ['line 1', 'line 2'].join('\n'),
+    })
   })
 
   it('only shows a paused summary badge when more than one sync domain is paused', () => {

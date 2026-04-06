@@ -206,6 +206,43 @@ function remoteDebugLogRecordText(remoteUpdateDebug: LanRemoteUpdateDebugRespons
     : 'No remote update log available from peer'
 }
 
+function remoteDebugBootstrapText(remoteUpdateDebug: LanRemoteUpdateDebugResponse): string | null {
+  const status = remoteUpdateDebug.remote_update_status
+  if (!status) return null
+  if (remoteUpdateDebug.worker_bootstrap_observed) {
+    return 'Worker bootstrap was observed from peer-side status/log entries'
+  }
+  if (status.reason_code === 'worker_never_bootstrapped') {
+    return 'Worker exited before bootstrap; no peer-side worker status/log entries were recorded'
+  }
+  return null
+}
+
+function remoteDebugScriptProbeText(remoteUpdateDebug: LanRemoteUpdateDebugResponse): string | null {
+  const probe = remoteUpdateDebug.worker_script_probe
+  if (!probe) return null
+  const facts = [
+    probe.exists ? 'script file exists' : 'script file missing',
+    probe.bootstrap_marker_present ? 'bootstrap markers present' : 'bootstrap markers missing',
+    probe.no_tag_fetch_present ? 'no-tag fetch present' : 'fetch behavior unknown',
+  ]
+  return `Worker script probe: ${facts.join(' · ')}`
+}
+
+export function splitRemoteDebugLogTail(logTail: string): { recent: string; older: string } {
+  const lines = logTail
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim().length > 0)
+  if (lines.length <= 4) {
+    return { recent: lines.join('\n'), older: '' }
+  }
+  return {
+    older: lines.slice(0, -4).join('\n'),
+    recent: lines.slice(-4).join('\n'),
+  }
+}
+
 export function remoteUpdateDetailText(source: ConfigSource, localBuildSha?: string | null): string {
   if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return ''
   const status = source.remote_update_status
@@ -1117,6 +1154,14 @@ export function ConfigModal({
                         remoteUpdateDebug?.remote_update_readiness.blocked_reason?.trim() ?? '',
                       )
                     const debugLogTail = remoteUpdateDebug?.log_tail?.trim() ?? ''
+                    const { recent: recentDebugLogTail, older: olderDebugLogTail } =
+                      splitRemoteDebugLogTail(debugLogTail)
+                    const debugBootstrapText = remoteUpdateDebug
+                      ? remoteDebugBootstrapText(remoteUpdateDebug)
+                      : null
+                    const debugScriptProbeText = remoteUpdateDebug
+                      ? remoteDebugScriptProbeText(remoteUpdateDebug)
+                      : null
                     const formattedDebugError = formatReadableCommitRefs(remoteUpdateDebugError)
                     const formattedWhyText = formatReadableCommitRefs(whyText)
                     const showDebugReadinessReason =
@@ -1229,13 +1274,39 @@ export function ConfigModal({
                                     {showDebugReadinessReason ? (
                                       <div className="aoConfigDiagRemoteUpdateDetail">{debugReadinessReason}</div>
                                     ) : null}
+                                    {debugBootstrapText ? (
+                                      <div className="aoConfigDiagRemoteUpdateDetail">{debugBootstrapText}</div>
+                                    ) : null}
+                                    {debugScriptProbeText ? (
+                                      <div className="aoConfigDiagRemoteUpdateDetail">{debugScriptProbeText}</div>
+                                    ) : null}
                                     <div className="aoConfigDiagRemoteUpdateDetail">
                                       {remoteDebugStatusRecordText(remoteUpdateDebug)}
                                     </div>
                                     <div className="aoConfigDiagRemoteUpdateDetail">
                                       {remoteDebugLogRecordText(remoteUpdateDebug)}
                                     </div>
-                                    {debugLogTail ? (
+                                    {olderDebugLogTail ? (
+                                      <details style={{ marginTop: 8 }}>
+                                        <summary className="aoConfigDiagRemoteUpdateDetail">
+                                          Earlier remote log lines
+                                        </summary>
+                                        <pre
+                                          className="aoConfigDiagWhyText"
+                                          style={{
+                                            margin: '8px 0 0',
+                                            padding: '10px 12px',
+                                            whiteSpace: 'pre-wrap',
+                                            overflowWrap: 'anywhere',
+                                            background: 'rgba(10, 16, 28, 0.04)',
+                                            borderRadius: 10,
+                                          }}
+                                        >
+                                          {olderDebugLogTail}
+                                        </pre>
+                                      </details>
+                                    ) : null}
+                                    {recentDebugLogTail ? (
                                       <pre
                                         className="aoConfigDiagWhyText"
                                         style={{
@@ -1247,7 +1318,7 @@ export function ConfigModal({
                                           borderRadius: 10,
                                         }}
                                       >
-                                        {debugLogTail}
+                                        {recentDebugLogTail}
                                       </pre>
                                     ) : null}
                                   </>

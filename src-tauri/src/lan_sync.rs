@@ -58,6 +58,7 @@ pub use remote_update::{LanRemoteUpdateReadinessSnapshot, LanRemoteUpdateStatusS
 pub const LAN_DISCOVERY_PORT: u16 = 38455;
 pub const LAN_HEARTBEAT_INTERVAL_MS: u64 = 2_000;
 pub const LAN_PEER_STALE_AFTER_MS: u64 = 7_000;
+pub const LAN_PEER_HTTP_GRACE_AFTER_MS: u64 = 30_000;
 const LAN_SHARED_HEALTH_LOOP_INTERVAL_MS: u64 = 900;
 const LAN_USAGE_SYNC_LOOP_INTERVAL_MS: u64 = 1_000;
 const LAN_USAGE_SYNC_BATCH_LIMIT: usize = 2_048;
@@ -418,6 +419,29 @@ struct LanPeerRuntime {
     provider_fingerprints: Vec<String>,
     provider_definitions_revision: String,
     followed_source_node_id: Option<String>,
+}
+
+fn lan_peer_snapshot_from_runtime(peer: &LanPeerRuntime) -> LanPeerSnapshot {
+    LanPeerSnapshot {
+        node_id: peer.node_id.clone(),
+        node_name: peer.node_name.clone(),
+        listen_addr: peer.listen_addr.clone(),
+        last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
+        capabilities: peer.capabilities.clone(),
+        build_identity: peer.build_identity.clone(),
+        provider_fingerprints: peer.provider_fingerprints.clone(),
+        provider_definitions_revision: peer.provider_definitions_revision.clone(),
+        sync_contracts: peer.sync_contracts.clone(),
+        followed_source_node_id: peer.followed_source_node_id.clone(),
+        trusted: false,
+        pair_state: None,
+        pair_request_id: None,
+        remote_update_readiness: peer.remote_update_readiness.clone(),
+        remote_update_status: peer.remote_update_status.clone(),
+        sync_blocked_domains: Vec::new(),
+        sync_diagnostics: Vec::new(),
+        build_matches_local: false,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -947,52 +971,14 @@ impl LanSyncRuntime {
             self.last_peer_prune_unix_ms.store(now, Ordering::Relaxed);
             peers
                 .values()
-                .map(|peer| LanPeerSnapshot {
-                    node_id: peer.node_id.clone(),
-                    node_name: peer.node_name.clone(),
-                    listen_addr: peer.listen_addr.clone(),
-                    last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
-                    capabilities: peer.capabilities.clone(),
-                    build_identity: peer.build_identity.clone(),
-                    remote_update_readiness: peer.remote_update_readiness.clone(),
-                    remote_update_status: peer.remote_update_status.clone(),
-                    sync_contracts: peer.sync_contracts.clone(),
-                    provider_fingerprints: peer.provider_fingerprints.clone(),
-                    provider_definitions_revision: peer.provider_definitions_revision.clone(),
-                    followed_source_node_id: peer.followed_source_node_id.clone(),
-                    trusted: false,
-                    pair_state: None,
-                    pair_request_id: None,
-                    sync_blocked_domains: Vec::new(),
-                    sync_diagnostics: Vec::new(),
-                    build_matches_local: false,
-                })
+                .map(lan_peer_snapshot_from_runtime)
                 .collect::<Vec<_>>()
         } else {
             self.peers
                 .read()
                 .values()
                 .filter(|peer| !peer_is_stale(peer.last_heartbeat_unix_ms, now))
-                .map(|peer| LanPeerSnapshot {
-                    node_id: peer.node_id.clone(),
-                    node_name: peer.node_name.clone(),
-                    listen_addr: peer.listen_addr.clone(),
-                    last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
-                    capabilities: peer.capabilities.clone(),
-                    build_identity: peer.build_identity.clone(),
-                    remote_update_readiness: peer.remote_update_readiness.clone(),
-                    remote_update_status: peer.remote_update_status.clone(),
-                    sync_contracts: peer.sync_contracts.clone(),
-                    provider_fingerprints: peer.provider_fingerprints.clone(),
-                    provider_definitions_revision: peer.provider_definitions_revision.clone(),
-                    followed_source_node_id: peer.followed_source_node_id.clone(),
-                    trusted: false,
-                    pair_state: None,
-                    pair_request_id: None,
-                    sync_blocked_domains: Vec::new(),
-                    sync_diagnostics: Vec::new(),
-                    build_matches_local: false,
-                })
+                .map(lan_peer_snapshot_from_runtime)
                 .collect::<Vec<_>>()
         };
         out.sort_by(|a, b| {
@@ -1007,6 +993,15 @@ impl LanSyncRuntime {
         self.collect_live_peers(unix_ms())
             .into_iter()
             .find(|peer| peer.node_id == node_id)
+    }
+
+    fn recent_peer_by_node_id(&self, node_id: &str, max_age_ms: u64) -> Option<LanPeerSnapshot> {
+        let now = unix_ms();
+        self.peers
+            .read()
+            .get(node_id)
+            .filter(|peer| now.saturating_sub(peer.last_heartbeat_unix_ms) <= max_age_ms)
+            .map(lan_peer_snapshot_from_runtime)
     }
 
     pub fn has_alive_peers(&self) -> bool {
@@ -6591,6 +6586,42 @@ mod tests {
         let peers = runtime.collect_live_peers(100_000);
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].node_id, "fresh");
+    }
+
+    #[test]
+    fn recent_peer_lookup_keeps_recently_stale_peer_for_http_grace_window() {
+        let runtime = LanSyncRuntime::new(LanNodeIdentity {
+            node_id: "node-self".to_string(),
+            node_name: "self".to_string(),
+        });
+        let now = crate::orchestrator::store::unix_ms();
+        runtime.peers.write().insert(
+            "peer-recent".to_string(),
+            super::LanPeerRuntime {
+                node_id: "peer-recent".to_string(),
+                node_name: "Peer Recent".to_string(),
+                listen_addr: "192.168.1.12:4000".to_string(),
+                last_heartbeat_unix_ms: now.saturating_sub(LAN_PEER_STALE_AFTER_MS + 1),
+                capabilities: super::lan_heartbeat_capabilities(),
+                build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
+                remote_update_status: None,
+                sync_contracts: std::collections::BTreeMap::new(),
+                provider_fingerprints: vec![],
+                provider_definitions_revision: String::new(),
+                followed_source_node_id: None,
+            },
+        );
+
+        let recent = runtime
+            .recent_peer_by_node_id("peer-recent", super::LAN_PEER_HTTP_GRACE_AFTER_MS)
+            .expect("recently stale peer should still be reachable for HTTP grace");
+        assert_eq!(recent.node_id, "peer-recent");
+        assert_eq!(recent.listen_addr, "192.168.1.12:4000");
+        assert!(peer_is_stale(
+            recent.last_heartbeat_unix_ms,
+            crate::orchestrator::store::unix_ms()
+        ));
     }
 
     #[test]

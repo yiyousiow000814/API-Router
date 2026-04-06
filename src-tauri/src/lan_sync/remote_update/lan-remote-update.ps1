@@ -139,14 +139,17 @@ function Assert-CleanWorktree {
 }
 
 function Resolve-CheckoutTarget([string]$Ref) {
-  & git rev-parse --verify "refs/heads/$Ref" *> $null
-  if ($LASTEXITCODE -eq 0) { return @{ Mode = 'local_branch'; Value = $Ref } }
+  if (Test-GitRevisionExists "refs/heads/$Ref") {
+    return @{ Mode = 'local_branch'; Value = $Ref }
+  }
 
-  & git rev-parse --verify "refs/remotes/origin/$Ref" *> $null
-  if ($LASTEXITCODE -eq 0) { return @{ Mode = 'remote_branch'; Value = $Ref } }
+  if (Test-GitRevisionExists "refs/remotes/origin/$Ref") {
+    return @{ Mode = 'remote_branch'; Value = $Ref }
+  }
 
-  & git rev-parse --verify $Ref *> $null
-  if ($LASTEXITCODE -eq 0) { return @{ Mode = 'detached'; Value = $Ref } }
+  if (Test-GitRevisionExists $Ref) {
+    return @{ Mode = 'detached'; Value = $Ref }
+  }
 
   throw "cannot resolve git ref: $Ref"
 }
@@ -176,6 +179,34 @@ function Write-CommandOutputLog($Output) {
       Write-RemoteUpdateLog $line
     }
   }
+}
+
+function Test-GitRevisionExists {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Spec
+  )
+
+  $exitCode = $null
+  $previousErrorActionPreference = $ErrorActionPreference
+  $nativeErrorActionPreferenceVariable = Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue
+  $previousNativeErrorActionPreference = $null
+  try {
+    $ErrorActionPreference = 'Continue'
+    if ($nativeErrorActionPreferenceVariable) {
+      $previousNativeErrorActionPreference = [bool]$nativeErrorActionPreferenceVariable.Value
+      $script:PSNativeCommandUseErrorActionPreference = $false
+    }
+    & git rev-parse --verify $Spec *> $null
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+    if ($nativeErrorActionPreferenceVariable) {
+      $script:PSNativeCommandUseErrorActionPreference = $previousNativeErrorActionPreference
+    }
+  }
+
+  return $exitCode -eq 0
 }
 
 function Invoke-RemoteUpdateCommand {

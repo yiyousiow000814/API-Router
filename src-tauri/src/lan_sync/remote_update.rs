@@ -123,8 +123,22 @@ pub(crate) struct LanRemoteUpdateDebugResponsePacket {
     pub log_file_exists: bool,
     pub log_tail_source: String,
     pub log_tail: Option<String>,
+    pub worker_bootstrap_observed: bool,
+    pub worker_script_probe: Option<LanRemoteUpdateWorkerScriptProbe>,
     pub local_build_identity: LanBuildIdentitySnapshot,
     pub local_version_sync: LanLocalVersionSyncSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct LanRemoteUpdateWorkerScriptProbe {
+    pub path: String,
+    pub exists: bool,
+    #[serde(default)]
+    pub modified_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
+    pub bootstrap_marker_present: bool,
+    pub no_tag_fetch_present: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,6 +218,59 @@ fn read_lan_remote_update_status_raw() -> Option<LanRemoteUpdateStatusSnapshot> 
     let path = lan_remote_update_status_path()?;
     let bytes = std::fs::read(path).ok()?;
     serde_json::from_slice::<LanRemoteUpdateStatusSnapshot>(&bytes).ok()
+}
+
+fn remote_update_worker_bootstrap_observed(status: &LanRemoteUpdateStatusSnapshot) -> bool {
+    status
+        .timeline
+        .iter()
+        .any(|entry| entry.source.trim() == "worker")
+}
+
+fn probe_remote_update_worker_script() -> Option<LanRemoteUpdateWorkerScriptProbe> {
+    let repo_root = resolve_repo_root_for_self_update().ok()?;
+    #[cfg(target_os = "windows")]
+    let script_path = repo_root
+        .join("src-tauri")
+        .join("src")
+        .join("lan_sync")
+        .join("remote_update")
+        .join("lan-remote-update.ps1");
+    #[cfg(not(target_os = "windows"))]
+    let script_path = repo_root
+        .join("src-tauri")
+        .join("src")
+        .join("lan_sync")
+        .join("remote_update")
+        .join("lan-remote-update.sh");
+
+    let exists = script_path.is_file();
+    let metadata = std::fs::metadata(&script_path).ok();
+    let modified_at_unix_ms = metadata
+        .as_ref()
+        .and_then(|value| value.modified().ok())
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|value| value.as_millis() as u64);
+    let size_bytes = metadata.as_ref().map(|value| value.len());
+    let script_text = std::fs::read_to_string(&script_path).ok();
+    let bootstrap_marker_present = script_text.as_ref().is_some_and(|value| {
+        value.contains("Bootstrapping remote self-update worker.")
+            && value.contains("Phase 'bootstrap'")
+    });
+    let no_tag_fetch_present = script_text
+        .as_ref()
+        .is_some_and(|value| value.contains("git fetch origin --prune"));
+    Some(LanRemoteUpdateWorkerScriptProbe {
+        path: script_path.display().to_string(),
+        exists,
+        modified_at_unix_ms,
+        size_bytes,
+        bootstrap_marker_present,
+        no_tag_fetch_present: no_tag_fetch_present
+            && !script_text
+                .as_ref()
+                .is_some_and(|value| value.contains("git fetch origin --prune --tags")),
+    })
 }
 
 fn trim_remote_update_timeline(timeline: &mut Vec<LanRemoteUpdateTimelineEntry>) {
@@ -746,12 +813,33 @@ fn build_worker_exited_early_status(
     exit_detail: &str,
     finished_at_unix_ms: u64,
 ) -> LanRemoteUpdateStatusSnapshot {
+    let bootstrap_observed = remote_update_worker_bootstrap_observed(current_status);
+    let display_target = display_target_ref(&current_status.target_ref);
+    let detail = if bootstrap_observed {
+        exit_detail.to_string()
+    } else {
+        match worker_exit_code {
+            Some(code) => format!(
+                "Remote update worker PID {worker_pid} exited before bootstrap for target {display_target} with code {code}. No worker status/log entries were recorded, so PowerShell likely failed before the script body started."
+            ),
+            None => format!(
+                "Remote update worker PID {worker_pid} exited before bootstrap for target {display_target}. No worker status/log entries were recorded, so PowerShell likely failed before the script body started."
+            ),
+        }
+    };
     LanRemoteUpdateStatusSnapshot {
         state: "failed".to_string(),
         worker_pid: Some(worker_pid),
         worker_exit_code,
-        reason_code: Some("worker_exited_early".to_string()),
-        detail: Some(exit_detail.to_string()),
+        reason_code: Some(
+            if bootstrap_observed {
+                "worker_exited_early"
+            } else {
+                "worker_never_bootstrapped"
+            }
+            .to_string(),
+        ),
+        detail: Some(detail),
         finished_at_unix_ms: Some(finished_at_unix_ms),
         updated_at_unix_ms: finished_at_unix_ms,
         ..current_status.clone()
@@ -905,6 +993,9 @@ impl LanSyncRuntime {
         }
         let peer = self
             .live_peer_by_node_id(normalized_node_id)
+            .or_else(|| {
+                self.recent_peer_by_node_id(normalized_node_id, LAN_PEER_HTTP_GRACE_AFTER_MS)
+            })
             .ok_or_else(|| format!("peer is not reachable on LAN: {normalized_node_id}"))?;
         if let Some(reason) = peer_remote_update_blocked_reason(&peer) {
             return Err(reason);
@@ -984,6 +1075,9 @@ impl LanSyncRuntime {
         }
         let peer = self
             .live_peer_by_node_id(normalized_node_id)
+            .or_else(|| {
+                self.recent_peer_by_node_id(normalized_node_id, LAN_PEER_HTTP_GRACE_AFTER_MS)
+            })
             .ok_or_else(|| format!("peer is not reachable on LAN: {normalized_node_id}"))?;
         let base_url = peer_http_base_url(&peer)
             .ok_or_else(|| format!("peer has no valid LAN address: {normalized_node_id}"))?;
@@ -1235,6 +1329,10 @@ pub(crate) async fn lan_sync_remote_update_debug_http(
     let status_path = lan_remote_update_status_path();
     let log_path = lan_remote_update_log_path();
     let remote_update_status = load_lan_remote_update_status();
+    let worker_bootstrap_observed = remote_update_status
+        .as_ref()
+        .is_some_and(remote_update_worker_bootstrap_observed);
+    let worker_script_probe = probe_remote_update_worker_script();
     let file_log_tail = read_remote_update_log_tail(6_000);
     let (log_tail_source, log_tail) = if let Some(log_tail) = file_log_tail {
         ("file".to_string(), Some(log_tail))
@@ -1265,6 +1363,8 @@ pub(crate) async fn lan_sync_remote_update_debug_http(
         log_path: log_path.map(|path| path.display().to_string()),
         log_tail_source,
         log_tail,
+        worker_bootstrap_observed,
+        worker_script_probe,
         local_build_identity: current_build_identity(),
         local_version_sync: current_local_version_sync_snapshot(),
     }))
@@ -1557,13 +1657,14 @@ mod tests {
         assert_eq!(failed_status.state, "failed");
         assert_eq!(
             failed_status.reason_code.as_deref(),
-            Some("worker_exited_early")
+            Some("worker_never_bootstrapped")
         );
         assert_eq!(
-            failed_status.detail.as_deref(),
-            Some(
-                "Remote update worker PID 4242 exited before completion with code 9 for target abc123."
-            )
+            failed_status
+                .detail
+                .as_deref()
+                .map(|value| value.contains("exited before bootstrap")),
+            Some(true)
         );
         assert_eq!(failed_status.worker_pid, Some(4242));
         assert_eq!(failed_status.worker_exit_code, Some(9));
@@ -1574,6 +1675,41 @@ mod tests {
         assert_eq!(failed_status.started_at_unix_ms, Some(25));
         assert_eq!(failed_status.finished_at_unix_ms, Some(40));
         assert_eq!(failed_status.updated_at_unix_ms, 40);
+    }
+
+    #[test]
+    fn build_worker_exited_early_status_preserves_original_detail_after_bootstrap() {
+        let mut running_status = build_worker_started_status(
+            &accepted_status_fixture(),
+            "src-tauri/src/lan_sync/remote_update/lan-remote-update.ps1",
+            4242,
+            25,
+        );
+        running_status.timeline.push(LanRemoteUpdateTimelineEntry {
+            unix_ms: 30,
+            phase: "bootstrap".to_string(),
+            label: "Bootstrapping worker".to_string(),
+            detail: Some("Bootstrapping remote self-update worker.".to_string()),
+            source: "worker".to_string(),
+            state: "running".to_string(),
+        });
+
+        let failed_status = build_worker_exited_early_status(
+            &running_status,
+            4242,
+            Some(9),
+            "Remote update worker PID 4242 exited before completion with code 9 for target abc123.",
+            40,
+        );
+
+        assert_eq!(
+            failed_status.reason_code.as_deref(),
+            Some("worker_exited_early")
+        );
+        assert_eq!(
+            failed_status.detail.as_deref(),
+            Some("Remote update worker PID 4242 exited before completion with code 9 for target abc123.")
+        );
     }
 
     #[test]
@@ -1604,10 +1740,14 @@ mod tests {
         assert_eq!(final_status.state, "failed");
         assert_eq!(final_status.worker_pid, Some(4242));
         assert_eq!(final_status.worker_exit_code, Some(7));
+        assert_eq!(
+            final_status.reason_code.as_deref(),
+            Some("worker_never_bootstrapped")
+        );
         assert!(final_status
             .detail
             .as_deref()
-            .is_some_and(|detail| detail.contains("exited before completion")));
+            .is_some_and(|detail| detail.contains("exited before bootstrap")));
         assert!(final_status
             .timeline
             .iter()
@@ -1642,6 +1782,8 @@ mod tests {
             std::fs::read_to_string(&windows_script).expect("read Windows remote update script");
         assert!(windows_contents.contains("git fetch origin --prune"));
         assert!(!windows_contents.contains("git fetch origin --prune --tags"));
+        assert!(windows_contents.contains("function Test-GitRevisionExists"));
+        assert!(windows_contents.contains("if (Test-GitRevisionExists \"refs/heads/$Ref\")"));
 
         let linux_script = repo_root
             .join("src-tauri")
