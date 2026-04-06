@@ -12,6 +12,7 @@ import {
   keepSourceMenuOpenAfterAction,
   remoteUpdateActionState,
   remoteUpdateDetailText,
+  remoteDebugReadinessReasonText,
   splitRemoteDebugLogTail,
   shouldShowDiagnosticsRemoteUpdateStatus,
   shouldShowRemoteUpdateMenuDetail,
@@ -957,6 +958,35 @@ describe('ConfigModal', () => {
     } as const
 
     expect(isRemoteDebugStatusRelevantToCurrentBuild(source, remoteUpdateDebug)).toBe(false)
+  })
+
+  it('keeps diagnostics render-safe when remote debug readiness is missing', () => {
+    expect(
+      remoteDebugReadinessReasonText({
+        ok: true,
+        version: 1,
+        node_id: 'node-b',
+        node_name: 'Desk B',
+        remote_update_readiness: undefined as unknown as never,
+        status_file_exists: false,
+        log_file_exists: false,
+        local_build_identity: {
+          app_version: '0.4.0',
+          build_git_sha: 'dfa0f229abcdef1234567890',
+          build_git_short_sha: 'dfa0f229',
+          build_git_commit_unix_ms: 1775482000000,
+        },
+        local_version_sync: {
+          target_ref: 'dfa0f229abcdef1234567890',
+          git_worktree_clean: true,
+          update_to_local_build_allowed: true,
+        },
+      }),
+    ).toBe('')
+  })
+
+  it('keeps remote debug summary render-safe before payload arrives', () => {
+    expect(remoteDebugReadinessReasonText(undefined)).toBe('')
   })
 
   it('keeps idle update rows visually quiet', () => {

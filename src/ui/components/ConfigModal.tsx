@@ -191,13 +191,15 @@ function hasRemoteDebugDetails(
   )
 }
 
-function remoteDebugStatusRecordText(remoteUpdateDebug: LanRemoteUpdateDebugResponse): string {
+function remoteDebugStatusRecordText(remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined): string {
+  if (!remoteUpdateDebug) return 'Peer remote update debug is not available yet'
   return remoteUpdateDebug.status_file_exists
     ? 'Remote status record available from peer'
     : 'Peer has not written a remote update status record yet'
 }
 
-function remoteDebugLogRecordText(remoteUpdateDebug: LanRemoteUpdateDebugResponse): string {
+function remoteDebugLogRecordText(remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined): string {
+  if (!remoteUpdateDebug) return 'Remote update log: unavailable'
   if (remoteUpdateDebug.log_tail_source === 'timeline' && remoteUpdateDebug.log_tail?.trim()) {
     return 'Remote update log: synthesized from status timeline'
   }
@@ -227,6 +229,14 @@ function remoteDebugScriptProbeText(remoteUpdateDebug: LanRemoteUpdateDebugRespo
     probe.no_tag_fetch_present ? 'no-tag fetch present' : 'fetch behavior unknown',
   ]
   return `Worker script probe: ${facts.join(' · ')}`
+}
+
+export function remoteDebugReadinessReasonText(
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+): string {
+  return formatReadableCommitRefs(
+    remoteUpdateDebug?.remote_update_readiness?.blocked_reason?.trim() ?? '',
+  )
 }
 
 export function splitRemoteDebugLogTail(logTail: string): { recent: string; older: string } {
@@ -1185,10 +1195,7 @@ export function ConfigModal({
                     const remoteUpdateDebug = remoteUpdateDebugByNode[source.node_id]
                     const remoteUpdateDebugLoading = Boolean(remoteUpdateDebugLoadingByNode[source.node_id])
                     const remoteUpdateDebugError = remoteUpdateDebugErrorByNode[source.node_id] ?? ''
-                    const debugReadinessReason =
-                      formatReadableCommitRefs(
-                        remoteUpdateDebug?.remote_update_readiness.blocked_reason?.trim() ?? '',
-                      )
+                    const debugReadinessReason = remoteDebugReadinessReasonText(remoteUpdateDebug)
                     const debugLogTail = remoteUpdateDebug?.log_tail?.trim() ?? ''
                     const { recent: recentDebugLogTail, older: olderDebugLogTail } =
                       splitRemoteDebugLogTail(debugLogTail)
