@@ -855,6 +855,54 @@ describe('ConfigModal', () => {
     })
   })
 
+  it('keeps the latest failed remote update visible when it matches the current machine build target', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: '368ce27fbbb47a851d0f89588085539465954111',
+        build_git_short_sha: '368ce27f',
+        build_git_commit_unix_ms: 1775477100000,
+      },
+      remote_update_status: {
+        state: 'failed',
+        reason_code: 'worker_exited_early',
+        target_ref: 'dfa0f229',
+        detail: 'Remote update worker PID 112248 exited without recording completion for target dfa0f229.',
+        finished_at_unix_ms: 1775480352000,
+        timeline: [
+          {
+            unix_ms: 1775480352000,
+            label: 'Remote update worker exited early',
+            detail: 'Remote update worker PID 112248 exited without recording completion for target dfa0f229.',
+            phase: 'worker_exit',
+          },
+        ],
+      },
+    }
+
+    expect(isRemoteUpdateStatusRelevantToCurrentBuild(source, 'dfa0f229abcdef')).toBe(true)
+    expect(shouldShowDiagnosticsRemoteUpdateStatus(source, 'dfa0f229abcdef')).toBe(true)
+    expect(remoteUpdateDetailText(source, 'dfa0f229abcdef')).toContain('target dfa0f229')
+    expect(remoteUpdateActionState(source, undefined, 'dfa0f229abcdef')).toEqual({
+      actionLabel: 'Retry update',
+      actionDetail: 'Remote update worker PID 112248 exited without recording completion for target dfa0f229.',
+      spinning: false,
+    })
+  })
+
   it('keeps idle update rows visually quiet', () => {
     const config = buildConfig()
     const source = {
