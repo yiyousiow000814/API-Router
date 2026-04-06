@@ -96,6 +96,7 @@ export function syncPauseSummaryLabel(source: ConfigSource): string | null {
 }
 
 function remoteUpdateStateLabel(source: ConfigSource): string | null {
+  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source)) return null
   const state = source.remote_update_status?.state?.trim()
   const reasonCode = source.remote_update_status?.reason_code?.trim()
   if (!state) return null
@@ -109,7 +110,29 @@ function remoteUpdateStateLabel(source: ConfigSource): string | null {
   return state
 }
 
+function remoteUpdateObservedAtUnixMs(source: ConfigSource): number {
+  const status = source.remote_update_status
+  if (!status) return 0
+  return Math.max(
+    status.finished_at_unix_ms ?? 0,
+    status.started_at_unix_ms ?? 0,
+    status.updated_at_unix_ms ?? 0,
+    status.accepted_at_unix_ms ?? 0,
+  )
+}
+
+export function isRemoteUpdateStatusRelevantToCurrentBuild(source: ConfigSource): boolean {
+  const status = source.remote_update_status
+  if (!status?.state?.trim()) return false
+  const buildCommitUnixMs = source.build_identity?.build_git_commit_unix_ms ?? null
+  if (!Number.isFinite(buildCommitUnixMs) || !buildCommitUnixMs) return true
+  const statusObservedAtUnixMs = remoteUpdateObservedAtUnixMs(source)
+  if (!statusObservedAtUnixMs) return true
+  return statusObservedAtUnixMs >= buildCommitUnixMs
+}
+
 export function shouldShowDiagnosticsRemoteUpdateStatus(source: ConfigSource): boolean {
+  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source)) return false
   const state = source.remote_update_status?.state?.trim()
   if (!state) return false
   if (state !== 'superseded') return true
@@ -152,6 +175,7 @@ function remoteDebugLogRecordText(remoteUpdateDebug: LanRemoteUpdateDebugRespons
 }
 
 export function remoteUpdateDetailText(source: ConfigSource): string {
+  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source)) return ''
   const status = source.remote_update_status
   if (!status) return ''
   const requester = status.requester_node_name?.trim() || status.requester_node_id?.trim() || 'remote peer'
@@ -181,6 +205,7 @@ export function remoteUpdateDetailText(source: ConfigSource): string {
 }
 
 function remoteUpdateTimestampLabel(source: ConfigSource): string {
+  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source)) return ''
   const status = source.remote_update_status
   if (!status) return ''
   const unixMs =
@@ -192,12 +217,14 @@ function remoteUpdateTimestampLabel(source: ConfigSource): string {
 }
 
 function remoteUpdateTimelineEntries(source: ConfigSource) {
+  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source)) return []
   return [...(source.remote_update_status?.timeline ?? [])]
     .filter((entry) => (entry.label?.trim() || entry.detail?.trim() || entry.phase?.trim()))
     .sort((a, b) => (a.unix_ms ?? 0) - (b.unix_ms ?? 0))
 }
 
 function remoteUpdateMenuDetailText(source: ConfigSource): string {
+  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source)) return 'Sync to this build'
   const status = source.remote_update_status
   if (!status) return 'Sync to this build'
   const state = status.state?.trim()
@@ -224,7 +251,9 @@ export function remoteUpdateActionState(
   actionDetail: string | null
   spinning: boolean
 } {
-  const remoteState = source.remote_update_status?.state?.trim()
+  const remoteState = isRemoteUpdateStatusRelevantToCurrentBuild(source)
+    ? source.remote_update_status?.state?.trim()
+    : ''
   const remoteStatusCurrentForPending = isRemoteUpdateStatusCurrentForPending(source, pendingStage)
   if (pendingStage?.stage === 'requesting') {
     return {
@@ -288,7 +317,9 @@ export function shouldShowRemoteUpdateMenuDetail(
 ): boolean {
   if (!actionState?.actionDetail?.trim()) return false
   if (actionState.spinning) return true
-  const remoteState = source.remote_update_status?.state?.trim()
+  const remoteState = isRemoteUpdateStatusRelevantToCurrentBuild(source)
+    ? source.remote_update_status?.state?.trim()
+    : ''
   return remoteState === 'failed'
 }
 
@@ -334,7 +365,7 @@ function isGenericVersionSyncReason(reason: string): boolean {
 export function diagnosticsWhyText(
   source: NonNullable<Config['config_source']>['sources'][number],
 ): string {
-  if (source.remote_update_status?.state?.trim()) {
+  if (isRemoteUpdateStatusRelevantToCurrentBuild(source)) {
     return ''
   }
   if (source.version_sync_required) {

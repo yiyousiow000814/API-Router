@@ -5,6 +5,7 @@ import {
   diagnosticsWhyText,
   formatBuildLabel,
   formatCommitDate,
+  isRemoteUpdateStatusRelevantToCurrentBuild,
   keepSourceMenuOpenAfterAction,
   remoteUpdateActionState,
   remoteUpdateDetailText,
@@ -734,6 +735,82 @@ describe('ConfigModal', () => {
     }
 
     expect(shouldShowDiagnosticsRemoteUpdateStatus(source)).toBe(true)
+  })
+
+  it('hides remote update diagnostics when the status record is older than the current peer build', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: '4731214fc6e75c3dda5a409045c02be55fdfb01d',
+        build_git_short_sha: '4731214f',
+        build_git_commit_unix_ms: 1775450940000,
+      },
+      remote_update_status: {
+        state: 'superseded',
+        reason_code: 'peer_build_changed_before_start',
+        target_ref: 'db1d2529',
+        detail: 'Queued remote update to db1d2529 never started; peer is currently on build e53479d1.',
+        finished_at_unix_ms: 1775435700000,
+      },
+    }
+
+    expect(isRemoteUpdateStatusRelevantToCurrentBuild(source)).toBe(false)
+    expect(shouldShowDiagnosticsRemoteUpdateStatus(source)).toBe(false)
+    expect(remoteUpdateDetailText(source)).toBe('')
+    expect(remoteUpdateActionState(source, undefined)).toEqual({
+      actionLabel: 'Update peer',
+      actionDetail: 'Sync to this build',
+      spinning: false,
+    })
+    expect(
+      shouldShowRemoteUpdateMenuDetail(source, remoteUpdateActionState(source, undefined)),
+    ).toBe(false)
+  })
+
+  it('shows diagnostics why text again once the only remote update status is stale', () => {
+    const whyText = diagnosticsWhyText({
+      kind: 'peer',
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      follow_blocked_reason: null,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: '4731214fc6e75c3dda5a409045c02be55fdfb01d',
+        build_git_short_sha: '4731214f',
+        build_git_commit_unix_ms: 1775450940000,
+      },
+      remote_update_status: {
+        state: 'superseded',
+        reason_code: 'peer_build_changed_before_start',
+        target_ref: 'db1d2529',
+        detail: 'Queued remote update to db1d2529 never started; peer is currently on build e53479d1.',
+        finished_at_unix_ms: 1775435700000,
+      },
+      build_matches_local: false,
+    })
+
+    expect(whyText).toBe('Desk B requires update.')
   })
 
   it('keeps idle update rows visually quiet', () => {
