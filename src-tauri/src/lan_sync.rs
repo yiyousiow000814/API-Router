@@ -5096,8 +5096,10 @@ mod tests {
         assert!(!payload.log_file_exists);
         assert_eq!(payload.log_tail_source, "timeline");
         let log_tail = payload.log_tail.as_deref().unwrap_or_default();
+        assert!(log_tail.contains("UTC"));
         assert!(log_tail.contains("Building checked EXE"));
         assert!(log_tail.contains("npm run build:root-exe:checked failed"));
+        assert!(!log_tail.contains("[3]"));
     }
 
     #[test]

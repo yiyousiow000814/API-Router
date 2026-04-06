@@ -1,4 +1,5 @@
 use super::*;
+use chrono::{Datelike, Local, TimeZone, Timelike};
 
 #[cfg(test)]
 thread_local! {
@@ -521,9 +522,9 @@ fn synthesize_remote_update_log_tail_from_status(
     let mut lines = Vec::new();
     for entry in &status.timeline {
         let mut line = String::new();
-        if entry.unix_ms != 0 {
-            let unix_ms = entry.unix_ms;
-            line.push_str(&format!("[{}] ", unix_ms));
+        if let Some(timestamp) = format_remote_update_debug_time(entry.unix_ms) {
+            line.push_str(&timestamp);
+            line.push_str(" · ");
         }
         if !entry.label.trim().is_empty() {
             let label = entry.label.trim();
@@ -576,6 +577,31 @@ fn synthesize_remote_update_log_tail_from_status(
         .rev()
         .collect();
     Some(tail)
+}
+
+fn format_remote_update_debug_time(unix_ms: u64) -> Option<String> {
+    if unix_ms == 0 {
+        return None;
+    }
+    let dt = Local
+        .timestamp_millis_opt(i64::try_from(unix_ms).ok()?)
+        .single()?;
+    let offset = dt.offset().local_minus_utc();
+    let sign = if offset >= 0 { '+' } else { '-' };
+    let abs_offset = offset.abs();
+    let offset_hours = abs_offset / 3600;
+    let offset_minutes = (abs_offset % 3600) / 60;
+    Some(format!(
+        "{:02}-{:02}-{:04} {:02}:{:02} UTC{}{:02}:{:02}",
+        dt.day(),
+        dt.month(),
+        dt.year(),
+        dt.hour(),
+        dt.minute(),
+        sign,
+        offset_hours,
+        offset_minutes
+    ))
 }
 
 fn remote_update_status_blocks_new_request(status: &LanRemoteUpdateStatusSnapshot) -> bool {

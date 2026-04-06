@@ -445,6 +445,9 @@ function isGenericVersionSyncReason(reason: string): boolean {
 export function diagnosticsWhyText(
   source: NonNullable<Config['config_source']>['sources'][number],
 ): string {
+  if (source.build_matches_local && !source.version_sync_required) {
+    return ''
+  }
   if (isRemoteUpdateStatusRelevantToCurrentBuild(source)) {
     return ''
   }
