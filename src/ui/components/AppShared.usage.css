@@ -294,7 +294,17 @@
 .aoModal.aoConfigDiagnosticsModal {
   width: min(860px, calc(100vw - 96px));
   max-height: min(860px, calc(100vh - 96px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.aoConfigDiagnosticsModalBody {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
   overflow: auto;
+  padding-right: 8px;
 }
 
 .aoConfigDiagBody {

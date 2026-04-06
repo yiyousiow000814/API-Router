@@ -7,6 +7,7 @@ import {
   formatCommitDate,
   keepSourceMenuOpenAfterAction,
   remoteUpdateActionState,
+  remoteUpdateDetailText,
   shouldShowDiagnosticsRemoteUpdateStatus,
   shouldShowRemoteUpdateMenuDetail,
   syncPauseSummaryLabel,
@@ -634,7 +635,7 @@ describe('ConfigModal', () => {
         state: 'superseded',
         reason_code: 'peer_build_changed_before_start',
         target_ref: '9910964e24802d327b1500a69f2d4471fb7ac647',
-        detail: 'Queued remote update to 9910964e never started; peer is currently on build ce542b7.',
+        detail: 'Queued remote update to 9910964e never started before the peer build changed.',
         finished_at_unix_ms: 1775312828000,
       },
     }
@@ -647,6 +648,36 @@ describe('ConfigModal', () => {
     expect(
       shouldShowRemoteUpdateMenuDetail(source, remoteUpdateActionState(source, undefined)),
     ).toBe(false)
+    expect(remoteUpdateDetailText(source)).toBe(
+      'Queued remote update to 9910964e never started before the peer build changed.',
+    )
+  })
+
+  it('avoids claiming a conflicting current build in expired-before-start details', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'superseded',
+        reason_code: 'peer_build_changed_before_start',
+        target_ref: '9910964e24802d327b1500a69f2d4471fb7ac647',
+        detail: 'Queued remote update to 9910964e never started before the peer build changed.',
+        finished_at_unix_ms: 1775312828000,
+      },
+    }
+
+    expect(remoteUpdateDetailText(source)).not.toContain('currently on build')
   })
 
   it('hides stale superseded diagnostics once the peer no longer needs an update', () => {

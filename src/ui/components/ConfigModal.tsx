@@ -151,7 +151,7 @@ function remoteDebugLogRecordText(remoteUpdateDebug: LanRemoteUpdateDebugRespons
     : 'No remote update log available from peer'
 }
 
-function remoteUpdateDetailText(source: ConfigSource): string {
+export function remoteUpdateDetailText(source: ConfigSource): string {
   const status = source.remote_update_status
   if (!status) return ''
   const requester = status.requester_node_name?.trim() || status.requester_node_id?.trim() || 'remote peer'
@@ -885,7 +885,7 @@ export function ConfigModal({
                 Close
               </button>
             </div>
-            <div className="aoModalBody" style={{ display: 'grid', gap: 12 }}>
+            <div className="aoModalBody aoConfigDiagnosticsModalBody">
               {peerSources.length === 0 ? (
                 <div className="aoHint">No LAN peers detected.</div>
               ) : (

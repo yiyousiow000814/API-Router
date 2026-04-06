@@ -1,5 +1,40 @@
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    static TEST_USER_DATA_DIR_OVERRIDE: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+    static TEST_REPO_ROOT_OVERRIDE: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_user_data_dir_override(
+    value: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    TEST_USER_DATA_DIR_OVERRIDE.with(|cell| {
+        let previous = cell.borrow().clone();
+        *cell.borrow_mut() = value.map(|path| path.to_path_buf());
+        previous
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_repo_root_override(
+    value: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    TEST_REPO_ROOT_OVERRIDE.with(|cell| {
+        let previous = cell.borrow().clone();
+        *cell.borrow_mut() = value.map(|path| path.to_path_buf());
+        previous
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn test_repo_root_override() -> Option<std::path::PathBuf> {
+    TEST_REPO_ROOT_OVERRIDE.with(|cell| cell.borrow().clone())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LanRemoteUpdateReadinessSnapshot {
     pub ready: bool,
@@ -96,6 +131,13 @@ pub(crate) struct LanRemoteUpdateAcceptedPacket {
 }
 
 fn lan_remote_update_status_path() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = TEST_USER_DATA_DIR_OVERRIDE.with(|cell| cell.borrow().clone()) {
+        return Some(
+            path.join("diagnostics")
+                .join("lan-remote-update-status.json"),
+        );
+    }
     let user_data_dir = std::env::var("API_ROUTER_USER_DATA_DIR").ok()?;
     let trimmed = user_data_dir.trim();
     if trimmed.is_empty() {
@@ -109,6 +151,10 @@ fn lan_remote_update_status_path() -> Option<std::path::PathBuf> {
 }
 
 pub(crate) fn lan_remote_update_log_path() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = TEST_USER_DATA_DIR_OVERRIDE.with(|cell| cell.borrow().clone()) {
+        return Some(path.join("diagnostics").join("lan-remote-update.log"));
+    }
     let user_data_dir = std::env::var("API_ROUTER_USER_DATA_DIR").ok()?;
     let trimmed = user_data_dir.trim();
     if trimmed.is_empty() {
@@ -396,14 +442,12 @@ fn normalize_remote_update_status(
             "Status normalized to expired before start",
             match worker_cleanup_detail {
                 Some(detail) => format!(
-                    "Queued remote update to {} never started; peer is currently on build {}. {detail}",
+                    "Queued remote update to {} never started before the peer build changed. {detail}",
                     display_target_ref(status_target_ref),
-                    display_target_ref(current_target_ref),
                 ),
                 None => format!(
-                    "Queued remote update to {} never started; peer is currently on build {}.",
+                    "Queued remote update to {} never started before the peer build changed.",
                     display_target_ref(status_target_ref),
-                    display_target_ref(current_target_ref),
                 ),
             },
         )
@@ -413,14 +457,12 @@ fn normalize_remote_update_status(
             "Status normalized to replaced after start",
             match worker_cleanup_detail {
                 Some(detail) => format!(
-                    "Queued remote update to {} stopped after the peer changed to build {}. {detail}",
+                    "Queued remote update to {} stopped after the peer build changed. {detail}",
                     display_target_ref(status_target_ref),
-                    display_target_ref(current_target_ref),
                 ),
                 None => format!(
-                    "Queued remote update to {} stopped after the peer changed to build {}.",
+                    "Queued remote update to {} stopped after the peer build changed.",
                     display_target_ref(status_target_ref),
-                    display_target_ref(current_target_ref),
                 ),
             },
         )
@@ -554,6 +596,24 @@ pub(crate) fn current_local_remote_update_readiness() -> LanRemoteUpdateReadines
     let snapshot = compute_local_remote_update_readiness();
     *cache.write() = Some((now, snapshot.clone()));
     snapshot
+}
+
+fn build_worker_started_status(
+    accepted_status: &LanRemoteUpdateStatusSnapshot,
+    worker_script: &str,
+    worker_pid: u32,
+    started_at_unix_ms: u64,
+) -> LanRemoteUpdateStatusSnapshot {
+    LanRemoteUpdateStatusSnapshot {
+        state: "running".to_string(),
+        worker_script: Some(worker_script.to_string()),
+        worker_pid: Some(worker_pid),
+        detail: Some("Remote self-update worker started".to_string()),
+        reason_code: Some("worker_spawned".to_string()),
+        started_at_unix_ms: Some(started_at_unix_ms),
+        updated_at_unix_ms: started_at_unix_ms,
+        ..accepted_status.clone()
+    }
 }
 
 pub(crate) fn peer_remote_update_blocked_reason(peer: &LanPeerSnapshot) -> Option<String> {
@@ -828,14 +888,14 @@ pub(crate) async fn lan_sync_remote_update_http(
     ) {
         Ok((worker_script, worker_pid)) => {
             let display_target_ref = display_target_ref(normalized_target_ref);
+            let started_at_unix_ms = unix_ms();
             let _ = write_lan_remote_update_status_with_timeline(
-                &LanRemoteUpdateStatusSnapshot {
-                    worker_script: Some(worker_script.clone()),
-                    worker_pid: Some(worker_pid),
-                    detail: Some("Remote self-update worker started".to_string()),
-                    reason_code: Some("worker_spawned".to_string()),
-                    ..accepted_status
-                },
+                &build_worker_started_status(
+                    &accepted_status,
+                    &worker_script,
+                    worker_pid,
+                    started_at_unix_ms,
+                ),
                 "worker_spawned",
                 "Remote update worker spawned",
                 "http",
@@ -1025,4 +1085,54 @@ fn spawn_remote_update_worker(
         .spawn()
         .map_err(|err| format!("failed to start remote update worker: {err}"))?;
     Ok((script, child.id()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_worker_started_status_marks_running_and_sets_started_time() {
+        let accepted_status = LanRemoteUpdateStatusSnapshot {
+            state: "accepted".to_string(),
+            target_ref: "abc123".to_string(),
+            request_id: Some("ru_test".to_string()),
+            reason_code: Some("request_accepted".to_string()),
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: None,
+            worker_pid: None,
+            detail: Some("Queued remote self-update worker".to_string()),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: None,
+            finished_at_unix_ms: None,
+            updated_at_unix_ms: 10,
+            timeline: Vec::new(),
+        };
+
+        let running_status = build_worker_started_status(
+            &accepted_status,
+            "src-tauri/src/lan_sync/remote_update/lan-remote-update.ps1",
+            4242,
+            25,
+        );
+
+        assert_eq!(running_status.state, "running");
+        assert_eq!(
+            running_status.reason_code.as_deref(),
+            Some("worker_spawned")
+        );
+        assert_eq!(
+            running_status.detail.as_deref(),
+            Some("Remote self-update worker started")
+        );
+        assert_eq!(running_status.worker_pid, Some(4242));
+        assert_eq!(
+            running_status.worker_script.as_deref(),
+            Some("src-tauri/src/lan_sync/remote_update/lan-remote-update.ps1")
+        );
+        assert_eq!(running_status.started_at_unix_ms, Some(25));
+        assert_eq!(running_status.updated_at_unix_ms, 25);
+        assert_eq!(running_status.accepted_at_unix_ms, 10);
+    }
 }

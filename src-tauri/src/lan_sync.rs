@@ -3508,6 +3508,12 @@ fn format_lan_sync_reqwest_error(err: &reqwest::Error) -> String {
 }
 
 fn resolve_repo_root_for_self_update() -> Result<std::path::PathBuf, String> {
+    #[cfg(test)]
+    if let Some(path) = remote_update::test_repo_root_override() {
+        if path.join("package.json").is_file() {
+            return Ok(path);
+        }
+    }
     if let Ok(explicit) = std::env::var("API_ROUTER_REPO_ROOT") {
         let trimmed = explicit.trim();
         if !trimmed.is_empty() {
@@ -4654,35 +4660,17 @@ mod tests {
         (tmp, state)
     }
 
-    fn remote_update_env_lock() -> &'static parking_lot::Mutex<()> {
-        static LOCK: std::sync::OnceLock<parking_lot::Mutex<()>> = std::sync::OnceLock::new();
-        LOCK.get_or_init(|| parking_lot::Mutex::new(()))
-    }
-
     struct RemoteUpdateEnvGuard {
-        _lock: parking_lot::MutexGuard<'static, ()>,
-        previous_user_data_dir: Option<std::ffi::OsString>,
-        previous_repo_root: Option<std::ffi::OsString>,
+        previous_user_data_dir: Option<std::path::PathBuf>,
+        previous_repo_root: Option<std::path::PathBuf>,
     }
 
     impl Drop for RemoteUpdateEnvGuard {
         fn drop(&mut self) {
-            match self.previous_repo_root.as_ref() {
-                Some(value) => unsafe {
-                    std::env::set_var("API_ROUTER_REPO_ROOT", value);
-                },
-                None => unsafe {
-                    std::env::remove_var("API_ROUTER_REPO_ROOT");
-                },
-            }
-            match self.previous_user_data_dir.as_ref() {
-                Some(value) => unsafe {
-                    std::env::set_var("API_ROUTER_USER_DATA_DIR", value);
-                },
-                None => unsafe {
-                    std::env::remove_var("API_ROUTER_USER_DATA_DIR");
-                },
-            }
+            super::remote_update::set_test_repo_root_override(self.previous_repo_root.as_deref());
+            super::remote_update::set_test_user_data_dir_override(
+                self.previous_user_data_dir.as_deref(),
+            );
         }
     }
 
@@ -4690,21 +4678,10 @@ mod tests {
         user_data_dir: Option<&std::path::Path>,
         repo_root: Option<&std::path::Path>,
     ) -> RemoteUpdateEnvGuard {
-        let lock = remote_update_env_lock().lock();
-        let previous_user_data_dir = std::env::var_os("API_ROUTER_USER_DATA_DIR");
-        let previous_repo_root = std::env::var_os("API_ROUTER_REPO_ROOT");
-        unsafe {
-            match user_data_dir {
-                Some(path) => std::env::set_var("API_ROUTER_USER_DATA_DIR", path),
-                None => std::env::remove_var("API_ROUTER_USER_DATA_DIR"),
-            }
-            match repo_root {
-                Some(path) => std::env::set_var("API_ROUTER_REPO_ROOT", path),
-                None => std::env::remove_var("API_ROUTER_REPO_ROOT"),
-            }
-        }
+        let previous_user_data_dir =
+            super::remote_update::set_test_user_data_dir_override(user_data_dir);
+        let previous_repo_root = super::remote_update::set_test_repo_root_override(repo_root);
         RemoteUpdateEnvGuard {
-            _lock: lock,
             previous_user_data_dir,
             previous_repo_root,
         }
@@ -5017,7 +4994,7 @@ mod tests {
             .detail
             .as_deref()
             .unwrap_or_default()
-            .contains("stopped after the peer changed to build"));
+            .contains("stopped after the peer build changed"));
         assert!(payload.status_file_exists);
         assert!(payload.log_file_exists);
         assert!(payload
@@ -5104,8 +5081,9 @@ mod tests {
             "9910964e24802d327b1500a69f2d4471fb7ac647"
         );
         let detail = loaded.detail.as_deref().unwrap_or_default();
-        assert!(detail.contains("never started; peer is currently on build"));
-        assert!(detail.contains(&current_target_ref[..8]));
+        assert!(detail.contains("never started before the peer build changed"));
+        assert!(!detail.contains("currently on build"));
+        assert!(!detail.contains(&current_target_ref[..8]));
         assert!(loaded.finished_at_unix_ms.is_some());
     }
 
