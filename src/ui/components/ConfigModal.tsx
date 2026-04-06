@@ -223,6 +223,67 @@ function remoteUpdateTimelineEntries(source: ConfigSource) {
     .sort((a, b) => (a.unix_ms ?? 0) - (b.unix_ms ?? 0))
 }
 
+function pendingRemoteUpdateStateLabel(pendingStage: RemoteUpdatePendingStage | undefined): string | null {
+  if (!pendingStage) return null
+  if (pendingStage.stage === 'requesting') return 'Sending'
+  if (pendingStage.stage === 'refreshing') return 'Waiting'
+  return 'Remote update pending'
+}
+
+function pendingRemoteUpdateDetailText(pendingStage: RemoteUpdatePendingStage | undefined): string {
+  if (!pendingStage) return ''
+  return formatReadableCommitRefs(pendingStage.detail?.trim() || '')
+}
+
+function pendingRemoteUpdateTimestampLabel(pendingStage: RemoteUpdatePendingStage | undefined): string {
+  if (!pendingStage?.startedAtUnixMs) return ''
+  return formatCommitDate(pendingStage.startedAtUnixMs)
+}
+
+function pendingRemoteUpdateTimelineEntries(pendingStage: RemoteUpdatePendingStage | undefined) {
+  if (!pendingStage) return []
+  return [
+    {
+      unix_ms: pendingStage.startedAtUnixMs,
+      label:
+        pendingStage.stage === 'requesting'
+          ? 'Request sent from current machine'
+          : 'Peer accepted request; waiting for remote progress',
+      detail: pendingStage.detail?.trim() || '',
+      phase: pendingStage.stage,
+    },
+  ]
+}
+
+export function diagnosticsRemoteUpdateDisplay(
+  source: ConfigSource,
+  pendingStage: RemoteUpdatePendingStage | undefined,
+): {
+  label: string | null
+  detail: string
+  time: string
+  timeline: Array<{ unix_ms?: number | null; label?: string | null; detail?: string | null; phase?: string | null }>
+} {
+  const remoteStatusCurrentForPending = isRemoteUpdateStatusCurrentForPending(source, pendingStage)
+  const showPendingRemoteUpdate =
+    Boolean(pendingStage) &&
+    (!shouldShowDiagnosticsRemoteUpdateStatus(source) || !remoteStatusCurrentForPending)
+  if (showPendingRemoteUpdate) {
+    return {
+      label: pendingRemoteUpdateStateLabel(pendingStage),
+      detail: pendingRemoteUpdateDetailText(pendingStage),
+      time: pendingRemoteUpdateTimestampLabel(pendingStage),
+      timeline: pendingRemoteUpdateTimelineEntries(pendingStage),
+    }
+  }
+  return {
+    label: shouldShowDiagnosticsRemoteUpdateStatus(source) ? remoteUpdateStateLabel(source) : null,
+    detail: remoteUpdateDetailText(source),
+    time: remoteUpdateTimestampLabel(source),
+    timeline: remoteUpdateTimelineEntries(source),
+  }
+}
+
 function remoteUpdateMenuDetailText(source: ConfigSource): string {
   if (!isRemoteUpdateStatusRelevantToCurrentBuild(source)) return 'Sync to this build'
   const status = source.remote_update_status
@@ -316,6 +377,15 @@ export function remoteUpdateActionState(
     actionDetail: 'Sync to this build',
     spinning: false,
   }
+}
+
+export function remoteUpdateMenuActionLabel(
+  source: ConfigSource,
+  pendingStage: RemoteUpdatePendingStage | undefined,
+): string {
+  const actionState = remoteUpdateActionState(source, pendingStage)
+  if (actionState.spinning) return actionState.actionLabel
+  return source.same_version_update_allowed ? 'Update peer' : 'Update blocked'
 }
 
 export function shouldShowRemoteUpdateMenuDetail(
@@ -687,7 +757,7 @@ export function ConfigModal({
                               ? 'Current'
                               : 'Use local'
                             : versionSyncRequired
-                              ? versionSyncActionState?.actionLabel || 'Update peer'
+                              ? remoteUpdateMenuActionLabel(source, versionSyncPendingStage)
                               : source.active
                               ? 'Following'
                               : !source.trusted && pairState === 'incoming_request'
@@ -975,18 +1045,18 @@ export function ConfigModal({
                     const pausedDomains = source.sync_blocked_domains?.map(syncDomainLabel) ?? []
                     const pausedSummary = syncPauseSummaryLabel(source)
                     const whyText = diagnosticsWhyText(source)
+                    const pendingStage = remoteUpdatePendingByNode[source.node_id]
+                    const remoteUpdateDisplay = diagnosticsRemoteUpdateDisplay(source, pendingStage)
                     const peerBuildLabel = source.build_identity
                       ? formatBuildLabel(source.build_identity)
                       : 'Unknown'
                     const peerCommitLabel = formatCommitDate(
                       source.build_identity?.build_git_commit_unix_ms ?? null,
                     )
-                    const remoteUpdateStatusLabel = shouldShowDiagnosticsRemoteUpdateStatus(source)
-                      ? remoteUpdateStateLabel(source)
-                      : null
-                    const remoteUpdateDetail = remoteUpdateDetailText(source)
-                    const remoteUpdateTime = remoteUpdateTimestampLabel(source)
-                    const remoteUpdateTimeline = remoteUpdateTimelineEntries(source)
+                    const remoteUpdateStatusLabel = remoteUpdateDisplay.label
+                    const remoteUpdateDetail = remoteUpdateDisplay.detail
+                    const remoteUpdateTime = remoteUpdateDisplay.time
+                    const remoteUpdateTimeline = remoteUpdateDisplay.timeline
                     const remoteUpdateDebug = remoteUpdateDebugByNode[source.node_id]
                     const remoteUpdateDebugLoading = Boolean(remoteUpdateDebugLoadingByNode[source.node_id])
                     const remoteUpdateDebugError = remoteUpdateDebugErrorByNode[source.node_id] ?? ''

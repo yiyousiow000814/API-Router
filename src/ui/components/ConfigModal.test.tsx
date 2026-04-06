@@ -1,6 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import {
+  remoteUpdateMenuActionLabel,
+  diagnosticsRemoteUpdateDisplay,
   ConfigModal,
   diagnosticsWhyText,
   formatBuildLabel,
@@ -838,6 +840,152 @@ describe('ConfigModal', () => {
     expect(
       shouldShowRemoteUpdateMenuDetail(source, remoteUpdateActionState(source, undefined)),
     ).toBe(false)
+  })
+
+  it('keeps dropdown remote update labels action-only after a superseded update', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'superseded',
+        reason_code: 'peer_build_changed_after_start',
+        target_ref: 'db1d2529',
+        detail: 'Queued remote update to db1d2529 stopped after the peer changed build.',
+        finished_at_unix_ms: 1775435700000,
+      },
+    }
+
+    expect(remoteUpdateActionState(source, undefined)).toEqual({
+      actionLabel: 'Build changed',
+      actionDetail: 'Peer changed build while the update was running',
+      spinning: false,
+    })
+    expect(remoteUpdateMenuActionLabel(source, undefined)).toBe('Update peer')
+  })
+
+  it('keeps dropdown remote update labels on live progress while pending', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'accepted',
+        target_ref: 'db1d2529',
+        detail: 'Peer accepted request. Refreshing remote progress',
+        accepted_at_unix_ms: 1775435700000,
+      },
+    }
+
+    expect(remoteUpdateMenuActionLabel(source, undefined)).toBe('Queued')
+  })
+
+  it('shows local pending remote update details in diagnostics before peer status catches up', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+    }
+
+    const display = diagnosticsRemoteUpdateDisplay(source, {
+      stage: 'requesting',
+      detail: 'Sending update request to peer',
+      startedAtUnixMs: 1775435700000,
+    })
+
+    expect(display.label).toBe('Sending')
+    expect(display.detail).toBe('Sending update request to peer')
+    expect(display.time).toBe(formatCommitDate(1775435700000))
+    expect(display.timeline).toEqual([
+      {
+        unix_ms: 1775435700000,
+        label: 'Request sent from current machine',
+        detail: 'Sending update request to peer',
+        phase: 'requesting',
+      },
+    ])
+  })
+
+  it('switches diagnostics to remote status once peer progress is newer than local pending', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'running',
+        target_ref: 'db1d2529',
+        detail: 'Peer is fetching and applying this build.',
+        accepted_at_unix_ms: 1775435701000,
+        started_at_unix_ms: 1775435702000,
+        updated_at_unix_ms: 1775435703000,
+        timeline: [
+          {
+            unix_ms: 1775435702000,
+            label: 'Fetching build',
+            detail: 'Downloading target build archive',
+            phase: 'fetching',
+          },
+        ],
+      },
+    }
+
+    const display = diagnosticsRemoteUpdateDisplay(source, {
+      stage: 'refreshing',
+      detail: 'Peer accepted request. Refreshing remote progress',
+      startedAtUnixMs: 1775435700000,
+    })
+
+    expect(display.label).toBe('Updating')
+    expect(display.detail).toBe('Peer is fetching and applying this build.')
+    expect(display.time).toBe(formatCommitDate(1775435702000))
+    expect(display.timeline).toEqual([
+      {
+        unix_ms: 1775435702000,
+        label: 'Fetching build',
+        detail: 'Downloading target build archive',
+        phase: 'fetching',
+      },
+    ])
   })
 
   it('only shows a paused summary badge when more than one sync domain is paused', () => {
