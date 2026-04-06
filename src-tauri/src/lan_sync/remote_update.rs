@@ -1,5 +1,7 @@
 use super::*;
 use chrono::{Datelike, Local, TimeZone, Timelike};
+use std::io::Write;
+use std::process::Stdio;
 
 #[cfg(test)]
 thread_local! {
@@ -167,6 +169,23 @@ pub(crate) fn lan_remote_update_log_path() -> Option<std::path::PathBuf> {
             .join("diagnostics")
             .join("lan-remote-update.log"),
     )
+}
+
+fn append_remote_update_log_message(message: &str) {
+    let Some(path) = lan_remote_update_log_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f UTC%:z");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "[{timestamp}] {message}");
+    }
 }
 
 fn read_lan_remote_update_status_raw() -> Option<LanRemoteUpdateStatusSnapshot> {
@@ -707,6 +726,106 @@ fn build_worker_started_status(
     }
 }
 
+fn build_worker_exited_early_status(
+    current_status: &LanRemoteUpdateStatusSnapshot,
+    worker_pid: u32,
+    exit_detail: &str,
+    finished_at_unix_ms: u64,
+) -> LanRemoteUpdateStatusSnapshot {
+    LanRemoteUpdateStatusSnapshot {
+        state: "failed".to_string(),
+        worker_pid: Some(worker_pid),
+        reason_code: Some("worker_exited_early".to_string()),
+        detail: Some(exit_detail.to_string()),
+        finished_at_unix_ms: Some(finished_at_unix_ms),
+        updated_at_unix_ms: finished_at_unix_ms,
+        ..current_status.clone()
+    }
+}
+
+fn record_remote_update_worker_exit(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    request_id: &str,
+    worker_pid: u32,
+    exit_detail: &str,
+    finished_at_unix_ms: u64,
+) {
+    let Some(current_status) = read_lan_remote_update_status_raw() else {
+        return;
+    };
+    if current_status.request_id.as_deref() != Some(request_id) {
+        return;
+    }
+    if current_status.worker_pid.is_some() && current_status.worker_pid != Some(worker_pid) {
+        return;
+    }
+    if !matches!(current_status.state.trim(), "accepted" | "running") {
+        return;
+    }
+    let failed_status = build_worker_exited_early_status(
+        &current_status,
+        worker_pid,
+        exit_detail,
+        finished_at_unix_ms,
+    );
+    let _ = write_lan_remote_update_status_with_timeline(
+        &failed_status,
+        "worker_exit",
+        "Remote update worker exited early",
+        "launcher",
+    );
+    gateway.store.add_event(
+        "gateway",
+        "error",
+        "lan.remote_update_failed",
+        &format!(
+            "Accepted remote update request to {}; local self-update worker exited early",
+            display_target_ref(&current_status.target_ref)
+        ),
+        serde_json::json!({
+            "request_id": request_id,
+            "target_ref": current_status.target_ref,
+            "worker_pid": worker_pid,
+            "reason_code": "worker_exited_early",
+            "error": exit_detail,
+        }),
+    );
+}
+
+fn monitor_remote_update_worker_exit(
+    gateway: crate::orchestrator::gateway::GatewayState,
+    mut child: std::process::Child,
+    request_id: String,
+    worker_pid: u32,
+    target_ref: String,
+) {
+    std::thread::spawn(move || {
+        let exit_detail = match child.wait() {
+            Ok(status) => match status.code() {
+                Some(code) => format!(
+                    "Remote update worker PID {worker_pid} exited before completion with code {code} for target {}.",
+                    display_target_ref(&target_ref)
+                ),
+                None => format!(
+                    "Remote update worker PID {worker_pid} exited before completion for target {}.",
+                    display_target_ref(&target_ref)
+                ),
+            },
+            Err(err) => format!(
+                "Remote update worker PID {worker_pid} could not be monitored after spawn: {err}"
+            ),
+        };
+        append_remote_update_log_message(&exit_detail);
+        record_remote_update_worker_exit(
+            &gateway,
+            &request_id,
+            worker_pid,
+            &exit_detail,
+            unix_ms(),
+        );
+    });
+}
+
 pub(crate) fn peer_remote_update_blocked_reason(peer: &LanPeerSnapshot) -> Option<String> {
     let peer_advertises_remote_update = peer_supports_http_sync(peer, LAN_REMOTE_UPDATE_CAPABILITY)
         || peer.remote_update_readiness.is_some();
@@ -972,6 +1091,7 @@ pub(crate) async fn lan_sync_remote_update_http(
             .into_response();
     }
     match spawn_remote_update_worker(
+        &gateway,
         normalized_target_ref,
         &request_id,
         &packet.node_id,
@@ -1167,6 +1287,7 @@ pub(crate) fn build_remote_update_worker_command(
 }
 
 fn spawn_remote_update_worker(
+    gateway: &crate::orchestrator::gateway::GatewayState,
     target_ref: &str,
     request_id: &str,
     requester_node_id: &str,
@@ -1175,12 +1296,13 @@ fn spawn_remote_update_worker(
     let (program, args, script) = build_remote_update_worker_command(target_ref)?;
     let repo_root = resolve_repo_root_for_self_update()?;
     let status_path = lan_remote_update_status_path();
+    let log_path = lan_remote_update_log_path();
     let mut command = std::process::Command::new(program);
-    command.args(args).current_dir(repo_root);
+    command.args(&args).current_dir(&repo_root);
     if let Some(path) = status_path {
         command.env("API_ROUTER_REMOTE_UPDATE_STATUS_PATH", path);
     }
-    if let Some(path) = lan_remote_update_log_path() {
+    if let Some(path) = log_path.clone() {
         command.env("API_ROUTER_REMOTE_UPDATE_LOG_PATH", path);
     }
     command.env("API_ROUTER_REMOTE_UPDATE_TARGET_REF", target_ref);
@@ -1200,19 +1322,72 @@ fn spawn_remote_update_worker(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0000_0008 | 0x0000_0200);
     }
+    command.stdin(Stdio::null());
+    if let Some(path) = log_path.as_ref() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create remote update log dir: {err}"))?;
+        }
+        let stdout = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|err| format!("failed to open remote update log for stdout: {err}"))?;
+        let stderr = stdout
+            .try_clone()
+            .map_err(|err| format!("failed to clone remote update log handle: {err}"))?;
+        command.stdout(Stdio::from(stdout));
+        command.stderr(Stdio::from(stderr));
+    }
+    append_remote_update_log_message(&format!(
+        "Launcher spawning remote update worker for target {} with script {}. cwd={} args={} log_path={} status_path={}",
+        display_target_ref(target_ref),
+        script,
+        repo_root.display(),
+        args.join(" "),
+        log_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "unavailable".to_string()),
+        lan_remote_update_status_path()
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "unavailable".to_string())
+    ));
     let child = command
         .spawn()
         .map_err(|err| format!("failed to start remote update worker: {err}"))?;
-    Ok((script, child.id()))
+    let worker_pid = child.id();
+    append_remote_update_log_message(&format!(
+        "Launcher started remote update worker PID {worker_pid} for target {}.",
+        display_target_ref(target_ref)
+    ));
+    monitor_remote_update_worker_exit(
+        gateway.clone(),
+        child,
+        request_id.to_string(),
+        worker_pid,
+        target_ref.to_string(),
+    );
+    Ok((script, worker_pid))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orchestrator::config::AppConfig;
+    use crate::orchestrator::gateway::open_store_dir;
+    use crate::orchestrator::gateway::GatewayState;
+    use crate::orchestrator::router::RouterState;
+    use crate::orchestrator::secrets::SecretStore;
+    use crate::orchestrator::upstream::UpstreamClient;
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::Arc;
 
-    #[test]
-    fn build_worker_started_status_marks_running_and_sets_started_time() {
-        let accepted_status = LanRemoteUpdateStatusSnapshot {
+    fn accepted_status_fixture() -> LanRemoteUpdateStatusSnapshot {
+        LanRemoteUpdateStatusSnapshot {
             state: "accepted".to_string(),
             target_ref: "abc123".to_string(),
             request_id: Some("ru_test".to_string()),
@@ -1227,7 +1402,29 @@ mod tests {
             finished_at_unix_ms: None,
             updated_at_unix_ms: 10,
             timeline: Vec::new(),
-        };
+        }
+    }
+
+    fn gateway_state_fixture(root: &std::path::Path) -> GatewayState {
+        let cfg = AppConfig::default_config();
+        let now = unix_ms();
+        GatewayState {
+            cfg: Arc::new(RwLock::new(cfg.clone())),
+            router: Arc::new(RouterState::new(&cfg, now)),
+            store: open_store_dir(root.join("data")).expect("store"),
+            upstream: UpstreamClient::new(),
+            secrets: SecretStore::new(root.join("secrets.json")),
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    #[test]
+    fn build_worker_started_status_marks_running_and_sets_started_time() {
+        let accepted_status = accepted_status_fixture();
 
         let running_status = build_worker_started_status(
             &accepted_status,
@@ -1253,5 +1450,101 @@ mod tests {
         assert_eq!(running_status.started_at_unix_ms, Some(25));
         assert_eq!(running_status.updated_at_unix_ms, 25);
         assert_eq!(running_status.accepted_at_unix_ms, 10);
+    }
+
+    #[test]
+    fn build_worker_exited_early_status_marks_failure_and_preserves_worker_context() {
+        let running_status = build_worker_started_status(
+            &accepted_status_fixture(),
+            "src-tauri/src/lan_sync/remote_update/lan-remote-update.ps1",
+            4242,
+            25,
+        );
+
+        let failed_status = build_worker_exited_early_status(
+            &running_status,
+            4242,
+            "Remote update worker PID 4242 exited before completion with code 9 for target abc123.",
+            40,
+        );
+
+        assert_eq!(failed_status.state, "failed");
+        assert_eq!(
+            failed_status.reason_code.as_deref(),
+            Some("worker_exited_early")
+        );
+        assert_eq!(
+            failed_status.detail.as_deref(),
+            Some(
+                "Remote update worker PID 4242 exited before completion with code 9 for target abc123."
+            )
+        );
+        assert_eq!(failed_status.worker_pid, Some(4242));
+        assert_eq!(
+            failed_status.worker_script.as_deref(),
+            Some("src-tauri/src/lan_sync/remote_update/lan-remote-update.ps1")
+        );
+        assert_eq!(failed_status.started_at_unix_ms, Some(25));
+        assert_eq!(failed_status.finished_at_unix_ms, Some(40));
+        assert_eq!(failed_status.updated_at_unix_ms, 40);
+    }
+
+    #[test]
+    fn record_remote_update_worker_exit_writes_failed_status_and_timeline() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let previous_user_data = set_test_user_data_dir_override(Some(temp_dir.path()));
+        let previous_repo_root = set_test_repo_root_override(Some(temp_dir.path()));
+
+        let result = (|| {
+            let gateway = gateway_state_fixture(temp_dir.path());
+            let accepted_status = accepted_status_fixture();
+            write_lan_remote_update_status(&accepted_status).expect("write accepted status");
+            append_remote_update_log_message(
+                "Remote update worker PID 4242 exited before completion with code 7 for target abc123.",
+            );
+            record_remote_update_worker_exit(
+                &gateway,
+                accepted_status
+                    .request_id
+                    .as_deref()
+                    .expect("request id should exist"),
+                4242,
+                "Remote update worker PID 4242 exited before completion with code 7 for target abc123.",
+                40,
+            );
+
+            let final_status =
+                read_lan_remote_update_status_raw().expect("worker exit should be recorded");
+            assert_eq!(final_status.state, "failed");
+            assert_eq!(final_status.worker_pid, Some(4242));
+            assert!(final_status
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("exited before completion")));
+            assert!(final_status
+                .timeline
+                .iter()
+                .any(|entry| entry.phase == "worker_exit"
+                    && entry.label == "Remote update worker exited early"
+                    && entry.source == "launcher"));
+
+            let log_tail = read_remote_update_log_tail(4096).expect("launcher log should exist");
+            assert!(log_tail.contains("Remote update worker PID"));
+            let events = gateway.store.list_events_range(None, None, Some(20));
+            assert!(events.iter().any(|event| {
+                event.get("code").and_then(|value| value.as_str())
+                    == Some("lan.remote_update_failed")
+                    && event
+                        .get("message")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|message| {
+                            message.contains("local self-update worker exited early")
+                        })
+            }));
+        })();
+
+        set_test_repo_root_override(previous_repo_root.as_deref());
+        set_test_user_data_dir_override(previous_user_data.as_deref());
+        result
     }
 }
