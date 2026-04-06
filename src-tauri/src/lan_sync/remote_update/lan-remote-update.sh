@@ -281,7 +281,7 @@ fi
 CURRENT_STEP="Fetching from origin"
 write_remote_update_log "${CURRENT_STEP}"
 write_remote_update_status "running" "${TARGET_REF}" "$(step_detail "${CURRENT_STEP}")" "git_fetch" "Fetching from origin" "worker" "${STARTED_AT}" "null"
-run_remote_update_command "git fetch failed" git fetch origin --prune --tags
+run_remote_update_command "git fetch failed" git fetch origin --prune
 
 CURRENT_STEP="Resolving target ref"
 write_remote_update_log "${CURRENT_STEP}: ${TARGET_REF}"

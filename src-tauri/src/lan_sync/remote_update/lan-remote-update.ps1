@@ -243,7 +243,7 @@ Assert-CleanWorktree
 $currentStep = 'Fetching from origin'
 Write-RemoteUpdateLog $currentStep
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep) -Phase 'git_fetch' -Label 'Fetching from origin' -StartedAtUnixMs $startedAtUnixMs
-Invoke-RemoteUpdateCommand -FailureMessage 'git fetch failed' -Command { git fetch origin --prune --tags }
+Invoke-RemoteUpdateCommand -FailureMessage 'git fetch failed' -Command { git fetch origin --prune }
 
 $currentStep = 'Resolving target ref'
 Write-RemoteUpdateLog "${currentStep}: $TargetRef"

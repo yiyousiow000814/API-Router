@@ -1628,4 +1628,30 @@ mod tests {
                     })
         }));
     }
+
+    #[test]
+    fn remote_update_scripts_fetch_without_tags() {
+        let repo_root = resolve_repo_root_for_self_update().expect("resolve repo root");
+        let windows_script = repo_root
+            .join("src-tauri")
+            .join("src")
+            .join("lan_sync")
+            .join("remote_update")
+            .join("lan-remote-update.ps1");
+        let windows_contents =
+            std::fs::read_to_string(&windows_script).expect("read Windows remote update script");
+        assert!(windows_contents.contains("git fetch origin --prune"));
+        assert!(!windows_contents.contains("git fetch origin --prune --tags"));
+
+        let linux_script = repo_root
+            .join("src-tauri")
+            .join("src")
+            .join("lan_sync")
+            .join("remote_update")
+            .join("lan-remote-update.sh");
+        let linux_contents =
+            std::fs::read_to_string(&linux_script).expect("read Linux remote update script");
+        assert!(linux_contents.contains("git fetch origin --prune"));
+        assert!(!linux_contents.contains("git fetch origin --prune --tags"));
+    }
 }
