@@ -144,13 +144,12 @@ export function isRemoteUpdateStatusRelevantToCurrentBuild(
   if (terminalState && source.build_matches_local && !source.version_sync_required) {
     return false
   }
-  const targetMatchesPeerBuild = remoteUpdateTargetMatchesBuild(source, source.build_identity?.build_git_sha)
   const targetMatchesLocalBuild = remoteUpdateTargetMatchesBuild(source, localBuildSha)
-  if (
-    terminalState &&
-    targetMatchesPeerBuild === false &&
-    (localBuildSha ? targetMatchesLocalBuild === false : true)
-  ) {
+  if (terminalState && localBuildSha && targetMatchesLocalBuild === false) {
+    return false
+  }
+  const targetMatchesPeerBuild = remoteUpdateTargetMatchesBuild(source, source.build_identity?.build_git_sha)
+  if (terminalState && targetMatchesPeerBuild === false && (localBuildSha ? targetMatchesLocalBuild === false : true)) {
     return false
   }
   const buildCommitUnixMs = source.build_identity?.build_git_commit_unix_ms ?? null
@@ -270,12 +269,15 @@ export function isRemoteDebugStatusRelevantToCurrentBuild(
   const targetRef = normalizedTargetRef(status.target_ref)
   const peerBuildSha = normalizedBuildSha(source.build_identity?.build_git_sha)
   const normalizedLocalBuildSha = normalizedBuildSha(localBuildSha)
-  const targetMatchesPeerBuild =
-    !peerBuildSha || !targetRef ? null : peerBuildSha.startsWith(targetRef) || targetRef.startsWith(peerBuildSha)
   const targetMatchesLocalBuild =
     !normalizedLocalBuildSha || !targetRef
       ? null
       : normalizedLocalBuildSha.startsWith(targetRef) || targetRef.startsWith(normalizedLocalBuildSha)
+  if (terminalState && localBuildSha && targetMatchesLocalBuild === false) {
+    return false
+  }
+  const targetMatchesPeerBuild =
+    !peerBuildSha || !targetRef ? null : peerBuildSha.startsWith(targetRef) || targetRef.startsWith(peerBuildSha)
   if (
     terminalState &&
     targetMatchesPeerBuild === false &&

@@ -942,6 +942,42 @@ describe('ConfigModal', () => {
     expect(remoteUpdateDetailText(source, 'ce1b5920b25646c3940e5ca7bb2fc79cdd6151a9')).toBe('')
   })
 
+  it('hides terminal remote update diagnostics when the target only matches the peer history but not the current machine build', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      build_matches_local: false,
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: 'ce1b5920b25646c3940e5ca7bb2fc79cdd6151a9',
+        build_git_short_sha: 'ce1b5920',
+        build_git_commit_unix_ms: 1775499120000,
+      },
+      remote_update_status: {
+        state: 'failed',
+        reason_code: 'worker_never_bootstrapped',
+        target_ref: 'ce1b5920',
+        detail: 'Remote update worker PID 107844 exited before bootstrap for target ce1b5920 with code 0.',
+        finished_at_unix_ms: 1775499340000,
+      },
+    }
+
+    expect(isRemoteUpdateStatusRelevantToCurrentBuild(source, '781c07b0abcdef1234567890')).toBe(false)
+    expect(shouldShowDiagnosticsRemoteUpdateStatus(source, '781c07b0abcdef1234567890')).toBe(false)
+    expect(remoteUpdateDetailText(source, '781c07b0abcdef1234567890')).toBe('')
+  })
+
   it('treats remote debug logs for an older target as stale for the current build', () => {
     const config = buildConfig()
     const source = {
@@ -1053,6 +1089,67 @@ describe('ConfigModal', () => {
         source,
         remoteUpdateDebug,
         'ce1b5920b25646c3940e5ca7bb2fc79cdd6151a9',
+      ),
+    ).toBe(false)
+  })
+
+  it('treats terminal remote debug logs as stale when they only match the peer history and not the current machine build', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      build_matches_local: false,
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: 'ce1b5920b25646c3940e5ca7bb2fc79cdd6151a9',
+        build_git_short_sha: 'ce1b5920',
+        build_git_commit_unix_ms: 1775499120000,
+      },
+    }
+
+    const remoteUpdateDebug = {
+      ok: true,
+      version: 1,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      remote_update_readiness: {
+        ready: true,
+      },
+      remote_update_status: {
+        state: 'failed',
+        target_ref: 'ce1b5920',
+        finished_at_unix_ms: 1775499340000,
+      },
+      status_file_exists: true,
+      log_file_exists: true,
+      local_build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: '781c07b0abcdef1234567890',
+        build_git_short_sha: '781c07b0',
+        build_git_commit_unix_ms: 1775500680000,
+      },
+      local_version_sync: {
+        target_ref: '781c07b0abcdef1234567890',
+        git_worktree_clean: true,
+        update_to_local_build_allowed: true,
+      },
+    } as const
+
+    expect(
+      isRemoteDebugStatusRelevantToCurrentBuild(
+        source,
+        remoteUpdateDebug,
+        '781c07b0abcdef1234567890',
       ),
     ).toBe(false)
   })
