@@ -244,10 +244,10 @@ if ($target.Mode -eq 'local_branch') {
   Invoke-RemoteUpdateCommand -FailureMessage "git checkout --detach failed: $($target.Value)" -Command { git checkout --detach $target.Value }
 }
 
-$currentStep = 'Building checked EXE'
-Write-RemoteUpdateLog "${currentStep}: npm run build:root-exe:checked"
-Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep 'Running npm run build:root-exe:checked') -Phase 'build_checked_exe' -Label 'Building checked EXE' -StartedAtUnixMs $startedAtUnixMs
-Invoke-RemoteUpdateCommand -FailureMessage 'npm run build:root-exe:checked failed' -Command { npm.cmd run build:root-exe:checked }
+$currentStep = 'Building EXE'
+Write-RemoteUpdateLog "${currentStep}: npm run build:root-exe"
+Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep 'Running npm run build:root-exe') -Phase 'build_exe' -Label 'Building EXE' -StartedAtUnixMs $startedAtUnixMs
+Invoke-RemoteUpdateCommand -FailureMessage 'npm run build:root-exe failed' -Command { npm.cmd run build:root-exe }
 $currentStep = 'Completed'
 Write-RemoteUpdateLog 'Remote self-update completed successfully.'
 Write-RemoteUpdateStatus -State 'succeeded' -TargetRef $TargetRef -Detail (Step-Detail $currentStep 'Remote self-update completed successfully.') -Phase 'completed' -Label 'Remote update completed' -StartedAtUnixMs $startedAtUnixMs -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())

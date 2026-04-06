@@ -311,10 +311,10 @@ else
   fail_remote_update "${LAST_REMOTE_UPDATE_ERROR}" "resolve_target" "Resolving target ref failed"
 fi
 
-CURRENT_STEP="Building checked EXE"
-write_remote_update_log "${CURRENT_STEP}: npm run build:root-exe:checked"
-write_remote_update_status "running" "${TARGET_REF}" "$(step_detail "${CURRENT_STEP}" "Running npm run build:root-exe:checked")" "build_checked_exe" "Building checked EXE" "worker" "${STARTED_AT}" "null"
-run_remote_update_command "npm run build:root-exe:checked failed" npm run build:root-exe:checked
+CURRENT_STEP="Building EXE"
+write_remote_update_log "${CURRENT_STEP}: npm run build:root-exe"
+write_remote_update_status "running" "${TARGET_REF}" "$(step_detail "${CURRENT_STEP}" "Running npm run build:root-exe")" "build_exe" "Building EXE" "worker" "${STARTED_AT}" "null"
+run_remote_update_command "npm run build:root-exe failed" npm run build:root-exe
 FINISHED_AT="$(python - <<'PY'
 import time
 print(int(time.time() * 1000))
