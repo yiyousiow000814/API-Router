@@ -1,5 +1,5 @@
 use super::*;
-use chrono::{Datelike, Local, TimeZone, Timelike};
+use chrono::{Datelike, Local, TimeZone, Timelike, Utc};
 use std::io::Write;
 use std::process::Stdio;
 
@@ -178,7 +178,7 @@ fn append_remote_update_log_message(message: &str) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let timestamp = Local::now().format("%d-%m-%Y %H:%M:%S%.3f UTC%:z");
+    let timestamp = Utc::now().format("%d-%m-%Y %H:%M:%S%.3f UTC");
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -1409,6 +1409,18 @@ mod tests {
     use std::sync::atomic::AtomicU64;
     use std::sync::Arc;
 
+    struct RemoteUpdateTestGuard {
+        previous_user_data_dir: Option<std::path::PathBuf>,
+        previous_repo_root: Option<std::path::PathBuf>,
+    }
+
+    impl Drop for RemoteUpdateTestGuard {
+        fn drop(&mut self) {
+            set_test_repo_root_override(self.previous_repo_root.as_deref());
+            set_test_user_data_dir_override(self.previous_user_data_dir.as_deref());
+        }
+    }
+
     fn accepted_status_fixture() -> LanRemoteUpdateStatusSnapshot {
         LanRemoteUpdateStatusSnapshot {
             state: "accepted".to_string(),
@@ -1445,29 +1457,31 @@ mod tests {
         }
     }
 
+    fn set_remote_update_test_env(root: &std::path::Path) -> RemoteUpdateTestGuard {
+        let previous_user_data_dir = set_test_user_data_dir_override(Some(root));
+        let previous_repo_root = set_test_repo_root_override(Some(root));
+        RemoteUpdateTestGuard {
+            previous_user_data_dir,
+            previous_repo_root,
+        }
+    }
+
     #[test]
     fn reset_remote_update_log_discards_previous_attempt_lines() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
-        let previous_user_data = set_test_user_data_dir_override(Some(temp_dir.path()));
-        let previous_repo_root = set_test_repo_root_override(Some(temp_dir.path()));
+        let _guard = set_remote_update_test_env(temp_dir.path());
 
-        let result = (|| {
-            append_remote_update_log_message("old attempt line");
-            let before_reset = read_remote_update_log_tail(4096).expect("old log should exist");
-            assert!(before_reset.contains("old attempt line"));
+        append_remote_update_log_message("old attempt line");
+        let before_reset = read_remote_update_log_tail(4096).expect("old log should exist");
+        assert!(before_reset.contains("old attempt line"));
 
-            reset_remote_update_log();
-            append_remote_update_log_message("current attempt line");
+        reset_remote_update_log();
+        append_remote_update_log_message("current attempt line");
 
-            let after_reset =
-                read_remote_update_log_tail(4096).expect("current log should exist after reset");
-            assert!(after_reset.contains("current attempt line"));
-            assert!(!after_reset.contains("old attempt line"));
-        })();
-
-        set_test_repo_root_override(previous_repo_root.as_deref());
-        set_test_user_data_dir_override(previous_user_data.as_deref());
-        result
+        let after_reset =
+            read_remote_update_log_tail(4096).expect("current log should exist after reset");
+        assert!(after_reset.contains("current attempt line"));
+        assert!(!after_reset.contains("old attempt line"));
     }
 
     #[test]
@@ -1540,59 +1554,51 @@ mod tests {
     #[test]
     fn record_remote_update_worker_exit_writes_failed_status_and_timeline() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
-        let previous_user_data = set_test_user_data_dir_override(Some(temp_dir.path()));
-        let previous_repo_root = set_test_repo_root_override(Some(temp_dir.path()));
+        let _guard = set_remote_update_test_env(temp_dir.path());
 
-        let result = (|| {
-            let gateway = gateway_state_fixture(temp_dir.path());
-            let accepted_status = accepted_status_fixture();
-            write_lan_remote_update_status(&accepted_status).expect("write accepted status");
-            append_remote_update_log_message(
-                "Remote update worker PID 4242 exited before completion with code 7 for target abc123.",
-            );
-            record_remote_update_worker_exit(
-                &gateway,
-                accepted_status
-                    .request_id
-                    .as_deref()
-                    .expect("request id should exist"),
-                4242,
-                "Remote update worker PID 4242 exited before completion with code 7 for target abc123.",
-                40,
-            );
-
-            let final_status =
-                read_lan_remote_update_status_raw().expect("worker exit should be recorded");
-            assert_eq!(final_status.state, "failed");
-            assert_eq!(final_status.worker_pid, Some(4242));
-            assert!(final_status
-                .detail
+        let gateway = gateway_state_fixture(temp_dir.path());
+        let accepted_status = accepted_status_fixture();
+        write_lan_remote_update_status(&accepted_status).expect("write accepted status");
+        append_remote_update_log_message(
+            "Remote update worker PID 4242 exited before completion with code 7 for target abc123.",
+        );
+        record_remote_update_worker_exit(
+            &gateway,
+            accepted_status
+                .request_id
                 .as_deref()
-                .is_some_and(|detail| detail.contains("exited before completion")));
-            assert!(final_status
-                .timeline
-                .iter()
-                .any(|entry| entry.phase == "worker_exit"
-                    && entry.label == "Remote update worker exited early"
-                    && entry.source == "launcher"));
+                .expect("request id should exist"),
+            4242,
+            "Remote update worker PID 4242 exited before completion with code 7 for target abc123.",
+            40,
+        );
 
-            let log_tail = read_remote_update_log_tail(4096).expect("launcher log should exist");
-            assert!(log_tail.contains("Remote update worker PID"));
-            let events = gateway.store.list_events_range(None, None, Some(20));
-            assert!(events.iter().any(|event| {
-                event.get("code").and_then(|value| value.as_str())
-                    == Some("lan.remote_update_failed")
-                    && event
-                        .get("message")
-                        .and_then(|value| value.as_str())
-                        .is_some_and(|message| {
-                            message.contains("local self-update worker exited early")
-                        })
-            }));
-        })();
+        let final_status =
+            read_lan_remote_update_status_raw().expect("worker exit should be recorded");
+        assert_eq!(final_status.state, "failed");
+        assert_eq!(final_status.worker_pid, Some(4242));
+        assert!(final_status
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("exited before completion")));
+        assert!(final_status
+            .timeline
+            .iter()
+            .any(|entry| entry.phase == "worker_exit"
+                && entry.label == "Remote update worker exited early"
+                && entry.source == "launcher"));
 
-        set_test_repo_root_override(previous_repo_root.as_deref());
-        set_test_user_data_dir_override(previous_user_data.as_deref());
-        result
+        let log_tail = read_remote_update_log_tail(4096).expect("launcher log should exist");
+        assert!(log_tail.contains("Remote update worker PID"));
+        let events = gateway.store.list_events_range(None, None, Some(20));
+        assert!(events.iter().any(|event| {
+            event.get("code").and_then(|value| value.as_str()) == Some("lan.remote_update_failed")
+                && event
+                    .get("message")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|message| {
+                        message.contains("local self-update worker exited early")
+                    })
+        }));
     }
 }
