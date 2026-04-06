@@ -1875,6 +1875,12 @@ pub(crate) fn current_local_node_identity() -> Option<LanNodeIdentity> {
     local_node_identity_for_edit_recording()
 }
 
+fn gateway_local_node_identity(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+) -> Option<LanNodeIdentity> {
+    gateway.secrets.get_lan_node_identity()
+}
+
 fn resolve_provider_name_for_shared_provider_id(
     gateway: &crate::orchestrator::gateway::GatewayState,
     shared_provider_id: &str,
@@ -2878,7 +2884,7 @@ fn apply_tracked_spend_day_event(
         &payload.provider_name,
     )?;
     if event.op == "delete" {
-        let local_node_id = current_local_node_identity()
+        let local_node_id = gateway_local_node_identity(gateway)
             .map(|node| node.node_id)
             .unwrap_or_default();
         if source_node_id == local_node_id {
@@ -7260,6 +7266,8 @@ mod tests {
             "tracked_spend_usd": 17.4690825,
             "last_seen_daily_spent_usd": 17.4690825
         });
+        let expected_day_key =
+            super::tracked_spend_history_day_key_for_debug(&local_row).expect("local day key");
         state
             .gateway
             .store
@@ -7328,7 +7336,7 @@ mod tests {
             "usage.tracked_spend_history_entries_removed",
             "tracked spend history entries removed",
             serde_json::json!({
-                "day_key": "2026-04-01",
+                "day_key": expected_day_key,
                 "removed": 2
             }),
         );
@@ -7340,8 +7348,7 @@ mod tests {
                 version: 1,
                 node_id: "node-remote".to_string(),
                 provider: "provider_1".to_string(),
-                day_key: super::tracked_spend_history_day_key_for_debug(&local_row)
-                    .expect("local day key"),
+                day_key: expected_day_key.clone(),
                 limit: 20,
             }),
         )
@@ -7354,8 +7361,6 @@ mod tests {
             .expect("debug body");
         let payload: LanTrackedSpendHistoryDebugResponsePacket =
             serde_json::from_slice(&body).expect("debug json");
-        let expected_day_key =
-            super::tracked_spend_history_day_key_for_debug(&local_row).expect("local day key");
         assert_eq!(payload.provider, "provider_1");
         assert_eq!(payload.day_key, expected_day_key);
         assert_eq!(payload.local_rows.len(), 1);
