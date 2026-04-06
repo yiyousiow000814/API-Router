@@ -906,13 +906,27 @@ fn monitor_remote_update_worker_exit(
     target_ref: String,
 ) {
     std::thread::spawn(move || {
-        let (worker_exit_code, exit_detail) = match child.wait() {
-            Ok(status) => match status.code() {
+        let mut last_progress_key: Option<String> = None;
+        let (worker_exit_code, exit_detail) = loop {
+            emit_remote_update_progress_event(
+                &gateway,
+                &request_id,
+                &target_ref,
+                &mut last_progress_key,
+            );
+            match child.try_wait() {
+                Ok(Some(status)) => break match status.code() {
                 Some(0)
                     if read_lan_remote_update_status_raw().as_ref().is_some_and(|snapshot| {
                         !matches!(snapshot.state.trim(), "accepted" | "running")
                     }) =>
                 {
+                    emit_remote_update_progress_event(
+                        &gateway,
+                        &request_id,
+                        &target_ref,
+                        &mut last_progress_key,
+                    );
                     return;
                 }
                 Some(0) => (
@@ -937,12 +951,19 @@ fn monitor_remote_update_worker_exit(
                 ),
                 ),
             },
-            Err(err) => (
-                None,
-                format!(
-                "Remote update worker PID {worker_pid} could not be monitored after spawn: {err}"
-            ),
-            ),
+                Ok(None) => {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    continue;
+                }
+                Err(err) => {
+                    break (
+                        None,
+                        format!(
+                            "Remote update worker PID {worker_pid} could not be monitored after spawn: {err}"
+                        ),
+                    )
+                }
+            }
         };
         append_remote_update_log_message(&exit_detail);
         record_remote_update_worker_exit(
@@ -953,7 +974,100 @@ fn monitor_remote_update_worker_exit(
             &exit_detail,
             unix_ms(),
         );
+        emit_remote_update_progress_event(
+            &gateway,
+            &request_id,
+            &target_ref,
+            &mut last_progress_key,
+        );
     });
+}
+
+fn emit_remote_update_progress_event(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    request_id: &str,
+    target_ref: &str,
+    last_progress_key: &mut Option<String>,
+) {
+    let Some(status) = read_lan_remote_update_status_raw() else {
+        return;
+    };
+    if status.request_id.as_deref() != Some(request_id) {
+        return;
+    }
+    let latest_entry = status
+        .timeline
+        .iter()
+        .max_by_key(|entry| entry.unix_ms)
+        .cloned();
+    let phase = latest_entry
+        .as_ref()
+        .map(|entry| entry.phase.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(status.state.trim());
+    let event_key = format!(
+        "{}:{}:{}",
+        status.state.trim(),
+        phase,
+        status.updated_at_unix_ms
+    );
+    if last_progress_key.as_deref() == Some(event_key.as_str()) {
+        return;
+    }
+    *last_progress_key = Some(event_key);
+
+    let label = latest_entry
+        .as_ref()
+        .map(|entry| entry.label.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| status.state.trim());
+    let detail = latest_entry
+        .as_ref()
+        .and_then(|entry| entry.detail.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            status
+                .detail
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or("");
+    let code = match status.state.trim() {
+        "running" => "lan.remote_update_progress",
+        "succeeded" => "lan.remote_update_succeeded",
+        "failed" => "lan.remote_update_failed",
+        _ => return,
+    };
+    let level = match status.state.trim() {
+        "failed" => "error",
+        "succeeded" => "info",
+        _ => "warning",
+    };
+    let display_target = display_target_ref(target_ref);
+    let message = if detail.is_empty() {
+        format!("Remote self-update to {display_target}: {label}")
+    } else {
+        format!("Remote self-update to {display_target}: {label} ({detail})")
+    };
+    gateway.store.add_event(
+        "gateway",
+        level,
+        code,
+        &message,
+        serde_json::json!({
+            "request_id": request_id,
+            "target_ref": target_ref,
+            "state": status.state,
+            "phase": phase,
+            "label": label,
+            "detail": if detail.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(detail.to_string()) },
+            "worker_pid": status.worker_pid,
+            "worker_exit_code": status.worker_exit_code,
+            "updated_at_unix_ms": status.updated_at_unix_ms,
+        }),
+    );
 }
 
 pub(crate) fn peer_remote_update_blocked_reason(peer: &LanPeerSnapshot) -> Option<String> {

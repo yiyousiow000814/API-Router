@@ -547,14 +547,22 @@ describe('ConfigModal', () => {
       remote_update_status: {
         state: 'running',
         target_ref: 'abc123',
-        detail: 'Building checked EXE: Running npm run build:root-exe:checked',
+        detail: 'Building release binary: Compiling release EXE',
         started_at_unix_ms: 1775312828000,
+        timeline: [
+          {
+            unix_ms: 1775312829000,
+            phase: 'build_release_binary',
+            label: 'Building release binary',
+            detail: 'Building release binary: Compiling release EXE',
+          },
+        ],
       },
     }
 
     expect(remoteUpdateActionState(source, undefined)).toEqual({
-      actionLabel: 'Updating',
-      actionDetail: 'Building checked EXE: Running npm run build:root-exe:checked',
+      actionLabel: 'Building',
+      actionDetail: 'Building release binary: Compiling release EXE',
       spinning: true,
     })
   })
@@ -1260,12 +1268,20 @@ describe('ConfigModal', () => {
       remote_update_status: {
         state: 'accepted',
         target_ref: 'db1d2529',
-        detail: 'Peer accepted request. Refreshing remote progress',
+        detail: 'Preparing worker: Starting remote self-update worker.',
         accepted_at_unix_ms: 1775435700000,
+        timeline: [
+          {
+            unix_ms: 1775435701000,
+            phase: 'worker_started',
+            label: 'Worker started',
+            detail: 'Preparing worker: Starting remote self-update worker.',
+          },
+        ],
       },
     }
 
-    expect(remoteUpdateMenuActionLabel(source, undefined)).toBe('Queued')
+    expect(remoteUpdateMenuActionLabel(source, undefined)).toBe('Preparing')
   })
 
   it('shows failed state in dropdown instead of immediately reverting to update peer', () => {

@@ -20,7 +20,7 @@ const result = await new Promise((resolve) => {
     cwd: root,
     detached: true,
     stdio: 'ignore',
-    windowsHide: false,
+    windowsHide: true,
   })
 
   child.once('spawn', () => {

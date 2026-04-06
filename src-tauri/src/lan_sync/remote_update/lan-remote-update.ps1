@@ -163,7 +163,7 @@ function Step-Detail([string]$Label, [string]$Detail = '') {
 
 function Format-CommandOutputSummary($Output) {
   if ($null -eq $Output) { return '' }
-  $text = (($Output | ForEach-Object { $_.ToString().Trim() }) -join ' ').Trim()
+  $text = (($Output | ForEach-Object { (Normalize-CommandOutputLine $_.ToString()).Trim() }) -join ' ').Trim()
   if (-not $text) { return '' }
   $text = [regex]::Replace($text, '\s+', ' ')
   if ($text.Length -gt 800) {
@@ -172,9 +172,21 @@ function Format-CommandOutputSummary($Output) {
   return $text
 }
 
-function Write-CommandOutputLog($Output) {
+function Normalize-CommandOutputLine([string]$Line) {
+  if (-not $Line) { return '' }
+  $normalized = [regex]::Replace($Line, '\x1b\[[0-9;?]*[ -/]*[@-~]', '')
+  $normalized = [regex]::Replace($normalized, '\s+', ' ').Trim()
+  if (-not $normalized) { return '' }
+  if ($normalized -match '^(vite v\d|\s*transforming|computing gzip size|\s*dist/|\s*target/release/|warning:|Finished `release` profile)') {
+    return ''
+  }
+  return $normalized
+}
+
+function Write-CommandOutputLog($Output, [switch]$LogOnSuccess) {
   if ($null -eq $Output) { return }
-  foreach ($line in ($Output | ForEach-Object { $_.ToString().TrimEnd() })) {
+  if (-not $LogOnSuccess) { return }
+  foreach ($line in ($Output | ForEach-Object { Normalize-CommandOutputLine $_.ToString() })) {
     if ($line) {
       Write-RemoteUpdateLog $line
     }
@@ -214,7 +226,8 @@ function Invoke-RemoteUpdateCommand {
     [Parameter(Mandatory = $true)]
     [string]$FailureMessage,
     [Parameter(Mandatory = $true)]
-    [scriptblock]$Command
+    [scriptblock]$Command,
+    [switch]$LogOnSuccess
   )
 
   $output = @()
@@ -242,13 +255,58 @@ function Invoke-RemoteUpdateCommand {
       $script:PSNativeCommandUseErrorActionPreference = $previousNativeErrorActionPreference
     }
   }
-  Write-CommandOutputLog $output
+  Write-CommandOutputLog $output -LogOnSuccess:$LogOnSuccess
   if ($exitCode -ne 0) {
     $summary = Format-CommandOutputSummary $output
+    if ($summary) {
+      Write-RemoteUpdateLog "Command failed output: $summary"
+    }
     if ($summary) {
       throw "${FailureMessage}. Output: $summary"
     }
     throw $FailureMessage
+  }
+}
+
+function Invoke-HiddenProcess {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$FilePath,
+    [Parameter(Mandatory = $true)]
+    [string[]]$ArgumentList,
+    [Parameter(Mandatory = $true)]
+    [string]$FailureMessage
+  )
+
+  $stdoutPath = [System.IO.Path]::GetTempFileName()
+  $stderrPath = [System.IO.Path]::GetTempFileName()
+  try {
+    $process = Start-Process -FilePath $FilePath `
+      -ArgumentList $ArgumentList `
+      -WorkingDirectory $RepoRoot `
+      -NoNewWindow:$false `
+      -WindowStyle Hidden `
+      -RedirectStandardOutput $stdoutPath `
+      -RedirectStandardError $stderrPath `
+      -PassThru
+    $process.WaitForExit()
+    $stdout = if (Test-Path $stdoutPath) { Get-Content -Path $stdoutPath -Raw -ErrorAction SilentlyContinue } else { '' }
+    $stderr = if (Test-Path $stderrPath) { Get-Content -Path $stderrPath -Raw -ErrorAction SilentlyContinue } else { '' }
+    $combinedOutput = @()
+    if ($stdout) { $combinedOutput += $stdout -split "\r?\n" }
+    if ($stderr) { $combinedOutput += $stderr -split "\r?\n" }
+    Write-CommandOutputLog $combinedOutput
+    if ($process.ExitCode -ne 0) {
+      $summary = Format-CommandOutputSummary $combinedOutput
+      if ($summary) {
+        Write-RemoteUpdateLog "Command failed output: $summary"
+        throw "${FailureMessage}. Output: $summary"
+      }
+      throw $FailureMessage
+    }
+  } finally {
+    Remove-Item -LiteralPath $stdoutPath -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $stderrPath -ErrorAction SilentlyContinue
   }
 }
 
@@ -304,7 +362,8 @@ if ($target.Mode -eq 'local_branch') {
 $currentStep = 'Building EXE'
 Write-RemoteUpdateLog "${currentStep}: npm run build:root-exe"
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep 'Running npm run build:root-exe') -Phase 'build_exe' -Label 'Building EXE' -StartedAtUnixMs $startedAtUnixMs
-Invoke-RemoteUpdateCommand -FailureMessage 'npm run build:root-exe failed' -Command { npm.cmd run build:root-exe }
+Invoke-HiddenProcess -FilePath 'npm.cmd' -ArgumentList @('run', 'build:root-exe') -FailureMessage 'npm run build:root-exe failed'
+
 $currentStep = 'Completed'
 Write-RemoteUpdateLog 'Remote self-update completed successfully.'
 Write-RemoteUpdateStatus -State 'succeeded' -TargetRef $TargetRef -Detail (Step-Detail $currentStep 'Remote self-update completed successfully.') -Phase 'completed' -Label 'Remote update completed' -StartedAtUnixMs $startedAtUnixMs -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())

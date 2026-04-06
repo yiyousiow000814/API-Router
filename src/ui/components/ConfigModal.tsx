@@ -104,8 +104,9 @@ function remoteUpdateStateLabel(source: ConfigSource, localBuildSha?: string | n
   const state = source.remote_update_status?.state?.trim()
   const reasonCode = source.remote_update_status?.reason_code?.trim()
   if (!state) return null
-  if (state === 'accepted') return 'Queued'
-  if (state === 'running') return 'Updating'
+  if (state === 'accepted' || state === 'running') {
+    return remoteUpdateLiveStageLabel(source.remote_update_status) ?? (state === 'accepted' ? 'Queued' : 'Updating')
+  }
   if (state === 'failed') return 'Update failed'
   if (state === 'succeeded') return 'Updated'
   if (state === 'superseded' && reasonCode === 'peer_build_changed_before_start') return 'Expired before start'
@@ -172,6 +173,67 @@ export function shouldShowDiagnosticsRemoteUpdateStatus(
 
 function remoteUpdateProgressDetail(source: ConfigSource): string {
   return formatReadableCommitRefs(source.remote_update_status?.detail?.trim() || '')
+}
+
+function latestRemoteUpdateTimelineEntry(
+  status:
+    | {
+        timeline?: Array<{
+          unix_ms?: number
+          phase?: string | null
+          label?: string | null
+          detail?: string | null
+          source?: string | null
+          state?: string | null
+        }>
+        state?: string | null
+      }
+    | null
+    | undefined,
+) {
+  return [...(status?.timeline ?? [])]
+    .filter((entry) => (entry.phase?.trim() || entry.label?.trim() || entry.detail?.trim()))
+    .sort((a, b) => (a.unix_ms ?? 0) - (b.unix_ms ?? 0))
+    .at(-1)
+}
+
+function remoteUpdateLiveStageLabel(
+  status:
+    | {
+        state?: string | null
+        timeline?: Array<{
+          unix_ms?: number
+          phase?: string | null
+          label?: string | null
+          detail?: string | null
+          source?: string | null
+          state?: string | null
+        }>
+      }
+    | null
+    | undefined,
+): string | null {
+  const phase = latestRemoteUpdateTimelineEntry(status)?.phase?.trim() || ''
+  if (phase === 'request_accepted') return 'Queued'
+  if (phase === 'worker_spawned' || phase === 'bootstrap' || phase === 'worker_started') return 'Preparing'
+  if (phase === 'git_status') return 'Checking repo'
+  if (phase === 'git_fetch') return 'Fetching'
+  if (phase === 'resolve_target') return 'Resolving'
+  if (
+    phase === 'checkout_local_branch' ||
+    phase === 'pull_branch' ||
+    phase === 'checkout_remote_branch' ||
+    phase === 'checkout_commit'
+  ) {
+    return 'Checking out'
+  }
+  if (phase === 'build_release_binary') return 'Building'
+  if (phase === 'install_release_binary') return 'Installing'
+  if (phase === 'restart_api_router') return 'Restarting'
+  if (phase === 'build_exe') return 'Building'
+  if (status?.state?.trim() === 'accepted') return 'Queued'
+  if (status?.state?.trim() === 'running') return 'Updating'
+  return null
 }
 
 function formatReadableCommitRefs(value: string): string {
@@ -456,24 +518,24 @@ export function remoteUpdateActionState(
       spinning: true,
     }
   }
-  if (pendingStage?.stage === 'refreshing' && (!remoteState || !remoteStatusCurrentForPending)) {
-    return {
-      actionLabel: 'Queued',
-      actionDetail: pendingStage.detail || 'Peer accepted update request',
-      spinning: true,
-    }
-  }
   if (remoteState === 'accepted') {
     return {
-      actionLabel: 'Queued',
+      actionLabel: remoteUpdateLiveStageLabel(source.remote_update_status) ?? 'Queued',
       actionDetail: remoteUpdateProgressDetail(source) || 'Peer accepted update request',
       spinning: true,
     }
   }
   if (remoteState === 'running') {
     return {
-      actionLabel: 'Updating',
+      actionLabel: remoteUpdateLiveStageLabel(source.remote_update_status) ?? 'Updating',
       actionDetail: remoteUpdateProgressDetail(source) || 'Peer is applying this build',
+      spinning: true,
+    }
+  }
+  if (pendingStage?.stage === 'refreshing' && (!remoteState || !remoteStatusCurrentForPending)) {
+    return {
+      actionLabel: 'Queued',
+      actionDetail: pendingStage.detail || 'Peer accepted update request',
       spinning: true,
     }
   }

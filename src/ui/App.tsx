@@ -1302,10 +1302,12 @@ export default function App() {
         const source = sources.find((item) => item.node_id === nodeId && item.kind === 'peer')
         if (!source) continue
         const pendingStage = prev[nodeId]
-        const hasCurrentRemoteUpdateStatus =
+        const remoteState = source.remote_update_status?.state?.trim() || ''
+        const hasCurrentTerminalRemoteUpdateStatus =
           Boolean(source.remote_update_status?.state?.trim()) &&
-          isRemoteUpdateStatusCurrentForPending(source, pendingStage)
-        if (hasCurrentRemoteUpdateStatus || !source.version_sync_required) {
+          isRemoteUpdateStatusCurrentForPending(source, pendingStage) &&
+          ['failed', 'succeeded', 'superseded'].includes(remoteState)
+        if (hasCurrentTerminalRemoteUpdateStatus || !source.version_sync_required) {
           delete next[nodeId]
           changed = true
         }
@@ -1313,6 +1315,27 @@ export default function App() {
       return changed ? next : prev
     })
   }, [config])
+
+  const lanRemoteUpdatePendingNodeIdsKey = Object.keys(lanRemoteUpdatePendingByNode).sort().join('|')
+
+  useEffect(() => {
+    if (isDevPreview || !lanRemoteUpdatePendingNodeIdsKey) return
+    let cancelled = false
+    const refreshRemoteUpdateProgress = async () => {
+      if (cancelled) return
+      await refreshStatus()
+      if (cancelled) return
+      await refreshConfig({ refreshProviderSwitchStatus: false, force: true })
+    }
+    void refreshRemoteUpdateProgress()
+    const timer = window.setInterval(() => {
+      void refreshRemoteUpdateProgress()
+    }, 1000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [isDevPreview, lanRemoteUpdatePendingNodeIdsKey, refreshConfig, refreshStatus])
 
   async function requestLanRemoteUpdateSameVersion(nodeId: string) {
     if (lanRemoteUpdatePendingByNode[nodeId]) return
