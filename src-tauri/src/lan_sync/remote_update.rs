@@ -188,6 +188,16 @@ fn append_remote_update_log_message(message: &str) {
     }
 }
 
+fn reset_remote_update_log() {
+    let Some(path) = lan_remote_update_log_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, "");
+}
+
 fn read_lan_remote_update_status_raw() -> Option<LanRemoteUpdateStatusSnapshot> {
     let path = lan_remote_update_status_path()?;
     let bytes = std::fs::read(path).ok()?;
@@ -1066,6 +1076,7 @@ pub(crate) async fn lan_sync_remote_update_http(
     }
     let accepted_at_unix_ms = unix_ms();
     let request_id = format!("ru_{}", uuid::Uuid::new_v4().simple());
+    reset_remote_update_log();
     let accepted_status = LanRemoteUpdateStatusSnapshot {
         state: "accepted".to_string(),
         target_ref: normalized_target_ref.to_string(),
@@ -1432,6 +1443,31 @@ mod tests {
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
             client_sessions: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    #[test]
+    fn reset_remote_update_log_discards_previous_attempt_lines() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let previous_user_data = set_test_user_data_dir_override(Some(temp_dir.path()));
+        let previous_repo_root = set_test_repo_root_override(Some(temp_dir.path()));
+
+        let result = (|| {
+            append_remote_update_log_message("old attempt line");
+            let before_reset = read_remote_update_log_tail(4096).expect("old log should exist");
+            assert!(before_reset.contains("old attempt line"));
+
+            reset_remote_update_log();
+            append_remote_update_log_message("current attempt line");
+
+            let after_reset =
+                read_remote_update_log_tail(4096).expect("current log should exist after reset");
+            assert!(after_reset.contains("current attempt line"));
+            assert!(!after_reset.contains("old attempt line"));
+        })();
+
+        set_test_repo_root_override(previous_repo_root.as_deref());
+        set_test_user_data_dir_override(previous_user_data.as_deref());
+        result
     }
 
     #[test]
