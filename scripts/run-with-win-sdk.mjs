@@ -34,6 +34,38 @@ async function resolveLocalNodeBin(command) {
   return command;
 }
 
+function findEnvKey(env, name) {
+  const lowered = String(name).toLowerCase();
+  return Object.keys(env).find((key) => key.toLowerCase() === lowered) || null;
+}
+
+function getEnvValue(env, name) {
+  const key = findEnvKey(env, name);
+  return key ? env[key] : undefined;
+}
+
+function setEnvValue(env, name, value) {
+  const existingKey = findEnvKey(env, name);
+  if (existingKey && existingKey !== name) {
+    delete env[existingKey];
+  }
+  env[name] = value;
+}
+
+function prependPathEntry(env, entry) {
+  if (!entry) return;
+  const pathKey = findEnvKey(env, "PATH") || "PATH";
+  const current = String(env[pathKey] || "");
+  const parts = current.split(";").filter(Boolean);
+  if (!parts.some((part) => part.toLowerCase() === String(entry).toLowerCase())) {
+    const next = [entry, ...parts].join(";");
+    setEnvValue(env, pathKey, next);
+    if (pathKey !== "PATH") {
+      env.PATH = next;
+    }
+  }
+}
+
 async function findRcDir() {
   const pf86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
   const kitsBin = join(pf86, "Windows Kits", "10", "bin");
@@ -82,29 +114,22 @@ async function main() {
 
   if (process.platform === "win32") {
     const nodeDir = dirname(process.execPath);
-    const pathParts = String(env.PATH || "").split(";").filter(Boolean);
-    if (!pathParts.some((part) => part.toLowerCase() === nodeDir.toLowerCase())) {
-      env.PATH = `${nodeDir};${env.PATH || ""}`;
-    }
-    const cargoDir = join(env.USERPROFILE || "", ".cargo", "bin");
-    const pathPartsForCargo = String(env.PATH || "").split(";").filter(Boolean);
-    if (
-      cargoDir &&
-      !pathPartsForCargo.some((part) => part.toLowerCase() === cargoDir.toLowerCase())
-    ) {
-      env.PATH = `${cargoDir};${env.PATH || ""}`;
-    }
+    prependPathEntry(env, nodeDir);
+    const userProfile = getEnvValue(env, "USERPROFILE") || "";
+    const cargoDir = join(userProfile, ".cargo", "bin");
+    prependPathEntry(env, cargoDir);
     const rcDir = await findRcDir();
-    if (rcDir) {
-      const parts = String(env.PATH || "").split(";").filter(Boolean);
-      if (!parts.some((part) => part.toLowerCase() === rcDir.toLowerCase())) {
-        env.PATH = `${rcDir};${env.PATH || ""}`;
-      }
-    }
+    prependPathEntry(env, rcDir);
     const rcExe = await findWinSdkTool("rc.exe");
     const mtExe = await findWinSdkTool("mt.exe");
-    if (rcExe && !env.RC) env.RC = rcExe;
-    if (mtExe && !env.MT) env.MT = mtExe;
+    if (rcExe && !getEnvValue(env, "RC")) {
+      setEnvValue(env, "RC", rcExe);
+      setEnvValue(env, "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RC", rcExe);
+    }
+    if (mtExe && !getEnvValue(env, "MT")) {
+      setEnvValue(env, "MT", mtExe);
+      setEnvValue(env, "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_MT", mtExe);
+    }
   }
 
   const launch = (cmd) =>
