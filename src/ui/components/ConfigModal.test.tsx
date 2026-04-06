@@ -642,13 +642,13 @@ describe('ConfigModal', () => {
     }
 
     expect(remoteUpdateActionState(source, undefined)).toEqual({
-      actionLabel: 'Update peer',
+      actionLabel: 'Expired before start',
       actionDetail: 'Queued update expired before the worker started',
       spinning: false,
     })
     expect(
       shouldShowRemoteUpdateMenuDetail(source, remoteUpdateActionState(source, undefined)),
-    ).toBe(false)
+    ).toBe(true)
     expect(remoteUpdateDetailText(source)).toBe(
       'Queued remote update to 9910964e never started before the peer build changed.',
     )

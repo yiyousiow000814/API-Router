@@ -243,6 +243,12 @@ function remoteUpdateMenuDetailText(source: ConfigSource): string {
   return 'Sync to this build'
 }
 
+function remoteUpdateIndicatesIssue(source: ConfigSource): boolean {
+  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source)) return false
+  const state = source.remote_update_status?.state?.trim()
+  return state === 'failed' || state === 'superseded'
+}
+
 export function remoteUpdateActionState(
   source: ConfigSource,
   pendingStage: RemoteUpdatePendingStage | undefined,
@@ -298,8 +304,9 @@ export function remoteUpdateActionState(
     }
   }
   if (remoteState === 'superseded') {
+    const issueLabel = remoteUpdateStateLabel(source)
     return {
-      actionLabel: source.same_version_update_allowed ? 'Update peer' : 'Update blocked',
+      actionLabel: issueLabel || (source.same_version_update_allowed ? 'Update issue' : 'Update blocked'),
       actionDetail: remoteUpdateMenuDetailText(source),
       spinning: false,
     }
@@ -320,7 +327,7 @@ export function shouldShowRemoteUpdateMenuDetail(
   const remoteState = isRemoteUpdateStatusRelevantToCurrentBuild(source)
     ? source.remote_update_status?.state?.trim()
     : ''
-  return remoteState === 'failed'
+  return remoteState === 'failed' || remoteState === 'superseded'
 }
 
 export function keepSourceMenuOpenAfterAction(source: ConfigSource): boolean {
@@ -460,11 +467,12 @@ export function ConfigModal({
         ? `${selectedUsingCount} using`
         : `${selectedUsingCount} follow`
       : ''
-  const updateRequiredSources = configSources.filter(
+  const issueSources = configSources.filter(
     (source) =>
       source.kind === 'peer' &&
       (((source.sync_blocked_domains?.length ?? 0) > 0) ||
-        (source.version_sync_required && !source.same_version_update_allowed)),
+        (source.version_sync_required && !source.same_version_update_allowed) ||
+        remoteUpdateIndicatesIssue(source)),
   )
   const localSource = configSources.find((source) => source.kind === 'local') ?? null
   const peerSources = configSources.filter((source) => source.kind === 'peer')
@@ -796,11 +804,11 @@ export function ConfigModal({
                 {peerSources.length > 0 ? (
                   <button
                     type="button"
-                    className={`aoConfigDiagPill${updateRequiredSources.length > 0 ? ' is-alert' : ''}`}
+                    className={`aoConfigDiagPill${issueSources.length > 0 ? ' is-alert' : ''}`}
                     onClick={() => setDiagnosticsOpen(true)}
                   >
                     <span>LAN</span>
-                    <span>{updateRequiredSources.length > 0 ? `${updateRequiredSources.length} issue${updateRequiredSources.length === 1 ? '' : 's'}` : 'healthy'}</span>
+                    <span>{issueSources.length > 0 ? `${issueSources.length} issue${issueSources.length === 1 ? '' : 's'}` : 'healthy'}</span>
                   </button>
                 ) : null}
               </div>

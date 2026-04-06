@@ -941,6 +941,21 @@ pub(crate) async fn lan_sync_remote_update_http(
                 "Remote update worker failed to start",
                 "http",
             );
+            gateway.store.add_event(
+                "gateway",
+                "warning",
+                "lan.remote_update_failed",
+                &format!(
+                    "Accepted remote update request to {}; local self-update worker failed to start",
+                    display_target_ref(normalized_target_ref)
+                ),
+                serde_json::json!({
+                    "request_id": request_id,
+                    "requester_node_id": packet.node_id,
+                    "target_ref": normalized_target_ref,
+                    "error": err,
+                }),
+            );
             (
                 StatusCode::CONFLICT,
                 Json(serde_json::json!({

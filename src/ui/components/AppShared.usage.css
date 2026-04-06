@@ -447,6 +447,9 @@
 }
 
 .aoConfigSourceMenuItem {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: start;
   justify-content: flex-start;
   text-align: left;
   min-height: 44px;
@@ -487,21 +490,23 @@
 }
 
 .aoConfigSourceMenuMeta {
-  display: inline-flex;
-  align-items: center;
+  display: flex;
+  align-items: flex-start;
   gap: 6px;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   font-size: 11px;
   color: rgba(13, 18, 32, 0.46);
   font-weight: 700;
 }
 
 .aoConfigSourceMenuMetaBlock {
-  display: inline-flex;
+  display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 2px;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .aoConfigSourceMenuMetaDetail {
@@ -509,6 +514,9 @@
   text-align: right;
   font-size: 10px;
   line-height: 1.25;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   color: rgba(13, 18, 32, 0.5);
 }
 
