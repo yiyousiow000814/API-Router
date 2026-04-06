@@ -1070,6 +1070,51 @@ fn emit_remote_update_progress_event(
     );
 }
 
+fn terminal_remote_update_event_already_recorded(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    request_id: &str,
+    code: &str,
+) -> bool {
+    gateway
+        .store
+        .list_events_range(None, None, Some(200))
+        .iter()
+        .any(|event| {
+            event.get("code").and_then(|value| value.as_str()) == Some(code)
+                && event
+                    .get("fields")
+                    .and_then(|value| value.get("request_id"))
+                    .and_then(|value| value.as_str())
+                    == Some(request_id)
+        })
+}
+
+pub(crate) fn reconcile_remote_update_terminal_event(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+) {
+    let Some(status) = load_lan_remote_update_status() else {
+        return;
+    };
+    let Some(request_id) = status.request_id.as_deref() else {
+        return;
+    };
+    let code = match status.state.trim() {
+        "succeeded" => "lan.remote_update_succeeded",
+        "failed" => "lan.remote_update_failed",
+        _ => return,
+    };
+    if terminal_remote_update_event_already_recorded(gateway, request_id, code) {
+        return;
+    }
+    let mut last_progress_key = None;
+    emit_remote_update_progress_event(
+        gateway,
+        request_id,
+        &status.target_ref,
+        &mut last_progress_key,
+    );
+}
+
 pub(crate) fn peer_remote_update_blocked_reason(peer: &LanPeerSnapshot) -> Option<String> {
     let peer_advertises_remote_update = peer_supports_http_sync(peer, LAN_REMOTE_UPDATE_CAPABILITY)
         || peer.remote_update_readiness.is_some();
@@ -1888,6 +1933,52 @@ mod tests {
                     .is_some_and(|message| {
                         message.contains("local self-update worker exited early")
                     })
+        }));
+    }
+
+    #[test]
+    fn reconcile_remote_update_terminal_event_backfills_missing_success_event() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let _guard = set_remote_update_test_env(temp_dir.path());
+        let gateway = gateway_state_fixture(temp_dir.path());
+
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "succeeded".to_string(),
+            target_ref: "9e557ebd".to_string(),
+            request_id: Some("ru_success".to_string()),
+            reason_code: None,
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some("worker.ps1".to_string()),
+            worker_pid: Some(4242),
+            worker_exit_code: Some(0),
+            detail: Some("Completed: Remote self-update completed successfully.".to_string()),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: Some(20),
+            finished_at_unix_ms: Some(30),
+            updated_at_unix_ms: 30,
+            timeline: vec![LanRemoteUpdateTimelineEntry {
+                unix_ms: 30,
+                phase: "completed".to_string(),
+                label: "Remote update completed".to_string(),
+                detail: Some("Completed: Remote self-update completed successfully.".to_string()),
+                source: "worker".to_string(),
+                state: "succeeded".to_string(),
+            }],
+        };
+        write_lan_remote_update_status(&status).expect("write status");
+
+        reconcile_remote_update_terminal_event(&gateway);
+
+        let events = gateway.store.list_events_range(None, None, Some(20));
+        assert!(events.iter().any(|event| {
+            event.get("code").and_then(|value| value.as_str())
+                == Some("lan.remote_update_succeeded")
+                && event
+                    .get("fields")
+                    .and_then(|value| value.get("request_id"))
+                    .and_then(|value| value.as_str())
+                    == Some("ru_success")
         }));
     }
 

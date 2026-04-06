@@ -487,6 +487,7 @@ pub fn run() {
                 }
                 st.lan_sync
                     .start_background(st.gateway.clone(), st.config_path.clone());
+                crate::lan_sync::reconcile_remote_update_terminal_event(&st.gateway);
             }
             if !is_ui_tauri {
                 let app_handle = app.handle().clone();

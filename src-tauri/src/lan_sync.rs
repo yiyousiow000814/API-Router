@@ -51,7 +51,8 @@ pub(crate) use remote_update::{
     current_local_remote_update_readiness, lan_sync_remote_update_debug_http,
     lan_sync_remote_update_http, load_lan_remote_update_status,
     load_lan_remote_update_status_public, normalized_local_build_target_ref,
-    peer_remote_update_blocked_reason, LanRemoteUpdateDebugResponsePacket,
+    peer_remote_update_blocked_reason, reconcile_remote_update_terminal_event,
+    LanRemoteUpdateDebugResponsePacket,
 };
 pub use remote_update::{LanRemoteUpdateReadinessSnapshot, LanRemoteUpdateStatusSnapshot};
 

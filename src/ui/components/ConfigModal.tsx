@@ -141,12 +141,12 @@ export function isRemoteUpdateStatusRelevantToCurrentBuild(
 ): boolean {
   const status = source.remote_update_status
   if (!status?.state?.trim()) return false
-  const terminalState = ['failed', 'succeeded', 'superseded'].includes(status.state.trim())
-  if (terminalState && source.build_matches_local && !source.version_sync_required) {
+  const targetMatchesLocalBuild = remoteUpdateTargetMatchesBuild(source, localBuildSha)
+  if (localBuildSha && targetMatchesLocalBuild === false) {
     return false
   }
-  const targetMatchesLocalBuild = remoteUpdateTargetMatchesBuild(source, localBuildSha)
-  if (terminalState && localBuildSha && targetMatchesLocalBuild === false) {
+  const terminalState = ['failed', 'succeeded', 'superseded'].includes(status.state.trim())
+  if (terminalState && source.build_matches_local && !source.version_sync_required) {
     return false
   }
   const targetMatchesPeerBuild = remoteUpdateTargetMatchesBuild(source, source.build_identity?.build_git_sha)
@@ -324,10 +324,6 @@ export function isRemoteDebugStatusRelevantToCurrentBuild(
 ): boolean {
   const status = remoteUpdateDebug?.remote_update_status
   if (!status?.state?.trim()) return true
-  const terminalState = ['failed', 'succeeded', 'superseded'].includes(status.state.trim())
-  if (terminalState && source.build_matches_local && !source.version_sync_required) {
-    return false
-  }
   const targetRef = normalizedTargetRef(status.target_ref)
   const peerBuildSha = normalizedBuildSha(source.build_identity?.build_git_sha)
   const normalizedLocalBuildSha = normalizedBuildSha(localBuildSha)
@@ -335,7 +331,11 @@ export function isRemoteDebugStatusRelevantToCurrentBuild(
     !normalizedLocalBuildSha || !targetRef
       ? null
       : normalizedLocalBuildSha.startsWith(targetRef) || targetRef.startsWith(normalizedLocalBuildSha)
-  if (terminalState && localBuildSha && targetMatchesLocalBuild === false) {
+  if (localBuildSha && targetMatchesLocalBuild === false) {
+    return false
+  }
+  const terminalState = ['failed', 'succeeded', 'superseded'].includes(status.state.trim())
+  if (terminalState && source.build_matches_local && !source.version_sync_required) {
     return false
   }
   const targetMatchesPeerBuild =
