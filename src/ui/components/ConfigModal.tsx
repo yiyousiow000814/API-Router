@@ -349,8 +349,9 @@ export function isRemoteDebugStatusRelevantToCurrentBuild(
   localBuildSha?: string | null,
 ): boolean {
   const status = remoteUpdateDebug?.remote_update_status
-  if (!status?.state?.trim()) return true
+  if (!status?.state?.trim()) return false
   const targetRef = normalizedTargetRef(status.target_ref)
+  if (!targetRef) return false
   const peerBuildSha = normalizedBuildSha(source.build_identity?.build_git_sha)
   const normalizedLocalBuildSha = normalizedBuildSha(localBuildSha)
   const targetMatchesLocalBuild =

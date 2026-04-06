@@ -1280,6 +1280,65 @@ describe('ConfigModal', () => {
     ).toBe(false)
   })
 
+  it('treats debug logs without a usable remote update status as previous instead of current', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      build_matches_local: false,
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: '2f211f11abcdef1234567890',
+        build_git_short_sha: '2f211f11',
+        build_git_commit_unix_ms: 1775505060000,
+      },
+    }
+
+    const remoteUpdateDebug = {
+      ok: true,
+      version: 1,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      remote_update_readiness: {
+        ready: true,
+      },
+      remote_update_status: undefined,
+      status_file_exists: true,
+      log_file_exists: true,
+      log_tail_source: 'file',
+      log_tail: 'Queued remote update to 2f211f11 was replaced.',
+      local_build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: '2f211f11abcdef1234567890',
+        build_git_short_sha: '2f211f11',
+        build_git_commit_unix_ms: 1775505060000,
+      },
+      local_version_sync: {
+        target_ref: 'e5ae2003abcdef1234567890',
+        git_worktree_clean: true,
+        update_to_local_build_allowed: true,
+      },
+    } as const
+
+    expect(
+      isRemoteDebugStatusRelevantToCurrentBuild(
+        source,
+        remoteUpdateDebug,
+        'e5ae2003abcdef1234567890',
+      ),
+    ).toBe(false)
+  })
+
   it('keeps diagnostics render-safe when remote debug readiness is missing', () => {
     expect(
       remoteDebugReadinessReasonText({
