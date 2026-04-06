@@ -8,6 +8,7 @@ import {
   formatBuildLabel,
   formatCommitDate,
   isRemoteUpdateStatusRelevantToCurrentBuild,
+  isRemoteDebugStatusRelevantToCurrentBuild,
   keepSourceMenuOpenAfterAction,
   remoteUpdateActionState,
   remoteUpdateDetailText,
@@ -902,6 +903,60 @@ describe('ConfigModal', () => {
       actionDetail: 'Remote update worker PID 112248 exited without recording completion for target dfa0f229.',
       spinning: false,
     })
+  })
+
+  it('treats remote debug logs for an older target as stale for the current build', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: false,
+      version_sync_reason: null,
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: '4731214fabcd12344343fae28a8e4280bb760d99',
+        build_git_short_sha: '4731214f',
+        build_git_commit_unix_ms: 1775482000000,
+      },
+    }
+
+    const remoteUpdateDebug = {
+      ok: true,
+      version: 1,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      remote_update_readiness: {
+        ready: true,
+      },
+      remote_update_status: {
+        state: 'failed',
+        target_ref: '56159561',
+        finished_at_unix_ms: 1775477266179,
+      },
+      status_file_exists: true,
+      log_file_exists: true,
+      local_build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: 'dfa0f229abcdef1234567890',
+        build_git_short_sha: 'dfa0f229',
+        build_git_commit_unix_ms: 1775482000000,
+      },
+      local_version_sync: {
+        target_ref: 'dfa0f229abcdef1234567890',
+        git_worktree_clean: true,
+        update_to_local_build_allowed: true,
+      },
+    } as const
+
+    expect(isRemoteDebugStatusRelevantToCurrentBuild(source, remoteUpdateDebug)).toBe(false)
   })
 
   it('keeps idle update rows visually quiet', () => {

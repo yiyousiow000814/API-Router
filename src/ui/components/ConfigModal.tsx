@@ -243,6 +243,42 @@ export function splitRemoteDebugLogTail(logTail: string): { recent: string; olde
   }
 }
 
+export function isRemoteDebugStatusRelevantToCurrentBuild(
+  source: ConfigSource,
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+  localBuildSha?: string | null,
+): boolean {
+  const status = remoteUpdateDebug?.remote_update_status
+  if (!status?.state?.trim()) return true
+  const terminalState = ['failed', 'succeeded', 'superseded'].includes(status.state.trim())
+  const targetRef = normalizedTargetRef(status.target_ref)
+  const peerBuildSha = normalizedBuildSha(source.build_identity?.build_git_sha)
+  const normalizedLocalBuildSha = normalizedBuildSha(localBuildSha)
+  const targetMatchesPeerBuild =
+    !peerBuildSha || !targetRef ? null : peerBuildSha.startsWith(targetRef) || targetRef.startsWith(peerBuildSha)
+  const targetMatchesLocalBuild =
+    !normalizedLocalBuildSha || !targetRef
+      ? null
+      : normalizedLocalBuildSha.startsWith(targetRef) || targetRef.startsWith(normalizedLocalBuildSha)
+  if (
+    terminalState &&
+    targetMatchesPeerBuild === false &&
+    (localBuildSha ? targetMatchesLocalBuild === false : true)
+  ) {
+    return false
+  }
+  const buildCommitUnixMs = source.build_identity?.build_git_commit_unix_ms ?? null
+  if (!Number.isFinite(buildCommitUnixMs) || !buildCommitUnixMs) return true
+  const statusObservedAtUnixMs =
+    status.finished_at_unix_ms ??
+    status.started_at_unix_ms ??
+    status.updated_at_unix_ms ??
+    status.accepted_at_unix_ms ??
+    null
+  if (!statusObservedAtUnixMs) return true
+  return statusObservedAtUnixMs >= buildCommitUnixMs
+}
+
 export function remoteUpdateDetailText(source: ConfigSource, localBuildSha?: string | null): string {
   if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return ''
   const status = source.remote_update_status
@@ -1156,6 +1192,17 @@ export function ConfigModal({
                     const debugLogTail = remoteUpdateDebug?.log_tail?.trim() ?? ''
                     const { recent: recentDebugLogTail, older: olderDebugLogTail } =
                       splitRemoteDebugLogTail(debugLogTail)
+                    const debugLogCurrentForBuild = isRemoteDebugStatusRelevantToCurrentBuild(
+                      source,
+                      remoteUpdateDebug,
+                      localBuildSha,
+                    )
+                    const collapsedDebugLogTail = [olderDebugLogTail, recentDebugLogTail]
+                      .filter((part) => part.trim().length > 0)
+                      .join('\n')
+                    const debugLogSummaryText = collapsedDebugLogTail
+                      ? `Remote update log: ${debugLogCurrentForBuild ? 'current' : 'older'}`
+                      : remoteDebugLogRecordText(remoteUpdateDebug)
                     const debugBootstrapText = remoteUpdateDebug
                       ? remoteDebugBootstrapText(remoteUpdateDebug)
                       : null
@@ -1283,13 +1330,10 @@ export function ConfigModal({
                                     <div className="aoConfigDiagRemoteUpdateDetail">
                                       {remoteDebugStatusRecordText(remoteUpdateDebug)}
                                     </div>
-                                    <div className="aoConfigDiagRemoteUpdateDetail">
-                                      {remoteDebugLogRecordText(remoteUpdateDebug)}
-                                    </div>
-                                    {olderDebugLogTail ? (
-                                      <details style={{ marginTop: 8 }}>
+                                    {collapsedDebugLogTail ? (
+                                      <details style={{ marginTop: 8 }} open={debugLogCurrentForBuild}>
                                         <summary className="aoConfigDiagRemoteUpdateDetail">
-                                          Earlier remote log lines
+                                          {debugLogSummaryText}
                                         </summary>
                                         <pre
                                           className="aoConfigDiagWhyText"
@@ -1302,25 +1346,12 @@ export function ConfigModal({
                                             borderRadius: 10,
                                           }}
                                         >
-                                          {olderDebugLogTail}
+                                          {collapsedDebugLogTail}
                                         </pre>
                                       </details>
-                                    ) : null}
-                                    {recentDebugLogTail ? (
-                                      <pre
-                                        className="aoConfigDiagWhyText"
-                                        style={{
-                                          margin: '8px 0 0',
-                                          padding: '10px 12px',
-                                          whiteSpace: 'pre-wrap',
-                                          overflowWrap: 'anywhere',
-                                          background: 'rgba(10, 16, 28, 0.04)',
-                                          borderRadius: 10,
-                                        }}
-                                      >
-                                        {recentDebugLogTail}
-                                      </pre>
-                                    ) : null}
+                                    ) : (
+                                      <div className="aoConfigDiagRemoteUpdateDetail">{debugLogSummaryText}</div>
+                                    )}
                                   </>
                                 ) : null}
                               </div>
