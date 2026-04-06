@@ -116,6 +116,7 @@ pub(crate) struct LanRemoteUpdateDebugResponsePacket {
     pub status_file_exists: bool,
     pub log_path: Option<String>,
     pub log_file_exists: bool,
+    pub log_tail_source: String,
     pub log_tail: Option<String>,
     pub local_build_identity: LanBuildIdentitySnapshot,
     pub local_version_sync: LanLocalVersionSyncSnapshot,
@@ -511,6 +512,70 @@ fn read_remote_update_log_tail(max_bytes: usize) -> Option<String> {
     let text = String::from_utf8_lossy(&bytes[start..]).to_string();
     let trimmed = text.trim().to_string();
     (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn synthesize_remote_update_log_tail_from_status(
+    status: &LanRemoteUpdateStatusSnapshot,
+    max_chars: usize,
+) -> Option<String> {
+    let mut lines = Vec::new();
+    for entry in &status.timeline {
+        let mut line = String::new();
+        if entry.unix_ms != 0 {
+            let unix_ms = entry.unix_ms;
+            line.push_str(&format!("[{}] ", unix_ms));
+        }
+        if !entry.label.trim().is_empty() {
+            let label = entry.label.trim();
+            line.push_str(label);
+        } else if !entry.phase.trim().is_empty() {
+            let phase = entry.phase.trim();
+            line.push_str(phase);
+        } else {
+            line.push_str("step");
+        }
+        if let Some(detail) = entry
+            .detail
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            line.push_str(": ");
+            line.push_str(detail);
+        }
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        if let Some(detail) = status
+            .detail
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            lines.push(detail.to_string());
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    let text = lines.join("\n");
+    let trimmed = text.trim().to_string();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let max_chars = max_chars.max(1);
+    if trimmed.chars().count() <= max_chars {
+        return Some(trimmed);
+    }
+    let tail: String = trimmed
+        .chars()
+        .rev()
+        .take(max_chars)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    Some(tail)
 }
 
 fn remote_update_status_blocks_new_request(status: &LanRemoteUpdateStatusSnapshot) -> bool {
@@ -979,6 +1044,18 @@ pub(crate) async fn lan_sync_remote_update_debug_http(
     let node = gateway.secrets.get_lan_node_identity();
     let status_path = lan_remote_update_status_path();
     let log_path = lan_remote_update_log_path();
+    let remote_update_status = load_lan_remote_update_status();
+    let file_log_tail = read_remote_update_log_tail(6_000);
+    let (log_tail_source, log_tail) = if let Some(log_tail) = file_log_tail {
+        ("file".to_string(), Some(log_tail))
+    } else if let Some(status) = remote_update_status.as_ref() {
+        match synthesize_remote_update_log_tail_from_status(status, 6_000) {
+            Some(log_tail) => ("timeline".to_string(), Some(log_tail)),
+            None => ("none".to_string(), None),
+        }
+    } else {
+        ("none".to_string(), None)
+    };
     Json(serde_json::json!(LanRemoteUpdateDebugResponsePacket {
         ok: true,
         version: 1,
@@ -991,12 +1068,13 @@ pub(crate) async fn lan_sync_remote_update_debug_http(
             .map(|value| value.node_name.clone())
             .unwrap_or_default(),
         remote_update_readiness: current_local_remote_update_readiness(),
-        remote_update_status: load_lan_remote_update_status(),
+        remote_update_status,
         status_file_exists: status_path.as_ref().is_some_and(|path| path.is_file()),
         status_path: status_path.map(|path| path.display().to_string()),
         log_file_exists: log_path.as_ref().is_some_and(|path| path.is_file()),
         log_path: log_path.map(|path| path.display().to_string()),
-        log_tail: read_remote_update_log_tail(6_000),
+        log_tail_source,
+        log_tail,
         local_build_identity: current_build_identity(),
         local_version_sync: current_local_version_sync_snapshot(),
     }))

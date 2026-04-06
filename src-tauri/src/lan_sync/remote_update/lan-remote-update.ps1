@@ -121,11 +121,19 @@ function Write-RemoteUpdateStatus {
 }
 
 function Assert-CleanWorktree {
-  $statusLines = & git status --porcelain=v1
+  $statusLines = & git status --porcelain=v1 2>&1
   if ($LASTEXITCODE -ne 0) {
+    $summary = Format-CommandOutputSummary $statusLines
+    if ($summary) {
+      throw "git status failed. Output: $summary"
+    }
     throw 'git status failed'
   }
   if ($statusLines) {
+    $summary = Format-CommandOutputSummary $statusLines
+    if ($summary) {
+      throw "worktree is dirty; refusing remote self-update. Pending changes: $summary"
+    }
     throw 'worktree is dirty; refusing remote self-update'
   }
 }
@@ -150,6 +158,46 @@ function Step-Detail([string]$Label, [string]$Detail = '') {
   return $Label
 }
 
+function Format-CommandOutputSummary($Output) {
+  if ($null -eq $Output) { return '' }
+  $text = (($Output | ForEach-Object { $_.ToString().Trim() }) -join ' ').Trim()
+  if (-not $text) { return '' }
+  $text = [regex]::Replace($text, '\s+', ' ')
+  if ($text.Length -gt 800) {
+    return $text.Substring($text.Length - 800)
+  }
+  return $text
+}
+
+function Write-CommandOutputLog($Output) {
+  if ($null -eq $Output) { return }
+  foreach ($line in ($Output | ForEach-Object { $_.ToString().TrimEnd() })) {
+    if ($line) {
+      Write-RemoteUpdateLog $line
+    }
+  }
+}
+
+function Invoke-RemoteUpdateCommand {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$FailureMessage,
+    [Parameter(Mandatory = $true)]
+    [scriptblock]$Command
+  )
+
+  $output = & $Command 2>&1
+  $exitCode = $LASTEXITCODE
+  Write-CommandOutputLog $output
+  if ($exitCode -ne 0) {
+    $summary = Format-CommandOutputSummary $output
+    if ($summary) {
+      throw "${FailureMessage}. Output: $summary"
+    }
+    throw $FailureMessage
+  }
+}
+
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
 Set-Location $RepoRoot
 
@@ -169,10 +217,7 @@ Assert-CleanWorktree
 $currentStep = 'Fetching from origin'
 Write-RemoteUpdateLog $currentStep
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep) -Phase 'git_fetch' -Label 'Fetching from origin' -StartedAtUnixMs $startedAtUnixMs
-& git fetch origin --prune --tags
-if ($LASTEXITCODE -ne 0) {
-  throw 'git fetch failed'
-}
+Invoke-RemoteUpdateCommand -FailureMessage 'git fetch failed' -Command { git fetch origin --prune --tags }
 
 $currentStep = 'Resolving target ref'
 Write-RemoteUpdateLog "${currentStep}: $TargetRef"
@@ -182,34 +227,27 @@ if ($target.Mode -eq 'local_branch') {
   $currentStep = 'Checking out local branch'
   Write-RemoteUpdateLog "${currentStep}: $($target.Value)"
   Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $target.Value) -Phase 'checkout_local_branch' -Label 'Checking out local branch' -StartedAtUnixMs $startedAtUnixMs
-  & git checkout $target.Value
-  if ($LASTEXITCODE -ne 0) { throw "git checkout failed: $($target.Value)" }
+  Invoke-RemoteUpdateCommand -FailureMessage "git checkout failed: $($target.Value)" -Command { git checkout $target.Value }
   $currentStep = 'Pulling latest branch'
   Write-RemoteUpdateLog "${currentStep}: $($target.Value)"
   Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $target.Value) -Phase 'pull_branch' -Label 'Pulling latest branch' -StartedAtUnixMs $startedAtUnixMs
-  & git pull --ff-only origin $target.Value
-  if ($LASTEXITCODE -ne 0) { throw "git pull failed: $($target.Value)" }
+  Invoke-RemoteUpdateCommand -FailureMessage "git pull failed: $($target.Value)" -Command { git pull --ff-only origin $target.Value }
 } elseif ($target.Mode -eq 'remote_branch') {
   $currentStep = 'Checking out remote branch'
   Write-RemoteUpdateLog "${currentStep}: $($target.Value)"
   Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $target.Value) -Phase 'checkout_remote_branch' -Label 'Checking out remote branch' -StartedAtUnixMs $startedAtUnixMs
-  & git checkout -B $target.Value "refs/remotes/origin/$($target.Value)"
-  if ($LASTEXITCODE -ne 0) { throw "git checkout -B failed: $($target.Value)" }
+  Invoke-RemoteUpdateCommand -FailureMessage "git checkout -B failed: $($target.Value)" -Command { git checkout -B $target.Value "refs/remotes/origin/$($target.Value)" }
 } else {
   $currentStep = 'Checking out commit'
   Write-RemoteUpdateLog "${currentStep}: $($target.Value)"
   Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $target.Value) -Phase 'checkout_commit' -Label 'Checking out commit' -StartedAtUnixMs $startedAtUnixMs
-  & git checkout --detach $target.Value
-  if ($LASTEXITCODE -ne 0) { throw "git checkout --detach failed: $($target.Value)" }
+  Invoke-RemoteUpdateCommand -FailureMessage "git checkout --detach failed: $($target.Value)" -Command { git checkout --detach $target.Value }
 }
 
 $currentStep = 'Building checked EXE'
 Write-RemoteUpdateLog "${currentStep}: npm run build:root-exe:checked"
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep 'Running npm run build:root-exe:checked') -Phase 'build_checked_exe' -Label 'Building checked EXE' -StartedAtUnixMs $startedAtUnixMs
-& npm.cmd run build:root-exe:checked
-if ($LASTEXITCODE -ne 0) {
-  throw 'npm run build:root-exe:checked failed'
-}
+Invoke-RemoteUpdateCommand -FailureMessage 'npm run build:root-exe:checked failed' -Command { npm.cmd run build:root-exe:checked }
 $currentStep = 'Completed'
 Write-RemoteUpdateLog 'Remote self-update completed successfully.'
 Write-RemoteUpdateStatus -State 'succeeded' -TargetRef $TargetRef -Detail (Step-Detail $currentStep 'Remote self-update completed successfully.') -Phase 'completed' -Label 'Remote update completed' -StartedAtUnixMs $startedAtUnixMs -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())

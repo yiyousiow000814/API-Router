@@ -272,6 +272,7 @@ export type LanRemoteUpdateDebugResponse = {
   status_file_exists: boolean
   log_path?: string | null
   log_file_exists: boolean
+  log_tail_source?: 'file' | 'timeline' | 'none' | string
   log_tail?: string | null
   local_build_identity: {
     app_version: string

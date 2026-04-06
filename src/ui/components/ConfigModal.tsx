@@ -169,6 +169,9 @@ function remoteDebugStatusRecordText(remoteUpdateDebug: LanRemoteUpdateDebugResp
 }
 
 function remoteDebugLogRecordText(remoteUpdateDebug: LanRemoteUpdateDebugResponse): string {
+  if (remoteUpdateDebug.log_tail_source === 'timeline' && remoteUpdateDebug.log_tail?.trim()) {
+    return 'Remote update log: synthesized from status timeline'
+  }
   return remoteUpdateDebug.log_file_exists
     ? 'Remote update log: available'
     : 'No remote update log available from peer'

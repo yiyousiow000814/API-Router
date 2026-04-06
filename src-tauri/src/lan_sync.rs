@@ -4634,6 +4634,7 @@ mod tests {
         LanUsageSyncRequestPacket, LAN_PEER_STALE_AFTER_MS, LAN_SYNC_AUTH_NODE_ID_HEADER,
         LAN_SYNC_AUTH_SECRET_HEADER,
     };
+    use crate::lan_sync::remote_update::LanRemoteUpdateTimelineEntry;
     use crate::orchestrator::store::{LanEditSyncEvent, UsageRequestSyncRow};
     use axum::body::to_bytes;
     use axum::extract::{Json, State};
@@ -5003,11 +5004,100 @@ mod tests {
             .contains("stopped after the peer build changed"));
         assert!(payload.status_file_exists);
         assert!(payload.log_file_exists);
+        assert_eq!(payload.log_tail_source, "file");
         assert!(payload
             .log_tail
             .as_deref()
             .unwrap_or_default()
             .contains("fatal: git fetch failed"));
+    }
+
+    #[test]
+    fn remote_update_debug_http_falls_back_to_status_timeline_when_log_file_is_missing() {
+        let (_tmp, state) = build_test_state();
+        let trust_secret = state
+            .secrets
+            .ensure_lan_trust_secret()
+            .expect("trust secret");
+        state
+            .secrets
+            .set_lan_node_trusted("node-remote", true)
+            .expect("trust peer");
+        let user_data_dir = state
+            .config_path
+            .parent()
+            .expect("config parent")
+            .to_path_buf();
+        let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "failed".to_string(),
+            target_ref: "abc123".to_string(),
+            request_id: None,
+            reason_code: Some("build_checked_exe".to_string()),
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some(
+                "src-tauri/src/lan_sync/remote_update/lan-remote-update.ps1".to_string(),
+            ),
+            worker_pid: Some(42),
+            detail: Some("Building checked EXE: npm run build:root-exe:checked failed".to_string()),
+            accepted_at_unix_ms: 1,
+            started_at_unix_ms: Some(2),
+            finished_at_unix_ms: Some(4),
+            updated_at_unix_ms: 4,
+            timeline: vec![
+                LanRemoteUpdateTimelineEntry {
+                    unix_ms: 2,
+                    phase: "git_fetch".to_string(),
+                    label: "Fetching from origin".to_string(),
+                    detail: Some("Fetching from origin".to_string()),
+                    source: "worker".to_string(),
+                    state: "running".to_string(),
+                },
+                LanRemoteUpdateTimelineEntry {
+                    unix_ms: 3,
+                    phase: "build_checked_exe".to_string(),
+                    label: "Building checked EXE".to_string(),
+                    detail: Some(
+                        "Building checked EXE: npm run build:root-exe:checked failed".to_string(),
+                    ),
+                    source: "worker".to_string(),
+                    state: "failed".to_string(),
+                },
+            ],
+        };
+        super::write_lan_remote_update_status(&status).expect("write remote update status");
+
+        let response = tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(async {
+                super::lan_sync_remote_update_debug_http(
+                    State(state.gateway.clone()),
+                    lan_sync_headers("node-remote", &trust_secret),
+                    Json(LanRemoteUpdateDebugRequestPacket {
+                        version: 1,
+                        node_id: "node-remote".to_string(),
+                    }),
+                )
+                .await
+                .into_response()
+            });
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(async {
+                to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("body")
+            });
+        let payload: LanRemoteUpdateDebugResponsePacket =
+            serde_json::from_slice(&body).expect("remote update debug json");
+        assert!(payload.ok);
+        assert!(!payload.log_file_exists);
+        assert_eq!(payload.log_tail_source, "timeline");
+        let log_tail = payload.log_tail.as_deref().unwrap_or_default();
+        assert!(log_tail.contains("Building checked EXE"));
+        assert!(log_tail.contains("npm run build:root-exe:checked failed"));
     }
 
     #[test]
