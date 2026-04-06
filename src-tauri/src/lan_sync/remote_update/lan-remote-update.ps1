@@ -32,7 +32,7 @@ function Write-RemoteUpdateLog {
   if ($parent) {
     New-Item -ItemType Directory -Force -Path $parent | Out-Null
   }
-  $timestamp = [DateTimeOffset]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss.fff UTC')
+  $timestamp = [DateTimeOffset]::UtcNow.ToString('dd-MM-yyyy HH:mm:ss.fff UTC')
   Add-Content -Path $logPath -Value "[$timestamp] $Message" -Encoding UTF8
 }
 

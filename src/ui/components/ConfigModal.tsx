@@ -2,7 +2,11 @@ import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useRef, useState } from 'react'
 import { ModalBackdrop } from './ModalBackdrop'
 import type { Config, LanRemoteUpdateDebugResponse } from '../types'
-import { isRemoteUpdateStatusCurrentForPending, type RemoteUpdatePendingStage } from '../utils/remoteUpdateStatus'
+import {
+  isRemoteUpdateStatusCurrentForPending,
+  remoteUpdateStatusObservedAtUnixMs,
+  type RemoteUpdatePendingStage,
+} from '../utils/remoteUpdateStatus'
 
 type Props = {
   open: boolean
@@ -110,23 +114,12 @@ function remoteUpdateStateLabel(source: ConfigSource): string | null {
   return state
 }
 
-function remoteUpdateObservedAtUnixMs(source: ConfigSource): number {
-  const status = source.remote_update_status
-  if (!status) return 0
-  return Math.max(
-    status.finished_at_unix_ms ?? 0,
-    status.started_at_unix_ms ?? 0,
-    status.updated_at_unix_ms ?? 0,
-    status.accepted_at_unix_ms ?? 0,
-  )
-}
-
 export function isRemoteUpdateStatusRelevantToCurrentBuild(source: ConfigSource): boolean {
   const status = source.remote_update_status
   if (!status?.state?.trim()) return false
   const buildCommitUnixMs = source.build_identity?.build_git_commit_unix_ms ?? null
   if (!Number.isFinite(buildCommitUnixMs) || !buildCommitUnixMs) return true
-  const statusObservedAtUnixMs = remoteUpdateObservedAtUnixMs(source)
+  const statusObservedAtUnixMs = remoteUpdateStatusObservedAtUnixMs(source)
   if (!statusObservedAtUnixMs) return true
   return statusObservedAtUnixMs >= buildCommitUnixMs
 }

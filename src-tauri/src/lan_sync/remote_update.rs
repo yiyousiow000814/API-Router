@@ -178,7 +178,7 @@ fn append_remote_update_log_message(message: &str) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f UTC%:z");
+    let timestamp = Local::now().format("%d-%m-%Y %H:%M:%S%.3f UTC%:z");
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -800,8 +800,20 @@ fn monitor_remote_update_worker_exit(
     target_ref: String,
 ) {
     std::thread::spawn(move || {
+        let current_status = read_lan_remote_update_status_raw();
         let exit_detail = match child.wait() {
             Ok(status) => match status.code() {
+                Some(0)
+                    if current_status.as_ref().is_some_and(|snapshot| {
+                        !matches!(snapshot.state.trim(), "accepted" | "running")
+                    }) =>
+                {
+                    return;
+                }
+                Some(0) => format!(
+                    "Remote update worker PID {worker_pid} exited without recording completion for target {}.",
+                    display_target_ref(&target_ref)
+                ),
                 Some(code) => format!(
                     "Remote update worker PID {worker_pid} exited before completion with code {code} for target {}.",
                     display_target_ref(&target_ref)

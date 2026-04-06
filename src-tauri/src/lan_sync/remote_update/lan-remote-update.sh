@@ -38,7 +38,7 @@ write_remote_update_log() {
   local log_path
   log_path="$(remote_update_log_path)" || return 0
   mkdir -p "$(dirname "${log_path}")"
-  printf '[%s] %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "${message}" >>"${log_path}"
+  printf '[%s] %s\n' "$(date -u '+%d-%m-%Y %H:%M:%S UTC')" "${message}" >>"${log_path}"
 }
 
 step_detail() {
