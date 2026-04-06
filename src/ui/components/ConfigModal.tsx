@@ -388,7 +388,7 @@ export function remoteUpdateActionState(
   }
   if (remoteState === 'failed') {
     return {
-      actionLabel: source.same_version_update_allowed ? 'Retry update' : 'Update blocked',
+      actionLabel: source.same_version_update_allowed ? 'Update failed' : 'Update blocked',
       actionDetail: remoteUpdateProgressDetail(source) || 'Last remote update failed',
       spinning: false,
     }

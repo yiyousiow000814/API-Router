@@ -580,7 +580,7 @@ describe('ConfigModal', () => {
     }
 
     expect(remoteUpdateActionState(source, undefined)).toEqual({
-      actionLabel: 'Retry update',
+      actionLabel: 'Update failed',
       actionDetail: 'Fetching from origin: git fetch failed',
       spinning: false,
     })
@@ -897,7 +897,7 @@ describe('ConfigModal', () => {
     expect(shouldShowDiagnosticsRemoteUpdateStatus(source, 'dfa0f229abcdef')).toBe(true)
     expect(remoteUpdateDetailText(source, 'dfa0f229abcdef')).toContain('target dfa0f229')
     expect(remoteUpdateActionState(source, undefined, 'dfa0f229abcdef')).toEqual({
-      actionLabel: 'Retry update',
+      actionLabel: 'Update failed',
       actionDetail: 'Remote update worker PID 112248 exited without recording completion for target dfa0f229.',
       spinning: false,
     })
