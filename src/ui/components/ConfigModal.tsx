@@ -674,9 +674,6 @@ export function ConfigModal({
                             ? remoteUpdateActionState(source, versionSyncPendingStage)
                             : null
                         const versionSyncPending = Boolean(versionSyncActionState?.spinning)
-                        const showVersionSyncDetail =
-                          versionSyncRequired &&
-                          shouldShowRemoteUpdateMenuDetail(source, versionSyncActionState)
                         const pairActionAvailable =
                           source.kind === 'peer' &&
                           (!source.trusted ||
@@ -789,11 +786,6 @@ export function ConfigModal({
                                 ) : null}
                                 {actionLabel}
                               </span>
-                              {showVersionSyncDetail ? (
-                                <span className="aoConfigSourceMenuMetaDetail">
-                                  {versionSyncActionState?.actionDetail}
-                                </span>
-                              ) : null}
                             </span>
                           </button>
                         )
