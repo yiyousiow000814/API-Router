@@ -88,9 +88,12 @@ function compactFollowStatusLabel(
   return 'Idle'
 }
 
-function compactUpdateStatusLabel(
+export function compactUpdateStatusLabel(
   source: ConfigSource,
+  localBuildSha?: string | null,
 ): string {
+  const liveRemoteState = remoteUpdateStateLabel(source, localBuildSha)
+  if (liveRemoteState) return liveRemoteState
   if (!source.version_sync_required) return 'No update needed'
   return source.same_version_update_allowed ? 'Update available' : 'Update blocked'
 }
@@ -556,6 +559,12 @@ function remoteUpdateIndicatesIssue(source: ConfigSource, localBuildSha?: string
   return state === 'failed' || state === 'superseded'
 }
 
+function remoteUpdateIsActivelyRunning(source: ConfigSource, localBuildSha?: string | null): boolean {
+  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return false
+  const state = source.remote_update_status?.state?.trim()
+  return state === 'accepted' || state === 'running'
+}
+
 export function remoteUpdateActionState(
   source: ConfigSource,
   pendingStage: RemoteUpdatePendingStage | undefined,
@@ -599,7 +608,7 @@ export function remoteUpdateActionState(
   }
   if (remoteState === 'failed') {
     return {
-      actionLabel: source.same_version_update_allowed ? 'Update failed' : 'Update blocked',
+      actionLabel: 'Update failed',
       actionDetail: remoteUpdateProgressDetail(source) || 'Last remote update failed',
       spinning: false,
     }
@@ -614,7 +623,7 @@ export function remoteUpdateActionState(
   if (remoteState === 'superseded') {
     const issueLabel = remoteUpdateStateLabel(source, localBuildSha)
     return {
-      actionLabel: issueLabel || (source.same_version_update_allowed ? 'Update issue' : 'Update blocked'),
+      actionLabel: issueLabel || 'Update issue',
       actionDetail: remoteUpdateMenuDetailText(source, localBuildSha),
       spinning: false,
     }
@@ -807,7 +816,10 @@ export function ConfigModal({
   const issueSources = effectivePeerSources.filter(
     (source) =>
       (((source.sync_blocked_domains?.length ?? 0) > 0) ||
-        (source.version_sync_required && !source.same_version_update_allowed) ||
+        (source.version_sync_required &&
+          !source.same_version_update_allowed &&
+          !remoteUpdateIsActivelyRunning(source, localBuildSha) &&
+          Boolean(source.same_version_update_blocked_reason?.trim())) ||
         remoteUpdateIndicatesIssue(source, localBuildSha)),
   )
   const peerDebugNodeIds = peerSources.map((source) => source.node_id).join('|')
@@ -1401,7 +1413,7 @@ export function ConfigModal({
                                 effectiveSource.version_sync_required ? ' is-alert' : ''
                               }`}
                             >
-                              {compactUpdateStatusLabel(effectiveSource)}
+                              {compactUpdateStatusLabel(effectiveSource, localBuildSha)}
                             </span>
                           </div>
                         </div>

@@ -81,6 +81,33 @@ fn app_profile_name() -> String {
     app_profile_name_from_inputs(Some(raw.as_str()), exe_stem.as_deref())
 }
 
+fn app_launch_args() -> Vec<String> {
+    std::env::args().collect()
+}
+
+fn app_launch_requests_hidden(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--start-hidden")
+}
+
+fn reveal_main_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_skip_taskbar(false);
+        let _ = w.set_focusable(true);
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+fn hide_main_window_for_background_launch(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_skip_taskbar(true);
+        let _ = w.set_focusable(false);
+        let _ = w.minimize();
+        let _ = w.hide();
+    }
+}
+
 fn profile_data_dir_name(profile: &str) -> String {
     if profile == "default" {
         "user-data".to_string()
@@ -347,14 +374,16 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
 pub fn run() {
     let is_ui_tauri = std::env::var("UI_TAURI").ok().as_deref() == Some("1");
     let app_profile = app_profile_name();
+    let launch_args = app_launch_args();
+    let start_hidden = app_launch_requests_hidden(&launch_args);
     let mut builder = tauri::Builder::default();
     if !is_ui_tauri && app_profile != "test" {
         // Ensure clicking the EXE again focuses the existing instance instead of launching a second one.
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.set_focus();
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if app_launch_requests_hidden(&argv) {
+                return;
             }
+            reveal_main_window(app);
         }));
     }
     let app_profile_for_setup = app_profile.clone();
@@ -373,6 +402,10 @@ pub fn run() {
                         y: 100_000,
                     }));
                 }
+            }
+
+            if start_hidden && !is_ui_tauri {
+                hide_main_window_for_background_launch(app.handle());
             }
 
             if cfg!(debug_assertions) {
@@ -625,10 +658,7 @@ pub fn run() {
                     .on_menu_event(|app: &tauri::AppHandle, event: tauri::menu::MenuEvent| {
                         match event.id().as_ref() {
                             "show" => {
-                                if let Some(w) = app.get_webview_window("main") {
-                                    let _ = w.show();
-                                    let _ = w.set_focus();
-                                }
+                                reveal_main_window(app);
                             }
                             "quit" => {
                                 app.exit(0);
@@ -757,8 +787,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        app_profile_name_from_inputs, profile_data_dir_name, resolve_codex_home,
-        should_reset_profile_data, should_seed_mock_data,
+        app_launch_requests_hidden, app_profile_name_from_inputs, profile_data_dir_name,
+        resolve_codex_home, should_reset_profile_data, should_seed_mock_data,
     };
 
     #[test]
@@ -797,5 +827,14 @@ mod tests {
         std::env::remove_var("API_ROUTER_CODEX_HOME");
         let got = resolve_codex_home(&user_data, false, "default");
         assert_eq!(got, user_data.join("codex-home"));
+    }
+
+    #[test]
+    fn start_hidden_launch_flag_is_detected() {
+        assert!(app_launch_requests_hidden(&[
+            "API Router.exe".to_string(),
+            "--start-hidden".to_string(),
+        ]));
+        assert!(!app_launch_requests_hidden(&["API Router.exe".to_string()]));
     }
 }

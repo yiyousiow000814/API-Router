@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import {
+  compactUpdateStatusLabel,
   remoteUpdateMenuActionLabel,
   diagnosticsRemoteUpdateDisplay,
   ConfigModal,
@@ -717,6 +718,72 @@ describe('ConfigModal', () => {
     expect(
       shouldShowRemoteUpdateMenuDetail(source, remoteUpdateActionState(source, undefined)),
     ).toBe(true)
+  })
+
+  it('keeps failed remote updates labeled as failed even when a new update is currently blocked', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: false,
+      same_version_update_blocked_reason: 'Local build is not ready for another remote update.',
+      remote_update_status: {
+        state: 'failed',
+        target_ref: 'abc123',
+        detail: 'Building EXE: build-root-exe.ps1 failed',
+        finished_at_unix_ms: 1775312828000,
+      },
+    }
+
+    expect(remoteUpdateActionState(source, undefined)).toEqual({
+      actionLabel: 'Update failed',
+      actionDetail: 'Building EXE: build-root-exe.ps1 failed',
+      spinning: false,
+    })
+  })
+
+  it('shows live update progress instead of blocked while a remote update is running', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: false,
+      same_version_update_blocked_reason: 'Another update cannot be queued right now.',
+      remote_update_status: {
+        state: 'running',
+        target_ref: 'abc12345',
+        detail: 'Preparing worker: Starting remote self-update worker.',
+        started_at_unix_ms: 1775312828000,
+        timeline: [
+          {
+            unix_ms: 1775312829000,
+            phase: 'worker_started',
+            label: 'Worker started',
+            detail: 'Preparing worker: Starting remote self-update worker.',
+            source: 'worker',
+            state: 'running',
+          },
+        ],
+      },
+    }
+
+    expect(compactUpdateStatusLabel(source, 'abc12345ffff')).toBe('Preparing')
   })
 
   it('keeps succeeded remote updates in updated state until version sync flags catch up', () => {

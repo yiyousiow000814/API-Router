@@ -1,6 +1,7 @@
 param(
   [switch]$NoCopy,
-  [switch]$TestProfile
+  [switch]$TestProfile,
+  [switch]$StartHidden
 )
 
 $ErrorActionPreference = 'Stop'
@@ -38,8 +39,10 @@ function Start-ApiRouter {
   }
   $env:API_ROUTER_PROFILE = $null
   if ($TestProfile) { $env:API_ROUTER_PROFILE = 'test' }
+  $arguments = @()
+  if ($StartHidden) { $arguments += '--start-hidden' }
   Write-Host "Starting: $DstExe"
-  Start-Process -FilePath $DstExe -WorkingDirectory $RepoRoot | Out-Null
+  Start-Process -FilePath $DstExe -ArgumentList $arguments -WorkingDirectory $RepoRoot | Out-Null
 }
 
 function Stop-RunningApiRouter {

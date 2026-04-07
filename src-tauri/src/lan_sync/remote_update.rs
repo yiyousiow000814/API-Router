@@ -2060,6 +2060,7 @@ mod tests {
         assert!(windows_contents.contains("scripts\\build-root-exe.ps1"));
         assert!(windows_contents.contains("Running Windows EXE build and restart script"));
         assert!(windows_contents.contains("build-root-exe.ps1 failed"));
+        assert!(windows_contents.contains("-StartHidden"));
         assert!(!windows_contents.contains("npm run build:root-exe"));
 
         let linux_script = repo_root
@@ -2099,5 +2100,7 @@ mod tests {
             std::fs::read_to_string(repo_root.join("scripts").join("build-root-exe.ps1"))
                 .expect("read build-root-exe.ps1");
         assert!(build_script.contains("npm.cmd run tauri -- build --no-bundle"));
+        assert!(build_script.contains("[switch]$StartHidden"));
+        assert!(build_script.contains("'--start-hidden'"));
     }
 }
