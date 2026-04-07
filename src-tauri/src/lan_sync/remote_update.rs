@@ -1,12 +1,9 @@
 use super::*;
-use chrono::{Datelike, Local, TimeZone, Timelike, Utc};
-use std::io::Write;
+use chrono::{Datelike, Local, TimeZone, Timelike};
 use std::process::Stdio;
 
 #[cfg(test)]
 thread_local! {
-    static TEST_USER_DATA_DIR_OVERRIDE: std::cell::RefCell<Option<std::path::PathBuf>> =
-        const { std::cell::RefCell::new(None) };
     static TEST_REPO_ROOT_OVERRIDE: std::cell::RefCell<Option<std::path::PathBuf>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -15,11 +12,7 @@ thread_local! {
 pub(crate) fn set_test_user_data_dir_override(
     value: Option<&std::path::Path>,
 ) -> Option<std::path::PathBuf> {
-    TEST_USER_DATA_DIR_OVERRIDE.with(|cell| {
-        let previous = cell.borrow().clone();
-        *cell.borrow_mut() = value.map(|path| path.to_path_buf());
-        previous
-    })
+    crate::diagnostics::set_test_user_data_dir_override(value)
 }
 
 #[cfg(test)]
@@ -36,11 +29,6 @@ pub(crate) fn set_test_repo_root_override(
 #[cfg(test)]
 pub(crate) fn test_repo_root_override() -> Option<std::path::PathBuf> {
     TEST_REPO_ROOT_OVERRIDE.with(|cell| cell.borrow().clone())
-}
-
-#[cfg(test)]
-pub(crate) fn test_user_data_dir_override() -> Option<std::path::PathBuf> {
-    TEST_USER_DATA_DIR_OVERRIDE.with(|cell| cell.borrow().clone())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -162,66 +150,25 @@ pub(crate) struct LanRemoteUpdateAcceptedPacket {
 }
 
 fn lan_remote_update_status_path() -> Option<std::path::PathBuf> {
-    #[cfg(test)]
-    if let Some(path) = TEST_USER_DATA_DIR_OVERRIDE.with(|cell| cell.borrow().clone()) {
-        return Some(
-            path.join("diagnostics")
-                .join("lan-remote-update-status.json"),
-        );
-    }
-    let user_data_dir = std::env::var("API_ROUTER_USER_DATA_DIR").ok()?;
-    let trimmed = user_data_dir.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    Some(
-        std::path::PathBuf::from(trimmed)
-            .join("diagnostics")
-            .join("lan-remote-update-status.json"),
-    )
+    crate::diagnostics::diagnostics_file_path("lan-remote-update-status.json")
 }
 
 pub(crate) fn lan_remote_update_log_path() -> Option<std::path::PathBuf> {
-    #[cfg(test)]
-    if let Some(path) = TEST_USER_DATA_DIR_OVERRIDE.with(|cell| cell.borrow().clone()) {
-        return Some(path.join("diagnostics").join("lan-remote-update.log"));
-    }
-    let user_data_dir = std::env::var("API_ROUTER_USER_DATA_DIR").ok()?;
-    let trimmed = user_data_dir.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    Some(
-        std::path::PathBuf::from(trimmed)
-            .join("diagnostics")
-            .join("lan-remote-update.log"),
-    )
+    crate::diagnostics::diagnostics_file_path("lan-remote-update.log")
 }
 
 fn append_remote_update_log_message(message: &str) {
     let Some(path) = lan_remote_update_log_path() else {
         return;
     };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let timestamp = Utc::now().format("%d-%m-%Y %H:%M:%S%.3f UTC");
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(file, "[{timestamp}] {message}");
-    }
+    let _ = crate::diagnostics::append_timestamped_log_line(&path, message);
 }
 
 fn reset_remote_update_log() {
     let Some(path) = lan_remote_update_log_path() else {
         return;
     };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
+    let _ = crate::diagnostics::ensure_parent_dir(&path);
     let _ = std::fs::write(path, "");
 }
 
@@ -2160,7 +2107,7 @@ mod tests {
         assert!(windows_contents.contains("UTF8Encoding($false)"));
         assert!(windows_contents
             .contains("[System.IO.File]::WriteAllText($statusPath, $json, $utf8NoBom)"));
-        assert!(windows_contents.contains("scripts\\build-root-exe.ps1"));
+        assert!(windows_contents.contains("tools\\build\\build-root-exe.ps1"));
         assert!(windows_contents.contains("Running Windows EXE build and restart script"));
         assert!(windows_contents.contains("build-root-exe.ps1 failed"));
         assert!(windows_contents.contains("-StartHidden"));
@@ -2191,17 +2138,27 @@ mod tests {
         let repo_root = resolve_repo_root_for_self_update().expect("resolve repo root");
         let package_json =
             std::fs::read_to_string(repo_root.join("package.json")).expect("read package.json");
-        assert!(package_json.contains("\"build:root-exe\": \"node scripts/build-root-exe.mjs\""));
+        assert!(
+            package_json.contains("\"build:root-exe\": \"node tools/build/build-root-exe.mjs\"")
+        );
 
-        let build_driver =
-            std::fs::read_to_string(repo_root.join("scripts").join("build-root-exe.mjs"))
-                .expect("read build-root-exe driver");
-        assert!(build_driver.contains("scripts', 'build-root-exe.ps1"));
+        let build_driver = std::fs::read_to_string(
+            repo_root
+                .join("tools")
+                .join("build")
+                .join("build-root-exe.mjs"),
+        )
+        .expect("read build-root-exe driver");
+        assert!(build_driver.contains("tools', 'build', 'build-root-exe.ps1"));
         assert!(build_driver.contains("powershell.exe"));
 
-        let build_script =
-            std::fs::read_to_string(repo_root.join("scripts").join("build-root-exe.ps1"))
-                .expect("read build-root-exe.ps1");
+        let build_script = std::fs::read_to_string(
+            repo_root
+                .join("tools")
+                .join("build")
+                .join("build-root-exe.ps1"),
+        )
+        .expect("read build-root-exe.ps1");
         assert!(build_script.contains("npm.cmd run tauri -- build --no-bundle"));
         assert!(build_script.contains("[switch]$StartHidden"));
         assert!(build_script.contains("'--start-hidden'"));

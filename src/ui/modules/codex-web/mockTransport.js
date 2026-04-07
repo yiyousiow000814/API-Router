@@ -127,13 +127,13 @@ function buildMockToolSteps(payload) {
           running: {
             id: "mock-command-2",
             type: "command_execution",
-            command: "node scripts/run-with-win-sdk.mjs cargo test --manifest-path src-tauri/Cargo.toml web_codex_ws --lib",
+      command: "node tools/windows/run-with-win-sdk.mjs cargo test --manifest-path src-tauri/Cargo.toml web_codex_ws --lib",
             status: "running",
           },
           completed: {
             id: "mock-command-2",
             type: "command_execution",
-            command: "node scripts/run-with-win-sdk.mjs cargo test --manifest-path src-tauri/Cargo.toml web_codex_ws --lib",
+      command: "node tools/windows/run-with-win-sdk.mjs cargo test --manifest-path src-tauri/Cargo.toml web_codex_ws --lib",
             status: "failed",
             output: "test failed: mock websocket timeout",
             exitCode: 1,

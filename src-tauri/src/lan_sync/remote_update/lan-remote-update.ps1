@@ -368,13 +368,13 @@ if ($target.Mode -eq 'local_branch') {
 }
 
 $currentStep = 'Building EXE'
-$buildScriptPath = Join-Path $RepoRoot 'scripts\build-root-exe.ps1'
+$buildScriptPath = Join-Path $RepoRoot 'tools\build\build-root-exe.ps1'
 if (-not (Test-Path $buildScriptPath)) {
   throw "missing build-root-exe script: $buildScriptPath"
 }
 Write-RemoteUpdateLog "${currentStep}: $buildScriptPath"
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep 'Running Windows EXE build and restart script') -Phase 'build_exe' -Label 'Building EXE' -StartedAtUnixMs $startedAtUnixMs
-Invoke-HiddenProcess -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScriptPath, '-StartHidden') -FailureMessage 'build-root-exe.ps1 failed'
+Invoke-HiddenProcess -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScriptPath, '-StartHidden') -FailureMessage 'tools/build/build-root-exe.ps1 failed'
 
 $currentStep = 'Completed'
 Write-RemoteUpdateLog 'Remote self-update completed successfully.'

@@ -13,7 +13,7 @@ use axum::response::IntoResponse;
 use base64::Engine;
 use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce};
-use chrono::{TimeZone, Utc};
+use chrono::TimeZone;
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
@@ -105,48 +105,18 @@ fn gateway_status_runtime() -> &'static RwLock<Option<LanSyncRuntime>> {
 }
 
 fn lan_peer_diagnostics_log_path() -> Option<std::path::PathBuf> {
-    #[cfg(test)]
-    if let Some(path) = remote_update::test_user_data_dir_override() {
-        return Some(path.join("diagnostics").join("lan-peer-diagnostics.log"));
-    }
-    let user_data_dir = std::env::var("API_ROUTER_USER_DATA_DIR").ok()?;
-    let trimmed = user_data_dir.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    Some(
-        std::path::PathBuf::from(trimmed)
-            .join("diagnostics")
-            .join("lan-peer-diagnostics.log"),
-    )
-}
-
-fn trim_diagnostics_log_bytes(mut bytes: Vec<u8>, max_bytes: usize) -> Vec<u8> {
-    if bytes.len() <= max_bytes {
-        return bytes;
-    }
-    let start = bytes.len().saturating_sub(max_bytes);
-    bytes = bytes.split_off(start);
-    if let Some(pos) = bytes.iter().position(|byte| *byte == b'\n') {
-        bytes.split_off(pos + 1)
-    } else {
-        bytes
-    }
+    crate::diagnostics::diagnostics_file_path("lan-peer-diagnostics.log")
 }
 
 fn append_lan_peer_diagnostics_log(message: &str) {
     let Some(path) = lan_peer_diagnostics_log_path() else {
         return;
     };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let timestamp = Utc::now().format("%d-%m-%Y %H:%M:%S%.3f UTC");
-    let line = format!("[{timestamp}] {message}\n");
-    let mut bytes = std::fs::read(&path).unwrap_or_default();
-    bytes.extend_from_slice(line.as_bytes());
-    let bytes = trim_diagnostics_log_bytes(bytes, LAN_PEER_DIAGNOSTICS_LOG_MAX_BYTES);
-    let _ = std::fs::write(path, bytes);
+    let _ = crate::diagnostics::append_timestamped_log_line_capped(
+        &path,
+        message,
+        LAN_PEER_DIAGNOSTICS_LOG_MAX_BYTES,
+    );
 }
 
 fn local_sync_contracts() -> BTreeMap<String, u32> {

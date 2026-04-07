@@ -1591,7 +1591,7 @@ mod tests {
             }),
             json!({
                 "id": "thread-shell",
-                "preview": "Use the shell to run Get-Content scripts/codex-web-e2e-send-turn-live.mjs | Select-String -Pattern \"command failed\"",
+                "preview": "Use the shell to run Get-Content tests/ui/e2e/codex-web/send-turn-live.mjs | Select-String -Pattern \"command failed\"",
                 "filterReason": "synthetic-probe",
                 "updatedAt": 1742269997
             }),

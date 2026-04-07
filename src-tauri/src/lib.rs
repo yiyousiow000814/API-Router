@@ -5,6 +5,7 @@ mod codex_home_env;
 mod codex_wsl_bridge;
 mod commands;
 mod constants;
+mod diagnostics;
 mod lan_sync;
 mod orchestrator;
 mod platform;
