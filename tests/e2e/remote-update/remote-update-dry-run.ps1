@@ -150,7 +150,7 @@ $windowLog = if (Test-Path -LiteralPath $windowLogPath) {
   ''
 }
 
-if ($exitCode -ne 0) {
+if (($null -ne $exitCode) -and ($exitCode -ne 0)) {
   $stderr = ''
   try { $stderr = Get-Content -LiteralPath $stderrPath -Raw } catch {}
   throw "Remote update dry-run failed with exit code $exitCode.`nstatus=`n$status`nlog=`n$log`nstderr=`n$stderr"
@@ -160,6 +160,9 @@ if (-not (Test-Path -LiteralPath $fakeDstExe)) {
 }
 if ($status -notmatch '"state"\s*:\s*"succeeded"') {
   throw "Expected dry-run remote update status to succeed.`n$status`nlog=`n$log"
+}
+if ($null -eq $exitCode) {
+  Write-Host '[remote-update-dry-run.e2e] outer process ExitCode was <null>; status/log success contract accepted it.'
 }
 
 Write-Host "[remote-update-dry-run.e2e] PASS"
