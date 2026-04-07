@@ -1583,7 +1583,7 @@ describe('ConfigModal', () => {
         remoteUpdateActionState(source, undefined, '45a389c0abcdef'),
         '45a389c0abcdef',
       ),
-    ).toBe('Remote update worker PID 116572 exited without recording completion for target 45a389c0.')
+    ).toBe(null)
   })
 
   it('shows succeeded state in dropdown instead of immediately reverting to update peer', () => {

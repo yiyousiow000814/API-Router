@@ -684,6 +684,7 @@ export function remoteUpdateMenuSubtext(
   localBuildSha?: string | null,
 ): string | null {
   if (!shouldShowRemoteUpdateMenuDetail(source, actionState, localBuildSha)) return null
+  if (!actionState?.spinning) return null
   const detail = actionState?.actionDetail?.trim() || ''
   return detail ? formatReadableCommitRefs(detail) : null
 }
