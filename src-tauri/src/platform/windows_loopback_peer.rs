@@ -53,6 +53,20 @@ pub fn visible_window_title(_pid: u32) -> Option<String> {
     None
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibleWindowSnapshot {
+    pub hwnd: isize,
+    pub pid: u32,
+    pub title: String,
+    pub class_name: String,
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub fn list_visible_windows() -> Vec<VisibleWindowSnapshot> {
+    Vec::new()
+}
+
 #[cfg(windows)]
 mod windows_impl {
     use super::*;
@@ -79,7 +93,7 @@ mod windows_impl {
         PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+        EnumWindows, GetClassNameW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
         IsWindowVisible,
     };
 
@@ -282,6 +296,35 @@ mod windows_impl {
             let _ = EnumWindows(Some(enum_windows_proc), &mut state as *mut _ as LPARAM);
         }
         state.title
+    }
+
+    pub fn list_visible_windows() -> Vec<VisibleWindowSnapshot> {
+        unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            let windows = &mut *(lparam as *mut Vec<VisibleWindowSnapshot>);
+            if IsWindowVisible(hwnd) == 0 {
+                return 1;
+            }
+            let title = read_window_text(hwnd);
+            let class_name = read_window_class_name(hwnd);
+            if title.trim().is_empty() && class_name.trim().is_empty() {
+                return 1;
+            }
+            let mut pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, &mut pid as *mut u32);
+            windows.push(VisibleWindowSnapshot {
+                hwnd,
+                pid,
+                title,
+                class_name,
+            });
+            1
+        }
+
+        let mut windows = Vec::new();
+        unsafe {
+            let _ = EnumWindows(Some(enum_windows_proc), &mut windows as *mut _ as LPARAM);
+        }
+        windows
     }
 
     fn tcp_owner_pid_v4(peer_port: u16, server_port: u16) -> Option<u32> {
@@ -638,13 +681,37 @@ mod windows_impl {
             .to_string_lossy()
             .to_string()
     }
+
+    fn read_window_text(hwnd: HWND) -> String {
+        let title_len = unsafe { GetWindowTextLengthW(hwnd) };
+        if title_len <= 0 {
+            return String::new();
+        }
+        let mut buf = vec![0u16; title_len as usize + 1];
+        let copied = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
+        if copied <= 0 {
+            String::new()
+        } else {
+            String::from_utf16_lossy(&buf[..copied as usize])
+        }
+    }
+
+    fn read_window_class_name(hwnd: HWND) -> String {
+        let mut buf = vec![0u16; 256];
+        let copied = unsafe { GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
+        if copied <= 0 {
+            String::new()
+        } else {
+            String::from_utf16_lossy(&buf[..copied as usize])
+        }
+    }
 }
 
 #[cfg(windows)]
 pub use windows_impl::{
     duplicate_process_stdin_write_handle, infer_loopback_peer_pid, is_pid_alive,
-    list_process_ids_by_name, read_process_command_line, read_process_cwd, read_process_env_var,
-    visible_window_title,
+    list_process_ids_by_name, list_visible_windows, read_process_command_line, read_process_cwd,
+    read_process_env_var, visible_window_title,
 };
 
 #[cfg(all(test, windows))]

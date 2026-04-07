@@ -206,6 +206,19 @@ struct RemoteUpdateShellProcessEvidence<'a> {
     request_id_env: &'a str,
 }
 
+#[cfg(target_os = "windows")]
+fn remote_update_global_visible_window_key(
+    window: &crate::platform::windows_loopback_peer::VisibleWindowSnapshot,
+) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        window.hwnd,
+        window.pid,
+        window.title.trim(),
+        window.class_name.trim()
+    )
+}
+
 struct RemoteUpdateWorkerMonitorContext {
     repo_root: std::path::PathBuf,
     status_path: Option<std::path::PathBuf>,
@@ -1052,6 +1065,76 @@ fn poll_remote_update_shell_window_diagnostics(
         };
         append_remote_update_shell_window_log(&format!(
             "Remote update shell process pid={pid} visibility={visibility}{title_detail} cwd={} request_id_env={} cmd={}",
+            cwd.as_ref()
+                .map(|value| value.display().to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            if request_id_env.trim().is_empty() {
+                "unset".to_string()
+            } else {
+                request_id_env.trim().to_string()
+            },
+            if command_line.trim().is_empty() {
+                "<unavailable>".to_string()
+            } else {
+                command_line.trim().to_string()
+            }
+        ));
+    }
+
+    for window in crate::platform::windows_loopback_peer::list_visible_windows() {
+        let key = format!(
+            "window|{}",
+            remote_update_global_visible_window_key(&window)
+        );
+        if !seen_keys.insert(key) {
+            continue;
+        }
+        let command_line =
+            crate::platform::windows_loopback_peer::read_process_command_line(window.pid)
+                .unwrap_or_default();
+        let cwd = crate::platform::windows_loopback_peer::read_process_cwd(window.pid);
+        let status_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            window.pid,
+            "API_ROUTER_REMOTE_UPDATE_STATUS_PATH",
+        )
+        .unwrap_or_default();
+        let log_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            window.pid,
+            "API_ROUTER_REMOTE_UPDATE_LOG_PATH",
+        )
+        .unwrap_or_default();
+        let request_id_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            window.pid,
+            "API_ROUTER_REMOTE_UPDATE_REQUEST_ID",
+        )
+        .unwrap_or_default();
+        let evidence = RemoteUpdateShellProcessEvidence {
+            pid: window.pid,
+            command_line: &command_line,
+            cwd: cwd.as_deref(),
+            status_env: &status_env,
+            log_env: &log_env,
+            request_id_env: &request_id_env,
+        };
+        let relevance = if remote_update_shell_process_is_relevant(context, &evidence) {
+            "relevant"
+        } else {
+            "observed"
+        };
+        append_remote_update_shell_window_log(&format!(
+            "Global visible window during remote update relevance={relevance} pid={} hwnd={} class={:?} title={:?} cwd={} request_id_env={} cmd={}",
+            window.pid,
+            window.hwnd,
+            if window.class_name.trim().is_empty() {
+                "<unknown>"
+            } else {
+                window.class_name.trim()
+            },
+            if window.title.trim().is_empty() {
+                "<untitled>"
+            } else {
+                window.title.trim()
+            },
             cwd.as_ref()
                 .map(|value| value.display().to_string())
                 .unwrap_or_else(|| "unknown".to_string()),
@@ -2435,6 +2518,20 @@ mod tests {
             loaded.timeline.last().map(|entry| entry.phase.as_str()),
             Some("build_exe")
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn remote_update_global_visible_window_key_trims_noise_for_dedup() {
+        let window = crate::platform::windows_loopback_peer::VisibleWindowSnapshot {
+            hwnd: 42,
+            pid: 777,
+            title: "  API Router  ".to_string(),
+            class_name: "  ConsoleWindowClass ".to_string(),
+        };
+
+        let key = remote_update_global_visible_window_key(&window);
+        assert_eq!(key, "42|777|API Router|ConsoleWindowClass");
     }
 
     #[test]
