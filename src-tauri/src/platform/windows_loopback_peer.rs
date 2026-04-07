@@ -61,10 +61,37 @@ pub struct VisibleWindowSnapshot {
     pub class_name: String,
 }
 
+#[allow(dead_code)]
+pub struct VisibleWindowEventWatcher {
+    #[cfg(windows)]
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(windows)]
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(windows)]
+impl Drop for VisibleWindowEventWatcher {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 #[cfg(not(windows))]
 #[allow(dead_code)]
 pub fn list_visible_windows() -> Vec<VisibleWindowSnapshot> {
     Vec::new()
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub fn watch_visible_window_show_events() -> Option<(
+    VisibleWindowEventWatcher,
+    std::sync::mpsc::Receiver<VisibleWindowSnapshot>,
+)> {
+    None
 }
 
 #[cfg(windows)]
@@ -74,6 +101,7 @@ mod windows_impl {
     use std::mem::{size_of, MaybeUninit};
     use std::os::windows::ffi::OsStringExt;
     use std::ptr::null_mut;
+    use std::sync::{mpsc, Arc, Mutex, OnceLock};
 
     use windows_sys::Win32::Foundation::{
         CloseHandle, DuplicateHandle, BOOL, DUPLICATE_SAME_ACCESS, HANDLE, HWND,
@@ -92,10 +120,16 @@ mod windows_impl {
         GetCurrentProcess, GetExitCodeProcess, OpenProcess, PROCESS_DUP_HANDLE,
         PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
     };
+    use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetClassNameW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
-        IsWindowVisible,
+        DispatchMessageW, EnumWindows, GetClassNameW, GetWindowTextLengthW, GetWindowTextW,
+        GetWindowThreadProcessId, IsWindowVisible, PeekMessageW, TranslateMessage,
+        EVENT_OBJECT_SHOW, MSG, OBJID_WINDOW, PM_REMOVE, WINEVENT_OUTOFCONTEXT,
     };
+
+    static VISIBLE_WINDOW_EVENT_SENDER: OnceLock<
+        Mutex<Option<mpsc::Sender<VisibleWindowSnapshot>>>,
+    > = OnceLock::new();
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -325,6 +359,109 @@ mod windows_impl {
             let _ = EnumWindows(Some(enum_windows_proc), &mut windows as *mut _ as LPARAM);
         }
         windows
+    }
+
+    pub fn watch_visible_window_show_events() -> Option<(
+        VisibleWindowEventWatcher,
+        mpsc::Receiver<VisibleWindowSnapshot>,
+    )> {
+        let (tx, rx) = mpsc::channel();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let thread = std::thread::Builder::new()
+            .name("remote-update-window-event-watch".to_string())
+            .spawn(move || {
+                let sender_cell = VISIBLE_WINDOW_EVENT_SENDER.get_or_init(|| Mutex::new(None));
+                if let Ok(mut sender) = sender_cell.lock() {
+                    *sender = Some(tx);
+                }
+
+                // Remote update console flashes can be shorter than the polling interval.
+                // A WinEvent hook records window show events during the worker lifetime so
+                // future hidden-launch regressions leave evidence in diagnostics.
+                let hook = unsafe {
+                    SetWinEventHook(
+                        EVENT_OBJECT_SHOW,
+                        EVENT_OBJECT_SHOW,
+                        0,
+                        Some(visible_window_event_proc),
+                        0,
+                        0,
+                        WINEVENT_OUTOFCONTEXT,
+                    )
+                };
+                if hook == 0 {
+                    if let Ok(mut sender) = sender_cell.lock() {
+                        *sender = None;
+                    }
+                    return;
+                }
+
+                let mut message: MSG = unsafe { std::mem::zeroed() };
+                while !thread_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    unsafe {
+                        while PeekMessageW(&mut message as *mut MSG, 0, 0, 0, PM_REMOVE) != 0 {
+                            TranslateMessage(&message as *const MSG);
+                            DispatchMessageW(&message as *const MSG);
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+
+                unsafe {
+                    UnhookWinEvent(hook);
+                }
+                if let Ok(mut sender) = sender_cell.lock() {
+                    *sender = None;
+                }
+            })
+            .ok()?;
+
+        Some((
+            VisibleWindowEventWatcher {
+                stop,
+                thread: Some(thread),
+            },
+            rx,
+        ))
+    }
+
+    unsafe extern "system" fn visible_window_event_proc(
+        _hook: isize,
+        event: u32,
+        hwnd: HWND,
+        id_object: i32,
+        _id_child: i32,
+        _event_thread: u32,
+        _event_time: u32,
+    ) {
+        if event != EVENT_OBJECT_SHOW
+            || hwnd == 0
+            || id_object != OBJID_WINDOW
+            || IsWindowVisible(hwnd) == 0
+        {
+            return;
+        }
+        let title = read_window_text(hwnd);
+        let class_name = read_window_class_name(hwnd);
+        if title.trim().is_empty() && class_name.trim().is_empty() {
+            return;
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, &mut pid as *mut u32);
+        let snapshot = VisibleWindowSnapshot {
+            hwnd,
+            pid,
+            title,
+            class_name,
+        };
+        if let Some(sender_cell) = VISIBLE_WINDOW_EVENT_SENDER.get() {
+            if let Ok(sender) = sender_cell.lock() {
+                if let Some(sender) = sender.as_ref() {
+                    let _ = sender.send(snapshot);
+                }
+            }
+        }
     }
 
     fn tcp_owner_pid_v4(peer_port: u16, server_port: u16) -> Option<u32> {
@@ -711,7 +848,7 @@ mod windows_impl {
 pub use windows_impl::{
     duplicate_process_stdin_write_handle, infer_loopback_peer_pid, is_pid_alive,
     list_process_ids_by_name, list_visible_windows, read_process_command_line, read_process_cwd,
-    read_process_env_var, visible_window_title,
+    read_process_env_var, visible_window_title, watch_visible_window_show_events,
 };
 
 #[cfg(all(test, windows))]

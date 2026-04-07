@@ -1082,80 +1082,121 @@ fn poll_remote_update_shell_window_diagnostics(
     }
 
     for window in crate::platform::windows_loopback_peer::list_visible_windows() {
-        let key = format!(
-            "window|{}",
-            remote_update_global_visible_window_key(&window)
+        log_remote_update_visible_window_diagnostic(
+            "Global visible window",
+            context,
+            seen_keys,
+            &window,
         );
-        if !seen_keys.insert(key) {
-            continue;
-        }
-        let command_line =
-            crate::platform::windows_loopback_peer::read_process_command_line(window.pid)
-                .unwrap_or_default();
-        let cwd = crate::platform::windows_loopback_peer::read_process_cwd(window.pid);
-        let status_env = crate::platform::windows_loopback_peer::read_process_env_var(
-            window.pid,
-            "API_ROUTER_REMOTE_UPDATE_STATUS_PATH",
-        )
-        .unwrap_or_default();
-        let log_env = crate::platform::windows_loopback_peer::read_process_env_var(
-            window.pid,
-            "API_ROUTER_REMOTE_UPDATE_LOG_PATH",
-        )
-        .unwrap_or_default();
-        let request_id_env = crate::platform::windows_loopback_peer::read_process_env_var(
-            window.pid,
-            "API_ROUTER_REMOTE_UPDATE_REQUEST_ID",
-        )
-        .unwrap_or_default();
-        let evidence = RemoteUpdateShellProcessEvidence {
-            pid: window.pid,
-            command_line: &command_line,
-            cwd: cwd.as_deref(),
-            status_env: &status_env,
-            log_env: &log_env,
-            request_id_env: &request_id_env,
-        };
-        let relevance = if remote_update_shell_process_is_relevant(context, &evidence) {
-            "relevant"
-        } else {
-            "observed"
-        };
-        append_remote_update_shell_window_log(&format!(
-            "Global visible window during remote update relevance={relevance} pid={} hwnd={} class={:?} title={:?} cwd={} request_id_env={} cmd={}",
-            window.pid,
-            window.hwnd,
-            if window.class_name.trim().is_empty() {
-                "<unknown>"
-            } else {
-                window.class_name.trim()
-            },
-            if window.title.trim().is_empty() {
-                "<untitled>"
-            } else {
-                window.title.trim()
-            },
-            cwd.as_ref()
-                .map(|value| value.display().to_string())
-                .unwrap_or_else(|| "unknown".to_string()),
-            if request_id_env.trim().is_empty() {
-                "unset".to_string()
-            } else {
-                request_id_env.trim().to_string()
-            },
-            if command_line.trim().is_empty() {
-                "<unavailable>".to_string()
-            } else {
-                command_line.trim().to_string()
-            }
-        ));
     }
+}
+
+#[cfg(target_os = "windows")]
+fn drain_remote_update_visible_window_events(
+    context: &RemoteUpdateShellProcessContext<'_>,
+    seen_keys: &mut std::collections::HashSet<String>,
+    receiver: &std::sync::mpsc::Receiver<
+        crate::platform::windows_loopback_peer::VisibleWindowSnapshot,
+    >,
+) {
+    while let Ok(window) = receiver.try_recv() {
+        log_remote_update_visible_window_diagnostic(
+            "WinEvent visible window",
+            context,
+            seen_keys,
+            &window,
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn log_remote_update_visible_window_diagnostic(
+    source: &str,
+    context: &RemoteUpdateShellProcessContext<'_>,
+    seen_keys: &mut std::collections::HashSet<String>,
+    window: &crate::platform::windows_loopback_peer::VisibleWindowSnapshot,
+) {
+    let key = format!(
+        "{source}|{}",
+        remote_update_global_visible_window_key(window)
+    );
+    if !seen_keys.insert(key) {
+        return;
+    }
+    let command_line =
+        crate::platform::windows_loopback_peer::read_process_command_line(window.pid)
+            .unwrap_or_default();
+    let cwd = crate::platform::windows_loopback_peer::read_process_cwd(window.pid);
+    let status_env = crate::platform::windows_loopback_peer::read_process_env_var(
+        window.pid,
+        "API_ROUTER_REMOTE_UPDATE_STATUS_PATH",
+    )
+    .unwrap_or_default();
+    let log_env = crate::platform::windows_loopback_peer::read_process_env_var(
+        window.pid,
+        "API_ROUTER_REMOTE_UPDATE_LOG_PATH",
+    )
+    .unwrap_or_default();
+    let request_id_env = crate::platform::windows_loopback_peer::read_process_env_var(
+        window.pid,
+        "API_ROUTER_REMOTE_UPDATE_REQUEST_ID",
+    )
+    .unwrap_or_default();
+    let evidence = RemoteUpdateShellProcessEvidence {
+        pid: window.pid,
+        command_line: &command_line,
+        cwd: cwd.as_deref(),
+        status_env: &status_env,
+        log_env: &log_env,
+        request_id_env: &request_id_env,
+    };
+    let relevance = if remote_update_shell_process_is_relevant(context, &evidence) {
+        "relevant"
+    } else {
+        "observed"
+    };
+    append_remote_update_shell_window_log(&format!(
+        "{source} during remote update relevance={relevance} pid={} hwnd={} class={:?} title={:?} cwd={} request_id_env={} cmd={}",
+        window.pid,
+        window.hwnd,
+        if window.class_name.trim().is_empty() {
+            "<unknown>"
+        } else {
+            window.class_name.trim()
+        },
+        if window.title.trim().is_empty() {
+            "<untitled>"
+        } else {
+            window.title.trim()
+        },
+        cwd.as_ref()
+            .map(|value| value.display().to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        if request_id_env.trim().is_empty() {
+            "unset".to_string()
+        } else {
+            request_id_env.trim().to_string()
+        },
+        if command_line.trim().is_empty() {
+            "<unavailable>".to_string()
+        } else {
+            command_line.trim().to_string()
+        }
+    ));
 }
 
 #[cfg(not(target_os = "windows"))]
 fn poll_remote_update_shell_window_diagnostics(
     _context: &RemoteUpdateShellProcessContext<'_>,
     _seen_keys: &mut std::collections::HashSet<String>,
+) {
+}
+
+#[cfg(not(target_os = "windows"))]
+fn drain_remote_update_visible_window_events(
+    _context: &RemoteUpdateShellProcessContext<'_>,
+    _seen_keys: &mut std::collections::HashSet<String>,
+    _receiver: &(),
 ) {
 }
 
@@ -1170,6 +1211,9 @@ fn monitor_remote_update_worker_exit(
     std::thread::spawn(move || {
         let mut last_progress_key: Option<String> = None;
         let mut seen_shell_window_keys = std::collections::HashSet::new();
+        #[cfg(target_os = "windows")]
+        let visible_window_event_watcher =
+            crate::platform::windows_loopback_peer::watch_visible_window_show_events();
         let shell_context = RemoteUpdateShellProcessContext {
             worker_pid,
             request_id: &request_id,
@@ -1188,6 +1232,14 @@ fn monitor_remote_update_worker_exit(
                 &shell_context,
                 &mut seen_shell_window_keys,
             );
+            #[cfg(target_os = "windows")]
+            if let Some((_, receiver)) = visible_window_event_watcher.as_ref() {
+                drain_remote_update_visible_window_events(
+                    &shell_context,
+                    &mut seen_shell_window_keys,
+                    receiver,
+                );
+            }
             match child.try_wait() {
                 Ok(Some(status)) => break match status.code() {
                 Some(0)
@@ -1240,6 +1292,14 @@ fn monitor_remote_update_worker_exit(
             }
         };
         poll_remote_update_shell_window_diagnostics(&shell_context, &mut seen_shell_window_keys);
+        #[cfg(target_os = "windows")]
+        if let Some((_, receiver)) = visible_window_event_watcher.as_ref() {
+            drain_remote_update_visible_window_events(
+                &shell_context,
+                &mut seen_shell_window_keys,
+                receiver,
+            );
+        }
         append_remote_update_log_message(&exit_detail);
         record_remote_update_worker_exit(
             &gateway,
