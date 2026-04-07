@@ -182,6 +182,7 @@ fn remote_update_shell_window_log_path() -> Option<std::path::PathBuf> {
     crate::diagnostics::diagnostics_file_path("lan-remote-update-shell.log")
 }
 
+#[cfg(any(test, target_os = "windows"))]
 fn append_remote_update_shell_window_log(message: &str) {
     let Some(path) = remote_update_shell_window_log_path() else {
         return;
@@ -189,6 +190,7 @@ fn append_remote_update_shell_window_log(message: &str) {
     let _ = crate::diagnostics::append_timestamped_log_line_capped(&path, message, 64 * 1024);
 }
 
+#[cfg(any(test, target_os = "windows"))]
 struct RemoteUpdateShellProcessContext<'a> {
     worker_pid: u32,
     request_id: &'a str,
@@ -197,6 +199,7 @@ struct RemoteUpdateShellProcessContext<'a> {
     log_path: Option<&'a std::path::Path>,
 }
 
+#[cfg(any(test, target_os = "windows"))]
 struct RemoteUpdateShellProcessEvidence<'a> {
     pid: u32,
     command_line: &'a str,
@@ -225,6 +228,7 @@ struct RemoteUpdateWorkerMonitorContext {
     log_path: Option<std::path::PathBuf>,
 }
 
+#[cfg(any(test, target_os = "windows"))]
 fn remote_update_text_contains_repo_marker(value: &str, repo_root: &std::path::Path) -> bool {
     let normalized = value.trim().to_ascii_lowercase();
     if normalized.is_empty() {
@@ -239,6 +243,7 @@ fn remote_update_text_contains_repo_marker(value: &str, repo_root: &std::path::P
         || normalized.contains("api_router_remote_update_request_id")
 }
 
+#[cfg(any(test, target_os = "windows"))]
 fn remote_update_shell_process_is_relevant(
     context: &RemoteUpdateShellProcessContext<'_>,
     evidence: &RemoteUpdateShellProcessEvidence<'_>,
@@ -1192,7 +1197,7 @@ fn poll_remote_update_shell_window_diagnostics(
 ) {
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), test))]
 fn drain_remote_update_visible_window_events(
     _context: &RemoteUpdateShellProcessContext<'_>,
     _seen_keys: &mut std::collections::HashSet<String>,
