@@ -2176,6 +2176,11 @@ mod tests {
         assert!(build_script.contains("'--start-hidden'"));
         assert!(build_script.contains("if ($arguments.Count -gt 0)"));
         assert!(build_script.contains("$restartWarning = $null"));
+        assert!(build_script.contains("function Update-RemoteUpdateTimelineStep"));
+        assert!(build_script.contains("Enter-BuildStep -Phase 'build_frontend'"));
+        assert!(build_script.contains("Enter-BuildStep -Phase 'build_release_binary'"));
+        assert!(build_script.contains("Enter-BuildStep -Phase 'install_release_binary'"));
+        assert!(build_script.contains("Enter-BuildStep -Phase 'restart_api_router'"));
         assert!(build_script.contains("API Router restart after build failed"));
         assert!(
             build_script.contains("Windows EXE build succeeded, but the restart attempt failed")

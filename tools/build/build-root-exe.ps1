@@ -19,6 +19,116 @@ $DstTestExe = Join-Path $RepoRoot 'API Router [TEST].exe'
 
 Write-Host "RepoRoot: $RepoRoot"
 
+function Get-RemoteUpdateStatusPath {
+  $path = [string]$env:API_ROUTER_REMOTE_UPDATE_STATUS_PATH
+  if ([string]::IsNullOrWhiteSpace($path)) { return $null }
+  return $path
+}
+
+function Get-RemoteUpdateLogPath {
+  $path = [string]$env:API_ROUTER_REMOTE_UPDATE_LOG_PATH
+  if ([string]::IsNullOrWhiteSpace($path)) { return $null }
+  return $path
+}
+
+function Write-RemoteUpdateLog {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Message
+  )
+
+  $logPath = Get-RemoteUpdateLogPath
+  if (-not $logPath) { return }
+  $parent = Split-Path -Parent $logPath
+  if ($parent) {
+    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+  }
+  $timestamp = [DateTimeOffset]::UtcNow.ToString('dd-MM-yyyy HH:mm:ss.fff UTC')
+  Add-Content -Path $logPath -Value "[$timestamp] [build-root-exe] $Message" -Encoding UTF8
+}
+
+function Update-RemoteUpdateTimelineStep {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Phase,
+    [Parameter(Mandatory = $true)]
+    [string]$Label,
+    [Parameter(Mandatory = $true)]
+    [string]$Detail,
+    [string]$State = 'running',
+    [Nullable[Int64]]$FinishedAtUnixMs = $null
+  )
+
+  $statusPath = Get-RemoteUpdateStatusPath
+  if (-not $statusPath -or -not (Test-Path $statusPath)) { return }
+
+  try {
+    $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
+    if ($null -eq $status) { return }
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $timeline = @($status.timeline)
+    $entry = [ordered]@{
+      unix_ms = $now
+      phase = $Phase
+      label = $Label
+      detail = $Detail
+      source = 'build_root_exe'
+      state = $State
+    }
+    $lastEntry = if ($timeline.Count -gt 0) { $timeline[-1] } else { $null }
+    $isDuplicate = $false
+    if ($lastEntry) {
+      $isDuplicate =
+        ([string]$lastEntry.phase -eq $Phase) -and
+        ([string]$lastEntry.label -eq $Label) -and
+        ([string]$lastEntry.detail -eq $Detail) -and
+        ([string]$lastEntry.source -eq 'build_root_exe') -and
+        ([string]$lastEntry.state -eq $State)
+    }
+    if (-not $isDuplicate) {
+      $timeline += $entry
+      if ($timeline.Count -gt 24) {
+        $timeline = @($timeline | Select-Object -Last 24)
+      }
+    }
+
+    $status.state = $State
+    $status.detail = $Detail
+    $status.updated_at_unix_ms = $now
+    if ($status.started_at_unix_ms -eq $null) {
+      $status.started_at_unix_ms = $now
+    }
+    if ($FinishedAtUnixMs -ne $null) {
+      $status.finished_at_unix_ms = [int64]$FinishedAtUnixMs
+    }
+    $status.timeline = $timeline
+
+    $json = $status | ConvertTo-Json -Depth 8
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($statusPath, $json, $utf8NoBom)
+  } catch {
+    Write-RemoteUpdateLog ("Failed to append nested remote update step '$Phase': " + $_.Exception.Message)
+  }
+}
+
+function Enter-BuildStep {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Phase,
+    [Parameter(Mandatory = $true)]
+    [string]$Label,
+    [Parameter(Mandatory = $true)]
+    [string]$Detail
+  )
+
+  $script:CurrentBuildStepPhase = $Phase
+  $script:CurrentBuildStepLabel = $Label
+  $script:CurrentBuildStepDetail = $Detail
+  Write-Host "$Label: $Detail"
+  Write-RemoteUpdateLog "$Label: $Detail"
+  Update-RemoteUpdateTimelineStep -Phase $Phase -Label $Label -Detail "$Label: $Detail"
+}
+
 function Is-ApiRouterRunning {
   try {
     $p = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path -ieq $DstExe) } | Select-Object -First 1
@@ -84,19 +194,25 @@ function Copy-WithRetry([string]$From, [string]$To) {
 
 $hadFailure = $false
 $restartWarning = $null
+$script:CurrentBuildStepPhase = ''
+$script:CurrentBuildStepLabel = ''
+$script:CurrentBuildStepDetail = ''
 try {
   # Build frontend (tsc + vite build). Note: tauri build runs this again via beforeBuildCommand,
   # but we keep this here so failures surface early and with clearer output.
+  Enter-BuildStep -Phase 'build_frontend' -Label 'Building frontend' -Detail 'Running npm run build'
   Write-Host "Running: npm run build"
   & npm.cmd run build
   Assert-LastExitOk 'npm run build'
 
   # Build tauri app (produces src-tauri/target/release/api_router.exe).
+  Enter-BuildStep -Phase 'build_release_binary' -Label 'Building release binary' -Detail 'Running npm run tauri -- build --no-bundle'
   Write-Host "Running: npm run tauri -- build --no-bundle"
   & npm.cmd run tauri -- build --no-bundle
   Assert-LastExitOk 'tauri build'
 
   if (-not $NoCopy) {
+    Enter-BuildStep -Phase 'install_release_binary' -Label 'Installing EXE' -Detail 'Replacing repo root API Router executables'
     if (-not (Test-Path $SrcExe)) { throw "Missing built exe: $SrcExe" }
 
     Stop-RunningApiRouter
@@ -104,17 +220,38 @@ try {
     Copy-WithRetry $SrcExe $DstTestExe
     Write-Host "Wrote: $DstExe"
     Write-Host "Wrote: $DstTestExe"
+    Write-RemoteUpdateLog "Installed root executables: $DstExe and $DstTestExe"
   }
 } catch {
   $hadFailure = $true
+  $failureContext = if ($script:CurrentBuildStepLabel) {
+    "$($script:CurrentBuildStepLabel): $($_.Exception.Message)"
+  } else {
+    $_.Exception.Message
+  }
+  Write-RemoteUpdateLog "Build step failed: $failureContext"
+  if ($script:CurrentBuildStepPhase -and $script:CurrentBuildStepLabel) {
+    Update-RemoteUpdateTimelineStep `
+      -Phase $script:CurrentBuildStepPhase `
+      -Label "$($script:CurrentBuildStepLabel) failed" `
+      -Detail $failureContext `
+      -State 'running'
+  }
   Write-Error $_
 } finally {
   # Always ensure API Router is running again. This is critical: if it is closed,
   # Codex sessions are stopped.
   try {
+    Enter-BuildStep -Phase 'restart_api_router' -Label 'Restarting API Router' -Detail 'Launching repo root API Router.exe'
     Start-ApiRouter
   } catch {
     $restartWarning = $_
+    Write-RemoteUpdateLog ("Restart warning: " + $_.Exception.Message)
+    Update-RemoteUpdateTimelineStep `
+      -Phase 'restart_api_router' `
+      -Label 'Restarting API Router' `
+      -Detail ("Restarting API Router: " + $_.Exception.Message) `
+      -State 'running'
     Write-Warning ("API Router restart after build failed: " + $_.Exception.Message)
   }
 }

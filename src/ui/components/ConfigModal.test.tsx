@@ -13,6 +13,7 @@ import {
   isRemoteDebugStatusRelevantToCurrentBuild,
   keepSourceMenuOpenAfterAction,
   remoteUpdateDebugPollNodeIds,
+  remoteUpdateMenuSubtext,
   remoteDebugStatusRelevance,
   remoteUpdateActionState,
   remoteUpdateDetailText,
@@ -1576,6 +1577,13 @@ describe('ConfigModal', () => {
     }
 
     expect(remoteUpdateMenuActionLabel(source, undefined, '45a389c0abcdef')).toBe('Update failed')
+    expect(
+      remoteUpdateMenuSubtext(
+        source,
+        remoteUpdateActionState(source, undefined, '45a389c0abcdef'),
+        '45a389c0abcdef',
+      ),
+    ).toBe('Remote update worker PID 116572 exited without recording completion for target 45a389c0.')
   })
 
   it('shows succeeded state in dropdown instead of immediately reverting to update peer', () => {
@@ -1602,6 +1610,13 @@ describe('ConfigModal', () => {
     }
 
     expect(remoteUpdateMenuActionLabel(source, undefined, '45a389c0abcdef')).toBe('Updated')
+    expect(
+      remoteUpdateMenuSubtext(
+        source,
+        remoteUpdateActionState(source, undefined, '45a389c0abcdef'),
+        '45a389c0abcdef',
+      ),
+    ).toBe(null)
   })
 
   it('shows local pending remote update details in diagnostics before peer status catches up', () => {
