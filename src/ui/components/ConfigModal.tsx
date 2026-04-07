@@ -49,6 +49,22 @@ type ConfigSource = NonNullable<Config['config_source']>['sources'][number]
 type BuildIdentity = NonNullable<ConfigSource['build_identity']>
 type RemoteUpdateStatusSnapshot = NonNullable<ConfigSource['remote_update_status']>
 
+export function remoteUpdateDebugPollNodeIds(
+  onlinePeerNodeIds: string[],
+  pendingPeerNodeIds: string[],
+): string[] {
+  const preferred = pendingPeerNodeIds.length > 0 ? pendingPeerNodeIds : onlinePeerNodeIds
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const nodeId of preferred) {
+    const normalized = nodeId.trim()
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    out.push(normalized)
+  }
+  return out
+}
+
 function normalizePinInput(value: string): string {
   return value.replace(/\D+/g, '').slice(0, 6)
 }
@@ -828,11 +844,13 @@ export function ConfigModal({
         remoteUpdateIndicatesIssue(source, localBuildSha)),
   )
   const onlinePeerSources = peerSources.filter((source) => source.online !== false)
-  const peerDebugNodeIds = onlinePeerSources.map((source) => source.node_id).join('|')
-  const pendingPeerDebugNodeIds = peerSources
+  const onlinePeerNodeIds = onlinePeerSources.map((source) => source.node_id)
+  const pendingPeerNodeIds = peerSources
     .filter((source) => source.online !== false && Boolean(remoteUpdatePendingByNode[source.node_id]))
     .map((source) => source.node_id)
-    .join('|')
+  const peerDebugPollNodeIds = remoteUpdateDebugPollNodeIds(onlinePeerNodeIds, pendingPeerNodeIds)
+  const peerDebugNodeIdsKey = peerDebugPollNodeIds.join('|')
+  const hasPendingPeerDebug = pendingPeerNodeIds.length > 0
 
   useEffect(() => {
     if (!sourceMenuOpen) return
@@ -900,9 +918,10 @@ export function ConfigModal({
   }, [pairDialog])
 
   useEffect(() => {
-    if (onlinePeerSources.length === 0) return
-    if (!diagnosticsOpen && !sourceMenuOpen && pendingPeerDebugNodeIds.length === 0) return
+    if (peerDebugPollNodeIds.length === 0) return
+    if (!diagnosticsOpen && !hasPendingPeerDebug) return
     let cancelled = false
+    let refreshInFlight = false
     const loadDebug = async (nodeId: string) => {
       setRemoteUpdateDebugLoadingByNode((prev) => ({ ...prev, [nodeId]: true }))
       try {
@@ -926,18 +945,24 @@ export function ConfigModal({
         })
       }
     }
-    const refreshAll = () => {
-      onlinePeerSources.forEach((source) => {
-        void loadDebug(source.node_id)
-      })
+    const refreshAll = async () => {
+      if (cancelled || refreshInFlight) return
+      refreshInFlight = true
+      try {
+        await Promise.all(peerDebugPollNodeIds.map((nodeId) => loadDebug(nodeId)))
+      } finally {
+        refreshInFlight = false
+      }
     }
-    refreshAll()
-    const timer = window.setInterval(refreshAll, pendingPeerDebugNodeIds.length > 0 ? 1000 : 3000)
+    void refreshAll()
+    const timer = window.setInterval(() => {
+      void refreshAll()
+    }, hasPendingPeerDebug ? 1000 : 3000)
     return () => {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [diagnosticsOpen, sourceMenuOpen, peerDebugNodeIds, pendingPeerDebugNodeIds])
+  }, [diagnosticsOpen, peerDebugNodeIdsKey, hasPendingPeerDebug])
 
   async function submitPairPinFromDialog() {
     if (pairDialog?.mode !== 'enter_pin') return

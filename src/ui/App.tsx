@@ -1321,11 +1321,15 @@ export default function App() {
   useEffect(() => {
     if (isDevPreview || !lanRemoteUpdatePendingNodeIdsKey) return
     let cancelled = false
+    let refreshInFlight = false
     const refreshRemoteUpdateProgress = async () => {
-      if (cancelled) return
-      await refreshStatus()
-      if (cancelled) return
-      await refreshConfig({ refreshProviderSwitchStatus: false, force: true })
+      if (cancelled || refreshInFlight) return
+      refreshInFlight = true
+      try {
+        await refreshConfig({ refreshProviderSwitchStatus: false, force: true })
+      } finally {
+        refreshInFlight = false
+      }
     }
     void refreshRemoteUpdateProgress()
     const timer = window.setInterval(() => {
@@ -1367,7 +1371,6 @@ export default function App() {
         },
       }))
       flashToast('Peer version sync requested')
-      await refreshStatus()
       await refreshConfig({ refreshProviderSwitchStatus: false, force: true })
     } catch (error) {
       setLanRemoteUpdatePendingByNode((prev) => {

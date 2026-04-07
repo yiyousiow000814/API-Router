@@ -12,6 +12,7 @@ import {
   isRemoteUpdateStatusRelevantToCurrentBuild,
   isRemoteDebugStatusRelevantToCurrentBuild,
   keepSourceMenuOpenAfterAction,
+  remoteUpdateDebugPollNodeIds,
   remoteDebugStatusRelevance,
   remoteUpdateActionState,
   remoteUpdateDetailText,
@@ -70,6 +71,14 @@ function buildConfig(): Config {
 }
 
 describe('ConfigModal', () => {
+  it('polls pending peer debug targets before scanning all online peers', () => {
+    expect(remoteUpdateDebugPollNodeIds(['node-a', 'node-b'], ['node-b'])).toEqual(['node-b'])
+    expect(remoteUpdateDebugPollNodeIds(['node-a', 'node-b'], [])).toEqual(['node-a', 'node-b'])
+    expect(remoteUpdateDebugPollNodeIds(['node-a', 'node-a', ''], [' ', 'node-b', 'node-b'])).toEqual([
+      'node-b',
+    ])
+  })
+
   it('renders provider name, base url, and key inputs for add provider', () => {
     const html = renderToStaticMarkup(
       <ConfigModal
