@@ -105,5 +105,8 @@ if ($log -notmatch 'TypeScript compile: Running tsc') {
 if ($log -notmatch 'Building frontend assets: Running vite build') {
   throw "Expected granular vite step in diagnostics log.`n$log"
 }
+if ($log -notmatch 'Build script final state: result=failed; had_failure=true;') {
+  throw "Expected final failure diagnostics in diagnostics log.`n$log"
+}
 
 Write-Host '[build-root-exe-hidden-failure-log.e2e] PASS'

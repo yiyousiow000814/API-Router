@@ -352,6 +352,7 @@ function Invoke-HiddenProcess {
   $stdoutPath = [System.IO.Path]::GetTempFileName()
   $stderrPath = [System.IO.Path]::GetTempFileName()
   try {
+    Write-RemoteUpdateLog "Invoking hidden process: file=$FilePath args=$($ArgumentList -join ' ')"
     $process = Start-Process -FilePath $FilePath `
       -ArgumentList $ArgumentList `
       -WorkingDirectory $RepoRoot `
@@ -366,11 +367,28 @@ function Invoke-HiddenProcess {
     $combinedOutput = @()
     if ($stdout) { $combinedOutput += $stdout -split "\r?\n" }
     if ($stderr) { $combinedOutput += $stderr -split "\r?\n" }
+    $stdoutSummary = Format-CommandOutputSummary ($stdout -split "\r?\n")
+    $stderrSummary = Format-CommandOutputSummary ($stderr -split "\r?\n")
+    Write-RemoteUpdateLog ("Hidden process completed: file={0}; exit_code={1}; success_flag={2}; last_exit_code={3}; stdout_summary={4}; stderr_summary={5}" -f `
+        $FilePath,
+        $process.ExitCode,
+        $?.ToString().ToLowerInvariant(),
+        $LASTEXITCODE,
+        $(if ($stdoutSummary) { $stdoutSummary } else { '<none>' }),
+        $(if ($stderrSummary) { $stderrSummary } else { '<none>' }))
     Write-CommandOutputLog $combinedOutput
     if ($process.ExitCode -ne 0) {
       $summary = Format-CommandOutputSummary $combinedOutput
+      $stdoutTail = Format-CommandOutputSummary ($stdout -split "\r?\n" | Select-Object -Last 20)
+      $stderrTail = Format-CommandOutputSummary ($stderr -split "\r?\n" | Select-Object -Last 20)
       if ($summary) {
         Write-RemoteUpdateLog "Command failed output: $summary"
+      }
+      if ($stdoutTail) {
+        Write-RemoteUpdateLog "Hidden process stdout tail: $stdoutTail"
+      }
+      if ($stderrTail) {
+        Write-RemoteUpdateLog "Hidden process stderr tail: $stderrTail"
       }
       throw (Format-ProcessFailureMessage $FailureMessage $summary $process.ExitCode)
     }
@@ -438,6 +456,7 @@ Write-RemoteUpdateLog "${currentStep}: $buildScriptPath"
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep 'Running Windows EXE build and restart script') -Phase 'build_exe' -Label 'Building EXE' -StartedAtUnixMs $startedAtUnixMs
 Show-RemoteUpdateNotification -TargetRef $TargetRef
 Invoke-HiddenProcess -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScriptPath, '-StartHidden') -FailureMessage 'tools/build/build-root-exe.ps1 failed'
+Write-RemoteUpdateLog "build-root-exe.ps1 hidden invocation returned success to remote update worker."
 
 $currentStep = 'Completed'
 Write-RemoteUpdateLog 'Remote self-update completed successfully.'
@@ -445,6 +464,11 @@ Write-RemoteUpdateStatus -State 'succeeded' -TargetRef $TargetRef -Detail (Step-
 } catch {
   $message = $_.Exception.Message
   Write-RemoteUpdateLog "$currentStep failed: $message"
+  Write-RemoteUpdateLog ("Worker catch diagnostics: current_step={0}; success_flag={1}; last_exit_code={2}; exception_type={3}" -f `
+      $currentStep,
+      $?.ToString().ToLowerInvariant(),
+      $LASTEXITCODE,
+      $_.Exception.GetType().FullName)
   Write-RemoteUpdateStatus -State 'failed' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $message) -Phase 'failed' -Label "$currentStep failed" -StartedAtUnixMs $startedAtUnixMs -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
   throw
 }

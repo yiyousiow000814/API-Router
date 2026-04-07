@@ -13,7 +13,7 @@ $fakeDstExe = Join-Path $tempRoot 'out\API Router.exe'
 $fakeDstTestExe = Join-Path $tempRoot 'out\API Router [TEST].exe'
 $fakeStartPath = Join-Path $fakeBin 'start-ok.cmd'
 $stdoutPath = Join-Path $tempRoot 'stdout.log'
-$stderrPath = Join-Path $tempRoot 'stderr.log'
+$logPath = Join-Path $tempRoot 'diagnostics\lan-remote-update.log'
 $fakeTscPath = Join-Path $fakeBin 'tsc.cmd'
 $fakeVitePath = Join-Path $fakeBin 'vite.cmd'
 
@@ -56,6 +56,7 @@ $env:API_ROUTER_BUILD_SRC_EXE_PATH = $fakeSrcExe
 $env:API_ROUTER_BUILD_DST_EXE_PATH = $fakeDstExe
 $env:API_ROUTER_BUILD_DST_TEST_EXE_PATH = $fakeDstTestExe
 $env:API_ROUTER_BUILD_START_FILE_PATH = $fakeStartPath
+$env:API_ROUTER_REMOTE_UPDATE_LOG_PATH = $logPath
 
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ScriptPath -StartHidden *> $stdoutPath
 $scriptExitCode = $LASTEXITCODE
@@ -73,6 +74,13 @@ if (-not (Test-Path -LiteralPath $fakeDstTestExe)) {
 }
 if ($out -notmatch 'Starting:\s+.+start-ok\.cmd') {
   throw "Expected restart target in stdout. stdout=`n$out"
+}
+if (-not (Test-Path -LiteralPath $logPath)) {
+  throw "Expected diagnostics log at $logPath"
+}
+$log = Get-Content -LiteralPath $logPath -Raw
+if ($log -notmatch 'Build script final state: result=succeeded; had_failure=false;') {
+  throw "Expected final success diagnostics in build log.`n$log"
 }
 
 Write-Host '[build-root-exe-success-exitcode.e2e] PASS'

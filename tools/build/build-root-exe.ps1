@@ -100,6 +100,26 @@ function Write-RemoteUpdateLog {
   Add-Content -Path $logPath -Value "[$timestamp] [build-root-exe] $Message" -Encoding UTF8
 }
 
+function Write-BuildExitDiagnostics([string]$Result) {
+  $restartWarningSummary = if ($null -ne $restartWarning) {
+    $restartWarning.Exception.Message
+  } else {
+    'none'
+  }
+  $currentPhase = if ($script:CurrentBuildStepPhase) { $script:CurrentBuildStepPhase } else { 'none' }
+  $currentLabel = if ($script:CurrentBuildStepLabel) { $script:CurrentBuildStepLabel } else { 'none' }
+  $currentDetail = if ($script:CurrentBuildStepDetail) { $script:CurrentBuildStepDetail } else { 'none' }
+  Write-RemoteUpdateLog ("Build script final state: result={0}; had_failure={1}; restart_warning={2}; last_exit_code={3}; success_flag={4}; current_phase={5}; current_label={6}; current_detail={7}" -f `
+      $Result,
+      $hadFailure.ToString().ToLowerInvariant(),
+      $restartWarningSummary,
+      $LASTEXITCODE,
+      $?.ToString().ToLowerInvariant(),
+      $currentPhase,
+      $currentLabel,
+      $currentDetail)
+}
+
 function Update-RemoteUpdateTimelineStep {
   param(
     [Parameter(Mandatory = $true)]
@@ -490,6 +510,7 @@ function Invoke-BuildStage {
 
 $hadFailure = $false
 $restartWarning = $null
+$script:BuildResult = 'succeeded'
 $script:CurrentBuildStepPhase = ''
 $script:CurrentBuildStepLabel = ''
 $script:CurrentBuildStepDetail = ''
@@ -559,6 +580,7 @@ try {
   }
 } catch {
   $hadFailure = $true
+  $script:BuildResult = 'failed'
   $failureContext = if ($script:CurrentBuildStepLabel) {
     "$($script:CurrentBuildStepLabel): $($_.Exception.Message)"
   } else {
@@ -589,6 +611,7 @@ try {
       -State 'running'
     Write-Warning ("API Router restart after build failed: " + $_.Exception.Message)
   }
+  Write-BuildExitDiagnostics $script:BuildResult
 }
 
 if ($hadFailure) {
