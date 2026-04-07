@@ -1653,10 +1653,13 @@ fn spawn_remote_update_worker(
 
 #[cfg(target_os = "windows")]
 fn windows_remote_update_creation_flags() -> u32 {
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
     // Keep the worker headless, but do not detach it from the parent process.
     // Detached PowerShell launches can exit before the script bootstrap runs when
     // stdout/stderr are redirected to files from the running API Router process.
-    0x0000_0200
+    CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
 }
 
 #[cfg(test)]
@@ -2127,9 +2130,10 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_remote_update_worker_does_not_use_detached_process() {
+    fn windows_remote_update_worker_runs_headless_without_detaching() {
         let flags = windows_remote_update_creation_flags();
         assert_eq!(flags & 0x0000_0200, 0x0000_0200);
+        assert_eq!(flags & 0x0800_0000, 0x0800_0000);
         assert_eq!(flags & 0x0000_0008, 0);
     }
 
