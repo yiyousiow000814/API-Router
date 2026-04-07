@@ -38,6 +38,11 @@ pub(crate) fn test_repo_root_override() -> Option<std::path::PathBuf> {
     TEST_REPO_ROOT_OVERRIDE.with(|cell| cell.borrow().clone())
 }
 
+#[cfg(test)]
+pub(crate) fn test_user_data_dir_override() -> Option<std::path::PathBuf> {
+    TEST_USER_DATA_DIR_OVERRIDE.with(|cell| cell.borrow().clone())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LanRemoteUpdateReadinessSnapshot {
     pub ready: bool,

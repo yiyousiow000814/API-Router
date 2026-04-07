@@ -11,6 +11,8 @@ mod platform;
 mod provider_switchboard;
 
 use tauri::Manager;
+#[cfg(target_os = "windows")]
+use tauri_plugin_notification::NotificationExt;
 
 use crate::app_state::build_state;
 use crate::orchestrator::gateway::serve_in_background;
@@ -107,6 +109,37 @@ fn hide_main_window_for_background_launch(app: &tauri::AppHandle) {
         let _ = w.hide();
     }
 }
+
+#[cfg(target_os = "windows")]
+fn maybe_notify_hidden_remote_update_success(app: &tauri::AppHandle) {
+    let target_ref = std::env::var("API_ROUTER_REMOTE_UPDATE_TARGET_REF")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let Some(target_ref) = target_ref else {
+        return;
+    };
+    let short_target = target_ref.chars().take(8).collect::<String>();
+    let body = if short_target.is_empty() {
+        "API Router updated successfully and is running in the background.".to_string()
+    } else {
+        format!(
+            "API Router updated successfully to {short_target} and is running in the background."
+        )
+    };
+    if let Err(err) = app
+        .notification()
+        .builder()
+        .title("API Router updated")
+        .body(&body)
+        .show()
+    {
+        log::warn!("failed to show remote update notification: {err}");
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn maybe_notify_hidden_remote_update_success(_app: &tauri::AppHandle) {}
 
 fn profile_data_dir_name(profile: &str) -> String {
     if profile == "default" {
@@ -376,7 +409,7 @@ pub fn run() {
     let app_profile = app_profile_name();
     let launch_args = app_launch_args();
     let start_hidden = app_launch_requests_hidden(&launch_args);
-    let mut builder = tauri::Builder::default();
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
     if !is_ui_tauri && app_profile != "test" {
         // Ensure clicking the EXE again focuses the existing instance instead of launching a second one.
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
@@ -406,6 +439,7 @@ pub fn run() {
 
             if start_hidden && !is_ui_tauri {
                 hide_main_window_for_background_launch(app.handle());
+                maybe_notify_hidden_remote_update_success(app.handle());
             }
 
             if cfg!(debug_assertions) {

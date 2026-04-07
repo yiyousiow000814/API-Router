@@ -13,7 +13,7 @@ use axum::response::IntoResponse;
 use base64::Engine;
 use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce};
-use chrono::TimeZone;
+use chrono::{TimeZone, Utc};
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
@@ -68,6 +68,7 @@ const LAN_EDIT_SYNC_BATCH_LIMIT: usize = 512;
 const LAN_DEBUG_BATCH_LIMIT: usize = 256;
 const LAN_PACKET_SOFT_LIMIT_BYTES: usize = 8 * 1024;
 const LAN_SOCKET_RETRY_MS: u64 = 2_000;
+const LAN_PEER_DIAGNOSTICS_LOG_MAX_BYTES: usize = 64 * 1024;
 const LAN_PAIR_REQUEST_TTL_MS: u64 = 5 * 60 * 1000;
 const LAN_PAIR_REQUEST_THROTTLE_MS: u64 = 60 * 1000;
 const LAN_PAIR_APPROVAL_TTL_MS: u64 = 5 * 60 * 1000;
@@ -101,6 +102,51 @@ static GATEWAY_STATUS_RUNTIME: OnceLock<RwLock<Option<LanSyncRuntime>>> = OnceLo
 
 fn gateway_status_runtime() -> &'static RwLock<Option<LanSyncRuntime>> {
     GATEWAY_STATUS_RUNTIME.get_or_init(|| RwLock::new(None))
+}
+
+fn lan_peer_diagnostics_log_path() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = remote_update::test_user_data_dir_override() {
+        return Some(path.join("diagnostics").join("lan-peer-diagnostics.log"));
+    }
+    let user_data_dir = std::env::var("API_ROUTER_USER_DATA_DIR").ok()?;
+    let trimmed = user_data_dir.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(
+        std::path::PathBuf::from(trimmed)
+            .join("diagnostics")
+            .join("lan-peer-diagnostics.log"),
+    )
+}
+
+fn trim_diagnostics_log_bytes(mut bytes: Vec<u8>, max_bytes: usize) -> Vec<u8> {
+    if bytes.len() <= max_bytes {
+        return bytes;
+    }
+    let start = bytes.len().saturating_sub(max_bytes);
+    bytes = bytes.split_off(start);
+    if let Some(pos) = bytes.iter().position(|byte| *byte == b'\n') {
+        bytes.split_off(pos + 1)
+    } else {
+        bytes
+    }
+}
+
+fn append_lan_peer_diagnostics_log(message: &str) {
+    let Some(path) = lan_peer_diagnostics_log_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let timestamp = Utc::now().format("%d-%m-%Y %H:%M:%S%.3f UTC");
+    let line = format!("[{timestamp}] {message}\n");
+    let mut bytes = std::fs::read(&path).unwrap_or_default();
+    bytes.extend_from_slice(line.as_bytes());
+    let bytes = trim_diagnostics_log_bytes(bytes, LAN_PEER_DIAGNOSTICS_LOG_MAX_BYTES);
+    let _ = std::fs::write(path, bytes);
 }
 
 fn local_sync_contracts() -> BTreeMap<String, u32> {
@@ -949,17 +995,38 @@ impl LanSyncRuntime {
         if packet.node_id.trim().is_empty() || packet.node_id == self.local_node.node_id {
             return;
         }
+        let received_at_unix_ms = unix_ms();
+        let previous = self.peers.read().get(&packet.node_id).cloned();
         let listen_addr = format!("{}:{}", source.ip(), packet.listen_port);
         self.last_peer_heartbeat_received_unix_ms
-            .store(unix_ms(), Ordering::Relaxed);
+            .store(received_at_unix_ms, Ordering::Relaxed);
         *self.last_peer_heartbeat_source.write() = Some(source.to_string());
+        let sanitized_name = sanitize_node_name(&packet.node_name);
+        let capability_summary = if packet.capabilities.is_empty() {
+            "none".to_string()
+        } else {
+            packet.capabilities.join(",")
+        };
+        let gap_ms = previous
+            .as_ref()
+            .map(|peer| received_at_unix_ms.saturating_sub(peer.last_heartbeat_unix_ms))
+            .unwrap_or(0);
+        let was_stale = previous
+            .as_ref()
+            .is_some_and(|peer| peer_is_stale(peer.last_heartbeat_unix_ms, received_at_unix_ms));
+        let listen_addr_changed = previous
+            .as_ref()
+            .is_some_and(|peer| peer.listen_addr != listen_addr);
+        let capabilities_changed = previous
+            .as_ref()
+            .is_some_and(|peer| peer.capabilities != packet.capabilities);
         self.peers.write().insert(
             packet.node_id.clone(),
             LanPeerRuntime {
                 node_id: packet.node_id,
-                node_name: sanitize_node_name(&packet.node_name),
-                listen_addr,
-                last_heartbeat_unix_ms: unix_ms(),
+                node_name: sanitized_name.clone(),
+                listen_addr: listen_addr.clone(),
+                last_heartbeat_unix_ms: received_at_unix_ms,
                 capabilities: packet.capabilities,
                 build_identity: packet.build_identity,
                 remote_update_readiness: packet.remote_update_readiness,
@@ -970,6 +1037,36 @@ impl LanSyncRuntime {
                 followed_source_node_id: packet.followed_source_node_id,
             },
         );
+        match previous {
+            None => append_lan_peer_diagnostics_log(&format!(
+                "Discovered LAN peer {} from {} listen_addr={} capabilities={}",
+                sanitized_name, source, listen_addr, capability_summary
+            )),
+            Some(previous_peer) if was_stale => append_lan_peer_diagnostics_log(&format!(
+                "Peer {} recovered after {}ms without heartbeat; source={} listen_addr={} previous_listen_addr={} capabilities={}",
+                previous_peer.node_id,
+                gap_ms,
+                source,
+                listen_addr,
+                previous_peer.listen_addr,
+                capability_summary
+            )),
+            Some(previous_peer) if listen_addr_changed => append_lan_peer_diagnostics_log(&format!(
+                "Peer {} changed listen_addr from {} to {} after {}ms; source={}",
+                previous_peer.node_id, previous_peer.listen_addr, listen_addr, gap_ms, source
+            )),
+            Some(previous_peer) if capabilities_changed => append_lan_peer_diagnostics_log(&format!(
+                "Peer {} updated capabilities after {}ms; now={}",
+                previous_peer.node_id, gap_ms, capability_summary
+            )),
+            Some(previous_peer) if gap_ms > LAN_HEARTBEAT_INTERVAL_MS.saturating_mul(2) => {
+                append_lan_peer_diagnostics_log(&format!(
+                    "Peer {} heartbeat gap {}ms from source={} listen_addr={}",
+                    previous_peer.node_id, gap_ms, source, listen_addr
+                ))
+            }
+            _ => {}
+        }
     }
 
     fn collect_live_peers(&self, now: u64) -> Vec<LanPeerSnapshot> {
@@ -977,8 +1074,26 @@ impl LanSyncRuntime {
             >= LAN_PEER_STALE_AFTER_MS / 2;
         let mut out = if should_prune {
             let mut peers = self.peers.write();
-            peers.retain(|_, peer| !peer_is_stale(peer.last_heartbeat_unix_ms, now));
+            let mut stale_peers = Vec::new();
+            peers.retain(|_, peer| {
+                let is_stale = peer_is_stale(peer.last_heartbeat_unix_ms, now);
+                if is_stale {
+                    stale_peers.push((
+                        peer.node_id.clone(),
+                        peer.node_name.clone(),
+                        peer.listen_addr.clone(),
+                        now.saturating_sub(peer.last_heartbeat_unix_ms),
+                    ));
+                }
+                !is_stale
+            });
             self.last_peer_prune_unix_ms.store(now, Ordering::Relaxed);
+            for (node_id, node_name, listen_addr, age_ms) in stale_peers {
+                append_lan_peer_diagnostics_log(&format!(
+                    "Pruned stale LAN peer {} ({}) after {}ms without heartbeat; listen_addr={}",
+                    node_id, node_name, age_ms, listen_addr
+                ));
+            }
             peers
                 .values()
                 .map(lan_peer_snapshot_from_runtime)
@@ -3163,6 +3278,7 @@ fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::Ga
         if let LanSyncPacket::Heartbeat(ref heartbeat) = packet {
             if let Err(err) = send_heartbeat_broadcast(heartbeat) {
                 log::warn!("lan sync sender heartbeat failed: {err}");
+                append_lan_peer_diagnostics_log(&format!("Heartbeat broadcast failed: {err}"));
                 std::thread::sleep(Duration::from_millis(LAN_SOCKET_RETRY_MS));
                 continue;
             }
@@ -6838,6 +6954,28 @@ mod tests {
             snapshot.last_peer_heartbeat_source.as_deref(),
             Some("192.168.1.50:4000")
         );
+    }
+
+    #[test]
+    fn lan_peer_diagnostics_log_is_capped_to_recent_entries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let user_data_dir = tmp.path().join("user-data");
+        let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
+
+        for index in 0..256 {
+            super::append_lan_peer_diagnostics_log(&format!(
+                "diagnostic entry {index:03} {}",
+                "x".repeat(512)
+            ));
+        }
+
+        let log_path =
+            super::lan_peer_diagnostics_log_path().expect("diagnostics log path should exist");
+        let bytes = std::fs::read(&log_path).expect("read diagnostics log");
+        assert!(bytes.len() <= super::LAN_PEER_DIAGNOSTICS_LOG_MAX_BYTES);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("diagnostic entry 255"));
+        assert!(!text.contains("diagnostic entry 000"));
     }
 
     #[test]
