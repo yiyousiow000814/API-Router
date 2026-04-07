@@ -1772,7 +1772,7 @@ pub(crate) async fn lan_sync_remote_update_debug_http(
         .is_some_and(remote_update_worker_bootstrap_observed);
     let worker_script_probe = probe_remote_update_worker_script();
     let file_log_tail = read_remote_update_log_tail(6_000);
-    let shell_log_tail = read_remote_update_shell_window_log_tail(6_000);
+    let shell_log_tail = read_remote_update_shell_window_log_tail(20_000);
     let (log_tail_source, log_tail) =
         select_remote_update_log_tail(remote_update_status.as_ref(), file_log_tail);
     Json(serde_json::json!(LanRemoteUpdateDebugResponsePacket {
@@ -2556,6 +2556,8 @@ mod tests {
         assert!(windows_contents.contains("Running Windows EXE build and restart script"));
         assert!(windows_contents.contains("build-root-exe.ps1 failed"));
         assert!(windows_contents.contains("function Get-RemoteUpdateBuildResultPath"));
+        assert!(windows_contents
+            .contains("$env:API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH = $buildResultPath"));
         assert!(windows_contents.contains("Hidden process exit_code was <null>"));
         assert!(windows_contents.contains("build result marker reported success"));
         assert!(windows_contents.contains("-StartHidden"));
@@ -2622,6 +2624,7 @@ mod tests {
         assert!(build_script.contains("function Get-RemoteUpdateBuildResultPath"));
         assert!(build_script.contains("function Write-BuildResultMarker"));
         assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH"));
+        assert!(build_script.contains("lan-remote-update-build-result.json"));
         assert!(build_script.contains("function Invoke-BuildStage"));
         assert!(build_script.contains("Invoke-BuildStage `"));
         assert!(build_script.contains("-FilePath $NpmCli"));
@@ -2640,8 +2643,8 @@ mod tests {
         assert!(build_script.contains("$StartFilePath = Resolve-BuildArtifactPath"));
         assert!(build_script.contains("Missing start target: $StartFilePath"));
         assert!(build_script.contains("Starting: $StartFilePath"));
-        assert!(build_script
-            .contains("Start-Process -FilePath $StartFilePath -WorkingDirectory $RepoRoot"));
+        assert!(build_script.contains("$startOptions.WindowStyle = 'Hidden'"));
+        assert!(build_script.contains("Start-Process @startOptions"));
         assert!(build_script.contains("$UsesArtifactPathOverrides"));
         assert!(build_script.contains("if ($IsWindows -and -not $UsesArtifactPathOverrides)"));
         assert!(build_script.contains("Reset-LastExitCode"));

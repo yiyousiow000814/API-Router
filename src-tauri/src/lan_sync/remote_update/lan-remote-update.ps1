@@ -395,8 +395,13 @@ function Invoke-HiddenProcess {
   # otherwise Windows can flash transient consoles during update/build/install stages.
   $stdoutPath = [System.IO.Path]::GetTempFileName()
   $stderrPath = [System.IO.Path]::GetTempFileName()
+  $buildResultPath = Get-RemoteUpdateBuildResultPath
+  $previousBuildResultPath = $env:API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH
   try {
     Reset-RemoteUpdateBuildResult
+    if ($buildResultPath) {
+      $env:API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH = $buildResultPath
+    }
     Write-RemoteUpdateLog "Invoking hidden process: file=$FilePath args=$($ArgumentList -join ' ')"
     $process = Start-Process -FilePath $FilePath `
       -ArgumentList $ArgumentList `
@@ -462,6 +467,11 @@ function Invoke-HiddenProcess {
     }
     throw "$FailureMessage; hidden process exited without a usable exit code or build result marker"
   } finally {
+    if ($null -eq $previousBuildResultPath) {
+      Remove-Item Env:\API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH -ErrorAction SilentlyContinue
+    } else {
+      $env:API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH = $previousBuildResultPath
+    }
     Remove-Item -LiteralPath $stdoutPath -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $stderrPath -ErrorAction SilentlyContinue
   }

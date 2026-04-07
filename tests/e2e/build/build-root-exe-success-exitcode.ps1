@@ -58,7 +58,6 @@ $env:API_ROUTER_BUILD_DST_EXE_PATH = $fakeDstExe
 $env:API_ROUTER_BUILD_DST_TEST_EXE_PATH = $fakeDstTestExe
 $env:API_ROUTER_BUILD_START_FILE_PATH = $fakeStartPath
 $env:API_ROUTER_REMOTE_UPDATE_LOG_PATH = $logPath
-$env:API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH = $resultPath
 
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ScriptPath -StartHidden *> $stdoutPath
 $scriptExitCode = $LASTEXITCODE

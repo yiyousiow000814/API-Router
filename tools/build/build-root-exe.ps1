@@ -86,8 +86,15 @@ function Get-RemoteUpdateLogPath {
 
 function Get-RemoteUpdateBuildResultPath {
   $path = [string]$env:API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH
-  if ([string]::IsNullOrWhiteSpace($path)) { return $null }
-  return $path
+  if (-not [string]::IsNullOrWhiteSpace($path)) { return $path }
+  $logPath = Get-RemoteUpdateLogPath
+  if (-not [string]::IsNullOrWhiteSpace($logPath)) {
+    $parent = Split-Path -Parent $logPath
+    if ($parent) {
+      return (Join-Path $parent 'lan-remote-update-build-result.json')
+    }
+  }
+  return $null
 }
 
 function Write-RemoteUpdateLog {
@@ -258,10 +265,19 @@ function Start-ApiRouter {
   $arguments = @()
   if ($StartHidden) { $arguments += '--start-hidden' }
   Write-Host "Starting: $StartFilePath"
+  $startOptions = @{
+    FilePath = $StartFilePath
+    WorkingDirectory = $RepoRoot
+  }
+  if ($StartHidden) {
+    # Remote update restarts must stay visually silent. Keep this explicit so future
+    # changes do not reintroduce a late console flash during the restart phase.
+    $startOptions.WindowStyle = 'Hidden'
+  }
   if ($arguments.Count -gt 0) {
-    Start-Process -FilePath $StartFilePath -ArgumentList $arguments -WorkingDirectory $RepoRoot | Out-Null
+    Start-Process @startOptions -ArgumentList $arguments | Out-Null
   } else {
-    Start-Process -FilePath $StartFilePath -WorkingDirectory $RepoRoot | Out-Null
+    Start-Process @startOptions | Out-Null
   }
   Reset-LastExitCode
 }
