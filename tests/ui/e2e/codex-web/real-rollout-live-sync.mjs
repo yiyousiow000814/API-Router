@@ -1,4 +1,4 @@
-﻿import os from 'node:os'
+import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import { randomUUID } from 'node:crypto'

@@ -1,4 +1,4 @@
-﻿import process from 'node:process'
+import process from 'node:process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'

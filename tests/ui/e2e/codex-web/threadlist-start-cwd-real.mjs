@@ -1,4 +1,4 @@
-﻿import process from 'node:process'
+import process from 'node:process'
 import { spawn, spawnSync } from 'node:child_process'
 import { Builder } from 'selenium-webdriver'
 import edge from 'selenium-webdriver/edge.js'

@@ -1,4 +1,4 @@
-﻿import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { Builder } from 'selenium-webdriver'
 import edge from 'selenium-webdriver/edge.js'
 import { ensureMsEdgeDriver, repoRoot } from '../../support/runtime-utils.mjs'
