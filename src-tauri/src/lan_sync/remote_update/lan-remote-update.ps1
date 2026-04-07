@@ -155,9 +155,6 @@ function Show-RemoteUpdateNotification {
   )
 
   try {
-    Add-Type -AssemblyName System.Windows.Forms
-    Add-Type -AssemblyName System.Drawing
-
     $trimmedTarget = $TargetRef.Trim()
     $shortTarget = if ($trimmedTarget.Length -gt 8) { $trimmedTarget.Substring(0, 8) } else { $trimmedTarget }
     $title = 'API Router update in progress'
@@ -167,14 +164,77 @@ function Show-RemoteUpdateNotification {
       "API Router is installing remote update $shortTarget and will restart automatically when it finishes."
     }
 
-    $script:RemoteUpdateNotifyIcon = New-Object System.Windows.Forms.NotifyIcon
-    $script:RemoteUpdateNotifyIcon.Icon = [System.Drawing.SystemIcons]::Information
-    $script:RemoteUpdateNotifyIcon.Visible = $true
-    $script:RemoteUpdateNotifyIcon.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Info
-    $script:RemoteUpdateNotifyIcon.BalloonTipTitle = $title
-    $script:RemoteUpdateNotifyIcon.BalloonTipText = $body
-    $script:RemoteUpdateNotifyIcon.ShowBalloonTip(10000)
-    Write-RemoteUpdateLog "Windows notification shown: $title ($body)"
+    $notificationScript = @'
+param(
+  [Parameter(Mandatory = $true)]
+  [string]$PayloadPath
+)
+
+$ErrorActionPreference = 'Stop'
+$payload = Get-Content -LiteralPath $PayloadPath -Raw | ConvertFrom-Json
+$Title = [string]$payload.title
+$Body = [string]$payload.body
+$LogPath = [string]$payload.log_path
+
+function Write-HelperLog([string]$Message) {
+  if ([string]::IsNullOrWhiteSpace($LogPath)) { return }
+  $timestamp = [DateTimeOffset]::UtcNow.ToString('dd-MM-yyyy HH:mm:ss.fff UTC')
+  Add-Content -Path $LogPath -Value "[$timestamp] [notification-helper] $Message" -Encoding UTF8
+}
+
+try {
+  Add-Type -AssemblyName System.Windows.Forms
+  Add-Type -AssemblyName System.Drawing
+  $notifyIcon = New-Object System.Windows.Forms.NotifyIcon
+  $notifyIcon.Icon = [System.Drawing.SystemIcons]::Information
+  $notifyIcon.Visible = $true
+  $notifyIcon.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Info
+  $notifyIcon.BalloonTipTitle = $Title
+  $notifyIcon.BalloonTipText = $Body
+  $notifyIcon.ShowBalloonTip(10000)
+  Write-HelperLog "ShowBalloonTip invoked: $Title ($Body)"
+  $deadline = [DateTime]::UtcNow.AddSeconds(12)
+  while ([DateTime]::UtcNow -lt $deadline) {
+    [System.Windows.Forms.Application]::DoEvents()
+    Start-Sleep -Milliseconds 100
+  }
+} catch {
+  Write-HelperLog ("failed: " + $_.Exception.Message)
+  exit 1
+} finally {
+  if ($notifyIcon) {
+    $notifyIcon.Visible = $false
+    $notifyIcon.Dispose()
+  }
+  Remove-Item -LiteralPath $PayloadPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+}
+'@
+
+    $helperPath = Join-Path ([System.IO.Path]::GetTempPath()) ("api-router-remote-update-notify-{0}.ps1" -f ([guid]::NewGuid().ToString('N')))
+    $payloadPath = Join-Path ([System.IO.Path]::GetTempPath()) ("api-router-remote-update-notify-{0}.json" -f ([guid]::NewGuid().ToString('N')))
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($helperPath, $notificationScript, $utf8NoBom)
+    $logPath = Get-RemoteUpdateLogPath
+    $payload = [ordered]@{
+      title = $title
+      body = $body
+      log_path = if ($logPath) { $logPath } else { '' }
+    } | ConvertTo-Json -Depth 3
+    [System.IO.File]::WriteAllText($payloadPath, $payload, $utf8NoBom)
+    $arguments = @(
+      '-NoProfile',
+      '-ExecutionPolicy', 'Bypass',
+      '-Sta',
+      '-File', $helperPath,
+      '-PayloadPath', $payloadPath
+    )
+    $process = Start-Process -FilePath 'powershell.exe' `
+      -ArgumentList $arguments `
+      -WorkingDirectory $RepoRoot `
+      -WindowStyle Hidden `
+      -PassThru
+    Write-RemoteUpdateLog "Windows notification helper launched: pid=$($process.Id); title=$title; body=$body; helper=$helperPath; payload=$payloadPath"
   } catch {
     Write-RemoteUpdateLog "Windows notification failed: $($_.Exception.Message)"
   }

@@ -122,6 +122,11 @@ fn maybe_notify_hidden_remote_update_success(app: &tauri::AppHandle) {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     let Some(target_ref) = target_ref else {
+        write_app_startup_diag(
+            "remote_update_success_notification_skipped",
+            0,
+            Some("no target ref"),
+        );
         return;
     };
     let short_target = target_ref.chars().take(8).collect::<String>();
@@ -139,7 +144,18 @@ fn maybe_notify_hidden_remote_update_success(app: &tauri::AppHandle) {
         .body(&body)
         .show()
     {
+        write_app_startup_diag(
+            "remote_update_success_notification_failed",
+            0,
+            Some(&err.to_string()),
+        );
         log::warn!("failed to show remote update notification: {err}");
+    } else {
+        write_app_startup_diag(
+            "remote_update_success_notification_shown",
+            0,
+            Some(&format!("target_ref={short_target}")),
+        );
     }
 }
 
@@ -442,9 +458,9 @@ pub fn run() {
                 }
             }
 
-            if start_hidden && !is_ui_tauri {
+            let hidden_remote_update_launch = start_hidden && !is_ui_tauri;
+            if hidden_remote_update_launch {
                 hide_main_window_for_background_launch(app.handle());
-                maybe_notify_hidden_remote_update_success(app.handle());
             } else if should_reveal_main_window_on_setup(start_hidden, is_ui_tauri) {
                 reveal_main_window(app.handle());
             }
@@ -506,6 +522,12 @@ pub fn run() {
             }
             std::env::set_var("API_ROUTER_USER_DATA_DIR", &user_data_dir);
             reset_app_startup_diag();
+            if hidden_remote_update_launch {
+                // The remote-update completion notification is emitted by the restarted Tauri
+                // process, not the hidden PowerShell worker. This path is more reliable and now
+                // leaves app-startup diagnostics when Windows accepts or rejects the notification.
+                maybe_notify_hidden_remote_update_success(app.handle());
+            }
 
             let build_state_started = Instant::now();
             let state = build_state(
