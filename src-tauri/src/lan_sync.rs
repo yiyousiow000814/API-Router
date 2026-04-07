@@ -60,6 +60,7 @@ pub const LAN_DISCOVERY_PORT: u16 = 38455;
 pub const LAN_HEARTBEAT_INTERVAL_MS: u64 = 2_000;
 pub const LAN_PEER_STALE_AFTER_MS: u64 = 7_000;
 pub const LAN_PEER_HTTP_GRACE_AFTER_MS: u64 = 30_000;
+const LAN_HEARTBEAT_SENDER_DELAY_LOG_THRESHOLD_MS: u64 = LAN_HEARTBEAT_INTERVAL_MS * 2;
 const LAN_SHARED_HEALTH_LOOP_INTERVAL_MS: u64 = 900;
 const LAN_USAGE_SYNC_LOOP_INTERVAL_MS: u64 = 1_000;
 const LAN_USAGE_SYNC_BATCH_LIMIT: usize = 2_048;
@@ -117,6 +118,13 @@ fn append_lan_peer_diagnostics_log(message: &str) {
         message,
         LAN_PEER_DIAGNOSTICS_LOG_MAX_BYTES,
     );
+}
+
+fn heartbeat_sender_delay_ms(previous_sent_unix_ms: Option<u64>, now_unix_ms: u64) -> Option<u64> {
+    previous_sent_unix_ms.and_then(|previous_sent_unix_ms| {
+        let delay_ms = now_unix_ms.saturating_sub(previous_sent_unix_ms);
+        (delay_ms > LAN_HEARTBEAT_SENDER_DELAY_LOG_THRESHOLD_MS).then_some(delay_ms)
+    })
 }
 
 fn local_sync_contracts() -> BTreeMap<String, u32> {
@@ -3243,7 +3251,23 @@ fn run_listener(
 }
 
 fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::GatewayState) {
+    let mut last_heartbeat_sent_unix_ms: Option<u64> = None;
+    let mut sender_delay_active = false;
+    let mut sender_delay_gap_ms: Option<u64> = None;
     loop {
+        let heartbeat_started_unix_ms = unix_ms();
+        if let Some(delay_ms) =
+            heartbeat_sender_delay_ms(last_heartbeat_sent_unix_ms, heartbeat_started_unix_ms)
+        {
+            if !sender_delay_active {
+                append_lan_peer_diagnostics_log(&format!(
+                    "Heartbeat sender delayed {}ms before broadcast; node={} name={}",
+                    delay_ms, runtime.local_node.node_id, runtime.local_node.node_name
+                ));
+            }
+            sender_delay_active = true;
+            sender_delay_gap_ms = Some(delay_ms);
+        }
         let cfg_snapshot = gateway.cfg.read().clone();
         let provider_fingerprints = build_provider_fingerprints(&cfg_snapshot, &gateway.secrets);
         let provider_definition_items = local_provider_definition_sync_items(&gateway);
@@ -3253,7 +3277,7 @@ fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::Ga
             node_id: runtime.local_node.node_id.clone(),
             node_name: runtime.local_node.node_name.clone(),
             listen_port: cfg_snapshot.listen.port,
-            sent_at_unix_ms: unix_ms(),
+            sent_at_unix_ms: heartbeat_started_unix_ms,
             capabilities: lan_heartbeat_capabilities(),
             build_identity: current_build_identity(),
             remote_update_readiness: Some(current_local_remote_update_readiness()),
@@ -3268,10 +3292,31 @@ fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::Ga
         if let LanSyncPacket::Heartbeat(ref heartbeat) = packet {
             if let Err(err) = send_heartbeat_broadcast(heartbeat) {
                 log::warn!("lan sync sender heartbeat failed: {err}");
-                append_lan_peer_diagnostics_log(&format!("Heartbeat broadcast failed: {err}"));
+                let failure_context = match last_heartbeat_sent_unix_ms {
+                    Some(last_sent_unix_ms) => format!(
+                        " after {}ms since last successful heartbeat",
+                        heartbeat_started_unix_ms.saturating_sub(last_sent_unix_ms)
+                    ),
+                    None => " before first successful heartbeat".to_string(),
+                };
+                append_lan_peer_diagnostics_log(&format!(
+                    "Heartbeat broadcast failed{}: {}",
+                    failure_context, err
+                ));
                 std::thread::sleep(Duration::from_millis(LAN_SOCKET_RETRY_MS));
                 continue;
             }
+        }
+        last_heartbeat_sent_unix_ms = Some(unix_ms());
+        if sender_delay_active {
+            append_lan_peer_diagnostics_log(&format!(
+                "Heartbeat sender recovered after {}ms delay; node={} name={}",
+                sender_delay_gap_ms.unwrap_or_default(),
+                runtime.local_node.node_id,
+                runtime.local_node.node_name
+            ));
+            sender_delay_active = false;
+            sender_delay_gap_ms = None;
         }
         std::thread::sleep(Duration::from_millis(LAN_HEARTBEAT_INTERVAL_MS));
     }
@@ -7013,6 +7058,25 @@ mod tests {
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("diagnostic entry 255"));
         assert!(!text.contains("diagnostic entry 000"));
+    }
+
+    #[test]
+    fn heartbeat_sender_delay_stays_quiet_without_previous_success() {
+        assert_eq!(super::heartbeat_sender_delay_ms(None, 10_000), None);
+    }
+
+    #[test]
+    fn heartbeat_sender_delay_uses_strict_threshold_boundary() {
+        let threshold = super::LAN_HEARTBEAT_SENDER_DELAY_LOG_THRESHOLD_MS;
+        assert_eq!(super::heartbeat_sender_delay_ms(Some(10_000), 10_000), None);
+        assert_eq!(
+            super::heartbeat_sender_delay_ms(Some(10_000), 10_000 + threshold),
+            None
+        );
+        assert_eq!(
+            super::heartbeat_sender_delay_ms(Some(10_000), 10_000 + threshold + 1),
+            Some(threshold + 1)
+        );
     }
 
     #[test]

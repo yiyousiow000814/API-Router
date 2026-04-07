@@ -206,6 +206,21 @@ function Try-CopyOptionalArtifact([string]$From, [string]$To, [string]$Label) {
   }
 }
 
+function Test-BuildOutputNoiseLine([string]$Line) {
+  if (-not $Line) { return $true }
+  return (
+    $Line -match '^(vite v\d|\s*transforming|rendering chunks|computing gzip size|\s*dist/|\s*target/release/|warning:|Finished `release` profile)' -or
+    $Line -match '\bgzip:\s*\d' -or
+    $Line -match '\bbuilt in \d' -or
+    $Line -match '^At [A-Z]:\\' -or
+    $Line -match '^At line:\d+' -or
+    $Line -match '^CategoryInfo:' -or
+    $Line -match '^FullyQualifiedErrorId' -or
+    $Line -match '^Microsoft\.PowerShell\.' -or
+    $Line -match '^Write-Error\b'
+  )
+}
+
 function Format-BuildCommandOutputSummary($Output) {
   if ($null -eq $Output) { return '' }
   $lines = @(
@@ -213,9 +228,10 @@ function Format-BuildCommandOutputSummary($Output) {
       ForEach-Object {
         if ($null -eq $_) { return }
         $line = [string]$_
+        $line = [regex]::Replace($line, '[^\u0009\u000A\u000D\u0020-\u007E]', ' ')
         $line = [regex]::Replace($line, '\x1b\[[0-9;?]*[ -/]*[@-~]', '')
         $line = [regex]::Replace($line, '\s+', ' ').Trim()
-        if ($line) { $line }
+        if ($line -and -not (Test-BuildOutputNoiseLine $line)) { $line }
       } |
       Where-Object { $_ }
   )
@@ -226,6 +242,16 @@ function Format-BuildCommandOutputSummary($Output) {
     return $text.Substring($text.Length - 1200)
   }
   return $text
+}
+
+function Format-BuildFailureMessage([string]$FailureLabel, [string]$Summary, [int]$ExitCode) {
+  if ($Summary) {
+    return "$FailureLabel failed: $Summary"
+  }
+  if ($ExitCode -gt 0) {
+    return "$FailureLabel failed with exit code $ExitCode"
+  }
+  return "$FailureLabel failed"
 }
 
 function Invoke-BuildCommand {
@@ -270,10 +296,7 @@ function Invoke-BuildCommand {
       Write-RemoteUpdateLog "$FailureLabel output: $summary"
     }
     if ($process.ExitCode -ne 0) {
-      if ($summary) {
-        throw "$FailureLabel failed. Output: $summary"
-      }
-      throw "$FailureLabel failed with exit code $($process.ExitCode)"
+      throw (Format-BuildFailureMessage $FailureLabel $summary $process.ExitCode)
     }
   } finally {
     Remove-Item -LiteralPath $stdoutPath -ErrorAction SilentlyContinue

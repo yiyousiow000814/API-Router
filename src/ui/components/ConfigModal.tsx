@@ -196,7 +196,7 @@ export function shouldShowDiagnosticsRemoteUpdateStatus(
 }
 
 function remoteUpdateProgressDetail(source: ConfigSource): string {
-  return formatReadableCommitRefs(source.remote_update_status?.detail?.trim() || '')
+  return sanitizeRemoteUpdateText(source.remote_update_status?.detail?.trim() || '')
 }
 
 export function effectiveRemoteUpdateStatus(
@@ -286,6 +286,46 @@ function remoteUpdateLiveStageLabel(
 
 function formatReadableCommitRefs(value: string): string {
   return value.replace(/\b[0-9a-f]{12,40}\b/gi, (match) => match.slice(0, 8))
+}
+
+function isRemoteUpdateNoiseLine(value: string): boolean {
+  const normalized = value.trim()
+  if (!normalized) return true
+  return (
+    /^dist\/assets\//i.test(normalized) ||
+    /\bgzip:\s*\d/i.test(normalized) ||
+    /\bbuilt in \d/i.test(normalized) ||
+    /^At [A-Z]:\\/i.test(normalized) ||
+    /^At line:\d+/i.test(normalized) ||
+    /^CategoryInfo:/i.test(normalized) ||
+    /^FullyQualifiedErrorId/i.test(normalized) ||
+    /^Microsoft\.PowerShell\./i.test(normalized) ||
+    /^Write-Error\b/i.test(normalized)
+  )
+}
+
+function sanitizeRemoteUpdateText(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  const normalized = formatReadableCommitRefs(trimmed)
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, ' ')
+    .replace(/\. Output:\s*/gi, ': ')
+  const segments = normalized
+    .split(/\r?\n|\s+\|\s+/)
+    .map((segment) =>
+      segment
+        .replace(/:\s*dist\/assets\/.*$/i, '')
+        .replace(/:\s*At [A-Z]:\\.*$/i, '')
+        .replace(/:\s*CategoryInfo:.*$/i, '')
+        .replace(/:\s*FullyQualifiedErrorId.*$/i, '')
+        .replace(/\s+/g, ' ')
+        .trim(),
+    )
+    .filter((segment) => segment && !isRemoteUpdateNoiseLine(segment))
+  if (segments.length === 0) {
+    return normalized.replace(/\s+/g, ' ').trim()
+  }
+  return segments.join(' | ')
 }
 
 function hasRemoteDebugDetails(
@@ -485,6 +525,10 @@ function remoteUpdateTimelineEntries(source: ConfigSource, localBuildSha?: strin
   if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return []
   return [...(source.remote_update_status?.timeline ?? [])]
     .filter((entry) => (entry.label?.trim() || entry.detail?.trim() || entry.phase?.trim()))
+    .map((entry) => ({
+      ...entry,
+      detail: sanitizeRemoteUpdateText(entry.detail?.trim() || ''),
+    }))
     .sort((a, b) => (a.unix_ms ?? 0) - (b.unix_ms ?? 0))
 }
 
@@ -497,7 +541,7 @@ function pendingRemoteUpdateStateLabel(pendingStage: RemoteUpdatePendingStage | 
 
 function pendingRemoteUpdateDetailText(pendingStage: RemoteUpdatePendingStage | undefined): string {
   if (!pendingStage) return ''
-  return formatReadableCommitRefs(pendingStage.detail?.trim() || '')
+  return sanitizeRemoteUpdateText(pendingStage.detail?.trim() || '')
 }
 
 function pendingRemoteUpdateTimestampLabel(pendingStage: RemoteUpdatePendingStage | undefined): string {
@@ -514,7 +558,7 @@ function pendingRemoteUpdateTimelineEntries(pendingStage: RemoteUpdatePendingSta
         pendingStage.stage === 'requesting'
           ? 'Request sent from current machine'
           : 'Peer accepted request; waiting for remote progress',
-      detail: pendingStage.detail?.trim() || '',
+      detail: sanitizeRemoteUpdateText(pendingStage.detail?.trim() || ''),
       phase: pendingStage.stage,
     },
   ]
@@ -1499,9 +1543,9 @@ export function ConfigModal({
                                         <div className="aoConfigDiagRemoteUpdateDetail">
                                           {formatCommitDate(entry.unix_ms ?? null)} · {entry.label?.trim() || entry.phase?.trim() || 'Step'}
                                         </div>
-                                        {entry.detail?.trim() ? (
-                                          <div className="aoConfigDiagWhyText">{formatReadableCommitRefs(entry.detail.trim())}</div>
-                                        ) : null}
+                                          {entry.detail?.trim() ? (
+                                            <div className="aoConfigDiagWhyText">{sanitizeRemoteUpdateText(entry.detail.trim())}</div>
+                                          ) : null}
                                       </div>
                                     ))}
                                   </div>

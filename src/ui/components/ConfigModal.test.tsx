@@ -838,6 +838,52 @@ describe('ConfigModal', () => {
     })
   })
 
+  it('sanitizes noisy remote update failure output into a readable summary', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'failed',
+        target_ref: 'abc123',
+        detail:
+          'Building EXE: tools/build/build-root-exe.ps1 failed. Output: dist/assets/App.js 10 kB | gzip: 2 kB | At C:\\repo\\tools\\build\\build-root-exe.ps1:328 char:3 | CategoryInfo: NotSpecified: (:) [Write-Error], WriteErrorException',
+        finished_at_unix_ms: 1775312828000,
+        timeline: [
+          {
+            unix_ms: 1775312828000,
+            phase: 'failed',
+            label: 'Building EXE failed',
+            detail:
+              'Building EXE: tools/build/build-root-exe.ps1 failed. Output: dist/assets/App.js 10 kB | gzip: 2 kB | FullyQualifiedErrorId : Microsoft.PowerShell.Commands.WriteErrorException',
+          },
+        ],
+      },
+    }
+
+    expect(remoteUpdateActionState(source, undefined)).toEqual({
+      actionLabel: 'Update failed',
+      actionDetail: 'Building EXE: tools/build/build-root-exe.ps1 failed',
+      spinning: false,
+    })
+    expect(remoteUpdateDetailText(source)).toBe('Building EXE: tools/build/build-root-exe.ps1 failed')
+    expect(diagnosticsRemoteUpdateDisplay(source, undefined).timeline).toEqual([
+      expect.objectContaining({
+        detail: 'Building EXE: tools/build/build-root-exe.ps1 failed',
+      }),
+    ])
+  })
+
   it('shows live update progress instead of blocked while a remote update is running', () => {
     const config = buildConfig()
     const source = {

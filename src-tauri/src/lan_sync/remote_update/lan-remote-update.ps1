@@ -195,12 +195,27 @@ function Step-Detail([string]$Label, [string]$Detail = '') {
   return $Label
 }
 
+function Test-CommandOutputNoiseLine([string]$Line) {
+  if (-not $Line) { return $true }
+  return (
+    $Line -match '^(vite v\d|\s*transforming|rendering chunks|computing gzip size|\s*dist/|\s*target/release/|warning:|Finished `release` profile)' -or
+    $Line -match '\bgzip:\s*\d' -or
+    $Line -match '\bbuilt in \d' -or
+    $Line -match '^At [A-Z]:\\' -or
+    $Line -match '^At line:\d+' -or
+    $Line -match '^CategoryInfo:' -or
+    $Line -match '^FullyQualifiedErrorId' -or
+    $Line -match '^Microsoft\.PowerShell\.' -or
+    $Line -match '^Write-Error\b'
+  )
+}
+
 function Format-CommandOutputSummary($Output) {
   if ($null -eq $Output) { return '' }
   $lines = @(
     $Output |
       ForEach-Object { Normalize-CommandOutputLine $_.ToString() } |
-      Where-Object { $_ }
+      Where-Object { $_ -and -not (Test-CommandOutputNoiseLine $_) }
   )
   if ($lines.Count -eq 0) { return '' }
   $text = ($lines | Select-Object -Last 6) -join ' | '
@@ -214,7 +229,8 @@ function Format-CommandOutputSummary($Output) {
 
 function Normalize-CommandOutputLine([string]$Line) {
   if (-not $Line) { return '' }
-  $normalized = [regex]::Replace($Line, '\x1b\[[0-9;?]*[ -/]*[@-~]', '')
+  $normalized = [regex]::Replace($Line, '[^\u0009\u000A\u000D\u0020-\u007E]', ' ')
+  $normalized = [regex]::Replace($normalized, '\x1b\[[0-9;?]*[ -/]*[@-~]', '')
   $normalized = [regex]::Replace($normalized, '\s+', ' ').Trim()
   if (-not $normalized) { return '' }
   if ($normalized -match '^(vite v\d|\s*transforming|computing gzip size|\s*dist/|\s*target/release/|warning:|Finished `release` profile)') {
@@ -231,6 +247,16 @@ function Write-CommandOutputLog($Output, [switch]$LogOnSuccess) {
       Write-RemoteUpdateLog $line
     }
   }
+}
+
+function Format-ProcessFailureMessage([string]$FailureMessage, [string]$Summary, [int]$ExitCode) {
+  if ($Summary) {
+    return "${FailureMessage}: $Summary"
+  }
+  if ($ExitCode -gt 0) {
+    return "${FailureMessage} with exit code $ExitCode"
+  }
+  return $FailureMessage
 }
 
 function Test-GitRevisionExists {
@@ -301,10 +327,7 @@ function Invoke-RemoteUpdateCommand {
     if ($summary) {
       Write-RemoteUpdateLog "Command failed output: $summary"
     }
-    if ($summary) {
-      throw "${FailureMessage}. Output: $summary"
-    }
-    throw $FailureMessage
+    throw (Format-ProcessFailureMessage $FailureMessage $summary $exitCode)
   }
 }
 
@@ -343,9 +366,8 @@ function Invoke-HiddenProcess {
       $summary = Format-CommandOutputSummary $combinedOutput
       if ($summary) {
         Write-RemoteUpdateLog "Command failed output: $summary"
-        throw "${FailureMessage}. Output: $summary"
       }
-      throw $FailureMessage
+      throw (Format-ProcessFailureMessage $FailureMessage $summary $process.ExitCode)
     }
   } finally {
     Remove-Item -LiteralPath $stdoutPath -ErrorAction SilentlyContinue
