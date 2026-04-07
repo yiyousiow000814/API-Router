@@ -10,12 +10,38 @@ function Assert-LastExitOk([string]$Step) {
   if ($LASTEXITCODE -ne 0) { throw "$Step failed with exit code $LASTEXITCODE" }
 }
 
+function Reset-LastExitCode {
+  $global:LASTEXITCODE = 0
+}
+
 $ProgressPreference = 'SilentlyContinue'
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\\..')).Path
-$SrcExe = Join-Path $RepoRoot 'src-tauri\target\release\api_router.exe'
-$DstExe = Join-Path $RepoRoot 'API Router.exe'
-$DstTestExe = Join-Path $RepoRoot 'API Router [TEST].exe'
+
+function Resolve-BuildArtifactPath([string]$EnvVarName, [string]$DefaultPath) {
+  $override = [string][System.Environment]::GetEnvironmentVariable($EnvVarName)
+  if (-not [string]::IsNullOrWhiteSpace($override)) {
+    return $override.Trim()
+  }
+  return $DefaultPath
+}
+
+$DefaultSrcExe = Join-Path $RepoRoot 'src-tauri\target\release\api_router.exe'
+$DefaultDstExe = Join-Path $RepoRoot 'API Router.exe'
+$DefaultDstTestExe = Join-Path $RepoRoot 'API Router [TEST].exe'
+$SrcExe = Resolve-BuildArtifactPath 'API_ROUTER_BUILD_SRC_EXE_PATH' $DefaultSrcExe
+$DstExe = Resolve-BuildArtifactPath 'API_ROUTER_BUILD_DST_EXE_PATH' $DefaultDstExe
+$DstTestExe = Resolve-BuildArtifactPath 'API_ROUTER_BUILD_DST_TEST_EXE_PATH' $DefaultDstTestExe
+$StartFilePath = Resolve-BuildArtifactPath 'API_ROUTER_BUILD_START_FILE_PATH' $DstExe
+$UsesArtifactPathOverrides = @(
+  'API_ROUTER_BUILD_SRC_EXE_PATH',
+  'API_ROUTER_BUILD_DST_EXE_PATH',
+  'API_ROUTER_BUILD_DST_TEST_EXE_PATH',
+  'API_ROUTER_BUILD_START_FILE_PATH'
+) | Where-Object {
+  -not [string]::IsNullOrWhiteSpace([string][System.Environment]::GetEnvironmentVariable($_))
+} | Select-Object -First 1
+$UsesArtifactPathOverrides = [bool]$UsesArtifactPathOverrides
 
 Write-Host "RepoRoot: $RepoRoot"
 
@@ -170,38 +196,46 @@ function Start-ApiRouter {
     Write-Host "API Router already running."
     return
   }
-  if (-not (Test-Path $DstExe)) {
-    Write-Warning "Missing root exe: $DstExe (cannot restart)"
+  if (-not (Test-Path $StartFilePath)) {
+    Write-Warning "Missing start target: $StartFilePath (cannot restart)"
     return
   }
   $env:API_ROUTER_PROFILE = $null
   if ($TestProfile) { $env:API_ROUTER_PROFILE = 'test' }
   $arguments = @()
   if ($StartHidden) { $arguments += '--start-hidden' }
-  Write-Host "Starting: $DstExe"
+  Write-Host "Starting: $StartFilePath"
   if ($arguments.Count -gt 0) {
-    Start-Process -FilePath $DstExe -ArgumentList $arguments -WorkingDirectory $RepoRoot | Out-Null
+    Start-Process -FilePath $StartFilePath -ArgumentList $arguments -WorkingDirectory $RepoRoot | Out-Null
   } else {
-    Start-Process -FilePath $DstExe -WorkingDirectory $RepoRoot | Out-Null
+    Start-Process -FilePath $StartFilePath -WorkingDirectory $RepoRoot | Out-Null
   }
+  Reset-LastExitCode
 }
 
 function Stop-RunningApiRouter {
   # Best-effort: if the root EXE is running, replacing it will fail with EPERM/EBUSY.
-  # We stop by both image name and by exact path.
-  try { Stop-Process -Name 'API Router' -Force -ErrorAction SilentlyContinue } catch {}
-  try { Stop-Process -Name 'API Router [TEST]' -Force -ErrorAction SilentlyContinue } catch {}
-  try { Stop-Process -Name 'api_router' -Force -ErrorAction SilentlyContinue } catch {}
+  # When test overrides point to temporary artifacts, never kill the user's real API Router by
+  # image name. In that mode we only target exact overridden paths.
+  if (-not $UsesArtifactPathOverrides) {
+    try { Stop-Process -Name 'API Router' -Force -ErrorAction SilentlyContinue } catch {}
+    try { Stop-Process -Name 'API Router [TEST]' -Force -ErrorAction SilentlyContinue } catch {}
+    try { Stop-Process -Name 'api_router' -Force -ErrorAction SilentlyContinue } catch {}
+  }
   try {
     Get-Process -ErrorAction SilentlyContinue | Where-Object {
       $_.Path -and (($_.Path -ieq $DstExe) -or ($_.Path -ieq $DstTestExe) -or ($_.Path -ieq $SrcExe))
     } | Stop-Process -Force -ErrorAction SilentlyContinue
   } catch {}
 
-  if ($IsWindows) {
+  if ($IsWindows -and -not $UsesArtifactPathOverrides) {
     try { & taskkill.exe /F /IM 'API Router.exe' /T | Out-Null } catch {}
     try { & taskkill.exe /F /IM 'API Router [TEST].exe' /T | Out-Null } catch {}
     try { & taskkill.exe /F /IM 'api_router.exe' /T | Out-Null } catch {}
+    # taskkill returns non-zero when nothing matched. That is expected during a clean restart and
+    # must not leak into the script exit code, otherwise remote update can be marked failed after
+    # a successful install/restart purely because a best-effort kill missed an already-closed PID.
+    Reset-LastExitCode
   }
 }
 
@@ -564,3 +598,8 @@ if ($hadFailure) {
 if ($null -ne $restartWarning) {
   Write-Warning "Windows EXE build succeeded, but the restart attempt failed. See warning above."
 }
+
+# PowerShell can otherwise propagate a stale non-zero $LASTEXITCODE from best-effort native
+# helpers such as taskkill.exe even when this script completed successfully.
+Reset-LastExitCode
+exit 0

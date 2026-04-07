@@ -118,6 +118,12 @@ pub(crate) struct LanRemoteUpdateDebugResponsePacket {
     pub log_tail_source: String,
     pub log_tail: Option<String>,
     #[serde(default)]
+    pub shell_log_path: Option<String>,
+    #[serde(default)]
+    pub shell_log_file_exists: bool,
+    #[serde(default)]
+    pub shell_log_tail: Option<String>,
+    #[serde(default)]
     pub worker_bootstrap_observed: bool,
     pub worker_script_probe: Option<LanRemoteUpdateWorkerScriptProbe>,
     pub local_build_identity: LanBuildIdentitySnapshot,
@@ -662,6 +668,15 @@ pub(crate) fn load_lan_remote_update_status_public() -> Option<LanRemoteUpdateSt
 
 fn read_remote_update_log_tail(max_bytes: usize) -> Option<String> {
     let path = lan_remote_update_log_path()?;
+    read_optional_log_tail(&path, max_bytes)
+}
+
+fn read_remote_update_shell_window_log_tail(max_bytes: usize) -> Option<String> {
+    let path = remote_update_shell_window_log_path()?;
+    read_optional_log_tail(&path, max_bytes)
+}
+
+fn read_optional_log_tail(path: &std::path::Path, max_bytes: usize) -> Option<String> {
     let bytes = std::fs::read(path).ok()?;
     if bytes.is_empty() {
         return None;
@@ -1667,12 +1682,14 @@ pub(crate) async fn lan_sync_remote_update_debug_http(
     let node = gateway.secrets.get_lan_node_identity();
     let status_path = lan_remote_update_status_path();
     let log_path = lan_remote_update_log_path();
+    let shell_log_path = remote_update_shell_window_log_path();
     let remote_update_status = load_lan_remote_update_status();
     let worker_bootstrap_observed = remote_update_status
         .as_ref()
         .is_some_and(remote_update_worker_bootstrap_observed);
     let worker_script_probe = probe_remote_update_worker_script();
     let file_log_tail = read_remote_update_log_tail(6_000);
+    let shell_log_tail = read_remote_update_shell_window_log_tail(6_000);
     let (log_tail_source, log_tail) =
         select_remote_update_log_tail(remote_update_status.as_ref(), file_log_tail);
     Json(serde_json::json!(LanRemoteUpdateDebugResponsePacket {
@@ -1694,6 +1711,9 @@ pub(crate) async fn lan_sync_remote_update_debug_http(
         log_path: log_path.map(|path| path.display().to_string()),
         log_tail_source,
         log_tail,
+        shell_log_file_exists: shell_log_path.as_ref().is_some_and(|path| path.is_file()),
+        shell_log_path: shell_log_path.map(|path| path.display().to_string()),
+        shell_log_tail,
         worker_bootstrap_observed,
         worker_script_probe,
         local_build_identity: current_build_identity(),
@@ -2337,6 +2357,9 @@ mod tests {
             serde_json::from_value(payload).expect("older payload should deserialize");
         assert_eq!(parsed.log_tail_source, "none");
         assert!(!parsed.worker_bootstrap_observed);
+        assert!(!parsed.shell_log_file_exists);
+        assert_eq!(parsed.shell_log_path, None);
+        assert_eq!(parsed.shell_log_tail, None);
     }
 
     #[test]
@@ -2511,9 +2534,15 @@ mod tests {
         assert!(
             build_script.contains("Windows EXE build succeeded, but the restart attempt failed")
         );
-        assert!(
-            build_script.contains("Start-Process -FilePath $DstExe -WorkingDirectory $RepoRoot")
-        );
+        assert!(build_script.contains("$StartFilePath = Resolve-BuildArtifactPath"));
+        assert!(build_script.contains("Missing start target: $StartFilePath"));
+        assert!(build_script.contains("Starting: $StartFilePath"));
+        assert!(build_script
+            .contains("Start-Process -FilePath $StartFilePath -WorkingDirectory $RepoRoot"));
+        assert!(build_script.contains("$UsesArtifactPathOverrides"));
+        assert!(build_script.contains("if ($IsWindows -and -not $UsesArtifactPathOverrides)"));
+        assert!(build_script.contains("Reset-LastExitCode"));
+        assert!(build_script.contains("exit 0"));
     }
 
     #[test]
