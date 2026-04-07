@@ -92,6 +92,10 @@ fn app_launch_requests_hidden(args: &[String]) -> bool {
     args.iter().any(|arg| arg == "--start-hidden")
 }
 
+fn should_reveal_main_window_on_setup(start_hidden: bool, is_ui_tauri: bool) -> bool {
+    !start_hidden && !is_ui_tauri
+}
+
 fn reveal_main_window(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.set_skip_taskbar(false);
@@ -441,6 +445,8 @@ pub fn run() {
             if start_hidden && !is_ui_tauri {
                 hide_main_window_for_background_launch(app.handle());
                 maybe_notify_hidden_remote_update_success(app.handle());
+            } else if should_reveal_main_window_on_setup(start_hidden, is_ui_tauri) {
+                reveal_main_window(app.handle());
             }
 
             if cfg!(debug_assertions) {
@@ -823,7 +829,8 @@ pub fn run() {
 mod tests {
     use super::{
         app_launch_requests_hidden, app_profile_name_from_inputs, profile_data_dir_name,
-        resolve_codex_home, should_reset_profile_data, should_seed_mock_data,
+        resolve_codex_home, should_reset_profile_data, should_reveal_main_window_on_setup,
+        should_seed_mock_data,
     };
 
     #[test]
@@ -871,5 +878,12 @@ mod tests {
             "--start-hidden".to_string(),
         ]));
         assert!(!app_launch_requests_hidden(&["API Router.exe".to_string()]));
+    }
+
+    #[test]
+    fn setup_only_reveals_window_for_normal_launches() {
+        assert!(should_reveal_main_window_on_setup(false, false));
+        assert!(!should_reveal_main_window_on_setup(true, false));
+        assert!(!should_reveal_main_window_on_setup(false, true));
     }
 }

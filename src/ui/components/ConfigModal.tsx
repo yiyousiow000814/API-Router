@@ -678,17 +678,6 @@ export function shouldShowRemoteUpdateMenuDetail(
   return remoteState === 'failed' || remoteState === 'superseded'
 }
 
-export function remoteUpdateMenuSubtext(
-  source: ConfigSource,
-  actionState: { actionDetail: string | null; spinning: boolean } | null,
-  localBuildSha?: string | null,
-): string | null {
-  if (!shouldShowRemoteUpdateMenuDetail(source, actionState, localBuildSha)) return null
-  if (!actionState?.spinning) return null
-  const detail = actionState?.actionDetail?.trim() || ''
-  return detail ? formatReadableCommitRefs(detail) : null
-}
-
 export function keepSourceMenuOpenAfterAction(source: ConfigSource): boolean {
   return source.kind === 'peer' && Boolean(source.version_sync_required)
 }
@@ -1072,14 +1061,6 @@ export function ConfigModal({
                           versionSyncRequired && effectiveSource.kind === 'peer'
                             ? remoteUpdateActionState(effectiveSource, versionSyncPendingStage, localBuildSha)
                             : null
-                        const versionSyncMenuSubtext =
-                          versionSyncRequired && effectiveSource.kind === 'peer'
-                            ? remoteUpdateMenuSubtext(
-                                effectiveSource,
-                                versionSyncActionState,
-                                localBuildSha,
-                              )
-                            : null
                         const versionSyncPending = Boolean(versionSyncActionState?.spinning)
                         const pairActionAvailable =
                           effectiveSource.kind === 'peer' &&
@@ -1186,9 +1167,6 @@ export function ConfigModal({
                             </span>
                             <span className="aoConfigSourceMenuText">
                               <span className="aoConfigSourceMenuLabel">{label}</span>
-                              {versionSyncMenuSubtext ? (
-                                <span className="aoConfigSourceMenuSub">{versionSyncMenuSubtext}</span>
-                              ) : null}
                             </span>
                             <span className="aoConfigSourceMenuMetaBlock">
                               <span className="aoConfigSourceMenuMeta">

@@ -13,7 +13,6 @@ import {
   isRemoteDebugStatusRelevantToCurrentBuild,
   keepSourceMenuOpenAfterAction,
   remoteUpdateDebugPollNodeIds,
-  remoteUpdateMenuSubtext,
   remoteDebugStatusRelevance,
   remoteUpdateActionState,
   remoteUpdateDetailText,
@@ -295,6 +294,85 @@ describe('ConfigModal', () => {
 
     expect(html).toContain('Desk B is on a different build. Remote update can sync it to the current machine build if needed.')
     expect(html).toContain('Choose Update peer in Config source to sync this peer to the current machine build.')
+  })
+
+  it('keeps config source peer rows single-line even while remote update is building', () => {
+    const config = buildConfig()
+    config.config_source = {
+      mode: 'follow',
+      followed_node_id: 'node-b',
+      sources: [
+        {
+          kind: 'local',
+          node_id: 'node-local',
+          node_name: 'Desk',
+          active: false,
+          follow_allowed: false,
+          follow_blocked_reason: null,
+          using_count: 0,
+          version_sync_required: false,
+          version_sync_reason: null,
+          same_version_update_allowed: true,
+          same_version_update_blocked_reason: null,
+        },
+        {
+          kind: 'peer',
+          node_id: 'node-b',
+          node_name: 'Desk B',
+          active: true,
+          trusted: true,
+          follow_allowed: false,
+          follow_blocked_reason: null,
+          using_count: 1,
+          version_sync_required: true,
+          version_sync_reason: 'Desk B requires update.',
+          same_version_update_allowed: true,
+          same_version_update_blocked_reason: null,
+          remote_update_status: {
+            state: 'running',
+            target_ref: 'abc123',
+            detail: 'Building release binary: Running npm run tauri -- build --no-bundle',
+            started_at_unix_ms: 1775312828000,
+          },
+        },
+      ],
+    }
+
+    const html = renderToStaticMarkup(
+      <ConfigModal
+        open
+        config={config}
+        newProviderName=""
+        newProviderBaseUrl=""
+        newProviderKey=""
+        newProviderKeyStorage="auth_json"
+        nextProviderPlaceholder="provider1"
+        setNewProviderName={() => undefined}
+        setNewProviderBaseUrl={() => undefined}
+        setNewProviderKey={() => undefined}
+        setNewProviderKeyStorage={() => undefined}
+        onAddProvider={() => undefined}
+        onFollowSource={() => undefined}
+        onClearFollowSource={() => undefined}
+        onRequestPair={() => undefined}
+        onApprovePair={() => undefined}
+        onSubmitPairPin={() => undefined}
+        onSyncPeerVersion={() => undefined}
+        remoteUpdatePendingByNode={{}}
+        onOpenGroupManager={() => undefined}
+        onClose={() => undefined}
+        providerListRef={{ current: null }}
+        orderedConfigProviders={['p1']}
+        dragPreviewOrder={null}
+        draggingProvider={null}
+        dragCardHeight={0}
+        renderProviderCard={() => null}
+      />,
+    )
+
+    expect(html).toContain('Desk B')
+    expect(html).not.toContain('aoConfigSourceMenuSub')
+    expect(html).not.toContain('Building release binary: Running npm run tauri -- build --no-bundle')
   })
 
   it('prefers concrete diagnostics why text over generic paused copy', () => {
@@ -1577,13 +1655,6 @@ describe('ConfigModal', () => {
     }
 
     expect(remoteUpdateMenuActionLabel(source, undefined, '45a389c0abcdef')).toBe('Update failed')
-    expect(
-      remoteUpdateMenuSubtext(
-        source,
-        remoteUpdateActionState(source, undefined, '45a389c0abcdef'),
-        '45a389c0abcdef',
-      ),
-    ).toBe(null)
   })
 
   it('shows succeeded state in dropdown instead of immediately reverting to update peer', () => {
@@ -1610,13 +1681,6 @@ describe('ConfigModal', () => {
     }
 
     expect(remoteUpdateMenuActionLabel(source, undefined, '45a389c0abcdef')).toBe('Updated')
-    expect(
-      remoteUpdateMenuSubtext(
-        source,
-        remoteUpdateActionState(source, undefined, '45a389c0abcdef'),
-        '45a389c0abcdef',
-      ),
-    ).toBe(null)
   })
 
   it('shows local pending remote update details in diagnostics before peer status catches up', () => {
