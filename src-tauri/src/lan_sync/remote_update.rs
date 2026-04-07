@@ -121,12 +121,18 @@ pub(crate) struct LanRemoteUpdateDebugResponsePacket {
     pub status_file_exists: bool,
     pub log_path: Option<String>,
     pub log_file_exists: bool,
+    #[serde(default = "default_remote_update_log_tail_source")]
     pub log_tail_source: String,
     pub log_tail: Option<String>,
+    #[serde(default)]
     pub worker_bootstrap_observed: bool,
     pub worker_script_probe: Option<LanRemoteUpdateWorkerScriptProbe>,
     pub local_build_identity: LanBuildIdentitySnapshot,
     pub local_version_sync: LanLocalVersionSyncSnapshot,
+}
+
+fn default_remote_update_log_tail_source() -> String {
+    "none".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -995,18 +1001,11 @@ fn monitor_remote_update_worker_exit(
     });
 }
 
-fn emit_remote_update_progress_event(
+fn emit_remote_update_progress_event_for_status(
     gateway: &crate::orchestrator::gateway::GatewayState,
-    request_id: &str,
-    target_ref: &str,
+    status: &LanRemoteUpdateStatusSnapshot,
     last_progress_key: &mut Option<String>,
 ) {
-    let Some(status) = read_lan_remote_update_status_raw() else {
-        return;
-    };
-    if status.request_id.as_deref() != Some(request_id) {
-        return;
-    }
     let latest_entry = status
         .timeline
         .iter()
@@ -1057,7 +1056,7 @@ fn emit_remote_update_progress_event(
         "succeeded" => "info",
         _ => "warning",
     };
-    let display_target = display_target_ref(target_ref);
+    let display_target = display_target_ref(&status.target_ref);
     let message = if detail.is_empty() {
         format!("Remote self-update to {display_target}: {label}")
     } else {
@@ -1069,8 +1068,8 @@ fn emit_remote_update_progress_event(
         code,
         &message,
         serde_json::json!({
-            "request_id": request_id,
-            "target_ref": target_ref,
+            "request_id": status.request_id,
+            "target_ref": status.target_ref,
             "state": status.state,
             "phase": phase,
             "label": label,
@@ -1080,6 +1079,21 @@ fn emit_remote_update_progress_event(
             "updated_at_unix_ms": status.updated_at_unix_ms,
         }),
     );
+}
+
+fn emit_remote_update_progress_event(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    request_id: &str,
+    _target_ref: &str,
+    last_progress_key: &mut Option<String>,
+) {
+    let Some(status) = read_lan_remote_update_status_raw() else {
+        return;
+    };
+    if status.request_id.as_deref() != Some(request_id) {
+        return;
+    }
+    emit_remote_update_progress_event_for_status(gateway, &status, last_progress_key);
 }
 
 fn terminal_remote_update_event_already_recorded(
@@ -1119,12 +1133,7 @@ pub(crate) fn reconcile_remote_update_terminal_event(
         return;
     }
     let mut last_progress_key = None;
-    emit_remote_update_progress_event(
-        gateway,
-        request_id,
-        &status.target_ref,
-        &mut last_progress_key,
-    );
+    emit_remote_update_progress_event_for_status(gateway, &status, &mut last_progress_key);
 }
 
 pub(crate) fn peer_remote_update_blocked_reason(peer: &LanPeerSnapshot) -> Option<String> {
@@ -1995,6 +2004,95 @@ mod tests {
                     .and_then(|value| value.as_str())
                     == Some("ru_success")
         }));
+    }
+
+    #[test]
+    fn record_remote_update_worker_exit_does_not_override_succeeded_status() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let _guard = set_remote_update_test_env(temp_dir.path());
+        let gateway = gateway_state_fixture(temp_dir.path());
+
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "succeeded".to_string(),
+            target_ref: "9e557ebd".to_string(),
+            request_id: Some("ru_success".to_string()),
+            reason_code: None,
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some("worker.ps1".to_string()),
+            worker_pid: Some(4242),
+            worker_exit_code: Some(0),
+            detail: Some("Completed: Remote self-update completed successfully.".to_string()),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: Some(20),
+            finished_at_unix_ms: Some(30),
+            updated_at_unix_ms: 30,
+            timeline: vec![LanRemoteUpdateTimelineEntry {
+                unix_ms: 30,
+                phase: "completed".to_string(),
+                label: "Remote update completed".to_string(),
+                detail: Some("Completed: Remote self-update completed successfully.".to_string()),
+                source: "worker".to_string(),
+                state: "succeeded".to_string(),
+            }],
+        };
+        write_lan_remote_update_status(&status).expect("write status");
+
+        record_remote_update_worker_exit(
+            &gateway,
+            "ru_success",
+            4242,
+            Some(0),
+            "Remote update worker PID 4242 exited without recording completion for target 9e557ebd.",
+            40,
+        );
+
+        let final_status = read_lan_remote_update_status_raw().expect("status should still exist");
+        assert_eq!(final_status.state, "succeeded");
+        assert_eq!(final_status.worker_exit_code, Some(0));
+        let events = gateway.store.list_events_range(None, None, Some(20));
+        assert!(!events.iter().any(|event| {
+            event.get("code").and_then(|value| value.as_str()) == Some("lan.remote_update_failed")
+        }));
+    }
+
+    #[test]
+    fn parse_remote_update_debug_response_accepts_older_payload_without_new_fields() {
+        let payload = serde_json::json!({
+            "ok": true,
+            "version": 1,
+            "node_id": "node-a",
+            "node_name": "Desk A",
+            "remote_update_readiness": {
+                "ready": true,
+                "checked_at_unix_ms": 1,
+                "blocked_reason": null
+            },
+            "remote_update_status": null,
+            "status_path": null,
+            "status_file_exists": false,
+            "log_path": null,
+            "log_file_exists": false,
+            "log_tail": null,
+            "worker_script_probe": null,
+            "local_build_identity": {
+                "app_version": "0.4.0",
+                "build_git_sha": "abcdef0123456789",
+                "build_git_short_sha": "abcdef01",
+                "build_commit_unix_ms": null
+            },
+            "local_version_sync": {
+                "target_ref": null,
+                "git_worktree_clean": true,
+                "update_to_local_build_allowed": false,
+                "blocked_reason": null
+            }
+        });
+
+        let parsed: LanRemoteUpdateDebugResponsePacket =
+            serde_json::from_value(payload).expect("older payload should deserialize");
+        assert_eq!(parsed.log_tail_source, "none");
+        assert!(!parsed.worker_bootstrap_observed);
     }
 
     #[test]
