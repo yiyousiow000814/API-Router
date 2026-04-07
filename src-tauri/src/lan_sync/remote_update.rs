@@ -2009,7 +2009,7 @@ mod tests {
             worker_script: Some("worker.ps1".to_string()),
             worker_pid: Some(4242),
             worker_exit_code: None,
-            detail: Some("Building EXE: Running npm run build:root-exe".to_string()),
+            detail: Some("Building EXE: Running Windows EXE build and restart script".to_string()),
             accepted_at_unix_ms: 10,
             started_at_unix_ms: Some(20),
             finished_at_unix_ms: None,
@@ -2018,7 +2018,9 @@ mod tests {
                 unix_ms: 30,
                 phase: "build_exe".to_string(),
                 label: "Building EXE".to_string(),
-                detail: Some("Building EXE: Running npm run build:root-exe".to_string()),
+                detail: Some(
+                    "Building EXE: Running Windows EXE build and restart script".to_string(),
+                ),
                 source: "worker".to_string(),
                 state: "running".to_string(),
             }],
@@ -2055,6 +2057,10 @@ mod tests {
         assert!(windows_contents.contains("UTF8Encoding($false)"));
         assert!(windows_contents
             .contains("[System.IO.File]::WriteAllText($statusPath, $json, $utf8NoBom)"));
+        assert!(windows_contents.contains("scripts\\build-root-exe.ps1"));
+        assert!(windows_contents.contains("Running Windows EXE build and restart script"));
+        assert!(windows_contents.contains("build-root-exe.ps1 failed"));
+        assert!(!windows_contents.contains("npm run build:root-exe"));
 
         let linux_script = repo_root
             .join("src-tauri")
@@ -2074,5 +2080,24 @@ mod tests {
         let flags = windows_remote_update_creation_flags();
         assert_eq!(flags & 0x0000_0200, 0x0000_0200);
         assert_eq!(flags & 0x0000_0008, 0);
+    }
+
+    #[test]
+    fn build_root_exe_script_uses_windows_powershell_driver() {
+        let repo_root = resolve_repo_root_for_self_update().expect("resolve repo root");
+        let package_json =
+            std::fs::read_to_string(repo_root.join("package.json")).expect("read package.json");
+        assert!(package_json.contains("\"build:root-exe\": \"node scripts/build-root-exe.mjs\""));
+
+        let build_driver =
+            std::fs::read_to_string(repo_root.join("scripts").join("build-root-exe.mjs"))
+                .expect("read build-root-exe driver");
+        assert!(build_driver.contains("scripts', 'build-root-exe.ps1"));
+        assert!(build_driver.contains("powershell.exe"));
+
+        let build_script =
+            std::fs::read_to_string(repo_root.join("scripts").join("build-root-exe.ps1"))
+                .expect("read build-root-exe.ps1");
+        assert!(build_script.contains("npm.cmd run tauri -- build --no-bundle"));
     }
 }

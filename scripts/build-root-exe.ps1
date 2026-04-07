@@ -84,8 +84,8 @@ try {
   Assert-LastExitOk 'npm run build'
 
   # Build tauri app (produces src-tauri/target/release/api_router.exe).
-  Write-Host "Running: npm run tauri -- build"
-  & npm.cmd run tauri -- build
+  Write-Host "Running: npm run tauri -- build --no-bundle"
+  & npm.cmd run tauri -- build --no-bundle
   Assert-LastExitOk 'tauri build'
 
   if (-not $NoCopy) {
