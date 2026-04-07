@@ -84,6 +84,12 @@ function Get-RemoteUpdateLogPath {
   return $path
 }
 
+function Get-RemoteUpdateBuildResultPath {
+  $path = [string]$env:API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH
+  if ([string]::IsNullOrWhiteSpace($path)) { return $null }
+  return $path
+}
+
 function Write-RemoteUpdateLog {
   param(
     [Parameter(Mandatory = $true)]
@@ -118,6 +124,33 @@ function Write-BuildExitDiagnostics([string]$Result) {
       $currentPhase,
       $currentLabel,
       $currentDetail)
+}
+
+function Write-BuildResultMarker([string]$Result) {
+  $resultPath = Get-RemoteUpdateBuildResultPath
+  if (-not $resultPath) { return }
+
+  try {
+    $parent = Split-Path -Parent $resultPath
+    if ($parent) {
+      New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    }
+    $payload = [ordered]@{
+      result = $Result
+      had_failure = $hadFailure
+      last_exit_code = $LASTEXITCODE
+      success_flag = $?
+      current_phase = if ($script:CurrentBuildStepPhase) { $script:CurrentBuildStepPhase } else { $null }
+      current_label = if ($script:CurrentBuildStepLabel) { $script:CurrentBuildStepLabel } else { $null }
+      current_detail = if ($script:CurrentBuildStepDetail) { $script:CurrentBuildStepDetail } else { $null }
+      written_at_unix_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    }
+    $json = $payload | ConvertTo-Json -Depth 4
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($resultPath, $json, $utf8NoBom)
+  } catch {
+    Write-RemoteUpdateLog ("Failed to write build result marker: " + $_.Exception.Message)
+  }
 }
 
 function Update-RemoteUpdateTimelineStep {
@@ -612,6 +645,7 @@ try {
     Write-Warning ("API Router restart after build failed: " + $_.Exception.Message)
   }
   Write-BuildExitDiagnostics $script:BuildResult
+  Write-BuildResultMarker $script:BuildResult
 }
 
 if ($hadFailure) {

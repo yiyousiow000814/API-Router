@@ -2555,6 +2555,9 @@ mod tests {
         assert!(windows_contents.contains("tools\\build\\build-root-exe.ps1"));
         assert!(windows_contents.contains("Running Windows EXE build and restart script"));
         assert!(windows_contents.contains("build-root-exe.ps1 failed"));
+        assert!(windows_contents.contains("function Get-RemoteUpdateBuildResultPath"));
+        assert!(windows_contents.contains("Hidden process exit_code was <null>"));
+        assert!(windows_contents.contains("build result marker reported success"));
         assert!(windows_contents.contains("-StartHidden"));
         assert!(windows_contents.contains("function Show-RemoteUpdateNotification"));
         assert!(windows_contents.contains("System.Windows.Forms.NotifyIcon"));
@@ -2616,6 +2619,9 @@ mod tests {
         assert!(build_script.contains("$restartWarning = $null"));
         assert!(build_script.contains("function Invoke-BuildCommand"));
         assert!(build_script.contains("CreateNoWindow = $true"));
+        assert!(build_script.contains("function Get-RemoteUpdateBuildResultPath"));
+        assert!(build_script.contains("function Write-BuildResultMarker"));
+        assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH"));
         assert!(build_script.contains("function Invoke-BuildStage"));
         assert!(build_script.contains("Invoke-BuildStage `"));
         assert!(build_script.contains("-FilePath $NpmCli"));

@@ -20,6 +20,32 @@ function Get-RemoteUpdateLogPath {
   return Join-Path $env:API_ROUTER_USER_DATA_DIR 'diagnostics\lan-remote-update.log'
 }
 
+function Get-RemoteUpdateBuildResultPath {
+  $explicit = $env:API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH
+  if ($explicit) { return $explicit }
+  if (-not $env:API_ROUTER_USER_DATA_DIR) { return $null }
+  return Join-Path $env:API_ROUTER_USER_DATA_DIR 'diagnostics\lan-remote-update-build-result.json'
+}
+
+function Reset-RemoteUpdateBuildResult {
+  $resultPath = Get-RemoteUpdateBuildResultPath
+  if (-not $resultPath) { return }
+  Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue
+}
+
+function Read-RemoteUpdateBuildResult {
+  $resultPath = Get-RemoteUpdateBuildResultPath
+  if (-not $resultPath -or -not (Test-Path -LiteralPath $resultPath)) {
+    return $null
+  }
+  try {
+    return Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+  } catch {
+    Write-RemoteUpdateLog ("Failed to read build result marker: " + $_.Exception.Message)
+    return $null
+  }
+}
+
 function Write-RemoteUpdateLog {
   param(
     [Parameter(Mandatory = $true)]
@@ -264,6 +290,24 @@ function Format-ProcessFailureMessage([string]$FailureMessage, [string]$Summary,
   return $FailureMessage
 }
 
+function Get-ProcessExitCodeOrNull {
+  param(
+    [Parameter(Mandatory = $true)]
+    [System.Diagnostics.Process]$Process
+  )
+
+  try {
+    $Process.Refresh()
+  } catch {
+  }
+  try {
+    return [Nullable[int]]$Process.ExitCode
+  } catch {
+    Write-RemoteUpdateLog ("Reading hidden process exit code failed: " + $_.Exception.Message)
+    return $null
+  }
+}
+
 function Test-GitRevisionExists {
   param(
     [Parameter(Mandatory = $true)]
@@ -352,6 +396,7 @@ function Invoke-HiddenProcess {
   $stdoutPath = [System.IO.Path]::GetTempFileName()
   $stderrPath = [System.IO.Path]::GetTempFileName()
   try {
+    Reset-RemoteUpdateBuildResult
     Write-RemoteUpdateLog "Invoking hidden process: file=$FilePath args=$($ArgumentList -join ' ')"
     $process = Start-Process -FilePath $FilePath `
       -ArgumentList $ArgumentList `
@@ -362,6 +407,7 @@ function Invoke-HiddenProcess {
       -RedirectStandardError $stderrPath `
       -PassThru
     $process.WaitForExit()
+    $exitCode = Get-ProcessExitCodeOrNull -Process $process
     $stdout = if (Test-Path $stdoutPath) { Get-Content -Path $stdoutPath -Raw -ErrorAction SilentlyContinue } else { '' }
     $stderr = if (Test-Path $stderrPath) { Get-Content -Path $stderrPath -Raw -ErrorAction SilentlyContinue } else { '' }
     $combinedOutput = @()
@@ -369,15 +415,29 @@ function Invoke-HiddenProcess {
     if ($stderr) { $combinedOutput += $stderr -split "\r?\n" }
     $stdoutSummary = Format-CommandOutputSummary ($stdout -split "\r?\n")
     $stderrSummary = Format-CommandOutputSummary ($stderr -split "\r?\n")
+    $buildResult = Read-RemoteUpdateBuildResult
     Write-RemoteUpdateLog ("Hidden process completed: file={0}; exit_code={1}; success_flag={2}; last_exit_code={3}; stdout_summary={4}; stderr_summary={5}" -f `
         $FilePath,
-        $process.ExitCode,
+        $(if ($null -eq $exitCode) { '<null>' } else { $exitCode }),
         $?.ToString().ToLowerInvariant(),
         $LASTEXITCODE,
         $(if ($stdoutSummary) { $stdoutSummary } else { '<none>' }),
         $(if ($stderrSummary) { $stderrSummary } else { '<none>' }))
     Write-CommandOutputLog $combinedOutput
-    if ($process.ExitCode -ne 0) {
+    if ($null -eq $exitCode) {
+      if ($buildResult -and [string]$buildResult.result -eq 'succeeded') {
+        Write-RemoteUpdateLog "Hidden process exit_code was <null>, but build result marker reported success. Treating nested build as succeeded."
+        return
+      }
+      Write-RemoteUpdateLog "Hidden process exit_code was <null> and no success marker was available."
+    }
+    if (($null -ne $exitCode) -and ($exitCode -eq 0)) {
+      return
+    }
+    if (($null -eq $exitCode) -and $buildResult -and [string]$buildResult.result -eq 'failed') {
+      Write-RemoteUpdateLog "Hidden process exit_code was <null> and build result marker reported failure."
+    }
+    if (($null -ne $exitCode) -or $buildResult) {
       $summary = Format-CommandOutputSummary $combinedOutput
       $stdoutTail = Format-CommandOutputSummary ($stdout -split "\r?\n" | Select-Object -Last 20)
       $stderrTail = Format-CommandOutputSummary ($stderr -split "\r?\n" | Select-Object -Last 20)
@@ -390,8 +450,17 @@ function Invoke-HiddenProcess {
       if ($stderrTail) {
         Write-RemoteUpdateLog "Hidden process stderr tail: $stderrTail"
       }
-      throw (Format-ProcessFailureMessage $FailureMessage $summary $process.ExitCode)
+      if ($buildResult) {
+        Write-RemoteUpdateLog ("Hidden process build marker: result={0}; had_failure={1}; last_exit_code={2}; current_phase={3}; current_label={4}" -f `
+            $buildResult.result,
+            $buildResult.had_failure,
+            $buildResult.last_exit_code,
+            $buildResult.current_phase,
+            $buildResult.current_label)
+      }
+      throw (Format-ProcessFailureMessage $FailureMessage $summary $exitCode)
     }
+    throw "$FailureMessage; hidden process exited without a usable exit code or build result marker"
   } finally {
     Remove-Item -LiteralPath $stdoutPath -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $stderrPath -ErrorAction SilentlyContinue

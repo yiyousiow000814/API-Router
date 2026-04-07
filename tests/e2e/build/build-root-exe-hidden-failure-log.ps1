@@ -10,6 +10,7 @@ $tempRoot = Join-Path $RepoRoot 'user-data\tmp\build-root-exe-hidden-failure-log
 $fakeBin = Join-Path $tempRoot 'fake-bin'
 $statusPath = Join-Path $tempRoot 'diagnostics\lan-remote-update-status.json'
 $logPath = Join-Path $tempRoot 'diagnostics\lan-remote-update.log'
+$resultPath = Join-Path $tempRoot 'diagnostics\lan-remote-update-build-result.json'
 $stdoutPath = Join-Path $tempRoot 'stdout.log'
 $stderrPath = Join-Path $tempRoot 'stderr.log'
 $fakeTscPath = Join-Path $fakeBin 'tsc.cmd'
@@ -58,6 +59,7 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 $env:API_ROUTER_REMOTE_UPDATE_STATUS_PATH = $statusPath
 $env:API_ROUTER_REMOTE_UPDATE_LOG_PATH = $logPath
+$env:API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH = $resultPath
 $env:PATH = "$fakeBin;$env:PATH"
 $env:API_ROUTER_BUILD_NPM_PATH = $fakeNpmPath
 $env:API_ROUTER_BUILD_TSC_PATH = $fakeTscPath
@@ -107,6 +109,13 @@ if ($log -notmatch 'Building frontend assets: Running vite build') {
 }
 if ($log -notmatch 'Build script final state: result=failed; had_failure=true;') {
   throw "Expected final failure diagnostics in diagnostics log.`n$log"
+}
+if (-not (Test-Path -LiteralPath $resultPath)) {
+  throw "Expected build result marker at $resultPath"
+}
+$result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+if ([string]$result.result -ne 'failed') {
+  throw "Expected build result marker to report failure.`n$($result | ConvertTo-Json -Depth 4)"
 }
 
 Write-Host '[build-root-exe-hidden-failure-log.e2e] PASS'

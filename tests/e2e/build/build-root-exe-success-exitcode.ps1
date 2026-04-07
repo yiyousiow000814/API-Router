@@ -14,6 +14,7 @@ $fakeDstTestExe = Join-Path $tempRoot 'out\API Router [TEST].exe'
 $fakeStartPath = Join-Path $fakeBin 'start-ok.cmd'
 $stdoutPath = Join-Path $tempRoot 'stdout.log'
 $logPath = Join-Path $tempRoot 'diagnostics\lan-remote-update.log'
+$resultPath = Join-Path $tempRoot 'diagnostics\lan-remote-update-build-result.json'
 $fakeTscPath = Join-Path $fakeBin 'tsc.cmd'
 $fakeVitePath = Join-Path $fakeBin 'vite.cmd'
 
@@ -57,6 +58,7 @@ $env:API_ROUTER_BUILD_DST_EXE_PATH = $fakeDstExe
 $env:API_ROUTER_BUILD_DST_TEST_EXE_PATH = $fakeDstTestExe
 $env:API_ROUTER_BUILD_START_FILE_PATH = $fakeStartPath
 $env:API_ROUTER_REMOTE_UPDATE_LOG_PATH = $logPath
+$env:API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH = $resultPath
 
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ScriptPath -StartHidden *> $stdoutPath
 $scriptExitCode = $LASTEXITCODE
@@ -81,6 +83,13 @@ if (-not (Test-Path -LiteralPath $logPath)) {
 $log = Get-Content -LiteralPath $logPath -Raw
 if ($log -notmatch 'Build script final state: result=succeeded; had_failure=false;') {
   throw "Expected final success diagnostics in build log.`n$log"
+}
+if (-not (Test-Path -LiteralPath $resultPath)) {
+  throw "Expected build result marker at $resultPath"
+}
+$result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+if ([string]$result.result -ne 'succeeded') {
+  throw "Expected build result marker to report success.`n$($result | ConvertTo-Json -Depth 4)"
 }
 
 Write-Host '[build-root-exe-success-exitcode.e2e] PASS'
