@@ -38,23 +38,58 @@ fn append_app_startup_stage(stage: &str, elapsed_ms: Option<u64>, detail: Option
     );
 }
 
+fn elapsed_ms_since(started_at: std::time::Instant) -> u64 {
+    started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn write_dashboard_status_slow_diag(
+    diagnostics_dir: &std::path::Path,
+    detail_level: &str,
+    total_elapsed_ms: u64,
+    response_bytes: usize,
+    phase_timings_ms: &serde_json::Map<String, serde_json::Value>,
+) {
+    let diag = serde_json::json!({
+        "captured_at_unix_ms": unix_ms(),
+        "detail_level": detail_level,
+        "total_elapsed_ms": total_elapsed_ms,
+        "response_bytes": response_bytes,
+        "phase_timings_ms": phase_timings_ms,
+    });
+    let path = diagnostics_dir.join(format!("status-dashboard-slow-{}.json", unix_ms()));
+    let _ = std::fs::write(path, serde_json::to_vec_pretty(&diag).unwrap_or_default());
+}
+
 #[tauri::command]
 pub(crate) fn get_status(
     state: tauri::State<'_, app_state::AppState>,
     detail_level: Option<String>,
 ) -> serde_json::Value {
+    let command_started_at = std::time::Instant::now();
+    let mut phase_timings_ms = serde_json::Map::new();
     let dashboard_detail = detail_level
         .as_deref()
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("dashboard"));
+    let phase_started_at = std::time::Instant::now();
     let cfg = state.gateway.cfg.read().clone();
     let config_revision = config_revision(&state, &cfg);
     let wsl_gateway_host =
         crate::platform::wsl_gateway_host::cached_or_default_wsl_gateway_host(Some(&state.config_path));
+    phase_timings_ms.insert(
+        "config_and_revision".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
     let now = unix_ms();
+    let phase_started_at = std::time::Instant::now();
     state.gateway.router.sync_with_config(&cfg, now);
     let providers = state.gateway.router.snapshot(now);
+    phase_timings_ms.insert(
+        "router_snapshot".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
     let manual_override = state.gateway.router.manual_override.read().clone();
     // Keep status payload small: expose only a compact latest-error preview.
+    let phase_started_at = std::time::Instant::now();
     let recent_events = if dashboard_detail {
         Vec::new()
     } else {
@@ -63,6 +98,11 @@ pub(crate) fn get_status(
             .store
             .list_recent_error_events(crate::constants::STATUS_RECENT_ERROR_PREVIEW_LIMIT)
     };
+    phase_timings_ms.insert(
+        "recent_events".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
+    let phase_started_at = std::time::Instant::now();
     let metrics = state.gateway.store.get_metrics();
     let quota = state.gateway.store.list_quota_snapshots();
     let mut providers = providers;
@@ -79,8 +119,13 @@ pub(crate) fn get_status(
     }
     let ledgers = state.gateway.store.list_ledgers();
     let projected_ledgers = projected_usage_ledgers(&state.gateway, &quota);
+    phase_timings_ms.insert(
+        "metrics_quota_ledgers".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
     let last_activity = state.gateway.last_activity_unix_ms.load(Ordering::Relaxed);
     let active_recent = last_activity > 0 && now.saturating_sub(last_activity) < 2 * 60 * 1000;
+    let phase_started_at = std::time::Instant::now();
     let (active_provider, active_reason, active_provider_counts) = if active_recent {
         let map = state.gateway.last_used_by_session.read();
 
@@ -115,20 +160,40 @@ pub(crate) fn get_status(
     } else {
         (None, None, std::collections::BTreeMap::<String, u64>::new())
     };
+    phase_timings_ms.insert(
+        "active_provider".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
+    let phase_started_at = std::time::Instant::now();
     let codex_account = state
         .gateway
         .store
         .get_codex_account_snapshot()
         .unwrap_or(serde_json::json!({"ok": false}));
+    phase_timings_ms.insert(
+        "codex_account".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
+    let phase_started_at = std::time::Instant::now();
     let lan_sync = state
         .lan_sync
         .snapshot(cfg.listen.port, &cfg, &state.secrets);
+    phase_timings_ms.insert(
+        "lan_sync_snapshot".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
+    let phase_started_at = std::time::Instant::now();
     let shared_quota_owners = if dashboard_detail {
         Vec::new()
     } else {
         crate::orchestrator::quota::shared_quota_owner_statuses(&state.gateway, &state.lan_sync)
     };
+    phase_timings_ms.insert(
+        "shared_quota_owners".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
 
+    let phase_started_at = std::time::Instant::now();
     let client_sessions = {
         let map = if !dashboard_detail {
             // Full status may update runtime session discovery; keep this off the dashboard hot path.
@@ -340,8 +405,12 @@ pub(crate) fn get_status(
             .collect::<Vec<_>>();
         sessions
     };
+    phase_timings_ms.insert(
+        "client_sessions".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
 
-    serde_json::json!({
+    let response = serde_json::json!({
       "listen": { "host": cfg.listen.host, "port": cfg.listen.port },
       "config_revision": config_revision,
       "wsl_gateway_host": wsl_gateway_host,
@@ -361,7 +430,19 @@ pub(crate) fn get_status(
       "client_sessions": client_sessions,
       "lan_sync": lan_sync,
       "shared_quota_owners": shared_quota_owners
-    })
+    });
+    let response_bytes = serde_json::to_vec(&response).unwrap_or_default();
+    let total_elapsed_ms = elapsed_ms_since(command_started_at);
+    if total_elapsed_ms >= 1000 {
+        write_dashboard_status_slow_diag(
+            &state.diagnostics_dir,
+            if dashboard_detail { "dashboard" } else { "full" },
+            total_elapsed_ms,
+            response_bytes.len(),
+            &phase_timings_ms,
+        );
+    }
+    response
 }
 
 fn config_revision(state: &app_state::AppState, cfg: &crate::orchestrator::config::AppConfig) -> String {

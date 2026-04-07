@@ -454,8 +454,8 @@ fn normalize_remote_update_status(
 ) -> LanRemoteUpdateStatusSnapshot {
     let current_target_ref = normalized_local_build_target_ref();
     let status_target_ref = status.target_ref.trim();
-    let state = status.state.trim();
-    if !matches!(state, "accepted" | "running") {
+    let state = status.state.trim().to_string();
+    if !matches!(state.as_str(), "accepted" | "running" | "failed") {
         return status;
     }
 
@@ -481,7 +481,11 @@ fn normalize_remote_update_status(
 
     if current_target_ref == status_target_ref {
         status.state = "succeeded".to_string();
-        status.reason_code = Some("peer_already_matches_target".to_string());
+        status.reason_code = Some(if state == "failed" {
+            "peer_already_matches_target_after_failed_status".to_string()
+        } else {
+            "peer_already_matches_target".to_string()
+        });
         status.detail = Some(match worker_cleanup_detail {
             Some(detail) => format!(
                 "Current build already matches the queued target; cleared stale remote update status after restart/manual update. {detail}"
@@ -2171,8 +2175,59 @@ mod tests {
         assert!(build_script.contains("[switch]$StartHidden"));
         assert!(build_script.contains("'--start-hidden'"));
         assert!(build_script.contains("if ($arguments.Count -gt 0)"));
+        assert!(build_script.contains("$restartWarning = $null"));
+        assert!(build_script.contains("API Router restart after build failed"));
+        assert!(
+            build_script.contains("Windows EXE build succeeded, but the restart attempt failed")
+        );
         assert!(
             build_script.contains("Start-Process -FilePath $DstExe -WorkingDirectory $RepoRoot")
         );
+    }
+
+    #[test]
+    fn normalize_remote_update_status_marks_failed_status_succeeded_when_target_already_matches() {
+        let Some(target_ref) = normalized_local_build_target_ref() else {
+            return;
+        };
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "failed".to_string(),
+            target_ref: target_ref.clone(),
+            request_id: Some("ru_failed".to_string()),
+            reason_code: Some("worker_exited_early".to_string()),
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some("worker.ps1".to_string()),
+            worker_pid: None,
+            worker_exit_code: Some(1),
+            detail: Some("tools/build/build-root-exe.ps1 failed".to_string()),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: Some(20),
+            finished_at_unix_ms: Some(30),
+            updated_at_unix_ms: 30,
+            timeline: vec![LanRemoteUpdateTimelineEntry {
+                unix_ms: 30,
+                phase: "failed".to_string(),
+                label: "Build step failed".to_string(),
+                detail: Some("tools/build/build-root-exe.ps1 failed".to_string()),
+                source: "worker".to_string(),
+                state: "failed".to_string(),
+            }],
+        };
+
+        let normalized = normalize_remote_update_status(status);
+        assert_eq!(normalized.state, "succeeded");
+        assert_eq!(
+            normalized.reason_code.as_deref(),
+            Some("peer_already_matches_target_after_failed_status")
+        );
+        assert!(normalized.detail.as_deref().is_some_and(
+            |detail| detail.contains("Current build already matches the queued target")
+        ));
+        assert!(normalized
+            .timeline
+            .iter()
+            .any(|entry| entry.phase == "normalized_succeeded"
+                && entry.label == "Status normalized to succeeded"));
     }
 }

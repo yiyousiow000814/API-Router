@@ -83,6 +83,7 @@ function Copy-WithRetry([string]$From, [string]$To) {
 }
 
 $hadFailure = $false
+$restartWarning = $null
 try {
   # Build frontend (tsc + vite build). Note: tauri build runs this again via beforeBuildCommand,
   # but we keep this here so failures surface early and with clearer output.
@@ -110,9 +111,18 @@ try {
 } finally {
   # Always ensure API Router is running again. This is critical: if it is closed,
   # Codex sessions are stopped.
-  Start-ApiRouter
+  try {
+    Start-ApiRouter
+  } catch {
+    $restartWarning = $_
+    Write-Warning ("API Router restart after build failed: " + $_.Exception.Message)
+  }
 }
 
 if ($hadFailure) {
   exit 1
+}
+
+if ($null -ne $restartWarning) {
+  Write-Warning "Windows EXE build succeeded, but the restart attempt failed. See warning above."
 }

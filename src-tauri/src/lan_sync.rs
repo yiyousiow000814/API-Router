@@ -5169,7 +5169,7 @@ mod tests {
             crate::orchestrator::secrets::SecretStore::new(user_data_dir.join("secrets.json"));
         let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
         let status = LanRemoteUpdateStatusSnapshot {
-            state: "failed".to_string(),
+            state: "succeeded".to_string(),
             target_ref: "abc123".to_string(),
             request_id: None,
             reason_code: None,
@@ -5180,7 +5180,7 @@ mod tests {
             ),
             worker_pid: None,
             worker_exit_code: None,
-            detail: Some("git fetch failed".to_string()),
+            detail: Some("Remote self-update completed successfully.".to_string()),
             accepted_at_unix_ms: 1,
             started_at_unix_ms: Some(2),
             finished_at_unix_ms: Some(3),
