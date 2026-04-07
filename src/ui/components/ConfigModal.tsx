@@ -292,6 +292,10 @@ function isRemoteUpdateNoiseLine(value: string): boolean {
   const normalized = value.trim()
   if (!normalized) return true
   return (
+    /^vite v\d/i.test(normalized) ||
+    /^transforming\b/i.test(normalized) ||
+    /^rendering chunks\b/i.test(normalized) ||
+    /^computing gzip size\b/i.test(normalized) ||
     /^dist\/assets\//i.test(normalized) ||
     /^>\s*api-router@/i.test(normalized) ||
     /^>\s*node\s+/i.test(normalized) ||
@@ -305,7 +309,9 @@ function isRemoteUpdateNoiseLine(value: string): boolean {
     /^CategoryInfo:/i.test(normalized) ||
     /^FullyQualifiedErrorId/i.test(normalized) ||
     /^Microsoft\.PowerShell\./i.test(normalized) ||
-    /^Write-Error\b/i.test(normalized)
+    /^Write-Error\b/i.test(normalized) ||
+    /^\+\s+Write-Error\b/i.test(normalized) ||
+    /^\+\s+~+$/i.test(normalized)
   )
 }
 
@@ -313,6 +319,9 @@ function sanitizeRemoteUpdateText(value: string): string {
   const trimmed = value.trim()
   if (!trimmed) return ''
   const normalized = formatReadableCommitRefs(trimmed)
+    .replace(/\u00c2/g, ' ')
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ' ')
+    .replace(/\[[0-9;]{1,16}m/g, ' ')
     .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, ' ')
     .replace(/\. Output:\s*/gi, ': ')
   const segments = normalized
@@ -323,6 +332,8 @@ function sanitizeRemoteUpdateText(value: string): string {
         .replace(/:\s*At [A-Z]:\\.*$/i, '')
         .replace(/:\s*CategoryInfo:.*$/i, '')
         .replace(/:\s*FullyQualifiedErrorId.*$/i, '')
+        .replace(/:\s*\+\s+Write-Error.*$/i, '')
+        .replace(/:\s*\+\s+~+.*$/i, '')
         .replace(/\s+/g, ' ')
         .trim(),
     )
@@ -399,8 +410,8 @@ export function remoteDebugReadinessReasonText(
 export function splitRemoteDebugLogTail(logTail: string): { recent: string; older: string } {
   const lines = logTail
     .split(/\r?\n/)
-    .map((line) => line.trimEnd())
-    .filter((line) => line.trim().length > 0)
+    .map((line) => sanitizeRemoteUpdateText(line.trimEnd()))
+    .filter((line) => line.trim().length > 0 && !isRemoteUpdateNoiseLine(line))
   if (lines.length <= 4) {
     return { recent: lines.join('\n'), older: '' }
   }

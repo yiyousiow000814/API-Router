@@ -79,6 +79,21 @@ describe('ConfigModal', () => {
     ])
   })
 
+  it('sanitizes debug log tail noise and ansi fragments', () => {
+    const { recent, older } = splitRemoteDebugLogTail(
+      [
+        '[36mvite v7.3.1 [32mbuilding client environment for production...',
+        '210 modules transformed.',
+        '+ Write-Error $_',
+        '+ ~~~~~~~~~~~~~~',
+        'error during build: EPERM: operation not permitted, rename dist/assets/app.js',
+      ].join('\n'),
+    )
+
+    expect(older).toBe('')
+    expect(recent).toBe('error during build: EPERM: operation not permitted, rename dist/assets/app.js')
+  })
+
   it('renders provider name, base url, and key inputs for add provider', () => {
     const html = renderToStaticMarkup(
       <ConfigModal

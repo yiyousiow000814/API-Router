@@ -736,6 +736,21 @@ fn synthesize_remote_update_log_tail_from_status(
     Some(tail)
 }
 
+fn select_remote_update_log_tail(
+    remote_update_status: Option<&LanRemoteUpdateStatusSnapshot>,
+    file_log_tail: Option<String>,
+) -> (String, Option<String>) {
+    if let Some(log_tail) = file_log_tail {
+        return ("file".to_string(), Some(log_tail));
+    }
+    if let Some(status) = remote_update_status {
+        if let Some(log_tail) = synthesize_remote_update_log_tail_from_status(status, 6_000) {
+            return ("timeline".to_string(), Some(log_tail));
+        }
+    }
+    ("none".to_string(), None)
+}
+
 fn format_remote_update_debug_time(unix_ms: u64) -> Option<String> {
     if unix_ms == 0 {
         return None;
@@ -1658,19 +1673,8 @@ pub(crate) async fn lan_sync_remote_update_debug_http(
         .is_some_and(remote_update_worker_bootstrap_observed);
     let worker_script_probe = probe_remote_update_worker_script();
     let file_log_tail = read_remote_update_log_tail(6_000);
-    let (log_tail_source, log_tail) = if let Some(status) = remote_update_status.as_ref() {
-        match synthesize_remote_update_log_tail_from_status(status, 6_000) {
-            Some(log_tail) => ("timeline".to_string(), Some(log_tail)),
-            None => match file_log_tail {
-                Some(log_tail) => ("file".to_string(), Some(log_tail)),
-                None => ("none".to_string(), None),
-            },
-        }
-    } else if let Some(log_tail) = file_log_tail {
-        ("file".to_string(), Some(log_tail))
-    } else {
-        ("none".to_string(), None)
-    };
+    let (log_tail_source, log_tail) =
+        select_remote_update_log_tail(remote_update_status.as_ref(), file_log_tail);
     Json(serde_json::json!(LanRemoteUpdateDebugResponsePacket {
         ok: true,
         version: 1,
@@ -2336,6 +2340,39 @@ mod tests {
     }
 
     #[test]
+    fn select_remote_update_log_tail_prefers_file_log_over_timeline() {
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "failed".to_string(),
+            target_ref: "deadbeef".to_string(),
+            request_id: Some("ru_file".to_string()),
+            reason_code: Some("build_failed".to_string()),
+            requester_node_id: Some("node-a".to_string()),
+            requester_node_name: Some("Desk A".to_string()),
+            worker_script: Some("worker.ps1".to_string()),
+            worker_pid: Some(42),
+            worker_exit_code: Some(1),
+            detail: Some("failed".to_string()),
+            accepted_at_unix_ms: 1,
+            started_at_unix_ms: Some(2),
+            finished_at_unix_ms: Some(3),
+            updated_at_unix_ms: 4,
+            timeline: vec![LanRemoteUpdateTimelineEntry {
+                unix_ms: 4,
+                phase: "failed".to_string(),
+                label: "Building frontend failed".to_string(),
+                detail: Some("timeline summary".to_string()),
+                source: "worker".to_string(),
+                state: "failed".to_string(),
+            }],
+        };
+
+        let (source, log_tail) =
+            select_remote_update_log_tail(Some(&status), Some("worker stderr tail".to_string()));
+        assert_eq!(source, "file");
+        assert_eq!(log_tail.as_deref(), Some("worker stderr tail"));
+    }
+
+    #[test]
     fn parse_lan_remote_update_status_bytes_accepts_utf8_bom_written_by_powershell() {
         let status = LanRemoteUpdateStatusSnapshot {
             state: "running".to_string(),
@@ -2458,12 +2495,14 @@ mod tests {
         assert!(build_script.contains("if ($arguments.Count -gt 0)"));
         assert!(build_script.contains("$restartWarning = $null"));
         assert!(build_script.contains("function Invoke-BuildCommand"));
-        assert!(build_script.contains("-WindowStyle Hidden"));
-        assert!(build_script.contains("Invoke-BuildCommand -FilePath 'npm.cmd'"));
+        assert!(build_script.contains("CreateNoWindow = $true"));
+        assert!(build_script.contains("function Invoke-BuildStage"));
+        assert!(build_script.contains("Invoke-BuildStage `"));
+        assert!(build_script.contains("-FilePath $NpmCli"));
         assert!(build_script.contains("function Update-RemoteUpdateTimelineStep"));
         assert!(build_script.contains("function Try-CopyOptionalArtifact"));
-        assert!(build_script.contains("Enter-BuildStep -Phase 'build_frontend'"));
-        assert!(build_script.contains("Enter-BuildStep -Phase 'build_release_binary'"));
+        assert!(build_script.contains("-Phase 'build_vite'"));
+        assert!(build_script.contains("-Phase 'build_release_binary'"));
         assert!(build_script.contains("Enter-BuildStep -Phase 'install_release_binary'"));
         assert!(build_script.contains("Enter-BuildStep -Phase 'restart_api_router'"));
         assert!(build_script.contains("Installed canonical runtime executable"));

@@ -5321,12 +5321,12 @@ mod tests {
             .contains("stopped after the peer build changed"));
         assert!(payload.status_file_exists);
         assert!(payload.log_file_exists);
-        assert_eq!(payload.log_tail_source, "timeline");
+        assert_eq!(payload.log_tail_source, "file");
         assert!(payload
             .log_tail
             .as_deref()
             .unwrap_or_default()
-            .contains("Status normalized to replaced after start"));
+            .contains("fatal: git fetch failed"));
     }
 
     #[test]

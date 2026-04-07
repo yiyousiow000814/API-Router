@@ -19,6 +19,33 @@ $DstTestExe = Join-Path $RepoRoot 'API Router [TEST].exe'
 
 Write-Host "RepoRoot: $RepoRoot"
 
+function Resolve-BuildToolPath([string]$EnvVarName, [string]$DefaultPath, [string]$Label) {
+  $override = [string][System.Environment]::GetEnvironmentVariable($EnvVarName)
+  if (-not [string]::IsNullOrWhiteSpace($override)) {
+    return $override.Trim()
+  }
+  if (Test-Path -LiteralPath $DefaultPath) {
+    return $DefaultPath
+  }
+  throw "$Label tool missing: $DefaultPath"
+}
+
+$NpmCli = [string][System.Environment]::GetEnvironmentVariable('API_ROUTER_BUILD_NPM_PATH')
+if ([string]::IsNullOrWhiteSpace($NpmCli)) {
+  $NpmCli = 'npm.cmd'
+} else {
+  $NpmCli = $NpmCli.Trim()
+}
+
+$TypeScriptCli = Resolve-BuildToolPath `
+  -EnvVarName 'API_ROUTER_BUILD_TSC_PATH' `
+  -DefaultPath (Join-Path $RepoRoot 'node_modules\.bin\tsc.cmd') `
+  -Label 'TypeScript compiler'
+$ViteCli = Resolve-BuildToolPath `
+  -EnvVarName 'API_ROUTER_BUILD_VITE_PATH' `
+  -DefaultPath (Join-Path $RepoRoot 'node_modules\.bin\vite.cmd') `
+  -Label 'Vite CLI'
+
 function Get-RemoteUpdateStatusPath {
   $path = [string]$env:API_ROUTER_REMOTE_UPDATE_STATUS_PATH
   if ([string]::IsNullOrWhiteSpace($path)) { return $null }
@@ -222,24 +249,55 @@ function Test-BuildOutputNoiseLine([string]$Line) {
     $Line -match '^CategoryInfo:' -or
     $Line -match '^FullyQualifiedErrorId' -or
     $Line -match '^Microsoft\.PowerShell\.' -or
-    $Line -match '^Write-Error\b'
+    $Line -match '^Write-Error\b' -or
+    $Line -match '^\+\s+Write-Error\b' -or
+    $Line -match '^\+\s+~+$'
   )
 }
 
-function Format-BuildCommandOutputSummary($Output) {
-  if ($null -eq $Output) { return '' }
-  $lines = @(
+function Normalize-BuildOutputLine([string]$Line) {
+  if (-not $Line) { return '' }
+  $normalized = [regex]::Replace($Line, '[^\u0009\u000A\u000D\u0020-\u007E]', ' ')
+  $normalized = [regex]::Replace($normalized, '\x1b\[[0-9;?]*[ -/]*[@-~]', '')
+  $normalized = [regex]::Replace($normalized, '\[[0-9;]{1,16}m', ' ')
+  $normalized = [regex]::Replace($normalized, '\s+', ' ').Trim()
+  return $normalized
+}
+
+function Get-BuildOutputLines($Output, [switch]$IncludeNoise) {
+  if ($null -eq $Output) { return @() }
+  return @(
     $Output |
-      ForEach-Object {
-        if ($null -eq $_) { return }
-        $line = [string]$_
-        $line = [regex]::Replace($line, '[^\u0009\u000A\u000D\u0020-\u007E]', ' ')
-        $line = [regex]::Replace($line, '\x1b\[[0-9;?]*[ -/]*[@-~]', '')
-        $line = [regex]::Replace($line, '\s+', ' ').Trim()
-        if ($line -and -not (Test-BuildOutputNoiseLine $line)) { $line }
-      } |
-      Where-Object { $_ }
+      ForEach-Object { Normalize-BuildOutputLine ([string]$_) } |
+      Where-Object {
+        $_ -and ($IncludeNoise -or -not (Test-BuildOutputNoiseLine $_))
+      }
   )
+}
+
+function Write-BuildFailureOutputDiagnostics(
+  [string]$FailureLabel,
+  [string[]]$StdoutLines,
+  [string[]]$StderrLines
+) {
+  $stderrTail = @($StderrLines | Select-Object -Last 20)
+  $stdoutTail = @($StdoutLines | Select-Object -Last 20)
+  if ($stderrTail.Count -gt 0) {
+    Write-RemoteUpdateLog "$FailureLabel stderr tail:"
+    foreach ($line in $stderrTail) {
+      Write-RemoteUpdateLog "  $line"
+    }
+  }
+  if ($stdoutTail.Count -gt 0) {
+    Write-RemoteUpdateLog "$FailureLabel stdout tail:"
+    foreach ($line in $stdoutTail) {
+      Write-RemoteUpdateLog "  $line"
+    }
+  }
+}
+
+function Format-BuildCommandOutputSummary($Output) {
+  $lines = @(Get-BuildOutputLines $Output)
   if ($lines.Count -eq 0) { return '' }
   $text = ($lines | Select-Object -Last 8) -join ' | '
   if (-not $text) { return '' }
@@ -253,6 +311,9 @@ function Format-BuildFailureMessage([string]$FailureLabel, [string]$Summary, [in
   if ($Summary) {
     return "$FailureLabel failed: $Summary"
   }
+  if (Get-RemoteUpdateLogPath) {
+    return "$FailureLabel failed; see lan-remote-update.log for stderr tail"
+  }
   if ($ExitCode -gt 0) {
     return "$FailureLabel failed with exit code $ExitCode"
   }
@@ -263,8 +324,7 @@ function Invoke-BuildCommand {
   param(
     [Parameter(Mandatory = $true)]
     [string]$FilePath,
-    [Parameter(Mandatory = $true)]
-    [string[]]$ArgumentList,
+    [string[]]$ArgumentList = @(),
     [Parameter(Mandatory = $true)]
     [string]$FailureLabel
   )
@@ -280,33 +340,118 @@ function Invoke-BuildCommand {
   # Remote update launches this script with -StartHidden.
   # In that mode every nested npm/cmd invocation must remain hidden too, otherwise the peer
   # machine can flash 2-3 transient console windows during frontend and Tauri build steps.
-  $stdoutPath = [System.IO.Path]::GetTempFileName()
-  $stderrPath = [System.IO.Path]::GetTempFileName()
-  try {
-    $process = Start-Process -FilePath $FilePath `
-      -ArgumentList $ArgumentList `
-      -WorkingDirectory $RepoRoot `
-      -WindowStyle Hidden `
-      -RedirectStandardOutput $stdoutPath `
-      -RedirectStandardError $stderrPath `
-      -PassThru
-    $process.WaitForExit()
-    $stdout = if (Test-Path $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue } else { '' }
-    $stderr = if (Test-Path $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue } else { '' }
-    $combinedOutput = @()
-    if ($stdout) { $combinedOutput += $stdout -split "\r?\n" }
-    if ($stderr) { $combinedOutput += $stderr -split "\r?\n" }
-    $summary = Format-BuildCommandOutputSummary $combinedOutput
-    if ($summary) {
-      Write-RemoteUpdateLog "$FailureLabel output: $summary"
+  # Batch wrappers such as npm.cmd/vite.cmd must run under cmd.exe here; launching them directly
+  # via Start-Process is not reliable on Windows and can fail before the underlying tool runs.
+  $resolvedFilePath = $FilePath
+  $resolvedArgumentList = @($ArgumentList)
+  $resolvedArgumentString = $null
+  $extension = [System.IO.Path]::GetExtension($FilePath)
+  if ($extension -and @('.cmd', '.bat') -contains $extension.ToLowerInvariant()) {
+    $quotedFilePath = "`"$FilePath`""
+    $quotedArgs = @(
+      $ArgumentList | ForEach-Object {
+        if ($null -eq $_) { return }
+        $arg = [string]$_
+        if ($arg -match '[\s"]') {
+          '"' + $arg.Replace('"', '\"') + '"'
+        } else {
+          $arg
+        }
+      }
+    ) | Where-Object { $_ }
+    $batchCommand = if ($quotedArgs.Count -gt 0) {
+      "$quotedFilePath $($quotedArgs -join ' ')"
+    } else {
+      $quotedFilePath
     }
-    if ($process.ExitCode -ne 0) {
-      throw (Format-BuildFailureMessage $FailureLabel $summary $process.ExitCode)
+    $resolvedFilePath = $env:ComSpec
+    if ([string]::IsNullOrWhiteSpace($resolvedFilePath)) {
+      $resolvedFilePath = 'cmd.exe'
     }
-  } finally {
-    Remove-Item -LiteralPath $stdoutPath -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $stderrPath -ErrorAction SilentlyContinue
+    $resolvedArgumentString = "/d /s /c $batchCommand"
   }
+  $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+  $startInfo.FileName = $resolvedFilePath
+  if (-not [string]::IsNullOrWhiteSpace($resolvedArgumentString)) {
+    $startInfo.Arguments = $resolvedArgumentString
+  } else {
+    $startInfo.Arguments = Format-BuildArgumentString -ArgumentList $resolvedArgumentList
+  }
+  $startInfo.WorkingDirectory = $RepoRoot
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+
+  $process = [System.Diagnostics.Process]::Start($startInfo)
+  $stdout = $process.StandardOutput.ReadToEnd()
+  $stderr = $process.StandardError.ReadToEnd()
+  $process.WaitForExit()
+  $stdoutLines = if ($stdout) { @($stdout -split "\r?\n") } else { @() }
+  $stderrLines = if ($stderr) { @($stderr -split "\r?\n") } else { @() }
+  $summary = Format-BuildCommandOutputSummary @($stderrLines + $stdoutLines)
+  if (-not $summary) {
+    $summary = Format-BuildCommandOutputSummary @($stdoutLines + $stderrLines)
+  }
+  if ($summary) {
+    Write-RemoteUpdateLog "$FailureLabel output: $summary"
+  }
+  if ($process.ExitCode -ne 0) {
+    # Hidden remote-update builds used to collapse genuine stderr into noisy vite progress
+    # lines. Persist both streams here so future failures always leave actionable evidence.
+    Write-BuildFailureOutputDiagnostics `
+      -FailureLabel $FailureLabel `
+      -StdoutLines (Get-BuildOutputLines $stdoutLines -IncludeNoise) `
+      -StderrLines (Get-BuildOutputLines $stderrLines -IncludeNoise)
+    throw (Format-BuildFailureMessage $FailureLabel $summary $process.ExitCode)
+  }
+}
+
+function Format-BuildCommandPreview([string]$FilePath, [string[]]$ArgumentList) {
+  $parts = @($FilePath)
+  $parts += Format-BuildArgumentTokens -ArgumentList $ArgumentList
+  return ($parts -join ' ').Trim()
+}
+
+function Format-BuildArgumentTokens([string[]]$ArgumentList) {
+  $parts = @()
+  if ($ArgumentList) {
+    foreach ($arg in $ArgumentList) {
+      if ($null -eq $arg) { continue }
+      if ($arg -match '\s') {
+        $parts += '"' + $arg.Replace('"', '\"') + '"'
+      } else {
+        $parts += $arg
+      }
+    }
+  }
+  return $parts
+}
+
+function Format-BuildArgumentString([string[]]$ArgumentList) {
+  return ((Format-BuildArgumentTokens -ArgumentList $ArgumentList) -join ' ').Trim()
+}
+
+function Invoke-BuildStage {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Phase,
+    [Parameter(Mandatory = $true)]
+    [string]$Label,
+    [Parameter(Mandatory = $true)]
+    [string]$Detail,
+    [Parameter(Mandatory = $true)]
+    [string]$FilePath,
+    [string[]]$ArgumentList = @(),
+    [Parameter(Mandatory = $true)]
+    [string]$FailureLabel
+  )
+
+  Enter-BuildStep -Phase $Phase -Label $Label -Detail $Detail
+  $commandPreview = Format-BuildCommandPreview -FilePath $FilePath -ArgumentList $ArgumentList
+  Write-Host "Running: $commandPreview"
+  Write-RemoteUpdateLog "Command for ${Label}: $commandPreview"
+  Invoke-BuildCommand -FilePath $FilePath -ArgumentList $ArgumentList -FailureLabel $FailureLabel
 }
 
 $hadFailure = $false
@@ -315,16 +460,56 @@ $script:CurrentBuildStepPhase = ''
 $script:CurrentBuildStepLabel = ''
 $script:CurrentBuildStepDetail = ''
 try {
-  # Build frontend (tsc + vite build). Note: tauri build runs this again via beforeBuildCommand,
-  # but we keep this here so failures surface early and with clearer output.
-  Enter-BuildStep -Phase 'build_frontend' -Label 'Building frontend' -Detail 'Running npm run build'
-  Write-Host "Running: npm run build"
-  Invoke-BuildCommand -FilePath 'npm.cmd' -ArgumentList @('run', 'build') -FailureLabel 'npm run build'
+  # Split the frontend chain into explicit sub-steps so remote-update diagnostics can
+  # identify the exact failing command instead of collapsing everything into "npm run build".
+  Invoke-BuildStage `
+    -Phase 'check_gateway_provider_id' `
+    -Label 'Checking provider ids' `
+    -Detail 'Running npm run check:gateway-provider-id' `
+    -FilePath $NpmCli `
+    -ArgumentList @('run', 'check:gateway-provider-id') `
+    -FailureLabel 'gateway provider id check'
+
+  Invoke-BuildStage `
+    -Phase 'check_line_endings' `
+    -Label 'Checking line endings' `
+    -Detail 'Running npm run check:line-endings' `
+    -FilePath $NpmCli `
+    -ArgumentList @('run', 'check:line-endings') `
+    -FailureLabel 'line ending check'
+
+  Invoke-BuildStage `
+    -Phase 'check_web_codex_assets' `
+    -Label 'Checking web assets' `
+    -Detail 'Running npm run check:web-codex-assets' `
+    -FilePath $NpmCli `
+    -ArgumentList @('run', 'check:web-codex-assets') `
+    -FailureLabel 'web codex asset check'
+
+  Invoke-BuildStage `
+    -Phase 'build_typescript' `
+    -Label 'TypeScript compile' `
+    -Detail 'Running tsc' `
+    -FilePath $TypeScriptCli `
+    -ArgumentList @() `
+    -FailureLabel 'TypeScript compile'
+
+  Invoke-BuildStage `
+    -Phase 'build_vite' `
+    -Label 'Building frontend assets' `
+    -Detail 'Running vite build' `
+    -FilePath $ViteCli `
+    -ArgumentList @('build') `
+    -FailureLabel 'vite build'
 
   # Build tauri app (produces src-tauri/target/release/api_router.exe).
-  Enter-BuildStep -Phase 'build_release_binary' -Label 'Building release binary' -Detail 'Running npm run tauri -- build --no-bundle'
-  Write-Host "Running: npm run tauri -- build --no-bundle"
-  Invoke-BuildCommand -FilePath 'npm.cmd' -ArgumentList @('run', 'tauri', '--', 'build', '--no-bundle') -FailureLabel 'tauri build'
+  Invoke-BuildStage `
+    -Phase 'build_release_binary' `
+    -Label 'Building release binary' `
+    -Detail 'Running npm run tauri -- build --no-bundle' `
+    -FilePath $NpmCli `
+    -ArgumentList @('run', 'tauri', '--', 'build', '--no-bundle') `
+    -FailureLabel 'tauri build'
 
   if (-not $NoCopy) {
     Enter-BuildStep -Phase 'install_release_binary' -Label 'Installing EXE' -Detail 'Replacing repo root API Router executables'
