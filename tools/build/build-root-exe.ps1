@@ -192,6 +192,20 @@ function Copy-WithRetry([string]$From, [string]$To) {
   }
 }
 
+function Try-CopyOptionalArtifact([string]$From, [string]$To, [string]$Label) {
+  try {
+    Copy-WithRetry $From $To
+    Write-Host "Wrote: $To"
+    Write-RemoteUpdateLog "$Label installed: $To"
+    return $true
+  } catch {
+    $message = $_.Exception.Message
+    Write-Warning "$Label copy skipped: $message"
+    Write-RemoteUpdateLog "$Label copy skipped: $message"
+    return $false
+  }
+}
+
 $hadFailure = $false
 $restartWarning = $null
 $script:CurrentBuildStepPhase = ''
@@ -221,7 +235,7 @@ try {
     Write-RemoteUpdateLog "Installed canonical runtime executable: $DstExe"
     # The canonical runtime is API Router.exe. The TEST copy is auxiliary and must not
     # turn a successful remote update into a failed one if that secondary artifact is locked.
-    [void](Try-CopyOptionalArtifact $SrcExe $DstTestExe 'Optional TEST EXE')
+    $null = Try-CopyOptionalArtifact $SrcExe $DstTestExe 'Optional TEST EXE'
   }
 } catch {
   $hadFailure = $true
@@ -254,20 +268,6 @@ try {
       -Detail ("Restarting API Router: " + $_.Exception.Message) `
       -State 'running'
     Write-Warning ("API Router restart after build failed: " + $_.Exception.Message)
-  }
-}
-
-function Try-CopyOptionalArtifact([string]$From, [string]$To, [string]$Label) {
-  try {
-    Copy-WithRetry $From $To
-    Write-Host "Wrote: $To"
-    Write-RemoteUpdateLog "$Label installed: $To"
-    return $true
-  } catch {
-    $message = $_.Exception.Message
-    Write-Warning "$Label copy skipped: $message"
-    Write-RemoteUpdateLog "$Label copy skipped: $message"
-    return $false
   }
 }
 
