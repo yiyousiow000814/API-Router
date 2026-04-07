@@ -2114,6 +2114,10 @@ mod tests {
         assert!(windows_contents.contains("Running Windows EXE build and restart script"));
         assert!(windows_contents.contains("build-root-exe.ps1 failed"));
         assert!(windows_contents.contains("-StartHidden"));
+        assert!(windows_contents.contains("function Show-RemoteUpdateNotification"));
+        assert!(windows_contents.contains("System.Windows.Forms.NotifyIcon"));
+        assert!(windows_contents.contains("API Router update in progress"));
+        assert!(windows_contents.contains("Show-RemoteUpdateNotification -TargetRef $TargetRef"));
         assert!(!windows_contents.contains("npm run build:root-exe"));
 
         let linux_script = repo_root

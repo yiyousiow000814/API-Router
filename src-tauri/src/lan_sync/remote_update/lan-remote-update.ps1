@@ -122,6 +122,38 @@ function Write-RemoteUpdateStatus {
   [System.IO.File]::WriteAllText($statusPath, $json, $utf8NoBom)
 }
 
+function Show-RemoteUpdateNotification {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$TargetRef
+  )
+
+  try {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+
+    $trimmedTarget = $TargetRef.Trim()
+    $shortTarget = if ($trimmedTarget.Length -gt 8) { $trimmedTarget.Substring(0, 8) } else { $trimmedTarget }
+    $title = 'API Router update in progress'
+    $body = if ([string]::IsNullOrWhiteSpace($shortTarget)) {
+      'API Router is installing a remote update and will restart automatically when it finishes.'
+    } else {
+      "API Router is installing remote update $shortTarget and will restart automatically when it finishes."
+    }
+
+    $script:RemoteUpdateNotifyIcon = New-Object System.Windows.Forms.NotifyIcon
+    $script:RemoteUpdateNotifyIcon.Icon = [System.Drawing.SystemIcons]::Information
+    $script:RemoteUpdateNotifyIcon.Visible = $true
+    $script:RemoteUpdateNotifyIcon.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Info
+    $script:RemoteUpdateNotifyIcon.BalloonTipTitle = $title
+    $script:RemoteUpdateNotifyIcon.BalloonTipText = $body
+    $script:RemoteUpdateNotifyIcon.ShowBalloonTip(10000)
+    Write-RemoteUpdateLog "Windows notification shown: $title ($body)"
+  } catch {
+    Write-RemoteUpdateLog "Windows notification failed: $($_.Exception.Message)"
+  }
+}
+
 function Assert-CleanWorktree {
   $statusLines = & git status --porcelain=v1 2>&1
   if ($LASTEXITCODE -ne 0) {
@@ -374,6 +406,7 @@ if (-not (Test-Path $buildScriptPath)) {
 }
 Write-RemoteUpdateLog "${currentStep}: $buildScriptPath"
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep 'Running Windows EXE build and restart script') -Phase 'build_exe' -Label 'Building EXE' -StartedAtUnixMs $startedAtUnixMs
+Show-RemoteUpdateNotification -TargetRef $TargetRef
 Invoke-HiddenProcess -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScriptPath, '-StartHidden') -FailureMessage 'tools/build/build-root-exe.ps1 failed'
 
 $currentStep = 'Completed'
