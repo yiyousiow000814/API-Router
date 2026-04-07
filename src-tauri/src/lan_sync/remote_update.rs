@@ -217,7 +217,19 @@ fn reset_remote_update_log() {
 fn read_lan_remote_update_status_raw() -> Option<LanRemoteUpdateStatusSnapshot> {
     let path = lan_remote_update_status_path()?;
     let bytes = std::fs::read(path).ok()?;
-    serde_json::from_slice::<LanRemoteUpdateStatusSnapshot>(&bytes).ok()
+    parse_lan_remote_update_status_bytes(&bytes).ok()
+}
+
+fn parse_lan_remote_update_status_bytes(
+    bytes: &[u8],
+) -> Result<LanRemoteUpdateStatusSnapshot, serde_json::Error> {
+    const UTF8_BOM: &[u8; 3] = b"\xEF\xBB\xBF";
+    let trimmed = if bytes.starts_with(UTF8_BOM) {
+        &bytes[UTF8_BOM.len()..]
+    } else {
+        bytes
+    };
+    serde_json::from_slice::<LanRemoteUpdateStatusSnapshot>(trimmed)
 }
 
 fn remote_update_worker_bootstrap_observed(status: &LanRemoteUpdateStatusSnapshot) -> bool {
@@ -589,7 +601,7 @@ fn normalize_remote_update_status(
 pub(crate) fn load_lan_remote_update_status() -> Option<LanRemoteUpdateStatusSnapshot> {
     let path = lan_remote_update_status_path()?;
     let bytes = std::fs::read(path).ok()?;
-    let status = serde_json::from_slice::<LanRemoteUpdateStatusSnapshot>(&bytes).ok()?;
+    let status = parse_lan_remote_update_status_bytes(&bytes).ok()?;
     let normalized = normalize_remote_update_status(status.clone());
     if normalized != status {
         let _ = write_lan_remote_update_status(&normalized);
@@ -1986,6 +1998,46 @@ mod tests {
     }
 
     #[test]
+    fn parse_lan_remote_update_status_bytes_accepts_utf8_bom_written_by_powershell() {
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "running".to_string(),
+            target_ref: "0d3cbb4b".to_string(),
+            request_id: Some("ru_bom".to_string()),
+            reason_code: Some("worker_spawned".to_string()),
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some("worker.ps1".to_string()),
+            worker_pid: Some(4242),
+            worker_exit_code: None,
+            detail: Some("Building EXE: Running npm run build:root-exe".to_string()),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: Some(20),
+            finished_at_unix_ms: None,
+            updated_at_unix_ms: 30,
+            timeline: vec![LanRemoteUpdateTimelineEntry {
+                unix_ms: 30,
+                phase: "build_exe".to_string(),
+                label: "Building EXE".to_string(),
+                detail: Some("Building EXE: Running npm run build:root-exe".to_string()),
+                source: "worker".to_string(),
+                state: "running".to_string(),
+            }],
+        };
+        let mut bytes = b"\xEF\xBB\xBF".to_vec();
+        bytes.extend(serde_json::to_vec(&status).expect("serialize status"));
+
+        let loaded =
+            parse_lan_remote_update_status_bytes(&bytes).expect("parse status with utf8 bom");
+        assert_eq!(loaded.state, "running");
+        assert_eq!(loaded.target_ref, "0d3cbb4b");
+        assert_eq!(loaded.request_id.as_deref(), Some("ru_bom"));
+        assert_eq!(
+            loaded.timeline.last().map(|entry| entry.phase.as_str()),
+            Some("build_exe")
+        );
+    }
+
+    #[test]
     fn remote_update_scripts_fetch_without_tags() {
         let repo_root = resolve_repo_root_for_self_update().expect("resolve repo root");
         let windows_script = repo_root
@@ -2000,6 +2052,9 @@ mod tests {
         assert!(!windows_contents.contains("git fetch origin --prune --tags"));
         assert!(windows_contents.contains("function Test-GitRevisionExists"));
         assert!(windows_contents.contains("if (Test-GitRevisionExists \"refs/heads/$Ref\")"));
+        assert!(windows_contents.contains("UTF8Encoding($false)"));
+        assert!(windows_contents
+            .contains("[System.IO.File]::WriteAllText($statusPath, $json, $utf8NoBom)"));
 
         let linux_script = repo_root
             .join("src-tauri")

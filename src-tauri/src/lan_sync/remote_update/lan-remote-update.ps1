@@ -117,7 +117,9 @@ function Write-RemoteUpdateStatus {
     updated_at_unix_ms = $now
     timeline = $timeline
   }
-  $payload | ConvertTo-Json -Depth 6 | Set-Content -Path $statusPath -Encoding UTF8
+  $json = $payload | ConvertTo-Json -Depth 6
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($statusPath, $json, $utf8NoBom)
 }
 
 function Assert-CleanWorktree {
