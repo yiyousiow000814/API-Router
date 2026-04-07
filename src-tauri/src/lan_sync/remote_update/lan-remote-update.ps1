@@ -318,6 +318,9 @@ function Invoke-HiddenProcess {
     [string]$FailureMessage
   )
 
+  # Remote update must stay visually silent on the peer machine.
+  # Any nested PowerShell/cmd process launched from this worker must use hidden window style,
+  # otherwise Windows can flash transient consoles during update/build/install stages.
   $stdoutPath = [System.IO.Path]::GetTempFileName()
   $stderrPath = [System.IO.Path]::GetTempFileName()
   try {

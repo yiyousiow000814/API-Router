@@ -206,6 +206,81 @@ function Try-CopyOptionalArtifact([string]$From, [string]$To, [string]$Label) {
   }
 }
 
+function Format-BuildCommandOutputSummary($Output) {
+  if ($null -eq $Output) { return '' }
+  $lines = @(
+    $Output |
+      ForEach-Object {
+        if ($null -eq $_) { return }
+        $line = [string]$_
+        $line = [regex]::Replace($line, '\x1b\[[0-9;?]*[ -/]*[@-~]', '')
+        $line = [regex]::Replace($line, '\s+', ' ').Trim()
+        if ($line) { $line }
+      } |
+      Where-Object { $_ }
+  )
+  if ($lines.Count -eq 0) { return '' }
+  $text = ($lines | Select-Object -Last 8) -join ' | '
+  if (-not $text) { return '' }
+  if ($text.Length -gt 1200) {
+    return $text.Substring($text.Length - 1200)
+  }
+  return $text
+}
+
+function Invoke-BuildCommand {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$FilePath,
+    [Parameter(Mandatory = $true)]
+    [string[]]$ArgumentList,
+    [Parameter(Mandatory = $true)]
+    [string]$FailureLabel
+  )
+
+  if (-not $StartHidden) {
+    & $FilePath @ArgumentList
+    if ($LASTEXITCODE -ne 0) {
+      throw "$FailureLabel failed with exit code $LASTEXITCODE"
+    }
+    return
+  }
+
+  # Remote update launches this script with -StartHidden.
+  # In that mode every nested npm/cmd invocation must remain hidden too, otherwise the peer
+  # machine can flash 2-3 transient console windows during frontend and Tauri build steps.
+  $stdoutPath = [System.IO.Path]::GetTempFileName()
+  $stderrPath = [System.IO.Path]::GetTempFileName()
+  try {
+    $process = Start-Process -FilePath $FilePath `
+      -ArgumentList $ArgumentList `
+      -WorkingDirectory $RepoRoot `
+      -WindowStyle Hidden `
+      -RedirectStandardOutput $stdoutPath `
+      -RedirectStandardError $stderrPath `
+      -PassThru
+    $process.WaitForExit()
+    $stdout = if (Test-Path $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue } else { '' }
+    $stderr = if (Test-Path $stderrPath) { Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue } else { '' }
+    $combinedOutput = @()
+    if ($stdout) { $combinedOutput += $stdout -split "\r?\n" }
+    if ($stderr) { $combinedOutput += $stderr -split "\r?\n" }
+    $summary = Format-BuildCommandOutputSummary $combinedOutput
+    if ($summary) {
+      Write-RemoteUpdateLog "$FailureLabel output: $summary"
+    }
+    if ($process.ExitCode -ne 0) {
+      if ($summary) {
+        throw "$FailureLabel failed. Output: $summary"
+      }
+      throw "$FailureLabel failed with exit code $($process.ExitCode)"
+    }
+  } finally {
+    Remove-Item -LiteralPath $stdoutPath -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $stderrPath -ErrorAction SilentlyContinue
+  }
+}
+
 $hadFailure = $false
 $restartWarning = $null
 $script:CurrentBuildStepPhase = ''
@@ -216,14 +291,12 @@ try {
   # but we keep this here so failures surface early and with clearer output.
   Enter-BuildStep -Phase 'build_frontend' -Label 'Building frontend' -Detail 'Running npm run build'
   Write-Host "Running: npm run build"
-  & npm.cmd run build
-  Assert-LastExitOk 'npm run build'
+  Invoke-BuildCommand -FilePath 'npm.cmd' -ArgumentList @('run', 'build') -FailureLabel 'npm run build'
 
   # Build tauri app (produces src-tauri/target/release/api_router.exe).
   Enter-BuildStep -Phase 'build_release_binary' -Label 'Building release binary' -Detail 'Running npm run tauri -- build --no-bundle'
   Write-Host "Running: npm run tauri -- build --no-bundle"
-  & npm.cmd run tauri -- build --no-bundle
-  Assert-LastExitOk 'tauri build'
+  Invoke-BuildCommand -FilePath 'npm.cmd' -ArgumentList @('run', 'tauri', '--', 'build', '--no-bundle') -FailureLabel 'tauri build'
 
   if (-not $NoCopy) {
     Enter-BuildStep -Phase 'install_release_binary' -Label 'Installing EXE' -Detail 'Replacing repo root API Router executables'

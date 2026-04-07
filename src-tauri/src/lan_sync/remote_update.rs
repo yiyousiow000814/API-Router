@@ -1603,6 +1603,9 @@ fn spawn_remote_update_worker(
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
+        // Remote update must never surface a transient PowerShell/cmd window on the peer.
+        // Keep the worker in a no-window process group here, and preserve hidden launches in
+        // the worker scripts as well when they invoke nested PowerShell/npm/cmd steps.
         command.creation_flags(windows_remote_update_creation_flags());
     }
     command.stdin(Stdio::null());
@@ -1660,9 +1663,10 @@ fn windows_remote_update_creation_flags() -> u32 {
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-    // Keep the worker headless, but do not detach it from the parent process.
-    // Detached PowerShell launches can exit before the script bootstrap runs when
-    // stdout/stderr are redirected to files from the running API Router process.
+    // Keep the remote update worker headless, but do not detach it from the parent process.
+    // This is the outermost Windows guarantee that remote update will not flash PowerShell/cmd
+    // on the peer machine. Detached launches were unreliable here because the script bootstrap
+    // could exit before redirected stdout/stderr were fully established by the running app.
     CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
 }
 
@@ -2171,11 +2175,14 @@ mod tests {
                 .join("build-root-exe.ps1"),
         )
         .expect("read build-root-exe.ps1");
-        assert!(build_script.contains("npm.cmd run tauri -- build --no-bundle"));
+        assert!(build_script.contains("@('run', 'tauri', '--', 'build', '--no-bundle')"));
         assert!(build_script.contains("[switch]$StartHidden"));
         assert!(build_script.contains("'--start-hidden'"));
         assert!(build_script.contains("if ($arguments.Count -gt 0)"));
         assert!(build_script.contains("$restartWarning = $null"));
+        assert!(build_script.contains("function Invoke-BuildCommand"));
+        assert!(build_script.contains("-WindowStyle Hidden"));
+        assert!(build_script.contains("Invoke-BuildCommand -FilePath 'npm.cmd'"));
         assert!(build_script.contains("function Update-RemoteUpdateTimelineStep"));
         assert!(build_script.contains("function Try-CopyOptionalArtifact"));
         assert!(build_script.contains("Enter-BuildStep -Phase 'build_frontend'"));
