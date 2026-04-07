@@ -348,10 +348,22 @@ export function isRemoteDebugStatusRelevantToCurrentBuild(
   remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
   localBuildSha?: string | null,
 ): boolean {
+  return remoteDebugStatusRelevance(source, remoteUpdateDebug, localBuildSha).isCurrent
+}
+
+export function remoteDebugStatusRelevance(
+  source: ConfigSource,
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+  localBuildSha?: string | null,
+): { isCurrent: boolean; reason: string } {
   const status = remoteUpdateDebug?.remote_update_status
-  if (!status?.state?.trim()) return false
+  if (!status?.state?.trim()) {
+    return { isCurrent: false, reason: 'peer did not return a structured remote update status' }
+  }
   const targetRef = normalizedTargetRef(status.target_ref)
-  if (!targetRef) return false
+  if (!targetRef) {
+    return { isCurrent: false, reason: 'peer status is missing a target ref' }
+  }
   const peerBuildSha = normalizedBuildSha(source.build_identity?.build_git_sha)
   const normalizedLocalBuildSha = normalizedBuildSha(localBuildSha)
   const targetMatchesLocalBuild =
@@ -359,11 +371,17 @@ export function isRemoteDebugStatusRelevantToCurrentBuild(
       ? null
       : normalizedLocalBuildSha.startsWith(targetRef) || targetRef.startsWith(normalizedLocalBuildSha)
   if (localBuildSha && targetMatchesLocalBuild === false) {
-    return false
+    return {
+      isCurrent: false,
+      reason: `status target ${formatReadableCommitRefs(targetRef)} does not match current build ${formatReadableCommitRefs(normalizedLocalBuildSha)}`,
+    }
   }
   const terminalState = ['failed', 'succeeded', 'superseded'].includes(status.state.trim())
   if (terminalState && source.build_matches_local && !source.version_sync_required) {
-    return false
+    return {
+      isCurrent: false,
+      reason: 'peer already matches the current machine build',
+    }
   }
   const targetMatchesPeerBuild =
     !peerBuildSha || !targetRef ? null : peerBuildSha.startsWith(targetRef) || targetRef.startsWith(peerBuildSha)
@@ -372,18 +390,31 @@ export function isRemoteDebugStatusRelevantToCurrentBuild(
     targetMatchesPeerBuild === false &&
     (localBuildSha ? targetMatchesLocalBuild === false : true)
   ) {
-    return false
+    return {
+      isCurrent: false,
+      reason: `status target ${formatReadableCommitRefs(targetRef)} only matches an older peer build`,
+    }
   }
   const buildCommitUnixMs = source.build_identity?.build_git_commit_unix_ms ?? null
-  if (!Number.isFinite(buildCommitUnixMs) || !buildCommitUnixMs) return true
+  if (!Number.isFinite(buildCommitUnixMs) || !buildCommitUnixMs) {
+    return { isCurrent: true, reason: 'peer build commit time is unavailable' }
+  }
   const statusObservedAtUnixMs =
     status.finished_at_unix_ms ??
     status.started_at_unix_ms ??
     status.updated_at_unix_ms ??
     status.accepted_at_unix_ms ??
     null
-  if (!statusObservedAtUnixMs) return true
-  return statusObservedAtUnixMs >= buildCommitUnixMs
+  if (!statusObservedAtUnixMs) {
+    return { isCurrent: true, reason: 'peer status has no timestamp; treating it as current' }
+  }
+  if (statusObservedAtUnixMs < buildCommitUnixMs) {
+    return {
+      isCurrent: false,
+      reason: `status time ${formatCommitDate(statusObservedAtUnixMs)} is older than peer build time ${formatCommitDate(buildCommitUnixMs)}`,
+    }
+  }
+  return { isCurrent: true, reason: 'status target matches the current machine build' }
 }
 
 export function remoteUpdateDetailText(source: ConfigSource, localBuildSha?: string | null): string {
@@ -1317,11 +1348,12 @@ export function ConfigModal({
                     const debugLogTail = remoteUpdateDebug?.log_tail?.trim() ?? ''
                     const { recent: recentDebugLogTail, older: olderDebugLogTail } =
                       splitRemoteDebugLogTail(debugLogTail)
-                    const debugLogCurrentForBuild = isRemoteDebugStatusRelevantToCurrentBuild(
+                    const debugLogRelevance = remoteDebugStatusRelevance(
                       effectiveSource,
                       remoteUpdateDebug,
                       localBuildSha,
                     )
+                    const debugLogCurrentForBuild = debugLogRelevance.isCurrent
                     const collapsedDebugLogTail = [olderDebugLogTail, recentDebugLogTail]
                       .filter((part) => part.trim().length > 0)
                       .join('\n')
@@ -1460,6 +1492,11 @@ export function ConfigModal({
                                         <summary className="aoConfigDiagRemoteUpdateDetail">
                                           {debugLogSummaryText}
                                         </summary>
+                                        {!debugLogCurrentForBuild && debugLogRelevance.reason ? (
+                                          <div className="aoConfigDiagRemoteUpdateDetail" style={{ marginTop: 8 }}>
+                                            Why previous: {debugLogRelevance.reason}
+                                          </div>
+                                        ) : null}
                                         <pre
                                           className="aoConfigDiagWhyText"
                                           style={{

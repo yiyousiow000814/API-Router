@@ -11,6 +11,7 @@ import {
   isRemoteUpdateStatusRelevantToCurrentBuild,
   isRemoteDebugStatusRelevantToCurrentBuild,
   keepSourceMenuOpenAfterAction,
+  remoteDebugStatusRelevance,
   remoteUpdateActionState,
   remoteUpdateDetailText,
   remoteDebugReadinessReasonText,
@@ -1278,6 +1279,13 @@ describe('ConfigModal', () => {
         '781c07b0abcdef1234567890',
       ),
     ).toBe(false)
+    expect(
+      remoteDebugStatusRelevance(
+        source,
+        remoteUpdateDebug,
+        '781c07b0abcdef1234567890',
+      ).reason,
+    ).toContain('does not match current build')
   })
 
   it('treats debug logs without a usable remote update status as previous instead of current', () => {
@@ -1337,6 +1345,13 @@ describe('ConfigModal', () => {
         'e5ae2003abcdef1234567890',
       ),
     ).toBe(false)
+    expect(
+      remoteDebugStatusRelevance(
+        source,
+        remoteUpdateDebug,
+        'e5ae2003abcdef1234567890',
+      ).reason,
+    ).toContain('did not return a structured remote update status')
   })
 
   it('keeps diagnostics render-safe when remote debug readiness is missing', () => {
