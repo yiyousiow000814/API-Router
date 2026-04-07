@@ -1129,6 +1129,26 @@ impl LanSyncRuntime {
             .map(lan_peer_snapshot_from_runtime)
     }
 
+    pub fn recently_stale_peers(&self, max_age_ms: u64) -> Vec<LanPeerSnapshot> {
+        let now = unix_ms();
+        let mut peers = self
+            .peers
+            .read()
+            .values()
+            .filter(|peer| {
+                let age_ms = now.saturating_sub(peer.last_heartbeat_unix_ms);
+                peer_is_stale(peer.last_heartbeat_unix_ms, now) && age_ms <= max_age_ms
+            })
+            .map(lan_peer_snapshot_from_runtime)
+            .collect::<Vec<_>>();
+        peers.sort_by(|a, b| {
+            b.last_heartbeat_unix_ms
+                .cmp(&a.last_heartbeat_unix_ms)
+                .then_with(|| a.node_name.cmp(&b.node_name))
+        });
+        peers
+    }
+
     pub fn has_alive_peers(&self) -> bool {
         !self.collect_live_peers(unix_ms()).is_empty()
     }
@@ -6905,6 +6925,53 @@ mod tests {
             recent.last_heartbeat_unix_ms,
             crate::orchestrator::store::unix_ms()
         ));
+    }
+
+    #[test]
+    fn recently_stale_peers_lists_recent_offline_peer_without_readding_live_peer() {
+        let runtime = LanSyncRuntime::new(LanNodeIdentity {
+            node_id: "node-self".to_string(),
+            node_name: "self".to_string(),
+        });
+        let now = crate::orchestrator::store::unix_ms();
+        runtime.peers.write().insert(
+            "peer-recent".to_string(),
+            super::LanPeerRuntime {
+                node_id: "peer-recent".to_string(),
+                node_name: "Peer Recent".to_string(),
+                listen_addr: "192.168.1.12:4000".to_string(),
+                last_heartbeat_unix_ms: now.saturating_sub(super::LAN_PEER_STALE_AFTER_MS + 1),
+                capabilities: super::lan_heartbeat_capabilities(),
+                build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
+                remote_update_status: None,
+                sync_contracts: super::local_sync_contracts(),
+                provider_fingerprints: vec![],
+                provider_definitions_revision: String::new(),
+                followed_source_node_id: None,
+            },
+        );
+        runtime.peers.write().insert(
+            "peer-live".to_string(),
+            super::LanPeerRuntime {
+                node_id: "peer-live".to_string(),
+                node_name: "Peer Live".to_string(),
+                listen_addr: "192.168.1.13:4000".to_string(),
+                last_heartbeat_unix_ms: now,
+                capabilities: super::lan_heartbeat_capabilities(),
+                build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
+                remote_update_status: None,
+                sync_contracts: super::local_sync_contracts(),
+                provider_fingerprints: vec![],
+                provider_definitions_revision: String::new(),
+                followed_source_node_id: None,
+            },
+        );
+
+        let peers = runtime.recently_stale_peers(super::LAN_PEER_HTTP_GRACE_AFTER_MS);
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].node_id, "peer-recent");
     }
 
     #[test]

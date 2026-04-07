@@ -71,6 +71,7 @@ function formatPairDialogError(error: unknown): string {
 function compactPeerStateLabel(
   source: ConfigSource,
 ): string {
+  if (source.kind === 'peer' && source.online === false) return 'Offline'
   if (source.trusted) return 'Trusted'
   if (source.pair_state === 'incoming_request') return 'Needs approval'
   if (source.pair_state === 'pin_required') return 'PIN required'
@@ -81,6 +82,7 @@ function compactPeerStateLabel(
 function compactFollowStatusLabel(
   source: ConfigSource,
 ): string {
+  if (source.kind === 'peer' && source.online === false) return 'Offline'
   if (source.active) return 'Following'
   if (source.follow_allowed) return 'Ready to follow'
   if (!source.trusted) return 'Pair required'
@@ -94,6 +96,7 @@ export function compactUpdateStatusLabel(
 ): string {
   const liveRemoteState = remoteUpdateStateLabel(source, localBuildSha)
   if (liveRemoteState) return liveRemoteState
+  if (source.kind === 'peer' && source.online === false) return 'Peer offline'
   if (!source.version_sync_required) return 'No update needed'
   return source.same_version_update_allowed ? 'Update available' : 'Update blocked'
 }
@@ -776,6 +779,7 @@ export function ConfigModal({
             node_id: 'local-fallback',
             node_name: 'Local',
             active: true,
+            online: true,
             follow_allowed: false,
             follow_blocked_reason: null,
             using_count: 0,
@@ -815,6 +819,7 @@ export function ConfigModal({
   )
   const issueSources = effectivePeerSources.filter(
     (source) =>
+      source.online === false ||
       (((source.sync_blocked_domains?.length ?? 0) > 0) ||
         (source.version_sync_required &&
           !source.same_version_update_allowed &&
@@ -822,9 +827,10 @@ export function ConfigModal({
           Boolean(source.same_version_update_blocked_reason?.trim())) ||
         remoteUpdateIndicatesIssue(source, localBuildSha)),
   )
-  const peerDebugNodeIds = peerSources.map((source) => source.node_id).join('|')
+  const onlinePeerSources = peerSources.filter((source) => source.online !== false)
+  const peerDebugNodeIds = onlinePeerSources.map((source) => source.node_id).join('|')
   const pendingPeerDebugNodeIds = peerSources
-    .filter((source) => Boolean(remoteUpdatePendingByNode[source.node_id]))
+    .filter((source) => source.online !== false && Boolean(remoteUpdatePendingByNode[source.node_id]))
     .map((source) => source.node_id)
     .join('|')
 
@@ -894,7 +900,7 @@ export function ConfigModal({
   }, [pairDialog])
 
   useEffect(() => {
-    if (peerSources.length === 0) return
+    if (onlinePeerSources.length === 0) return
     if (!diagnosticsOpen && !sourceMenuOpen && pendingPeerDebugNodeIds.length === 0) return
     let cancelled = false
     const loadDebug = async (nodeId: string) => {
@@ -921,7 +927,7 @@ export function ConfigModal({
       }
     }
     const refreshAll = () => {
-      peerSources.forEach((source) => {
+      onlinePeerSources.forEach((source) => {
         void loadDebug(source.node_id)
       })
     }
@@ -1033,6 +1039,7 @@ export function ConfigModal({
                         const versionSyncPending = Boolean(versionSyncActionState?.spinning)
                         const pairActionAvailable =
                           effectiveSource.kind === 'peer' &&
+                          effectiveSource.online !== false &&
                           (!effectiveSource.trusted ||
                             (effectiveSource.trusted && effectiveSource.follow_allowed && !effectiveSource.active))
                         const disabled =
@@ -1043,6 +1050,8 @@ export function ConfigModal({
                             ? effectiveSource.active
                               ? 'Current'
                               : 'Use local'
+                            : effectiveSource.online === false
+                              ? 'Offline'
                             : versionSyncRequired
                               ? remoteUpdateMenuActionLabel(effectiveSource, versionSyncPendingStage, localBuildSha)
                               : effectiveSource.active

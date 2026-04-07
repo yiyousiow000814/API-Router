@@ -350,6 +350,7 @@ export type Config = {
       node_id: string
       node_name: string
       active: boolean
+      online?: boolean
       trusted?: boolean
       pair_state?: 'trusted' | 'incoming_request' | 'requested' | 'pin_required' | null
       pair_request_id?: string | null
