@@ -124,9 +124,9 @@ function Enter-BuildStep {
   $script:CurrentBuildStepPhase = $Phase
   $script:CurrentBuildStepLabel = $Label
   $script:CurrentBuildStepDetail = $Detail
-  Write-Host "$Label: $Detail"
-  Write-RemoteUpdateLog "$Label: $Detail"
-  Update-RemoteUpdateTimelineStep -Phase $Phase -Label $Label -Detail "$Label: $Detail"
+  Write-Host "${Label}: $Detail"
+  Write-RemoteUpdateLog "${Label}: $Detail"
+  Update-RemoteUpdateTimelineStep -Phase $Phase -Label $Label -Detail "${Label}: $Detail"
 }
 
 function Is-ApiRouterRunning {
