@@ -621,6 +621,13 @@ struct LanQuotaRefreshRequestPacket {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct LanEditSyncHintPacket {
+    version: u8,
+    node_id: String,
+    sent_at_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct LanPairRequestPacket {
     version: u8,
     request_id: String,
@@ -663,6 +670,7 @@ enum LanSyncPacket {
     Heartbeat(Box<LanHeartbeatPacket>),
     SharedHealth(LanSharedHealthPacket),
     QuotaRefreshRequest(LanQuotaRefreshRequestPacket),
+    EditSyncHint(LanEditSyncHintPacket),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -762,9 +770,10 @@ impl LanSyncRuntime {
 
         let listener_runtime = self.clone();
         let listener_gateway = gateway.clone();
+        let listener_config_path = config_path.clone();
         std::thread::Builder::new()
             .name("lan-sync-listener".to_string())
-            .spawn(move || run_listener(listener_runtime, listener_gateway))
+            .spawn(move || run_listener(listener_runtime, listener_gateway, listener_config_path))
             .ok();
 
         let sender_runtime = self.clone();
@@ -2496,10 +2505,20 @@ fn record_edit_event(
     };
     if gateway.store.insert_lan_edit_event(&event) {
         note_entity_version(gateway, &event);
+        if should_request_immediate_edit_sync(entity_type) {
+            request_immediate_edit_sync_from_live_peers(gateway);
+        }
         Ok(event)
     } else {
         Err("failed to insert edit sync event".to_string())
     }
+}
+
+fn should_request_immediate_edit_sync(entity_type: &str) -> bool {
+    matches!(
+        lan_edit_entity_sync_domain(entity_type),
+        Some(SYNC_DOMAIN_USAGE_HISTORY)
+    )
 }
 
 fn entity_version_meta_key(entity_type: &str, entity_id: &str) -> String {
@@ -3031,7 +3050,11 @@ pub fn sanitize_node_name(raw: &str) -> String {
     }
 }
 
-fn run_listener(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::GatewayState) {
+fn run_listener(
+    runtime: LanSyncRuntime,
+    gateway: crate::orchestrator::gateway::GatewayState,
+    config_path: std::path::PathBuf,
+) {
     loop {
         let socket = match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, LAN_DISCOVERY_PORT)) {
             Ok(socket) => socket,
@@ -3075,6 +3098,15 @@ fn run_listener(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::
                                 }
                                 LanSyncPacket::QuotaRefreshRequest(packet) => {
                                     handle_quota_refresh_request(&runtime, &gateway, packet);
+                                }
+                                LanSyncPacket::EditSyncHint(packet) => {
+                                    handle_edit_sync_hint(
+                                        &runtime,
+                                        &gateway,
+                                        &config_path,
+                                        source,
+                                        packet,
+                                    );
                                 }
                             }
                         }
@@ -3477,6 +3509,66 @@ fn emit_http_sync_recovered_event(
             "previous_detail": recovered.detail,
         }),
     );
+}
+
+fn sync_edit_events_from_peer(
+    runtime: &LanSyncRuntime,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    config_path: &Path,
+    peer: &LanPeerSnapshot,
+    reported_sync_blocks: &mut HashMap<String, String>,
+) -> Result<(), String> {
+    if !ensure_peer_sync_contract(
+        gateway,
+        peer,
+        SYNC_DOMAIN_USAGE_HISTORY,
+        reported_sync_blocks,
+    ) {
+        return Ok(());
+    }
+    if !peer_supports_http_sync(peer, "edit_sync_v1") {
+        return Ok(());
+    }
+    loop {
+        let batch =
+            tauri::async_runtime::block_on(fetch_edit_sync_batch_http(runtime, gateway, peer))?;
+        let has_more = batch.has_more;
+        if batch.events.is_empty() {
+            break;
+        }
+        apply_edit_sync_batch(runtime, gateway, config_path, peer, batch);
+        if !has_more {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn request_immediate_edit_sync_from_live_peers(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+) {
+    let runtime = gateway_status_runtime().read().as_ref().cloned();
+    let Some(runtime) = runtime else {
+        return;
+    };
+    let trusted_node_ids = gateway.secrets.trusted_lan_node_ids();
+    let packet = LanSyncPacket::EditSyncHint(LanEditSyncHintPacket {
+        version: 1,
+        node_id: runtime.local_node.node_id.clone(),
+        sent_at_unix_ms: unix_ms(),
+    });
+    for peer in runtime.collect_live_peers(unix_ms()) {
+        if !trusted_node_ids.contains(&peer.node_id) {
+            continue;
+        }
+        if sync_contract_mismatch_detail(&peer, SYNC_DOMAIN_USAGE_HISTORY).is_some() {
+            continue;
+        }
+        let Some(addr) = peer_sync_addr(&peer) else {
+            continue;
+        };
+        let _ = send_packet_to_addr(gateway, addr, &packet);
+    }
 }
 
 fn format_lan_sync_reqwest_error(err: &reqwest::Error) -> String {
@@ -4101,6 +4193,54 @@ fn handle_quota_refresh_request(
     });
 }
 
+fn handle_edit_sync_hint(
+    runtime: &LanSyncRuntime,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    config_path: &Path,
+    source: SocketAddr,
+    packet: LanEditSyncHintPacket,
+) {
+    let sender_node_id = packet.node_id.trim();
+    if sender_node_id.is_empty() || sender_node_id == runtime.local_node.node_id {
+        return;
+    }
+    if !gateway.secrets.is_lan_node_trusted(sender_node_id) {
+        return;
+    }
+
+    let Some(peer) = runtime
+        .live_peer_by_node_id(sender_node_id)
+        .or_else(|| runtime.recent_peer_by_node_id(sender_node_id, LAN_PEER_HTTP_GRACE_AFTER_MS))
+    else {
+        gateway.store.add_event(
+            "gateway",
+            "debug",
+            "lan.edit_sync_hint_ignored_unknown_peer",
+            "ignored LAN edit sync hint because the sender has no live or recent peer snapshot",
+            serde_json::json!({
+                "peer_node_id": sender_node_id,
+                "source": source.to_string(),
+                "hint_sent_at_unix_ms": packet.sent_at_unix_ms,
+            }),
+        );
+        return;
+    };
+
+    let runtime = runtime.clone();
+    let gateway = gateway.clone();
+    let config_path = config_path.to_path_buf();
+    tauri::async_runtime::spawn(async move {
+        let mut reported_sync_blocks = HashMap::new();
+        let _ = sync_edit_events_from_peer(
+            &runtime,
+            &gateway,
+            &config_path,
+            &peer,
+            &mut reported_sync_blocks,
+        );
+    });
+}
+
 fn apply_edit_sync_batch(
     runtime: &LanSyncRuntime,
     gateway: &crate::orchestrator::gateway::GatewayState,
@@ -4299,35 +4439,22 @@ fn run_edit_sync_loop(
             ) {
                 continue;
             }
-            if !peer_supports_http_sync(&peer, "edit_sync_v1") {
-                continue;
-            }
-            loop {
-                let batch = match tauri::async_runtime::block_on(fetch_edit_sync_batch_http(
-                    &runtime, &gateway, &peer,
-                )) {
-                    Ok(batch) => batch,
-                    Err(err) => {
-                        gateway.store.add_event(
-                            "gateway",
-                            "warning",
-                            "lan.edit_sync_http_failed",
-                            &err,
-                            serde_json::json!({
-                                "peer_node_id": peer.node_id,
-                            }),
-                        );
-                        break;
-                    }
-                };
-                let has_more = batch.has_more;
-                if batch.events.is_empty() {
-                    break;
-                }
-                apply_edit_sync_batch(&runtime, &gateway, &config_path, &peer, batch);
-                if !has_more {
-                    break;
-                }
+            if let Err(err) = sync_edit_events_from_peer(
+                &runtime,
+                &gateway,
+                &config_path,
+                &peer,
+                &mut reported_sync_blocks,
+            ) {
+                gateway.store.add_event(
+                    "gateway",
+                    "warning",
+                    "lan.edit_sync_http_failed",
+                    &err,
+                    serde_json::json!({
+                        "peer_node_id": peer.node_id,
+                    }),
+                );
             }
         }
         last_live_peer_ids = current_live_peer_ids;
@@ -4620,9 +4747,9 @@ mod tests {
         lan_sync_usage_http, local_version_sync_target_ref, note_entity_version, peer_is_stale,
         peer_supports_http_sync, replace_remote_provider_definition_snapshots,
         restore_local_provider_state, sanitize_node_name, serialize_wire_packet,
-        tracked_spend_day_entity_id, LanEditSyncRequestPacket, LanHeartbeatPacket,
-        LanLocalVersionSyncSnapshot, LanNodeIdentity, LanPeerSnapshot,
-        LanProviderDefinitionSyncItem, LanProviderDefinitionsRequestPacket,
+        should_request_immediate_edit_sync, tracked_spend_day_entity_id, LanEditSyncHintPacket,
+        LanEditSyncRequestPacket, LanHeartbeatPacket, LanLocalVersionSyncSnapshot, LanNodeIdentity,
+        LanPeerSnapshot, LanProviderDefinitionSyncItem, LanProviderDefinitionsRequestPacket,
         LanRemoteUpdateDebugRequestPacket, LanRemoteUpdateDebugResponsePacket,
         LanRemoteUpdateReadinessSnapshot, LanRemoteUpdateRequestPacket,
         LanRemoteUpdateStatusSnapshot, LanSyncPacket, LanSyncRuntime,
@@ -4767,6 +4894,45 @@ mod tests {
         });
 
         assert_eq!(super::peer_remote_update_blocked_reason(&peer), None);
+    }
+
+    #[test]
+    fn protected_edit_sync_hint_roundtrips_over_wire_format() {
+        let (_tmp, state) = build_test_state();
+        let packet = LanSyncPacket::EditSyncHint(LanEditSyncHintPacket {
+            version: 1,
+            node_id: "node-remote".to_string(),
+            sent_at_unix_ms: 1234,
+        });
+
+        let bytes = serialize_wire_packet(&state.gateway, &packet).expect("serialize wire packet");
+        let decoded = deserialize_wire_packet(&state.gateway, &bytes).expect("decode wire packet");
+        match decoded {
+            LanSyncPacket::EditSyncHint(inner) => {
+                assert_eq!(inner.node_id, "node-remote");
+                assert_eq!(inner.sent_at_unix_ms, 1234);
+            }
+            other => panic!("unexpected packet: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn immediate_edit_sync_hints_only_usage_history_events() {
+        assert!(should_request_immediate_edit_sync(
+            super::LAN_EDIT_ENTITY_PROVIDER_PRICING
+        ));
+        assert!(should_request_immediate_edit_sync(
+            super::LAN_EDIT_ENTITY_QUOTA_SNAPSHOT
+        ));
+        assert!(should_request_immediate_edit_sync(
+            super::LAN_EDIT_ENTITY_TRACKED_SPEND_DAY
+        ));
+        assert!(should_request_immediate_edit_sync(
+            super::LAN_EDIT_ENTITY_TRACKED_SPEND_DAY_HISTORY_DELETE
+        ));
+        assert!(!should_request_immediate_edit_sync(
+            super::LAN_EDIT_ENTITY_PROVIDER_DEFINITION
+        ));
     }
 
     #[test]

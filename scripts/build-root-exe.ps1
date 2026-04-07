@@ -42,7 +42,11 @@ function Start-ApiRouter {
   $arguments = @()
   if ($StartHidden) { $arguments += '--start-hidden' }
   Write-Host "Starting: $DstExe"
-  Start-Process -FilePath $DstExe -ArgumentList $arguments -WorkingDirectory $RepoRoot | Out-Null
+  if ($arguments.Count -gt 0) {
+    Start-Process -FilePath $DstExe -ArgumentList $arguments -WorkingDirectory $RepoRoot | Out-Null
+  } else {
+    Start-Process -FilePath $DstExe -WorkingDirectory $RepoRoot | Out-Null
+  }
 }
 
 function Stop-RunningApiRouter {

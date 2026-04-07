@@ -2102,5 +2102,9 @@ mod tests {
         assert!(build_script.contains("npm.cmd run tauri -- build --no-bundle"));
         assert!(build_script.contains("[switch]$StartHidden"));
         assert!(build_script.contains("'--start-hidden'"));
+        assert!(build_script.contains("if ($arguments.Count -gt 0)"));
+        assert!(
+            build_script.contains("Start-Process -FilePath $DstExe -WorkingDirectory $RepoRoot")
+        );
     }
 }
