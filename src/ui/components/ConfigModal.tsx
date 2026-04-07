@@ -293,6 +293,11 @@ function isRemoteUpdateNoiseLine(value: string): boolean {
   if (!normalized) return true
   return (
     /^dist\/assets\//i.test(normalized) ||
+    /^>\s*api-router@/i.test(normalized) ||
+    /^>\s*node\s+/i.test(normalized) ||
+    /^line ending check passed/i.test(normalized) ||
+    /^\[check-[^\]]+\]\s+ok/i.test(normalized) ||
+    /^\d+\s+modules transformed\.?$/i.test(normalized) ||
     /\bgzip:\s*\d/i.test(normalized) ||
     /\bbuilt in \d/i.test(normalized) ||
     /^At [A-Z]:\\/i.test(normalized) ||

@@ -172,6 +172,91 @@ fn reset_remote_update_log() {
     let _ = std::fs::write(path, "");
 }
 
+fn remote_update_shell_window_log_path() -> Option<std::path::PathBuf> {
+    crate::diagnostics::diagnostics_file_path("lan-remote-update-shell.log")
+}
+
+fn append_remote_update_shell_window_log(message: &str) {
+    let Some(path) = remote_update_shell_window_log_path() else {
+        return;
+    };
+    let _ = crate::diagnostics::append_timestamped_log_line_capped(&path, message, 64 * 1024);
+}
+
+struct RemoteUpdateShellProcessContext<'a> {
+    worker_pid: u32,
+    request_id: &'a str,
+    repo_root: &'a std::path::Path,
+    status_path: Option<&'a std::path::Path>,
+    log_path: Option<&'a std::path::Path>,
+}
+
+struct RemoteUpdateShellProcessEvidence<'a> {
+    pid: u32,
+    command_line: &'a str,
+    cwd: Option<&'a std::path::Path>,
+    status_env: &'a str,
+    log_env: &'a str,
+    request_id_env: &'a str,
+}
+
+struct RemoteUpdateWorkerMonitorContext {
+    repo_root: std::path::PathBuf,
+    status_path: Option<std::path::PathBuf>,
+    log_path: Option<std::path::PathBuf>,
+}
+
+fn remote_update_text_contains_repo_marker(value: &str, repo_root: &std::path::Path) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+    let repo_marker = repo_root.display().to_string().to_ascii_lowercase();
+    normalized.contains(&repo_marker)
+        || normalized.contains("lan-remote-update.ps1")
+        || normalized.contains("lan-remote-update.sh")
+        || normalized.contains("build-root-exe.ps1")
+        || normalized.contains("build-root-exe.mjs")
+        || normalized.contains("api_router_remote_update_request_id")
+}
+
+fn remote_update_shell_process_is_relevant(
+    context: &RemoteUpdateShellProcessContext<'_>,
+    evidence: &RemoteUpdateShellProcessEvidence<'_>,
+) -> bool {
+    if evidence.pid == context.worker_pid {
+        return true;
+    }
+    if !context.request_id.trim().is_empty()
+        && evidence.request_id_env.trim() == context.request_id.trim()
+    {
+        return true;
+    }
+    if remote_update_text_contains_repo_marker(evidence.command_line, context.repo_root) {
+        return true;
+    }
+    if evidence
+        .cwd
+        .is_some_and(|value| value.starts_with(context.repo_root))
+    {
+        return true;
+    }
+    if context.status_path.is_some_and(|path| {
+        evidence
+            .status_env
+            .trim()
+            .eq_ignore_ascii_case(&path.display().to_string())
+    }) {
+        return true;
+    }
+    context.log_path.is_some_and(|path| {
+        evidence
+            .log_env
+            .trim()
+            .eq_ignore_ascii_case(&path.display().to_string())
+    })
+}
+
 fn read_lan_remote_update_status_raw() -> Option<LanRemoteUpdateStatusSnapshot> {
     let path = lan_remote_update_status_path()?;
     let bytes = std::fs::read(path).ok()?;
@@ -872,21 +957,123 @@ fn record_remote_update_worker_exit(
     );
 }
 
+#[cfg(target_os = "windows")]
+fn poll_remote_update_shell_window_diagnostics(
+    context: &RemoteUpdateShellProcessContext<'_>,
+    seen_keys: &mut std::collections::HashSet<String>,
+) {
+    let candidate_pids = crate::platform::windows_loopback_peer::list_process_ids_by_name(&[
+        "powershell.exe",
+        "pwsh.exe",
+        "cmd.exe",
+        "conhost.exe",
+    ]);
+    for pid in candidate_pids {
+        let command_line = crate::platform::windows_loopback_peer::read_process_command_line(pid)
+            .unwrap_or_default();
+        let cwd = crate::platform::windows_loopback_peer::read_process_cwd(pid);
+        let status_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            pid,
+            "API_ROUTER_REMOTE_UPDATE_STATUS_PATH",
+        )
+        .unwrap_or_default();
+        let log_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            pid,
+            "API_ROUTER_REMOTE_UPDATE_LOG_PATH",
+        )
+        .unwrap_or_default();
+        let request_id_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            pid,
+            "API_ROUTER_REMOTE_UPDATE_REQUEST_ID",
+        )
+        .unwrap_or_default();
+        let evidence = RemoteUpdateShellProcessEvidence {
+            pid,
+            command_line: &command_line,
+            cwd: cwd.as_deref(),
+            status_env: &status_env,
+            log_env: &log_env,
+            request_id_env: &request_id_env,
+        };
+        if !remote_update_shell_process_is_relevant(context, &evidence) {
+            continue;
+        }
+        let visible_title = crate::platform::windows_loopback_peer::visible_window_title(pid);
+        let visibility = if visible_title.is_some() {
+            "visible"
+        } else {
+            "hidden_or_no_window"
+        };
+        let key = format!(
+            "{pid}|{visibility}|{}|{}|{}",
+            command_line.trim(),
+            cwd.as_ref()
+                .map(|value| value.display().to_string())
+                .unwrap_or_default(),
+            request_id_env.trim()
+        );
+        if !seen_keys.insert(key) {
+            continue;
+        }
+        let title_detail = match visible_title.as_deref() {
+            Some(title) if !title.trim().is_empty() => format!(" title={title:?}"),
+            Some(_) => " title=<untitled>".to_string(),
+            None => String::new(),
+        };
+        append_remote_update_shell_window_log(&format!(
+            "Remote update shell process pid={pid} visibility={visibility}{title_detail} cwd={} request_id_env={} cmd={}",
+            cwd.as_ref()
+                .map(|value| value.display().to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            if request_id_env.trim().is_empty() {
+                "unset".to_string()
+            } else {
+                request_id_env.trim().to_string()
+            },
+            if command_line.trim().is_empty() {
+                "<unavailable>".to_string()
+            } else {
+                command_line.trim().to_string()
+            }
+        ));
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn poll_remote_update_shell_window_diagnostics(
+    _context: &RemoteUpdateShellProcessContext<'_>,
+    _seen_keys: &mut std::collections::HashSet<String>,
+) {
+}
+
 fn monitor_remote_update_worker_exit(
     gateway: crate::orchestrator::gateway::GatewayState,
     mut child: std::process::Child,
     request_id: String,
     worker_pid: u32,
     target_ref: String,
+    monitor_context: RemoteUpdateWorkerMonitorContext,
 ) {
     std::thread::spawn(move || {
         let mut last_progress_key: Option<String> = None;
+        let mut seen_shell_window_keys = std::collections::HashSet::new();
+        let shell_context = RemoteUpdateShellProcessContext {
+            worker_pid,
+            request_id: &request_id,
+            repo_root: &monitor_context.repo_root,
+            status_path: monitor_context.status_path.as_deref(),
+            log_path: monitor_context.log_path.as_deref(),
+        };
         let (worker_exit_code, exit_detail) = loop {
             emit_remote_update_progress_event(
                 &gateway,
                 &request_id,
                 &target_ref,
                 &mut last_progress_key,
+            );
+            poll_remote_update_shell_window_diagnostics(
+                &shell_context,
+                &mut seen_shell_window_keys,
             );
             match child.try_wait() {
                 Ok(Some(status)) => break match status.code() {
@@ -939,6 +1126,7 @@ fn monitor_remote_update_worker_exit(
                 }
             }
         };
+        poll_remote_update_shell_window_diagnostics(&shell_context, &mut seen_shell_window_keys);
         append_remote_update_log_message(&exit_detail);
         record_remote_update_worker_exit(
             &gateway,
@@ -1654,6 +1842,11 @@ fn spawn_remote_update_worker(
         request_id.to_string(),
         worker_pid,
         target_ref.to_string(),
+        RemoteUpdateWorkerMonitorContext {
+            repo_root,
+            status_path: lan_remote_update_status_path(),
+            log_path,
+        },
     );
     Ok((script, worker_pid))
 }
@@ -1731,6 +1924,90 @@ mod tests {
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
             client_sessions: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    #[test]
+    fn remote_update_shell_process_match_accepts_request_and_repo_markers() {
+        let repo_root = std::path::Path::new(r"C:\repo\API-Router");
+        let status_path = repo_root
+            .join("user-data")
+            .join("diagnostics")
+            .join("lan-remote-update-status.json");
+        let log_path = repo_root
+            .join("user-data")
+            .join("diagnostics")
+            .join("lan-remote-update.log");
+        let context = super::RemoteUpdateShellProcessContext {
+            worker_pid: 41,
+            request_id: "ru_test",
+            repo_root,
+            status_path: Some(&status_path),
+            log_path: Some(&log_path),
+        };
+        assert!(super::remote_update_shell_process_is_relevant(
+            &context,
+            &super::RemoteUpdateShellProcessEvidence {
+                pid: 42,
+                command_line: "",
+                cwd: None,
+                status_env: "",
+                log_env: "",
+                request_id_env: "ru_test",
+            },
+        ));
+        assert!(super::remote_update_shell_process_is_relevant(
+            &context,
+            &super::RemoteUpdateShellProcessEvidence {
+                pid: 42,
+                command_line: r#"powershell.exe -File C:\repo\API-Router\tools\build\build-root-exe.ps1"#,
+                cwd: None,
+                status_env: "",
+                log_env: "",
+                request_id_env: "",
+            },
+        ));
+        assert!(super::remote_update_shell_process_is_relevant(
+            &context,
+            &super::RemoteUpdateShellProcessEvidence {
+                pid: 42,
+                command_line: "",
+                cwd: Some(repo_root),
+                status_env: "",
+                log_env: "",
+                request_id_env: "",
+            },
+        ));
+    }
+
+    #[test]
+    fn remote_update_shell_process_match_rejects_unrelated_shells() {
+        let repo_root = std::path::Path::new(r"C:\repo\API-Router");
+        let status_path = repo_root
+            .join("user-data")
+            .join("diagnostics")
+            .join("lan-remote-update-status.json");
+        let log_path = repo_root
+            .join("user-data")
+            .join("diagnostics")
+            .join("lan-remote-update.log");
+        let context = super::RemoteUpdateShellProcessContext {
+            worker_pid: 41,
+            request_id: "ru_test",
+            repo_root,
+            status_path: Some(&status_path),
+            log_path: Some(&log_path),
+        };
+        assert!(!super::remote_update_shell_process_is_relevant(
+            &context,
+            &super::RemoteUpdateShellProcessEvidence {
+                pid: 42,
+                command_line: r#"cmd.exe /c echo hello"#,
+                cwd: Some(std::path::Path::new(r"C:\Windows\System32")),
+                status_env: "",
+                log_env: "",
+                request_id_env: "",
+            },
+        ));
     }
 
     fn set_remote_update_test_env(root: &std::path::Path) -> RemoteUpdateTestGuard {

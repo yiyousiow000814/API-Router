@@ -41,6 +41,18 @@ pub fn duplicate_process_stdin_write_handle(_pid: u32) -> Option<isize> {
     None
 }
 
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub fn list_process_ids_by_name(_names: &[&str]) -> Vec<u32> {
+    Vec::new()
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub fn visible_window_title(_pid: u32) -> Option<String> {
+    None
+}
+
 #[cfg(windows)]
 mod windows_impl {
     use super::*;
@@ -50,16 +62,25 @@ mod windows_impl {
     use std::ptr::null_mut;
 
     use windows_sys::Win32::Foundation::{
-        CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE,
+        CloseHandle, DuplicateHandle, BOOL, DUPLICATE_SAME_ACCESS, HANDLE, HWND,
+        INVALID_HANDLE_VALUE, LPARAM,
     };
     use windows_sys::Win32::NetworkManagement::IpHelper::{
         GetExtendedTcpTable, TCP_TABLE_OWNER_PID_ALL,
     };
     use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
     use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, GetExitCodeProcess, OpenProcess, PROCESS_DUP_HANDLE,
         PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+        IsWindowVisible,
     };
 
     #[repr(C)]
@@ -190,6 +211,77 @@ mod windows_impl {
             let _ = CloseHandle(h);
             out
         }
+    }
+
+    pub fn list_process_ids_by_name(names: &[&str]) -> Vec<u32> {
+        let wanted = names
+            .iter()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .collect::<std::collections::HashSet<_>>();
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snapshot == INVALID_HANDLE_VALUE {
+                return Vec::new();
+            }
+            let mut entry = PROCESSENTRY32W {
+                dwSize: size_of::<PROCESSENTRY32W>() as u32,
+                ..std::mem::zeroed()
+            };
+            let mut out = Vec::new();
+            if Process32FirstW(snapshot, &mut entry as *mut PROCESSENTRY32W) != 0 {
+                loop {
+                    let exe_name = widestr_to_string(&entry.szExeFile);
+                    if wanted.contains(&exe_name.to_ascii_lowercase()) {
+                        out.push(entry.th32ProcessID);
+                    }
+                    if Process32NextW(snapshot, &mut entry as *mut PROCESSENTRY32W) == 0 {
+                        break;
+                    }
+                }
+            }
+            let _ = CloseHandle(snapshot);
+            out
+        }
+    }
+
+    pub fn visible_window_title(pid: u32) -> Option<String> {
+        #[derive(Default)]
+        struct VisibleWindowMatch {
+            pid: u32,
+            title: Option<String>,
+        }
+
+        unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            let state = &mut *(lparam as *mut VisibleWindowMatch);
+            let mut owner_pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, &mut owner_pid as *mut u32);
+            if owner_pid != state.pid || IsWindowVisible(hwnd) == 0 {
+                return 1;
+            }
+            let title_len = GetWindowTextLengthW(hwnd);
+            if title_len <= 0 {
+                state.title = Some(String::new());
+                return 0;
+            }
+            let mut buf = vec![0u16; title_len as usize + 1];
+            let copied = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+            if copied <= 0 {
+                state.title = Some(String::new());
+            } else {
+                state.title = Some(String::from_utf16_lossy(&buf[..copied as usize]));
+            }
+            0
+        }
+
+        let mut state = VisibleWindowMatch { pid, title: None };
+        unsafe {
+            let _ = EnumWindows(Some(enum_windows_proc), &mut state as *mut _ as LPARAM);
+        }
+        state.title
     }
 
     fn tcp_owner_pid_v4(peer_port: u16, server_port: u16) -> Option<u32> {
@@ -536,12 +628,23 @@ mod windows_impl {
         }
         Some(duplicated)
     }
+
+    fn widestr_to_string(value: &[u16]) -> String {
+        let end = value
+            .iter()
+            .position(|wide| *wide == 0)
+            .unwrap_or(value.len());
+        OsString::from_wide(&value[..end])
+            .to_string_lossy()
+            .to_string()
+    }
 }
 
 #[cfg(windows)]
 pub use windows_impl::{
     duplicate_process_stdin_write_handle, infer_loopback_peer_pid, is_pid_alive,
-    read_process_command_line, read_process_cwd, read_process_env_var,
+    list_process_ids_by_name, read_process_command_line, read_process_cwd, read_process_env_var,
+    visible_window_title,
 };
 
 #[cfg(all(test, windows))]

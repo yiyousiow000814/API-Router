@@ -199,6 +199,11 @@ function Test-CommandOutputNoiseLine([string]$Line) {
   if (-not $Line) { return $true }
   return (
     $Line -match '^(vite v\d|\s*transforming|rendering chunks|computing gzip size|\s*dist/|\s*target/release/|warning:|Finished `release` profile)' -or
+    $Line -match '^>\s*api-router@' -or
+    $Line -match '^>\s*node\s+' -or
+    $Line -match '^Line ending check passed' -or
+    $Line -match '^\[check-[^\]]+\]\s+ok' -or
+    $Line -match '^\d+\s+modules transformed\.?$' -or
     $Line -match '\bgzip:\s*\d' -or
     $Line -match '\bbuilt in \d' -or
     $Line -match '^At [A-Z]:\\' -or
