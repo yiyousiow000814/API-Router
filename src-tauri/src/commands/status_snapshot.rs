@@ -449,16 +449,9 @@ fn projected_usage_ledgers(
         if updated_at_unix_ms == 0 {
             continue;
         }
-        let (request_count, _, _, total_tokens, _, _) = gateway.store.summarize_usage_requests(
-            updated_at_unix_ms,
-            None,
-            None,
-            &[],
-            std::slice::from_ref(provider_name),
-            &[],
-            &[],
-            &[],
-        );
+        let (request_count, total_tokens) = gateway
+            .store
+            .summarize_usage_requests_since_by_provider(provider_name, updated_at_unix_ms);
         out.insert(
             provider_name.clone(),
             serde_json::json!({

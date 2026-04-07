@@ -986,6 +986,56 @@ mod tests {
     }
 
     #[test]
+    fn summarize_usage_requests_since_by_provider_matches_cross_day_usage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let day1_morning = chrono::Local
+            .with_ymd_and_hms(2026, 4, 2, 9, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let day1_afternoon = chrono::Local
+            .with_ymd_and_hms(2026, 4, 2, 15, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let day2_noon = chrono::Local
+            .with_ymd_and_hms(2026, 4, 3, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let day3_noon = chrono::Local
+            .with_ymd_and_hms(2026, 4, 4, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        {
+            let conn = store.events_db.lock();
+            let insert = |id: &str, ts: i64, provider: &str, total: i64| {
+                conn.execute(
+                    "INSERT INTO usage_requests(
+                        id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                        input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                     ) VALUES(?1, ?2, ?3, '-', 'gpt-5.2-codex', 'windows', 's', ?4, 0, ?4, 0, 0)",
+                    rusqlite::params![id, ts, provider, total],
+                )
+                .unwrap();
+            };
+            insert("id-1", day1_morning, "provider_1", 100);
+            insert("id-2", day1_afternoon, "provider_1", 200);
+            insert("id-3", day2_noon, "provider_1", 300);
+            insert("id-4", day3_noon, "provider_1", 400);
+            insert("id-5", day3_noon + 1_000, "provider_2", 999);
+        }
+
+        let (request_count, total_tokens) = store
+            .summarize_usage_requests_since_by_provider("provider_1", day1_afternoon as u64);
+        assert_eq!(request_count, 3);
+        assert_eq!(total_tokens, 900);
+    }
+
+    #[test]
     fn since_window_applies_when_date_range_is_unbounded() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();
