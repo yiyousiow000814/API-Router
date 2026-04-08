@@ -190,6 +190,7 @@ fn append_remote_update_shell_window_log(message: &str) {
     let _ = crate::diagnostics::append_timestamped_log_line_capped(&path, message, 64 * 1024);
 }
 
+#[cfg(any(test, target_os = "windows"))]
 struct RemoteUpdateShellProcessContext<'a> {
     worker_pid: u32,
     request_id: &'a str,
@@ -1189,21 +1190,6 @@ fn log_remote_update_visible_window_diagnostic(
     ));
 }
 
-#[cfg(not(target_os = "windows"))]
-fn poll_remote_update_shell_window_diagnostics(
-    _context: &RemoteUpdateShellProcessContext<'_>,
-    _seen_keys: &mut std::collections::HashSet<String>,
-) {
-}
-
-#[cfg(not(target_os = "windows"))]
-fn drain_remote_update_visible_window_events(
-    _context: &RemoteUpdateShellProcessContext<'_>,
-    _seen_keys: &mut std::collections::HashSet<String>,
-    _receiver: &(),
-) {
-}
-
 fn monitor_remote_update_worker_exit(
     gateway: crate::orchestrator::gateway::GatewayState,
     mut child: std::process::Child,
@@ -1218,6 +1204,7 @@ fn monitor_remote_update_worker_exit(
         #[cfg(target_os = "windows")]
         let visible_window_event_watcher =
             crate::platform::windows_loopback_peer::watch_visible_window_show_events();
+        #[cfg(target_os = "windows")]
         let shell_context = RemoteUpdateShellProcessContext {
             worker_pid,
             request_id: &request_id,
@@ -1232,6 +1219,7 @@ fn monitor_remote_update_worker_exit(
                 &target_ref,
                 &mut last_progress_key,
             );
+            #[cfg(target_os = "windows")]
             poll_remote_update_shell_window_diagnostics(
                 &shell_context,
                 &mut seen_shell_window_keys,
@@ -1295,6 +1283,7 @@ fn monitor_remote_update_worker_exit(
                 }
             }
         };
+        #[cfg(target_os = "windows")]
         poll_remote_update_shell_window_diagnostics(&shell_context, &mut seen_shell_window_keys);
         #[cfg(target_os = "windows")]
         if let Some((_, receiver)) = visible_window_event_watcher.as_ref() {
