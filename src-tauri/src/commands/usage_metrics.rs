@@ -135,6 +135,44 @@ fn request_window_ratio(day_req_total: f64, day_req_in_window: f64) -> f64 {
     0.0
 }
 
+fn tracked_spend_day_key(day: &Value) -> Option<String> {
+    let started_at_unix_ms = day
+        .get("started_at_unix_ms")
+        .and_then(|value| value.as_u64())
+        .or_else(|| {
+            day.get("ended_at_unix_ms")
+                .and_then(|value| value.as_u64())
+                .map(|value| value.saturating_sub(1))
+        })
+        .or_else(|| day.get("updated_at_unix_ms").and_then(|value| value.as_u64()))?;
+    local_day_key_from_unix_ms(started_at_unix_ms)
+}
+
+fn usage_metrics_tracked_days_with_remote_fallback(
+    store: &crate::orchestrator::store::Store,
+    provider: &str,
+) -> Vec<Value> {
+    let local_days = store.list_local_spend_days(provider);
+    let mut day_keys_with_local = BTreeSet::new();
+    for day in &local_days {
+        if let Some(day_key) = tracked_spend_day_key(day) {
+            day_keys_with_local.insert(day_key);
+        }
+    }
+
+    let mut merged = local_days;
+    for day in store.list_remote_spend_days(provider) {
+        let Some(day_key) = tracked_spend_day_key(&day) else {
+            continue;
+        };
+        if day_keys_with_local.contains(&day_key) {
+            continue;
+        }
+        merged.push(day);
+    }
+    merged
+}
+
 fn merge_manual_per_req_for_usage_metrics_day(
     current_per_req: &mut Option<f64>,
     current_per_req_updated_at: &mut u64,
@@ -983,7 +1021,8 @@ pub(crate) fn get_usage_statistics(
                 }
             }
             _ => {
-                let spend_days = state.gateway.store.list_local_spend_days(provider);
+                let spend_days =
+                    usage_metrics_tracked_days_with_remote_fallback(&state.gateway.store, provider);
                 let mut tracked_in_window = 0.0_f64;
                 for day in spend_days {
                     let tracked = as_f64(day.get("tracked_spend_usd")).unwrap_or(0.0);
@@ -1407,6 +1446,7 @@ mod usage_metrics_tests {
         parse_usage_statistics_detail_level,
         projection_hours_for_day_estimate, request_window_ratio,
         resolve_budget_or_token_rate_cost, UsageStatisticsDetailLevel,
+        usage_metrics_tracked_days_with_remote_fallback,
         usage_metrics_configured_provider_names,
     };
     use crate::orchestrator::config::{AppConfig, ProviderConfig};
@@ -1661,5 +1701,47 @@ mod usage_metrics_tests {
         assert_eq!(rows[0].provider, "official");
         assert_eq!(rows[0].unix_ms, newer as u64);
         assert_eq!(rows[0].node_name, "Desk A");
+    }
+
+    #[test]
+    fn tracked_spend_days_fall_back_to_remote_when_local_day_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let started_at = chrono::Local
+            .with_ymd_and_hms(2026, 4, 7, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+
+        store.put_remote_spend_day(
+            "aigateway2",
+            "node-remote",
+            "Remote Node",
+            started_at,
+            &serde_json::json!({
+                "provider": "aigateway2",
+                "started_at_unix_ms": started_at,
+                "tracked_spend_usd": 22.0,
+                "updated_at_unix_ms": started_at,
+                "producer_node_id": "node-remote",
+                "producer_node_name": "Remote Node"
+            }),
+        );
+
+        let days = usage_metrics_tracked_days_with_remote_fallback(&store, "aigateway2");
+
+        assert_eq!(days.len(), 1);
+        assert_eq!(
+            days[0]
+                .get("tracked_spend_usd")
+                .and_then(serde_json::Value::as_f64),
+            Some(22.0)
+        );
+        assert_eq!(
+            days[0]
+                .get("producer_node_id")
+                .and_then(serde_json::Value::as_str),
+            Some("node-remote")
+        );
     }
 }

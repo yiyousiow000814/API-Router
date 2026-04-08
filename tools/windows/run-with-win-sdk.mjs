@@ -106,10 +106,40 @@ function mergeEnvCaseInsensitive(target, source) {
   }
 }
 
+const VS_DEV_CMD_ENV_ALLOWLIST = new Set([
+  "ExtensionSdkDir",
+  "INCLUDE",
+  "LIB",
+  "LIBPATH",
+  "Path",
+  "UniversalCRTSdkDir",
+  "UCRTVersion",
+  "VCINSTALLDIR",
+  "VCToolsInstallDir",
+  "VCToolsRedistDir",
+  "VSINSTALLDIR",
+  "WindowsLibPath",
+  "WindowsSdkBinPath",
+  "WindowsSdkDir",
+  "WindowsSDKLibVersion",
+  "WindowsSDKVersion",
+]);
+
+function pickVsBuildEnv(source) {
+  const picked = {};
+  const allowedKeys = Array.from(VS_DEV_CMD_ENV_ALLOWLIST);
+  for (const [key, value] of Object.entries(source)) {
+    if (allowedKeys.some((name) => name.toLowerCase() === key.toLowerCase())) {
+      picked[key] = value;
+    }
+  }
+  return picked;
+}
+
 function findVsDevCmdCandidates() {
   const candidates = [
     "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\Common7\\Tools\\VsDevCmd.bat",
-    "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\Common7\\Tools\\VsDevCmd.bat",
+    "C:\\Program Files\\Microsoft Visual Studio\\2019\\Enterprise\\Common7\\Tools\\VsDevCmd.bat",
     "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\Common7\\Tools\\VsDevCmd.bat",
   ];
   return candidates;
@@ -177,7 +207,7 @@ async function main() {
     prependPathEntry(env, cargoDir);
     const vsDevEnv = loadVsDevCmdEnv(env);
     if (vsDevEnv) {
-      mergeEnvCaseInsensitive(env, vsDevEnv);
+      mergeEnvCaseInsensitive(env, pickVsBuildEnv(vsDevEnv));
     }
     const rcDir = await findRcDir();
     prependPathEntry(env, rcDir);

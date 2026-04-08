@@ -58,6 +58,31 @@ fn tracked_spend_history_snapshot(day: &Value) -> Option<(String, f64, u64)> {
     Some((day_key, tracked_spend_usd, updated_at_unix_ms))
 }
 
+fn spend_history_tracked_days_with_remote_fallback(
+    store: &crate::orchestrator::store::Store,
+    provider: &str,
+) -> Vec<Value> {
+    let local_days = store.list_local_spend_days(provider);
+    let mut day_keys_with_local = std::collections::BTreeSet::new();
+    for day in &local_days {
+        if let Some(day_key) = tracked_spend_history_day_key(day) {
+            day_keys_with_local.insert(day_key);
+        }
+    }
+
+    let mut merged = local_days;
+    for day in store.list_remote_spend_days(provider) {
+        let Some(day_key) = tracked_spend_history_day_key(&day) else {
+            continue;
+        };
+        if day_keys_with_local.contains(&day_key) {
+            continue;
+        }
+        merged.push(day);
+    }
+    merged
+}
+
 fn include_compact_spend_history_row(
     compact_only: bool,
     req_count: u64,
@@ -203,7 +228,9 @@ pub(crate) fn get_spend_history(
         let mut tracked_api_key_ref_by_day: BTreeMap<String, String> = BTreeMap::new();
         let mut updated_by_day: BTreeMap<String, u64> = BTreeMap::new();
         let mut tracked_day_meta_by_day: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-        for day in state.gateway.store.list_local_spend_days(&provider_name) {
+        for day in
+            spend_history_tracked_days_with_remote_fallback(&state.gateway.store, &provider_name)
+        {
             let Some((snapshot_day_key, tracked_spend_usd, updated_at_unix_ms)) =
                 tracked_spend_history_snapshot(&day) else {
                 continue;
@@ -653,6 +680,7 @@ mod spend_history_tests {
         include_compact_spend_history_row, merge_manual_per_req_for_spend_history_day,
         merge_usage_history_day_counts,
         remove_tracked_spend_history_entries_impl, spend_history_provider_names,
+        spend_history_tracked_days_with_remote_fallback,
         tracked_spend_day_matches_history_target,
         tracked_spend_history_day_key, tracked_spend_history_snapshot,
     };
@@ -1050,6 +1078,91 @@ mod spend_history_tests {
                 ("node-local".to_string(), "Local Node".to_string()),
                 ("node-remote".to_string(), "Remote Node".to_string())
             ]
+        );
+    }
+
+    #[test]
+    fn tracked_spend_days_fall_back_to_remote_when_local_day_is_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = crate::orchestrator::gateway::open_store_dir(tmp.path().join("data"))
+            .expect("store");
+        let started_at_unix_ms = local_unix_ms(2026, 4, 7, 12, 0, 0);
+        store.put_remote_spend_day(
+            "aigateway2",
+            "node-remote",
+            "Remote Node",
+            started_at_unix_ms,
+            &serde_json::json!({
+                "provider": "aigateway2",
+                "started_at_unix_ms": started_at_unix_ms,
+                "tracked_spend_usd": 42.0,
+                "updated_at_unix_ms": started_at_unix_ms,
+                "producer_node_id": "node-remote",
+                "producer_node_name": "Remote Node"
+            }),
+        );
+
+        let days = spend_history_tracked_days_with_remote_fallback(&store, "aigateway2");
+
+        assert_eq!(days.len(), 1);
+        assert_eq!(
+            tracked_spend_history_snapshot(&days[0]),
+            Some(("2026-04-07".to_string(), 42.0, started_at_unix_ms))
+        );
+        assert_eq!(
+            days[0]
+                .get("producer_node_id")
+                .and_then(serde_json::Value::as_str),
+            Some("node-remote")
+        );
+    }
+
+    #[test]
+    fn tracked_spend_days_prefer_local_row_over_remote_same_day() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = crate::orchestrator::gateway::open_store_dir(tmp.path().join("data"))
+            .expect("store");
+        let local_started_at_unix_ms = local_unix_ms(2026, 4, 7, 8, 0, 0);
+        let remote_started_at_unix_ms = local_unix_ms(2026, 4, 7, 9, 0, 0);
+        store.put_spend_day(
+            "aigateway2",
+            local_started_at_unix_ms,
+            &serde_json::json!({
+                "provider": "aigateway2",
+                "started_at_unix_ms": local_started_at_unix_ms,
+                "tracked_spend_usd": 11.0,
+                "updated_at_unix_ms": local_started_at_unix_ms,
+                "producer_node_id": "node-local",
+                "producer_node_name": "Local Node"
+            }),
+        );
+        store.put_remote_spend_day(
+            "aigateway2",
+            "node-remote",
+            "Remote Node",
+            remote_started_at_unix_ms,
+            &serde_json::json!({
+                "provider": "aigateway2",
+                "started_at_unix_ms": remote_started_at_unix_ms,
+                "tracked_spend_usd": 42.0,
+                "updated_at_unix_ms": remote_started_at_unix_ms,
+                "producer_node_id": "node-remote",
+                "producer_node_name": "Remote Node"
+            }),
+        );
+
+        let days = spend_history_tracked_days_with_remote_fallback(&store, "aigateway2");
+
+        assert_eq!(days.len(), 1);
+        assert_eq!(
+            tracked_spend_history_snapshot(&days[0]),
+            Some(("2026-04-07".to_string(), 11.0, local_started_at_unix_ms))
+        );
+        assert_eq!(
+            days[0]
+                .get("producer_node_id")
+                .and_then(serde_json::Value::as_str),
+            Some("node-local")
         );
     }
 

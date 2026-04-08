@@ -1009,9 +1009,9 @@ pub(crate) fn clear_quota_snapshot(st: &GatewayState, provider_name: &str) {
 
 fn store_quota_snapshot_silent(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
     let _ = st.store.put_quota_snapshot(provider_name, &snap.to_json());
-    // Propagation writes should not affect per-provider ledgers; only a real refresh should reset.
-    // Tracking budget spend here would duplicate the same shared-key delta across propagated
-    // providers and inflate total usage cost.
+    // Silent propagation writes must not affect per-provider ledgers.
+    // The primary remote snapshot path records tracked spend before sibling propagation, so only
+    // propagated sibling updates remain silent here to avoid duplicating the same shared-key delta.
 }
 
 pub(crate) fn apply_remote_quota_snapshot(
