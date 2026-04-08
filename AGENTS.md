@@ -16,7 +16,7 @@
 - **Titles**: PR and issue titles stay in English. PR descriptions and regular comments should match the primary language of the surrounding conversation or thread.
 - **PR title prefix**: PR titles must start with one of `feat:`, `fix:`, `docs:`, `chore:`.
 - **PR title length**: Keep PR titles at 8 words or fewer. Avoid symbols like `+` in titles.
-- **PR body format**: PR bodies must include `## What`, `## Why`, `## Changes`, `## Verify`. If the PR is long, add `## TL;DR` at the very top.
+- **PR body format**: Prefer a Devin-style readable summary instead of a rigid checklist. Start with a short overview paragraph, then use concise `Before:` / `After:` comparisons when helpful, followed by a numbered `Key architectural changes:` list that names the concrete modules, types, functions, or config surfaces that changed. End with a short `Verification:` section listing the checks that were run. If the PR is long, add `## TL;DR` at the very top.
 - **PR summary scope**: Titles and bodies must describe the overall changes relative to `main`, not just the latest commit.
 - **Resolve review threads**: After addressing review comments, resolve the corresponding review conversations (click "Resolve conversation").
 - **Efficiency review rule (required)**: If a PR/review comment calls out `efficiency`, `inefficiency`, redundant work, repeated allocation, unnecessary polling/rendering, or similar performance waste, treat it as actionable work by default and fix it before resolving the thread unless you can show clear evidence that the comment is incorrect.
