@@ -99,6 +99,22 @@ export type Status = {
     unlimited?: boolean | null
     error?: string
   }
+  tailscale?: {
+    installed: boolean
+    connected: boolean
+    backend_state?: string | null
+    dns_name?: string | null
+    ipv4: string[]
+    reachable_ipv4: string[]
+    gateway_reachable: boolean
+    needs_gateway_restart: boolean
+    status_error?: string | null
+    bootstrap?: {
+      last_stage?: string | null
+      last_detail?: string | null
+      updated_at_unix_ms?: number | null
+    } | null
+  }
   lan_sync?: {
     enabled: boolean
     discovery_port: number
@@ -111,6 +127,7 @@ export type Status = {
       node_name: string
       listen_addr?: string | null
       capabilities: string[]
+      tailscale?: Status['tailscale']
       build_identity?: {
         app_version: string
         build_git_sha: string
@@ -154,6 +171,7 @@ export type Status = {
       listen_addr: string
       last_heartbeat_unix_ms: number
       capabilities: string[]
+      tailscale?: Status['tailscale']
       build_identity?: {
         app_version: string
         build_git_sha: string

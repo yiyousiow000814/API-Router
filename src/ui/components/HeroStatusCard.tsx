@@ -17,6 +17,48 @@ export function lanPeersSummary(status: Status): string {
   return `${aliveLabel} (${updateLabel})`
 }
 
+export function tailscaleSummary(status: Status): string {
+  const tailscale = status.tailscale
+  if (!tailscale) return 'Unknown'
+  const host = tailscale.dns_name?.trim() || tailscale.reachable_ipv4[0] || tailscale.ipv4[0] || ''
+  if (!tailscale.installed) return 'Not installed'
+  if (!tailscale.connected) {
+    if (tailscale.status_error === 'tailscale_not_found') return 'CLI not found'
+    if (tailscale.status_error === 'tailscale_not_connected') return 'Installed, not connected'
+    return 'Disconnected'
+  }
+  if (tailscale.gateway_reachable) {
+    return host ? `Reachable via ${host}` : 'Reachable'
+  }
+  if (tailscale.needs_gateway_restart) return 'Connected, restart API Router'
+  if (tailscale.status_error?.trim()) return tailscale.status_error.trim()
+  return 'Connected, gateway unreachable'
+}
+
+function peerTailscaleStateLabel(peer: NonNullable<Status['lan_sync']>['peers'][number]): string | null {
+  const tailscale = peer.tailscale
+  if (!tailscale) return null
+  if (!tailscale.installed) return 'not installed'
+  if (!tailscale.connected) return 'not connected'
+  if (tailscale.gateway_reachable) return null
+  if (tailscale.needs_gateway_restart) return 'needs restart'
+  return 'gateway unreachable'
+}
+
+export function lanPeerTailscaleSummary(status: Status): string | null {
+  const peers = status.lan_sync?.peers ?? []
+  const issues = peers
+    .map((peer) => {
+      const label = peerTailscaleStateLabel(peer)
+      return label ? `${peer.node_name}: ${label}` : null
+    })
+    .filter((value): value is string => Boolean(value))
+  if (issues.length <= 0) return null
+  if (issues.length === 1) return issues[0]
+  if (issues.length === 2) return issues.join(' | ')
+  return `${issues[0]} | ${issues[1]} | +${issues.length - 2} more`
+}
+
 export function HeroStatusCard({
   status,
   gatewayTokenPreview,
@@ -25,6 +67,7 @@ export function HeroStatusCard({
 }: HeroStatusProps) {
   const wslGatewayHost = status.wsl_gateway_host?.trim() || GATEWAY_WSL2_HOST
   const lanNode = status.lan_sync?.local_node
+  const peerTailscaleIssues = lanPeerTailscaleSummary(status)
   return (
     <div className="aoCard aoHeroCard aoHeroStatus">
       <div className="aoCardHeader">
@@ -51,6 +94,14 @@ export function HeroStatusCard({
             </div>
             <div className="aoStatLabel">LAN peers</div>
             <div className="aoStatValue">{lanPeersSummary(status)}</div>
+          </>
+        ) : null}
+        <div className="aoStatLabel">Tailscale</div>
+        <div className="aoStatValue">{tailscaleSummary(status)}</div>
+        {peerTailscaleIssues ? (
+          <>
+            <div className="aoStatLabel">Peer Tailscale</div>
+            <div className="aoStatValue">{peerTailscaleIssues}</div>
           </>
         ) : null}
       </div>

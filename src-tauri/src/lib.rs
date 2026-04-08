@@ -10,6 +10,7 @@ mod lan_sync;
 mod orchestrator;
 mod platform;
 mod provider_switchboard;
+mod tailscale_diagnostics;
 
 use tauri::Manager;
 #[cfg(target_os = "windows")]

@@ -367,6 +367,7 @@ pub struct LanLocalNodeSnapshot {
     pub node_name: String,
     pub listen_addr: Option<String>,
     pub capabilities: Vec<String>,
+    pub tailscale: crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot,
     pub build_identity: LanBuildIdentitySnapshot,
     pub version_sync: LanLocalVersionSyncSnapshot,
     pub remote_update_status: Option<LanRemoteUpdateStatusSnapshot>,
@@ -382,6 +383,7 @@ pub struct LanPeerSnapshot {
     pub listen_addr: String,
     pub last_heartbeat_unix_ms: u64,
     pub capabilities: Vec<String>,
+    pub tailscale: crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot,
     pub build_identity: LanBuildIdentitySnapshot,
     pub provider_fingerprints: Vec<String>,
     pub provider_definitions_revision: String,
@@ -451,6 +453,7 @@ struct LanPeerRuntime {
     listen_addr: String,
     last_heartbeat_unix_ms: u64,
     capabilities: Vec<String>,
+    tailscale: crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot,
     build_identity: LanBuildIdentitySnapshot,
     remote_update_readiness: Option<LanRemoteUpdateReadinessSnapshot>,
     remote_update_status: Option<LanRemoteUpdateStatusSnapshot>,
@@ -467,6 +470,7 @@ fn lan_peer_snapshot_from_runtime(peer: &LanPeerRuntime) -> LanPeerSnapshot {
         listen_addr: peer.listen_addr.clone(),
         last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
         capabilities: peer.capabilities.clone(),
+        tailscale: peer.tailscale.clone(),
         build_identity: peer.build_identity.clone(),
         provider_fingerprints: peer.provider_fingerprints.clone(),
         provider_definitions_revision: peer.provider_definitions_revision.clone(),
@@ -520,6 +524,7 @@ struct LanHeartbeatPacket {
     #[serde(default)]
     sender_previous_elapsed_ms: Option<u64>,
     capabilities: Vec<String>,
+    tailscale: crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot,
     #[serde(default = "current_build_identity")]
     build_identity: LanBuildIdentitySnapshot,
     #[serde(default)]
@@ -934,6 +939,8 @@ impl LanSyncRuntime {
             .collect();
         let local_provider_fingerprints = build_provider_fingerprints(cfg, secrets);
         *self.local_provider_fingerprints.write() = local_provider_fingerprints.clone();
+        let tailscale =
+            crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(listen_port);
         LanSyncStatusSnapshot {
             enabled: true,
             discovery_port: LAN_DISCOVERY_PORT,
@@ -950,6 +957,7 @@ impl LanSyncRuntime {
                 node_name: self.local_node.node_name.clone(),
                 listen_addr: detect_local_listen_addr(listen_port),
                 capabilities: lan_heartbeat_capabilities(),
+                tailscale,
                 build_identity: local_build_identity,
                 version_sync: local_version_sync,
                 remote_update_status: load_lan_remote_update_status(),
@@ -978,6 +986,9 @@ impl LanSyncRuntime {
                 listen_addr: "192.168.1.10:4000".to_string(),
                 last_heartbeat_unix_ms: unix_ms(),
                 capabilities: lan_heartbeat_capabilities(),
+                tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(
+                    4000,
+                ),
                 build_identity: current_build_identity(),
                 remote_update_readiness: Some(current_local_remote_update_readiness()),
                 remote_update_status: load_lan_remote_update_status(),
@@ -1027,6 +1038,7 @@ impl LanSyncRuntime {
                 listen_addr: listen_addr.clone(),
                 last_heartbeat_unix_ms: received_at_unix_ms,
                 capabilities: packet.capabilities,
+                tailscale: packet.tailscale,
                 build_identity: packet.build_identity,
                 remote_update_readiness: packet.remote_update_readiness,
                 remote_update_status: packet.remote_update_status,
@@ -3354,6 +3366,11 @@ fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::Ga
         let remote_update_readiness = Some(current_local_remote_update_readiness());
         let remote_update_status = load_lan_remote_update_status();
         let remote_update_elapsed_ms = heartbeat_step_elapsed_ms(remote_update_started_unix_ms);
+        let tailscale_started_unix_ms = unix_ms();
+        let tailscale = crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(
+            cfg_snapshot.listen.port,
+        );
+        let tailscale_elapsed_ms = heartbeat_step_elapsed_ms(tailscale_started_unix_ms);
         let sync_contracts_started_unix_ms = unix_ms();
         let sync_contracts = local_sync_contracts();
         let sync_contracts_elapsed_ms = heartbeat_step_elapsed_ms(sync_contracts_started_unix_ms);
@@ -3370,6 +3387,7 @@ fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::Ga
             sender_previous_gap_ms,
             sender_previous_elapsed_ms: last_heartbeat_elapsed_ms,
             capabilities: lan_heartbeat_capabilities(),
+            tailscale,
             build_identity: current_build_identity(),
             remote_update_readiness,
             remote_update_status,
@@ -3383,7 +3401,7 @@ fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::Ga
         let prep_elapsed_ms = heartbeat_step_elapsed_ms(heartbeat_started_unix_ms);
         if prep_elapsed_ms >= LAN_HEARTBEAT_PREP_SLOW_LOG_THRESHOLD_MS {
             append_lan_peer_diagnostics_log(&format!(
-                "Heartbeat sender prep slow {}ms; node={} name={} cfg={}ms provider_fingerprints={}ms provider_definitions={}ms remote_update={}ms sync_contracts={}ms followed_source={}ms",
+                "Heartbeat sender prep slow {}ms; node={} name={} cfg={}ms provider_fingerprints={}ms provider_definitions={}ms remote_update={}ms tailscale={}ms sync_contracts={}ms followed_source={}ms",
                 prep_elapsed_ms,
                 runtime.local_node.node_id,
                 runtime.local_node.node_name,
@@ -3391,6 +3409,7 @@ fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::Ga
                 provider_fingerprints_elapsed_ms,
                 provider_definitions_elapsed_ms,
                 remote_update_elapsed_ms,
+                tailscale_elapsed_ms,
                 sync_contracts_elapsed_ms,
                 followed_source_elapsed_ms
             ));
@@ -5098,6 +5117,7 @@ mod tests {
             listen_addr: "192.168.1.10:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(4000),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -6077,6 +6097,9 @@ mod tests {
                 sender_previous_gap_ms: None,
                 sender_previous_elapsed_ms: None,
                 capabilities: vec!["heartbeat_v1".to_string()],
+                tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(
+                    4000,
+                ),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -6654,6 +6677,7 @@ mod tests {
             listen_addr: "192.168.1.10:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(4000),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -6690,6 +6714,7 @@ mod tests {
             listen_addr: "192.168.1.10:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(4000),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -6729,6 +6754,7 @@ mod tests {
             listen_addr: "192.168.1.10:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(4000),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -6846,6 +6872,7 @@ mod tests {
             listen_addr: "192.168.1.10:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(4000),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -6987,6 +7014,9 @@ mod tests {
                 listen_addr: "192.168.1.10:4000".to_string(),
                 last_heartbeat_unix_ms: 100_000,
                 capabilities: vec!["heartbeat_v1".to_string()],
+                tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(
+                    4000,
+                ),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7004,6 +7034,9 @@ mod tests {
                 listen_addr: "192.168.1.11:4000".to_string(),
                 last_heartbeat_unix_ms: 100_000_u64.saturating_sub(LAN_PEER_STALE_AFTER_MS + 1),
                 capabilities: vec!["heartbeat_v1".to_string()],
+                tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(
+                    4000,
+                ),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7034,6 +7067,9 @@ mod tests {
                 listen_addr: "192.168.1.12:4000".to_string(),
                 last_heartbeat_unix_ms: now.saturating_sub(LAN_PEER_STALE_AFTER_MS + 1),
                 capabilities: super::lan_heartbeat_capabilities(),
+                tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(
+                    4000,
+                ),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7070,6 +7106,9 @@ mod tests {
                 listen_addr: "192.168.1.12:4000".to_string(),
                 last_heartbeat_unix_ms: now.saturating_sub(super::LAN_PEER_STALE_AFTER_MS + 1),
                 capabilities: super::lan_heartbeat_capabilities(),
+                tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(
+                    4000,
+                ),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7087,6 +7126,9 @@ mod tests {
                 listen_addr: "192.168.1.13:4000".to_string(),
                 last_heartbeat_unix_ms: now,
                 capabilities: super::lan_heartbeat_capabilities(),
+                tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(
+                    4000,
+                ),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7135,6 +7177,9 @@ mod tests {
                 sender_previous_gap_ms: None,
                 sender_previous_elapsed_ms: None,
                 capabilities: vec!["heartbeat_v1".to_string()],
+                tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(
+                    4000,
+                ),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7211,6 +7256,7 @@ mod tests {
             listen_addr: "192.168.1.50:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(4000),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -7261,6 +7307,7 @@ mod tests {
             listen_addr: "192.168.1.50:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(4000),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -7441,6 +7488,9 @@ mod tests {
                 sender_previous_gap_ms: None,
                 sender_previous_elapsed_ms: None,
                 capabilities: vec!["heartbeat_v1".to_string()],
+                tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(
+                    4000,
+                ),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7473,6 +7523,9 @@ mod tests {
                 listen_addr: "192.168.1.10:4000".to_string(),
                 last_heartbeat_unix_ms: now,
                 capabilities: super::lan_heartbeat_capabilities(),
+                tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(
+                    4000,
+                ),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7507,6 +7560,9 @@ mod tests {
                 listen_addr: "192.168.1.10:4000".to_string(),
                 last_heartbeat_unix_ms: now,
                 capabilities: vec!["heartbeat_v1".to_string()],
+                tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(
+                    4000,
+                ),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7554,6 +7610,9 @@ mod tests {
                 listen_addr: "192.168.1.50:4000".to_string(),
                 last_heartbeat_unix_ms: now,
                 capabilities: super::lan_heartbeat_capabilities(),
+                tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(
+                    4000,
+                ),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7571,6 +7630,9 @@ mod tests {
                 listen_addr: "192.168.1.51:4000".to_string(),
                 last_heartbeat_unix_ms: now.saturating_sub(super::LAN_PEER_STALE_AFTER_MS + 1),
                 capabilities: super::lan_heartbeat_capabilities(),
+                tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(
+                    4000,
+                ),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7908,6 +7970,9 @@ mod tests {
                 listen_addr: "192.168.1.21:4000".to_string(),
                 last_heartbeat_unix_ms: crate::orchestrator::store::unix_ms(),
                 capabilities: vec!["heartbeat_v1".to_string()],
+                tailscale: crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(
+                    4000,
+                ),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,

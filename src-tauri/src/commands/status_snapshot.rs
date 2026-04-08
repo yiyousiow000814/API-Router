@@ -183,6 +183,12 @@ pub(crate) fn get_status(
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
     let phase_started_at = std::time::Instant::now();
+    let tailscale = crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(cfg.listen.port);
+    phase_timings_ms.insert(
+        "tailscale_snapshot".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
+    let phase_started_at = std::time::Instant::now();
     let shared_quota_owners = if dashboard_detail {
         Vec::new()
     } else {
@@ -422,6 +428,7 @@ pub(crate) fn get_status(
       "codex_account": codex_account,
       "client_sessions": client_sessions,
       "lan_sync": lan_sync,
+      "tailscale": tailscale,
       "shared_quota_owners": shared_quota_owners
     });
     let total_elapsed_ms = elapsed_ms_since(command_started_at);
