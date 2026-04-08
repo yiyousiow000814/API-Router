@@ -460,7 +460,7 @@ mod tests {
             usage_base_url: None,
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert!(bases.is_empty());
     }
 
@@ -475,7 +475,7 @@ mod tests {
             usage_base_url: Some("https://explicit.example.com/".to_string()),
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://explicit.example.com".to_string()]);
     }
 
@@ -490,7 +490,7 @@ mod tests {
             usage_base_url: None,
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://codex.packycode.com".to_string()]);
     }
 
@@ -505,7 +505,7 @@ mod tests {
             usage_base_url: Some("https://www.packycode.com".to_string()),
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://codex.packycode.com".to_string()]);
     }
 
@@ -534,6 +534,7 @@ mod tests {
             &[base.clone()],
             Some("test-token"),
             "usage token",
+            crate::orchestrator::providers::default_budget_info_mapping(),
             PackageExpiryStrategy::None,
         )
         .await;
@@ -604,8 +605,8 @@ mod tests {
             api_key: String::new(),
         };
 
-        let bases_pp = candidate_quota_bases(&pp);
-        let bases_pumpkin = candidate_quota_bases(&pumpkin);
+        let bases_pp = resolve_quota_profile(&pp).candidate_bases;
+        let bases_pumpkin = resolve_quota_profile(&pumpkin).candidate_bases;
         assert_eq!(bases_pp, bases_pumpkin);
         assert_eq!(bases_pp.first().unwrap(), "https://his.ppchat.vip");
         assert_eq!(bases_pumpkin.first().unwrap(), "https://his.ppchat.vip");
@@ -638,7 +639,7 @@ mod tests {
             usage_base_url: None,
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://api-vip.codex-for.me".to_string()]);
     }
 
@@ -653,7 +654,7 @@ mod tests {
             usage_base_url: None,
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://api-vip.codex-for.vip".to_string()]);
     }
 
@@ -715,7 +716,6 @@ mod tests {
 
     #[test]
     fn explicit_usage_endpoint_payload_reads_aigateway_usage_shape() {
-        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
         let payload = serde_json::json!({
             "isValid": true,
             "mode": "unrestricted",
@@ -736,16 +736,17 @@ mod tests {
             }
         });
 
-        apply_explicit_usage_endpoint_payload(
-            &mut snap,
+        let snap = map_snapshot_from_usage_payload(
             &payload,
+            explicit_usage_mapping("https://aigateway.chat/v1/usage"),
             "https://aigateway.chat/v1/usage",
+            "usage_base",
             1_700_000_000_000,
         )
         .expect("aigateway usage payload should parse");
 
         assert_eq!(snap.kind, UsageKind::BudgetInfo);
-        assert_eq!(snap.remaining, Some(200.0));
+        assert_eq!(snap.remaining, None);
         assert_eq!(snap.daily_budget_usd, Some(200.0));
         assert_eq!(snap.daily_spent_usd, Some(0.0));
         assert_eq!(snap.package_expires_at_unix_ms, Some(1_775_109_747_679));
@@ -756,17 +757,16 @@ mod tests {
     }
 
     #[test]
-    fn explicit_usage_endpoint_prefers_aigateway_usage_today_cost_over_subscription_daily_usage() {
-        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+    fn explicit_usage_endpoint_prefers_aigateway_today_actual_cost_when_remaining_is_depleted() {
         let payload = serde_json::json!({
             "isValid": true,
             "mode": "unrestricted",
-            "planName": "轻享卡 3天",
-            "remaining": 121.9059165,
+            "planName": "季卡 90天",
+            "remaining": 0,
             "subscription": {
-                "daily_limit_usd": 200,
-                "daily_usage_usd": 78.0940835,
-                "expires_at": "2026-04-06T14:02:27.679994+08:00"
+                "daily_limit_usd": 300,
+                "daily_usage_usd": 300.043385,
+                "expires_at": "2026-10-04T09:29:39.391714+08:00"
             },
             "unit": "USD",
             "usage": {
@@ -779,20 +779,21 @@ mod tests {
             }
         });
 
-        apply_explicit_usage_endpoint_payload(
-            &mut snap,
+        let snap = map_snapshot_from_usage_payload(
             &payload,
+            explicit_usage_mapping("https://aigateway.chat/v1/usage"),
             "https://aigateway.chat/v1/usage",
+            "usage_base",
             1_700_000_000_000,
         )
         .expect("aigateway usage payload should parse");
 
-        assert_eq!(snap.daily_budget_usd, Some(200.0));
-        assert_eq!(snap.remaining, Some(121.9059165));
+        assert_eq!(snap.daily_budget_usd, Some(300.0));
+        assert_eq!(snap.remaining, None);
         assert_eq!(
             snap.daily_spent_usd,
             Some(0.0),
-            "aigateway today usage should come from usage.today, not subscription.daily_usage_usd"
+            "aigateway snapshots should trust usage.today.actual_cost instead of stale remaining or subscription daily usage"
         );
     }
 
@@ -911,6 +912,17 @@ mod tests {
         let cfg = st.cfg.read().clone();
         let provider = cfg.providers.get("p1").unwrap();
         assert!(can_refresh_quota_for_provider(&st, "p1", provider));
+    }
+
+    #[tokio::test]
+    async fn packycode_usage_login_without_provider_key_is_not_refreshable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_usage_login("p1", "alice", "secret").unwrap();
+        let st = mk_state("https://codex.packycode.com/v1".to_string(), secrets);
+        let cfg = st.cfg.read().clone();
+        let provider = cfg.providers.get("p1").unwrap();
+        assert!(!can_refresh_quota_for_provider(&st, "p1", provider));
     }
 
     #[tokio::test]
@@ -2006,6 +2018,49 @@ mod tests {
     }
 
     #[test]
+    fn quota_snapshot_roundtrips_through_canonical_usage() {
+        let snapshot = QuotaSnapshot {
+            kind: UsageKind::BudgetInfo,
+            updated_at_unix_ms: 1_700_000_000_000,
+            remaining: Some(42.5),
+            today_used: Some(2.0),
+            today_added: Some(5.0),
+            daily_spent_usd: Some(7.5),
+            daily_budget_usd: Some(20.0),
+            weekly_spent_usd: Some(12.0),
+            weekly_budget_usd: Some(50.0),
+            monthly_spent_usd: Some(30.0),
+            monthly_budget_usd: Some(200.0),
+            package_expires_at_unix_ms: Some(1_800_000_000_000),
+            last_error: String::new(),
+            effective_usage_base: Some("https://usage.example".to_string()),
+            effective_usage_source: Some("usage_base".to_string()),
+            producer_node_id: None,
+            producer_node_name: None,
+            applied_from_node_id: None,
+            applied_from_node_name: None,
+            applied_at_unix_ms: 0,
+        };
+
+        let canonical =
+            canonical_usage_from_snapshot(&snapshot).expect("successful snapshot should normalize");
+        let rebuilt = QuotaSnapshot::from_canonical(canonical);
+
+        assert_eq!(rebuilt.kind, snapshot.kind);
+        assert_eq!(rebuilt.remaining, snapshot.remaining);
+        assert_eq!(rebuilt.daily_spent_usd, snapshot.daily_spent_usd);
+        assert_eq!(rebuilt.daily_budget_usd, snapshot.daily_budget_usd);
+        assert_eq!(rebuilt.weekly_spent_usd, snapshot.weekly_spent_usd);
+        assert_eq!(rebuilt.monthly_budget_usd, snapshot.monthly_budget_usd);
+        assert_eq!(
+            rebuilt.package_expires_at_unix_ms,
+            snapshot.package_expires_at_unix_ms
+        );
+        assert_eq!(rebuilt.effective_usage_base, snapshot.effective_usage_base);
+        assert_eq!(rebuilt.effective_usage_source, snapshot.effective_usage_source);
+    }
+
+    #[test]
     fn rate_limit_backoff_prefers_retry_after_header() {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(reqwest::header::RETRY_AFTER, "12".parse().unwrap());
@@ -2247,18 +2302,18 @@ mod tests {
 
         let tz = FixedOffset::east_opt(8 * 3600).unwrap();
         let now = tz.with_ymd_and_hms(2026, 3, 11, 11, 25, 42).unwrap();
-        let due = next_packycode_refresh_at(now);
+        let due = next_priority_quota_refresh_at(now);
         assert_eq!(due.minute(), 58);
         assert_eq!(due.second(), 0);
 
         let now = tz.with_ymd_and_hms(2026, 3, 11, 11, 58, 0).unwrap();
-        let due = next_packycode_refresh_at(now);
+        let due = next_priority_quota_refresh_at(now);
         assert_eq!(due.hour(), 12);
         assert_eq!(due.minute(), 58);
         assert_eq!(due.second(), 0);
 
         let now = tz.with_ymd_and_hms(2026, 3, 10, 23, 58, 0).unwrap();
-        let due = next_packycode_refresh_at(now);
+        let due = next_priority_quota_refresh_at(now);
         assert_eq!(due.hour(), 0);
         assert_eq!(due.minute(), 1);
         assert_eq!(due.second(), 0);
@@ -2279,7 +2334,7 @@ mod tests {
             true,
             true,
             1,
-            PackageExpiryStrategy::Packycode,
+            PackageExpiryStrategy::BackendUsersInfo,
         )
         .expect("packycode due");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
@@ -2301,7 +2356,7 @@ mod tests {
             true,
             true,
             1,
-            PackageExpiryStrategy::Packycode,
+            PackageExpiryStrategy::BackendUsersInfo,
         )
         .expect("packycode due without snapshot");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
@@ -2326,7 +2381,7 @@ mod tests {
             true,
             true,
             1,
-            PackageExpiryStrategy::Packycode,
+            PackageExpiryStrategy::BackendUsersInfo,
         )
         .expect("packycode due after failed snapshot");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
@@ -2792,6 +2847,126 @@ mod tests {
             st.store.get_quota_snapshot("p2").is_none(),
             "disabled provider must not be refreshed just because it still has credentials"
         );
+    }
+
+    #[test]
+    fn explicit_usage_mapping_normalizes_user_me_payload_to_usd() {
+        let payload = serde_json::json!({
+            "quota": {
+                "daily_quota": 4500,
+                "daily_spent": 28,
+                "daily_remaining": 4472
+            },
+            "timestamps": {
+                "expires_at": "2026-04-04T14:57:44.674Z"
+            }
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            explicit_usage_mapping("https://yunyi.rdzhvip.com/user/api/v1/me"),
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://yunyi.rdzhvip.com/user/api/v1/me".to_string()),
+                effective_usage_source: Some("usage_base".to_string()),
+                updated_at_unix_ms: 123,
+            },
+        )
+        .expect("mapped usage");
+
+        assert_eq!(usage.usage_kind, UsageKind::BudgetInfo);
+        assert_eq!(usage.daily_limit, Some(45.0));
+        assert_eq!(usage.daily_used, Some(0.28));
+        assert_eq!(usage.remaining, Some(44.72));
+        assert_eq!(usage.expires_at_unix_ms, Some(1_775_314_664_674));
+    }
+
+    #[test]
+    fn packycode_mapping_reads_alias_fields_into_canonical_usage() {
+        let provider = ProviderConfig {
+            display_name: "Packycode".to_string(),
+            base_url: "https://codex.packycode.com/v1".to_string(),
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            group: None,
+            disabled: false,
+            api_key: String::new(),
+        };
+        let mapping = resolve_quota_profile(&provider)
+            .budget_info_mapping
+            .expect("budget info mapping");
+        let payload = serde_json::json!({
+            "daily_spent_usd": "0.5",
+            "daily_budget_usd": 1,
+            "weekly_spent": 2.5,
+            "weekly_budget": "8",
+            "monthly_spent_usd": 4,
+            "monthly_budget_usd": 10,
+            "remaining_quota": 123
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            mapping,
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://codex.packycode.com".to_string()),
+                effective_usage_source: Some("usage_base".to_string()),
+                updated_at_unix_ms: 456,
+            },
+        )
+        .expect("mapped usage");
+
+        assert_eq!(usage.daily_used, Some(0.5));
+        assert_eq!(usage.daily_limit, Some(1.0));
+        assert_eq!(usage.weekly_used, Some(2.5));
+        assert_eq!(usage.weekly_limit, Some(8.0));
+        assert_eq!(usage.monthly_used, Some(4.0));
+        assert_eq!(usage.monthly_limit, Some(10.0));
+        assert_eq!(usage.remaining, Some(123.0));
+    }
+
+    #[test]
+    fn codex_for_me_mapping_preserves_balance_fields_and_budget_signal() {
+        let provider = ProviderConfig {
+            display_name: "Codex For Me".to_string(),
+            base_url: "https://api-vip.codex-for.me/v1".to_string(),
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            group: None,
+            disabled: false,
+            api_key: String::new(),
+        };
+        let mapping = resolve_quota_profile(&provider)
+            .summary_mapping
+            .expect("summary mapping");
+        let payload = serde_json::json!({
+            "data": {
+                "card_balance": "42.5",
+                "card_expire_date": "2027-12-31",
+                "card_name": "VIP",
+                "card_daily_limit": "200",
+                "today_spent_amount": "26.03",
+                "card_total_spent_amount": "40.92"
+            }
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            mapping,
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://api-vip.codex-for.me".to_string()),
+                effective_usage_source: Some("login_summary".to_string()),
+                updated_at_unix_ms: 789,
+            },
+        )
+        .expect("mapped usage");
+
+        assert_eq!(usage.usage_kind, UsageKind::BudgetInfo);
+        assert_eq!(usage.plan_name.as_deref(), Some("VIP"));
+        assert_eq!(usage.remaining, Some(42.5));
+        assert_eq!(usage.daily_limit, Some(200.0));
+        assert_eq!(usage.daily_used, Some(26.03));
+        assert_eq!(usage.monthly_used, Some(40.92));
+        assert_eq!(usage.expires_at_unix_ms, Some(1_830_254_400_000));
     }
 
 }

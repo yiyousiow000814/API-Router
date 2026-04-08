@@ -871,6 +871,7 @@ mod tests {
 
     #[test]
     fn wsl_rollout_path_resolves_host_specific_local_path() {
+        let _test_guard = crate::codex_app_server::lock_test_globals();
         let _identity = WslIdentityGuard::set("Ubuntu", "/home/test/.codex");
         let _home = EnvGuard::set("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", "/home/test/.codex");
         let raw_path = "/home/test/.codex/sessions/2026/03/07/rollout.jsonl";
@@ -919,6 +920,7 @@ mod tests {
 
     #[test]
     fn wsl_history_falls_back_to_linux_loader_when_local_path_is_missing() {
+        let _test_guard = crate::codex_app_server::lock_test_globals();
         let _identity = WslIdentityGuard::set("Ubuntu", "/home/test/.codex");
         let _home = EnvGuard::set("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", "/home/test/.codex");
         let seen = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
