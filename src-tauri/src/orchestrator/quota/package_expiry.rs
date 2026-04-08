@@ -1,17 +1,3 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PackageExpiryStrategy {
-    None,
-    Packycode,
-}
-
-fn detect_package_expiry_strategy(base_url: &str) -> PackageExpiryStrategy {
-    if is_packycode_base(base_url) {
-        PackageExpiryStrategy::Packycode
-    } else {
-        PackageExpiryStrategy::None
-    }
-}
-
 async fn fetch_package_expiry_for_strategy(
     strategy: PackageExpiryStrategy,
     st: &GatewayState,

@@ -11,6 +11,13 @@ use crate::orchestrator::config::AppConfig;
 
 use super::config::ProviderConfig;
 use super::gateway::GatewayState;
+pub(crate) use super::providers::canonical_packycode_usage_base;
+#[cfg(test)]
+pub(crate) use super::providers::{derive_origin, explicit_usage_endpoint_url};
+use super::providers::{
+    detect_package_expiry_strategy, resolve_quota_profile, CanonicalProviderUsage,
+    PackageExpiryStrategy, ProviderQuotaProfile,
+};
 use super::secrets::UsageLoginConfig;
 use super::store::unix_ms;
 
@@ -149,12 +156,6 @@ struct QuotaCredentials<'a> {
     provider_key: Option<&'a str>,
     usage_token: Option<&'a str>,
     usage_login: Option<&'a UsageLoginConfig>,
-}
-
-#[derive(Clone, Copy)]
-struct QuotaSnapshotStrategies {
-    provider_strategy: PackageExpiryStrategy,
-    package_expiry_fetch_strategy: PackageExpiryStrategy,
 }
 
 const USAGE_BASE_MIN_GAP_MS: u64 = 1_250;
@@ -336,6 +337,57 @@ impl QuotaSnapshot {
             "applied_at_unix_ms": self.applied_at_unix_ms,
         })
     }
+
+    fn from_canonical(usage: CanonicalProviderUsage) -> Self {
+        Self {
+            kind: usage.usage_kind,
+            updated_at_unix_ms: usage.updated_at_unix_ms,
+            remaining: usage.remaining,
+            today_used: usage.today_used,
+            today_added: usage.today_added,
+            daily_spent_usd: usage.daily_used,
+            daily_budget_usd: usage.daily_limit,
+            weekly_spent_usd: usage.weekly_used,
+            weekly_budget_usd: usage.weekly_limit,
+            monthly_spent_usd: usage.monthly_used,
+            monthly_budget_usd: usage.monthly_limit,
+            package_expires_at_unix_ms: usage.expires_at_unix_ms,
+            last_error: String::new(),
+            effective_usage_base: usage.effective_usage_base,
+            effective_usage_source: usage.effective_usage_source,
+            producer_node_id: None,
+            producer_node_name: None,
+            applied_from_node_id: None,
+            applied_from_node_name: None,
+            applied_at_unix_ms: 0,
+        }
+    }
+}
+
+fn canonical_usage_from_snapshot(snapshot: &QuotaSnapshot) -> Option<CanonicalProviderUsage> {
+    if !snapshot.last_error.is_empty() || snapshot.updated_at_unix_ms == 0 {
+        return None;
+    }
+
+    Some(CanonicalProviderUsage {
+        usage_kind: snapshot.kind,
+        plan_name: None,
+        mode: None,
+        currency_unit: None,
+        remaining: snapshot.remaining,
+        today_used: snapshot.today_used,
+        today_added: snapshot.today_added,
+        daily_used: snapshot.daily_spent_usd,
+        daily_limit: snapshot.daily_budget_usd,
+        weekly_used: snapshot.weekly_spent_usd,
+        weekly_limit: snapshot.weekly_budget_usd,
+        monthly_used: snapshot.monthly_spent_usd,
+        monthly_limit: snapshot.monthly_budget_usd,
+        expires_at_unix_ms: snapshot.package_expires_at_unix_ms,
+        effective_usage_base: snapshot.effective_usage_base.clone(),
+        effective_usage_source: snapshot.effective_usage_source.clone(),
+        updated_at_unix_ms: snapshot.updated_at_unix_ms,
+    })
 }
 
 fn normalized_usage_proxy_pool(st: &GatewayState, provider_name: &str) -> Vec<String> {
@@ -373,16 +425,6 @@ fn build_usage_http_client(
     builder
         .build()
         .map_err(|e| format!("failed to build usage http client: {e}"))
-}
-
-pub fn detect_usage_kind(provider: &ProviderConfig) -> UsageKind {
-    let explicit = UsageKind::from_str(&provider.usage_adapter);
-    if explicit != UsageKind::None {
-        return explicit;
-    }
-
-    // Intentionally do not infer from domains; keep it provider-agnostic.
-    UsageKind::None
 }
 
 fn next_daily_reset_refresh_at<Tz>(now: chrono::DateTime<Tz>) -> chrono::DateTime<Tz>
@@ -461,7 +503,7 @@ pub async fn effective_usage_base(st: &GatewayState, provider_name: &str) -> Opt
     let cfg = st.cfg.read().clone();
     let p = cfg.providers.get(provider_name)?;
     let api_key = st.secrets.get_provider_key(provider_name);
-    let bases = candidate_quota_bases(p);
+    let bases = resolve_quota_profile(p).candidate_bases;
     if bases.is_empty() {
         return None;
     }
@@ -536,6 +578,20 @@ fn usage_auth_key_for_provider(
     usage_auth_key(provider_key, usage_token, usage_login)
 }
 
+fn canonicalize_snapshot_result(
+    snapshot: QuotaSnapshot,
+    fallback_kind: UsageKind,
+) -> Result<CanonicalProviderUsage, String> {
+    let last_error = snapshot.last_error.clone();
+    canonical_usage_from_snapshot(&snapshot).ok_or_else(|| {
+        if last_error.is_empty() {
+            format!("{} usage normalization failed", fallback_kind.as_str())
+        } else {
+            last_error
+        }
+    })
+}
+
 fn stable_shared_fingerprint_component(input: &str) -> String {
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in input.trim().as_bytes() {
@@ -551,7 +607,10 @@ pub fn provider_runtime_identity(
     usage_token: &Option<String>,
     usage_login: &Option<UsageLoginConfig>,
 ) -> Option<String> {
-    let shared_base = candidate_quota_bases(provider).first()?.clone();
+    let shared_base = resolve_quota_profile(provider)
+        .candidate_bases
+        .first()?
+        .clone();
     let shared_key = usage_shared_key(
         provider,
         &shared_base,
@@ -641,76 +700,38 @@ pub fn shared_quota_owner_statuses(
 async fn compute_quota_snapshot(
     st: &GatewayState,
     provider_name: &str,
-    kind: UsageKind,
+    profile: &ProviderQuotaProfile,
     bases: &[String],
-    explicit_usage_endpoint: Option<&str>,
     credentials: QuotaCredentials<'_>,
-    strategies: QuotaSnapshotStrategies,
+    package_expiry_fetch_strategy: PackageExpiryStrategy,
 ) -> QuotaSnapshot {
-    let should_use_packycode_usage_flow =
-        strategies.provider_strategy == PackageExpiryStrategy::Packycode;
+    let should_use_packycode_usage_flow = profile.uses_packycode_usage_schedule()
+        && (credentials.usage_token.is_some()
+            || package_expiry_fetch_strategy == PackageExpiryStrategy::Packycode);
     if should_use_packycode_usage_flow {
-        return fetch_budget_info_any(
-            st,
-            provider_name,
-            bases,
-            credentials.provider_key,
-            "provider key",
-            strategies.package_expiry_fetch_strategy,
-        )
-        .await;
-    }
-
-    if is_codex_for_me_base(provider_name, bases) {
-        return fetch_codex_for_me_balance_any(
-            st,
-            provider_name,
-            bases,
-            credentials.usage_token,
-            credentials.usage_login,
-        )
-        .await;
-    }
-
-    if let Some(endpoint_url) = explicit_usage_endpoint {
-        let direct = fetch_explicit_usage_endpoint_any(
-            st,
-            provider_name,
-            endpoint_url,
-            credentials.provider_key,
-            credentials.usage_token,
-        )
-        .await;
-        if direct.last_error.is_empty() {
-            return direct;
-        }
-    }
-
-    match kind {
-        UsageKind::TokenStats => {
-            fetch_token_stats_any(
-                st,
-                provider_name,
-                bases,
-                explicit_usage_endpoint,
-                credentials.provider_key,
-                credentials.usage_token,
-                strategies.package_expiry_fetch_strategy,
-            )
-            .await
-        }
-        UsageKind::BudgetInfo => {
+        return match canonicalize_snapshot_result(
             fetch_budget_info_any(
                 st,
                 provider_name,
                 bases,
-                credentials.usage_token,
-                "usage token",
-                strategies.package_expiry_fetch_strategy,
+                credentials.provider_key,
+                "provider key",
+                package_expiry_fetch_strategy,
             )
-            .await
-        }
-        UsageKind::BalanceInfo => {
+            .await,
+            UsageKind::BudgetInfo,
+        ) {
+            Ok(usage) => QuotaSnapshot::from_canonical(usage),
+            Err(err) => {
+                let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+                out.last_error = err;
+                out
+            }
+        };
+    }
+
+    if profile.is_codex_for_me() {
+        return match canonicalize_snapshot_result(
             fetch_codex_for_me_balance_any(
                 st,
                 provider_name,
@@ -718,35 +739,136 @@ async fn compute_quota_snapshot(
                 credentials.usage_token,
                 credentials.usage_login,
             )
-            .await
+            .await,
+            UsageKind::BalanceInfo,
+        ) {
+            Ok(usage) => QuotaSnapshot::from_canonical(usage),
+            Err(err) => {
+                let mut out = QuotaSnapshot::empty(UsageKind::BalanceInfo);
+                out.last_error = err;
+                out
+            }
+        };
+    }
+
+    if let Some(endpoint_url) = profile.explicit_usage_endpoint.as_deref() {
+        let direct = match canonicalize_snapshot_result(
+            fetch_explicit_usage_endpoint_any(
+                st,
+                provider_name,
+                endpoint_url,
+                credentials.provider_key,
+                credentials.usage_token,
+            )
+            .await,
+            UsageKind::BudgetInfo,
+        ) {
+            Ok(usage) => QuotaSnapshot::from_canonical(usage),
+            Err(err) => {
+                let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+                out.last_error = err;
+                out
+            }
+        };
+        if direct.last_error.is_empty() {
+            return direct;
         }
+    }
+
+    let canonical_result = match profile.usage_kind {
+        UsageKind::TokenStats => canonicalize_snapshot_result(
+            fetch_token_stats_any(
+                st,
+                provider_name,
+                bases,
+                profile.explicit_usage_endpoint.as_deref(),
+                credentials.provider_key,
+                credentials.usage_token,
+                package_expiry_fetch_strategy,
+            )
+            .await,
+            UsageKind::TokenStats,
+        ),
+        UsageKind::BudgetInfo => canonicalize_snapshot_result(
+            fetch_budget_info_any(
+                st,
+                provider_name,
+                bases,
+                credentials.usage_token,
+                "usage token",
+                package_expiry_fetch_strategy,
+            )
+            .await,
+            UsageKind::BudgetInfo,
+        ),
+        UsageKind::BalanceInfo => canonicalize_snapshot_result(
+            fetch_codex_for_me_balance_any(
+                st,
+                provider_name,
+                bases,
+                credentials.usage_token,
+                credentials.usage_login,
+            )
+            .await,
+            UsageKind::BalanceInfo,
+        ),
         UsageKind::None => {
             if credentials.provider_key.is_some() {
                 let s = fetch_token_stats_any(
                     st,
                     provider_name,
                     bases,
-                    explicit_usage_endpoint,
+                    profile.explicit_usage_endpoint.as_deref(),
                     credentials.provider_key,
                     credentials.usage_token,
-                    strategies.package_expiry_fetch_strategy,
+                    package_expiry_fetch_strategy,
                 )
                 .await;
                 if s.last_error.is_empty() {
-                    s
+                    canonicalize_snapshot_result(s, UsageKind::TokenStats)
                 } else if credentials.usage_token.is_some() {
+                    canonicalize_snapshot_result(
+                        fetch_budget_info_any(
+                            st,
+                            provider_name,
+                            bases,
+                            credentials.usage_token,
+                            "usage token",
+                            package_expiry_fetch_strategy,
+                        )
+                        .await,
+                        UsageKind::BudgetInfo,
+                    )
+                } else if credentials.usage_login.is_some() && profile.is_codex_for_me() {
+                    canonicalize_snapshot_result(
+                        fetch_codex_for_me_balance_any(
+                            st,
+                            provider_name,
+                            bases,
+                            credentials.usage_token,
+                            credentials.usage_login,
+                        )
+                        .await,
+                        UsageKind::BalanceInfo,
+                    )
+                } else {
+                    canonicalize_snapshot_result(s, UsageKind::TokenStats)
+                }
+            } else if credentials.usage_token.is_some() {
+                canonicalize_snapshot_result(
                     fetch_budget_info_any(
                         st,
                         provider_name,
                         bases,
                         credentials.usage_token,
                         "usage token",
-                        strategies.package_expiry_fetch_strategy,
+                        package_expiry_fetch_strategy,
                     )
-                    .await
-                } else if credentials.usage_login.is_some()
-                    && is_codex_for_me_base(provider_name, bases)
-                {
+                    .await,
+                    UsageKind::BudgetInfo,
+                )
+            } else if credentials.usage_login.is_some() && profile.is_codex_for_me() {
+                canonicalize_snapshot_result(
                     fetch_codex_for_me_balance_any(
                         st,
                         provider_name,
@@ -754,36 +876,21 @@ async fn compute_quota_snapshot(
                         credentials.usage_token,
                         credentials.usage_login,
                     )
-                    .await
-                } else {
-                    s
-                }
-            } else if credentials.usage_token.is_some() {
-                fetch_budget_info_any(
-                    st,
-                    provider_name,
-                    bases,
-                    credentials.usage_token,
-                    "usage token",
-                    strategies.package_expiry_fetch_strategy,
+                    .await,
+                    UsageKind::BalanceInfo,
                 )
-                .await
-            } else if credentials.usage_login.is_some()
-                && is_codex_for_me_base(provider_name, bases)
-            {
-                fetch_codex_for_me_balance_any(
-                    st,
-                    provider_name,
-                    bases,
-                    credentials.usage_token,
-                    credentials.usage_login,
-                )
-                .await
             } else {
-                let mut out = QuotaSnapshot::empty(UsageKind::None);
-                out.last_error = "missing credentials for quota refresh".to_string();
-                out
+                Err("missing credentials for quota refresh".to_string())
             }
+        }
+    };
+
+    match canonical_result {
+        Ok(usage) => QuotaSnapshot::from_canonical(usage),
+        Err(err) => {
+            let mut out = QuotaSnapshot::empty(profile.usage_kind);
+            out.last_error = err;
+            out
         }
     }
 }
@@ -927,11 +1034,12 @@ pub(crate) fn apply_remote_quota_snapshot(
     let provider_key = st.secrets.get_provider_key(provider_name);
     let usage_token = st.secrets.get_usage_token(provider_name);
     let usage_login = st.secrets.get_usage_login(provider_name);
-    let Some(shared_base) = cfg
-        .providers
-        .get(provider_name)
-        .and_then(|provider| candidate_quota_bases(provider).first().cloned())
-    else {
+    let Some(shared_base) = cfg.providers.get(provider_name).and_then(|provider| {
+        resolve_quota_profile(provider)
+            .candidate_bases
+            .first()
+            .cloned()
+    }) else {
         return;
     };
     let Some(source_provider) = cfg.providers.get(provider_name) else {
@@ -953,7 +1061,8 @@ pub(crate) fn apply_remote_quota_snapshot(
         }
         let other_key = usage_shared_key(
             provider,
-            candidate_quota_bases(provider)
+            resolve_quota_profile(provider)
+                .candidate_bases
                 .first()
                 .map(String::as_str)
                 .unwrap_or_default(),
@@ -1226,7 +1335,7 @@ pub(crate) fn clear_usage_refresh_gate_for_provider(st: &GatewayState, provider_
     let Some(provider) = cfg.providers.get(provider_name) else {
         return;
     };
-    for base in candidate_quota_bases(provider) {
+    for base in resolve_quota_profile(provider).candidate_bases {
         clear_usage_base_refresh_gate_for_base(&base);
     }
 }
@@ -1263,7 +1372,9 @@ fn can_refresh_quota_for_provider(
     if provider.disabled {
         return false;
     }
-    let bases = candidate_quota_bases(provider);
+    let profile = resolve_quota_profile(provider);
+    let allows_login_only_refresh = profile.is_codex_for_me();
+    let bases = profile.candidate_bases;
     if bases.is_empty() {
         return false;
     }
@@ -1273,7 +1384,7 @@ fn can_refresh_quota_for_provider(
     if detect_package_expiry_strategy(&provider.base_url) == PackageExpiryStrategy::Packycode {
         return provider_key.is_some();
     }
-    if is_codex_for_me_base(provider_name, &bases) {
+    if allows_login_only_refresh {
         return usage_token.is_some() || usage_login.is_some();
     }
     provider_key.is_some() || usage_token.is_some() || usage_login.is_some()
@@ -1540,7 +1651,7 @@ async fn propagate_quota_snapshot_shared(
     let source_package_expiry_strategy = cfg
         .providers
         .get(source_provider)
-        .map(|p| detect_package_expiry_strategy(&p.base_url))
+        .map(|p| resolve_quota_profile(p).package_expiry_strategy)
         .unwrap_or(PackageExpiryStrategy::None);
     for (name, p) in cfg.providers.iter() {
         if name == source_provider {
@@ -1554,7 +1665,8 @@ async fn propagate_quota_snapshot_shared(
         let usage_token = st.secrets.get_usage_token(name);
         let usage_login = st.secrets.get_usage_login(name);
 
-        let bases = candidate_quota_bases(p);
+        let profile = resolve_quota_profile(p);
+        let bases = profile.candidate_bases;
         let Some(shared_base) = bases.first().map(|s| s.as_str()) else {
             continue;
         };
@@ -1565,13 +1677,13 @@ async fn propagate_quota_snapshot_shared(
 
         // If the target provider explicitly pins a usage adapter, only propagate matching snapshots.
         // (Auto-detected providers use `UsageKind::None` and can accept either kind.)
-        let other_kind = detect_usage_kind(p);
+        let other_kind = profile.usage_kind;
         if other_kind != UsageKind::None && other_kind != snap.kind {
             continue;
         }
 
         let mut copied = snap.clone();
-        let target_package_expiry_strategy = detect_package_expiry_strategy(&p.base_url);
+        let target_package_expiry_strategy = profile.package_expiry_strategy;
         if target_package_expiry_strategy != source_package_expiry_strategy {
             copied.package_expires_at_unix_ms = None;
         }
@@ -1591,7 +1703,8 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
     let provider_key = st.secrets.get_provider_key(provider_name);
     let usage_token = st.secrets.get_usage_token(provider_name);
     let usage_login = st.secrets.get_usage_login(provider_name);
-    let bases_raw = candidate_quota_bases(p);
+    let profile = resolve_quota_profile(p);
+    let bases_raw = profile.candidate_bases.clone();
     let Some(shared_base) = bases_raw.first().cloned() else {
         let mut out = QuotaSnapshot::empty(UsageKind::None);
         out.last_error = "missing base_url".to_string();
@@ -1601,10 +1714,9 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
         reorder_bases_for_speed(st, provider_name, bases_raw, provider_key.as_deref()).await;
     let effective_base = bases.first().cloned();
 
-    let kind = detect_usage_kind(p);
     let cached_package_expiry =
         cached_future_package_expiry_for_provider(st, provider_name, unix_ms());
-    let provider_strategy = detect_package_expiry_strategy(&p.base_url);
+    let provider_strategy = profile.package_expiry_strategy;
     let package_expiry_fetch_strategy = if cached_package_expiry.is_some()
         && provider_strategy != PackageExpiryStrategy::Packycode
     {
@@ -1616,18 +1728,14 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
     let mut snap = compute_quota_snapshot(
         st,
         provider_name,
-        kind,
+        &profile,
         &bases,
-        explicit_usage_endpoint_url(p).as_deref(),
         QuotaCredentials {
             provider_key: provider_key.as_deref(),
             usage_token: usage_token.as_deref(),
             usage_login: usage_login.as_ref(),
         },
-        QuotaSnapshotStrategies {
-            provider_strategy,
-            package_expiry_fetch_strategy,
-        },
+        package_expiry_fetch_strategy,
     )
     .await;
     if snap.effective_usage_base.is_none() {
@@ -1656,7 +1764,8 @@ async fn refresh_quota_for_provider_cached(
     let provider_key = st.secrets.get_provider_key(provider_name);
     let usage_token = st.secrets.get_usage_token(provider_name);
     let usage_login = st.secrets.get_usage_login(provider_name);
-    let bases_raw = candidate_quota_bases(p);
+    let profile = resolve_quota_profile(p);
+    let bases_raw = profile.candidate_bases.clone();
     let Some(shared_base) = bases_raw.first().cloned() else {
         let mut out = QuotaSnapshot::empty(UsageKind::None);
         out.last_error = "missing base_url".to_string();
@@ -1666,10 +1775,9 @@ async fn refresh_quota_for_provider_cached(
         reorder_bases_for_speed(st, provider_name, bases_raw, provider_key.as_deref()).await;
     let effective_base = bases.first().cloned();
 
-    let kind = detect_usage_kind(p);
     let cached_package_expiry =
         cached_future_package_expiry_for_provider(st, provider_name, unix_ms());
-    let provider_strategy = detect_package_expiry_strategy(&p.base_url);
+    let provider_strategy = profile.package_expiry_strategy;
     let package_expiry_fetch_strategy = if cached_package_expiry.is_some()
         && provider_strategy != PackageExpiryStrategy::Packycode
     {
@@ -1677,7 +1785,14 @@ async fn refresh_quota_for_provider_cached(
     } else {
         provider_strategy
     };
-    let key = usage_request_key(p, &bases, &provider_key, &usage_token, &usage_login, kind);
+    let key = usage_request_key(
+        p,
+        &bases,
+        &provider_key,
+        &usage_token,
+        &usage_login,
+        profile.usage_kind,
+    );
     let shared_key = usage_shared_key(p, &shared_base, &provider_key, &usage_token, &usage_login);
     let snap = if let Some(existing) = cache.get(&key) {
         existing.clone()
@@ -1685,18 +1800,14 @@ async fn refresh_quota_for_provider_cached(
         let mut computed = compute_quota_snapshot(
             st,
             provider_name,
-            kind,
+            &profile,
             &bases,
-            explicit_usage_endpoint_url(p).as_deref(),
             QuotaCredentials {
                 provider_key: provider_key.as_deref(),
                 usage_token: usage_token.as_deref(),
                 usage_login: usage_login.as_ref(),
             },
-            QuotaSnapshotStrategies {
-                provider_strategy,
-                package_expiry_fetch_strategy,
-            },
+            package_expiry_fetch_strategy,
         )
         .await;
         if computed.effective_usage_base.is_none() {
@@ -1723,7 +1834,7 @@ fn usage_shared_key_for_provider(st: &GatewayState, provider_name: &str) -> Opti
     let provider_key = st.secrets.get_provider_key(provider_name);
     let usage_token = st.secrets.get_usage_token(provider_name);
     let usage_login = st.secrets.get_usage_login(provider_name);
-    let bases = candidate_quota_bases(p);
+    let bases = resolve_quota_profile(p).candidate_bases;
     let shared_base = bases.first()?.as_str();
     Some(usage_shared_key(
         p,
@@ -1845,6 +1956,7 @@ pub async fn run_quota_scheduler(st: GatewayState, lan_sync: crate::lan_sync::La
         }
         let mut cache: HashMap<UsageRequestKey, QuotaSnapshot> = HashMap::new();
         for (name, p) in cfg.providers.iter() {
+            let profile = resolve_quota_profile(p);
             if !can_refresh_quota_for_provider(&st, name, p) {
                 continue;
             }
@@ -1863,7 +1975,7 @@ pub async fn run_quota_scheduler(st: GatewayState, lan_sync: crate::lan_sync::La
                     false,
                     name == &cfg.routing.preferred_provider,
                     shared_provider_count,
-                    detect_package_expiry_strategy(&p.base_url),
+                    profile.package_expiry_strategy,
                 )
                 .unwrap_or(0)
             });
@@ -1883,7 +1995,7 @@ pub async fn run_quota_scheduler(st: GatewayState, lan_sync: crate::lan_sync::La
                     }),
                     shared_provider_count,
                     "",
-                    detect_package_expiry_strategy(&p.base_url),
+                    profile.package_expiry_strategy,
                 );
                 next_refresh_unix_ms.insert(name.clone(), now.saturating_add(jitter_ms));
                 continue;
@@ -1900,7 +2012,7 @@ pub async fn run_quota_scheduler(st: GatewayState, lan_sync: crate::lan_sync::La
                 previous_success,
                 shared_provider_count,
                 &snap.last_error,
-                detect_package_expiry_strategy(&p.base_url),
+                profile.package_expiry_strategy,
             );
             next_refresh_unix_ms.insert(name.clone(), now.saturating_add(jitter_ms));
 

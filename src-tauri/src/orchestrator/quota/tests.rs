@@ -460,7 +460,7 @@ mod tests {
             usage_base_url: None,
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert!(bases.is_empty());
     }
 
@@ -475,7 +475,7 @@ mod tests {
             usage_base_url: Some("https://explicit.example.com/".to_string()),
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://explicit.example.com".to_string()]);
     }
 
@@ -490,7 +490,7 @@ mod tests {
             usage_base_url: None,
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://codex.packycode.com".to_string()]);
     }
 
@@ -505,7 +505,7 @@ mod tests {
             usage_base_url: Some("https://www.packycode.com".to_string()),
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://codex.packycode.com".to_string()]);
     }
 
@@ -604,8 +604,8 @@ mod tests {
             api_key: String::new(),
         };
 
-        let bases_pp = candidate_quota_bases(&pp);
-        let bases_pumpkin = candidate_quota_bases(&pumpkin);
+        let bases_pp = resolve_quota_profile(&pp).candidate_bases;
+        let bases_pumpkin = resolve_quota_profile(&pumpkin).candidate_bases;
         assert_eq!(bases_pp, bases_pumpkin);
         assert_eq!(bases_pp.first().unwrap(), "https://his.ppchat.vip");
         assert_eq!(bases_pumpkin.first().unwrap(), "https://his.ppchat.vip");
@@ -638,7 +638,7 @@ mod tests {
             usage_base_url: None,
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://api-vip.codex-for.me".to_string()]);
     }
 
@@ -653,7 +653,7 @@ mod tests {
             usage_base_url: None,
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://api-vip.codex-for.vip".to_string()]);
     }
 
@@ -2003,6 +2003,49 @@ mod tests {
         assert_eq!(as_f64(Some(&v)).unwrap_or(0.0), 14993.0);
         let v = serde_json::json!("13%");
         assert_eq!(as_f64(Some(&v)).unwrap_or(0.0), 13.0);
+    }
+
+    #[test]
+    fn quota_snapshot_roundtrips_through_canonical_usage() {
+        let snapshot = QuotaSnapshot {
+            kind: UsageKind::BudgetInfo,
+            updated_at_unix_ms: 1_700_000_000_000,
+            remaining: Some(42.5),
+            today_used: Some(2.0),
+            today_added: Some(5.0),
+            daily_spent_usd: Some(7.5),
+            daily_budget_usd: Some(20.0),
+            weekly_spent_usd: Some(12.0),
+            weekly_budget_usd: Some(50.0),
+            monthly_spent_usd: Some(30.0),
+            monthly_budget_usd: Some(200.0),
+            package_expires_at_unix_ms: Some(1_800_000_000_000),
+            last_error: String::new(),
+            effective_usage_base: Some("https://usage.example".to_string()),
+            effective_usage_source: Some("usage_base".to_string()),
+            producer_node_id: None,
+            producer_node_name: None,
+            applied_from_node_id: None,
+            applied_from_node_name: None,
+            applied_at_unix_ms: 0,
+        };
+
+        let canonical =
+            canonical_usage_from_snapshot(&snapshot).expect("successful snapshot should normalize");
+        let rebuilt = QuotaSnapshot::from_canonical(canonical);
+
+        assert_eq!(rebuilt.kind, snapshot.kind);
+        assert_eq!(rebuilt.remaining, snapshot.remaining);
+        assert_eq!(rebuilt.daily_spent_usd, snapshot.daily_spent_usd);
+        assert_eq!(rebuilt.daily_budget_usd, snapshot.daily_budget_usd);
+        assert_eq!(rebuilt.weekly_spent_usd, snapshot.weekly_spent_usd);
+        assert_eq!(rebuilt.monthly_budget_usd, snapshot.monthly_budget_usd);
+        assert_eq!(
+            rebuilt.package_expires_at_unix_ms,
+            snapshot.package_expires_at_unix_ms
+        );
+        assert_eq!(rebuilt.effective_usage_base, snapshot.effective_usage_base);
+        assert_eq!(rebuilt.effective_usage_source, snapshot.effective_usage_source);
     }
 
     #[test]
