@@ -915,6 +915,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn packycode_usage_login_without_provider_key_is_not_refreshable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_usage_login("p1", "alice", "secret").unwrap();
+        let st = mk_state("https://codex.packycode.com/v1".to_string(), secrets);
+        let cfg = st.cfg.read().clone();
+        let provider = cfg.providers.get("p1").unwrap();
+        assert!(!can_refresh_quota_for_provider(&st, "p1", provider));
+    }
+
+    #[tokio::test]
     async fn packycode_budget_info_without_provider_key_reports_missing_provider_key() {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));

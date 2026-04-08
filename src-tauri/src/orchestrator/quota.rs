@@ -1415,7 +1415,7 @@ fn can_refresh_quota_for_provider(
         return usage_token.is_some() || usage_login.is_some();
     }
     match profile.budget_info_auth_source {
-        BudgetInfoAuthSource::ProviderKey => provider_key.is_some() || usage_login.is_some(),
+        BudgetInfoAuthSource::ProviderKey => provider_key.is_some(),
         BudgetInfoAuthSource::UsageToken => {
             provider_key.is_some() || usage_token.is_some() || usage_login.is_some()
         }

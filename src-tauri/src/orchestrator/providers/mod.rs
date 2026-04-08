@@ -454,6 +454,18 @@ impl TryFrom<ProviderDefinitionFile> for ProviderDefinition {
             return Err("provider definition id cannot be empty".to_string());
         }
 
+        if value.matcher.base_url_hosts.is_empty()
+            && value.matcher.base_url_host_suffixes.is_empty()
+            && value.matcher.base_url_host_contains.is_empty()
+            && value.matcher.base_url_prefixes.is_empty()
+            && value.matcher.usage_base_url_suffixes.is_empty()
+        {
+            return Err(format!(
+                "provider definition {} must declare at least one matcher",
+                value.id.trim()
+            ));
+        }
+
         Ok(Self {
             matcher: ProviderMatcher {
                 base_url_hosts: normalize_match_values(value.matcher.base_url_hosts),
@@ -472,8 +484,8 @@ impl TryFrom<ProviderDefinitionFile> for ProviderDefinition {
             budget_info_auth_source,
             usage_kind,
             candidate_base_sources,
-            fixed_candidate_bases: normalize_match_values(value.usage.fixed_candidate_bases),
-            speed_probe_bases: normalize_match_values(value.usage.speed_probe_bases),
+            fixed_candidate_bases: normalize_url_values(value.usage.fixed_candidate_bases),
+            speed_probe_bases: normalize_url_values(value.usage.speed_probe_bases),
             explicit_endpoint_mode,
             explicit_endpoint_url: value
                 .usage
@@ -508,6 +520,14 @@ fn normalize_match_values(values: Vec<String>) -> Vec<String> {
     values
         .into_iter()
         .map(|value| value.trim().trim_end_matches('/').to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn normalize_url_values(values: Vec<String>) -> Vec<String> {
+    values
+        .into_iter()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
         .filter(|value| !value.is_empty())
         .collect()
 }
@@ -1015,5 +1035,42 @@ mod tests {
             profile.package_expiry_strategy,
             PackageExpiryStrategy::BackendUsersInfo
         );
+    }
+
+    #[test]
+    fn file_registry_resolves_aigateway_subdomain_provider() {
+        let provider = ProviderConfig {
+            display_name: "aigateway-subdomain".to_string(),
+            base_url: "https://edge.aigateway.chat/v1".to_string(),
+            group: None,
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        };
+
+        let profile = resolve_quota_profile(&provider);
+        assert_eq!(
+            profile.explicit_usage_endpoint.as_deref(),
+            Some("https://aigateway.chat/v1/usage")
+        );
+        assert_eq!(
+            profile.candidate_bases,
+            vec!["https://aigateway.chat".to_string()]
+        );
+        assert!(profile.explicit_usage_mapping.is_some());
+    }
+
+    #[test]
+    fn provider_definition_requires_non_empty_matcher() {
+        let err = ProviderDefinition::try_from(ProviderDefinitionFile {
+            id: "invalid".to_string(),
+            matcher: ProviderMatcherFile::default(),
+            usage: ProviderUsageFile::default(),
+            package_expiry: PackageExpiryFile::default(),
+        })
+        .expect_err("empty matcher should fail");
+
+        assert!(err.contains("must declare at least one matcher"));
     }
 }

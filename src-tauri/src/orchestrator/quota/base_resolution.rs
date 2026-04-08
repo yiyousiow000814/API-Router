@@ -1,3 +1,5 @@
+use futures_util::future::join_all;
+
 fn build_models_url(base: &str) -> String {
     let trimmed = base.trim_end_matches('/');
     if trimmed.ends_with("/v1") {
@@ -73,13 +75,17 @@ async fn reorder_bases_for_speed(
         }
     }
 
-    let mut measured = Vec::new();
-    for base in &speed_probe_bases {
-        measured.push((
-            base.clone(),
-            probe_usage_base_speed(st, provider_name, base, api_key).await,
-        ));
-    }
+    let measurements = join_all(
+        speed_probe_bases
+            .iter()
+            .map(|base| probe_usage_base_speed(st, provider_name, base, api_key)),
+    )
+    .await;
+    let mut measured = speed_probe_bases
+        .iter()
+        .cloned()
+        .zip(measurements)
+        .collect::<Vec<_>>();
     measured.sort_by(|(left_base, left_latency), (right_base, right_latency)| {
         match (left_latency, right_latency) {
             (Some(left), Some(right)) => left.cmp(right).then_with(|| left_base.cmp(right_base)),

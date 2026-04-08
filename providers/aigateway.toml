@@ -1,7 +1,7 @@
 id = "aigateway"
 
 [match]
-base_url_hosts = ["aigateway.chat"]
+base_url_host_suffixes = ["aigateway.chat"]
 
 [usage]
 refresh_flow = "auto"
