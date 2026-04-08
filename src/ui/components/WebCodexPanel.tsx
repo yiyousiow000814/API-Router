@@ -14,6 +14,7 @@ type Props = {
 }
 
 const TAILSCALE_REFRESH_MS = 5000
+const TAILSCALE_DOWNLOAD_URL = 'https://tailscale.com/download'
 
 const FALLBACK_TAILSCALE_STATUS: TailscaleStatus = {
   installed: false,
@@ -23,7 +24,20 @@ const FALLBACK_TAILSCALE_STATUS: TailscaleStatus = {
   reachableIpv4: [],
   gatewayReachable: false,
   needsGatewayRestart: false,
-  downloadUrl: 'https://tailscale.com/download',
+  downloadUrl: TAILSCALE_DOWNLOAD_URL,
+}
+
+async function openExternalUrl(url: string, devPreview: boolean) {
+  if (typeof window === 'undefined') return
+  if (devPreview) {
+    window.open(url, '_blank', 'noopener,noreferrer')
+    return
+  }
+  try {
+    await invoke('open_external_url', { url })
+  } catch {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
 }
 
 export function WebCodexPanel({ listenPort }: Props) {
@@ -75,6 +89,7 @@ export function WebCodexPanel({ listenPort }: Props) {
     tailscale: effectiveTailscale,
     tailscaleLoading: effectiveTailscaleLoading,
   })
+  const tailscaleDownloadUrl = effectiveTailscale?.downloadUrl || TAILSCALE_DOWNLOAD_URL
 
   return (
     <section className="aoPanel webCodexAccess">
@@ -108,18 +123,20 @@ export function WebCodexPanel({ listenPort }: Props) {
             <div className="webCodexDesktopMain">
               <div className="webCodexCardLabel">Desktop</div>
               <code className="webCodexPrimaryUrl">{accessState.localUrl}</code>
-              <a
+              <button
                 className="webCodexCta webCodexDesktopAction"
-                href={accessState.localUrl}
-                target="_blank"
-                rel="noreferrer"
+                type="button"
+                onClick={() => {
+                  void openExternalUrl(accessState.localUrl, devPreview)
+                }}
               >
                 <span className="webCodexButtonLabel">Open in browser</span>
-              </a>
+              </button>
             </div>
             <div className="webCodexDesktopFoot">
-              <span className="webCodexDesktopPreviewLabel">Preview</span>
+              <span className="webCodexDesktopPreviewLabel">Preview (Vite dev server required)</span>
               <code className="webCodexDesktopPreviewUrl">{accessState.previewUrl}</code>
+              <div className="webCodexPreviewHint">Start `npm run dev` first, then open the preview URL.</div>
             </div>
           </div>
 
@@ -154,14 +171,15 @@ export function WebCodexPanel({ listenPort }: Props) {
                   <div className="webCodexPhoneActionsReady" aria-hidden={!accessState.phoneReady} />
                   <div className="webCodexPhoneSetupActions">
                     {accessState.showInstallAction ? (
-                      <a
+                      <button
                         className="webCodexCta webCodexInstallBtn"
-                        href={effectiveTailscale?.downloadUrl || 'https://tailscale.com/download'}
-                        target="_blank"
-                        rel="noreferrer"
+                        type="button"
+                        onClick={() => {
+                          void openExternalUrl(tailscaleDownloadUrl, devPreview)
+                        }}
                       >
                         <span className="webCodexButtonLabel">Install Tailscale</span>
-                      </a>
+                      </button>
                     ) : null}
                   </div>
                 </div>

@@ -769,6 +769,7 @@ pub fn run() {
             commands::record_ui_frame_stall,
             commands::record_ui_frontend_error,
             commands::record_ui_invoke_result,
+            commands::open_external_url,
             commands::get_event_log_entries,
             commands::get_event_log_years,
             commands::get_event_log_daily_stats,
