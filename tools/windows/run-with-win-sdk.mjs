@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, join } from "node:path";
+import { execFileSync } from "node:child_process";
 
 const args = process.argv.slice(2);
 if (!args.length) {
@@ -87,6 +88,62 @@ async function findRcDir() {
   return null;
 }
 
+function parseCmdEnvDump(text) {
+  const env = {};
+  for (const line of String(text).split(/\r?\n/)) {
+    const idx = line.indexOf("=");
+    if (idx <= 0) continue;
+    const key = line.slice(0, idx).trim();
+    if (!key) continue;
+    env[key] = line.slice(idx + 1);
+  }
+  return env;
+}
+
+function mergeEnvCaseInsensitive(target, source) {
+  for (const [key, value] of Object.entries(source)) {
+    setEnvValue(target, key, value);
+  }
+}
+
+function findVsDevCmdCandidates() {
+  const candidates = [
+    "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\Common7\\Tools\\VsDevCmd.bat",
+    "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\Common7\\Tools\\VsDevCmd.bat",
+    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\Common7\\Tools\\VsDevCmd.bat",
+  ];
+  return candidates;
+}
+
+function loadVsDevCmdEnv(currentEnv) {
+  for (const candidate of findVsDevCmdCandidates()) {
+    try {
+      const dump = execFileSync(
+        "cmd.exe",
+        [
+          "/d",
+          "/s",
+          "/c",
+          `"call "${candidate}" -arch=x64 -host_arch=x64 >nul && set"`,
+        ],
+        {
+          encoding: "utf8",
+          env: currentEnv,
+          windowsHide: true,
+          stdio: ["ignore", "pipe", "ignore"],
+        },
+      );
+      const parsed = parseCmdEnvDump(dump);
+      if (parsed.WindowsSdkDir || parsed.WindowsSDKVersion || parsed.VCToolsInstallDir) {
+        return parsed;
+      }
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return null;
+}
+
 async function findWinSdkTool(toolName) {
   const pf86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
   const kitsBin = join(pf86, "Windows Kits", "10", "bin");
@@ -118,6 +175,10 @@ async function main() {
     const userProfile = getEnvValue(env, "USERPROFILE") || "";
     const cargoDir = join(userProfile, ".cargo", "bin");
     prependPathEntry(env, cargoDir);
+    const vsDevEnv = loadVsDevCmdEnv(env);
+    if (vsDevEnv) {
+      mergeEnvCaseInsensitive(env, vsDevEnv);
+    }
     const rcDir = await findRcDir();
     prependPathEntry(env, rcDir);
     const rcExe = await findWinSdkTool("rc.exe");
