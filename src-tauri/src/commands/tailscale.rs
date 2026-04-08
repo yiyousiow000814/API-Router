@@ -107,9 +107,9 @@ fn maybe_refresh_runtime_tailscale_listener(
     connected: bool,
     ipv4: &[String],
     gateway_reachable: bool,
-) {
+) -> usize {
     if !connected || ipv4.is_empty() || gateway_reachable {
-        return;
+        return 0;
     }
     let listen = state.gateway.cfg.read().listen.clone();
     let parsed_ips = parse_tailscale_ipv4_addrs(ipv4);
@@ -118,10 +118,20 @@ fn maybe_refresh_runtime_tailscale_listener(
         listen.port,
         &parsed_ips,
     ) else {
-        return;
+        return 0;
     };
-    let _ =
-        crate::orchestrator::gateway::ensure_runtime_gateway_listener_bindings(state.gateway.clone(), &addrs);
+    crate::orchestrator::gateway::ensure_runtime_gateway_listener_bindings(state.gateway.clone(), &addrs)
+        .map(|newly_bound| newly_bound.len())
+        .unwrap_or(0)
+}
+
+fn needs_gateway_restart(
+    connected: bool,
+    ipv4: &[String],
+    gateway_reachable: bool,
+    runtime_binding_in_progress: bool,
+) -> bool {
+    connected && !ipv4.is_empty() && !gateway_reachable && !runtime_binding_in_progress
 }
 
 #[tauri::command]
@@ -148,7 +158,7 @@ pub(crate) async fn tailscale_status(
     let (connected, dns_name, ipv4) = parse_tailscale_summary(&parsed);
     let listen_port = state.gateway.cfg.read().listen.port;
     #[cfg(windows)]
-    {
+    let runtime_binding_in_progress = {
         let initial_reachable_ipv4 = if connected {
             resolve_reachable_gateway_ipv4_blocking(ipv4.clone(), listen_port).await?
         } else {
@@ -159,15 +169,22 @@ pub(crate) async fn tailscale_status(
             connected,
             &ipv4,
             !initial_reachable_ipv4.is_empty(),
-        );
-    }
+        ) > 0
+    };
+    #[cfg(not(windows))]
+    let runtime_binding_in_progress = false;
     let reachable_ipv4 = if connected {
         resolve_reachable_gateway_ipv4_blocking(ipv4.clone(), listen_port).await?
     } else {
         Vec::new()
     };
     let gateway_reachable = !reachable_ipv4.is_empty();
-    let needs_gateway_restart = connected && !ipv4.is_empty() && !gateway_reachable;
+    let needs_gateway_restart = needs_gateway_restart(
+        connected,
+        &ipv4,
+        gateway_reachable,
+        runtime_binding_in_progress,
+    );
 
     Ok(serde_json::json!({
         "ok": true,
@@ -208,6 +225,28 @@ fn reachable_gateway_ipv4_only_keeps_probeable_addrs() {
     );
 
     assert_eq!(reachable, vec!["100.64.208.117"]);
+}
+
+#[cfg(test)]
+#[test]
+fn restart_hint_waits_for_next_poll_after_runtime_bind_progress() {
+    assert!(!needs_gateway_restart(
+        true,
+        &["100.64.208.117".to_string()],
+        false,
+        true,
+    ));
+}
+
+#[cfg(test)]
+#[test]
+fn restart_hint_remains_when_gateway_is_still_unreachable_without_new_binding_progress() {
+    assert!(needs_gateway_restart(
+        true,
+        &["100.64.208.117".to_string()],
+        false,
+        false,
+    ));
 }
 
 #[cfg(all(test, windows))]
