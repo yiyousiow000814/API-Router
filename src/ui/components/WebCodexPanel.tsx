@@ -35,8 +35,8 @@ async function openExternalUrl(url: string, devPreview: boolean) {
   }
   try {
     await invoke('open_external_url', { url })
-  } catch {
-    window.open(url, '_blank', 'noopener,noreferrer')
+  } catch (error) {
+    console.error('Failed to open external URL from Web Codex.', { url, error })
   }
 }
 

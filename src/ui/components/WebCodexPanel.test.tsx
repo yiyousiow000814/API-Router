@@ -52,6 +52,8 @@ describe('WebCodexPanel', () => {
 
     expect(source).toContain("await invoke('open_external_url', { url })")
     expect(source).toContain("window.open(url, '_blank', 'noopener,noreferrer')")
+    expect(source).toContain("console.error('Failed to open external URL from Web Codex.', { url, error })")
+    expect(source).not.toContain("window.open(url, '_blank', 'noopener,noreferrer')\n  }")
     expect(source).not.toContain('target="_blank"')
   })
 
