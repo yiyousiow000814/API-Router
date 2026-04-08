@@ -109,7 +109,7 @@ pub(crate) fn get_status(
     for (provider_name, snapshot) in providers.iter_mut() {
         let hard_cap = state.secrets.get_provider_quota_hard_cap(provider_name);
         if !crate::orchestrator::gateway::provider_has_remaining_quota_with_hard_cap(
-            &state.gateway.cfg.read().clone(),
+            &cfg,
             &quota,
             provider_name,
             &hard_cap,
