@@ -62,6 +62,12 @@ if ([string]::IsNullOrWhiteSpace($NpmCli)) {
 } else {
   $NpmCli = $NpmCli.Trim()
 }
+$NodeCli = [string][System.Environment]::GetEnvironmentVariable('API_ROUTER_BUILD_NODE_PATH')
+if ([string]::IsNullOrWhiteSpace($NodeCli)) {
+  $NodeCli = 'node.exe'
+} else {
+  $NodeCli = $NodeCli.Trim()
+}
 
 $TypeScriptCli = Resolve-BuildToolPath `
   -EnvVarName 'API_ROUTER_BUILD_TSC_PATH' `
@@ -71,6 +77,14 @@ $ViteCli = Resolve-BuildToolPath `
   -EnvVarName 'API_ROUTER_BUILD_VITE_PATH' `
   -DefaultPath (Join-Path $RepoRoot 'node_modules\.bin\vite.cmd') `
   -Label 'Vite CLI'
+$RunWithWinSdkCli = Resolve-BuildToolPath `
+  -EnvVarName 'API_ROUTER_BUILD_RUN_WITH_WIN_SDK_PATH' `
+  -DefaultPath (Join-Path $RepoRoot 'tools\windows\run-with-win-sdk.mjs') `
+  -Label 'Windows SDK wrapper'
+$TauriCliEntry = Resolve-BuildToolPath `
+  -EnvVarName 'API_ROUTER_BUILD_TAURI_ENTRY_PATH' `
+  -DefaultPath (Join-Path $RepoRoot 'node_modules\@tauri-apps\cli\tauri.js') `
+  -Label 'Tauri CLI entry'
 
 function Get-RemoteUpdateStatusPath {
   $path = [string]$env:API_ROUTER_REMOTE_UPDATE_STATUS_PATH
@@ -610,9 +624,9 @@ try {
   Invoke-BuildStage `
     -Phase 'build_release_binary' `
     -Label 'Building release binary' `
-    -Detail 'Running npm run tauri -- build --no-bundle' `
-    -FilePath $NpmCli `
-    -ArgumentList @('run', 'tauri', '--', 'build', '--no-bundle') `
+    -Detail 'Running direct Tauri build via Windows SDK wrapper' `
+    -FilePath $NodeCli `
+    -ArgumentList @($RunWithWinSdkCli, 'node', $TauriCliEntry, 'build', '--no-bundle') `
     -FailureLabel 'tauri build'
 
   if (-not $NoCopy) {

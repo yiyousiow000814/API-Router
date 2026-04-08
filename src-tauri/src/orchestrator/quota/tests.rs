@@ -746,7 +746,7 @@ mod tests {
         .expect("aigateway usage payload should parse");
 
         assert_eq!(snap.kind, UsageKind::BudgetInfo);
-        assert_eq!(snap.remaining, Some(200.0));
+        assert_eq!(snap.remaining, None);
         assert_eq!(snap.daily_budget_usd, Some(200.0));
         assert_eq!(snap.daily_spent_usd, Some(0.0));
         assert_eq!(snap.package_expires_at_unix_ms, Some(1_775_109_747_679));
@@ -757,16 +757,16 @@ mod tests {
     }
 
     #[test]
-    fn explicit_usage_endpoint_prefers_aigateway_usage_today_cost_over_subscription_daily_usage() {
+    fn explicit_usage_endpoint_prefers_aigateway_today_actual_cost_when_remaining_is_depleted() {
         let payload = serde_json::json!({
             "isValid": true,
             "mode": "unrestricted",
-            "planName": "轻享卡 3天",
-            "remaining": 121.9059165,
+            "planName": "季卡 90天",
+            "remaining": 0,
             "subscription": {
-                "daily_limit_usd": 200,
-                "daily_usage_usd": 78.0940835,
-                "expires_at": "2026-04-06T14:02:27.679994+08:00"
+                "daily_limit_usd": 300,
+                "daily_usage_usd": 300.043385,
+                "expires_at": "2026-10-04T09:29:39.391714+08:00"
             },
             "unit": "USD",
             "usage": {
@@ -788,12 +788,12 @@ mod tests {
         )
         .expect("aigateway usage payload should parse");
 
-        assert_eq!(snap.daily_budget_usd, Some(200.0));
-        assert_eq!(snap.remaining, Some(121.9059165));
+        assert_eq!(snap.daily_budget_usd, Some(300.0));
+        assert_eq!(snap.remaining, None);
         assert_eq!(
             snap.daily_spent_usd,
             Some(0.0),
-            "aigateway today usage should come from usage.today, not subscription.daily_usage_usd"
+            "aigateway snapshots should trust usage.today.actual_cost instead of stale remaining or subscription daily usage"
         );
     }
 

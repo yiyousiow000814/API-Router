@@ -386,10 +386,11 @@ async fn refresh_usage_once_after_first_failure(
 
     let quota_snapshots = st.store.list_quota_snapshots();
     let hard_cap = st.secrets.get_provider_quota_hard_cap(provider_name);
-    if quota_snapshot_confirms_available(&quota_snapshots, provider_name, &hard_cap) {
+    if quota_snapshot_confirms_available(&cfg, &quota_snapshots, provider_name, &hard_cap) {
         st.router
             .clear_usage_confirmation_requirement(provider_name);
     } else if !provider_has_remaining_quota_with_hard_cap(
+        &cfg,
         &quota_snapshots,
         provider_name,
         &hard_cap,

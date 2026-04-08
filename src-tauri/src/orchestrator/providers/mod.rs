@@ -37,6 +37,7 @@ pub(crate) struct ProviderQuotaProfile {
     pub refresh_flow: RefreshFlow,
     pub budget_info_auth_source: BudgetInfoAuthSource,
     pub usage_kind: UsageKind,
+    pub ignore_remaining_when_budget_present: bool,
     pub candidate_bases: Vec<String>,
     pub speed_probe_bases: Vec<String>,
     pub explicit_usage_endpoint: Option<String>,
@@ -84,6 +85,7 @@ struct ProviderDefinition {
     refresh_flow: RefreshFlow,
     budget_info_auth_source: BudgetInfoAuthSource,
     usage_kind: Option<UsageKind>,
+    ignore_remaining_when_budget_present: bool,
     candidate_base_sources: Vec<CandidateBaseSource>,
     fixed_candidate_bases: Vec<String>,
     speed_probe_bases: Vec<String>,
@@ -151,6 +153,8 @@ struct ProviderUsageFile {
     refresh_flow: Option<String>,
     #[serde(default)]
     budget_info_auth_source: Option<String>,
+    #[serde(default)]
+    ignore_remaining_when_budget_present: Option<bool>,
     #[serde(default)]
     candidate_base_sources: Vec<String>,
     #[serde(default)]
@@ -483,6 +487,10 @@ impl TryFrom<ProviderDefinitionFile> for ProviderDefinition {
             refresh_flow,
             budget_info_auth_source,
             usage_kind,
+            ignore_remaining_when_budget_present: value
+                .usage
+                .ignore_remaining_when_budget_present
+                .unwrap_or(false),
             candidate_base_sources,
             fixed_candidate_bases: normalize_url_values(value.usage.fixed_candidate_bases),
             speed_probe_bases: normalize_url_values(value.usage.speed_probe_bases),
@@ -799,6 +807,7 @@ pub(crate) fn resolve_quota_profile(provider: &ProviderConfig) -> ProviderQuotaP
             refresh_flow: definition.refresh_flow,
             budget_info_auth_source: definition.budget_info_auth_source,
             usage_kind: detect_usage_kind(provider),
+            ignore_remaining_when_budget_present: definition.ignore_remaining_when_budget_present,
             candidate_bases: candidate_quota_bases_from_definition(provider, definition),
             speed_probe_bases: definition.speed_probe_bases.clone(),
             explicit_usage_endpoint: explicit_usage_endpoint_url_from_definition(
@@ -815,6 +824,7 @@ pub(crate) fn resolve_quota_profile(provider: &ProviderConfig) -> ProviderQuotaP
         refresh_flow: RefreshFlow::Auto,
         budget_info_auth_source: BudgetInfoAuthSource::UsageToken,
         usage_kind: detect_usage_kind(provider),
+        ignore_remaining_when_budget_present: false,
         candidate_bases: generic_candidate_quota_bases(provider),
         speed_probe_bases: Vec::new(),
         explicit_usage_endpoint: generic_explicit_usage_endpoint_url(provider),

@@ -6,6 +6,7 @@ base_url_host_suffixes = ["aigateway.chat"]
 [usage]
 refresh_flow = "auto"
 budget_info_auth_source = "usage_token"
+ignore_remaining_when_budget_present = true
 candidate_base_sources = []
 fixed_candidate_bases = ["https://aigateway.chat"]
 explicit_endpoint_mode = "fixed"
@@ -18,16 +19,14 @@ requires_any = [
   "/daily_quota",
   "/daily_budget_usd",
   "/daily_limit_usd",
+  "/subscription/daily_limit_usd",
   "/quota/daily_spent",
   "/daily_spent_usd",
-  "/remaining",
-  "/balance",
+  "/usage/today/actual_cost",
+  "/usage/today/cost",
   "/timestamps/expires_at",
+  "/subscription/expires_at",
 ]
-
-[usage.explicit_mapping.remaining]
-aliases = ["/remaining", "/remaining_quota", "/balance", "/quota/daily_remaining"]
-transform = "none"
 
 [usage.explicit_mapping.daily_used]
 aliases = [
@@ -38,8 +37,8 @@ aliases = [
   "/usage/daily_spent",
   "/usage/daily_total_spent",
   "/daily_spent_usd",
-  "/daily_usage_usd",
   "/subscription/daily_usage_usd",
+  "/daily_usage_usd",
 ]
 transform = "none"
 

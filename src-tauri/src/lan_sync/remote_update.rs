@@ -2671,7 +2671,8 @@ mod tests {
                 .join("build-root-exe.ps1"),
         )
         .expect("read build-root-exe.ps1");
-        assert!(build_script.contains("@('run', 'tauri', '--', 'build', '--no-bundle')"));
+        assert!(build_script
+            .contains("@($RunWithWinSdkCli, 'node', $TauriCliEntry, 'build', '--no-bundle')"));
         assert!(build_script.contains("[switch]$StartHidden"));
         assert!(build_script.contains("'--start-hidden'"));
         assert!(build_script.contains("if ($arguments.Count -gt 0)"));
