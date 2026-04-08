@@ -5,12 +5,15 @@ mod codex_home_env;
 mod codex_wsl_bridge;
 mod commands;
 mod constants;
+mod diagnostics;
 mod lan_sync;
 mod orchestrator;
 mod platform;
 mod provider_switchboard;
 
 use tauri::Manager;
+#[cfg(target_os = "windows")]
+use tauri_plugin_notification::NotificationExt;
 
 use crate::app_state::build_state;
 use crate::orchestrator::gateway::serve_in_background;
@@ -80,6 +83,84 @@ fn app_profile_name() -> String {
     });
     app_profile_name_from_inputs(Some(raw.as_str()), exe_stem.as_deref())
 }
+
+fn app_launch_args() -> Vec<String> {
+    std::env::args().collect()
+}
+
+fn app_launch_requests_hidden(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--start-hidden")
+}
+
+fn should_reveal_main_window_on_setup(start_hidden: bool, is_ui_tauri: bool) -> bool {
+    !start_hidden && !is_ui_tauri
+}
+
+fn reveal_main_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_skip_taskbar(false);
+        let _ = w.set_focusable(true);
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+fn hide_main_window_for_background_launch(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_skip_taskbar(true);
+        let _ = w.set_focusable(false);
+        let _ = w.minimize();
+        let _ = w.hide();
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn maybe_notify_hidden_remote_update_success(app: &tauri::AppHandle) {
+    let target_ref = std::env::var("API_ROUTER_REMOTE_UPDATE_TARGET_REF")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let Some(target_ref) = target_ref else {
+        write_app_startup_diag(
+            "remote_update_success_notification_skipped",
+            0,
+            Some("no target ref"),
+        );
+        return;
+    };
+    let short_target = target_ref.chars().take(8).collect::<String>();
+    let body = if short_target.is_empty() {
+        "API Router updated successfully and is running in the background.".to_string()
+    } else {
+        format!(
+            "API Router updated successfully to {short_target} and is running in the background."
+        )
+    };
+    if let Err(err) = app
+        .notification()
+        .builder()
+        .title("API Router updated")
+        .body(&body)
+        .show()
+    {
+        write_app_startup_diag(
+            "remote_update_success_notification_failed",
+            0,
+            Some(&err.to_string()),
+        );
+        log::warn!("failed to show remote update notification: {err}");
+    } else {
+        write_app_startup_diag(
+            "remote_update_success_notification_shown",
+            0,
+            Some(&format!("target_ref={short_target}")),
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn maybe_notify_hidden_remote_update_success(_app: &tauri::AppHandle) {}
 
 fn profile_data_dir_name(profile: &str) -> String {
     if profile == "default" {
@@ -347,14 +428,16 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
 pub fn run() {
     let is_ui_tauri = std::env::var("UI_TAURI").ok().as_deref() == Some("1");
     let app_profile = app_profile_name();
-    let mut builder = tauri::Builder::default();
+    let launch_args = app_launch_args();
+    let start_hidden = app_launch_requests_hidden(&launch_args);
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
     if !is_ui_tauri && app_profile != "test" {
         // Ensure clicking the EXE again focuses the existing instance instead of launching a second one.
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.set_focus();
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if app_launch_requests_hidden(&argv) {
+                return;
             }
+            reveal_main_window(app);
         }));
     }
     let app_profile_for_setup = app_profile.clone();
@@ -373,6 +456,13 @@ pub fn run() {
                         y: 100_000,
                     }));
                 }
+            }
+
+            let hidden_remote_update_launch = start_hidden && !is_ui_tauri;
+            if hidden_remote_update_launch {
+                hide_main_window_for_background_launch(app.handle());
+            } else if should_reveal_main_window_on_setup(start_hidden, is_ui_tauri) {
+                reveal_main_window(app.handle());
             }
 
             if cfg!(debug_assertions) {
@@ -432,6 +522,12 @@ pub fn run() {
             }
             std::env::set_var("API_ROUTER_USER_DATA_DIR", &user_data_dir);
             reset_app_startup_diag();
+            if hidden_remote_update_launch {
+                // The remote-update completion notification is emitted by the restarted Tauri
+                // process, not the hidden PowerShell worker. This path is more reliable and now
+                // leaves app-startup diagnostics when Windows accepts or rejects the notification.
+                maybe_notify_hidden_remote_update_success(app.handle());
+            }
 
             let build_state_started = Instant::now();
             let state = build_state(
@@ -487,6 +583,7 @@ pub fn run() {
                 }
                 st.lan_sync
                     .start_background(st.gateway.clone(), st.config_path.clone());
+                crate::lan_sync::reconcile_remote_update_terminal_event(&st.gateway);
             }
             if !is_ui_tauri {
                 let app_handle = app.handle().clone();
@@ -624,10 +721,7 @@ pub fn run() {
                     .on_menu_event(|app: &tauri::AppHandle, event: tauri::menu::MenuEvent| {
                         match event.id().as_ref() {
                             "show" => {
-                                if let Some(w) = app.get_webview_window("main") {
-                                    let _ = w.show();
-                                    let _ = w.set_focus();
-                                }
+                                reveal_main_window(app);
                             }
                             "quit" => {
                                 app.exit(0);
@@ -756,8 +850,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        app_profile_name_from_inputs, profile_data_dir_name, resolve_codex_home,
-        should_reset_profile_data, should_seed_mock_data,
+        app_launch_requests_hidden, app_profile_name_from_inputs, profile_data_dir_name,
+        resolve_codex_home, should_reset_profile_data, should_reveal_main_window_on_setup,
+        should_seed_mock_data,
     };
 
     #[test]
@@ -796,5 +891,21 @@ mod tests {
         std::env::remove_var("API_ROUTER_CODEX_HOME");
         let got = resolve_codex_home(&user_data, false, "default");
         assert_eq!(got, user_data.join("codex-home"));
+    }
+
+    #[test]
+    fn start_hidden_launch_flag_is_detected() {
+        assert!(app_launch_requests_hidden(&[
+            "API Router.exe".to_string(),
+            "--start-hidden".to_string(),
+        ]));
+        assert!(!app_launch_requests_hidden(&["API Router.exe".to_string()]));
+    }
+
+    #[test]
+    fn setup_only_reveals_window_for_normal_launches() {
+        assert!(should_reveal_main_window_on_setup(false, false));
+        assert!(!should_reveal_main_window_on_setup(true, false));
+        assert!(!should_reveal_main_window_on_setup(false, true));
     }
 }

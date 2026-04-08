@@ -145,10 +145,7 @@ impl UiWatchdogState {
         });
         let filename = format!("ui-freeze-{now_unix_ms}-{trigger}.json");
         let path = diagnostics_dir.join(filename);
-        let _ = std::fs::write(
-            path,
-            serde_json::to_vec_pretty(&payload).unwrap_or_default(),
-        );
+        let _ = crate::diagnostics::write_pretty_json(&path, &payload);
     }
 
     pub fn record_heartbeat(
@@ -733,10 +730,7 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         .ensure_lan_node_identity(&crate::lan_sync::default_node_name())
         .map_err(anyhow::Error::msg)?;
     let app_state = AppState {
-        diagnostics_dir: config_path
-            .parent()
-            .map(|parent| parent.join("diagnostics"))
-            .unwrap_or_else(|| data_dir.join("diagnostics")),
+        diagnostics_dir: crate::diagnostics::app_diagnostics_dir(&config_path, &data_dir),
         config_path,
         gateway,
         secrets,

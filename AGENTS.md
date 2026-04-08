@@ -4,6 +4,7 @@
 - **Document language**: Write instructions in English. Examples may include other languages when clarity improves.
 - **Replies**: Match the primary language the user is using in the current conversation. If the conversation is mixed-language, follow the language used for the actionable part; if still unclear, mirror the user's current conversational language.
 - **Terminology**: Do not translate proper nouns such as `Tauri`, `Rust`, `Codex`, `OpenAI`, or provider names.
+- **Term clarification**: Whenever using a specific term or phrase that may be unclear, add a short bracketed explanation beside it on first use (for example, `worktree` [separate checkout] or `canonical path` [single official implementation route]). Keep the explanation concise and skip obvious terms.
 - **Date/Time format**: Always use day-month-year ordering; never use month-day-year in outputs or docs.
 - **Agent capacity fallback**: If spawning a new agent fails because capacity is full, first clean up agents that are not actively in progress/in use, then retry spawning.
 
@@ -87,15 +88,6 @@ Guards/fallbacks are only allowed if:
 - retries/timeouts without concurrency/root-cause analysis
 - skipping inputs/files to make tests pass
 - weakening assertions or deleting failing tests
-
-## Required PR / Patch Metadata (Put In Description)
-- Root cause:
-- Minimal repro:
-- Evidence (logs/trace/screenshots):
-- Fix summary:
-- New/updated tests:
-- Risk assessment:
-- Rollback plan:
 
 ## CSS Layering (z-index) Policy
 - Use the global sequential z-index scale (e.g. `--z-*` tokens) for cross-component layering.

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
@@ -51,13 +51,20 @@ pub(crate) use remote_update::{
     current_local_remote_update_readiness, lan_sync_remote_update_debug_http,
     lan_sync_remote_update_http, load_lan_remote_update_status,
     load_lan_remote_update_status_public, normalized_local_build_target_ref,
-    peer_remote_update_blocked_reason, LanRemoteUpdateDebugResponsePacket,
+    peer_remote_update_blocked_reason, reconcile_remote_update_terminal_event,
+    LanRemoteUpdateDebugResponsePacket,
 };
 pub use remote_update::{LanRemoteUpdateReadinessSnapshot, LanRemoteUpdateStatusSnapshot};
 
 pub const LAN_DISCOVERY_PORT: u16 = 38455;
 pub const LAN_HEARTBEAT_INTERVAL_MS: u64 = 2_000;
-pub const LAN_PEER_STALE_AFTER_MS: u64 = 7_000;
+// Keep this well above the 2s send interval. Windows peer updates/builds and normal Wi-Fi jitter
+// can delay UDP heartbeats for 7-10s; pruning that quickly makes the LAN peer button flicker even
+// though the peer is still reachable and immediately rediscovered from the same listen address.
+pub const LAN_PEER_STALE_AFTER_MS: u64 = 20_000;
+pub const LAN_PEER_HTTP_GRACE_AFTER_MS: u64 = 30_000;
+const LAN_HEARTBEAT_SENDER_DELAY_LOG_THRESHOLD_MS: u64 = LAN_HEARTBEAT_INTERVAL_MS * 2;
+const LAN_HEARTBEAT_PREP_SLOW_LOG_THRESHOLD_MS: u64 = 250;
 const LAN_SHARED_HEALTH_LOOP_INTERVAL_MS: u64 = 900;
 const LAN_USAGE_SYNC_LOOP_INTERVAL_MS: u64 = 1_000;
 const LAN_USAGE_SYNC_BATCH_LIMIT: usize = 2_048;
@@ -66,6 +73,7 @@ const LAN_EDIT_SYNC_BATCH_LIMIT: usize = 512;
 const LAN_DEBUG_BATCH_LIMIT: usize = 256;
 const LAN_PACKET_SOFT_LIMIT_BYTES: usize = 8 * 1024;
 const LAN_SOCKET_RETRY_MS: u64 = 2_000;
+const LAN_PEER_DIAGNOSTICS_LOG_MAX_BYTES: usize = 64 * 1024;
 const LAN_PAIR_REQUEST_TTL_MS: u64 = 5 * 60 * 1000;
 const LAN_PAIR_REQUEST_THROTTLE_MS: u64 = 60 * 1000;
 const LAN_PAIR_APPROVAL_TTL_MS: u64 = 5 * 60 * 1000;
@@ -99,6 +107,38 @@ static GATEWAY_STATUS_RUNTIME: OnceLock<RwLock<Option<LanSyncRuntime>>> = OnceLo
 
 fn gateway_status_runtime() -> &'static RwLock<Option<LanSyncRuntime>> {
     GATEWAY_STATUS_RUNTIME.get_or_init(|| RwLock::new(None))
+}
+
+fn lan_peer_diagnostics_log_path() -> Option<std::path::PathBuf> {
+    crate::diagnostics::diagnostics_file_path("lan-peer-diagnostics.log")
+}
+
+fn append_lan_peer_diagnostics_log(message: &str) {
+    let Some(path) = lan_peer_diagnostics_log_path() else {
+        return;
+    };
+    let _ = crate::diagnostics::append_timestamped_log_line_capped(
+        &path,
+        message,
+        LAN_PEER_DIAGNOSTICS_LOG_MAX_BYTES,
+    );
+}
+
+fn heartbeat_sender_delay_ms(previous_sent_unix_ms: Option<u64>, now_unix_ms: u64) -> Option<u64> {
+    previous_sent_unix_ms.and_then(|previous_sent_unix_ms| {
+        let delay_ms = now_unix_ms.saturating_sub(previous_sent_unix_ms);
+        (delay_ms > LAN_HEARTBEAT_SENDER_DELAY_LOG_THRESHOLD_MS).then_some(delay_ms)
+    })
+}
+
+fn optional_u64_log_value(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn heartbeat_step_elapsed_ms(started_at_unix_ms: u64) -> u64 {
+    unix_ms().saturating_sub(started_at_unix_ms)
 }
 
 fn local_sync_contracts() -> BTreeMap<String, u32> {
@@ -420,6 +460,29 @@ struct LanPeerRuntime {
     followed_source_node_id: Option<String>,
 }
 
+fn lan_peer_snapshot_from_runtime(peer: &LanPeerRuntime) -> LanPeerSnapshot {
+    LanPeerSnapshot {
+        node_id: peer.node_id.clone(),
+        node_name: peer.node_name.clone(),
+        listen_addr: peer.listen_addr.clone(),
+        last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
+        capabilities: peer.capabilities.clone(),
+        build_identity: peer.build_identity.clone(),
+        provider_fingerprints: peer.provider_fingerprints.clone(),
+        provider_definitions_revision: peer.provider_definitions_revision.clone(),
+        sync_contracts: peer.sync_contracts.clone(),
+        followed_source_node_id: peer.followed_source_node_id.clone(),
+        trusted: false,
+        pair_state: None,
+        pair_request_id: None,
+        remote_update_readiness: peer.remote_update_readiness.clone(),
+        remote_update_status: peer.remote_update_status.clone(),
+        sync_blocked_domains: Vec::new(),
+        sync_diagnostics: Vec::new(),
+        build_matches_local: false,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct LanPendingPairRequest {
     request_id: String,
@@ -450,6 +513,12 @@ struct LanHeartbeatPacket {
     node_name: String,
     listen_port: u16,
     sent_at_unix_ms: u64,
+    #[serde(default)]
+    sequence: u64,
+    #[serde(default)]
+    sender_previous_gap_ms: Option<u64>,
+    #[serde(default)]
+    sender_previous_elapsed_ms: Option<u64>,
     capabilities: Vec<String>,
     #[serde(default = "current_build_identity")]
     build_identity: LanBuildIdentitySnapshot,
@@ -596,6 +665,13 @@ struct LanQuotaRefreshRequestPacket {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct LanEditSyncHintPacket {
+    version: u8,
+    node_id: String,
+    sent_at_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct LanPairRequestPacket {
     version: u8,
     request_id: String,
@@ -638,6 +714,7 @@ enum LanSyncPacket {
     Heartbeat(Box<LanHeartbeatPacket>),
     SharedHealth(LanSharedHealthPacket),
     QuotaRefreshRequest(LanQuotaRefreshRequestPacket),
+    EditSyncHint(LanEditSyncHintPacket),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -737,9 +814,10 @@ impl LanSyncRuntime {
 
         let listener_runtime = self.clone();
         let listener_gateway = gateway.clone();
+        let listener_config_path = config_path.clone();
         std::thread::Builder::new()
             .name("lan-sync-listener".to_string())
-            .spawn(move || run_listener(listener_runtime, listener_gateway))
+            .spawn(move || run_listener(listener_runtime, listener_gateway, listener_config_path))
             .ok();
 
         let sender_runtime = self.clone();
@@ -915,17 +993,39 @@ impl LanSyncRuntime {
         if packet.node_id.trim().is_empty() || packet.node_id == self.local_node.node_id {
             return;
         }
+        let received_at_unix_ms = unix_ms();
+        let previous = self.peers.read().get(&packet.node_id).cloned();
         let listen_addr = format!("{}:{}", source.ip(), packet.listen_port);
         self.last_peer_heartbeat_received_unix_ms
-            .store(unix_ms(), Ordering::Relaxed);
+            .store(received_at_unix_ms, Ordering::Relaxed);
         *self.last_peer_heartbeat_source.write() = Some(source.to_string());
+        let sanitized_name = sanitize_node_name(&packet.node_name);
+        let capability_summary = if packet.capabilities.is_empty() {
+            "none".to_string()
+        } else {
+            packet.capabilities.join(",")
+        };
+        let gap_ms = previous
+            .as_ref()
+            .map(|peer| received_at_unix_ms.saturating_sub(peer.last_heartbeat_unix_ms))
+            .unwrap_or(0);
+        let wire_delay_ms = received_at_unix_ms.saturating_sub(packet.sent_at_unix_ms);
+        let was_stale = previous
+            .as_ref()
+            .is_some_and(|peer| peer_is_stale(peer.last_heartbeat_unix_ms, received_at_unix_ms));
+        let listen_addr_changed = previous
+            .as_ref()
+            .is_some_and(|peer| peer.listen_addr != listen_addr);
+        let capabilities_changed = previous
+            .as_ref()
+            .is_some_and(|peer| peer.capabilities != packet.capabilities);
         self.peers.write().insert(
             packet.node_id.clone(),
             LanPeerRuntime {
                 node_id: packet.node_id,
-                node_name: sanitize_node_name(&packet.node_name),
-                listen_addr,
-                last_heartbeat_unix_ms: unix_ms(),
+                node_name: sanitized_name.clone(),
+                listen_addr: listen_addr.clone(),
+                last_heartbeat_unix_ms: received_at_unix_ms,
                 capabilities: packet.capabilities,
                 build_identity: packet.build_identity,
                 remote_update_readiness: packet.remote_update_readiness,
@@ -936,6 +1036,41 @@ impl LanSyncRuntime {
                 followed_source_node_id: packet.followed_source_node_id,
             },
         );
+        match previous {
+            None => append_lan_peer_diagnostics_log(&format!(
+                "Discovered LAN peer {} from {} listen_addr={} capabilities={}",
+                sanitized_name, source, listen_addr, capability_summary
+            )),
+            Some(previous_peer) if was_stale => append_lan_peer_diagnostics_log(&format!(
+                "Peer {} recovered after {}ms without heartbeat; source={} listen_addr={} previous_listen_addr={} sent_at_unix_ms={} receive_minus_sent_ms={} sender_previous_gap_ms={} sender_previous_elapsed_ms={} heartbeat_sequence={} capabilities={}",
+                previous_peer.node_id,
+                gap_ms,
+                source,
+                listen_addr,
+                previous_peer.listen_addr,
+                packet.sent_at_unix_ms,
+                wire_delay_ms,
+                optional_u64_log_value(packet.sender_previous_gap_ms),
+                optional_u64_log_value(packet.sender_previous_elapsed_ms),
+                packet.sequence,
+                capability_summary
+            )),
+            Some(previous_peer) if listen_addr_changed => append_lan_peer_diagnostics_log(&format!(
+                "Peer {} changed listen_addr from {} to {} after {}ms; source={} sent_at_unix_ms={} receive_minus_sent_ms={} sender_previous_gap_ms={} sender_previous_elapsed_ms={} heartbeat_sequence={}",
+                previous_peer.node_id, previous_peer.listen_addr, listen_addr, gap_ms, source, packet.sent_at_unix_ms, wire_delay_ms, optional_u64_log_value(packet.sender_previous_gap_ms), optional_u64_log_value(packet.sender_previous_elapsed_ms), packet.sequence
+            )),
+            Some(previous_peer) if capabilities_changed => append_lan_peer_diagnostics_log(&format!(
+                "Peer {} updated capabilities after {}ms; sent_at_unix_ms={} receive_minus_sent_ms={} sender_previous_gap_ms={} sender_previous_elapsed_ms={} heartbeat_sequence={}; now={}",
+                previous_peer.node_id, gap_ms, packet.sent_at_unix_ms, wire_delay_ms, optional_u64_log_value(packet.sender_previous_gap_ms), optional_u64_log_value(packet.sender_previous_elapsed_ms), packet.sequence, capability_summary
+            )),
+            Some(previous_peer) if gap_ms > LAN_HEARTBEAT_INTERVAL_MS.saturating_mul(2) => {
+                append_lan_peer_diagnostics_log(&format!(
+                    "Peer {} heartbeat gap {}ms from source={} listen_addr={} sent_at_unix_ms={} receive_minus_sent_ms={} sender_previous_gap_ms={} sender_previous_elapsed_ms={} heartbeat_sequence={}",
+                    previous_peer.node_id, gap_ms, source, listen_addr, packet.sent_at_unix_ms, wire_delay_ms, optional_u64_log_value(packet.sender_previous_gap_ms), optional_u64_log_value(packet.sender_previous_elapsed_ms), packet.sequence
+                ))
+            }
+            _ => {}
+        }
     }
 
     fn collect_live_peers(&self, now: u64) -> Vec<LanPeerSnapshot> {
@@ -943,56 +1078,36 @@ impl LanSyncRuntime {
             >= LAN_PEER_STALE_AFTER_MS / 2;
         let mut out = if should_prune {
             let mut peers = self.peers.write();
-            peers.retain(|_, peer| !peer_is_stale(peer.last_heartbeat_unix_ms, now));
+            let mut stale_peers = Vec::new();
+            peers.retain(|_, peer| {
+                let is_stale = peer_is_stale(peer.last_heartbeat_unix_ms, now);
+                if is_stale {
+                    stale_peers.push((
+                        peer.node_id.clone(),
+                        peer.node_name.clone(),
+                        peer.listen_addr.clone(),
+                        now.saturating_sub(peer.last_heartbeat_unix_ms),
+                    ));
+                }
+                !is_stale
+            });
             self.last_peer_prune_unix_ms.store(now, Ordering::Relaxed);
+            for (node_id, node_name, listen_addr, age_ms) in stale_peers {
+                append_lan_peer_diagnostics_log(&format!(
+                    "Pruned stale LAN peer {} ({}) after {}ms without heartbeat; listen_addr={}",
+                    node_id, node_name, age_ms, listen_addr
+                ));
+            }
             peers
                 .values()
-                .map(|peer| LanPeerSnapshot {
-                    node_id: peer.node_id.clone(),
-                    node_name: peer.node_name.clone(),
-                    listen_addr: peer.listen_addr.clone(),
-                    last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
-                    capabilities: peer.capabilities.clone(),
-                    build_identity: peer.build_identity.clone(),
-                    remote_update_readiness: peer.remote_update_readiness.clone(),
-                    remote_update_status: peer.remote_update_status.clone(),
-                    sync_contracts: peer.sync_contracts.clone(),
-                    provider_fingerprints: peer.provider_fingerprints.clone(),
-                    provider_definitions_revision: peer.provider_definitions_revision.clone(),
-                    followed_source_node_id: peer.followed_source_node_id.clone(),
-                    trusted: false,
-                    pair_state: None,
-                    pair_request_id: None,
-                    sync_blocked_domains: Vec::new(),
-                    sync_diagnostics: Vec::new(),
-                    build_matches_local: false,
-                })
+                .map(lan_peer_snapshot_from_runtime)
                 .collect::<Vec<_>>()
         } else {
             self.peers
                 .read()
                 .values()
                 .filter(|peer| !peer_is_stale(peer.last_heartbeat_unix_ms, now))
-                .map(|peer| LanPeerSnapshot {
-                    node_id: peer.node_id.clone(),
-                    node_name: peer.node_name.clone(),
-                    listen_addr: peer.listen_addr.clone(),
-                    last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
-                    capabilities: peer.capabilities.clone(),
-                    build_identity: peer.build_identity.clone(),
-                    remote_update_readiness: peer.remote_update_readiness.clone(),
-                    remote_update_status: peer.remote_update_status.clone(),
-                    sync_contracts: peer.sync_contracts.clone(),
-                    provider_fingerprints: peer.provider_fingerprints.clone(),
-                    provider_definitions_revision: peer.provider_definitions_revision.clone(),
-                    followed_source_node_id: peer.followed_source_node_id.clone(),
-                    trusted: false,
-                    pair_state: None,
-                    pair_request_id: None,
-                    sync_blocked_domains: Vec::new(),
-                    sync_diagnostics: Vec::new(),
-                    build_matches_local: false,
-                })
+                .map(lan_peer_snapshot_from_runtime)
                 .collect::<Vec<_>>()
         };
         out.sort_by(|a, b| {
@@ -1003,10 +1118,60 @@ impl LanSyncRuntime {
         out
     }
 
+    fn heartbeat_delivery_targets(&self, now: u64) -> Vec<SocketAddr> {
+        let broadcast_target = SocketAddr::from((Ipv4Addr::BROADCAST, LAN_DISCOVERY_PORT));
+        let mut targets = vec![broadcast_target];
+        let mut seen = HashSet::from([broadcast_target]);
+        for peer in self.peers.read().values() {
+            if peer_is_stale(peer.last_heartbeat_unix_ms, now) {
+                continue;
+            }
+            let Ok(listen_addr) = peer.listen_addr.parse::<SocketAddr>() else {
+                continue;
+            };
+            // Heartbeat discovery is UDP on LAN_DISCOVERY_PORT. peer.listen_addr stores the
+            // peer's HTTP listen port, so only reuse the IP for a directed unicast heartbeat.
+            let target = SocketAddr::new(listen_addr.ip(), LAN_DISCOVERY_PORT);
+            if seen.insert(target) {
+                targets.push(target);
+            }
+        }
+        targets
+    }
+
     fn live_peer_by_node_id(&self, node_id: &str) -> Option<LanPeerSnapshot> {
         self.collect_live_peers(unix_ms())
             .into_iter()
             .find(|peer| peer.node_id == node_id)
+    }
+
+    fn recent_peer_by_node_id(&self, node_id: &str, max_age_ms: u64) -> Option<LanPeerSnapshot> {
+        let now = unix_ms();
+        self.peers
+            .read()
+            .get(node_id)
+            .filter(|peer| now.saturating_sub(peer.last_heartbeat_unix_ms) <= max_age_ms)
+            .map(lan_peer_snapshot_from_runtime)
+    }
+
+    pub fn recently_stale_peers(&self, max_age_ms: u64) -> Vec<LanPeerSnapshot> {
+        let now = unix_ms();
+        let mut peers = self
+            .peers
+            .read()
+            .values()
+            .filter(|peer| {
+                let age_ms = now.saturating_sub(peer.last_heartbeat_unix_ms);
+                peer_is_stale(peer.last_heartbeat_unix_ms, now) && age_ms <= max_age_ms
+            })
+            .map(lan_peer_snapshot_from_runtime)
+            .collect::<Vec<_>>();
+        peers.sort_by(|a, b| {
+            b.last_heartbeat_unix_ms
+                .cmp(&a.last_heartbeat_unix_ms)
+                .then_with(|| a.node_name.cmp(&b.node_name))
+        });
+        peers
     }
 
     pub fn has_alive_peers(&self) -> bool {
@@ -1779,11 +1944,29 @@ fn broadcast_shared_health_packet(
     );
 }
 
-fn send_heartbeat_broadcast(packet: &LanHeartbeatPacket) -> Result<(), String> {
-    let target = SocketAddr::from((Ipv4Addr::BROADCAST, LAN_DISCOVERY_PORT));
+fn send_heartbeat_packet(
+    packet: &LanHeartbeatPacket,
+    targets: &[SocketAddr],
+) -> Result<(), String> {
     let bytes = serde_json::to_vec(&LanWirePacket::Heartbeat(Box::new(packet.clone())))
         .map_err(|err| err.to_string())?;
-    send_wire_bytes(target, &bytes)
+    let mut sent_count = 0_usize;
+    let mut errors = Vec::new();
+    for target in targets {
+        match send_wire_bytes(*target, &bytes) {
+            Ok(()) => sent_count += 1,
+            Err(err) => errors.push(format!("{target}: {err}")),
+        }
+    }
+    if sent_count > 0 {
+        Ok(())
+    } else {
+        Err(if errors.is_empty() {
+            "no heartbeat targets".to_string()
+        } else {
+            errors.join("; ")
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1873,6 +2056,12 @@ fn local_node_identity_for_edit_recording() -> Option<LanNodeIdentity> {
 
 pub(crate) fn current_local_node_identity() -> Option<LanNodeIdentity> {
     local_node_identity_for_edit_recording()
+}
+
+fn gateway_local_node_identity(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+) -> Option<LanNodeIdentity> {
+    gateway.secrets.get_lan_node_identity()
 }
 
 fn resolve_provider_name_for_shared_provider_id(
@@ -2494,10 +2683,20 @@ fn record_edit_event(
     };
     if gateway.store.insert_lan_edit_event(&event) {
         note_entity_version(gateway, &event);
+        if should_request_immediate_edit_sync(entity_type) {
+            request_immediate_edit_sync_from_live_peers(gateway);
+        }
         Ok(event)
     } else {
         Err("failed to insert edit sync event".to_string())
     }
+}
+
+fn should_request_immediate_edit_sync(entity_type: &str) -> bool {
+    matches!(
+        lan_edit_entity_sync_domain(entity_type),
+        Some(SYNC_DOMAIN_USAGE_HISTORY)
+    )
 }
 
 fn entity_version_meta_key(entity_type: &str, entity_id: &str) -> String {
@@ -2878,7 +3077,7 @@ fn apply_tracked_spend_day_event(
         &payload.provider_name,
     )?;
     if event.op == "delete" {
-        let local_node_id = current_local_node_identity()
+        let local_node_id = gateway_local_node_identity(gateway)
             .map(|node| node.node_id)
             .unwrap_or_default();
         if source_node_id == local_node_id {
@@ -3029,7 +3228,11 @@ pub fn sanitize_node_name(raw: &str) -> String {
     }
 }
 
-fn run_listener(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::GatewayState) {
+fn run_listener(
+    runtime: LanSyncRuntime,
+    gateway: crate::orchestrator::gateway::GatewayState,
+    config_path: std::path::PathBuf,
+) {
     loop {
         let socket = match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, LAN_DISCOVERY_PORT)) {
             Ok(socket) => socket,
@@ -3074,6 +3277,15 @@ fn run_listener(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::
                                 LanSyncPacket::QuotaRefreshRequest(packet) => {
                                     handle_quota_refresh_request(&runtime, &gateway, packet);
                                 }
+                                LanSyncPacket::EditSyncHint(packet) => {
+                                    handle_edit_sync_hint(
+                                        &runtime,
+                                        &gateway,
+                                        &config_path,
+                                        source,
+                                        packet,
+                                    );
+                                }
                             }
                         }
                         LanWirePacket::PairRequest(packet) => {
@@ -3104,34 +3316,117 @@ fn run_listener(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::
 }
 
 fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::GatewayState) {
+    let mut last_heartbeat_sent_unix_ms: Option<u64> = None;
+    let mut last_heartbeat_elapsed_ms: Option<u64> = None;
+    let mut heartbeat_sequence: u64 = 0;
+    let mut sender_delay_active = false;
+    let mut sender_delay_gap_ms: Option<u64> = None;
     loop {
+        let heartbeat_started_unix_ms = unix_ms();
+        let sender_previous_gap_ms = last_heartbeat_sent_unix_ms
+            .map(|last_sent| heartbeat_started_unix_ms.saturating_sub(last_sent));
+        if let Some(delay_ms) =
+            heartbeat_sender_delay_ms(last_heartbeat_sent_unix_ms, heartbeat_started_unix_ms)
+        {
+            if !sender_delay_active {
+                append_lan_peer_diagnostics_log(&format!(
+                    "Heartbeat sender delayed {}ms before broadcast; node={} name={}",
+                    delay_ms, runtime.local_node.node_id, runtime.local_node.node_name
+                ));
+            }
+            sender_delay_active = true;
+            sender_delay_gap_ms = Some(delay_ms);
+        }
+        let cfg_started_unix_ms = unix_ms();
         let cfg_snapshot = gateway.cfg.read().clone();
+        let cfg_elapsed_ms = heartbeat_step_elapsed_ms(cfg_started_unix_ms);
+        let provider_fingerprints_started_unix_ms = unix_ms();
         let provider_fingerprints = build_provider_fingerprints(&cfg_snapshot, &gateway.secrets);
+        let provider_fingerprints_elapsed_ms =
+            heartbeat_step_elapsed_ms(provider_fingerprints_started_unix_ms);
+        let provider_definitions_started_unix_ms = unix_ms();
         let provider_definition_items = local_provider_definition_sync_items(&gateway);
+        let provider_definitions_elapsed_ms =
+            heartbeat_step_elapsed_ms(provider_definitions_started_unix_ms);
         *runtime.local_provider_fingerprints.write() = provider_fingerprints.clone();
+        heartbeat_sequence = heartbeat_sequence.saturating_add(1);
+        let remote_update_started_unix_ms = unix_ms();
+        let remote_update_readiness = Some(current_local_remote_update_readiness());
+        let remote_update_status = load_lan_remote_update_status();
+        let remote_update_elapsed_ms = heartbeat_step_elapsed_ms(remote_update_started_unix_ms);
+        let sync_contracts_started_unix_ms = unix_ms();
+        let sync_contracts = local_sync_contracts();
+        let sync_contracts_elapsed_ms = heartbeat_step_elapsed_ms(sync_contracts_started_unix_ms);
+        let followed_source_started_unix_ms = unix_ms();
+        let followed_source_node_id = gateway.secrets.get_followed_config_source_node_id();
+        let followed_source_elapsed_ms = heartbeat_step_elapsed_ms(followed_source_started_unix_ms);
         let packet = LanSyncPacket::Heartbeat(Box::new(LanHeartbeatPacket {
             version: 1,
             node_id: runtime.local_node.node_id.clone(),
             node_name: runtime.local_node.node_name.clone(),
             listen_port: cfg_snapshot.listen.port,
-            sent_at_unix_ms: unix_ms(),
+            sent_at_unix_ms: heartbeat_started_unix_ms,
+            sequence: heartbeat_sequence,
+            sender_previous_gap_ms,
+            sender_previous_elapsed_ms: last_heartbeat_elapsed_ms,
             capabilities: lan_heartbeat_capabilities(),
             build_identity: current_build_identity(),
-            remote_update_readiness: Some(current_local_remote_update_readiness()),
-            remote_update_status: load_lan_remote_update_status(),
-            sync_contracts: local_sync_contracts(),
+            remote_update_readiness,
+            remote_update_status,
+            sync_contracts,
             provider_fingerprints,
             provider_definitions_revision: provider_definitions_revision(
                 &provider_definition_items,
             ),
-            followed_source_node_id: gateway.secrets.get_followed_config_source_node_id(),
+            followed_source_node_id,
         }));
+        let prep_elapsed_ms = heartbeat_step_elapsed_ms(heartbeat_started_unix_ms);
+        if prep_elapsed_ms >= LAN_HEARTBEAT_PREP_SLOW_LOG_THRESHOLD_MS {
+            append_lan_peer_diagnostics_log(&format!(
+                "Heartbeat sender prep slow {}ms; node={} name={} cfg={}ms provider_fingerprints={}ms provider_definitions={}ms remote_update={}ms sync_contracts={}ms followed_source={}ms",
+                prep_elapsed_ms,
+                runtime.local_node.node_id,
+                runtime.local_node.node_name,
+                cfg_elapsed_ms,
+                provider_fingerprints_elapsed_ms,
+                provider_definitions_elapsed_ms,
+                remote_update_elapsed_ms,
+                sync_contracts_elapsed_ms,
+                followed_source_elapsed_ms
+            ));
+        }
         if let LanSyncPacket::Heartbeat(ref heartbeat) = packet {
-            if let Err(err) = send_heartbeat_broadcast(heartbeat) {
+            let targets = runtime.heartbeat_delivery_targets(heartbeat_started_unix_ms);
+            if let Err(err) = send_heartbeat_packet(heartbeat, &targets) {
                 log::warn!("lan sync sender heartbeat failed: {err}");
+                let failure_context = match last_heartbeat_sent_unix_ms {
+                    Some(last_sent_unix_ms) => format!(
+                        " after {}ms since last successful heartbeat",
+                        heartbeat_started_unix_ms.saturating_sub(last_sent_unix_ms)
+                    ),
+                    None => " before first successful heartbeat".to_string(),
+                };
+                append_lan_peer_diagnostics_log(&format!(
+                    "Heartbeat broadcast failed{}: {}",
+                    failure_context, err
+                ));
                 std::thread::sleep(Duration::from_millis(LAN_SOCKET_RETRY_MS));
                 continue;
             }
+        }
+        let heartbeat_finished_unix_ms = unix_ms();
+        last_heartbeat_elapsed_ms =
+            Some(heartbeat_finished_unix_ms.saturating_sub(heartbeat_started_unix_ms));
+        last_heartbeat_sent_unix_ms = Some(heartbeat_finished_unix_ms);
+        if sender_delay_active {
+            append_lan_peer_diagnostics_log(&format!(
+                "Heartbeat sender recovered after {}ms delay; node={} name={}",
+                sender_delay_gap_ms.unwrap_or_default(),
+                runtime.local_node.node_id,
+                runtime.local_node.node_name
+            ));
+            sender_delay_active = false;
+            sender_delay_gap_ms = None;
         }
         std::thread::sleep(Duration::from_millis(LAN_HEARTBEAT_INTERVAL_MS));
     }
@@ -3477,6 +3772,66 @@ fn emit_http_sync_recovered_event(
     );
 }
 
+fn sync_edit_events_from_peer(
+    runtime: &LanSyncRuntime,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    config_path: &Path,
+    peer: &LanPeerSnapshot,
+    reported_sync_blocks: &mut HashMap<String, String>,
+) -> Result<(), String> {
+    if !ensure_peer_sync_contract(
+        gateway,
+        peer,
+        SYNC_DOMAIN_USAGE_HISTORY,
+        reported_sync_blocks,
+    ) {
+        return Ok(());
+    }
+    if !peer_supports_http_sync(peer, "edit_sync_v1") {
+        return Ok(());
+    }
+    loop {
+        let batch =
+            tauri::async_runtime::block_on(fetch_edit_sync_batch_http(runtime, gateway, peer))?;
+        let has_more = batch.has_more;
+        if batch.events.is_empty() {
+            break;
+        }
+        apply_edit_sync_batch(runtime, gateway, config_path, peer, batch);
+        if !has_more {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn request_immediate_edit_sync_from_live_peers(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+) {
+    let runtime = gateway_status_runtime().read().as_ref().cloned();
+    let Some(runtime) = runtime else {
+        return;
+    };
+    let trusted_node_ids = gateway.secrets.trusted_lan_node_ids();
+    let packet = LanSyncPacket::EditSyncHint(LanEditSyncHintPacket {
+        version: 1,
+        node_id: runtime.local_node.node_id.clone(),
+        sent_at_unix_ms: unix_ms(),
+    });
+    for peer in runtime.collect_live_peers(unix_ms()) {
+        if !trusted_node_ids.contains(&peer.node_id) {
+            continue;
+        }
+        if sync_contract_mismatch_detail(&peer, SYNC_DOMAIN_USAGE_HISTORY).is_some() {
+            continue;
+        }
+        let Some(addr) = peer_sync_addr(&peer) else {
+            continue;
+        };
+        let _ = send_packet_to_addr(gateway, addr, &packet);
+    }
+}
+
 fn format_lan_sync_reqwest_error(err: &reqwest::Error) -> String {
     let kind = if err.is_timeout() {
         "timeout"
@@ -3508,6 +3863,12 @@ fn format_lan_sync_reqwest_error(err: &reqwest::Error) -> String {
 }
 
 fn resolve_repo_root_for_self_update() -> Result<std::path::PathBuf, String> {
+    #[cfg(test)]
+    if let Some(path) = remote_update::test_repo_root_override() {
+        if path.join("package.json").is_file() {
+            return Ok(path);
+        }
+    }
     if let Ok(explicit) = std::env::var("API_ROUTER_REPO_ROOT") {
         let trimmed = explicit.trim();
         if !trimmed.is_empty() {
@@ -4093,6 +4454,54 @@ fn handle_quota_refresh_request(
     });
 }
 
+fn handle_edit_sync_hint(
+    runtime: &LanSyncRuntime,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    config_path: &Path,
+    source: SocketAddr,
+    packet: LanEditSyncHintPacket,
+) {
+    let sender_node_id = packet.node_id.trim();
+    if sender_node_id.is_empty() || sender_node_id == runtime.local_node.node_id {
+        return;
+    }
+    if !gateway.secrets.is_lan_node_trusted(sender_node_id) {
+        return;
+    }
+
+    let Some(peer) = runtime
+        .live_peer_by_node_id(sender_node_id)
+        .or_else(|| runtime.recent_peer_by_node_id(sender_node_id, LAN_PEER_HTTP_GRACE_AFTER_MS))
+    else {
+        gateway.store.add_event(
+            "gateway",
+            "debug",
+            "lan.edit_sync_hint_ignored_unknown_peer",
+            "ignored LAN edit sync hint because the sender has no live or recent peer snapshot",
+            serde_json::json!({
+                "peer_node_id": sender_node_id,
+                "source": source.to_string(),
+                "hint_sent_at_unix_ms": packet.sent_at_unix_ms,
+            }),
+        );
+        return;
+    };
+
+    let runtime = runtime.clone();
+    let gateway = gateway.clone();
+    let config_path = config_path.to_path_buf();
+    tauri::async_runtime::spawn(async move {
+        let mut reported_sync_blocks = HashMap::new();
+        let _ = sync_edit_events_from_peer(
+            &runtime,
+            &gateway,
+            &config_path,
+            &peer,
+            &mut reported_sync_blocks,
+        );
+    });
+}
+
 fn apply_edit_sync_batch(
     runtime: &LanSyncRuntime,
     gateway: &crate::orchestrator::gateway::GatewayState,
@@ -4291,35 +4700,22 @@ fn run_edit_sync_loop(
             ) {
                 continue;
             }
-            if !peer_supports_http_sync(&peer, "edit_sync_v1") {
-                continue;
-            }
-            loop {
-                let batch = match tauri::async_runtime::block_on(fetch_edit_sync_batch_http(
-                    &runtime, &gateway, &peer,
-                )) {
-                    Ok(batch) => batch,
-                    Err(err) => {
-                        gateway.store.add_event(
-                            "gateway",
-                            "warning",
-                            "lan.edit_sync_http_failed",
-                            &err,
-                            serde_json::json!({
-                                "peer_node_id": peer.node_id,
-                            }),
-                        );
-                        break;
-                    }
-                };
-                let has_more = batch.has_more;
-                if batch.events.is_empty() {
-                    break;
-                }
-                apply_edit_sync_batch(&runtime, &gateway, &config_path, &peer, batch);
-                if !has_more {
-                    break;
-                }
+            if let Err(err) = sync_edit_events_from_peer(
+                &runtime,
+                &gateway,
+                &config_path,
+                &peer,
+                &mut reported_sync_blocks,
+            ) {
+                gateway.store.add_event(
+                    "gateway",
+                    "warning",
+                    "lan.edit_sync_http_failed",
+                    &err,
+                    serde_json::json!({
+                        "peer_node_id": peer.node_id,
+                    }),
+                );
             }
         }
         last_live_peer_ids = current_live_peer_ids;
@@ -4612,9 +5008,9 @@ mod tests {
         lan_sync_usage_http, local_version_sync_target_ref, note_entity_version, peer_is_stale,
         peer_supports_http_sync, replace_remote_provider_definition_snapshots,
         restore_local_provider_state, sanitize_node_name, serialize_wire_packet,
-        tracked_spend_day_entity_id, LanEditSyncRequestPacket, LanHeartbeatPacket,
-        LanLocalVersionSyncSnapshot, LanNodeIdentity, LanPeerSnapshot,
-        LanProviderDefinitionSyncItem, LanProviderDefinitionsRequestPacket,
+        should_request_immediate_edit_sync, tracked_spend_day_entity_id, LanEditSyncHintPacket,
+        LanEditSyncRequestPacket, LanHeartbeatPacket, LanLocalVersionSyncSnapshot, LanNodeIdentity,
+        LanPeerSnapshot, LanProviderDefinitionSyncItem, LanProviderDefinitionsRequestPacket,
         LanRemoteUpdateDebugRequestPacket, LanRemoteUpdateDebugResponsePacket,
         LanRemoteUpdateReadinessSnapshot, LanRemoteUpdateRequestPacket,
         LanRemoteUpdateStatusSnapshot, LanSyncPacket, LanSyncRuntime,
@@ -4622,6 +5018,7 @@ mod tests {
         LanUsageSyncRequestPacket, LAN_PEER_STALE_AFTER_MS, LAN_SYNC_AUTH_NODE_ID_HEADER,
         LAN_SYNC_AUTH_SECRET_HEADER,
     };
+    use crate::lan_sync::remote_update::LanRemoteUpdateTimelineEntry;
     use crate::orchestrator::store::{LanEditSyncEvent, UsageRequestSyncRow};
     use axum::body::to_bytes;
     use axum::extract::{Json, State};
@@ -4654,72 +5051,30 @@ mod tests {
         (tmp, state)
     }
 
-    fn remote_update_env_lock() -> &'static parking_lot::Mutex<()> {
-        static LOCK: std::sync::OnceLock<parking_lot::Mutex<()>> = std::sync::OnceLock::new();
-        LOCK.get_or_init(|| parking_lot::Mutex::new(()))
+    struct RemoteUpdateEnvGuard {
+        previous_user_data_dir: Option<std::path::PathBuf>,
+        previous_repo_root: Option<std::path::PathBuf>,
     }
 
-    struct RemoteUpdateUserDataDirGuard {
-        _lock: parking_lot::MutexGuard<'static, ()>,
-        previous: Option<std::ffi::OsString>,
-    }
-
-    impl Drop for RemoteUpdateUserDataDirGuard {
+    impl Drop for RemoteUpdateEnvGuard {
         fn drop(&mut self) {
-            match self.previous.as_ref() {
-                Some(value) => unsafe {
-                    std::env::set_var("API_ROUTER_USER_DATA_DIR", value);
-                },
-                None => unsafe {
-                    std::env::remove_var("API_ROUTER_USER_DATA_DIR");
-                },
-            }
+            super::remote_update::set_test_repo_root_override(self.previous_repo_root.as_deref());
+            super::remote_update::set_test_user_data_dir_override(
+                self.previous_user_data_dir.as_deref(),
+            );
         }
     }
 
-    fn set_remote_update_user_data_dir_for_test(
-        user_data_dir: &std::path::Path,
-    ) -> RemoteUpdateUserDataDirGuard {
-        let lock = remote_update_env_lock().lock();
-        let previous = std::env::var_os("API_ROUTER_USER_DATA_DIR");
-        unsafe {
-            std::env::set_var("API_ROUTER_USER_DATA_DIR", user_data_dir);
-        }
-        RemoteUpdateUserDataDirGuard {
-            _lock: lock,
-            previous,
-        }
-    }
-
-    struct RemoteUpdateRepoRootGuard {
-        _lock: parking_lot::MutexGuard<'static, ()>,
-        previous: Option<std::ffi::OsString>,
-    }
-
-    impl Drop for RemoteUpdateRepoRootGuard {
-        fn drop(&mut self) {
-            match self.previous.as_ref() {
-                Some(value) => unsafe {
-                    std::env::set_var("API_ROUTER_REPO_ROOT", value);
-                },
-                None => unsafe {
-                    std::env::remove_var("API_ROUTER_REPO_ROOT");
-                },
-            }
-        }
-    }
-
-    fn set_remote_update_repo_root_for_test(
-        repo_root: &std::path::Path,
-    ) -> RemoteUpdateRepoRootGuard {
-        let lock = remote_update_env_lock().lock();
-        let previous = std::env::var_os("API_ROUTER_REPO_ROOT");
-        unsafe {
-            std::env::set_var("API_ROUTER_REPO_ROOT", repo_root);
-        }
-        RemoteUpdateRepoRootGuard {
-            _lock: lock,
-            previous,
+    fn set_remote_update_env_for_test(
+        user_data_dir: Option<&std::path::Path>,
+        repo_root: Option<&std::path::Path>,
+    ) -> RemoteUpdateEnvGuard {
+        let previous_user_data_dir =
+            super::remote_update::set_test_user_data_dir_override(user_data_dir);
+        let previous_repo_root = super::remote_update::set_test_repo_root_override(repo_root);
+        RemoteUpdateEnvGuard {
+            previous_user_data_dir,
+            previous_repo_root,
         }
     }
 
@@ -4803,10 +5158,48 @@ mod tests {
     }
 
     #[test]
+    fn protected_edit_sync_hint_roundtrips_over_wire_format() {
+        let (_tmp, state) = build_test_state();
+        let packet = LanSyncPacket::EditSyncHint(LanEditSyncHintPacket {
+            version: 1,
+            node_id: "node-remote".to_string(),
+            sent_at_unix_ms: 1234,
+        });
+
+        let bytes = serialize_wire_packet(&state.gateway, &packet).expect("serialize wire packet");
+        let decoded = deserialize_wire_packet(&state.gateway, &bytes).expect("decode wire packet");
+        match decoded {
+            LanSyncPacket::EditSyncHint(inner) => {
+                assert_eq!(inner.node_id, "node-remote");
+                assert_eq!(inner.sent_at_unix_ms, 1234);
+            }
+            other => panic!("unexpected packet: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn immediate_edit_sync_hints_only_usage_history_events() {
+        assert!(should_request_immediate_edit_sync(
+            super::LAN_EDIT_ENTITY_PROVIDER_PRICING
+        ));
+        assert!(should_request_immediate_edit_sync(
+            super::LAN_EDIT_ENTITY_QUOTA_SNAPSHOT
+        ));
+        assert!(should_request_immediate_edit_sync(
+            super::LAN_EDIT_ENTITY_TRACKED_SPEND_DAY
+        ));
+        assert!(should_request_immediate_edit_sync(
+            super::LAN_EDIT_ENTITY_TRACKED_SPEND_DAY_HISTORY_DELETE
+        ));
+        assert!(!should_request_immediate_edit_sync(
+            super::LAN_EDIT_ENTITY_PROVIDER_DEFINITION
+        ));
+    }
+
+    #[test]
     fn compute_local_remote_update_readiness_ignores_stale_remote_update_after_build_changes() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let user_data_dir = tmp.path().join("user-data");
-        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
         let repo_root = tmp.path().join("repo");
         std::fs::create_dir_all(&repo_root).expect("create repo root");
         std::fs::write(
@@ -4820,7 +5213,7 @@ mod tests {
             .output()
             .expect("git init");
         std::fs::write(repo_root.join("dirty.txt"), "dirty\n").expect("write dirty file");
-        let _repo_guard = set_remote_update_repo_root_for_test(&repo_root);
+        let _guard = set_remote_update_env_for_test(Some(&user_data_dir), Some(&repo_root));
         super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
             state: "running".to_string(),
             target_ref: "abc123".to_string(),
@@ -4832,6 +5225,7 @@ mod tests {
                 "src-tauri/src/lan_sync/remote_update/lan-remote-update.ps1".to_string(),
             ),
             worker_pid: None,
+            worker_exit_code: None,
             detail: Some("Remote self-update worker started".to_string()),
             accepted_at_unix_ms: 1,
             started_at_unix_ms: Some(2),
@@ -4874,7 +5268,7 @@ mod tests {
             .parent()
             .expect("config parent")
             .to_path_buf();
-        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
         super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
             state: "accepted".to_string(),
             target_ref: "abc123".to_string(),
@@ -4884,6 +5278,7 @@ mod tests {
             requester_node_name: Some("Desk Prev".to_string()),
             worker_script: None,
             worker_pid: None,
+            worker_exit_code: None,
             detail: Some("Queued remote self-update worker".to_string()),
             accepted_at_unix_ms: 1,
             started_at_unix_ms: None,
@@ -4927,9 +5322,9 @@ mod tests {
         std::fs::create_dir_all(&user_data_dir).expect("create user-data dir");
         let secrets =
             crate::orchestrator::secrets::SecretStore::new(user_data_dir.join("secrets.json"));
-        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
         let status = LanRemoteUpdateStatusSnapshot {
-            state: "failed".to_string(),
+            state: "succeeded".to_string(),
             target_ref: "abc123".to_string(),
             request_id: None,
             reason_code: None,
@@ -4939,7 +5334,8 @@ mod tests {
                 "src-tauri/src/lan_sync/remote_update/lan-remote-update.ps1".to_string(),
             ),
             worker_pid: None,
-            detail: Some("git fetch failed".to_string()),
+            worker_exit_code: None,
+            detail: Some("Remote self-update completed successfully.".to_string()),
             accepted_at_unix_ms: 1,
             started_at_unix_ms: Some(2),
             finished_at_unix_ms: Some(3),
@@ -4968,7 +5364,7 @@ mod tests {
             .parent()
             .expect("config parent")
             .to_path_buf();
-        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
         let status = LanRemoteUpdateStatusSnapshot {
             state: "running".to_string(),
             target_ref: "abc123".to_string(),
@@ -4980,6 +5376,7 @@ mod tests {
                 "src-tauri/src/lan_sync/remote_update/lan-remote-update.ps1".to_string(),
             ),
             worker_pid: None,
+            worker_exit_code: None,
             detail: Some("Fetching from origin".to_string()),
             accepted_at_unix_ms: 1,
             started_at_unix_ms: Some(2),
@@ -5031,9 +5428,10 @@ mod tests {
             .detail
             .as_deref()
             .unwrap_or_default()
-            .contains("stopped after the peer changed to build"));
+            .contains("stopped after the peer build changed"));
         assert!(payload.status_file_exists);
         assert!(payload.log_file_exists);
+        assert_eq!(payload.log_tail_source, "file");
         assert!(payload
             .log_tail
             .as_deref()
@@ -5042,11 +5440,102 @@ mod tests {
     }
 
     #[test]
+    fn remote_update_debug_http_falls_back_to_status_timeline_when_log_file_is_missing() {
+        let (_tmp, state) = build_test_state();
+        let trust_secret = state
+            .secrets
+            .ensure_lan_trust_secret()
+            .expect("trust secret");
+        state
+            .secrets
+            .set_lan_node_trusted("node-remote", true)
+            .expect("trust peer");
+        let user_data_dir = state
+            .config_path
+            .parent()
+            .expect("config parent")
+            .to_path_buf();
+        let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "failed".to_string(),
+            target_ref: "abc123".to_string(),
+            request_id: None,
+            reason_code: Some("build_checked_exe".to_string()),
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some(
+                "src-tauri/src/lan_sync/remote_update/lan-remote-update.ps1".to_string(),
+            ),
+            worker_pid: Some(42),
+            worker_exit_code: None,
+            detail: Some("Building checked EXE: npm run build:root-exe:checked failed".to_string()),
+            accepted_at_unix_ms: 1,
+            started_at_unix_ms: Some(2),
+            finished_at_unix_ms: Some(4),
+            updated_at_unix_ms: 4,
+            timeline: vec![
+                LanRemoteUpdateTimelineEntry {
+                    unix_ms: 2,
+                    phase: "git_fetch".to_string(),
+                    label: "Fetching from origin".to_string(),
+                    detail: Some("Fetching from origin".to_string()),
+                    source: "worker".to_string(),
+                    state: "running".to_string(),
+                },
+                LanRemoteUpdateTimelineEntry {
+                    unix_ms: 3,
+                    phase: "build_checked_exe".to_string(),
+                    label: "Building checked EXE".to_string(),
+                    detail: Some(
+                        "Building checked EXE: npm run build:root-exe:checked failed".to_string(),
+                    ),
+                    source: "worker".to_string(),
+                    state: "failed".to_string(),
+                },
+            ],
+        };
+        super::write_lan_remote_update_status(&status).expect("write remote update status");
+
+        let response = tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(async {
+                super::lan_sync_remote_update_debug_http(
+                    State(state.gateway.clone()),
+                    lan_sync_headers("node-remote", &trust_secret),
+                    Json(LanRemoteUpdateDebugRequestPacket {
+                        version: 1,
+                        node_id: "node-remote".to_string(),
+                    }),
+                )
+                .await
+                .into_response()
+            });
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(async {
+                to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("body")
+            });
+        let payload: LanRemoteUpdateDebugResponsePacket =
+            serde_json::from_slice(&body).expect("remote update debug json");
+        assert!(payload.ok);
+        assert!(!payload.log_file_exists);
+        assert_eq!(payload.log_tail_source, "timeline");
+        let log_tail = payload.log_tail.as_deref().unwrap_or_default();
+        assert!(log_tail.contains("UTC"));
+        assert!(log_tail.contains("Building checked EXE"));
+        assert!(log_tail.contains("npm run build:root-exe:checked failed"));
+        assert!(!log_tail.contains("[3]"));
+    }
+
+    #[test]
     fn load_remote_update_status_marks_matching_pending_target_as_succeeded() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let user_data_dir = tmp.path().join("user-data");
         std::fs::create_dir_all(&user_data_dir).expect("create user-data dir");
-        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
         let target_ref = super::normalized_local_build_target_ref().expect("local target ref");
         super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
             state: "accepted".to_string(),
@@ -5057,6 +5546,7 @@ mod tests {
             requester_node_name: Some("Desk Remote".to_string()),
             worker_script: None,
             worker_pid: None,
+            worker_exit_code: None,
             detail: Some("Queued remote self-update worker".to_string()),
             accepted_at_unix_ms: 1,
             started_at_unix_ms: None,
@@ -5086,7 +5576,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let user_data_dir = tmp.path().join("user-data");
         std::fs::create_dir_all(&user_data_dir).expect("create user-data dir");
-        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
         let current_target_ref =
             super::normalized_local_build_target_ref().expect("local target ref");
         super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
@@ -5098,6 +5588,7 @@ mod tests {
             requester_node_name: Some("Desk Remote".to_string()),
             worker_script: None,
             worker_pid: None,
+            worker_exit_code: None,
             detail: Some("Queued remote self-update worker".to_string()),
             accepted_at_unix_ms: 1,
             started_at_unix_ms: None,
@@ -5118,8 +5609,9 @@ mod tests {
             "9910964e24802d327b1500a69f2d4471fb7ac647"
         );
         let detail = loaded.detail.as_deref().unwrap_or_default();
-        assert!(detail.contains("never started; peer is currently on build"));
-        assert!(detail.contains(&current_target_ref[..8]));
+        assert!(detail.contains("never started before the peer build changed"));
+        assert!(!detail.contains("currently on build"));
+        assert!(!detail.contains(&current_target_ref[..8]));
         assert!(loaded.finished_at_unix_ms.is_some());
     }
 
@@ -5128,7 +5620,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let user_data_dir = tmp.path().join("user-data");
         std::fs::create_dir_all(&user_data_dir).expect("create user-data dir");
-        let _guard = set_remote_update_user_data_dir_for_test(&user_data_dir);
+        let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
         let fresh_unix_ms = crate::orchestrator::store::unix_ms();
         super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
             state: "accepted".to_string(),
@@ -5141,6 +5633,7 @@ mod tests {
                 "src-tauri/src/lan_sync/remote_update/lan-remote-update.ps1".to_string(),
             ),
             worker_pid: None,
+            worker_exit_code: None,
             detail: Some("Queued remote self-update worker".to_string()),
             accepted_at_unix_ms: fresh_unix_ms,
             started_at_unix_ms: None,
@@ -5580,6 +6073,9 @@ mod tests {
                 node_name: "Desk".to_string(),
                 listen_port: 4000,
                 sent_at_unix_ms: 1,
+                sequence: 0,
+                sender_previous_gap_ms: None,
+                sender_previous_elapsed_ms: None,
                 capabilities: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
@@ -6524,6 +7020,89 @@ mod tests {
     }
 
     #[test]
+    fn recent_peer_lookup_keeps_recently_stale_peer_for_http_grace_window() {
+        let runtime = LanSyncRuntime::new(LanNodeIdentity {
+            node_id: "node-self".to_string(),
+            node_name: "self".to_string(),
+        });
+        let now = crate::orchestrator::store::unix_ms();
+        runtime.peers.write().insert(
+            "peer-recent".to_string(),
+            super::LanPeerRuntime {
+                node_id: "peer-recent".to_string(),
+                node_name: "Peer Recent".to_string(),
+                listen_addr: "192.168.1.12:4000".to_string(),
+                last_heartbeat_unix_ms: now.saturating_sub(LAN_PEER_STALE_AFTER_MS + 1),
+                capabilities: super::lan_heartbeat_capabilities(),
+                build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
+                remote_update_status: None,
+                sync_contracts: std::collections::BTreeMap::new(),
+                provider_fingerprints: vec![],
+                provider_definitions_revision: String::new(),
+                followed_source_node_id: None,
+            },
+        );
+
+        let recent = runtime
+            .recent_peer_by_node_id("peer-recent", super::LAN_PEER_HTTP_GRACE_AFTER_MS)
+            .expect("recently stale peer should still be reachable for HTTP grace");
+        assert_eq!(recent.node_id, "peer-recent");
+        assert_eq!(recent.listen_addr, "192.168.1.12:4000");
+        assert!(peer_is_stale(
+            recent.last_heartbeat_unix_ms,
+            crate::orchestrator::store::unix_ms()
+        ));
+    }
+
+    #[test]
+    fn recently_stale_peers_lists_recent_offline_peer_without_readding_live_peer() {
+        let runtime = LanSyncRuntime::new(LanNodeIdentity {
+            node_id: "node-self".to_string(),
+            node_name: "self".to_string(),
+        });
+        let now = crate::orchestrator::store::unix_ms();
+        runtime.peers.write().insert(
+            "peer-recent".to_string(),
+            super::LanPeerRuntime {
+                node_id: "peer-recent".to_string(),
+                node_name: "Peer Recent".to_string(),
+                listen_addr: "192.168.1.12:4000".to_string(),
+                last_heartbeat_unix_ms: now.saturating_sub(super::LAN_PEER_STALE_AFTER_MS + 1),
+                capabilities: super::lan_heartbeat_capabilities(),
+                build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
+                remote_update_status: None,
+                sync_contracts: super::local_sync_contracts(),
+                provider_fingerprints: vec![],
+                provider_definitions_revision: String::new(),
+                followed_source_node_id: None,
+            },
+        );
+        runtime.peers.write().insert(
+            "peer-live".to_string(),
+            super::LanPeerRuntime {
+                node_id: "peer-live".to_string(),
+                node_name: "Peer Live".to_string(),
+                listen_addr: "192.168.1.13:4000".to_string(),
+                last_heartbeat_unix_ms: now,
+                capabilities: super::lan_heartbeat_capabilities(),
+                build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
+                remote_update_status: None,
+                sync_contracts: super::local_sync_contracts(),
+                provider_fingerprints: vec![],
+                provider_definitions_revision: String::new(),
+                followed_source_node_id: None,
+            },
+        );
+
+        let peers = runtime.recently_stale_peers(super::LAN_PEER_HTTP_GRACE_AFTER_MS);
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].node_id, "peer-recent");
+    }
+
+    #[test]
     fn snapshot_tracks_last_peer_heartbeat_for_diagnostics() {
         let runtime = LanSyncRuntime::new(LanNodeIdentity {
             node_id: "node-self".to_string(),
@@ -6552,6 +7131,9 @@ mod tests {
                 node_name: "peer".to_string(),
                 listen_port: 4000,
                 sent_at_unix_ms: 1000,
+                sequence: 0,
+                sender_previous_gap_ms: None,
+                sender_previous_elapsed_ms: None,
                 capabilities: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
@@ -6569,6 +7151,47 @@ mod tests {
         assert_eq!(
             snapshot.last_peer_heartbeat_source.as_deref(),
             Some("192.168.1.50:4000")
+        );
+    }
+
+    #[test]
+    fn lan_peer_diagnostics_log_is_capped_to_recent_entries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let user_data_dir = tmp.path().join("user-data");
+        let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
+
+        for index in 0..256 {
+            super::append_lan_peer_diagnostics_log(&format!(
+                "diagnostic entry {index:03} {}",
+                "x".repeat(512)
+            ));
+        }
+
+        let log_path =
+            super::lan_peer_diagnostics_log_path().expect("diagnostics log path should exist");
+        let bytes = std::fs::read(&log_path).expect("read diagnostics log");
+        assert!(bytes.len() <= super::LAN_PEER_DIAGNOSTICS_LOG_MAX_BYTES);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("diagnostic entry 255"));
+        assert!(!text.contains("diagnostic entry 000"));
+    }
+
+    #[test]
+    fn heartbeat_sender_delay_stays_quiet_without_previous_success() {
+        assert_eq!(super::heartbeat_sender_delay_ms(None, 10_000), None);
+    }
+
+    #[test]
+    fn heartbeat_sender_delay_uses_strict_threshold_boundary() {
+        let threshold = super::LAN_HEARTBEAT_SENDER_DELAY_LOG_THRESHOLD_MS;
+        assert_eq!(super::heartbeat_sender_delay_ms(Some(10_000), 10_000), None);
+        assert_eq!(
+            super::heartbeat_sender_delay_ms(Some(10_000), 10_000 + threshold),
+            None
+        );
+        assert_eq!(
+            super::heartbeat_sender_delay_ms(Some(10_000), 10_000 + threshold + 1),
+            Some(threshold + 1)
         );
     }
 
@@ -6814,6 +7437,9 @@ mod tests {
                 node_name: "Peer Fresh".to_string(),
                 listen_port: 4000,
                 sent_at_unix_ms: 1,
+                sequence: 0,
+                sender_previous_gap_ms: None,
+                sender_previous_elapsed_ms: None,
                 capabilities: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
@@ -6903,6 +7529,74 @@ mod tests {
     fn peer_stale_boundary_matches_timeout() {
         assert!(!peer_is_stale(10_000, 10_000 + LAN_PEER_STALE_AFTER_MS));
         assert!(peer_is_stale(10_000, 10_000 + LAN_PEER_STALE_AFTER_MS + 1));
+    }
+
+    #[test]
+    fn peer_stale_timeout_tolerates_transient_windows_heartbeat_gaps() {
+        // Regression guard: LAN diagnostics showed the same peer being pruned after 7-10s
+        // heartbeat gaps, then immediately rediscovered from the same listen address.
+        assert!(super::LAN_PEER_STALE_AFTER_MS >= super::LAN_HEARTBEAT_INTERVAL_MS * 10);
+        assert!(!peer_is_stale(10_000, 20_000));
+    }
+
+    #[test]
+    fn heartbeat_delivery_targets_include_known_peer_unicast_ips() {
+        let runtime = LanSyncRuntime::new(LanNodeIdentity {
+            node_id: "node-self".to_string(),
+            node_name: "self".to_string(),
+        });
+        let now = crate::orchestrator::store::unix_ms();
+        runtime.peers.write().insert(
+            "node-live".to_string(),
+            super::LanPeerRuntime {
+                node_id: "node-live".to_string(),
+                node_name: "peer-live".to_string(),
+                listen_addr: "192.168.1.50:4000".to_string(),
+                last_heartbeat_unix_ms: now,
+                capabilities: super::lan_heartbeat_capabilities(),
+                build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
+                remote_update_status: None,
+                sync_contracts: super::local_sync_contracts(),
+                provider_fingerprints: vec![],
+                provider_definitions_revision: String::new(),
+                followed_source_node_id: None,
+            },
+        );
+        runtime.peers.write().insert(
+            "node-stale".to_string(),
+            super::LanPeerRuntime {
+                node_id: "node-stale".to_string(),
+                node_name: "peer-stale".to_string(),
+                listen_addr: "192.168.1.51:4000".to_string(),
+                last_heartbeat_unix_ms: now.saturating_sub(super::LAN_PEER_STALE_AFTER_MS + 1),
+                capabilities: super::lan_heartbeat_capabilities(),
+                build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
+                remote_update_status: None,
+                sync_contracts: super::local_sync_contracts(),
+                provider_fingerprints: vec![],
+                provider_definitions_revision: String::new(),
+                followed_source_node_id: None,
+            },
+        );
+
+        let targets = runtime.heartbeat_delivery_targets(now);
+
+        assert!(targets.contains(&std::net::SocketAddr::from((
+            std::net::Ipv4Addr::BROADCAST,
+            super::LAN_DISCOVERY_PORT
+        ))));
+        assert!(targets.contains(
+            &format!("192.168.1.50:{}", super::LAN_DISCOVERY_PORT)
+                .parse()
+                .expect("live unicast target")
+        ));
+        assert!(!targets.contains(
+            &format!("192.168.1.51:{}", super::LAN_DISCOVERY_PORT)
+                .parse()
+                .expect("stale unicast target")
+        ));
     }
 
     #[test]
@@ -7296,6 +7990,8 @@ mod tests {
             "tracked_spend_usd": 17.4690825,
             "last_seen_daily_spent_usd": 17.4690825
         });
+        let expected_day_key =
+            super::tracked_spend_history_day_key_for_debug(&local_row).expect("local day key");
         state
             .gateway
             .store
@@ -7364,7 +8060,7 @@ mod tests {
             "usage.tracked_spend_history_entries_removed",
             "tracked spend history entries removed",
             serde_json::json!({
-                "day_key": "2026-04-01",
+                "day_key": expected_day_key,
                 "removed": 2
             }),
         );
@@ -7376,8 +8072,7 @@ mod tests {
                 version: 1,
                 node_id: "node-remote".to_string(),
                 provider: "provider_1".to_string(),
-                day_key: super::tracked_spend_history_day_key_for_debug(&local_row)
-                    .expect("local day key"),
+                day_key: expected_day_key.clone(),
                 limit: 20,
             }),
         )
@@ -7390,8 +8085,6 @@ mod tests {
             .expect("debug body");
         let payload: LanTrackedSpendHistoryDebugResponsePacket =
             serde_json::from_slice(&body).expect("debug json");
-        let expected_day_key =
-            super::tracked_spend_history_day_key_for_debug(&local_row).expect("local day key");
         assert_eq!(payload.provider, "provider_1");
         assert_eq!(payload.day_key, expected_day_key);
         assert_eq!(payload.local_rows.len(), 1);

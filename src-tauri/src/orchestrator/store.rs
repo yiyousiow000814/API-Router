@@ -2674,6 +2674,63 @@ impl Store {
         })
     }
 
+    pub fn summarize_usage_requests_since_by_provider(
+        &self,
+        provider: &str,
+        since_unix_ms: u64,
+    ) -> (u64, u64) {
+        let provider = provider.trim().to_ascii_lowercase();
+        if provider.is_empty() {
+            return (0, 0);
+        }
+        let Some(since_dt) = Local.timestamp_millis_opt(since_unix_ms as i64).single() else {
+            return (0, 0);
+        };
+        let since_day_key = since_dt.format("%Y-%m-%d").to_string();
+        let since_i64 = i64::try_from(since_unix_ms).unwrap_or(i64::MAX);
+        self.with_events_read_conn(|conn| {
+            let aggregate = conn
+                .query_row(
+                    "SELECT
+                        COALESCE(SUM(request_count), 0),
+                        COALESCE(SUM(total_tokens), 0)
+                     FROM usage_request_day_provider_totals
+                     WHERE lower(provider) = ?1
+                       AND day_key > ?2",
+                    params![provider, since_day_key],
+                    |row| {
+                        Ok((
+                            u64::try_from(row.get::<_, i64>(0)?).unwrap_or(0),
+                            u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+                        ))
+                    },
+                )
+                .unwrap_or((0, 0));
+            let partial = conn
+                .query_row(
+                    "SELECT
+                        COUNT(*),
+                        COALESCE(SUM(total_tokens), 0)
+                     FROM usage_requests
+                     WHERE lower(provider) = ?1
+                       AND unix_ms >= ?2
+                       AND strftime('%Y-%m-%d', unix_ms / 1000, 'unixepoch', 'localtime') = ?3",
+                    params![provider, since_i64, since_day_key],
+                    |row| {
+                        Ok((
+                            u64::try_from(row.get::<_, i64>(0)?).unwrap_or(0),
+                            u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0),
+                        ))
+                    },
+                )
+                .unwrap_or((0, 0));
+            (
+                aggregate.0.saturating_add(partial.0),
+                aggregate.1.saturating_add(partial.1),
+            )
+        })
+    }
+
     pub fn list_usage_request_daily_totals(
         &self,
         day_limit: usize,

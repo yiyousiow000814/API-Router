@@ -38,7 +38,7 @@ write_remote_update_log() {
   local log_path
   log_path="$(remote_update_log_path)" || return 0
   mkdir -p "$(dirname "${log_path}")"
-  printf '[%s] %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "${message}" >>"${log_path}"
+  printf '[%s] %s\n' "$(date -u '+%d-%m-%Y %H:%M:%S UTC')" "${message}" >>"${log_path}"
 }
 
 step_detail() {
@@ -49,6 +49,24 @@ step_detail() {
     return 0
   fi
   printf '%s' "${label}"
+}
+
+format_command_output_summary() {
+  local output="${1:-}"
+  if [[ -z "${output}" ]]; then
+    return 0
+  fi
+  printf '%s' "${output}" | tr '\r\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^ //; s/ $//' | tail -c 800
+}
+
+write_command_output_log() {
+  local output="${1:-}"
+  if [[ -z "${output}" ]]; then
+    return 0
+  fi
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] && write_remote_update_log "${line}"
+  done <<<"${output}"
 }
 
 write_remote_update_status() {
@@ -200,6 +218,27 @@ PY
   exit 1
 }
 
+run_remote_update_command() {
+  local failure_message="$1"
+  shift
+  local output
+  set +e
+  output="$("$@" 2>&1)"
+  local exit_code=$?
+  set -e
+  write_command_output_log "${output}"
+  if [[ ${exit_code} -ne 0 ]]; then
+    local summary
+    summary="$(format_command_output_summary "${output}")"
+    if [[ -n "${summary}" ]]; then
+      LAST_REMOTE_UPDATE_ERROR="${failure_message}. Output: ${summary}"
+    else
+      LAST_REMOTE_UPDATE_ERROR="${failure_message}"
+    fi
+    fail_remote_update "${LAST_REMOTE_UPDATE_ERROR}" "failed" "${CURRENT_STEP:-Preparing worker} failed"
+  fi
+}
+
 sleep 1
 
 STARTED_AT="$(python - <<'PY'
@@ -216,8 +255,25 @@ trap 'fail_remote_update "${LAST_REMOTE_UPDATE_ERROR:-Remote self-update failed.
 CURRENT_STEP="Checking git worktree"
 write_remote_update_log "${CURRENT_STEP}"
 write_remote_update_status "running" "${TARGET_REF}" "$(step_detail "${CURRENT_STEP}")" "git_status" "Checking git worktree" "worker" "${STARTED_AT}" "null"
-if [[ -n "$(git status --porcelain=v1)" ]]; then
+set +e
+GIT_STATUS_OUTPUT="$(git status --porcelain=v1 2>&1)"
+GIT_STATUS_EXIT=$?
+set -e
+write_command_output_log "${GIT_STATUS_OUTPUT}"
+if [[ ${GIT_STATUS_EXIT} -ne 0 ]]; then
+  LAST_REMOTE_UPDATE_ERROR="git status failed"
+  GIT_STATUS_SUMMARY="$(format_command_output_summary "${GIT_STATUS_OUTPUT}")"
+  if [[ -n "${GIT_STATUS_SUMMARY}" ]]; then
+    LAST_REMOTE_UPDATE_ERROR="${LAST_REMOTE_UPDATE_ERROR}. Output: ${GIT_STATUS_SUMMARY}"
+  fi
+  fail_remote_update "${LAST_REMOTE_UPDATE_ERROR}" "git_status" "Checking git worktree failed"
+fi
+if [[ -n "${GIT_STATUS_OUTPUT}" ]]; then
+  GIT_STATUS_SUMMARY="$(format_command_output_summary "${GIT_STATUS_OUTPUT}")"
   LAST_REMOTE_UPDATE_ERROR="worktree is dirty; refusing remote self-update"
+  if [[ -n "${GIT_STATUS_SUMMARY}" ]]; then
+    LAST_REMOTE_UPDATE_ERROR="${LAST_REMOTE_UPDATE_ERROR}. Pending changes: ${GIT_STATUS_SUMMARY}"
+  fi
   echo "${LAST_REMOTE_UPDATE_ERROR}" >&2
   fail_remote_update "${LAST_REMOTE_UPDATE_ERROR}" "git_status" "Checking git worktree failed"
 fi
@@ -225,7 +281,7 @@ fi
 CURRENT_STEP="Fetching from origin"
 write_remote_update_log "${CURRENT_STEP}"
 write_remote_update_status "running" "${TARGET_REF}" "$(step_detail "${CURRENT_STEP}")" "git_fetch" "Fetching from origin" "worker" "${STARTED_AT}" "null"
-git fetch origin --prune --tags
+run_remote_update_command "git fetch failed" git fetch origin --prune
 
 CURRENT_STEP="Resolving target ref"
 write_remote_update_log "${CURRENT_STEP}: ${TARGET_REF}"
@@ -234,31 +290,31 @@ if git rev-parse --verify "refs/heads/${TARGET_REF}" >/dev/null 2>&1; then
   CURRENT_STEP="Checking out local branch"
   write_remote_update_log "${CURRENT_STEP}: ${TARGET_REF}"
   write_remote_update_status "running" "${TARGET_REF}" "$(step_detail "${CURRENT_STEP}" "${TARGET_REF}")" "checkout_local_branch" "Checking out local branch" "worker" "${STARTED_AT}" "null"
-  git checkout "${TARGET_REF}"
+  run_remote_update_command "git checkout failed: ${TARGET_REF}" git checkout "${TARGET_REF}"
   CURRENT_STEP="Pulling latest branch"
   write_remote_update_log "${CURRENT_STEP}: ${TARGET_REF}"
   write_remote_update_status "running" "${TARGET_REF}" "$(step_detail "${CURRENT_STEP}" "${TARGET_REF}")" "pull_branch" "Pulling latest branch" "worker" "${STARTED_AT}" "null"
-  git pull --ff-only origin "${TARGET_REF}"
+  run_remote_update_command "git pull failed: ${TARGET_REF}" git pull --ff-only origin "${TARGET_REF}"
 elif git rev-parse --verify "refs/remotes/origin/${TARGET_REF}" >/dev/null 2>&1; then
   CURRENT_STEP="Checking out remote branch"
   write_remote_update_log "${CURRENT_STEP}: ${TARGET_REF}"
   write_remote_update_status "running" "${TARGET_REF}" "$(step_detail "${CURRENT_STEP}" "${TARGET_REF}")" "checkout_remote_branch" "Checking out remote branch" "worker" "${STARTED_AT}" "null"
-  git checkout -B "${TARGET_REF}" "refs/remotes/origin/${TARGET_REF}"
+  run_remote_update_command "git checkout -B failed: ${TARGET_REF}" git checkout -B "${TARGET_REF}" "refs/remotes/origin/${TARGET_REF}"
 elif git rev-parse --verify "${TARGET_REF}" >/dev/null 2>&1; then
   CURRENT_STEP="Checking out commit"
   write_remote_update_log "${CURRENT_STEP}: ${TARGET_REF}"
   write_remote_update_status "running" "${TARGET_REF}" "$(step_detail "${CURRENT_STEP}" "${TARGET_REF}")" "checkout_commit" "Checking out commit" "worker" "${STARTED_AT}" "null"
-  git checkout --detach "${TARGET_REF}"
+  run_remote_update_command "git checkout --detach failed: ${TARGET_REF}" git checkout --detach "${TARGET_REF}"
 else
   LAST_REMOTE_UPDATE_ERROR="cannot resolve git ref: ${TARGET_REF}"
   echo "${LAST_REMOTE_UPDATE_ERROR}" >&2
   fail_remote_update "${LAST_REMOTE_UPDATE_ERROR}" "resolve_target" "Resolving target ref failed"
 fi
 
-CURRENT_STEP="Building checked EXE"
-write_remote_update_log "${CURRENT_STEP}: npm run build:root-exe:checked"
-write_remote_update_status "running" "${TARGET_REF}" "$(step_detail "${CURRENT_STEP}" "Running npm run build:root-exe:checked")" "build_checked_exe" "Building checked EXE" "worker" "${STARTED_AT}" "null"
-npm run build:root-exe:checked
+CURRENT_STEP="Building EXE"
+write_remote_update_log "${CURRENT_STEP}: npm run build:root-exe"
+write_remote_update_status "running" "${TARGET_REF}" "$(step_detail "${CURRENT_STEP}" "Running npm run build:root-exe")" "build_exe" "Building EXE" "worker" "${STARTED_AT}" "null"
+run_remote_update_command "npm run build:root-exe failed" npm run build:root-exe
 FINISHED_AT="$(python - <<'PY'
 import time
 print(int(time.time() * 1000))

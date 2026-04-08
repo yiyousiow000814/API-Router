@@ -42,6 +42,7 @@ struct ConfigSourceSnapshot {
     node_id: String,
     node_name: String,
     active: bool,
+    online: bool,
     trusted: bool,
     pair_state: Option<String>,
     pair_request_id: Option<String>,
@@ -79,6 +80,7 @@ fn offline_followed_config_source_snapshot(
         node_id: node_id.to_string(),
         node_name,
         active: true,
+        online: false,
         trusted: true,
         pair_state: Some("trusted".to_string()),
         pair_request_id: None,
@@ -255,6 +257,7 @@ pub(crate) fn set_manual_override(
 
 #[tauri::command]
 pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value {
+    crate::lan_sync::reconcile_remote_update_terminal_event(&state.gateway);
     let cfg = state.gateway.cfg.read().clone();
     let pricing = state.secrets.list_provider_pricing();
     let quota_hard_caps = state.secrets.list_provider_quota_hard_cap();
@@ -363,6 +366,7 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
         node_id: lan_snapshot.local_node.node_id.clone(),
         node_name: lan_snapshot.local_node.node_name.clone(),
         active: followed_source_node_id.is_none(),
+        online: true,
         trusted: true,
         pair_state: Some("trusted".to_string()),
         pair_request_id: None,
@@ -387,6 +391,7 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
             node_id: peer.node_id.clone(),
             node_name: peer.node_name.clone(),
             active: followed_source_node_id.as_deref() == Some(peer.node_id.as_str()),
+            online: true,
             trusted: peer.trusted,
             pair_state: peer.pair_state.clone(),
             pair_request_id: peer.pair_request_id.clone(),
@@ -434,6 +439,54 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
             },
         }
     }))
+    .chain(
+        state
+            .lan_sync
+            .recently_stale_peers(crate::lan_sync::LAN_PEER_HTTP_GRACE_AFTER_MS)
+            .into_iter()
+            .filter(|peer| {
+                !lan_snapshot
+                    .peers
+                    .iter()
+                    .any(|live_peer| live_peer.node_id == peer.node_id)
+            })
+            .map(|peer| {
+                let version_sync_reason = crate::lan_sync::peer_version_sync_reason(&peer);
+                ConfigSourceSnapshot {
+                    kind: "peer",
+                    node_id: peer.node_id.clone(),
+                    node_name: peer.node_name.clone(),
+                    active: followed_source_node_id.as_deref() == Some(peer.node_id.as_str()),
+                    online: false,
+                    trusted: peer.trusted,
+                    pair_state: peer.pair_state.clone(),
+                    pair_request_id: peer.pair_request_id.clone(),
+                    follow_allowed: false,
+                    follow_blocked_reason: Some(
+                        "that node was seen recently but is currently offline; wait for it to reappear before following or pairing".to_string(),
+                    ),
+                    using_count: usize::from(
+                        followed_source_node_id.as_deref() == Some(peer.node_id.as_str())
+                    ) + lan_snapshot
+                        .peers
+                        .iter()
+                        .filter(|other| {
+                            other.followed_source_node_id.as_deref() == Some(peer.node_id.as_str())
+                        })
+                        .count(),
+                    build_identity: Some(peer.build_identity.clone()),
+                    build_matches_local: peer.build_matches_local,
+                    remote_update_status: peer.remote_update_status.clone(),
+                    sync_blocked_domains: peer.sync_blocked_domains.clone(),
+                    version_sync_required: version_sync_reason.is_some(),
+                    version_sync_reason,
+                    same_version_update_allowed: false,
+                    same_version_update_blocked_reason: Some(
+                        "that node is currently offline; wait for a fresh LAN heartbeat before syncing versions".to_string(),
+                    ),
+                }
+            }),
+    )
     .collect::<Vec<_>>();
     if let Some(followed_node_id) = followed_source_node_id.as_deref() {
         let followed_peer_is_live = lan_snapshot
