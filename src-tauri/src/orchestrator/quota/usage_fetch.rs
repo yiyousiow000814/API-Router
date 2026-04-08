@@ -152,153 +152,27 @@ async fn fetch_token_stats_any(
     out
 }
 
-fn apply_packycode_budget_payload(
-    out: &mut QuotaSnapshot,
-    root: &Value,
-    base: &str,
-    now_ms: u64,
-) -> Result<(), String> {
-    if root.get("daily_spent_usd").is_none()
-        && root.get("monthly_spent_usd").is_none()
-        && root.get("weekly_spent_usd").is_none()
-        && root.get("weekly_spent").is_none()
-    {
-        return Err(format!("unexpected response from {base}"));
-    }
-
-    out.daily_spent_usd = as_f64(root.get("daily_spent_usd"));
-    out.daily_budget_usd = as_f64(root.get("daily_budget_usd"));
-    out.weekly_spent_usd =
-        as_f64(root.get("weekly_spent_usd")).or_else(|| as_f64(root.get("weekly_spent")));
-    out.weekly_budget_usd =
-        as_f64(root.get("weekly_budget_usd")).or_else(|| as_f64(root.get("weekly_budget")));
-    out.monthly_spent_usd = as_f64(root.get("monthly_spent_usd"));
-    out.monthly_budget_usd = as_f64(root.get("monthly_budget_usd"));
-    out.remaining = as_f64(root.get("remaining_quota"));
-    out.effective_usage_base = Some(base.to_string());
-    out.effective_usage_source = Some("usage_base".to_string());
-    out.updated_at_unix_ms = now_ms;
-    out.last_error.clear();
-    Ok(())
+fn snapshot_from_canonical_usage(usage: CanonicalProviderUsage) -> QuotaSnapshot {
+    QuotaSnapshot::from_canonical(usage)
 }
 
-fn apply_explicit_usage_endpoint_payload(
-    out: &mut QuotaSnapshot,
+fn map_snapshot_from_usage_payload(
     root: &Value,
-    endpoint_url: &str,
+    mapping: &CanonicalUsageMapping,
+    effective_usage_base: &str,
+    effective_usage_source: &str,
     now_ms: u64,
-) -> Result<(), String> {
-    let normalize_money = |value: Option<f64>| {
-        if endpoint_url
-            .trim_end_matches('/')
-            .to_ascii_lowercase()
-            .ends_with("/user/api/v1/me")
-        {
-            value.map(|amount| amount / 100.0)
-        } else {
-            value
-        }
-    };
-    let daily_budget_usd = root
-        .pointer("/quota/daily_quota")
-        .and_then(|value| as_f64(Some(value)))
-        .or_else(|| {
-            root.pointer("/daily_quota")
-                .and_then(|value| as_f64(Some(value)))
-        })
-        .or_else(|| {
-            root.pointer("/daily_budget_usd")
-                .and_then(|value| as_f64(Some(value)))
-        })
-        .or_else(|| {
-            root.pointer("/daily_limit_usd")
-                .and_then(|value| as_f64(Some(value)))
-        })
-        .or_else(|| {
-            root.pointer("/subscription/daily_limit_usd")
-                .and_then(|value| as_f64(Some(value)))
-        });
-    let usage_today_cost = root
-        .pointer("/usage/today/actual_cost")
-        .and_then(|value| as_f64(Some(value)))
-        .or_else(|| {
-            root.pointer("/usage/today/cost")
-                .and_then(|value| as_f64(Some(value)))
-        });
-    let daily_spent_usd = usage_today_cost.or_else(|| {
-        root.pointer("/quota/daily_spent")
-        .and_then(|value| as_f64(Some(value)))
-        .or_else(|| {
-            root.pointer("/quota/daily_total_spent")
-                .and_then(|value| as_f64(Some(value)))
-        })
-        .or_else(|| {
-            root.pointer("/usage/daily_spent")
-                .and_then(|value| as_f64(Some(value)))
-        })
-        .or_else(|| {
-            root.pointer("/usage/daily_total_spent")
-                .and_then(|value| as_f64(Some(value)))
-        })
-        .or_else(|| {
-            root.pointer("/daily_spent_usd")
-                .and_then(|value| as_f64(Some(value)))
-        })
-        .or_else(|| {
-            root.pointer("/daily_usage_usd")
-                .and_then(|value| as_f64(Some(value)))
-        })
-        .or_else(|| {
-            root.pointer("/subscription/daily_usage_usd")
-                .and_then(|value| as_f64(Some(value)))
-        })
-    });
-    let remaining = root
-        .pointer("/quota/daily_remaining")
-        .and_then(|value| as_f64(Some(value)))
-        .or_else(|| {
-            root.pointer("/remaining")
-                .and_then(|value| as_f64(Some(value)))
-        })
-        .or_else(|| {
-            root.pointer("/remaining_quota")
-                .and_then(|value| as_f64(Some(value)))
-        })
-        .or_else(|| {
-            root.pointer("/balance")
-                .and_then(|value| as_f64(Some(value)))
-        });
-    let package_expires_at_unix_ms = root
-        .pointer("/timestamps/expires_at")
-        .and_then(|value| parse_unix_ms_from_value(Some(value)))
-        .or_else(|| parse_unix_ms_from_value(root.pointer("/expires_at")))
-        .or_else(|| parse_unix_ms_from_value(root.pointer("/subscription/expires_at")));
-    if daily_budget_usd.is_none()
-        && daily_spent_usd.is_none()
-        && remaining.is_none()
-        && package_expires_at_unix_ms.is_none()
-    {
-        return Err(format!("unexpected response from {endpoint_url}"));
-    }
-
-    let daily_budget_usd = normalize_money(daily_budget_usd);
-    let daily_spent_usd = normalize_money(daily_spent_usd);
-    let remaining = normalize_money(remaining);
-
-    out.kind = if daily_budget_usd.is_some() || daily_spent_usd.is_some() {
-        UsageKind::BudgetInfo
-    } else {
-        UsageKind::BalanceInfo
-    };
-    out.remaining = remaining;
-    out.daily_budget_usd = daily_budget_usd;
-    out.daily_spent_usd = daily_spent_usd;
-    out.package_expires_at_unix_ms = package_expires_at_unix_ms;
-    out.effective_usage_base = Some(endpoint_url.to_string());
-    out.effective_usage_source = Some("usage_base".to_string());
-    out.updated_at_unix_ms = now_ms;
-    out.last_error.clear();
-    Ok(())
+) -> Option<QuotaSnapshot> {
+    map_canonical_usage(
+        root,
+        mapping,
+        CanonicalUsageContext {
+            effective_usage_base: Some(effective_usage_base.to_string()),
+            effective_usage_source: Some(effective_usage_source.to_string()),
+            updated_at_unix_ms: now_ms,
+        },
+    )
+    .map(snapshot_from_canonical_usage)
 }
 
 async fn fetch_explicit_usage_endpoint_any(
@@ -372,10 +246,16 @@ async fn fetch_explicit_usage_endpoint_any(
             continue;
         }
         let root = payload.get("data").unwrap_or(&payload);
-        match apply_explicit_usage_endpoint_payload(&mut out, root, endpoint_url, response_now_ms) {
-            Ok(()) => return out,
-            Err(err) => last_err = err,
+        if let Some(snapshot) = map_snapshot_from_usage_payload(
+            root,
+            explicit_usage_mapping(endpoint_url),
+            endpoint_url,
+            "usage_base",
+            response_now_ms,
+        ) {
+            return snapshot;
         }
+        last_err = format!("unexpected response from {endpoint_url}");
     }
 
     out.last_error = if last_err.is_empty() {
@@ -516,55 +396,6 @@ fn build_codex_for_me_api_url(base: &str, endpoint: &str) -> Option<String> {
     Some(url.to_string())
 }
 
-fn parse_unix_ms_from_value(value: Option<&Value>) -> Option<u64> {
-    let value = value?;
-    if let Some(raw) = value.as_u64() {
-        return Some(if raw < 1_000_000_000_000 {
-            raw.saturating_mul(1000)
-        } else {
-            raw
-        });
-    }
-    if let Some(raw) = value.as_i64() {
-        if raw <= 0 {
-            return None;
-        }
-        let raw = raw as u64;
-        return Some(if raw < 1_000_000_000_000 {
-            raw.saturating_mul(1000)
-        } else {
-            raw
-        });
-    }
-    let text = value.as_str()?.trim();
-    if text.is_empty() {
-        return None;
-    }
-    if text.chars().all(|ch| ch.is_ascii_digit()) {
-        let raw = text.parse::<u64>().ok()?;
-        return Some(if raw < 1_000_000_000_000 {
-            raw.saturating_mul(1000)
-        } else {
-            raw
-        });
-    }
-    if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(text) {
-        let millis = ts.timestamp_millis();
-        return (millis > 0).then_some(millis as u64);
-    }
-    if let Ok(ts) = chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S") {
-        let millis = ts.and_utc().timestamp_millis();
-        return (millis > 0).then_some(millis as u64);
-    }
-    if let Ok(date) = chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d") {
-        let millis = date
-            .and_hms_opt(12, 0, 0)
-            .map(|dt| dt.and_utc().timestamp_millis())?;
-        return (millis > 0).then_some(millis as u64);
-    }
-    None
-}
-
 async fn fetch_codex_for_me_login_token(
     client: &reqwest::Client,
     base: &str,
@@ -628,46 +459,6 @@ async fn fetch_codex_for_me_summary(
         return Err(format!("http {status} from {base}"));
     }
     Ok(payload)
-}
-
-struct CodexForMeSummarySnapshot {
-    balance: Option<f64>,
-    expires_at_unix_ms: Option<u64>,
-    daily_budget_usd: Option<f64>,
-    daily_spent_usd: Option<f64>,
-    total_spent_usd: Option<f64>,
-}
-
-fn extract_codex_for_me_summary_snapshot(root: &Value) -> Option<CodexForMeSummarySnapshot> {
-    let summary = root.get("data").unwrap_or(root);
-    let balance = as_f64(summary.get("card_balance")).or_else(|| as_f64(summary.get("balance")));
-    let expires_at_unix_ms = parse_unix_ms_from_value(summary.get("card_expire_date"))
-        .or_else(|| parse_unix_ms_from_value(summary.get("expire_date")));
-    let daily_budget_usd = as_f64(summary.get("card_daily_limit"))
-        .or_else(|| as_f64(summary.get("daily_limit")))
-        .or_else(|| as_f64(summary.get("daily_budget_usd")));
-    let daily_spent_usd = as_f64(summary.get("today_spent_amount"))
-        .or_else(|| as_f64(summary.get("today_total_amount")))
-        .or_else(|| as_f64(summary.get("daily_spent_usd")));
-    let total_spent_usd = as_f64(summary.get("card_total_spent_amount"))
-        .or_else(|| as_f64(summary.get("this_month_total_amount")))
-        .or_else(|| as_f64(summary.get("total_spent_amount")))
-        .or_else(|| as_f64(summary.get("monthly_spent_usd")));
-    if balance.is_none()
-        && expires_at_unix_ms.is_none()
-        && daily_budget_usd.is_none()
-        && daily_spent_usd.is_none()
-        && total_spent_usd.is_none()
-    {
-        return None;
-    }
-    Some(CodexForMeSummarySnapshot {
-        balance,
-        expires_at_unix_ms,
-        daily_budget_usd,
-        daily_spent_usd,
-        total_spent_usd,
-    })
 }
 
 async fn fetch_codex_for_me_balance_any(
@@ -746,33 +537,24 @@ async fn fetch_codex_for_me_balance_any(
 
         match payload {
             Ok(payload) => {
-                let Some(summary) = extract_codex_for_me_summary_snapshot(&payload) else {
+                let Some(mut usage) = map_canonical_usage(
+                    &payload,
+                    &CODEX_FOR_ME_SUMMARY_MAPPING,
+                    CanonicalUsageContext {
+                        effective_usage_base: Some(base.to_string()),
+                        effective_usage_source: Some("codex_for_me_balance".to_string()),
+                        updated_at_unix_ms: unix_ms(),
+                    },
+                ) else {
                     last_err = format!("unexpected response from {base}");
                     non_404_err.get_or_insert_with(|| last_err.clone());
                     continue;
                 };
-                out.kind = if summary.daily_budget_usd.is_some()
-                    || summary.daily_spent_usd.is_some()
-                    || summary.total_spent_usd.is_some()
-                {
-                    UsageKind::BudgetInfo
-                } else {
-                    UsageKind::BalanceInfo
-                };
-                out.remaining = summary.balance;
-                out.daily_budget_usd = summary.daily_budget_usd;
-                out.daily_spent_usd = summary.daily_spent_usd;
-                out.monthly_spent_usd = summary.total_spent_usd;
-                out.monthly_budget_usd = match (summary.balance, summary.total_spent_usd) {
+                usage.monthly_limit = match (usage.remaining, usage.monthly_used) {
                     (Some(balance), Some(spent)) => Some(balance + spent),
                     _ => None,
                 };
-                out.package_expires_at_unix_ms = summary.expires_at_unix_ms;
-                out.effective_usage_base = Some(base.to_string());
-                out.effective_usage_source = Some("codex_for_me_balance".to_string());
-                out.updated_at_unix_ms = unix_ms();
-                out.last_error.clear();
-                return out;
+                return snapshot_from_canonical_usage(usage);
             }
             Err(err) => {
                 if err.contains("http 404") {
@@ -870,14 +652,18 @@ async fn fetch_budget_info_any(
 
                 // Some endpoints wrap the payload in { success, data }.
                 let root = j.get("data").unwrap_or(&j);
-                if let Err(err) =
-                    apply_packycode_budget_payload(&mut out, root, base, response_now_ms)
-                {
-                    last_err = err.clone();
-                    non_404_err.get_or_insert(err);
+                let Some(mut snapshot) = map_snapshot_from_usage_payload(
+                    root,
+                    &PACKYCODE_USAGE_MAPPING,
+                    base,
+                    "usage_base",
+                    response_now_ms,
+                ) else {
+                    last_err = format!("unexpected response from {base}");
+                    non_404_err.get_or_insert_with(|| last_err.clone());
                     continue;
-                }
-                out.package_expires_at_unix_ms = fetch_package_expiry_for_strategy(
+                };
+                snapshot.package_expires_at_unix_ms = fetch_package_expiry_for_strategy(
                     package_expiry_strategy,
                     st,
                     provider_name,
@@ -887,7 +673,7 @@ async fn fetch_budget_info_any(
                     Some(root),
                 )
                 .await;
-                return out;
+                return snapshot;
             }
             Err(e) => {
                 last_err = format_reqwest_error_for_logs(&e);

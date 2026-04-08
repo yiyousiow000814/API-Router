@@ -1,5 +1,21 @@
+mod aigateway;
+mod codex_for_me;
+mod generic;
+mod mapping;
+mod packycode;
+mod ppchat;
+mod pumpkinai;
+
 use super::config::ProviderConfig;
 use super::quota::UsageKind;
+
+pub(crate) use aigateway::{AIGATEWAY_USAGE_MAPPING, USER_ME_USAGE_MAPPING};
+pub(crate) use codex_for_me::CODEX_FOR_ME_SUMMARY_MAPPING;
+pub(crate) use generic::derive_origin;
+pub(crate) use mapping::{map_canonical_usage, CanonicalUsageContext, CanonicalUsageMapping};
+pub(crate) use packycode::{
+    canonical_usage_base as canonical_packycode_usage_base, PACKYCODE_USAGE_MAPPING,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProviderFamily {
@@ -36,8 +52,6 @@ impl ProviderQuotaProfile {
     }
 }
 
-// Canonical provider semantics are defined ahead of the current UI so new providers
-// can normalize once even before every field is surfaced downstream.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct CanonicalProviderUsage {
@@ -79,40 +93,35 @@ pub(crate) fn resolve_quota_profile(provider: &ProviderConfig) -> ProviderQuotaP
     }
 }
 
+pub(crate) fn explicit_usage_mapping(endpoint_url: &str) -> &'static CanonicalUsageMapping {
+    if endpoint_url
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+        .ends_with("/user/api/v1/me")
+    {
+        &USER_ME_USAGE_MAPPING
+    } else {
+        &AIGATEWAY_USAGE_MAPPING
+    }
+}
+
 fn detect_provider_family(provider: &ProviderConfig) -> ProviderFamily {
-    if is_packycode_base(&provider.base_url) {
+    if packycode::is_packycode_base(&provider.base_url) {
         return ProviderFamily::Packycode;
     }
-    if is_codex_for_me_origin(&provider.base_url) {
+    if codex_for_me::is_codex_for_me_origin(&provider.base_url) {
         return ProviderFamily::CodexForMe;
     }
     if is_aigateway_base(&provider.base_url) {
         return ProviderFamily::Aigateway;
     }
-    if is_ppchat_base(&provider.base_url) {
+    if ppchat::is_ppchat_base(&provider.base_url) {
         return ProviderFamily::Ppchat;
     }
-    if is_pumpkinai_base(&provider.base_url) {
+    if pumpkinai::is_pumpkinai_base(&provider.base_url) {
         return ProviderFamily::PumpkinAi;
     }
     ProviderFamily::Generic
-}
-
-pub(crate) fn derive_origin(base_url: &str) -> Option<String> {
-    let u = reqwest::Url::parse(base_url).ok()?;
-    let mut origin = u.clone();
-    origin.set_path("");
-    origin.set_query(None);
-    origin.set_fragment(None);
-    Some(origin.as_str().trim_end_matches('/').to_string())
-}
-
-pub(crate) fn canonical_packycode_usage_base(base_url: &str) -> Option<String> {
-    if is_packycode_base(base_url) {
-        Some("https://codex.packycode.com".to_string())
-    } else {
-        None
-    }
 }
 
 pub(crate) fn explicit_usage_endpoint_url(provider: &ProviderConfig) -> Option<String> {
@@ -167,7 +176,9 @@ pub(crate) fn candidate_quota_bases(
     }
 
     if matches!(family, ProviderFamily::Ppchat | ProviderFamily::PumpkinAi) {
-        push_unique("https://his.ppchat.vip".to_string());
+        for base in ppchat::default_candidate_bases() {
+            push_unique(base.to_string());
+        }
     }
 
     if let Some(canonical) = canonical_packycode_usage_base(&provider.base_url) {
@@ -182,11 +193,6 @@ pub(crate) fn candidate_quota_bases(
 
     if family == ProviderFamily::Aigateway {
         push_unique("https://aigateway.chat".to_string());
-    }
-
-    if matches!(family, ProviderFamily::Ppchat | ProviderFamily::PumpkinAi) {
-        push_unique("https://code.ppchat.vip".to_string());
-        push_unique("https://code.pumpkinai.vip".to_string());
     }
 
     out
@@ -205,50 +211,22 @@ pub(crate) fn detect_package_expiry_strategy(base_url: &str) -> PackageExpiryStr
 }
 
 fn detect_provider_family_from_base_url(base_url: &str) -> ProviderFamily {
-    if is_packycode_base(base_url) {
+    if packycode::is_packycode_base(base_url) {
         return ProviderFamily::Packycode;
     }
-    if is_codex_for_me_origin(base_url) {
+    if codex_for_me::is_codex_for_me_origin(base_url) {
         return ProviderFamily::CodexForMe;
     }
     if is_aigateway_base(base_url) {
         return ProviderFamily::Aigateway;
     }
-    if is_ppchat_base(base_url) {
+    if ppchat::is_ppchat_base(base_url) {
         return ProviderFamily::Ppchat;
     }
-    if is_pumpkinai_base(base_url) {
+    if pumpkinai::is_pumpkinai_base(base_url) {
         return ProviderFamily::PumpkinAi;
     }
     ProviderFamily::Generic
-}
-
-fn is_packycode_base(base_url: &str) -> bool {
-    reqwest::Url::parse(base_url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_string()))
-        .map(|host| host.ends_with("packycode.com"))
-        .unwrap_or(false)
-}
-
-fn is_codex_for_me_host(host: &str) -> bool {
-    host.contains("codex-for")
-}
-
-fn is_codex_for_me_origin(base_url: &str) -> bool {
-    reqwest::Url::parse(base_url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_string()))
-        .map(|host| is_codex_for_me_host(&host))
-        .unwrap_or(false)
-}
-
-fn is_ppchat_base(base_url: &str) -> bool {
-    reqwest::Url::parse(base_url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_string()))
-        .map(|host| host.ends_with("ppchat.vip"))
-        .unwrap_or(false)
 }
 
 fn is_aigateway_base(base_url: &str) -> bool {
@@ -256,13 +234,5 @@ fn is_aigateway_base(base_url: &str) -> bool {
         .ok()
         .and_then(|u| u.host_str().map(|h| h.to_string()))
         .map(|host| host == "aigateway.chat" || host.ends_with(".aigateway.chat"))
-        .unwrap_or(false)
-}
-
-fn is_pumpkinai_base(base_url: &str) -> bool {
-    reqwest::Url::parse(base_url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_string()))
-        .map(|host| host.ends_with("pumpkinai.vip"))
         .unwrap_or(false)
 }

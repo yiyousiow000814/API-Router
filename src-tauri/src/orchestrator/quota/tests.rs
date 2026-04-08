@@ -715,7 +715,6 @@ mod tests {
 
     #[test]
     fn explicit_usage_endpoint_payload_reads_aigateway_usage_shape() {
-        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
         let payload = serde_json::json!({
             "isValid": true,
             "mode": "unrestricted",
@@ -736,10 +735,11 @@ mod tests {
             }
         });
 
-        apply_explicit_usage_endpoint_payload(
-            &mut snap,
+        let snap = map_snapshot_from_usage_payload(
             &payload,
+            explicit_usage_mapping("https://aigateway.chat/v1/usage"),
             "https://aigateway.chat/v1/usage",
+            "usage_base",
             1_700_000_000_000,
         )
         .expect("aigateway usage payload should parse");
@@ -757,7 +757,6 @@ mod tests {
 
     #[test]
     fn explicit_usage_endpoint_prefers_aigateway_usage_today_cost_over_subscription_daily_usage() {
-        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
         let payload = serde_json::json!({
             "isValid": true,
             "mode": "unrestricted",
@@ -779,10 +778,11 @@ mod tests {
             }
         });
 
-        apply_explicit_usage_endpoint_payload(
-            &mut snap,
+        let snap = map_snapshot_from_usage_payload(
             &payload,
+            explicit_usage_mapping("https://aigateway.chat/v1/usage"),
             "https://aigateway.chat/v1/usage",
+            "usage_base",
             1_700_000_000_000,
         )
         .expect("aigateway usage payload should parse");
@@ -2835,6 +2835,102 @@ mod tests {
             st.store.get_quota_snapshot("p2").is_none(),
             "disabled provider must not be refreshed just because it still has credentials"
         );
+    }
+
+    #[test]
+    fn explicit_usage_mapping_normalizes_user_me_payload_to_usd() {
+        let payload = serde_json::json!({
+            "quota": {
+                "daily_quota": 4500,
+                "daily_spent": 28,
+                "daily_remaining": 4472
+            },
+            "timestamps": {
+                "expires_at": "2026-04-04T14:57:44.674Z"
+            }
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            explicit_usage_mapping("https://yunyi.rdzhvip.com/user/api/v1/me"),
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://yunyi.rdzhvip.com/user/api/v1/me".to_string()),
+                effective_usage_source: Some("usage_base".to_string()),
+                updated_at_unix_ms: 123,
+            },
+        )
+        .expect("mapped usage");
+
+        assert_eq!(usage.usage_kind, UsageKind::BudgetInfo);
+        assert_eq!(usage.daily_limit, Some(45.0));
+        assert_eq!(usage.daily_used, Some(0.28));
+        assert_eq!(usage.remaining, Some(44.72));
+        assert_eq!(usage.expires_at_unix_ms, Some(1_775_314_664_674));
+    }
+
+    #[test]
+    fn packycode_mapping_reads_alias_fields_into_canonical_usage() {
+        let payload = serde_json::json!({
+            "daily_spent_usd": "0.5",
+            "daily_budget_usd": 1,
+            "weekly_spent": 2.5,
+            "weekly_budget": "8",
+            "monthly_spent_usd": 4,
+            "monthly_budget_usd": 10,
+            "remaining_quota": 123
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            &PACKYCODE_USAGE_MAPPING,
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://codex.packycode.com".to_string()),
+                effective_usage_source: Some("usage_base".to_string()),
+                updated_at_unix_ms: 456,
+            },
+        )
+        .expect("mapped usage");
+
+        assert_eq!(usage.daily_used, Some(0.5));
+        assert_eq!(usage.daily_limit, Some(1.0));
+        assert_eq!(usage.weekly_used, Some(2.5));
+        assert_eq!(usage.weekly_limit, Some(8.0));
+        assert_eq!(usage.monthly_used, Some(4.0));
+        assert_eq!(usage.monthly_limit, Some(10.0));
+        assert_eq!(usage.remaining, Some(123.0));
+    }
+
+    #[test]
+    fn codex_for_me_mapping_preserves_balance_fields_and_budget_signal() {
+        let payload = serde_json::json!({
+            "data": {
+                "card_balance": "42.5",
+                "card_expire_date": "2027-12-31",
+                "card_name": "VIP",
+                "card_daily_limit": "200",
+                "today_spent_amount": "26.03",
+                "card_total_spent_amount": "40.92"
+            }
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            &CODEX_FOR_ME_SUMMARY_MAPPING,
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://api-vip.codex-for.me".to_string()),
+                effective_usage_source: Some("codex_for_me_balance".to_string()),
+                updated_at_unix_ms: 789,
+            },
+        )
+        .expect("mapped usage");
+
+        assert_eq!(usage.usage_kind, UsageKind::BudgetInfo);
+        assert_eq!(usage.plan_name.as_deref(), Some("VIP"));
+        assert_eq!(usage.remaining, Some(42.5));
+        assert_eq!(usage.daily_limit, Some(200.0));
+        assert_eq!(usage.daily_used, Some(26.03));
+        assert_eq!(usage.monthly_used, Some(40.92));
+        assert_eq!(usage.expires_at_unix_ms, Some(1_830_254_400_000));
     }
 
 }

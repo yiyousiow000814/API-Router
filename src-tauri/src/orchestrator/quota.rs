@@ -15,8 +15,10 @@ pub(crate) use super::providers::canonical_packycode_usage_base;
 #[cfg(test)]
 pub(crate) use super::providers::{derive_origin, explicit_usage_endpoint_url};
 use super::providers::{
-    detect_package_expiry_strategy, resolve_quota_profile, CanonicalProviderUsage,
-    PackageExpiryStrategy, ProviderQuotaProfile,
+    detect_package_expiry_strategy, explicit_usage_mapping, map_canonical_usage,
+    resolve_quota_profile, CanonicalProviderUsage, CanonicalUsageContext, CanonicalUsageMapping,
+    PackageExpiryStrategy, ProviderQuotaProfile, CODEX_FOR_ME_SUMMARY_MAPPING,
+    PACKYCODE_USAGE_MAPPING,
 };
 use super::secrets::UsageLoginConfig;
 use super::store::unix_ms;
