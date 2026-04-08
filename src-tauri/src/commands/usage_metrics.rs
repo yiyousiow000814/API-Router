@@ -983,7 +983,7 @@ pub(crate) fn get_usage_statistics(
                 }
             }
             _ => {
-                let spend_days = state.gateway.store.list_spend_days(provider);
+                let spend_days = state.gateway.store.list_local_spend_days(provider);
                 let mut tracked_in_window = 0.0_f64;
                 for day in spend_days {
                     let tracked = as_f64(day.get("tracked_spend_usd")).unwrap_or(0.0);

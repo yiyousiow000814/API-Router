@@ -203,7 +203,7 @@ pub(crate) fn get_spend_history(
         let mut tracked_api_key_ref_by_day: BTreeMap<String, String> = BTreeMap::new();
         let mut updated_by_day: BTreeMap<String, u64> = BTreeMap::new();
         let mut tracked_day_meta_by_day: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-        for day in state.gateway.store.list_spend_days(&provider_name) {
+        for day in state.gateway.store.list_local_spend_days(&provider_name) {
             let Some((snapshot_day_key, tracked_spend_usd, updated_at_unix_ms)) =
                 tracked_spend_history_snapshot(&day) else {
                 continue;

@@ -2227,10 +2227,6 @@ fn quota_snapshot_seed_meta_key(shared_provider_id: &str) -> String {
     format!("lan_quota_snapshot_seed:{shared_provider_id}")
 }
 
-fn tracked_spend_day_seed_meta_key(entity_id: &str) -> String {
-    format!("lan_tracked_spend_day_seed:{entity_id}")
-}
-
 fn spend_manual_day_seed_meta_key(entity_id: &str) -> String {
     format!("lan_spend_manual_day_seed:{entity_id}")
 }
@@ -2251,6 +2247,7 @@ fn spend_manual_day_entity_id(
     format!("{shared_provider_id}|{day_key}|{source_node_id}")
 }
 
+#[cfg(test)]
 fn tracked_spend_day_entity_id(
     shared_provider_id: &str,
     day_started_at_unix_ms: u64,
@@ -2382,34 +2379,6 @@ pub fn ensure_local_edit_seed_state(state: &crate::app_state::AppState) -> Resul
                 "replace",
                 snapshot_payload,
                 &quota_snapshot_seed_meta_key(&shared_provider_id),
-            )?;
-        }
-
-        for row in state.gateway.store.list_local_spend_days(&provider) {
-            let Some(day_started_at_unix_ms) = row
-                .get("started_at_unix_ms")
-                .and_then(|value| value.as_u64())
-            else {
-                continue;
-            };
-            let entity_id = tracked_spend_day_entity_id(
-                &shared_provider_id,
-                day_started_at_unix_ms,
-                &state.lan_sync.local_node.node_id,
-            );
-            let tracked_payload = serde_json::to_value(TrackedSpendDaySyncPayload {
-                provider_name: provider.clone(),
-                day_started_at_unix_ms,
-                row,
-            })
-            .map_err(|err| err.to_string())?;
-            seed_edit_event_if_changed(
-                state,
-                "tracked_spend_day",
-                &entity_id,
-                "replace",
-                tracked_payload,
-                &tracked_spend_day_seed_meta_key(&entity_id),
             )?;
         }
 
@@ -2547,39 +2516,6 @@ pub fn record_quota_snapshot_from_gateway(
         &local_node,
         "quota_snapshot",
         &shared_provider_id,
-        "replace",
-        payload,
-    )?;
-    Ok(())
-}
-
-pub fn record_tracked_spend_day_from_gateway(
-    gateway: &crate::orchestrator::gateway::GatewayState,
-    secrets: &SecretStore,
-    provider: &str,
-    day_started_at_unix_ms: u64,
-    row: &Value,
-) -> Result<(), String> {
-    let Some(local_node) = local_node_identity_for_edit_recording() else {
-        return Ok(());
-    };
-    let shared_provider_id = shared_provider_id_for_provider(secrets, provider)?;
-    let entity_id = tracked_spend_day_entity_id(
-        &shared_provider_id,
-        day_started_at_unix_ms,
-        &local_node.node_id,
-    );
-    let payload = serde_json::to_value(TrackedSpendDaySyncPayload {
-        provider_name: provider.to_string(),
-        day_started_at_unix_ms,
-        row: row.clone(),
-    })
-    .map_err(|err| err.to_string())?;
-    let _ = record_edit_event(
-        gateway,
-        &local_node,
-        "tracked_spend_day",
-        &entity_id,
         "replace",
         payload,
     )?;
@@ -7336,28 +7272,11 @@ mod tests {
             &snapshot,
         )
         .expect("record quota snapshot");
-        let tracked_row = serde_json::json!({
-            "provider": "provider_1",
-            "started_at_unix_ms": 1711929600000u64,
-            "tracked_spend_usd": 12.34,
-            "updated_at_unix_ms": 5000u64
-        });
-        super::record_tracked_spend_day_from_gateway(
-            &state.gateway,
-            &state.secrets,
-            "provider_1",
-            1711929600000,
-            &tracked_row,
-        )
-        .expect("record tracked spend");
 
         let (events, _) = state.gateway.store.list_lan_edit_events_batch(0, None, 10);
         assert!(events
             .iter()
             .any(|event| event.entity_type == "quota_snapshot"));
-        assert!(events
-            .iter()
-            .any(|event| event.entity_type == "tracked_spend_day"));
     }
 
     #[test]
@@ -7385,16 +7304,6 @@ mod tests {
                 }),
             )
             .expect("seed quota snapshot");
-        state.gateway.store.put_spend_day(
-            "provider_1",
-            1711929600000,
-            &serde_json::json!({
-                "provider": "provider_1",
-                "started_at_unix_ms": 1711929600000u64,
-                "tracked_spend_usd": 12.34,
-                "updated_at_unix_ms": 5000u64,
-            }),
-        );
         state.gateway.store.put_spend_manual_day(
             "provider_1",
             "2026-04-02",
@@ -7416,9 +7325,6 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event.entity_type == "quota_snapshot"));
-        assert!(events
-            .iter()
-            .any(|event| event.entity_type == "tracked_spend_day"));
         assert!(events
             .iter()
             .any(|event| event.entity_type == "spend_manual_day"));
@@ -7842,28 +7748,47 @@ mod tests {
         );
 
         let tracked_days = state.gateway.store.list_spend_days("provider_1");
-        assert_eq!(tracked_days.len(), 1);
+        assert_eq!(tracked_days.len(), 2);
+        let local_tracked_days = state.gateway.store.list_local_spend_days("provider_1");
+        assert_eq!(local_tracked_days.len(), 1);
         assert_eq!(
-            tracked_days[0]
+            local_tracked_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(0.0)
+        );
+        let remote_tracked_days = state.gateway.store.list_remote_spend_days("provider_1");
+        assert_eq!(remote_tracked_days.len(), 1);
+        assert_eq!(
+            remote_tracked_days[0]
                 .get("tracked_spend_usd")
                 .and_then(|value| value.as_f64()),
             Some(17.47)
         );
         assert_eq!(
-            tracked_days[0]
+            remote_tracked_days[0]
                 .get("producer_node_id")
                 .and_then(|value| value.as_str()),
             Some("node-remote")
         );
         assert_eq!(
-            tracked_days[0]
+            remote_tracked_days[0]
                 .get("applied_from_node_id")
                 .and_then(|value| value.as_str()),
             Some("node-remote")
         );
         assert!(
-            state.gateway.store.get_spend_state("provider_1").is_none(),
-            "remote tracked spend must not mutate local tracking state"
+            state.gateway.store.get_spend_state("provider_1").is_some(),
+            "remote quota observations should now advance the shared local tracking state"
+        );
+        assert_eq!(
+            state
+                .gateway
+                .store
+                .get_spend_state("provider_1")
+                .and_then(|value| value.get("last_seen_daily_spent_usd").cloned())
+                .and_then(|value| value.as_f64()),
+            Some(17.47)
         );
     }
 
