@@ -190,7 +190,6 @@ fn append_remote_update_shell_window_log(message: &str) {
     let _ = crate::diagnostics::append_timestamped_log_line_capped(&path, message, 64 * 1024);
 }
 
-#[cfg(any(test, target_os = "windows"))]
 struct RemoteUpdateShellProcessContext<'a> {
     worker_pid: u32,
     request_id: &'a str,
@@ -1197,7 +1196,7 @@ fn poll_remote_update_shell_window_diagnostics(
 ) {
 }
 
-#[cfg(all(not(target_os = "windows"), test))]
+#[cfg(not(target_os = "windows"))]
 fn drain_remote_update_visible_window_events(
     _context: &RemoteUpdateShellProcessContext<'_>,
     _seen_keys: &mut std::collections::HashSet<String>,
