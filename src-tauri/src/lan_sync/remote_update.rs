@@ -1200,7 +1200,7 @@ fn monitor_remote_update_worker_exit(
 ) {
     std::thread::spawn(move || {
         let mut last_progress_key: Option<String> = None;
-        let mut seen_shell_window_keys = std::collections::HashSet::new();
+        let mut seen_shell_window_keys = std::collections::HashSet::<String>::new();
         #[cfg(target_os = "windows")]
         let visible_window_event_watcher =
             crate::platform::windows_loopback_peer::watch_visible_window_show_events();
