@@ -2,11 +2,35 @@
 
 ## Goal
 
-Reduce provider-specific complexity in the quota and usage pipeline so that adding a new provider is mostly a data-definition task, not a core-engine code change.
+Turn provider onboarding into a file-driven workflow so that adding a new provider is, by default, a `providers/*.toml` change instead of a Rust code change.
+
+The target end state is:
+
+- shared quota and usage logic lives in one canonical engine
+- provider-specific behavior is declared in provider definition files
+- new providers auto-register at startup by being placed in the provider folder
+- Rust adapters remain only for flows that cannot be represented declaratively
+
+## What This Plan Is Optimizing For
+
+This plan is not just about moving logic out of `quota.rs`.
+
+It is specifically about making the provider system:
+
+- declarative
+- runtime-loadable
+- schema-driven
+- stable enough that future providers can be added without touching core code
+
+The desired developer experience is:
+
+1. add `providers/<provider-id>.toml`
+2. restart the app
+3. provider quota support is active
 
 ## Current Problem
 
-The current design already has a good canonical output model:
+The current quota pipeline already has a solid canonical output model:
 
 - `remaining`
 - `daily_spent_usd`
@@ -17,18 +41,22 @@ The current design already has a good canonical output model:
 - `monthly_budget_usd`
 - `package_expires_at_unix_ms`
 
-However, the mapping into that model is still spread across core quota code:
+But provider behavior is still partly encoded in Rust:
 
 - host detection
 - usage endpoint inference
+- auth-source selection
 - field alias handling
+- unit conversion
 - provider-specific fetch flows
 
-This makes the system harder to extend and harder to reason about as more providers are added.
+That means the code is more modular than before, but onboarding a provider still requires source edits and a rebuild.
+
+This is better than the old quota-core sprawl, but it is not yet the intended end state.
 
 ## Design Direction
 
-Keep one canonical internal schema, but move provider-specific behavior into isolated provider modules or provider definitions.
+Keep one canonical internal schema and move provider-specific behavior into declarative provider definition files.
 
 The main quota engine should not know provider field names such as:
 
@@ -49,6 +77,8 @@ It should only know canonical semantics such as:
 - `remaining`
 - `expires_at`
 
+It should also not branch on provider names or hosts once provider definitions are loaded.
+
 ## Target Architecture
 
 ### 1. Canonical Provider Usage Schema
@@ -61,6 +91,8 @@ Suggested canonical fields:
 - `mode`
 - `currency_unit`
 - `remaining`
+- `today_used`
+- `today_added`
 - `daily_used`
 - `daily_limit`
 - `weekly_used`
@@ -71,31 +103,48 @@ Suggested canonical fields:
 
 This schema becomes the only input accepted by the shared quota-to-UI pipeline.
 
-### 2. Provider Definition Layer
+### 2. File-Driven Provider Registry
 
-Create one provider definition per supported provider.
+Create one provider definition file per supported provider.
 
 Examples:
 
-- `src-tauri/src/orchestrator/providers/aigateway.rs`
-- `src-tauri/src/orchestrator/providers/packycode.rs`
-- `src-tauri/src/orchestrator/providers/ppchat.rs`
+- `providers/aigateway.toml`
+- `providers/packycode.toml`
+- `providers/ppchat.toml`
+- `providers/yunyi-user-me.toml`
 
-Alternative future option:
+The application should scan the provider folder at startup, parse all valid files, and register them automatically.
 
-- `providers/aigateway.json`
-- `providers/packycode.json`
-- `providers/ppchat.json`
+Suggested responsibilities of a provider definition:
 
-Each provider definition should describe:
-
-- how to detect the provider
-- how to resolve the usage endpoint
+- how to match a provider
+- how to resolve its usage endpoint
 - which auth source to use
-- how upstream fields map to canonical fields
-- whether the provider needs a custom fetch flow
+- how to map upstream fields into canonical fields
+- which numeric or timestamp transforms to apply
+- whether package expiry or shared-usage rules need special strategy names
+- whether the provider requires a named adapter
 
-### 3. Generic Mapping Engine
+### 3. Declarative Matching and Resolution
+
+Provider files should be able to describe matching and endpoint behavior without code changes.
+
+Examples of declarative matching:
+
+- base URL host equals `aigateway.chat`
+- base URL host suffix equals `.packycode.com`
+- explicit `usage_base_url` path ends with `/user/api/v1/me`
+- origin host contains `codex-for`
+
+Examples of declarative endpoint resolution:
+
+- use explicit `usage_base_url`
+- use provider origin
+- use canonical shared base
+- append fixed suffix to resolved origin
+
+### 4. Declarative Mapping Engine
 
 Add a shared mapping engine that can:
 
@@ -111,7 +160,33 @@ This engine should support aliases such as:
 - `expires_at` -> `expires_at`
 - `subscription.expires_at` -> `expires_at`
 
-### 4. Custom Provider Adapter Escape Hatch
+It also needs data-driven transforms such as:
+
+- divide by `100`
+- parse RFC3339 timestamps
+- parse unix seconds into unix milliseconds
+- strip commas or percent suffixes from numeric strings
+
+### 5. Runtime Data Model
+
+Rust should consume one runtime definition model regardless of whether a provider is built-in or loaded from file.
+
+Suggested shape:
+
+```rust
+struct ProviderDefinition {
+    id: String,
+    matcher: ProviderMatcher,
+    usage: ProviderUsageDefinition,
+    package_expiry_strategy: PackageExpiryStrategy,
+    shared_usage: SharedUsageDefinition,
+    adapter: Option<String>,
+}
+```
+
+The quota engine should work only with this runtime model.
+
+### 6. Minimal Adapter Escape Hatch
 
 Some providers will not fit a pure mapping file.
 
@@ -120,83 +195,147 @@ Examples:
 - browser-session based usage collection
 - login flows that mint temporary usage tokens
 - multiple endpoint aggregation
+- special package-expiry lookup that requires secondary requests
 
-For those cases, keep a small adapter interface.
+For those cases, keep a very small adapter interface.
 
 Suggested shape:
 
 ```rust
 trait ProviderUsageAdapter {
-    fn matches(&self, provider: &ProviderConfig) -> bool;
-    fn resolve_usage_endpoint(&self, provider: &ProviderConfig) -> Option<String>;
+    fn id(&self) -> &'static str;
     async fn fetch(&self, ctx: &UsageContext) -> Result<CanonicalProviderUsage, String>;
 }
 ```
 
-The generic mapper should be the default. Custom adapters should be the exception.
+Provider files should reference adapters by name, for example:
+
+- `adapter = "codex_for_me_login"`
+- `adapter = "packycode_browser_session"`
+
+The default path must stay declarative. Adapters are the exception, not the norm.
+
+## Example Provider File
+
+Example shape only. Field names may evolve as the schema is finalized.
+
+```toml
+id = "yunyi-user-me"
+
+[match]
+base_url_prefixes = ["https://yunyi.rdzhvip.com/codex"]
+usage_base_url_suffixes = ["/user/api/v1/me"]
+
+[usage]
+kind = "budget_info"
+endpoint_mode = "explicit_usage_base_url"
+auth_mode = "provider_key_or_usage_token"
+
+[usage.mapping.remaining]
+aliases = ["/quota/daily_remaining", "/remaining", "/balance"]
+transform = "divide_by_100"
+
+[usage.mapping.daily_used]
+aliases = ["/quota/daily_spent", "/usage/today/actual_cost"]
+transform = "divide_by_100"
+
+[usage.mapping.daily_limit]
+aliases = ["/quota/daily_quota", "/daily_limit_usd"]
+transform = "divide_by_100"
+
+[usage.mapping.expires_at_unix_ms]
+aliases = ["/timestamps/expires_at", "/subscription/expires_at"]
+transform = "parse_timestamp"
+
+[shared_usage]
+source = "explicit_usage_base_url"
+
+[package_expiry]
+strategy = "none"
+```
 
 ## Migration Strategy
 
-### Phase 1. Define Canonical Semantics
+### Phase 1. Freeze Canonical Semantics
 
 - finalize the canonical provider usage schema
 - document exact meaning for each canonical field
-- make `QuotaSnapshot` consume only canonical semantics from provider adapters
+- make `QuotaSnapshot` consume only canonical semantics from provider definitions or adapters
 
-### Phase 2. Extract Provider Detection
+### Phase 2. Build the Runtime Registry
 
-- move host matching and endpoint inference out of core quota files
-- create isolated provider modules for existing providers
+- define `ProviderDefinition`
+- add file loading for `providers/*.toml`
+- validate files at startup
+- make the engine consume runtime definitions instead of hardcoded provider branches
 
-Initial migration targets:
+### Phase 3. Move Current Rust Definitions Into Schema
 
+Start with providers that already fit the declarative model well:
+
+- `aigateway`
+- `yunyi / user/api/v1/me`
 - `packycode`
 - `ppchat`
 - `pumpkinai`
-- `codex-for-*`
-- `aigateway`
 
-### Phase 3. Introduce Generic Mapping
+These should become the first real `.toml` provider definitions.
 
-- add reusable JSON-path based field extraction
-- move simple providers onto declarative field mappings
-- keep only complex providers on custom Rust adapters
+### Phase 4. Keep Only Necessary Adapters
 
-### Phase 4. Simplify Core Quota Engine
+For providers that still need custom code:
 
-After provider logic is extracted, the shared engine should only do:
+- `codex-for.me` login-token flow
+- any browser-session based usage flow
+- any multi-endpoint aggregation flow
 
-1. choose provider adapter
-2. fetch payload
-3. normalize to canonical usage
-4. convert to `QuotaSnapshot`
-5. persist and expose UI state
+Move the rest fully into schema.
+
+### Phase 5. Enforce File-First Onboarding
+
+Once the loader and schema are stable:
+
+- all new provider onboarding must start with `providers/*.toml`
+- any new Rust provider logic must justify why schema cannot express it
+- core quota code must not add provider-name or host-specific branches
 
 ## Proposed Rules
 
 To keep the system coherent, apply these rules:
 
 - Do not add new provider-specific field aliases directly inside shared quota code.
-- Do not add new host checks directly inside the quota engine once provider modules exist.
-- New provider support should prefer provider definitions first, custom adapter second.
+- Do not add new host checks directly inside the quota engine once the registry exists.
+- New provider support must default to provider definition files first, adapters second.
 - UI components must only consume canonical fields and must not branch on provider names.
+- Provider file loading errors must be explicit and actionable at startup.
+- Avoid turning the schema into a second programming language; prefer a small, composable set of transforms and strategies.
 
 ## Expected Benefits
 
 - adding a provider becomes predictable
-- provider logic becomes isolated
+- most provider onboarding becomes a file change instead of a code change
+- provider logic becomes isolated from the core engine
 - field alias churn no longer pollutes shared engine code
-- testing becomes easier per provider
-- long-term maintenance cost drops
+- testing becomes easier per provider definition
+- future contributors can extend support without touching quota internals
 
 ## Risks
 
 - a partial migration may temporarily duplicate logic
 - poorly designed canonical semantics may still leak provider-specific assumptions
-- too much configurability too early could make debugging harder
+- an overly powerful schema could become hard to validate and debug
+- some providers may need adapters longer than expected
 
 ## Recommendation
 
-Do this as a refactor plan, not as opportunistic fixes during provider onboarding.
+Treat the current Rust modularization as an intermediate step, not the final architecture.
 
-The next provider added after this refactor should be implemented through the new provider-definition path to validate the design.
+The next milestone should be:
+
+1. define the provider file schema
+2. load provider definitions from disk
+3. migrate simple built-in providers onto real `.toml` files
+
+The system is only "done" when the default answer to "how do I add a provider?" becomes:
+
+Add a provider file, not a Rust module.

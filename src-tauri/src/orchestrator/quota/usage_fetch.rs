@@ -1,27 +1,35 @@
+struct TokenStatsFetchConfig<'a> {
+    explicit_usage_endpoint: Option<&'a str>,
+    explicit_usage_mapping: Option<&'static CanonicalUsageMapping>,
+    provider_key: Option<&'a str>,
+    usage_token: Option<&'a str>,
+    package_expiry_strategy: PackageExpiryStrategy,
+}
+
 async fn fetch_token_stats_any(
     st: &GatewayState,
     provider_name: &str,
     bases: &[String],
-    explicit_usage_endpoint: Option<&str>,
-    provider_key: Option<&str>,
-    usage_token: Option<&str>,
-    package_expiry_strategy: PackageExpiryStrategy,
+    config: TokenStatsFetchConfig<'_>,
 ) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(UsageKind::TokenStats);
-    if let Some(endpoint_url) = explicit_usage_endpoint {
+    if let Some(endpoint_url) = config.explicit_usage_endpoint {
         let direct = fetch_explicit_usage_endpoint_any(
             st,
             provider_name,
             endpoint_url,
-            provider_key,
-            usage_token,
+            config
+                .explicit_usage_mapping
+                .unwrap_or_else(|| super::providers::explicit_usage_mapping(endpoint_url)),
+            config.provider_key,
+            config.usage_token,
         )
         .await;
         if direct.last_error.is_empty() {
             return direct;
         }
     }
-    let Some(k) = provider_key else {
+    let Some(k) = config.provider_key else {
         out.last_error = "missing provider key".to_string();
         return out;
     };
@@ -86,9 +94,9 @@ async fn fetch_token_stats_any(
                     out.remaining = remaining;
                     out.today_used = today_used;
                     out.today_added = today_added;
-                    if let Some(token) = usage_token {
+                    if let Some(token) = config.usage_token {
                         out.package_expires_at_unix_ms = fetch_package_expiry_for_strategy(
-                            package_expiry_strategy,
+                            config.package_expiry_strategy,
                             st,
                             provider_name,
                             bases,
@@ -111,9 +119,9 @@ async fn fetch_token_stats_any(
                     out.remaining = remaining;
                     out.today_used = today_used;
                     out.today_added = today_added;
-                    if let Some(token) = usage_token {
+                    if let Some(token) = config.usage_token {
                         out.package_expires_at_unix_ms = fetch_package_expiry_for_strategy(
-                            package_expiry_strategy,
+                            config.package_expiry_strategy,
                             st,
                             provider_name,
                             bases,
@@ -179,6 +187,7 @@ async fn fetch_explicit_usage_endpoint_any(
     st: &GatewayState,
     provider_name: &str,
     endpoint_url: &str,
+    mapping: &'static CanonicalUsageMapping,
     provider_key: Option<&str>,
     usage_token: Option<&str>,
 ) -> QuotaSnapshot {
@@ -248,7 +257,7 @@ async fn fetch_explicit_usage_endpoint_any(
         let root = payload.get("data").unwrap_or(&payload);
         if let Some(snapshot) = map_snapshot_from_usage_payload(
             root,
-            explicit_usage_mapping(endpoint_url),
+            mapping,
             endpoint_url,
             "usage_base",
             response_now_ms,
@@ -378,7 +387,7 @@ async fn fetch_token_logs_stats(
     Some((remaining, today_used, today_added))
 }
 
-fn build_codex_for_me_api_url(base: &str, endpoint: &str) -> Option<String> {
+fn build_login_summary_api_url(base: &str, endpoint: &str) -> Option<String> {
     let trimmed = base.trim().trim_end_matches('/');
     if trimmed.is_empty() {
         return None;
@@ -396,12 +405,12 @@ fn build_codex_for_me_api_url(base: &str, endpoint: &str) -> Option<String> {
     Some(url.to_string())
 }
 
-async fn fetch_codex_for_me_login_token(
+async fn fetch_login_summary_token(
     client: &reqwest::Client,
     base: &str,
     login: &UsageLoginConfig,
 ) -> Result<String, String> {
-    let url = build_codex_for_me_api_url(base, "users/login")
+    let url = build_login_summary_api_url(base, "users/login")
         .ok_or_else(|| format!("invalid usage base: {base}"))?;
     wait_for_usage_base_refresh_slot(base).await?;
     let resp = client
@@ -433,12 +442,12 @@ async fn fetch_codex_for_me_login_token(
         .ok_or_else(|| format!("unexpected response from {base}"))
 }
 
-async fn fetch_codex_for_me_summary(
+async fn fetch_login_summary_payload(
     client: &reqwest::Client,
     base: &str,
     token: &str,
 ) -> Result<Value, String> {
-    let url = build_codex_for_me_api_url(base, "users/summary")
+    let url = build_login_summary_api_url(base, "users/summary")
         .ok_or_else(|| format!("invalid usage base: {base}"))?;
     wait_for_usage_base_refresh_slot(base).await?;
     let resp = client
@@ -461,12 +470,13 @@ async fn fetch_codex_for_me_summary(
     Ok(payload)
 }
 
-async fn fetch_codex_for_me_balance_any(
+async fn fetch_login_summary_any(
     st: &GatewayState,
     provider_name: &str,
     bases: &[String],
     usage_token: Option<&str>,
     usage_login: Option<&UsageLoginConfig>,
+    summary_mapping: Option<&'static CanonicalUsageMapping>,
 ) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(UsageKind::BalanceInfo);
     if bases.is_empty() {
@@ -500,7 +510,7 @@ async fn fetch_codex_for_me_balance_any(
         if token.is_none() {
             if let Some(login) = usage_login {
                 login_attempted = true;
-                match fetch_codex_for_me_login_token(&client, base, login).await {
+                match fetch_login_summary_token(&client, base, login).await {
                     Ok(found) => token = Some(found),
                     Err(err) => {
                         last_err = err.clone();
@@ -521,13 +531,13 @@ async fn fetch_codex_for_me_balance_any(
             continue;
         };
 
-        let payload = match fetch_codex_for_me_summary(&client, base, &token).await {
+        let payload = match fetch_login_summary_payload(&client, base, &token).await {
             Ok(payload) => Ok(payload),
             Err(err) if !login_attempted && err.contains("http 401") && usage_login.is_some() => {
                 let login = usage_login.expect("checked is_some");
-                match fetch_codex_for_me_login_token(&client, base, login).await {
+                match fetch_login_summary_token(&client, base, login).await {
                     Ok(fresh_token) => {
-                        fetch_codex_for_me_summary(&client, base, &fresh_token).await
+                        fetch_login_summary_payload(&client, base, &fresh_token).await
                     }
                     Err(login_err) => Err(login_err),
                 }
@@ -537,12 +547,17 @@ async fn fetch_codex_for_me_balance_any(
 
         match payload {
             Ok(payload) => {
+                let Some(mapping) = summary_mapping else {
+                    last_err = "missing summary mapping".to_string();
+                    non_404_err.get_or_insert_with(|| last_err.clone());
+                    continue;
+                };
                 let Some(mut usage) = map_canonical_usage(
                     &payload,
-                    &CODEX_FOR_ME_SUMMARY_MAPPING,
+                    mapping,
                     CanonicalUsageContext {
                         effective_usage_base: Some(base.to_string()),
-                        effective_usage_source: Some("codex_for_me_balance".to_string()),
+                        effective_usage_source: Some("login_summary".to_string()),
                         updated_at_unix_ms: unix_ms(),
                     },
                 ) else {
@@ -583,6 +598,7 @@ async fn fetch_budget_info_any(
     bases: &[String],
     credential_value: Option<&str>,
     missing_credential_label: &str,
+    budget_info_mapping: &'static CanonicalUsageMapping,
     package_expiry_strategy: PackageExpiryStrategy,
 ) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
@@ -654,7 +670,7 @@ async fn fetch_budget_info_any(
                 let root = j.get("data").unwrap_or(&j);
                 let Some(mut snapshot) = map_snapshot_from_usage_payload(
                     root,
-                    &PACKYCODE_USAGE_MAPPING,
+                    budget_info_mapping,
                     base,
                     "usage_base",
                     response_now_ms,
@@ -725,6 +741,7 @@ mod usage_fetch_tests {
             &["https://usage.example.test".to_string()],
             None,
             "usage token",
+            crate::orchestrator::providers::default_budget_info_mapping(),
             crate::orchestrator::quota::PackageExpiryStrategy::None,
         )
         .await;

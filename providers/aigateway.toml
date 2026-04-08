@@ -1,0 +1,60 @@
+id = "aigateway"
+
+[match]
+base_url_hosts = ["aigateway.chat"]
+
+[usage]
+refresh_flow = "auto"
+budget_info_auth_source = "usage_token"
+candidate_base_sources = []
+fixed_candidate_bases = ["https://aigateway.chat"]
+explicit_endpoint_mode = "fixed"
+explicit_endpoint_url = "https://aigateway.chat/v1/usage"
+
+[usage.explicit_mapping]
+usage_kind = "budget_info"
+requires_any = [
+  "/quota/daily_quota",
+  "/daily_quota",
+  "/daily_budget_usd",
+  "/daily_limit_usd",
+  "/quota/daily_spent",
+  "/daily_spent_usd",
+  "/remaining",
+  "/balance",
+  "/timestamps/expires_at",
+]
+
+[usage.explicit_mapping.remaining]
+aliases = ["/remaining", "/remaining_quota", "/balance", "/quota/daily_remaining"]
+transform = "none"
+
+[usage.explicit_mapping.daily_used]
+aliases = [
+  "/usage/today/actual_cost",
+  "/usage/today/cost",
+  "/quota/daily_spent",
+  "/quota/daily_total_spent",
+  "/usage/daily_spent",
+  "/usage/daily_total_spent",
+  "/daily_spent_usd",
+  "/daily_usage_usd",
+  "/subscription/daily_usage_usd",
+]
+transform = "none"
+
+[usage.explicit_mapping.daily_limit]
+aliases = [
+  "/quota/daily_quota",
+  "/daily_quota",
+  "/daily_budget_usd",
+  "/daily_limit_usd",
+  "/subscription/daily_limit_usd",
+]
+transform = "none"
+
+[usage.explicit_mapping.expires_at_unix_ms]
+aliases = ["/timestamps/expires_at", "/expires_at", "/subscription/expires_at"]
+
+[package_expiry]
+strategy = "none"

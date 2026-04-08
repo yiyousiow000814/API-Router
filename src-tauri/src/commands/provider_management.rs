@@ -330,7 +330,7 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
                   "disabled": p.disabled,
                   "usage_adapter": p.usage_adapter.clone(),
                   "usage_base_url": p.usage_base_url.clone().map(|value| {
-                    crate::orchestrator::quota::canonical_packycode_usage_base(&value)
+                    crate::orchestrator::quota::normalize_usage_base_url(&p.base_url, &value)
                         .unwrap_or(value)
                   }),
                   "quota_hard_cap": quota_hard_cap,

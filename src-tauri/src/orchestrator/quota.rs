@@ -11,14 +11,15 @@ use crate::orchestrator::config::AppConfig;
 
 use super::config::ProviderConfig;
 use super::gateway::GatewayState;
-pub(crate) use super::providers::canonical_packycode_usage_base;
-#[cfg(test)]
-pub(crate) use super::providers::{derive_origin, explicit_usage_endpoint_url};
+pub(crate) use super::providers::normalize_usage_base_url;
 use super::providers::{
-    detect_package_expiry_strategy, explicit_usage_mapping, map_canonical_usage,
-    resolve_quota_profile, CanonicalProviderUsage, CanonicalUsageContext, CanonicalUsageMapping,
-    PackageExpiryStrategy, ProviderQuotaProfile, CODEX_FOR_ME_SUMMARY_MAPPING,
-    PACKYCODE_USAGE_MAPPING,
+    default_budget_info_mapping, map_canonical_usage, resolve_quota_profile, BudgetInfoAuthSource,
+    CanonicalProviderUsage, CanonicalUsageContext, CanonicalUsageMapping, PackageExpiryStrategy,
+    ProviderQuotaProfile,
+};
+#[cfg(test)]
+pub(crate) use super::providers::{
+    derive_origin, explicit_usage_endpoint_url, explicit_usage_mapping,
 };
 use super::secrets::UsageLoginConfig;
 use super::store::unix_ms;
@@ -135,8 +136,8 @@ struct UsageRequestKey {
 struct UsageSharedKey {
     // Shared "usage base" (normalized), not the whole candidate list.
     //
-    // The candidate list may include provider-specific origins / fallbacks that differ even when
-    // the *actual* usage endpoint is shared (e.g. ppchat/pumpkinai). Using only the shared base
+    // The candidate list may include different provider origins that still converge on the same
+    // shared usage host. Using only the shared base
     // makes "same base + same key => same quota snapshot" deterministic.
     base_key: String,
     auth_key: Option<String>,
@@ -449,7 +450,7 @@ where
         .unwrap_or(base + chrono::Duration::days(1))
 }
 
-fn next_packycode_refresh_at<Tz>(now: chrono::DateTime<Tz>) -> chrono::DateTime<Tz>
+fn next_priority_quota_refresh_at<Tz>(now: chrono::DateTime<Tz>) -> chrono::DateTime<Tz>
 where
     Tz: chrono::TimeZone,
     Tz::Offset: Copy,
@@ -480,7 +481,7 @@ where
     Tz: chrono::TimeZone,
     Tz::Offset: Copy,
 {
-    let hourly = next_packycode_refresh_at(now);
+    let hourly = next_priority_quota_refresh_at(now);
     let daily = next_daily_reset_refresh_at(now);
     if hourly <= daily {
         hourly
@@ -574,7 +575,8 @@ fn usage_auth_key_for_provider(
     usage_token: &Option<String>,
     usage_login: &Option<UsageLoginConfig>,
 ) -> Option<String> {
-    if detect_package_expiry_strategy(&provider.base_url) == PackageExpiryStrategy::Packycode {
+    if resolve_quota_profile(provider).budget_info_auth_source == BudgetInfoAuthSource::ProviderKey
+    {
         return provider_key.clone();
     }
     usage_auth_key(provider_key, usage_token, usage_login)
@@ -707,10 +709,10 @@ async fn compute_quota_snapshot(
     credentials: QuotaCredentials<'_>,
     package_expiry_fetch_strategy: PackageExpiryStrategy,
 ) -> QuotaSnapshot {
-    let should_use_packycode_usage_flow = profile.uses_packycode_usage_schedule()
+    let should_use_backend_usage_info_flow = profile.uses_backend_users_info_expiry()
         && (credentials.usage_token.is_some()
-            || package_expiry_fetch_strategy == PackageExpiryStrategy::Packycode);
-    if should_use_packycode_usage_flow {
+            || package_expiry_fetch_strategy == PackageExpiryStrategy::BackendUsersInfo);
+    if should_use_backend_usage_info_flow {
         return match canonicalize_snapshot_result(
             fetch_budget_info_any(
                 st,
@@ -718,6 +720,9 @@ async fn compute_quota_snapshot(
                 bases,
                 credentials.provider_key,
                 "provider key",
+                profile
+                    .budget_info_mapping
+                    .unwrap_or_else(default_budget_info_mapping),
                 package_expiry_fetch_strategy,
             )
             .await,
@@ -732,14 +737,15 @@ async fn compute_quota_snapshot(
         };
     }
 
-    if profile.is_codex_for_me() {
+    if profile.uses_login_summary_refresh() {
         return match canonicalize_snapshot_result(
-            fetch_codex_for_me_balance_any(
+            fetch_login_summary_any(
                 st,
                 provider_name,
                 bases,
                 credentials.usage_token,
                 credentials.usage_login,
+                profile.summary_mapping,
             )
             .await,
             UsageKind::BalanceInfo,
@@ -759,6 +765,9 @@ async fn compute_quota_snapshot(
                 st,
                 provider_name,
                 endpoint_url,
+                profile
+                    .explicit_usage_mapping
+                    .unwrap_or_else(|| super::providers::explicit_usage_mapping(endpoint_url)),
                 credentials.provider_key,
                 credentials.usage_token,
             )
@@ -783,10 +792,13 @@ async fn compute_quota_snapshot(
                 st,
                 provider_name,
                 bases,
-                profile.explicit_usage_endpoint.as_deref(),
-                credentials.provider_key,
-                credentials.usage_token,
-                package_expiry_fetch_strategy,
+                TokenStatsFetchConfig {
+                    explicit_usage_endpoint: profile.explicit_usage_endpoint.as_deref(),
+                    explicit_usage_mapping: profile.explicit_usage_mapping,
+                    provider_key: credentials.provider_key,
+                    usage_token: credentials.usage_token,
+                    package_expiry_strategy: package_expiry_fetch_strategy,
+                },
             )
             .await,
             UsageKind::TokenStats,
@@ -798,18 +810,22 @@ async fn compute_quota_snapshot(
                 bases,
                 credentials.usage_token,
                 "usage token",
+                profile
+                    .budget_info_mapping
+                    .unwrap_or_else(default_budget_info_mapping),
                 package_expiry_fetch_strategy,
             )
             .await,
             UsageKind::BudgetInfo,
         ),
         UsageKind::BalanceInfo => canonicalize_snapshot_result(
-            fetch_codex_for_me_balance_any(
+            fetch_login_summary_any(
                 st,
                 provider_name,
                 bases,
                 credentials.usage_token,
                 credentials.usage_login,
+                profile.summary_mapping,
             )
             .await,
             UsageKind::BalanceInfo,
@@ -820,10 +836,13 @@ async fn compute_quota_snapshot(
                     st,
                     provider_name,
                     bases,
-                    profile.explicit_usage_endpoint.as_deref(),
-                    credentials.provider_key,
-                    credentials.usage_token,
-                    package_expiry_fetch_strategy,
+                    TokenStatsFetchConfig {
+                        explicit_usage_endpoint: profile.explicit_usage_endpoint.as_deref(),
+                        explicit_usage_mapping: profile.explicit_usage_mapping,
+                        provider_key: credentials.provider_key,
+                        usage_token: credentials.usage_token,
+                        package_expiry_strategy: package_expiry_fetch_strategy,
+                    },
                 )
                 .await;
                 if s.last_error.is_empty() {
@@ -836,19 +855,24 @@ async fn compute_quota_snapshot(
                             bases,
                             credentials.usage_token,
                             "usage token",
+                            profile
+                                .budget_info_mapping
+                                .unwrap_or_else(default_budget_info_mapping),
                             package_expiry_fetch_strategy,
                         )
                         .await,
                         UsageKind::BudgetInfo,
                     )
-                } else if credentials.usage_login.is_some() && profile.is_codex_for_me() {
+                } else if credentials.usage_login.is_some() && profile.uses_login_summary_refresh()
+                {
                     canonicalize_snapshot_result(
-                        fetch_codex_for_me_balance_any(
+                        fetch_login_summary_any(
                             st,
                             provider_name,
                             bases,
                             credentials.usage_token,
                             credentials.usage_login,
+                            profile.summary_mapping,
                         )
                         .await,
                         UsageKind::BalanceInfo,
@@ -864,19 +888,23 @@ async fn compute_quota_snapshot(
                         bases,
                         credentials.usage_token,
                         "usage token",
+                        profile
+                            .budget_info_mapping
+                            .unwrap_or_else(default_budget_info_mapping),
                         package_expiry_fetch_strategy,
                     )
                     .await,
                     UsageKind::BudgetInfo,
                 )
-            } else if credentials.usage_login.is_some() && profile.is_codex_for_me() {
+            } else if credentials.usage_login.is_some() && profile.uses_login_summary_refresh() {
                 canonicalize_snapshot_result(
-                    fetch_codex_for_me_balance_any(
+                    fetch_login_summary_any(
                         st,
                         provider_name,
                         bases,
                         credentials.usage_token,
                         credentials.usage_login,
+                        profile.summary_mapping,
                     )
                     .await,
                     UsageKind::BalanceInfo,
@@ -1192,7 +1220,7 @@ fn quota_refresh_source_label(source: &str) -> &'static str {
     match source.trim() {
         "usage_base" => "usage base",
         "token_stats" => "token stats",
-        "codex_for_me_balance" => "codex-for.me dashboard",
+        "login_summary" => "login summary",
         _ => "",
     }
 }
@@ -1375,7 +1403,7 @@ fn can_refresh_quota_for_provider(
         return false;
     }
     let profile = resolve_quota_profile(provider);
-    let allows_login_only_refresh = profile.is_codex_for_me();
+    let allows_login_only_refresh = profile.uses_login_summary_refresh();
     let bases = profile.candidate_bases;
     if bases.is_empty() {
         return false;
@@ -1383,13 +1411,15 @@ fn can_refresh_quota_for_provider(
     let provider_key = st.secrets.get_provider_key(provider_name);
     let usage_token = st.secrets.get_usage_token(provider_name);
     let usage_login = st.secrets.get_usage_login(provider_name);
-    if detect_package_expiry_strategy(&provider.base_url) == PackageExpiryStrategy::Packycode {
-        return provider_key.is_some();
-    }
     if allows_login_only_refresh {
         return usage_token.is_some() || usage_login.is_some();
     }
-    provider_key.is_some() || usage_token.is_some() || usage_login.is_some()
+    match profile.budget_info_auth_source {
+        BudgetInfoAuthSource::ProviderKey => provider_key.is_some() || usage_login.is_some(),
+        BudgetInfoAuthSource::UsageToken => {
+            provider_key.is_some() || usage_token.is_some() || usage_login.is_some()
+        }
+    }
 }
 
 fn quota_refresh_interval_ms(
@@ -1406,9 +1436,9 @@ fn quota_refresh_interval_ms(
         .single()
         .unwrap_or_else(chrono::Local::now);
     let due = match provider_strategy {
-        PackageExpiryStrategy::Packycode => {
-            next_packycode_refresh_at(now).timestamp_millis().max(0) as u64
-        }
+        PackageExpiryStrategy::BackendUsersInfo => next_priority_quota_refresh_at(now)
+            .timestamp_millis()
+            .max(0) as u64,
         _ => next_standard_quota_refresh_due_unix_ms(now_ms),
     };
     due.saturating_sub(now_ms)
@@ -1427,9 +1457,9 @@ fn initial_quota_refresh_due_unix_ms(
         .single()
         .unwrap_or_else(chrono::Local::now);
     Some(match provider_strategy {
-        PackageExpiryStrategy::Packycode => {
-            next_packycode_refresh_at(now).timestamp_millis().max(0) as u64
-        }
+        PackageExpiryStrategy::BackendUsersInfo => next_priority_quota_refresh_at(now)
+            .timestamp_millis()
+            .max(0) as u64,
         _ => {
             if existing_snapshot.is_some_and(|existing| existing.updated_at_unix_ms == 0) {
                 return None;
@@ -1720,7 +1750,7 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
         cached_future_package_expiry_for_provider(st, provider_name, unix_ms());
     let provider_strategy = profile.package_expiry_strategy;
     let package_expiry_fetch_strategy = if cached_package_expiry.is_some()
-        && provider_strategy != PackageExpiryStrategy::Packycode
+        && provider_strategy != PackageExpiryStrategy::BackendUsersInfo
     {
         PackageExpiryStrategy::None
     } else {
@@ -1781,7 +1811,7 @@ async fn refresh_quota_for_provider_cached(
         cached_future_package_expiry_for_provider(st, provider_name, unix_ms());
     let provider_strategy = profile.package_expiry_strategy;
     let package_expiry_fetch_strategy = if cached_package_expiry.is_some()
-        && provider_strategy != PackageExpiryStrategy::Packycode
+        && provider_strategy != PackageExpiryStrategy::BackendUsersInfo
     {
         PackageExpiryStrategy::None
     } else {

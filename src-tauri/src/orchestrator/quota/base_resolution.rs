@@ -42,9 +42,18 @@ async fn reorder_bases_for_speed(
         normalized.push(trimmed);
     }
 
-    let has_ppchat = normalized.iter().any(|b| b == "https://code.ppchat.vip");
-    let has_pumpkin = normalized.iter().any(|b| b == "https://code.pumpkinai.vip");
-    if !has_ppchat || !has_pumpkin {
+    let cfg = st.cfg.read().clone();
+    let Some(provider) = cfg.providers.get(provider_name) else {
+        return normalized;
+    };
+    let speed_probe_bases = resolve_quota_profile(provider).speed_probe_bases;
+    if speed_probe_bases.len() < 2 {
+        return normalized;
+    }
+    if !speed_probe_bases
+        .iter()
+        .all(|base| normalized.iter().any(|candidate| candidate == base))
+    {
         return normalized;
     }
     let Some(api_key) = api_key else {
@@ -64,35 +73,31 @@ async fn reorder_bases_for_speed(
         }
     }
 
-    let ppchat = "https://code.ppchat.vip";
-    let pumpkin = "https://code.pumpkinai.vip";
-    let (ppchat_latency, pumpkin_latency) = tokio::join!(
-        probe_usage_base_speed(st, provider_name, ppchat, api_key),
-        probe_usage_base_speed(st, provider_name, pumpkin, api_key)
-    );
-
-    let mut ordered_pair = vec![ppchat.to_string(), pumpkin.to_string()];
-    match (ppchat_latency, pumpkin_latency) {
-        (Some(a), Some(b)) => {
-            if b < a {
-                ordered_pair.reverse();
-            }
-        }
-        (None, Some(_)) => {
-            ordered_pair.reverse();
-        }
-        _ => {}
+    let mut measured = Vec::new();
+    for base in &speed_probe_bases {
+        measured.push((
+            base.clone(),
+            probe_usage_base_speed(st, provider_name, base, api_key).await,
+        ));
     }
+    measured.sort_by(|(left_base, left_latency), (right_base, right_latency)| {
+        match (left_latency, right_latency) {
+            (Some(left), Some(right)) => left.cmp(right).then_with(|| left_base.cmp(right_base)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => left_base.cmp(right_base),
+        }
+    });
 
     let mut ordered = Vec::new();
     for base in normalized.iter() {
-        if base == "https://code.ppchat.vip" || base == "https://code.pumpkinai.vip" {
+        if speed_probe_bases.iter().any(|candidate| candidate == base) {
             continue;
         }
         ordered.push(base.clone());
     }
-    // Insert the speed-ordered ppchat/pumpkin bases at the end to avoid overriding preferred bases.
-    for base in ordered_pair {
+    // Keep the provider-selected primary bases first, then append the probed cluster in speed order.
+    for (base, _) in measured {
         if normalized.contains(&base) {
             ordered.push(base);
         }

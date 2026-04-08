@@ -378,8 +378,7 @@ fn set_usage_base_url_impl(
         .map(|provider| provider.base_url.clone())
         .ok_or_else(|| format!("unknown provider: {provider}"))?;
     let parsed = url.trim().trim_end_matches('/').to_string();
-    let usage_base_url = crate::orchestrator::quota::canonical_packycode_usage_base(&provider_base_url)
-        .filter(|_| crate::orchestrator::quota::canonical_packycode_usage_base(&parsed).is_some())
+    let usage_base_url = crate::orchestrator::quota::normalize_usage_base_url(&provider_base_url, &parsed)
         .unwrap_or(parsed);
     if usage_base_url.is_empty() {
         return Err("url is required".to_string());

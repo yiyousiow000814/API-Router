@@ -534,6 +534,7 @@ mod tests {
             &[base.clone()],
             Some("test-token"),
             "usage token",
+            crate::orchestrator::providers::default_budget_info_mapping(),
             PackageExpiryStrategy::None,
         )
         .await;
@@ -2290,18 +2291,18 @@ mod tests {
 
         let tz = FixedOffset::east_opt(8 * 3600).unwrap();
         let now = tz.with_ymd_and_hms(2026, 3, 11, 11, 25, 42).unwrap();
-        let due = next_packycode_refresh_at(now);
+        let due = next_priority_quota_refresh_at(now);
         assert_eq!(due.minute(), 58);
         assert_eq!(due.second(), 0);
 
         let now = tz.with_ymd_and_hms(2026, 3, 11, 11, 58, 0).unwrap();
-        let due = next_packycode_refresh_at(now);
+        let due = next_priority_quota_refresh_at(now);
         assert_eq!(due.hour(), 12);
         assert_eq!(due.minute(), 58);
         assert_eq!(due.second(), 0);
 
         let now = tz.with_ymd_and_hms(2026, 3, 10, 23, 58, 0).unwrap();
-        let due = next_packycode_refresh_at(now);
+        let due = next_priority_quota_refresh_at(now);
         assert_eq!(due.hour(), 0);
         assert_eq!(due.minute(), 1);
         assert_eq!(due.second(), 0);
@@ -2322,7 +2323,7 @@ mod tests {
             true,
             true,
             1,
-            PackageExpiryStrategy::Packycode,
+            PackageExpiryStrategy::BackendUsersInfo,
         )
         .expect("packycode due");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
@@ -2344,7 +2345,7 @@ mod tests {
             true,
             true,
             1,
-            PackageExpiryStrategy::Packycode,
+            PackageExpiryStrategy::BackendUsersInfo,
         )
         .expect("packycode due without snapshot");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
@@ -2369,7 +2370,7 @@ mod tests {
             true,
             true,
             1,
-            PackageExpiryStrategy::Packycode,
+            PackageExpiryStrategy::BackendUsersInfo,
         )
         .expect("packycode due after failed snapshot");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
@@ -2870,6 +2871,18 @@ mod tests {
 
     #[test]
     fn packycode_mapping_reads_alias_fields_into_canonical_usage() {
+        let provider = ProviderConfig {
+            display_name: "Packycode".to_string(),
+            base_url: "https://codex.packycode.com/v1".to_string(),
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            group: None,
+            disabled: false,
+            api_key: String::new(),
+        };
+        let mapping = resolve_quota_profile(&provider)
+            .budget_info_mapping
+            .expect("budget info mapping");
         let payload = serde_json::json!({
             "daily_spent_usd": "0.5",
             "daily_budget_usd": 1,
@@ -2882,7 +2895,7 @@ mod tests {
 
         let usage = map_canonical_usage(
             &payload,
-            &PACKYCODE_USAGE_MAPPING,
+            mapping,
             CanonicalUsageContext {
                 effective_usage_base: Some("https://codex.packycode.com".to_string()),
                 effective_usage_source: Some("usage_base".to_string()),
@@ -2902,6 +2915,18 @@ mod tests {
 
     #[test]
     fn codex_for_me_mapping_preserves_balance_fields_and_budget_signal() {
+        let provider = ProviderConfig {
+            display_name: "Codex For Me".to_string(),
+            base_url: "https://api-vip.codex-for.me/v1".to_string(),
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            group: None,
+            disabled: false,
+            api_key: String::new(),
+        };
+        let mapping = resolve_quota_profile(&provider)
+            .summary_mapping
+            .expect("summary mapping");
         let payload = serde_json::json!({
             "data": {
                 "card_balance": "42.5",
@@ -2915,10 +2940,10 @@ mod tests {
 
         let usage = map_canonical_usage(
             &payload,
-            &CODEX_FOR_ME_SUMMARY_MAPPING,
+            mapping,
             CanonicalUsageContext {
                 effective_usage_base: Some("https://api-vip.codex-for.me".to_string()),
-                effective_usage_source: Some("codex_for_me_balance".to_string()),
+                effective_usage_source: Some("login_summary".to_string()),
                 updated_at_unix_ms: 789,
             },
         )
