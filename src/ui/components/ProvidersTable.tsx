@@ -233,7 +233,11 @@ export function ProvidersTable({
             const lastErrorAt = h.last_fail_at_unix_ms
             // Show each provider's own latest failure in-place. Event Log jump remains best-effort:
             // the Event Log page re-runs a provider+message+time search against its full loaded window.
-            const showLastError = lastErrorAt > 0 && lastErrorMessage.length > 0
+            const providerIsHealthy = h.status === 'healthy'
+            const showLastError =
+              lastErrorAt > 0 &&
+              lastErrorMessage.length > 0 &&
+              (!providerIsHealthy || lastErrorAt >= (h.last_ok_at_unix_ms ?? 0))
 
             return (
               <tr key={p}>

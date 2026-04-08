@@ -272,7 +272,17 @@ export type LanRemoteUpdateDebugResponse = {
   status_file_exists: boolean
   log_path?: string | null
   log_file_exists: boolean
+  log_tail_source?: 'file' | 'timeline' | 'none' | string
   log_tail?: string | null
+  worker_bootstrap_observed?: boolean
+  worker_script_probe?: {
+    path: string
+    exists: boolean
+    modified_at_unix_ms?: number | null
+    size_bytes?: number | null
+    bootstrap_marker_present: boolean
+    no_tag_fetch_present: boolean
+  } | null
   local_build_identity: {
     app_version: string
     build_git_sha: string
@@ -340,6 +350,7 @@ export type Config = {
       node_id: string
       node_name: string
       active: boolean
+      online?: boolean
       trusted?: boolean
       pair_state?: 'trusted' | 'incoming_request' | 'requested' | 'pin_required' | null
       pair_request_id?: string | null

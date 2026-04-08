@@ -66,6 +66,7 @@ import {
   resolveCliHomes,
 } from './utils/switchboard'
 import { usageProviderRowKey } from './utils/usageStatisticsView'
+import { isRemoteUpdateStatusCurrentForPending } from './utils/remoteUpdateStatus'
 import {
   USAGE_REQUESTS_CANONICAL_QUERY_KEY,
   primeUsageRequestsPrefetchCache,
@@ -1300,7 +1301,13 @@ export default function App() {
       for (const nodeId of Object.keys(prev)) {
         const source = sources.find((item) => item.node_id === nodeId && item.kind === 'peer')
         if (!source) continue
-        if (source.remote_update_status?.state?.trim() || !source.version_sync_required) {
+        const pendingStage = prev[nodeId]
+        const remoteState = source.remote_update_status?.state?.trim() || ''
+        const hasCurrentTerminalRemoteUpdateStatus =
+          Boolean(source.remote_update_status?.state?.trim()) &&
+          isRemoteUpdateStatusCurrentForPending(source, pendingStage) &&
+          ['failed', 'succeeded', 'superseded'].includes(remoteState)
+        if (hasCurrentTerminalRemoteUpdateStatus || !source.version_sync_required) {
           delete next[nodeId]
           changed = true
         }
@@ -1308,6 +1315,31 @@ export default function App() {
       return changed ? next : prev
     })
   }, [config])
+
+  const lanRemoteUpdatePendingNodeIdsKey = Object.keys(lanRemoteUpdatePendingByNode).sort().join('|')
+
+  useEffect(() => {
+    if (isDevPreview || !lanRemoteUpdatePendingNodeIdsKey) return
+    let cancelled = false
+    let refreshInFlight = false
+    const refreshRemoteUpdateProgress = async () => {
+      if (cancelled || refreshInFlight) return
+      refreshInFlight = true
+      try {
+        await refreshConfig({ refreshProviderSwitchStatus: false, force: true })
+      } finally {
+        refreshInFlight = false
+      }
+    }
+    void refreshRemoteUpdateProgress()
+    const timer = window.setInterval(() => {
+      void refreshRemoteUpdateProgress()
+    }, 1000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [isDevPreview, lanRemoteUpdatePendingNodeIdsKey, refreshConfig])
 
   async function requestLanRemoteUpdateSameVersion(nodeId: string) {
     if (lanRemoteUpdatePendingByNode[nodeId]) return
@@ -1339,7 +1371,6 @@ export default function App() {
         },
       }))
       flashToast('Peer version sync requested')
-      await refreshStatus()
       await refreshConfig({ refreshProviderSwitchStatus: false, force: true })
     } catch (error) {
       setLanRemoteUpdatePendingByNode((prev) => {

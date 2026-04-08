@@ -2,6 +2,12 @@ import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useRef, useState } from 'react'
 import { ModalBackdrop } from './ModalBackdrop'
 import type { Config, LanRemoteUpdateDebugResponse } from '../types'
+import {
+  isRemoteUpdateStatusCurrentForPending,
+  remoteUpdateStatusObservedAtUnixMs,
+  remoteUpdateStatusObservedAtUnixMsFromStatus,
+  type RemoteUpdatePendingStage,
+} from '../utils/remoteUpdateStatus'
 
 type Props = {
   open: boolean
@@ -22,10 +28,7 @@ type Props = {
   onApprovePair: (requestId: string) => Promise<string | null | void> | string | null | void
   onSubmitPairPin: (nodeId: string, requestId: string, pinCode: string) => Promise<void> | void
   onSyncPeerVersion: (nodeId: string) => Promise<void> | void
-  remoteUpdatePendingByNode: Record<
-    string,
-    { stage: 'requesting' | 'refreshing'; detail: string; startedAtUnixMs: number }
-  >
+  remoteUpdatePendingByNode: Record<string, RemoteUpdatePendingStage>
   onOpenGroupManager: () => void
   onClose: () => void
   providerListRef: React.RefObject<HTMLDivElement | null>
@@ -44,6 +47,23 @@ type PairDialogState =
 
 type ConfigSource = NonNullable<Config['config_source']>['sources'][number]
 type BuildIdentity = NonNullable<ConfigSource['build_identity']>
+type RemoteUpdateStatusSnapshot = NonNullable<ConfigSource['remote_update_status']>
+
+export function remoteUpdateDebugPollNodeIds(
+  onlinePeerNodeIds: string[],
+  pendingPeerNodeIds: string[],
+): string[] {
+  const preferred = pendingPeerNodeIds.length > 0 ? pendingPeerNodeIds : onlinePeerNodeIds
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const nodeId of preferred) {
+    const normalized = nodeId.trim()
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    out.push(normalized)
+  }
+  return out
+}
 
 function normalizePinInput(value: string): string {
   return value.replace(/\D+/g, '').slice(0, 6)
@@ -67,6 +87,7 @@ function formatPairDialogError(error: unknown): string {
 function compactPeerStateLabel(
   source: ConfigSource,
 ): string {
+  if (source.kind === 'peer' && source.online === false) return 'Offline'
   if (source.trusted) return 'Trusted'
   if (source.pair_state === 'incoming_request') return 'Needs approval'
   if (source.pair_state === 'pin_required') return 'PIN required'
@@ -77,6 +98,7 @@ function compactPeerStateLabel(
 function compactFollowStatusLabel(
   source: ConfigSource,
 ): string {
+  if (source.kind === 'peer' && source.online === false) return 'Offline'
   if (source.active) return 'Following'
   if (source.follow_allowed) return 'Ready to follow'
   if (!source.trusted) return 'Pair required'
@@ -84,9 +106,13 @@ function compactFollowStatusLabel(
   return 'Idle'
 }
 
-function compactUpdateStatusLabel(
+export function compactUpdateStatusLabel(
   source: ConfigSource,
+  localBuildSha?: string | null,
 ): string {
+  const liveRemoteState = remoteUpdateStateLabel(source, localBuildSha)
+  if (liveRemoteState) return liveRemoteState
+  if (source.kind === 'peer' && source.online === false) return 'Peer offline'
   if (!source.version_sync_required) return 'No update needed'
   return source.same_version_update_allowed ? 'Update available' : 'Update blocked'
 }
@@ -97,12 +123,14 @@ export function syncPauseSummaryLabel(source: ConfigSource): string | null {
   return pausedCount === 2 ? '2 domains paused' : `${pausedCount} domains paused`
 }
 
-function remoteUpdateStateLabel(source: ConfigSource): string | null {
+function remoteUpdateStateLabel(source: ConfigSource, localBuildSha?: string | null): string | null {
+  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return null
   const state = source.remote_update_status?.state?.trim()
   const reasonCode = source.remote_update_status?.reason_code?.trim()
   if (!state) return null
-  if (state === 'accepted') return 'Queued'
-  if (state === 'running') return 'Updating'
+  if (state === 'accepted' || state === 'running') {
+    return remoteUpdateLiveStageLabel(source.remote_update_status) ?? (state === 'accepted' ? 'Queued' : 'Updating')
+  }
   if (state === 'failed') return 'Update failed'
   if (state === 'succeeded') return 'Updated'
   if (state === 'superseded' && reasonCode === 'peer_build_changed_before_start') return 'Expired before start'
@@ -111,7 +139,56 @@ function remoteUpdateStateLabel(source: ConfigSource): string | null {
   return state
 }
 
-export function shouldShowDiagnosticsRemoteUpdateStatus(source: ConfigSource): boolean {
+function normalizedBuildSha(value: string | undefined | null): string {
+  const normalized = value?.trim().toLowerCase() || ''
+  if (!normalized || normalized === 'unknown') return ''
+  return normalized
+}
+
+function normalizedTargetRef(value: string | undefined | null): string {
+  return value?.trim().toLowerCase() || ''
+}
+
+function remoteUpdateTargetMatchesBuild(
+  source: ConfigSource,
+  buildSha: string | undefined | null,
+): boolean | null {
+  const normalizedBuild = normalizedBuildSha(buildSha)
+  const targetRef = normalizedTargetRef(source.remote_update_status?.target_ref)
+  if (!normalizedBuild || !targetRef) return null
+  return normalizedBuild.startsWith(targetRef) || targetRef.startsWith(normalizedBuild)
+}
+
+export function isRemoteUpdateStatusRelevantToCurrentBuild(
+  source: ConfigSource,
+  localBuildSha?: string | null,
+): boolean {
+  const status = source.remote_update_status
+  if (!status?.state?.trim()) return false
+  const targetMatchesLocalBuild = remoteUpdateTargetMatchesBuild(source, localBuildSha)
+  if (localBuildSha && targetMatchesLocalBuild === false) {
+    return false
+  }
+  const terminalState = ['failed', 'succeeded', 'superseded'].includes(status.state.trim())
+  if (terminalState && source.build_matches_local && !source.version_sync_required) {
+    return false
+  }
+  const targetMatchesPeerBuild = remoteUpdateTargetMatchesBuild(source, source.build_identity?.build_git_sha)
+  if (terminalState && targetMatchesPeerBuild === false && (localBuildSha ? targetMatchesLocalBuild === false : true)) {
+    return false
+  }
+  const buildCommitUnixMs = source.build_identity?.build_git_commit_unix_ms ?? null
+  if (!Number.isFinite(buildCommitUnixMs) || !buildCommitUnixMs) return true
+  const statusObservedAtUnixMs = remoteUpdateStatusObservedAtUnixMs(source)
+  if (!statusObservedAtUnixMs) return true
+  return statusObservedAtUnixMs >= buildCommitUnixMs
+}
+
+export function shouldShowDiagnosticsRemoteUpdateStatus(
+  source: ConfigSource,
+  localBuildSha?: string | null,
+): boolean {
+  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return false
   const state = source.remote_update_status?.state?.trim()
   if (!state) return false
   if (state !== 'superseded') return true
@@ -119,11 +196,152 @@ export function shouldShowDiagnosticsRemoteUpdateStatus(source: ConfigSource): b
 }
 
 function remoteUpdateProgressDetail(source: ConfigSource): string {
-  return formatReadableCommitRefs(source.remote_update_status?.detail?.trim() || '')
+  return sanitizeRemoteUpdateText(source.remote_update_status?.detail?.trim() || '')
+}
+
+export function effectiveRemoteUpdateStatus(
+  source: ConfigSource,
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+): RemoteUpdateStatusSnapshot | null {
+  const sourceStatus = source.remote_update_status ?? null
+  const debugStatus = remoteUpdateDebug?.remote_update_status ?? null
+  if (!debugStatus?.state?.trim()) return sourceStatus
+  const sourceObservedAtUnixMs = remoteUpdateStatusObservedAtUnixMsFromStatus(sourceStatus)
+  const debugObservedAtUnixMs = remoteUpdateStatusObservedAtUnixMsFromStatus(debugStatus)
+  return debugObservedAtUnixMs >= sourceObservedAtUnixMs ? debugStatus : sourceStatus
+}
+
+export function withEffectiveRemoteUpdateStatus(
+  source: ConfigSource,
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+): ConfigSource {
+  const nextStatus = effectiveRemoteUpdateStatus(source, remoteUpdateDebug)
+  if (nextStatus === source.remote_update_status) return source
+  return {
+    ...source,
+    remote_update_status: nextStatus,
+  }
+}
+
+function latestRemoteUpdateTimelineEntry(
+  status:
+    | {
+        timeline?: Array<{
+          unix_ms?: number
+          phase?: string | null
+          label?: string | null
+          detail?: string | null
+          source?: string | null
+          state?: string | null
+        }>
+        state?: string | null
+      }
+    | null
+    | undefined,
+) {
+  return [...(status?.timeline ?? [])]
+    .filter((entry) => (entry.phase?.trim() || entry.label?.trim() || entry.detail?.trim()))
+    .sort((a, b) => (a.unix_ms ?? 0) - (b.unix_ms ?? 0))
+    .at(-1)
+}
+
+function remoteUpdateLiveStageLabel(
+  status:
+    | {
+        state?: string | null
+        timeline?: Array<{
+          unix_ms?: number
+          phase?: string | null
+          label?: string | null
+          detail?: string | null
+          source?: string | null
+          state?: string | null
+        }>
+      }
+    | null
+    | undefined,
+): string | null {
+  const phase = latestRemoteUpdateTimelineEntry(status)?.phase?.trim() || ''
+  if (phase === 'request_accepted') return 'Queued'
+  if (phase === 'worker_spawned' || phase === 'bootstrap' || phase === 'worker_started') return 'Preparing'
+  if (phase === 'git_status') return 'Checking repo'
+  if (phase === 'git_fetch') return 'Fetching'
+  if (phase === 'resolve_target') return 'Resolving'
+  if (
+    phase === 'checkout_local_branch' ||
+    phase === 'pull_branch' ||
+    phase === 'checkout_remote_branch' ||
+    phase === 'checkout_commit'
+  ) {
+    return 'Checking out'
+  }
+  if (phase === 'build_release_binary') return 'Building'
+  if (phase === 'install_release_binary') return 'Installing'
+  if (phase === 'restart_api_router') return 'Restarting'
+  if (phase === 'build_exe') return 'Building'
+  if (status?.state?.trim() === 'accepted') return 'Queued'
+  if (status?.state?.trim() === 'running') return 'Updating'
+  return null
 }
 
 function formatReadableCommitRefs(value: string): string {
   return value.replace(/\b[0-9a-f]{12,40}\b/gi, (match) => match.slice(0, 8))
+}
+
+function isRemoteUpdateNoiseLine(value: string): boolean {
+  const normalized = value.trim()
+  if (!normalized) return true
+  return (
+    /^vite v\d/i.test(normalized) ||
+    /^transforming\b/i.test(normalized) ||
+    /^rendering chunks\b/i.test(normalized) ||
+    /^computing gzip size\b/i.test(normalized) ||
+    /^dist\/assets\//i.test(normalized) ||
+    /^>\s*api-router@/i.test(normalized) ||
+    /^>\s*node\s+/i.test(normalized) ||
+    /^line ending check passed/i.test(normalized) ||
+    /^\[check-[^\]]+\]\s+ok/i.test(normalized) ||
+    /^\d+\s+modules transformed\.?$/i.test(normalized) ||
+    /\bgzip:\s*\d/i.test(normalized) ||
+    /\bbuilt in \d/i.test(normalized) ||
+    /^At [A-Z]:\\/i.test(normalized) ||
+    /^At line:\d+/i.test(normalized) ||
+    /^CategoryInfo:/i.test(normalized) ||
+    /^FullyQualifiedErrorId/i.test(normalized) ||
+    /^Microsoft\.PowerShell\./i.test(normalized) ||
+    /^Write-Error\b/i.test(normalized) ||
+    /^\+\s+Write-Error\b/i.test(normalized) ||
+    /^\+\s+~+$/i.test(normalized)
+  )
+}
+
+function sanitizeRemoteUpdateText(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  const normalized = formatReadableCommitRefs(trimmed)
+    .replace(/\u00c2/g, ' ')
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ' ')
+    .replace(/\[[0-9;]{1,16}m/g, ' ')
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, ' ')
+    .replace(/\. Output:\s*/gi, ': ')
+  const segments = normalized
+    .split(/\r?\n|\s+\|\s+/)
+    .map((segment) =>
+      segment
+        .replace(/:\s*dist\/assets\/.*$/i, '')
+        .replace(/:\s*At [A-Z]:\\.*$/i, '')
+        .replace(/:\s*CategoryInfo:.*$/i, '')
+        .replace(/:\s*FullyQualifiedErrorId.*$/i, '')
+        .replace(/:\s*\+\s+Write-Error.*$/i, '')
+        .replace(/:\s*\+\s+~+.*$/i, '')
+        .replace(/\s+/g, ' ')
+        .trim(),
+    )
+    .filter((segment) => segment && !isRemoteUpdateNoiseLine(segment))
+  if (segments.length === 0) {
+    return normalized.replace(/\s+/g, ' ').trim()
+  }
+  return segments.join(' | ')
 }
 
 function hasRemoteDebugDetails(
@@ -141,19 +359,144 @@ function hasRemoteDebugDetails(
   )
 }
 
-function remoteDebugStatusRecordText(remoteUpdateDebug: LanRemoteUpdateDebugResponse): string {
+function remoteDebugStatusRecordText(remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined): string {
+  if (!remoteUpdateDebug) return 'Peer remote update debug is not available yet'
   return remoteUpdateDebug.status_file_exists
     ? 'Remote status record available from peer'
     : 'Peer has not written a remote update status record yet'
 }
 
-function remoteDebugLogRecordText(remoteUpdateDebug: LanRemoteUpdateDebugResponse): string {
+function remoteDebugLogRecordText(remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined): string {
+  if (!remoteUpdateDebug) return 'Remote update log: unavailable'
+  if (remoteUpdateDebug.log_tail_source === 'timeline' && remoteUpdateDebug.log_tail?.trim()) {
+    return 'Remote update log: synthesized from status timeline'
+  }
   return remoteUpdateDebug.log_file_exists
     ? 'Remote update log: available'
     : 'No remote update log available from peer'
 }
 
-function remoteUpdateDetailText(source: ConfigSource): string {
+function remoteDebugBootstrapText(remoteUpdateDebug: LanRemoteUpdateDebugResponse): string | null {
+  const status = remoteUpdateDebug.remote_update_status
+  if (!status) return null
+  if (remoteUpdateDebug.worker_bootstrap_observed) {
+    return 'Worker bootstrap was observed from peer-side status/log entries'
+  }
+  if (status.reason_code === 'worker_never_bootstrapped') {
+    return 'Worker exited before bootstrap; no peer-side worker status/log entries were recorded'
+  }
+  return null
+}
+
+function remoteDebugScriptProbeText(remoteUpdateDebug: LanRemoteUpdateDebugResponse): string | null {
+  const probe = remoteUpdateDebug.worker_script_probe
+  if (!probe) return null
+  const facts = [
+    probe.exists ? 'script file exists' : 'script file missing',
+    probe.bootstrap_marker_present ? 'bootstrap markers present' : 'bootstrap markers missing',
+    probe.no_tag_fetch_present ? 'no-tag fetch present' : 'fetch behavior unknown',
+  ]
+  return `Worker script probe: ${facts.join(' · ')}`
+}
+
+export function remoteDebugReadinessReasonText(
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+): string {
+  return formatReadableCommitRefs(
+    remoteUpdateDebug?.remote_update_readiness?.blocked_reason?.trim() ?? '',
+  )
+}
+
+export function splitRemoteDebugLogTail(logTail: string): { recent: string; older: string } {
+  const lines = logTail
+    .split(/\r?\n/)
+    .map((line) => sanitizeRemoteUpdateText(line.trimEnd()))
+    .filter((line) => line.trim().length > 0 && !isRemoteUpdateNoiseLine(line))
+  if (lines.length <= 4) {
+    return { recent: lines.join('\n'), older: '' }
+  }
+  return {
+    older: lines.slice(0, -4).join('\n'),
+    recent: lines.slice(-4).join('\n'),
+  }
+}
+
+export function isRemoteDebugStatusRelevantToCurrentBuild(
+  source: ConfigSource,
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+  localBuildSha?: string | null,
+): boolean {
+  return remoteDebugStatusRelevance(source, remoteUpdateDebug, localBuildSha).isCurrent
+}
+
+export function remoteDebugStatusRelevance(
+  source: ConfigSource,
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+  localBuildSha?: string | null,
+): { isCurrent: boolean; reason: string } {
+  const status = remoteUpdateDebug?.remote_update_status
+  if (!status?.state?.trim()) {
+    return { isCurrent: false, reason: 'peer did not return a structured remote update status' }
+  }
+  const targetRef = normalizedTargetRef(status.target_ref)
+  if (!targetRef) {
+    return { isCurrent: false, reason: 'peer status is missing a target ref' }
+  }
+  const peerBuildSha = normalizedBuildSha(source.build_identity?.build_git_sha)
+  const normalizedLocalBuildSha = normalizedBuildSha(localBuildSha)
+  const targetMatchesLocalBuild =
+    !normalizedLocalBuildSha || !targetRef
+      ? null
+      : normalizedLocalBuildSha.startsWith(targetRef) || targetRef.startsWith(normalizedLocalBuildSha)
+  if (localBuildSha && targetMatchesLocalBuild === false) {
+    return {
+      isCurrent: false,
+      reason: `status target ${formatReadableCommitRefs(targetRef)} does not match current build ${formatReadableCommitRefs(normalizedLocalBuildSha)}`,
+    }
+  }
+  const terminalState = ['failed', 'succeeded', 'superseded'].includes(status.state.trim())
+  if (terminalState && source.build_matches_local && !source.version_sync_required) {
+    return {
+      isCurrent: false,
+      reason: 'peer already matches the current machine build',
+    }
+  }
+  const targetMatchesPeerBuild =
+    !peerBuildSha || !targetRef ? null : peerBuildSha.startsWith(targetRef) || targetRef.startsWith(peerBuildSha)
+  if (
+    terminalState &&
+    targetMatchesPeerBuild === false &&
+    (localBuildSha ? targetMatchesLocalBuild === false : true)
+  ) {
+    return {
+      isCurrent: false,
+      reason: `status target ${formatReadableCommitRefs(targetRef)} only matches an older peer build`,
+    }
+  }
+  const buildCommitUnixMs = source.build_identity?.build_git_commit_unix_ms ?? null
+  if (!Number.isFinite(buildCommitUnixMs) || !buildCommitUnixMs) {
+    return { isCurrent: true, reason: 'peer build commit time is unavailable' }
+  }
+  const statusObservedAtUnixMs =
+    status.finished_at_unix_ms ??
+    status.started_at_unix_ms ??
+    status.updated_at_unix_ms ??
+    status.accepted_at_unix_ms ??
+    null
+  if (!statusObservedAtUnixMs) {
+    return { isCurrent: true, reason: 'peer status has no timestamp; treating it as current' }
+  }
+  if (statusObservedAtUnixMs < buildCommitUnixMs) {
+    return {
+      isCurrent: false,
+      reason: `status time ${formatCommitDate(statusObservedAtUnixMs)} is older than peer build time ${formatCommitDate(buildCommitUnixMs)}`,
+    }
+  }
+  return { isCurrent: true, reason: 'status target matches the current machine build' }
+}
+
+export function remoteUpdateDetailText(source: ConfigSource, localBuildSha?: string | null): string {
+  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return ''
   const status = source.remote_update_status
   if (!status) return ''
   const requester = status.requester_node_name?.trim() || status.requester_node_id?.trim() || 'remote peer'
@@ -182,7 +525,8 @@ function remoteUpdateDetailText(source: ConfigSource): string {
   return detail
 }
 
-function remoteUpdateTimestampLabel(source: ConfigSource): string {
+function remoteUpdateTimestampLabel(source: ConfigSource, localBuildSha?: string | null): string {
+  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return ''
   const status = source.remote_update_status
   if (!status) return ''
   const unixMs =
@@ -193,13 +537,83 @@ function remoteUpdateTimestampLabel(source: ConfigSource): string {
   return formatCommitDate(unixMs ?? null)
 }
 
-function remoteUpdateTimelineEntries(source: ConfigSource) {
+function remoteUpdateTimelineEntries(source: ConfigSource, localBuildSha?: string | null) {
+  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return []
   return [...(source.remote_update_status?.timeline ?? [])]
     .filter((entry) => (entry.label?.trim() || entry.detail?.trim() || entry.phase?.trim()))
+    .map((entry) => ({
+      ...entry,
+      detail: sanitizeRemoteUpdateText(entry.detail?.trim() || ''),
+    }))
     .sort((a, b) => (a.unix_ms ?? 0) - (b.unix_ms ?? 0))
 }
 
-function remoteUpdateMenuDetailText(source: ConfigSource): string {
+function pendingRemoteUpdateStateLabel(pendingStage: RemoteUpdatePendingStage | undefined): string | null {
+  if (!pendingStage) return null
+  if (pendingStage.stage === 'requesting') return 'Sending'
+  if (pendingStage.stage === 'refreshing') return 'Waiting'
+  return 'Remote update pending'
+}
+
+function pendingRemoteUpdateDetailText(pendingStage: RemoteUpdatePendingStage | undefined): string {
+  if (!pendingStage) return ''
+  return sanitizeRemoteUpdateText(pendingStage.detail?.trim() || '')
+}
+
+function pendingRemoteUpdateTimestampLabel(pendingStage: RemoteUpdatePendingStage | undefined): string {
+  if (!pendingStage?.startedAtUnixMs) return ''
+  return formatCommitDate(pendingStage.startedAtUnixMs)
+}
+
+function pendingRemoteUpdateTimelineEntries(pendingStage: RemoteUpdatePendingStage | undefined) {
+  if (!pendingStage) return []
+  return [
+    {
+      unix_ms: pendingStage.startedAtUnixMs,
+      label:
+        pendingStage.stage === 'requesting'
+          ? 'Request sent from current machine'
+          : 'Peer accepted request; waiting for remote progress',
+      detail: sanitizeRemoteUpdateText(pendingStage.detail?.trim() || ''),
+      phase: pendingStage.stage,
+    },
+  ]
+}
+
+export function diagnosticsRemoteUpdateDisplay(
+  source: ConfigSource,
+  pendingStage: RemoteUpdatePendingStage | undefined,
+  localBuildSha?: string | null,
+): {
+  label: string | null
+  detail: string
+  time: string
+  timeline: Array<{ unix_ms?: number | null; label?: string | null; detail?: string | null; phase?: string | null }>
+} {
+  const remoteStatusCurrentForPending = isRemoteUpdateStatusCurrentForPending(source, pendingStage)
+  const showPendingRemoteUpdate =
+    Boolean(pendingStage) &&
+    (!shouldShowDiagnosticsRemoteUpdateStatus(source, localBuildSha) || !remoteStatusCurrentForPending)
+  if (showPendingRemoteUpdate) {
+    return {
+      label: pendingRemoteUpdateStateLabel(pendingStage),
+      detail: pendingRemoteUpdateDetailText(pendingStage),
+      time: pendingRemoteUpdateTimestampLabel(pendingStage),
+      timeline: pendingRemoteUpdateTimelineEntries(pendingStage),
+    }
+  }
+  return {
+    label: shouldShowDiagnosticsRemoteUpdateStatus(source, localBuildSha)
+      ? remoteUpdateStateLabel(source, localBuildSha)
+      : null,
+    detail: remoteUpdateDetailText(source, localBuildSha),
+    time: remoteUpdateTimestampLabel(source, localBuildSha),
+    timeline: remoteUpdateTimelineEntries(source, localBuildSha),
+  }
+}
+
+function remoteUpdateMenuDetailText(source: ConfigSource, localBuildSha?: string | null): string {
+  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return 'Sync to this build'
   const status = source.remote_update_status
   if (!status) return 'Sync to this build'
   const state = status.state?.trim()
@@ -218,17 +632,31 @@ function remoteUpdateMenuDetailText(source: ConfigSource): string {
   return 'Sync to this build'
 }
 
+function remoteUpdateIndicatesIssue(source: ConfigSource, localBuildSha?: string | null): boolean {
+  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return false
+  const state = source.remote_update_status?.state?.trim()
+  return state === 'failed' || state === 'superseded'
+}
+
+function remoteUpdateIsActivelyRunning(source: ConfigSource, localBuildSha?: string | null): boolean {
+  if (!isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) return false
+  const state = source.remote_update_status?.state?.trim()
+  return state === 'accepted' || state === 'running'
+}
+
 export function remoteUpdateActionState(
   source: ConfigSource,
-  pendingStage:
-    | { stage: 'requesting' | 'refreshing'; detail: string; startedAtUnixMs: number }
-    | undefined,
+  pendingStage: RemoteUpdatePendingStage | undefined,
+  localBuildSha?: string | null,
 ): {
   actionLabel: string
   actionDetail: string | null
   spinning: boolean
 } {
-  const remoteState = source.remote_update_status?.state?.trim()
+  const remoteState = isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)
+    ? source.remote_update_status?.state?.trim()
+    : ''
+  const remoteStatusCurrentForPending = isRemoteUpdateStatusCurrentForPending(source, pendingStage)
   if (pendingStage?.stage === 'requesting') {
     return {
       actionLabel: 'Sending...',
@@ -236,30 +664,30 @@ export function remoteUpdateActionState(
       spinning: true,
     }
   }
-  if (pendingStage?.stage === 'refreshing' && !remoteState) {
-    return {
-      actionLabel: 'Queued',
-      actionDetail: pendingStage.detail || 'Peer accepted update request',
-      spinning: true,
-    }
-  }
   if (remoteState === 'accepted') {
     return {
-      actionLabel: 'Queued',
+      actionLabel: remoteUpdateLiveStageLabel(source.remote_update_status) ?? 'Queued',
       actionDetail: remoteUpdateProgressDetail(source) || 'Peer accepted update request',
       spinning: true,
     }
   }
   if (remoteState === 'running') {
     return {
-      actionLabel: 'Updating',
+      actionLabel: remoteUpdateLiveStageLabel(source.remote_update_status) ?? 'Updating',
       actionDetail: remoteUpdateProgressDetail(source) || 'Peer is applying this build',
+      spinning: true,
+    }
+  }
+  if (pendingStage?.stage === 'refreshing' && (!remoteState || !remoteStatusCurrentForPending)) {
+    return {
+      actionLabel: 'Queued',
+      actionDetail: pendingStage.detail || 'Peer accepted update request',
       spinning: true,
     }
   }
   if (remoteState === 'failed') {
     return {
-      actionLabel: source.same_version_update_allowed ? 'Retry update' : 'Update blocked',
+      actionLabel: 'Update failed',
       actionDetail: remoteUpdateProgressDetail(source) || 'Last remote update failed',
       spinning: false,
     }
@@ -272,9 +700,10 @@ export function remoteUpdateActionState(
     }
   }
   if (remoteState === 'superseded') {
+    const issueLabel = remoteUpdateStateLabel(source, localBuildSha)
     return {
-      actionLabel: source.same_version_update_allowed ? 'Update peer' : 'Update blocked',
-      actionDetail: remoteUpdateMenuDetailText(source),
+      actionLabel: issueLabel || 'Update issue',
+      actionDetail: remoteUpdateMenuDetailText(source, localBuildSha),
       spinning: false,
     }
   }
@@ -285,14 +714,28 @@ export function remoteUpdateActionState(
   }
 }
 
+export function remoteUpdateMenuActionLabel(
+  source: ConfigSource,
+  pendingStage: RemoteUpdatePendingStage | undefined,
+  localBuildSha?: string | null,
+): string {
+  const remoteStateLabel = remoteUpdateStateLabel(source, localBuildSha)
+  if (remoteStateLabel) return remoteStateLabel
+  const actionState = remoteUpdateActionState(source, pendingStage, localBuildSha)
+  return actionState.actionLabel
+}
+
 export function shouldShowRemoteUpdateMenuDetail(
   source: ConfigSource,
   actionState: { actionDetail: string | null; spinning: boolean } | null,
+  localBuildSha?: string | null,
 ): boolean {
   if (!actionState?.actionDetail?.trim()) return false
   if (actionState.spinning) return true
-  const remoteState = source.remote_update_status?.state?.trim()
-  return remoteState === 'failed'
+  const remoteState = isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)
+    ? source.remote_update_status?.state?.trim()
+    : ''
+  return remoteState === 'failed' || remoteState === 'superseded'
 }
 
 export function keepSourceMenuOpenAfterAction(source: ConfigSource): boolean {
@@ -336,8 +779,12 @@ function isGenericVersionSyncReason(reason: string): boolean {
 
 export function diagnosticsWhyText(
   source: NonNullable<Config['config_source']>['sources'][number],
+  localBuildSha?: string | null,
 ): string {
-  if (source.remote_update_status?.state?.trim()) {
+  if (source.build_matches_local && !source.version_sync_required) {
+    return ''
+  }
+  if (isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)) {
     return ''
   }
   if (source.version_sync_required) {
@@ -408,6 +855,7 @@ export function ConfigModal({
             node_id: 'local-fallback',
             node_name: 'Local',
             active: true,
+            online: true,
             follow_allowed: false,
             follow_blocked_reason: null,
             using_count: 0,
@@ -425,6 +873,13 @@ export function ConfigModal({
     'local-fallback'
   const selectedConfigSource =
     configSources.find((source) => source.node_id === selectedConfigSourceValue) ?? configSources[0]
+  const effectiveSelectedConfigSource =
+    selectedConfigSource?.kind === 'peer'
+      ? withEffectiveRemoteUpdateStatus(
+          selectedConfigSource,
+          remoteUpdateDebugByNode[selectedConfigSource.node_id],
+        )
+      : selectedConfigSource
   const selectedUsingCount = selectedConfigSource?.using_count ?? 0
   const selectedUsingLabel =
     selectedUsingCount > 0
@@ -432,15 +887,30 @@ export function ConfigModal({
         ? `${selectedUsingCount} using`
         : `${selectedUsingCount} follow`
       : ''
-  const updateRequiredSources = configSources.filter(
-    (source) =>
-      source.kind === 'peer' &&
-      (((source.sync_blocked_domains?.length ?? 0) > 0) ||
-        (source.version_sync_required && !source.same_version_update_allowed)),
-  )
   const localSource = configSources.find((source) => source.kind === 'local') ?? null
+  const localBuildSha = localSource?.build_identity?.build_git_sha ?? null
   const peerSources = configSources.filter((source) => source.kind === 'peer')
-  const peerDebugNodeIds = peerSources.map((source) => source.node_id).join('|')
+  const effectivePeerSources = peerSources.map((source) =>
+    withEffectiveRemoteUpdateStatus(source, remoteUpdateDebugByNode[source.node_id]),
+  )
+  const issueSources = effectivePeerSources.filter(
+    (source) =>
+      source.online === false ||
+      (((source.sync_blocked_domains?.length ?? 0) > 0) ||
+        (source.version_sync_required &&
+          !source.same_version_update_allowed &&
+          !remoteUpdateIsActivelyRunning(source, localBuildSha) &&
+          Boolean(source.same_version_update_blocked_reason?.trim())) ||
+        remoteUpdateIndicatesIssue(source, localBuildSha)),
+  )
+  const onlinePeerSources = peerSources.filter((source) => source.online !== false)
+  const onlinePeerNodeIds = onlinePeerSources.map((source) => source.node_id)
+  const pendingPeerNodeIds = peerSources
+    .filter((source) => source.online !== false && Boolean(remoteUpdatePendingByNode[source.node_id]))
+    .map((source) => source.node_id)
+  const peerDebugPollNodeIds = remoteUpdateDebugPollNodeIds(onlinePeerNodeIds, pendingPeerNodeIds)
+  const peerDebugNodeIdsKey = peerDebugPollNodeIds.join('|')
+  const hasPendingPeerDebug = pendingPeerNodeIds.length > 0
 
   useEffect(() => {
     if (!sourceMenuOpen) return
@@ -508,8 +978,10 @@ export function ConfigModal({
   }, [pairDialog])
 
   useEffect(() => {
-    if (!diagnosticsOpen || peerSources.length === 0) return
+    if (peerDebugPollNodeIds.length === 0) return
+    if (!diagnosticsOpen && !hasPendingPeerDebug) return
     let cancelled = false
+    let refreshInFlight = false
     const loadDebug = async (nodeId: string) => {
       setRemoteUpdateDebugLoadingByNode((prev) => ({ ...prev, [nodeId]: true }))
       try {
@@ -533,18 +1005,24 @@ export function ConfigModal({
         })
       }
     }
-    const refreshAll = () => {
-      peerSources.forEach((source) => {
-        void loadDebug(source.node_id)
-      })
+    const refreshAll = async () => {
+      if (cancelled || refreshInFlight) return
+      refreshInFlight = true
+      try {
+        await Promise.all(peerDebugPollNodeIds.map((nodeId) => loadDebug(nodeId)))
+      } finally {
+        refreshInFlight = false
+      }
     }
-    refreshAll()
-    const timer = window.setInterval(refreshAll, 3000)
+    void refreshAll()
+    const timer = window.setInterval(() => {
+      void refreshAll()
+    }, hasPendingPeerDebug ? 1000 : 3000)
     return () => {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [diagnosticsOpen, peerDebugNodeIds])
+  }, [diagnosticsOpen, peerDebugNodeIdsKey, hasPendingPeerDebug])
 
   async function submitPairPinFromDialog() {
     if (pairDialog?.mode !== 'enter_pin') return
@@ -622,40 +1100,46 @@ export function ConfigModal({
                   {sourceMenuOpen ? (
                     <div className="aoMenu aoMenuCompact aoConfigSourceMenu" role="menu" aria-label="Config source options">
                       {configSources.map((source) => {
+                        const effectiveSource =
+                          source.kind === 'peer'
+                            ? withEffectiveRemoteUpdateStatus(source, remoteUpdateDebugByNode[source.node_id])
+                            : source
                         const label = source.kind === 'local' ? 'Local' : source.node_name
-                        const blockedReason = source.follow_blocked_reason?.trim() || ''
-                        const pairState = source.pair_state ?? null
+                        const blockedReason = effectiveSource.follow_blocked_reason?.trim() || ''
+                        const pairState = effectiveSource.pair_state ?? null
                         const versionSyncRequired =
-                          source.kind === 'peer' && Boolean(source.version_sync_required)
+                          effectiveSource.kind === 'peer' && Boolean(effectiveSource.version_sync_required)
                         const versionSyncBlockedReason =
-                          source.same_version_update_blocked_reason?.trim() || ''
+                          effectiveSource.same_version_update_blocked_reason?.trim() || ''
                         const versionSyncActionAvailable =
-                          versionSyncRequired && Boolean(source.same_version_update_allowed)
+                          versionSyncRequired && Boolean(effectiveSource.same_version_update_allowed)
                         const versionSyncPendingStage =
-                          source.kind === 'peer' ? remoteUpdatePendingByNode[source.node_id] : undefined
+                          effectiveSource.kind === 'peer'
+                            ? remoteUpdatePendingByNode[effectiveSource.node_id]
+                            : undefined
                         const versionSyncActionState =
-                          versionSyncRequired && source.kind === 'peer'
-                            ? remoteUpdateActionState(source, versionSyncPendingStage)
+                          versionSyncRequired && effectiveSource.kind === 'peer'
+                            ? remoteUpdateActionState(effectiveSource, versionSyncPendingStage, localBuildSha)
                             : null
                         const versionSyncPending = Boolean(versionSyncActionState?.spinning)
-                        const showVersionSyncDetail =
-                          versionSyncRequired &&
-                          shouldShowRemoteUpdateMenuDetail(source, versionSyncActionState)
                         const pairActionAvailable =
-                          source.kind === 'peer' &&
-                          (!source.trusted ||
-                            (source.trusted && source.follow_allowed && !source.active))
+                          effectiveSource.kind === 'peer' &&
+                          effectiveSource.online !== false &&
+                          (!effectiveSource.trusted ||
+                            (effectiveSource.trusted && effectiveSource.follow_allowed && !effectiveSource.active))
                         const disabled =
-                          (source.kind === 'peer' && !pairActionAvailable && !versionSyncActionAvailable) ||
+                          (effectiveSource.kind === 'peer' && !pairActionAvailable && !versionSyncActionAvailable) ||
                           versionSyncPending
                         const actionLabel =
-                          source.kind === 'local'
-                            ? source.active
+                          effectiveSource.kind === 'local'
+                            ? effectiveSource.active
                               ? 'Current'
                               : 'Use local'
+                            : effectiveSource.online === false
+                              ? 'Offline'
                             : versionSyncRequired
-                              ? versionSyncActionState?.actionLabel || 'Update peer'
-                              : source.active
+                              ? remoteUpdateMenuActionLabel(effectiveSource, versionSyncPendingStage, localBuildSha)
+                              : effectiveSource.active
                               ? 'Following'
                               : !source.trusted && pairState === 'incoming_request'
                                 ? 'Approve'
@@ -680,49 +1164,49 @@ export function ConfigModal({
                             disabled={disabled}
                             title={
                               versionSyncBlockedReason ||
-                              source.version_sync_reason?.trim() ||
+                              effectiveSource.version_sync_reason?.trim() ||
                               blockedReason ||
                               label
                             }
                             onClick={async () => {
-                              if (!keepSourceMenuOpenAfterAction(source)) {
+                              if (!keepSourceMenuOpenAfterAction(effectiveSource)) {
                                 setSourceMenuOpen(false)
                               }
-                              if (source.kind === 'local') {
+                              if (effectiveSource.kind === 'local') {
                                 await onClearFollowSource()
                                 return
                               }
-                              if (!source.trusted && pairState === 'incoming_request' && source.pair_request_id) {
-                                const pinCode = await onApprovePair(source.pair_request_id)
+                              if (!effectiveSource.trusted && pairState === 'incoming_request' && effectiveSource.pair_request_id) {
+                                const pinCode = await onApprovePair(effectiveSource.pair_request_id)
                                 if (pinCode) {
                                   setPairDialogError('')
                                   setPairDialog({
                                     mode: 'show_pin',
-                                    nodeId: source.node_id,
+                                    nodeId: effectiveSource.node_id,
                                     nodeName: label,
                                     pinCode,
                                   })
                                 }
                                 return
                               }
-                              if (!source.trusted && pairState === 'pin_required' && source.pair_request_id) {
+                              if (!effectiveSource.trusted && pairState === 'pin_required' && effectiveSource.pair_request_id) {
                                 setPairPinDigits(emptyPairPinDigits())
                                 setPairDialogError('')
                                 setPairDialog({
                                   mode: 'enter_pin',
-                                  nodeId: source.node_id,
+                                  nodeId: effectiveSource.node_id,
                                   nodeName: label,
-                                  requestId: source.pair_request_id,
+                                  requestId: effectiveSource.pair_request_id,
                                 })
                                 return
                               }
-                              if (!source.trusted) {
-                                const requestId = await onRequestPair(source.node_id)
+                              if (!effectiveSource.trusted) {
+                                const requestId = await onRequestPair(effectiveSource.node_id)
                                 if (requestId) {
                                   setPairDialogError('')
                                   setPairDialog({
                                     mode: 'waiting_approval',
-                                    nodeId: source.node_id,
+                                    nodeId: effectiveSource.node_id,
                                     nodeName: label,
                                     requestId,
                                   })
@@ -730,12 +1214,12 @@ export function ConfigModal({
                                 return
                               }
                               if (versionSyncRequired) {
-                                if (versionSyncPending || !source.same_version_update_allowed) return
-                                await onSyncPeerVersion(source.node_id)
+                                if (versionSyncPending || !effectiveSource.same_version_update_allowed) return
+                                await onSyncPeerVersion(effectiveSource.node_id)
                                 return
                               }
-                              if (disabled || source.active) return
-                              await onFollowSource(source.node_id)
+                              if (disabled || effectiveSource.active) return
+                              await onFollowSource(effectiveSource.node_id)
                             }}
                           >
                             <span className="aoConfigSourceMenuCheck" aria-hidden="true">
@@ -753,11 +1237,6 @@ export function ConfigModal({
                                 ) : null}
                                 {actionLabel}
                               </span>
-                              {showVersionSyncDetail ? (
-                                <span className="aoConfigSourceMenuMetaDetail">
-                                  {versionSyncActionState?.actionDetail}
-                                </span>
-                              ) : null}
                             </span>
                           </button>
                         )
@@ -768,11 +1247,11 @@ export function ConfigModal({
                 {peerSources.length > 0 ? (
                   <button
                     type="button"
-                    className={`aoConfigDiagPill${updateRequiredSources.length > 0 ? ' is-alert' : ''}`}
+                    className={`aoConfigDiagPill${issueSources.length > 0 ? ' is-alert' : ''}`}
                     onClick={() => setDiagnosticsOpen(true)}
                   >
                     <span>LAN</span>
-                    <span>{updateRequiredSources.length > 0 ? `${updateRequiredSources.length} issue${updateRequiredSources.length === 1 ? '' : 's'}` : 'healthy'}</span>
+                    <span>{issueSources.length > 0 ? `${issueSources.length} issue${issueSources.length === 1 ? '' : 's'}` : 'healthy'}</span>
                   </button>
                 ) : null}
               </div>
@@ -793,14 +1272,14 @@ export function ConfigModal({
             <div className="aoCard aoConfigCard">
               <div className="aoConfigDeck">
                 <div className="aoConfigPanel">
-                  {selectedConfigSource?.kind === 'peer' && selectedConfigSource.version_sync_required ? (
+                  {effectiveSelectedConfigSource?.kind === 'peer' && effectiveSelectedConfigSource.version_sync_required ? (
                     <div
                       className="aoHint aoHintWarning"
                       style={{ marginBottom: 10, color: 'rgba(145, 12, 43, 0.92)' }}
                     >
-                      {selectedConfigSource.version_sync_reason}
-                      {selectedConfigSource.same_version_update_blocked_reason
-                        ? ` ${selectedConfigSource.same_version_update_blocked_reason}`
+                      {effectiveSelectedConfigSource.version_sync_reason}
+                      {effectiveSelectedConfigSource.same_version_update_blocked_reason
+                        ? ` ${effectiveSelectedConfigSource.same_version_update_blocked_reason}`
                         : ' Choose Update peer in Config source to sync this peer to the current machine build.'}
                     </div>
                   ) : null}
@@ -874,8 +1353,7 @@ export function ConfigModal({
       {diagnosticsOpen ? (
         <ModalBackdrop className="aoModalBackdrop aoModalBackdropTop" onClose={() => setDiagnosticsOpen(false)}>
           <div
-            className="aoModal"
-            style={{ width: 'min(860px, calc(100vw - 40px))' }}
+            className="aoModal aoConfigDiagnosticsModal"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="aoModalHeader">
@@ -889,18 +1367,22 @@ export function ConfigModal({
                 Close
               </button>
             </div>
-            <div className="aoModalBody" style={{ display: 'grid', gap: 12 }}>
+            <div className="aoModalBody aoConfigDiagnosticsModalBody">
               {peerSources.length === 0 ? (
                 <div className="aoHint">No LAN peers detected.</div>
               ) : (
                 <>
                   {(() => {
                     const localRemoteUpdateStatusLabel =
-                      localSource && shouldShowDiagnosticsRemoteUpdateStatus(localSource)
-                        ? remoteUpdateStateLabel(localSource)
+                      localSource && shouldShowDiagnosticsRemoteUpdateStatus(localSource, localBuildSha)
+                        ? remoteUpdateStateLabel(localSource, localBuildSha)
                         : null
-                    const localRemoteUpdateDetail = localSource ? remoteUpdateDetailText(localSource) : ''
-                    const localRemoteUpdateTime = localSource ? remoteUpdateTimestampLabel(localSource) : ''
+                    const localRemoteUpdateDetail = localSource
+                      ? remoteUpdateDetailText(localSource, localBuildSha)
+                      : ''
+                    const localRemoteUpdateTime = localSource
+                      ? remoteUpdateTimestampLabel(localSource, localBuildSha)
+                      : ''
                     return (
                   <div className="aoCard aoConfigDiagLocalCard">
                     <div className="aoConfigDiagLocalHead">
@@ -945,29 +1427,51 @@ export function ConfigModal({
                     )
                   })()}
                   {peerSources.map((source) => {
-                    const pausedDomains = source.sync_blocked_domains?.map(syncDomainLabel) ?? []
-                    const pausedSummary = syncPauseSummaryLabel(source)
-                    const whyText = diagnosticsWhyText(source)
-                    const peerBuildLabel = source.build_identity
-                      ? formatBuildLabel(source.build_identity)
+                    const remoteUpdateDebug = remoteUpdateDebugByNode[source.node_id]
+                    const effectiveSource = withEffectiveRemoteUpdateStatus(source, remoteUpdateDebug)
+                    const pausedDomains = effectiveSource.sync_blocked_domains?.map(syncDomainLabel) ?? []
+                    const pausedSummary = syncPauseSummaryLabel(effectiveSource)
+                    const whyText = diagnosticsWhyText(effectiveSource, localBuildSha)
+                    const pendingStage = remoteUpdatePendingByNode[source.node_id]
+                    const remoteUpdateDisplay = diagnosticsRemoteUpdateDisplay(
+                      effectiveSource,
+                      pendingStage,
+                      localBuildSha,
+                    )
+                    const peerBuildLabel = effectiveSource.build_identity
+                      ? formatBuildLabel(effectiveSource.build_identity)
                       : 'Unknown'
                     const peerCommitLabel = formatCommitDate(
-                      source.build_identity?.build_git_commit_unix_ms ?? null,
+                      effectiveSource.build_identity?.build_git_commit_unix_ms ?? null,
                     )
-                    const remoteUpdateStatusLabel = shouldShowDiagnosticsRemoteUpdateStatus(source)
-                      ? remoteUpdateStateLabel(source)
-                      : null
-                    const remoteUpdateDetail = remoteUpdateDetailText(source)
-                    const remoteUpdateTime = remoteUpdateTimestampLabel(source)
-                    const remoteUpdateTimeline = remoteUpdateTimelineEntries(source)
-                    const remoteUpdateDebug = remoteUpdateDebugByNode[source.node_id]
+                    const remoteUpdateStatusLabel = remoteUpdateDisplay.label
+                    const remoteUpdateDetail = remoteUpdateDisplay.detail
+                    const remoteUpdateTime = remoteUpdateDisplay.time
+                    const remoteUpdateTimeline = remoteUpdateDisplay.timeline
                     const remoteUpdateDebugLoading = Boolean(remoteUpdateDebugLoadingByNode[source.node_id])
                     const remoteUpdateDebugError = remoteUpdateDebugErrorByNode[source.node_id] ?? ''
-                    const debugReadinessReason =
-                      formatReadableCommitRefs(
-                        remoteUpdateDebug?.remote_update_readiness.blocked_reason?.trim() ?? '',
-                      )
+                    const debugReadinessReason = remoteDebugReadinessReasonText(remoteUpdateDebug)
                     const debugLogTail = remoteUpdateDebug?.log_tail?.trim() ?? ''
+                    const { recent: recentDebugLogTail, older: olderDebugLogTail } =
+                      splitRemoteDebugLogTail(debugLogTail)
+                    const debugLogRelevance = remoteDebugStatusRelevance(
+                      effectiveSource,
+                      remoteUpdateDebug,
+                      localBuildSha,
+                    )
+                    const debugLogCurrentForBuild = debugLogRelevance.isCurrent
+                    const collapsedDebugLogTail = [olderDebugLogTail, recentDebugLogTail]
+                      .filter((part) => part.trim().length > 0)
+                      .join('\n')
+                    const debugLogSummaryText = collapsedDebugLogTail
+                      ? `Remote update log: ${debugLogCurrentForBuild ? 'current' : 'previous'}`
+                      : remoteDebugLogRecordText(remoteUpdateDebug)
+                    const debugBootstrapText = remoteUpdateDebug
+                      ? remoteDebugBootstrapText(remoteUpdateDebug)
+                      : null
+                    const debugScriptProbeText = remoteUpdateDebug
+                      ? remoteDebugScriptProbeText(remoteUpdateDebug)
+                      : null
                     const formattedDebugError = formatReadableCommitRefs(remoteUpdateDebugError)
                     const formattedWhyText = formatReadableCommitRefs(whyText)
                     const showDebugReadinessReason =
@@ -986,24 +1490,24 @@ export function ConfigModal({
                           <div className="aoConfigDiagPeerBlock">
                             <div className="aoConfigDiagPeerName">{source.node_name}</div>
                             <div className="aoConfigDiagPeerMeta">
-                              <span>{compactPeerStateLabel(source)}</span>
+                              <span>{compactPeerStateLabel(effectiveSource)}</span>
                               <span>·</span>
-                              <span>{source.build_matches_local ? 'Same build' : 'Different build'}</span>
+                              <span>{effectiveSource.build_matches_local ? 'Same build' : 'Different build'}</span>
                             </div>
                           </div>
                           <div className="aoConfigDiagBadgeRow">
                             <span className="aoConfigDiagBadge">
-                              {compactFollowStatusLabel(source)}
+                              {compactFollowStatusLabel(effectiveSource)}
                             </span>
                             {pausedSummary ? (
                               <span className="aoConfigDiagBadge">{pausedSummary}</span>
                             ) : null}
                             <span
                               className={`aoConfigDiagBadge${
-                                source.version_sync_required ? ' is-alert' : ''
+                                effectiveSource.version_sync_required ? ' is-alert' : ''
                               }`}
                             >
-                              {compactUpdateStatusLabel(source)}
+                              {compactUpdateStatusLabel(effectiveSource, localBuildSha)}
                             </span>
                           </div>
                         </div>
@@ -1019,7 +1523,7 @@ export function ConfigModal({
                           <div className="aoConfigDiagSection">
                             <div className="aoConfigDiagSectionLabel">Local</div>
                             <div className="aoConfigDiagCompareValue">
-                              {source.build_matches_local
+                              {effectiveSource.build_matches_local
                                 ? 'Matches current machine build'
                                 : 'Does not match current machine build'}
                             </div>
@@ -1035,9 +1539,9 @@ export function ConfigModal({
                                 {remoteUpdateTime && remoteUpdateTime !== 'Unknown' ? (
                                   <div className="aoConfigDiagRemoteUpdateTime">{remoteUpdateTime}</div>
                                 ) : null}
-                                {source.remote_update_status?.request_id ? (
+                                {effectiveSource.remote_update_status?.request_id ? (
                                   <div className="aoConfigDiagRemoteUpdateDetail">
-                                    Request: {source.remote_update_status.request_id}
+                                    Request: {effectiveSource.remote_update_status.request_id}
                                   </div>
                                 ) : null}
                                 {remoteUpdateTimeline.length > 0 ? (
@@ -1055,9 +1559,9 @@ export function ConfigModal({
                                         <div className="aoConfigDiagRemoteUpdateDetail">
                                           {formatCommitDate(entry.unix_ms ?? null)} · {entry.label?.trim() || entry.phase?.trim() || 'Step'}
                                         </div>
-                                        {entry.detail?.trim() ? (
-                                          <div className="aoConfigDiagWhyText">{formatReadableCommitRefs(entry.detail.trim())}</div>
-                                        ) : null}
+                                          {entry.detail?.trim() ? (
+                                            <div className="aoConfigDiagWhyText">{sanitizeRemoteUpdateText(entry.detail.trim())}</div>
+                                          ) : null}
                                       </div>
                                     ))}
                                   </div>
@@ -1080,27 +1584,42 @@ export function ConfigModal({
                                     {showDebugReadinessReason ? (
                                       <div className="aoConfigDiagRemoteUpdateDetail">{debugReadinessReason}</div>
                                     ) : null}
+                                    {debugBootstrapText ? (
+                                      <div className="aoConfigDiagRemoteUpdateDetail">{debugBootstrapText}</div>
+                                    ) : null}
+                                    {debugScriptProbeText ? (
+                                      <div className="aoConfigDiagRemoteUpdateDetail">{debugScriptProbeText}</div>
+                                    ) : null}
                                     <div className="aoConfigDiagRemoteUpdateDetail">
                                       {remoteDebugStatusRecordText(remoteUpdateDebug)}
                                     </div>
-                                    <div className="aoConfigDiagRemoteUpdateDetail">
-                                      {remoteDebugLogRecordText(remoteUpdateDebug)}
-                                    </div>
-                                    {debugLogTail ? (
-                                      <pre
-                                        className="aoConfigDiagWhyText"
-                                        style={{
-                                          margin: '8px 0 0',
-                                          padding: '10px 12px',
-                                          whiteSpace: 'pre-wrap',
-                                          overflowWrap: 'anywhere',
-                                          background: 'rgba(10, 16, 28, 0.04)',
-                                          borderRadius: 10,
-                                        }}
-                                      >
-                                        {debugLogTail}
-                                      </pre>
-                                    ) : null}
+                                    {collapsedDebugLogTail ? (
+                                      <details style={{ marginTop: 8 }}>
+                                        <summary className="aoConfigDiagRemoteUpdateDetail">
+                                          {debugLogSummaryText}
+                                        </summary>
+                                        {!debugLogCurrentForBuild && debugLogRelevance.reason ? (
+                                          <div className="aoConfigDiagRemoteUpdateDetail" style={{ marginTop: 8 }}>
+                                            Why previous: {debugLogRelevance.reason}
+                                          </div>
+                                        ) : null}
+                                        <pre
+                                          className="aoConfigDiagWhyText"
+                                          style={{
+                                            margin: '8px 0 0',
+                                            padding: '10px 12px',
+                                            whiteSpace: 'pre-wrap',
+                                            overflowWrap: 'anywhere',
+                                            background: 'rgba(10, 16, 28, 0.04)',
+                                            borderRadius: 10,
+                                          }}
+                                        >
+                                          {collapsedDebugLogTail}
+                                        </pre>
+                                      </details>
+                                    ) : (
+                                      <div className="aoConfigDiagRemoteUpdateDetail">{debugLogSummaryText}</div>
+                                    )}
                                   </>
                                 ) : null}
                               </div>

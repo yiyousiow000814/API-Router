@@ -38,23 +38,58 @@ fn append_app_startup_stage(stage: &str, elapsed_ms: Option<u64>, detail: Option
     );
 }
 
+fn elapsed_ms_since(started_at: std::time::Instant) -> u64 {
+    started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn write_dashboard_status_slow_diag(
+    diagnostics_dir: &std::path::Path,
+    detail_level: &str,
+    total_elapsed_ms: u64,
+    response_bytes: usize,
+    phase_timings_ms: &serde_json::Map<String, serde_json::Value>,
+) {
+    let diag = serde_json::json!({
+        "captured_at_unix_ms": unix_ms(),
+        "detail_level": detail_level,
+        "total_elapsed_ms": total_elapsed_ms,
+        "response_bytes": response_bytes,
+        "phase_timings_ms": phase_timings_ms,
+    });
+    let path = diagnostics_dir.join(format!("status-dashboard-slow-{}.json", unix_ms()));
+    let _ = std::fs::write(path, serde_json::to_vec_pretty(&diag).unwrap_or_default());
+}
+
 #[tauri::command]
 pub(crate) fn get_status(
     state: tauri::State<'_, app_state::AppState>,
     detail_level: Option<String>,
 ) -> serde_json::Value {
+    let command_started_at = std::time::Instant::now();
+    let mut phase_timings_ms = serde_json::Map::new();
     let dashboard_detail = detail_level
         .as_deref()
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("dashboard"));
+    let phase_started_at = std::time::Instant::now();
     let cfg = state.gateway.cfg.read().clone();
     let config_revision = config_revision(&state, &cfg);
     let wsl_gateway_host =
         crate::platform::wsl_gateway_host::cached_or_default_wsl_gateway_host(Some(&state.config_path));
+    phase_timings_ms.insert(
+        "config_and_revision".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
     let now = unix_ms();
+    let phase_started_at = std::time::Instant::now();
     state.gateway.router.sync_with_config(&cfg, now);
     let providers = state.gateway.router.snapshot(now);
+    phase_timings_ms.insert(
+        "router_snapshot".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
     let manual_override = state.gateway.router.manual_override.read().clone();
     // Keep status payload small: expose only a compact latest-error preview.
+    let phase_started_at = std::time::Instant::now();
     let recent_events = if dashboard_detail {
         Vec::new()
     } else {
@@ -63,6 +98,11 @@ pub(crate) fn get_status(
             .store
             .list_recent_error_events(crate::constants::STATUS_RECENT_ERROR_PREVIEW_LIMIT)
     };
+    phase_timings_ms.insert(
+        "recent_events".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
+    let phase_started_at = std::time::Instant::now();
     let metrics = state.gateway.store.get_metrics();
     let quota = state.gateway.store.list_quota_snapshots();
     let mut providers = providers;
@@ -79,8 +119,13 @@ pub(crate) fn get_status(
     }
     let ledgers = state.gateway.store.list_ledgers();
     let projected_ledgers = projected_usage_ledgers(&state.gateway, &quota);
+    phase_timings_ms.insert(
+        "metrics_quota_ledgers".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
     let last_activity = state.gateway.last_activity_unix_ms.load(Ordering::Relaxed);
     let active_recent = last_activity > 0 && now.saturating_sub(last_activity) < 2 * 60 * 1000;
+    let phase_started_at = std::time::Instant::now();
     let (active_provider, active_reason, active_provider_counts) = if active_recent {
         let map = state.gateway.last_used_by_session.read();
 
@@ -115,23 +160,46 @@ pub(crate) fn get_status(
     } else {
         (None, None, std::collections::BTreeMap::<String, u64>::new())
     };
+    phase_timings_ms.insert(
+        "active_provider".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
+    let phase_started_at = std::time::Instant::now();
     let codex_account = state
         .gateway
         .store
         .get_codex_account_snapshot()
         .unwrap_or(serde_json::json!({"ok": false}));
+    phase_timings_ms.insert(
+        "codex_account".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
+    let phase_started_at = std::time::Instant::now();
     let lan_sync = state
         .lan_sync
         .snapshot(cfg.listen.port, &cfg, &state.secrets);
+    phase_timings_ms.insert(
+        "lan_sync_snapshot".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
+    let phase_started_at = std::time::Instant::now();
     let shared_quota_owners = if dashboard_detail {
         Vec::new()
     } else {
         crate::orchestrator::quota::shared_quota_owner_statuses(&state.gateway, &state.lan_sync)
     };
+    phase_timings_ms.insert(
+        "shared_quota_owners".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
 
+    let phase_started_at = std::time::Instant::now();
     let client_sessions = {
         let map = if !dashboard_detail {
             // Full status may update runtime session discovery; keep this off the dashboard hot path.
+            // Session discovery can take seconds on Windows. If this is reintroduced into the
+            // dashboard polling path, clicks and scrolling will stutter again because
+            // get_status(detailLevel='dashboard') runs on a tight interval.
             let gateway_token = state.secrets.get_gateway_token().unwrap_or_default();
             let expected = (!gateway_token.is_empty()).then_some(gateway_token.as_str());
             let discovered_snapshot = crate::platform::windows_terminal::discover_sessions_using_router_snapshot(
@@ -273,20 +341,10 @@ pub(crate) fn get_status(
             }
             state.gateway.client_sessions.read().clone()
         } else {
-            let gateway_token = state.secrets.get_gateway_token().unwrap_or_default();
-            let expected = (!gateway_token.is_empty()).then_some(gateway_token.as_str());
-            let discovered_snapshot =
-                crate::platform::windows_terminal::discover_sessions_using_router_snapshot(
-                    cfg.listen.port,
-                    expected,
-                );
-            let base_map = state.gateway.client_sessions.read().clone();
-            overlay_discovered_sessions_for_display(
-                &base_map,
-                &discovered_snapshot.items,
-                now,
-                discovered_snapshot.fresh,
-            )
+            // Dashboard must stay cache-only here. Do not run live session discovery in this branch.
+            // The cached runtime session map is refreshed by the non-dashboard status path and other
+            // session lifecycle updates; using it here keeps the dashboard responsive.
+            state.gateway.client_sessions.read().clone()
         };
         let last_used_by_session = state.gateway.last_used_by_session.read().clone();
         let items = recent_client_sessions_with_main_parent_context(&map, 20);
@@ -340,8 +398,12 @@ pub(crate) fn get_status(
             .collect::<Vec<_>>();
         sessions
     };
+    phase_timings_ms.insert(
+        "client_sessions".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
 
-    serde_json::json!({
+    let response = serde_json::json!({
       "listen": { "host": cfg.listen.host, "port": cfg.listen.port },
       "config_revision": config_revision,
       "wsl_gateway_host": wsl_gateway_host,
@@ -361,7 +423,19 @@ pub(crate) fn get_status(
       "client_sessions": client_sessions,
       "lan_sync": lan_sync,
       "shared_quota_owners": shared_quota_owners
-    })
+    });
+    let total_elapsed_ms = elapsed_ms_since(command_started_at);
+    if total_elapsed_ms >= 1000 {
+        let response_bytes = serde_json::to_vec(&response).unwrap_or_default();
+        write_dashboard_status_slow_diag(
+            &state.diagnostics_dir,
+            if dashboard_detail { "dashboard" } else { "full" },
+            total_elapsed_ms,
+            response_bytes.len(),
+            &phase_timings_ms,
+        );
+    }
+    response
 }
 
 fn config_revision(state: &app_state::AppState, cfg: &crate::orchestrator::config::AppConfig) -> String {
@@ -449,16 +523,9 @@ fn projected_usage_ledgers(
         if updated_at_unix_ms == 0 {
             continue;
         }
-        let (request_count, _, _, total_tokens, _, _) = gateway.store.summarize_usage_requests(
-            updated_at_unix_ms,
-            None,
-            None,
-            &[],
-            std::slice::from_ref(provider_name),
-            &[],
-            &[],
-            &[],
-        );
+        let (request_count, total_tokens) = gateway
+            .store
+            .summarize_usage_requests_since_by_provider(provider_name, updated_at_unix_ms);
         out.insert(
             provider_name.clone(),
             serde_json::json!({
@@ -1124,70 +1191,6 @@ fn discovered_live_agent_parent_session_ids(
         .collect()
 }
 
-fn overlay_discovered_sessions_for_display(
-    base_map: &std::collections::HashMap<
-        String,
-        crate::orchestrator::gateway::ClientSessionRuntime,
-    >,
-    discovered: &[crate::platform::windows_terminal::InferredWtSession],
-    now: u64,
-    discovery_is_fresh: bool,
-) -> std::collections::HashMap<String, crate::orchestrator::gateway::ClientSessionRuntime> {
-    let mut map = base_map.clone();
-    for s in discovered {
-        let Some(codex_session_id) = s.codex_session_id.as_deref() else {
-            continue;
-        };
-        let entry = map.entry(codex_session_id.to_string()).or_insert_with(|| {
-            crate::orchestrator::gateway::ClientSessionRuntime {
-                codex_session_id: codex_session_id.to_string(),
-                pid: s.pid,
-                wt_session: crate::platform::windows_terminal::merge_wt_session_marker(
-                    None,
-                    &s.wt_session,
-                ),
-                last_request_unix_ms: 0,
-                // Dashboard-only overlay should still surface cached sessions immediately.
-                last_discovered_unix_ms: now,
-                last_reported_model_provider: None,
-                last_reported_model: None,
-                last_reported_base_url: None,
-                agent_parent_session_id: None,
-                is_agent: s.is_agent,
-                is_review: s.is_review,
-                confirmed_router: s.router_confirmed,
-            }
-        });
-        entry.pid = s.pid;
-        entry.wt_session = crate::platform::windows_terminal::merge_wt_session_marker(
-            entry.wt_session.as_deref(),
-            &s.wt_session,
-        );
-        entry.last_discovered_unix_ms = if entry.last_discovered_unix_ms == 0 {
-            now
-        } else {
-            next_last_discovered_unix_ms(entry.last_discovered_unix_ms, now, discovery_is_fresh)
-        };
-        apply_discovered_router_confirmation(entry, s.router_confirmed, s.is_agent);
-        merge_discovered_model_provider(entry, s.reported_model_provider.as_deref());
-        if let Some(bu) = s.reported_base_url.as_deref() {
-            entry.last_reported_base_url = Some(bu.to_string());
-        }
-        if let Some(parent_sid) = s.agent_parent_session_id.as_deref() {
-            entry.agent_parent_session_id = Some(parent_sid.to_string());
-        }
-        if s.is_agent {
-            entry.is_agent = true;
-        }
-        if s.is_review {
-            entry.is_review = true;
-            entry.is_agent = true;
-        }
-    }
-    backfill_main_confirmation_from_verified_agent(&mut map, now);
-    map
-}
-
 fn local_day_key_from_unix_ms(ts_unix_ms: u64) -> Option<String> {
     let ts = i64::try_from(ts_unix_ms).ok()?;
     let dt = Local.timestamp_millis_opt(ts).single()?;
@@ -1696,7 +1699,6 @@ mod tests {
         append_backup_event_daily_stats, day_start_unix_ms_from_day_key, event_query_key,
         config_revision,
         main_session_ids_excluding_agents_and_reviews,
-        overlay_discovered_sessions_for_display,
         rebalance_balanced_assignments_on_main_session_change,
         displayed_session_route, merge_discovered_model_provider, next_last_discovered_unix_ms,
         normalize_event_query_limit, next_wsl_discovery_miss_count,
@@ -1710,7 +1712,6 @@ mod tests {
     use crate::orchestrator::store::{unix_ms, UsageRequestSyncRow};
     use crate::orchestrator::upstream::UpstreamClient;
     use crate::orchestrator::gateway::ClientSessionRuntime;
-    use crate::platform::windows_terminal::InferredWtSession;
     use chrono::TimeZone;
     use parking_lot::RwLock;
     use serde_json::Value;
@@ -1855,43 +1856,6 @@ mod tests {
             "fields": { "codex_session_id": "s2" }
         });
         assert_ne!(event_query_key(&a), event_query_key(&b));
-    }
-
-    #[test]
-    fn overlay_discovered_sessions_for_display_surfaces_cached_session_without_mutating_base() {
-        let base = std::collections::HashMap::<String, ClientSessionRuntime>::new();
-        let discovered = vec![InferredWtSession {
-            wt_session: "wt-123".to_string(),
-            pid: 42,
-            linux_pid: None,
-            wsl_distro: None,
-            cwd: None,
-            rollout_path: None,
-            codex_session_id: Some("session-123".to_string()),
-            reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
-            reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
-            agent_parent_session_id: None,
-            router_confirmed: true,
-            is_agent: false,
-            is_review: false,
-        }];
-
-        let overlay = overlay_discovered_sessions_for_display(&base, &discovered, 12_345, false);
-
-        assert!(base.is_empty());
-        let row = overlay.get("session-123").expect("overlay row");
-        assert_eq!(row.pid, 42);
-        assert_eq!(row.wt_session.as_deref(), Some("wt-123"));
-        assert_eq!(row.last_discovered_unix_ms, 12_345);
-        assert!(row.confirmed_router);
-        assert_eq!(
-            row.last_reported_model_provider.as_deref(),
-            Some(GATEWAY_MODEL_PROVIDER_ID)
-        );
-        assert_eq!(
-            row.last_reported_base_url.as_deref(),
-            Some("http://127.0.0.1:4000/v1")
-        );
     }
 
     #[test]
