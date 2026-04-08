@@ -15,17 +15,15 @@ type Props = {
 
 const TAILSCALE_REFRESH_MS = 5000
 
-function buildFallbackTailscaleStatus(): TailscaleStatus {
-  return {
-    installed: false,
-    connected: false,
-    dnsName: null,
-    ipv4: [],
-    reachableIpv4: [],
-    gatewayReachable: false,
-    needsGatewayRestart: false,
-    downloadUrl: 'https://tailscale.com/download',
-  }
+const FALLBACK_TAILSCALE_STATUS: TailscaleStatus = {
+  installed: false,
+  connected: false,
+  dnsName: null,
+  ipv4: [],
+  reachableIpv4: [],
+  gatewayReachable: false,
+  needsGatewayRestart: false,
+  downloadUrl: 'https://tailscale.com/download',
 }
 
 export function WebCodexPanel({ listenPort }: Props) {
@@ -52,7 +50,7 @@ export function WebCodexPanel({ listenPort }: Props) {
         setTailscale(value)
       } catch {
         if (cancelled) return
-        setTailscale(buildFallbackTailscaleStatus())
+        setTailscale(FALLBACK_TAILSCALE_STATUS)
       } finally {
         if (cancelled) return
         setTailscaleLoading(false)
