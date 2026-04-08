@@ -16,3 +16,4 @@ include!("commands/provider_management.rs");
 include!("commands/quota_ops.rs");
 include!("commands/account_switchboard.rs");
 include!("commands/tailscale.rs");
+include!("commands/external_links.rs");
