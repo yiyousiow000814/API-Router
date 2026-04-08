@@ -13,6 +13,19 @@ type Props = {
   listenPort?: number | null
 }
 
+const TAILSCALE_REFRESH_MS = 5000
+
+const FALLBACK_TAILSCALE_STATUS: TailscaleStatus = {
+  installed: false,
+  connected: false,
+  dnsName: null,
+  ipv4: [],
+  reachableIpv4: [],
+  gatewayReachable: false,
+  needsGatewayRestart: false,
+  downloadUrl: 'https://tailscale.com/download',
+}
+
 export function WebCodexPanel({ listenPort }: Props) {
   const qrSize = 132
   const [tailscale, setTailscale] = useState<TailscaleStatus | null>(null)
@@ -30,31 +43,28 @@ export function WebCodexPanel({ listenPort }: Props) {
     if (devPreview) return () => { cancelled = true }
     setTailscaleLoading(true)
 
-    void invoke<TailscaleStatus>('tailscale_status')
-      .then((value) => {
+    const refreshTailscale = async () => {
+      try {
+        const value = await invoke<TailscaleStatus>('tailscale_status')
         if (cancelled) return
         setTailscale(value)
-      })
-      .catch(() => {
+      } catch {
         if (cancelled) return
-        setTailscale({
-          installed: false,
-          connected: false,
-          dnsName: null,
-          ipv4: [],
-          reachableIpv4: [],
-          gatewayReachable: false,
-          needsGatewayRestart: false,
-          downloadUrl: 'https://tailscale.com/download',
-        })
-      })
-      .finally(() => {
+        setTailscale(FALLBACK_TAILSCALE_STATUS)
+      } finally {
         if (cancelled) return
         setTailscaleLoading(false)
-      })
+      }
+    }
+
+    void refreshTailscale()
+    const refreshTimer = window.setInterval(() => {
+      void refreshTailscale()
+    }, TAILSCALE_REFRESH_MS)
 
     return () => {
       cancelled = true
+      window.clearInterval(refreshTimer)
     }
   }, [devPreview])
 

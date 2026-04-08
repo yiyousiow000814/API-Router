@@ -342,6 +342,7 @@ fn session_demand_ratio_for_balancing(st: &GatewayState, session_key: &str, now_
         &[],
         &[],
         &[],
+        &[],
         &sessions,
     );
     session_demand_ratio_from_usage(request_count, total_tokens)
@@ -1129,6 +1130,8 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
     let now = unix_ms();
     let mut providers = st.router.snapshot(now);
     let manual_override = st.router.manual_override.read().clone();
+    let lan_sync = crate::lan_sync::gateway_status_snapshot(cfg.listen.port, &cfg, &st.secrets);
+    let windows_firewall = crate::platform::windows_firewall::status_snapshot();
 
     let recent_events = st
         .store
@@ -1171,7 +1174,9 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
         "active_reason": active_reason,
         "quota": quota,
         "ledgers": ledgers,
-        "last_activity_unix_ms": last_activity
+        "last_activity_unix_ms": last_activity,
+        "lan_sync": lan_sync,
+        "windows_firewall": windows_firewall
     }))
 }
 

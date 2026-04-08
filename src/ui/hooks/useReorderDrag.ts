@@ -12,6 +12,7 @@ import {
   animateReorderFlip,
   buildNextOrder,
   captureRects,
+  computeDragStartTopInList,
   findScrollableParent,
   hasOrderChanged,
   measureDragItemHeight,
@@ -88,6 +89,7 @@ export function useReorderDrag<T extends string>({
     const dragTopRaw = clientY - dragPointerOffsetRef.current
     const listNode = listRef.current
     const listRect = listNode?.getBoundingClientRect()
+    const scrollTop = scrollParentRef.current?.scrollTop ?? 0
     let dragTop = dragTopRaw
 
     if (listNode && listRect) {
@@ -95,6 +97,7 @@ export function useReorderDrag<T extends string>({
       const { dragTop: clampedTop, dragTopInList } = clampDragTopToList({
         listNode,
         listRect,
+        scrollTop,
         currentOrder,
         draggingId: dragging,
         itemRefs: itemRefs.current,
@@ -302,18 +305,23 @@ export function useReorderDrag<T extends string>({
       const rect = node?.getBoundingClientRect()
       const listNode = listRef.current
       const listRect = listNode?.getBoundingClientRect()
+      const scrollParent = findScrollableParent(listNode)
       dragStartYRef.current = e.clientY
       dragLastYRef.current = e.clientY
       dragMovingDownRef.current = null
       dragPointerOffsetRef.current = rect ? e.clientY - rect.top : 0
       dragStartTopRef.current = rect?.top ?? 0
-      dragStartTopInListRef.current = rect && listRect ? rect.top - listRect.top : 0
+      dragStartTopInListRef.current = computeDragStartTopInList(
+        rect?.top,
+        listRect?.top,
+        scrollParent?.scrollTop ?? 0,
+      )
 
       const h = measureDragItemHeight(node)
       dragCardHeightRef.current = h
       setDragCardHeight(h)
 
-      scrollParentRef.current = findScrollableParent(listNode)
+      scrollParentRef.current = scrollParent
       setDragBaseTop(dragStartTopInListRef.current)
 
       const sp = scrollParentRef.current

@@ -15,8 +15,6 @@ export type UsageBaseModalState = {
   provider: string
   baseUrl: string
   showUrlInput: boolean
-  showPackycodeLogin: boolean
-  hasUsageLogin: boolean
   value: string
   auto: boolean
   explicitValue: string
@@ -54,6 +52,7 @@ export type ProviderBaseUrlModalState = {
 export type UseProviderActionsParams = {
   config: Config | null
   status: Status | null
+  setStatus: Dispatch<SetStateAction<Status | null>>
   isDevPreview: boolean
   setConfig: Dispatch<SetStateAction<Config | null>>
   keyModal: KeyModalState
@@ -115,7 +114,6 @@ export type UseProviderActionsResult = {
     options?: { showUrlInput?: boolean },
   ) => Promise<void>
   openUsageAuthModal: (provider: string) => Promise<void>
-  openPackycodeLogin: (provider: string) => Promise<void>
   openProviderEmailModal: (provider: string, current: string | null | undefined) => void
   addProvider: () => Promise<void>
 }

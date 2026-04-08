@@ -9,6 +9,7 @@ type ItemNodeMap = Record<string, HTMLDivElement | null>
 type ClampDragTopParams<T extends string> = {
   listNode: HTMLDivElement
   listRect: DOMRect
+  scrollTop: number
   currentOrder: T[]
   draggingId: T
   itemRefs: ItemNodeMap
@@ -19,6 +20,7 @@ type ClampDragTopParams<T extends string> = {
 export function clampDragTopToList<T extends string>({
   listNode,
   listRect,
+  scrollTop,
   currentOrder,
   draggingId,
   itemRefs,
@@ -32,20 +34,20 @@ export function clampDragTopToList<T extends string>({
     const node = itemRefs[id]
     if (!node) continue
     const rect = node.getBoundingClientRect()
-    maxBottomInList = Math.max(maxBottomInList, rect.bottom - listRect.top)
+    maxBottomInList = Math.max(maxBottomInList, rect.bottom - listRect.top + scrollTop)
   }
 
   const placeholder = listNode.querySelector('.aoProviderConfigPlaceholder') as HTMLElement | null
   if (placeholder) {
     const rect = placeholder.getBoundingClientRect()
-    maxBottomInList = Math.max(maxBottomInList, rect.bottom - listRect.top)
+    maxBottomInList = Math.max(maxBottomInList, rect.bottom - listRect.top + scrollTop)
   }
 
   const maxTopInList = Math.max(0, maxBottomInList - dragHeight)
-  const dragTopInListRaw = dragTopRaw - listRect.top
+  const dragTopInListRaw = dragTopRaw - listRect.top + scrollTop
   const dragTopInList = Math.max(0, Math.min(maxTopInList, dragTopInListRaw))
   return {
-    dragTop: dragTopInList + listRect.top,
+    dragTop: dragTopInList - scrollTop + listRect.top,
     dragTopInList,
   }
 }

@@ -13,9 +13,9 @@ const devWatchIgnored = [
   '**/.tmp/**',
   '**/.tmp-*/**',
   '**/.tmp-codex-*/**',
+  '**/user-data/**',
   '**/src-tauri/target/**',
   '**/src-tauri/target-*/**',
-  '**/user-data/tmp/**',
   '**/*.exe',
   '**/*.msi',
   '**/*.pdb',
@@ -35,6 +35,14 @@ function resolveGatewayTokenFromSecrets(): string {
 }
 
 export default defineConfig({
+  optimizeDeps: {
+    entries: ['index.html', 'codex-web.html'],
+  },
+  resolve: {
+    alias: {
+      '@tauri-apps/api/core': path.resolve(process.cwd(), 'src', 'ui', 'tauriCore.ts'),
+    },
+  },
   plugins: [
     react(),
     {

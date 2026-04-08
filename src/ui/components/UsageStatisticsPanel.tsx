@@ -27,12 +27,15 @@ type UsageSummary = UsageStatistics['summary']
 type UsageProviderRow = UsageSummary['by_provider'][number]
 type UsageDetailsTab = 'analytics' | 'requests'
 type UsageRequestEntry = {
+  id?: string
   provider: string
   api_key_ref: string
   model: string
   origin: string
   session_id: string
   unix_ms: number
+  node_id?: string
+  node_name?: string
   input_tokens: number
   output_tokens: number
   total_tokens: number
@@ -115,45 +118,39 @@ type UsageRequestRenderedLineSeries = UsageRequestLineSeries & {
 }
 const usageRequestRowIdentity = (row: UsageRequestEntry) =>
   [
-    row.unix_ms,
-    row.provider,
-    row.api_key_ref,
-    row.model,
-    row.origin,
-    row.session_id,
-    row.input_tokens,
-    row.output_tokens,
-    row.total_tokens,
-    row.cache_creation_input_tokens,
-    row.cache_read_input_tokens,
+    row.id ?? `${row.unix_ms}|${row.provider}|${row.session_id}|${row.total_tokens}`,
+    row.node_id ?? 'node-local',
   ].join('|')
 type UsageRequestColumnFilterKey =
   | 'time'
+  | 'node'
   | 'provider'
   | 'model'
   | 'input'
   | 'output'
-  | 'cacheCreate'
   | 'cacheRead'
   | 'origin'
   | 'session'
-type UsageRequestMultiFilterKey = 'provider' | 'model' | 'origin' | 'session'
+type UsageRequestMultiFilterKey = 'node' | 'provider' | 'model' | 'origin' | 'session'
 const USAGE_REQUEST_COLUMN_FILTERS: Array<{
   key: UsageRequestColumnFilterKey
   label: string
   filterable: boolean
 }> = [
   { key: 'time', label: 'Time', filterable: true },
+  { key: 'node', label: 'Node', filterable: true },
   { key: 'provider', label: 'Provider', filterable: true },
   { key: 'model', label: 'Model', filterable: true },
   { key: 'origin', label: 'Origin', filterable: true },
   { key: 'session', label: 'Session', filterable: true },
   { key: 'input', label: 'Input', filterable: false },
   { key: 'output', label: 'Output', filterable: false },
-  { key: 'cacheCreate', label: 'Cache Create', filterable: false },
   { key: 'cacheRead', label: 'Cache Read', filterable: false },
 ]
 const USAGE_REQUEST_PAGE_SIZE = 200
+const USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS = 120
+const USAGE_REQUEST_ROW_HEIGHT_PX = 33
+const USAGE_REQUEST_OVERSCAN_ROWS = 18
 const USAGE_REQUEST_GRAPH_SOURCE_LIMIT = 60
 const USAGE_REQUEST_GRAPH_MAX_SESSIONS = 6
 const USAGE_REQUEST_TEST_MIN_ROWS = 401
@@ -221,6 +218,25 @@ function shortSessionIdForLegend(sessionId: string): string {
   return `${value.slice(0, 12)}...${value.slice(-8)}`
 }
 
+function resolveUsageRequestVirtualRange(
+  scrollTop: number,
+  viewportHeight: number,
+  rowCount: number,
+): { start: number; end: number } {
+  if (rowCount <= 0) return { start: 0, end: 0 }
+  if (viewportHeight <= 0) {
+    return { start: 0, end: Math.min(rowCount, USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS) }
+  }
+  const visibleStart = Math.max(0, Math.floor(scrollTop / USAGE_REQUEST_ROW_HEIGHT_PX))
+  const visibleCount = Math.max(1, Math.ceil(viewportHeight / USAGE_REQUEST_ROW_HEIGHT_PX))
+  const start = Math.max(0, visibleStart - USAGE_REQUEST_OVERSCAN_ROWS)
+  const end = Math.min(
+    rowCount,
+    visibleStart + visibleCount + USAGE_REQUEST_OVERSCAN_ROWS,
+  )
+  return { start, end }
+}
+
 function listUsageRequestDailyProviderHints(
   providers: UsageRequestDailyTotalsResponse['providers'],
 ): string[] {
@@ -257,6 +273,7 @@ export function buildUsageRequestsQueryKey(input: {
   hours: number
   fromUnixMs: number | null
   toUnixMs: number | null
+  nodes?: string[] | null
   providers: string[] | null
   models: string[] | null
   origins: string[] | null
@@ -267,6 +284,7 @@ export function buildUsageRequestsQueryKey(input: {
     hours: number
     from_unix_ms: number | null
     to_unix_ms: number | null
+    nodes: string[]
     providers: string[]
     models: string[]
     origins: string[]
@@ -276,6 +294,7 @@ export function buildUsageRequestsQueryKey(input: {
     hours: input.hours,
     from_unix_ms: input.fromUnixMs,
     to_unix_ms: input.toUnixMs,
+    nodes: input.nodes ?? [],
     providers: input.providers ?? [],
     models: input.models ?? [],
     origins: input.origins ?? [],
@@ -290,6 +309,7 @@ export const USAGE_REQUESTS_CANONICAL_QUERY_KEY = buildUsageRequestsQueryKey({
   hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
   fromUnixMs: null,
   toUnixMs: null,
+  nodes: null,
   providers: null,
   models: null,
   origins: null,
@@ -329,6 +349,7 @@ export function buildUsageRequestEntriesArgs(input: {
   hours: number
   fromUnixMs: number | null
   toUnixMs: number | null
+  nodes?: string[] | null
   providers: string[] | null
   models: string[] | null
   origins: string[] | null
@@ -340,6 +361,7 @@ export function buildUsageRequestEntriesArgs(input: {
     hours: input.hours,
     fromUnixMs: input.fromUnixMs,
     toUnixMs: input.toUnixMs,
+    nodes: input.nodes,
     providers: input.providers,
     models: input.models,
     origins: input.origins,
@@ -353,6 +375,7 @@ function buildUsageRequestSummaryArgs(input: {
   hours: number
   fromUnixMs: number | null
   toUnixMs: number | null
+  nodes?: string[] | null
   providers: string[] | null
   models: string[] | null
   origins: string[] | null
@@ -362,6 +385,7 @@ function buildUsageRequestSummaryArgs(input: {
     hours: input.hours,
     fromUnixMs: input.fromUnixMs,
     toUnixMs: input.toUnixMs,
+    nodes: input.nodes,
     providers: input.providers,
     models: input.models,
     origins: input.origins,
@@ -1081,12 +1105,15 @@ function buildUsageRequestTestRows(
         generatedAt,
       )
       rows.push({
+        id: `synthetic-${providerName}-${sessionId}-${idx}`,
         provider: providerName,
         api_key_ref: providerMeta.apiKeyRef,
         model: providerMeta.model || model.model,
         origin,
         session_id: sessionId,
         unix_ms: unixMs,
+        node_id: 'node-local',
+        node_name: 'Local',
         input_tokens: input,
         output_tokens: output,
         total_tokens: total,
@@ -1155,6 +1182,10 @@ type Props = {
   usageWindowHours: number
   setUsageWindowHours: (hours: number) => void
   usageStatisticsLoading: boolean
+  usageFilterNodes: string[]
+  setUsageFilterNodes: (nodes: string[]) => void
+  usageNodeFilterOptions: string[]
+  toggleUsageNodeFilter: (nodeName: string) => void
   usageFilterProviders: string[]
   setUsageFilterProviders: (providers: string[]) => void
   usageProviderFilterOptions: string[]
@@ -1229,6 +1260,10 @@ export function UsageStatisticsPanel({
   usageWindowHours,
   setUsageWindowHours,
   usageStatisticsLoading,
+  usageFilterNodes,
+  setUsageFilterNodes,
+  usageNodeFilterOptions,
+  toggleUsageNodeFilter,
   usageFilterProviders,
   setUsageFilterProviders,
   usageProviderFilterOptions,
@@ -1284,12 +1319,14 @@ export function UsageStatisticsPanel({
 }: Props) {
   const [usageRequestTimeFilter, setUsageRequestTimeFilter] = useState('')
   const [usageRequestMultiFilters, setUsageRequestMultiFilters] = useState<Record<UsageRequestMultiFilterKey, string[] | null>>({
+    node: null,
     provider: null,
     model: null,
     origin: null,
     session: null,
   })
   const [usageRequestFilterSearch, setUsageRequestFilterSearch] = useState<Record<UsageRequestMultiFilterKey, string>>({
+    node: '',
     provider: '',
     model: '',
     origin: '',
@@ -1309,6 +1346,7 @@ export function UsageStatisticsPanel({
     Record<string, UsageRequestEntry[]>
   >({})
   const [usageRequestTableScrollLeft, setUsageRequestTableScrollLeft] = useState(0)
+  const [usageRequestVirtualRange, setUsageRequestVirtualRange] = useState(() => ({ start: 0, end: 0 }))
   const [usageRequestHasMore, setUsageRequestHasMore] = useState(false)
   const [usageRequestLoading, setUsageRequestLoading] = useState(false)
   const [usageRequestError, setUsageRequestError] = useState('')
@@ -1377,6 +1415,7 @@ export function UsageStatisticsPanel({
   const usageRequestLastRenderedRowsRef = useRef<UsageRequestEntry[]>([])
   const usageRequestLastActivityRef = useRef<number | null>(null)
   const usageRequestWasNearBottomRef = useRef(false)
+  const usageRequestVirtualRowCountRef = useRef(0)
   const usageRequestWarmupAtRef = useRef(0)
   const usageRequestDefaultTodayAutoPageRef = useRef(false)
   const usageRequestsPagePrefetchInFlightRef = useRef(false)
@@ -1424,6 +1463,10 @@ export function UsageStatisticsPanel({
     () => (useGlobalRequestFilters && usageFilterProviders.length ? usageFilterProviders : null),
     [useGlobalRequestFilters, usageFilterProviders],
   )
+  const requestFetchNodes = useMemo(
+    () => (useGlobalRequestFilters && usageFilterNodes.length ? usageFilterNodes : null),
+    [useGlobalRequestFilters, usageFilterNodes],
+  )
   const requestFetchModels = useMemo(
     () => (useGlobalRequestFilters && usageFilterModels.length ? usageFilterModels : null),
     [useGlobalRequestFilters, usageFilterModels],
@@ -1452,6 +1495,7 @@ export function UsageStatisticsPanel({
         hours: requestFetchHours,
         fromUnixMs: requestFetchFromUnixMs,
         toUnixMs: requestFetchToUnixMs,
+        nodes: requestFetchNodes,
         providers: requestFetchProviders,
         models: requestFetchModels,
         origins: requestFetchOrigins,
@@ -1462,6 +1506,7 @@ export function UsageStatisticsPanel({
       requestFetchFromUnixMs,
       requestFetchHours,
       requestFetchModels,
+      requestFetchNodes,
       requestFetchOrigins,
       requestFetchProviders,
       requestFetchSessions,
@@ -1478,6 +1523,7 @@ export function UsageStatisticsPanel({
   )
   const hasExplicitRequestFilters =
     hasExplicitTimeFilter ||
+    usageRequestMultiFilters.node !== null ||
     usageRequestMultiFilters.provider !== null ||
     usageRequestMultiFilters.model !== null ||
     usageRequestMultiFilters.origin !== null ||
@@ -1485,8 +1531,10 @@ export function UsageStatisticsPanel({
   const hasStrictRequestQuery = hasExplicitRequestFilters
   const hasImpossibleRequestFilters =
     (requestFetchProviders !== null && requestFetchProviders.length === 0) ||
+    (requestFetchNodes !== null && requestFetchNodes.length === 0) ||
     (requestFetchModels !== null && requestFetchModels.length === 0) ||
     (requestFetchOrigins !== null && requestFetchOrigins.length === 0) ||
+    (usageRequestMultiFilters.node !== null && usageRequestMultiFilters.node.length === 0) ||
     (usageRequestMultiFilters.provider !== null && usageRequestMultiFilters.provider.length === 0) ||
     (usageRequestMultiFilters.model !== null && usageRequestMultiFilters.model.length === 0) ||
     (usageRequestMultiFilters.origin !== null && usageRequestMultiFilters.origin.length === 0) ||
@@ -1656,10 +1704,28 @@ export function UsageStatisticsPanel({
     clearUsageHistoryScrollbarTimers: clearUsageRequestScrollbarTimers,
   } = useUsageHistoryScrollbar()
 
+  const syncUsageRequestVirtualRange = useCallback(() => {
+    const wrap = usageRequestTableWrapRef.current
+    const rowCount = usageRequestVirtualRowCountRef.current
+    if (!wrap || rowCount <= 0) {
+      setUsageRequestVirtualRange({ start: 0, end: rowCount })
+      return
+    }
+    if (rowCount <= USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS) {
+      setUsageRequestVirtualRange({ start: 0, end: rowCount })
+      return
+    }
+    const nextRange = resolveUsageRequestVirtualRange(wrap.scrollTop, wrap.clientHeight, rowCount)
+    setUsageRequestVirtualRange((prev) =>
+      prev.start === nextRange.start && prev.end === nextRange.end ? prev : nextRange,
+    )
+  }, [usageRequestTableWrapRef])
+
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests' || typeof window === 'undefined') return
     const sync = () => {
       scheduleUsageRequestScrollbarSync()
+      syncUsageRequestVirtualRange()
     }
     const raf = window.requestAnimationFrame(sync)
     const onResize = () => sync()
@@ -1670,6 +1736,7 @@ export function UsageStatisticsPanel({
     }
   }, [
     effectiveDetailsTab,
+    syncUsageRequestVirtualRange,
     usageRequestRows,
     usageRequestLoading,
     scheduleUsageRequestScrollbarSync,
@@ -1696,6 +1763,7 @@ export function UsageStatisticsPanel({
             hours: requestFetchHours,
             fromUnixMs: requestFetchFromUnixMs,
             toUnixMs: requestFetchToUnixMs,
+            nodes: requestFetchNodes,
             providers: requestFetchProviders,
             models: requestFetchModels,
             origins: requestFetchOrigins,
@@ -1755,6 +1823,7 @@ export function UsageStatisticsPanel({
     [
       requestFetchHours,
       requestFetchFromUnixMs,
+      requestFetchNodes,
       requestFetchProviders,
       requestFetchModels,
       requestFetchOrigins,
@@ -1800,6 +1869,7 @@ export function UsageStatisticsPanel({
           hours: requestFetchHours,
           fromUnixMs: summaryFetchFromUnixMs,
           toUnixMs: summaryFetchToUnixMs,
+          nodes: requestFetchNodes,
           providers: requestFetchProviders,
           models: requestFetchModels,
           origins: requestFetchOrigins,
@@ -1817,6 +1887,7 @@ export function UsageStatisticsPanel({
     isRequestsTab,
     requestFetchHours,
     requestFetchFromUnixMs,
+    requestFetchNodes,
     requestFetchModels,
     requestFetchOrigins,
     requestFetchProviders,
@@ -1838,6 +1909,7 @@ export function UsageStatisticsPanel({
             hours: requestFetchHours,
             fromUnixMs: requestFetchFromUnixMs,
             toUnixMs: requestFetchToUnixMs,
+            nodes: requestFetchNodes,
             providers: requestFetchProviders,
             models: requestFetchModels,
             origins: requestFetchOrigins,
@@ -1907,6 +1979,7 @@ export function UsageStatisticsPanel({
     [
       requestFetchFromUnixMs,
       requestFetchHours,
+      requestFetchNodes,
       requestFetchModels,
       requestFetchOrigins,
       requestFetchProviders,
@@ -1936,6 +2009,7 @@ export function UsageStatisticsPanel({
           hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
           fromUnixMs: null,
           toUnixMs: null,
+          nodes: null,
           providers: null,
           models: null,
           origins: null,
@@ -2008,6 +2082,7 @@ export function UsageStatisticsPanel({
                 hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
                 fromUnixMs: null,
                 toUnixMs: null,
+                nodes: null,
                 providers: null,
                 models: null,
                 origins: [origin],
@@ -2038,6 +2113,7 @@ export function UsageStatisticsPanel({
               hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
               fromUnixMs: null,
               toUnixMs: null,
+              nodes: null,
               providers: null,
               models: null,
               origins: null,
@@ -2139,6 +2215,7 @@ export function UsageStatisticsPanel({
                 hours: USAGE_REQUEST_GRAPH_FETCH_HOURS,
                 fromUnixMs: null,
                 toUnixMs: null,
+                nodes: null,
                 providers: [provider],
                 models: null,
                 origins: null,
@@ -2531,6 +2608,7 @@ export function UsageStatisticsPanel({
           hours: requestFetchHours,
           fromUnixMs: requestFetchFromUnixMs,
           toUnixMs: requestFetchToUnixMs,
+          nodes: requestFetchNodes,
           providers: requestFetchProviders,
           models: requestFetchModels,
           origins: requestFetchOrigins,
@@ -2566,6 +2644,7 @@ export function UsageStatisticsPanel({
   }, [
     requestFetchHours,
     requestFetchFromUnixMs,
+    requestFetchNodes,
     requestFetchModels,
     requestFetchOrigins,
     requestFetchProviders,
@@ -3156,17 +3235,20 @@ export function UsageStatisticsPanel({
   ])
 
   const usageRequestFilterOptions = useMemo(() => {
+    const nodes = new Set<string>()
     const providers = new Set<string>()
     const models = new Set<string>()
     const origins = new Set<string>()
     const sessions = new Set<string>()
     for (const row of timeScopedUsageRequestRows) {
+      nodes.add(row.node_name || 'Local')
       providers.add(row.provider)
       models.add(row.model)
       origins.add(row.origin)
       sessions.add(row.session_id)
     }
     return {
+      node: [...nodes].sort((a, b) => a.localeCompare(b)),
       provider: [...providers].sort((a, b) => a.localeCompare(b)),
       model: [...models].sort((a, b) => a.localeCompare(b)),
       origin: [...origins].sort((a, b) => a.localeCompare(b)),
@@ -3187,6 +3269,7 @@ export function UsageStatisticsPanel({
   useEffect(() => {
     if (!isRequestsTab) return
     setUsageRequestMultiFilters((prev) => ({
+      node: prev.node == null ? null : prev.node.filter((item) => usageRequestFilterOptions.node.includes(item)),
       provider:
         prev.provider == null
           ? null
@@ -3219,6 +3302,7 @@ export function UsageStatisticsPanel({
     const contains = (text: string) => timeNeedle.length === 0 || text.toLowerCase().includes(timeNeedle)
     const providerFilterSet =
       usageRequestMultiFilters.provider == null ? null : new Set(usageRequestMultiFilters.provider)
+    const nodeFilterSet = usageRequestMultiFilters.node == null ? null : new Set(usageRequestMultiFilters.node)
     const modelFilterSet =
       usageRequestMultiFilters.model == null ? null : new Set(usageRequestMultiFilters.model)
     const originFilterSet =
@@ -3233,6 +3317,7 @@ export function UsageStatisticsPanel({
       } else if (!contains(fmtWhen(row.unix_ms))) {
         return false
       }
+      if (nodeFilterSet && !nodeFilterSet.has(row.node_name || 'Local')) return false
       if (providerFilterSet && !providerFilterSet.has(row.provider)) return false
       if (modelFilterSet && !modelFilterSet.has(row.model)) return false
       if (originFilterSet && !originFilterSet.has(row.origin)) return false
@@ -3266,7 +3351,28 @@ export function UsageStatisticsPanel({
   const tableRowsForDisplay = showPreviousRowsDuringQuerySwitch
     ? usageRequestLastRenderedRowsRef.current
     : displayedFilteredUsageRequestRows
+  usageRequestVirtualRowCountRef.current = tableRowsForDisplay.length
+  const shouldVirtualizeUsageRequestRows =
+    isRequestsTab && tableRowsForDisplay.length > USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS
+  const virtualUsageRequestStart = shouldVirtualizeUsageRequestRows
+    ? Math.min(usageRequestVirtualRange.start, Math.max(0, tableRowsForDisplay.length - 1))
+    : 0
+  const virtualUsageRequestEnd = shouldVirtualizeUsageRequestRows
+    ? Math.max(usageRequestVirtualRange.end, Math.min(tableRowsForDisplay.length, USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS))
+    : tableRowsForDisplay.length
+  const visibleUsageRequestRows = shouldVirtualizeUsageRequestRows
+    ? tableRowsForDisplay.slice(virtualUsageRequestStart, virtualUsageRequestEnd)
+    : tableRowsForDisplay
+  const usageRequestTopSpacerPx = shouldVirtualizeUsageRequestRows
+    ? virtualUsageRequestStart * USAGE_REQUEST_ROW_HEIGHT_PX
+    : 0
+  const usageRequestBottomSpacerPx = shouldVirtualizeUsageRequestRows
+    ? Math.max(0, (tableRowsForDisplay.length - virtualUsageRequestEnd) * USAGE_REQUEST_ROW_HEIGHT_PX)
+    : 0
   const totalRequestRowsForDisplay = rowsForRequestRender.length
+  const requestFooterTotalRows = defaultTodayOnly
+    ? tableRowsForDisplay.length
+    : totalRequestRowsForDisplay
   useEffect(() => {
     if (effectiveDetailsTab !== 'requests') return
     if (!hasExplicitTimeFilter) return
@@ -3552,6 +3658,10 @@ export function UsageStatisticsPanel({
             usageWindowHours={usageWindowHours}
             setUsageWindowHours={setUsageWindowHours}
             usageStatisticsLoading={usageStatisticsLoading}
+            usageFilterNodes={usageFilterNodes}
+            setUsageFilterNodes={setUsageFilterNodes}
+            usageNodeFilterOptions={usageNodeFilterOptions}
+            toggleUsageNodeFilter={toggleUsageNodeFilter}
             usageFilterProviders={usageFilterProviders}
             setUsageFilterProviders={setUsageFilterProviders}
             usageProviderFilterDisplayOptions={usageProviderFilterDisplayOptions}
@@ -3914,13 +4024,13 @@ export function UsageStatisticsPanel({
               >
                 <colgroup>
                   <col className="aoUsageReqColTime" />
+                  <col className="aoUsageReqColNode" />
                   <col className="aoUsageReqColProvider" />
                   <col className="aoUsageReqColModel" />
                   <col className="aoUsageReqColOrigin" />
                   <col className="aoUsageReqColSession" />
                   <col className="aoUsageReqColInput" />
                   <col className="aoUsageReqColOutput" />
-                  <col className="aoUsageReqColCacheCreate" />
                   <col className="aoUsageReqColCacheRead" />
                 </colgroup>
                 <thead>
@@ -3932,6 +4042,13 @@ export function UsageStatisticsPanel({
                           ? usageRequestTimeFilter.trim().length > 0
                             ? 1
                             : 0
+                          : column.key === 'node'
+                            ? filteredSelectionCount(
+                                usageRequestMultiFilters.node == null
+                                  ? usageRequestFilterOptions.node.length
+                                  : usageRequestMultiFilters.node.length,
+                                usageRequestFilterOptions.node.length,
+                              )
                           : column.key === 'provider'
                             ? Math.max(
                                   filteredSelectionCount(
@@ -4247,13 +4364,17 @@ export function UsageStatisticsPanel({
                           )
                         }
                         const options =
-                          activeUsageRequestFilterMenu.key === 'model'
+                          activeUsageRequestFilterMenu.key === 'node'
+                            ? usageRequestFilterOptions.node
+                            : activeUsageRequestFilterMenu.key === 'model'
                               ? usageRequestFilterOptions.model
                               : activeUsageRequestFilterMenu.key === 'origin'
                                 ? usageRequestFilterOptions.origin
                                 : usageRequestFilterOptions.session
                         const searchNeedle = (
-                          activeUsageRequestFilterMenu.key === 'model'
+                          activeUsageRequestFilterMenu.key === 'node'
+                            ? usageRequestFilterSearch.node
+                            : activeUsageRequestFilterMenu.key === 'model'
                               ? usageRequestFilterSearch.model
                               : activeUsageRequestFilterMenu.key === 'origin'
                                 ? usageRequestFilterSearch.origin
@@ -4342,6 +4463,7 @@ export function UsageStatisticsPanel({
                   const wrap = usageRequestTableWrapRef.current
                   if (wrap) {
                     setUsageRequestTableScrollLeft(wrap.scrollLeft)
+                    syncUsageRequestVirtualRange()
                     if (usageRequestHasMore && !usageRequestLoading) {
                       if (hasExplicitRequestFilters && !hasImpossibleRequestFilters) {
                         const nearBottom = isNearBottom(wrap, 24)
@@ -4367,13 +4489,13 @@ export function UsageStatisticsPanel({
                 <table className="aoUsageHistoryTable aoUsageRequestsTable">
                   <colgroup>
                     <col className="aoUsageReqColTime" />
+                    <col className="aoUsageReqColNode" />
                     <col className="aoUsageReqColProvider" />
                     <col className="aoUsageReqColModel" />
                     <col className="aoUsageReqColOrigin" />
                     <col className="aoUsageReqColSession" />
                     <col className="aoUsageReqColInput" />
                     <col className="aoUsageReqColOutput" />
-                    <col className="aoUsageReqColCacheCreate" />
                     <col className="aoUsageReqColCacheRead" />
                   </colgroup>
                   <tbody>
@@ -4388,9 +4510,16 @@ export function UsageStatisticsPanel({
                         </td>
                       </tr>
                     ) : (
-                      tableRowsForDisplay.map((row) => (
+                      <>
+                        {usageRequestTopSpacerPx > 0 ? (
+                          <tr aria-hidden="true">
+                            <td colSpan={9} style={{ padding: 0, borderBottom: 0, background: 'transparent', height: usageRequestTopSpacerPx }} />
+                          </tr>
+                        ) : null}
+                        {visibleUsageRequestRows.map((row) => (
                         <tr key={usageRequestRowIdentity(row)}>
                           <td>{fmtWhen(row.unix_ms)}</td>
+                          <td className="aoUsageRequestsMono">{row.node_name || 'Local'}</td>
                           <td className="aoUsageRequestsMono">{resolveRequestProviderName(row.provider)}</td>
                           <td className="aoUsageRequestsMono">{row.model}</td>
                           <td>
@@ -4418,10 +4547,15 @@ export function UsageStatisticsPanel({
                           </td>
                           <td>{row.input_tokens.toLocaleString()}</td>
                           <td>{row.output_tokens.toLocaleString()}</td>
-                          <td>{row.cache_creation_input_tokens.toLocaleString()}</td>
                           <td>{row.cache_read_input_tokens.toLocaleString()}</td>
                         </tr>
-                      ))
+                        ))}
+                        {usageRequestBottomSpacerPx > 0 ? (
+                          <tr aria-hidden="true">
+                            <td colSpan={9} style={{ padding: 0, borderBottom: 0, background: 'transparent', height: usageRequestBottomSpacerPx }} />
+                          </tr>
+                        ) : null}
+                      </>
                     )}
                   </tbody>
                 </table>
@@ -4443,13 +4577,13 @@ export function UsageStatisticsPanel({
               <table className="aoUsageHistoryTable aoUsageRequestsTable">
                 <colgroup>
                   <col className="aoUsageReqColTime" />
+                  <col className="aoUsageReqColNode" />
                   <col className="aoUsageReqColProvider" />
                   <col className="aoUsageReqColModel" />
                   <col className="aoUsageReqColOrigin" />
                   <col className="aoUsageReqColSession" />
                   <col className="aoUsageReqColInput" />
                   <col className="aoUsageReqColOutput" />
-                  <col className="aoUsageReqColCacheCreate" />
                   <col className="aoUsageReqColCacheRead" />
                 </colgroup>
                 <tbody>
@@ -4466,9 +4600,9 @@ export function UsageStatisticsPanel({
                     <td>Requests {formatRequestSummaryValue(requestTableSummary?.requests)}</td>
                     <td />
                     <td />
+                    <td />
                     <td>{formatRequestSummaryValue(requestTableSummary?.input)}</td>
                     <td>{formatRequestSummaryValue(requestTableSummary?.output)}</td>
-                    <td>{formatRequestSummaryValue(requestTableSummary?.cacheCreate)}</td>
                     <td>{formatRequestSummaryValue(requestTableSummary?.cacheRead)}</td>
                   </tr>
                 </tbody>
@@ -4493,7 +4627,7 @@ export function UsageStatisticsPanel({
                   : 'All loaded'}
             </span>
             <span className="aoHint">
-              {tableRowsForDisplay.length.toLocaleString()} / {totalRequestRowsForDisplay.toLocaleString()} rows
+              {tableRowsForDisplay.length.toLocaleString()} / {requestFooterTotalRows.toLocaleString()} rows
             </span>
           </div>
         </div>

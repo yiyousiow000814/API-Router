@@ -106,6 +106,23 @@ describe('WebCodexPanel', () => {
     expect(source).toContain("if (devPreview) return () => { cancelled = true }")
   })
 
+  it('polls tailscale status so late network changes can promote the phone qr automatically', () => {
+    const source = fs.readFileSync(new URL('./WebCodexPanel.tsx', import.meta.url), 'utf8')
+
+    expect(source).toContain('const TAILSCALE_REFRESH_MS = 5000')
+    expect(source).toContain("const refreshTimer = window.setInterval(() => {")
+    expect(source).toContain("void refreshTailscale()")
+    expect(source).toContain("window.clearInterval(refreshTimer)")
+  })
+
+  it('reuses one fallback tailscale status object so repeated polling failures do not re-render on identical data', () => {
+    const source = fs.readFileSync(new URL('./WebCodexPanel.tsx', import.meta.url), 'utf8')
+
+    expect(source).toContain('const FALLBACK_TAILSCALE_STATUS: TailscaleStatus = {')
+    expect(source).toContain('setTailscale(FALLBACK_TAILSCALE_STATUS)')
+    expect(source).not.toContain('setTailscale(buildFallbackTailscaleStatus())')
+  })
+
   it('only marks phone ready when the gateway is actually reachable on tailscale', () => {
     const connectedButUnreachable = deriveWebCodexAccessState({
       listenPort: 4312,

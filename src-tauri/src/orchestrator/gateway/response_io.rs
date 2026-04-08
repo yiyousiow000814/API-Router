@@ -315,14 +315,19 @@ fn passthrough_sse_and_persist(
                     }
                 }
             }
+            let local_node = st2.secrets.get_lan_node_identity();
             st2.store
                 .record_success_with_model(
                     &provider2,
                     &resp_obj,
-                    Some(&api_key_ref2),
+                    crate::orchestrator::store::UsageRequestContext {
+                        api_key_ref: Some(&api_key_ref2),
+                        origin: &request_origin2,
+                        session_id: Some(session_key2.as_str()),
+                        node_id: local_node.as_ref().map(|value| value.node_id.as_str()),
+                        node_name: local_node.as_ref().map(|value| value.node_name.as_str()),
+                    },
                     created_model_for_usage.as_deref(),
-                    &request_origin2,
-                    Some(session_key2.as_str()),
                 );
         }
     };

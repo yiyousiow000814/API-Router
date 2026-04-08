@@ -3,12 +3,15 @@ import type { Config, UsageStatistics } from '../types'
 export function buildDevUsageStatistics(params: {
   now: number
   usageWindowHours: number
+  usageFilterNodes?: string[]
   usageFilterProviders: string[]
   usageFilterModels: string[]
   usageFilterOrigins: string[]
   config?: Config | null
 }): UsageStatistics {
-  const { now, usageWindowHours, usageFilterProviders, usageFilterModels, usageFilterOrigins, config = null } = params
+  const { now, usageWindowHours, usageFilterNodes = [], usageFilterProviders, usageFilterModels, usageFilterOrigins, config = null } = params
+  const normalizedNodeFilters = usageFilterNodes.map((node) => node.trim().toLowerCase()).filter(Boolean)
+  const includeNode = (nodeName: string) => normalizedNodeFilters.length === 0 || normalizedNodeFilters.includes(nodeName.trim().toLowerCase())
   const normalizedProviderFilters = usageFilterProviders.map((provider) => provider.trim().toLowerCase()).filter(Boolean)
   const includeProvider =
     normalizedProviderFilters.length === 0
@@ -165,6 +168,7 @@ export function buildDevUsageStatistics(params: {
     const wslTokens = Math.max(1, totalTokens - windowsTokens)
     return [
       {
+        node_name: 'Local',
         provider: providerName,
         api_key_ref: apiKeyRef,
         origin: 'windows',
@@ -176,6 +180,7 @@ export function buildDevUsageStatistics(params: {
         pricing_source: 'manual_per_request',
       },
       {
+        node_name: 'Desk B',
         provider: providerName,
         api_key_ref: apiKeyRef,
         origin: 'wsl2',
@@ -190,11 +195,14 @@ export function buildDevUsageStatistics(params: {
   })
 
   const byProvider = providerRowsRaw
+    .filter((row) => includeNode(row.node_name))
     .filter((row) => includeOrigin(row.origin))
     .filter((row) => includeProvider(row.provider))
 
   const totalRequests = byProvider.reduce((sum, row) => sum + row.requests, 0)
   const totalTokens = byProvider.reduce((sum, row) => sum + row.total_tokens, 0)
+  const totalInputTokens = byModel.reduce((sum, row) => sum + row.input_tokens, 0)
+  const totalOutputTokens = byModel.reduce((sum, row) => sum + row.output_tokens, 0)
   const totalCost = byProvider.reduce((sum, row) => sum + row.estimated_total_cost_usd, 0)
   const totalCacheCreation = timeline.reduce((sum, row) => sum + (row.cache_creation_tokens ?? 0), 0)
   const totalCacheRead = timeline.reduce((sum, row) => sum + (row.cache_read_tokens ?? 0), 0)
@@ -204,11 +212,13 @@ export function buildDevUsageStatistics(params: {
     generated_at_unix_ms: now,
     window_hours: usageWindowHours,
     filter: {
+      nodes: usageFilterNodes,
       providers: usageFilterProviders,
       models: usageFilterModels,
       origins: usageFilterOrigins,
     },
     catalog: {
+      nodes: ['Desk B', 'Local'],
       providers: orderedProviderNames,
       models: ['gpt-5.x', 'gpt-4.1'],
       origins: ['windows', 'wsl2'],
@@ -217,9 +227,19 @@ export function buildDevUsageStatistics(params: {
     summary: {
       total_requests: totalRequests,
       total_tokens: totalTokens,
+      input_tokens: totalInputTokens,
+      output_tokens: totalOutputTokens,
       cache_creation_tokens: totalCacheCreation,
       cache_read_tokens: totalCacheRead,
       unique_models: byModel.length,
+      top_model:
+        byModel[0] != null
+          ? {
+              model: byModel[0].model,
+              requests: byModel[0].requests,
+              share_pct: byModel[0].share_pct,
+            }
+          : null,
       estimated_total_cost_usd: Number(totalCost.toFixed(2)),
       estimated_daily_cost_usd: Number(totalCost.toFixed(2)),
       by_model: byModel,

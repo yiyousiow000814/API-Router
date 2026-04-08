@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -69,6 +69,12 @@ pub struct GatewayState {
     pub usage_base_speed_cache: Arc<RwLock<HashMap<String, UsageBaseSpeedCacheEntry>>>,
     pub prev_id_support_cache: Arc<RwLock<HashMap<String, bool>>>,
     pub client_sessions: Arc<RwLock<HashMap<String, ClientSessionRuntime>>>,
+}
+
+static RUNTIME_BOUND_LISTENER_ADDRS: OnceLock<Mutex<HashSet<SocketAddr>>> = OnceLock::new();
+
+fn runtime_bound_listener_addrs() -> &'static Mutex<HashSet<SocketAddr>> {
+    RUNTIME_BOUND_LISTENER_ADDRS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 #[derive(Clone, Debug)]
@@ -346,12 +352,9 @@ async fn refresh_usage_once_after_first_failure(
     *usage_refreshed_after_first_failure = true;
 
     let cfg = st.cfg.read().clone();
-    let Some(provider) = cfg.providers.get(provider_name) else {
+    let Some(_provider) = cfg.providers.get(provider_name) else {
         return;
     };
-    if super::quota::uses_packycode_usage_schedule(provider) {
-        return;
-    }
 
     st.router.require_usage_confirmation(provider_name);
     let snap = super::quota::refresh_quota_for_provider(st, provider_name).await;
@@ -360,6 +363,7 @@ async fn refresh_usage_once_after_first_failure(
         let err = snap.last_error.trim();
         let is_config_gap = err == "missing credentials for quota refresh"
             || err == "missing usage token"
+            || err == "missing provider key"
             || err == "missing quota base"
             || err == "missing base_url"
             || err == "usage endpoint not found (set Usage base URL)";
@@ -487,6 +491,27 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
     let router = Router::new()
         .route("/health", get(health))
         .route("/status", get(status))
+        .route(
+            "/lan-sync/usage",
+            post(crate::lan_sync::lan_sync_usage_http),
+        )
+        .route("/lan-sync/edit", post(crate::lan_sync::lan_sync_edit_http))
+        .route(
+            "/lan-sync/provider-definitions",
+            post(crate::lan_sync::lan_sync_provider_definitions_http),
+        )
+        .route(
+            "/lan-sync/remote-update",
+            post(crate::lan_sync::lan_sync_remote_update_http),
+        )
+        .route(
+            "/lan-sync/debug/tracked-spend-history",
+            post(crate::lan_sync::lan_sync_tracked_spend_history_debug_http),
+        )
+        .route(
+            "/lan-sync/debug/remote-update",
+            post(crate::lan_sync::lan_sync_remote_update_debug_http),
+        )
         .route("/v1/models", get(models))
         .route("/v1/responses", post(responses))
         .route("/responses", post(responses))
@@ -671,6 +696,10 @@ pub async fn serve_in_background(
         .join(", ");
     {
         state.cfg.write().listen.port = prepared.listen_port;
+        let mut bound_listener_addrs = runtime_bound_listener_addrs().lock();
+        for (addr, _) in &prepared.listeners {
+            bound_listener_addrs.insert(*addr);
+        }
     }
     write_gateway_startup_diag("binding", diag_addr, Some(&diag_binding));
 
@@ -705,6 +734,99 @@ pub async fn serve_in_background(
         }
     }
     Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn ensure_runtime_gateway_listener_bindings(
+    state: GatewayState,
+    addrs: &[SocketAddr],
+) -> anyhow::Result<Vec<SocketAddr>> {
+    let mut pending = Vec::new();
+    let mut newly_bound = Vec::new();
+    {
+        let bound_listener_addrs = runtime_bound_listener_addrs().lock();
+        for addr in addrs {
+            if bound_listener_addrs.contains(addr) {
+                continue;
+            }
+            let listener = match std::net::TcpListener::bind(addr) {
+                Ok(listener) => listener,
+                Err(err) => {
+                    state.gateway_event_optional_overlay_bind_skip(*addr, &err.to_string());
+                    continue;
+                }
+            };
+            listener.set_nonblocking(true)?;
+            pending.push((*addr, listener));
+        }
+    }
+
+    if pending.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    write_gateway_startup_diag(
+        "runtime_listener_bound",
+        pending.first().map(|(addr, _)| *addr),
+        Some(
+            &pending
+                .iter()
+                .map(|(addr, _)| addr.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+    );
+    let app = build_router(state.clone());
+    for (addr, listener) in pending {
+        let listener = tokio::net::TcpListener::from_std(listener)?;
+        runtime_bound_listener_addrs().lock().insert(addr);
+        newly_bound.push(addr);
+        let app_for_addr = app.clone();
+        let state_for_addr = state.clone();
+        tauri::async_runtime::spawn(async move {
+            let result = axum::serve(
+                listener,
+                app_for_addr.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await;
+            runtime_bound_listener_addrs().lock().remove(&addr);
+            if let Err(err) = result {
+                write_gateway_startup_diag(
+                    "runtime_listener_failed",
+                    Some(addr),
+                    Some(&err.to_string()),
+                );
+                state_for_addr.store.add_event(
+                    "gateway",
+                    "warning",
+                    "gateway.runtime_listener_failed",
+                    &format!("runtime gateway listener exited on {addr}: {err}"),
+                    json!({ "listen_addr": addr.to_string() }),
+                );
+            }
+        });
+    }
+
+    Ok(newly_bound)
+}
+
+#[cfg(windows)]
+trait GatewayRuntimeListenerEventExt {
+    fn gateway_event_optional_overlay_bind_skip(&self, addr: SocketAddr, detail: &str);
+}
+
+#[cfg(windows)]
+impl GatewayRuntimeListenerEventExt for GatewayState {
+    fn gateway_event_optional_overlay_bind_skip(&self, addr: SocketAddr, detail: &str) {
+        write_gateway_startup_diag("runtime_listener_skipped", Some(addr), Some(detail));
+        self.store.add_event(
+            "gateway",
+            "info",
+            "gateway.runtime_listener_skipped",
+            &format!("Skipped runtime gateway listener bind for {addr}: {detail}"),
+            json!({ "listen_addr": addr.to_string(), "detail": detail }),
+        );
+    }
 }
 
 include!("gateway/store_recovery.rs");
@@ -1388,14 +1510,19 @@ async fn responses(
                         );
                     }
                     let api_key_ref = api_key_ref_from_raw(api_key.as_deref());
+                    let local_node = st.secrets.get_lan_node_identity();
 
                     // Persist the exchange so we can keep continuity if provider changes later.
                     st.store.record_success(
                         &provider_name,
                         &response_obj,
-                        Some(&api_key_ref),
-                        request_origin,
-                        Some(session_key.as_str()),
+                        crate::orchestrator::store::UsageRequestContext {
+                            api_key_ref: Some(&api_key_ref),
+                            origin: request_origin,
+                            session_id: Some(session_key.as_str()),
+                            node_id: local_node.as_ref().map(|value| value.node_id.as_str()),
+                            node_name: local_node.as_ref().map(|value| value.node_name.as_str()),
+                        },
                     );
 
                     // Avoid spamming the event log for routine successful requests; only surface

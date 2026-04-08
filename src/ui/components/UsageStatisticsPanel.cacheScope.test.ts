@@ -157,6 +157,7 @@ describe('buildUsageRequestsQueryKey', () => {
         hours: 24 * 365 * 20,
         from_unix_ms: null,
         to_unix_ms: null,
+        nodes: [],
         providers: [],
         models: [],
         origins: [],

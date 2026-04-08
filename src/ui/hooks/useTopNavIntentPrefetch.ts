@@ -27,17 +27,24 @@ type TopPage =
 
 type Params = {
   activePage: TopPage
-  refreshUsageStatistics: (opts?: { silent?: boolean }) => Promise<unknown> | void
+  refreshUsageStatistics: (opts?: {
+    silent?: boolean
+    interactive?: boolean
+    source?: string
+  }) => Promise<unknown> | void
   clientSessions?: Status['client_sessions']
 }
 
 type UsageRequestEntry = {
+  id?: string
   provider: string
   api_key_ref: string
   model: string
   origin: string
   session_id: string
   unix_ms: number
+  node_id?: string
+  node_name?: string
   input_tokens: number
   output_tokens: number
   total_tokens: number
@@ -191,12 +198,15 @@ function buildSyntheticUsageRequestRows(limit: number, clientSessions?: Status['
     const cacheCreate = i % 7 === 0 ? 100_000 + Math.floor(rand() * 900_000) : 0
     const cacheRead = i % 4 === 0 ? 100_000 + Math.floor(rand() * 900_000) : 0
     rows.push({
+      id: `prefetch-${i}`,
       provider,
       api_key_ref: '-',
       model: models[0],
       origin,
       session_id: chosenSession.sessionId,
       unix_ms: now - Math.floor(rand() * windowMs),
+      node_id: 'node-local',
+      node_name: 'Local',
       input_tokens: input,
       output_tokens: output,
       total_tokens: total,
@@ -229,7 +239,13 @@ export function useTopNavIntentPrefetch({
     }
     usageStatsIntentPrefetchAtRef.current = now
     usageStatsIntentPrefetchInFlightRef.current = true
-    void Promise.resolve(refreshUsageStatistics({ silent: true })).finally(() => {
+    void Promise.resolve(
+      refreshUsageStatistics({
+        silent: true,
+        interactive: false,
+        source: 'top_nav_usage_intent_prefetch',
+      }),
+    ).finally(() => {
       usageStatsIntentPrefetchInFlightRef.current = false
     })
   }, [activePage, refreshUsageStatistics])
@@ -248,10 +264,11 @@ export function useTopNavIntentPrefetch({
     usageRequestsIntentPrefetchInFlightRef.current = true
     const useSyntheticRevision = import.meta.env.DEV || readTestFlagFromLocation()
     const requestQueryKey = useSyntheticRevision
-      ? buildUsageRequestsQueryKey({
+        ? buildUsageRequestsQueryKey({
           hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
           fromUnixMs: null,
           toUnixMs: null,
+          nodes: null,
           providers: null,
           models: null,
           origins: null,
@@ -271,6 +288,7 @@ export function useTopNavIntentPrefetch({
               hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
               fromUnixMs: null,
               toUnixMs: null,
+              nodes: null,
               providers: null,
               models: null,
               origins: null,
@@ -320,6 +338,7 @@ export function useTopNavIntentPrefetch({
                       hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
                       fromUnixMs: null,
                       toUnixMs: null,
+                      nodes: null,
                       providers: [provider],
                       models: null,
                       origins: null,

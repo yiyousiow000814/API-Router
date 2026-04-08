@@ -2,21 +2,24 @@
 
 ## Agent Defaults (Repository-Wide)
 - **Document language**: Write instructions in English. Examples may include other languages when clarity improves.
-- **Replies**: Default to Simplified Chinese. If a request is prefixed with `[EN]`, respond in English.
+- **Replies**: Match the primary language the user is using in the current conversation. If the conversation is mixed-language, follow the language used for the actionable part; if still unclear, mirror the user's current conversational language.
 - **Terminology**: Do not translate proper nouns such as `Tauri`, `Rust`, `Codex`, `OpenAI`, or provider names.
+- **Term clarification**: Whenever using a specific term or phrase that may be unclear, add a short bracketed explanation beside it on first use (for example, `worktree` [separate checkout] or `canonical path` [single official implementation route]). Keep the explanation concise and skip obvious terms.
 - **Date/Time format**: Always use day-month-year ordering; never use month-day-year in outputs or docs.
 - **Agent capacity fallback**: If spawning a new agent fails because capacity is full, first clean up agents that are not actively in progress/in use, then retry spawning.
 
 ## Git / GitHub Workflow
 - **Branch-first**: Never commit directly to `main`. Use branches such as `feat/*`, `fix/*`, `docs/*`, `chore/*`.
 - **PR-first**: Ship changes through a pull request (default to draft).
+- **User-specified PR number rule (required)**: If the user references a specific PR number (for example "push to PR 165" or "open PR 165"), first verify whether that PR already exists and report the result before taking action. If that PR number is already taken, do not silently open a different PR number. Ask whether to update the existing PR, close/reuse another PR, or proceed with a new PR.
 - **No PR comments** unless explicitly requested.
-- **Titles**: PR and issue titles stay in English. Descriptions and regular comments default to Simplified Chinese (unless `[EN]`).
+- **Titles**: PR and issue titles stay in English. PR descriptions and regular comments should match the primary language of the surrounding conversation or thread.
 - **PR title prefix**: PR titles must start with one of `feat:`, `fix:`, `docs:`, `chore:`.
 - **PR title length**: Keep PR titles at 8 words or fewer. Avoid symbols like `+` in titles.
 - **PR body format**: PR bodies must include `## What`, `## Why`, `## Changes`, `## Verify`. If the PR is long, add `## TL;DR` at the very top.
 - **PR summary scope**: Titles and bodies must describe the overall changes relative to `main`, not just the latest commit.
 - **Resolve review threads**: After addressing review comments, resolve the corresponding review conversations (click "Resolve conversation").
+- **Efficiency review rule (required)**: If a PR/review comment calls out `efficiency`, `inefficiency`, redundant work, repeated allocation, unnecessary polling/rendering, or similar performance waste, treat it as actionable work by default and fix it before resolving the thread unless you can show clear evidence that the comment is incorrect.
 - **Format before commit**: Ensure formatting checks pass before committing.
 - **Pre-commit/push gate (required)**: Before every `git commit` and `git push`, run `npm run check:ci-local` (or at minimum run `cargo fmt --manifest-path src-tauri/Cargo.toml --check` and `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`). Do not commit/push when these fail.
 - **Conflict-resolution rule (required)**: Never resolve merge conflicts by dropping one side wholesale. Preserve both branch intent and incoming `main` functionality unless there is a documented reason to change behavior. After conflict resolution, run targeted checks/tests for the touched behavior before committing.
@@ -86,15 +89,6 @@ Guards/fallbacks are only allowed if:
 - retries/timeouts without concurrency/root-cause analysis
 - skipping inputs/files to make tests pass
 - weakening assertions or deleting failing tests
-
-## Required PR / Patch Metadata (Put In Description)
-- Root cause:
-- Minimal repro:
-- Evidence (logs/trace/screenshots):
-- Fix summary:
-- New/updated tests:
-- Risk assessment:
-- Rollback plan:
 
 ## CSS Layering (z-index) Policy
 - Use the global sequential z-index scale (e.g. `--z-*` tokens) for cross-component layering.

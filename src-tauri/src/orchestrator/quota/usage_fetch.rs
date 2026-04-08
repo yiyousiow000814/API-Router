@@ -152,270 +152,6 @@ async fn fetch_token_stats_any(
     out
 }
 
-fn packycode_login_slug_for_usage_context(provider: &str) -> String {
-    let mut slug = String::new();
-    let mut last_was_dash = false;
-    for ch in provider.trim().chars() {
-        let normalized = ch.to_ascii_lowercase();
-        if normalized.is_ascii_alphanumeric() {
-            slug.push(normalized);
-            last_was_dash = false;
-        } else if !last_was_dash {
-            slug.push('-');
-            last_was_dash = true;
-        }
-    }
-    let trimmed = slug.trim_matches('-');
-    if trimmed.is_empty() {
-        "provider".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-fn packycode_login_data_dir_for_usage_context(
-    st: &GatewayState,
-    provider_name: &str,
-) -> std::path::PathBuf {
-    st.secrets
-        .path()
-        .parent()
-        .unwrap_or(std::path::Path::new("."))
-        .join("packycode-login")
-        .join(packycode_login_slug_for_usage_context(provider_name))
-}
-
-fn packycode_devtools_active_port_path_for_usage_context(
-    data_dir: &std::path::Path,
-) -> std::path::PathBuf {
-    data_dir.join("DevToolsActivePort")
-}
-
-fn parse_packycode_devtools_port_for_usage_context(raw: &str) -> Option<u16> {
-    raw.lines()
-        .next()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .and_then(|line| line.parse::<u16>().ok())
-}
-
-fn packycode_browser_candidates_for_usage_context() -> Vec<std::path::PathBuf> {
-    let mut candidates = Vec::new();
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
-            candidates.push(
-                std::path::PathBuf::from(program_files_x86)
-                    .join("Microsoft\\Edge\\Application\\msedge.exe"),
-            );
-        }
-        if let Ok(program_files) = std::env::var("ProgramFiles") {
-            let program_files = std::path::PathBuf::from(program_files);
-            candidates.push(program_files.join("Microsoft\\Edge\\Application\\msedge.exe"));
-            candidates.push(program_files.join("Google\\Chrome\\Application\\chrome.exe"));
-        }
-        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-            candidates.push(
-                std::path::PathBuf::from(local_app_data)
-                    .join("Google\\Chrome\\Application\\chrome.exe"),
-            );
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        for name in [
-            "microsoft-edge",
-            "microsoft-edge-stable",
-            "google-chrome",
-            "chromium",
-            "chromium-browser",
-        ] {
-            candidates.push(std::path::PathBuf::from(name));
-        }
-    }
-    candidates
-}
-
-fn resolve_packycode_browser_path_for_usage_context() -> Option<std::path::PathBuf> {
-    packycode_browser_candidates_for_usage_context()
-        .into_iter()
-        .find(|candidate| candidate.is_file() || candidate.components().count() == 1)
-        .or_else(|| {
-            let lookup = if cfg!(target_os = "windows") {
-                std::process::Command::new("where")
-                    .args(["msedge", "chrome"])
-                    .output()
-                    .ok()
-            } else {
-                std::process::Command::new("which")
-                    .args(["microsoft-edge", "google-chrome", "chromium"])
-                    .output()
-                    .ok()
-            }?;
-            if !lookup.status.success() {
-                return None;
-            }
-            lookup
-                .stdout
-                .split(|byte| *byte == b'\n' || *byte == b'\r')
-                .filter_map(|line| std::str::from_utf8(line).ok())
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-                .map(std::path::PathBuf::from)
-        })
-}
-
-async fn wait_for_packycode_devtools_port_for_usage_context(
-    data_dir: &std::path::Path,
-) -> Result<u16, String> {
-    let active_port_path = packycode_devtools_active_port_path_for_usage_context(data_dir);
-    let started = std::time::Instant::now();
-    loop {
-        if let Ok(raw) = std::fs::read_to_string(&active_port_path) {
-            if let Some(port) = parse_packycode_devtools_port_for_usage_context(&raw) {
-                return Ok(port);
-            }
-        }
-        if started.elapsed() >= Duration::from_secs(30) {
-            return Err("timed out waiting for Packycode browser debug port".to_string());
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-}
-
-async fn fetch_packycode_devtools_page_ws_url_for_usage_context(
-    port: u16,
-) -> Result<Option<String>, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("api-router/0.1")
-        .build()
-        .map_err(|err| format!("failed to build devtools client: {err}"))?;
-    let targets = client
-        .get(format!("http://127.0.0.1:{port}/json/list"))
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|err| format!("devtools target list failed: {err}"))?
-        .json::<Value>()
-        .await
-        .map_err(|err| format!("devtools target list decode failed: {err}"))?;
-    let Some(items) = targets.as_array() else {
-        return Ok(None);
-    };
-    Ok(items.iter().find_map(|item| {
-        let item_type = item.get("type").and_then(Value::as_str)?.trim();
-        if item_type != "page" {
-            return None;
-        }
-        let url = item.get("url").and_then(Value::as_str)?.trim();
-        if !url.contains("packycode.com") {
-            return None;
-        }
-        item.get("webSocketDebuggerUrl")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToString::to_string)
-    }))
-}
-
-async fn send_packycode_devtools_command(
-    socket: &mut tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
-    id: u64,
-    method: &str,
-    params: Value,
-) -> Result<Value, String> {
-    socket
-        .send(WebSocketMessage::Text(
-            serde_json::json!({
-                "id": id,
-                "method": method,
-                "params": params,
-            })
-            .to_string(),
-        ))
-        .await
-        .map_err(|err| format!("devtools websocket send failed: {err}"))?;
-    while let Some(message) = socket.next().await {
-        let message = message.map_err(|err| format!("devtools websocket read failed: {err}"))?;
-        let WebSocketMessage::Text(text) = message else {
-            continue;
-        };
-        let payload: Value = serde_json::from_str(&text)
-            .map_err(|err| format!("devtools websocket decode failed: {err}"))?;
-        if payload.get("id").and_then(Value::as_u64) != Some(id) {
-            continue;
-        }
-        if let Some(err) = payload.get("error") {
-            return Err(format!("devtools command {method} failed: {err}"));
-        }
-        return Ok(payload);
-    }
-    Err(format!(
-        "devtools websocket closed before {method} completed"
-    ))
-}
-
-fn build_packycode_auth_storage_seed(token: &str) -> String {
-    serde_json::json!({
-        "state": {
-            "token": token.trim(),
-            "user": Value::Null,
-        },
-        "version": 0,
-    })
-    .to_string()
-}
-
-fn extract_packycode_browser_auth_storage_user(root: &Value) -> Result<Value, String> {
-    let result = root
-        .pointer("/result/result/value")
-        .ok_or_else(|| "missing devtools evaluate result".to_string())?;
-    if let Some(err) = result.get("__parseError").and_then(Value::as_str) {
-        return Err(format!(
-            "Packycode dashboard auth-storage parse failed: {err}"
-        ));
-    }
-    let storage = if let Some(raw) = result.as_str() {
-        let raw = raw.trim();
-        if raw.is_empty() {
-            return Err("Packycode dashboard auth-storage is empty".to_string());
-        }
-        serde_json::from_str::<Value>(raw)
-            .map_err(|err| format!("invalid Packycode auth-storage JSON: {err}"))?
-    } else {
-        result.clone()
-    };
-    let user = storage
-        .pointer("/state/user")
-        .or_else(|| storage.get("user"))
-        .cloned()
-        .ok_or_else(|| "Packycode dashboard auth-storage missing user payload".to_string())?;
-    if user.get("daily_spent_usd").is_none()
-        && user.get("monthly_spent_usd").is_none()
-        && user.get("weekly_spent_usd").is_none()
-        && user.get("weekly_spent").is_none()
-    {
-        return Err("Packycode dashboard user payload has no usage fields".to_string());
-    }
-    Ok(user)
-}
-
-fn packycode_usage_browser_args(data_dir: &std::path::Path, dashboard_url: &str) -> Vec<String> {
-    vec![
-        "--headless=new".to_string(),
-        "--disable-gpu".to_string(),
-        "--hide-scrollbars".to_string(),
-        "--mute-audio".to_string(),
-        "--no-first-run".to_string(),
-        "--remote-debugging-port=0".to_string(),
-        format!("--user-data-dir={}", data_dir.display()),
-        dashboard_url.to_string(),
-    ]
-}
-
 fn apply_packycode_budget_payload(
     out: &mut QuotaSnapshot,
     root: &Value,
@@ -473,9 +209,24 @@ fn apply_explicit_usage_endpoint_payload(
         .or_else(|| {
             root.pointer("/daily_budget_usd")
                 .and_then(|value| as_f64(Some(value)))
+        })
+        .or_else(|| {
+            root.pointer("/daily_limit_usd")
+                .and_then(|value| as_f64(Some(value)))
+        })
+        .or_else(|| {
+            root.pointer("/subscription/daily_limit_usd")
+                .and_then(|value| as_f64(Some(value)))
         });
-    let daily_spent_usd = root
-        .pointer("/quota/daily_spent")
+    let usage_today_cost = root
+        .pointer("/usage/today/actual_cost")
+        .and_then(|value| as_f64(Some(value)))
+        .or_else(|| {
+            root.pointer("/usage/today/cost")
+                .and_then(|value| as_f64(Some(value)))
+        });
+    let daily_spent_usd = usage_today_cost.or_else(|| {
+        root.pointer("/quota/daily_spent")
         .and_then(|value| as_f64(Some(value)))
         .or_else(|| {
             root.pointer("/quota/daily_total_spent")
@@ -492,10 +243,23 @@ fn apply_explicit_usage_endpoint_payload(
         .or_else(|| {
             root.pointer("/daily_spent_usd")
                 .and_then(|value| as_f64(Some(value)))
-        });
+        })
+        .or_else(|| {
+            root.pointer("/daily_usage_usd")
+                .and_then(|value| as_f64(Some(value)))
+        })
+        .or_else(|| {
+            root.pointer("/subscription/daily_usage_usd")
+                .and_then(|value| as_f64(Some(value)))
+        })
+    });
     let remaining = root
         .pointer("/quota/daily_remaining")
         .and_then(|value| as_f64(Some(value)))
+        .or_else(|| {
+            root.pointer("/remaining")
+                .and_then(|value| as_f64(Some(value)))
+        })
         .or_else(|| {
             root.pointer("/remaining_quota")
                 .and_then(|value| as_f64(Some(value)))
@@ -507,7 +271,8 @@ fn apply_explicit_usage_endpoint_payload(
     let package_expires_at_unix_ms = root
         .pointer("/timestamps/expires_at")
         .and_then(|value| parse_unix_ms_from_value(Some(value)))
-        .or_else(|| parse_unix_ms_from_value(root.pointer("/expires_at")));
+        .or_else(|| parse_unix_ms_from_value(root.pointer("/expires_at")))
+        .or_else(|| parse_unix_ms_from_value(root.pointer("/subscription/expires_at")));
     if daily_budget_usd.is_none()
         && daily_spent_usd.is_none()
         && remaining.is_none()
@@ -619,176 +384,6 @@ async fn fetch_explicit_usage_endpoint_any(
         last_err
     };
     out
-}
-
-async fn fetch_packycode_budget_info_via_browser_context(
-    st: &GatewayState,
-    provider_name: &str,
-    base: &str,
-    usage_token: Option<&str>,
-) -> QuotaSnapshot {
-    const PACKYCODE_DASHBOARD_URL: &str = "https://codex.packycode.com/dashboard";
-    const PACKYCODE_ORIGIN_URL: &str = "https://codex.packycode.com/";
-    let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
-    let data_dir = packycode_login_data_dir_for_usage_context(st, provider_name);
-    if !data_dir.exists() {
-        out.last_error = "Packycode login browser profile not found".to_string();
-        return out;
-    }
-
-    let browser_path = match resolve_packycode_browser_path_for_usage_context() {
-        Some(path) => path,
-        None => {
-            out.last_error =
-                "no supported browser found for Packycode browser usage sync".to_string();
-            return out;
-        }
-    };
-
-    let _ = std::fs::remove_file(packycode_devtools_active_port_path_for_usage_context(
-        &data_dir,
-    ));
-    let launch_args = packycode_usage_browser_args(&data_dir, PACKYCODE_DASHBOARD_URL);
-    let mut child = match tokio::process::Command::new(&browser_path)
-        .args(&launch_args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(err) => {
-            out.last_error = format!("failed to launch Packycode browser usage session: {err}");
-            return out;
-        }
-    };
-
-    let result = async {
-        let port = wait_for_packycode_devtools_port_for_usage_context(&data_dir).await?;
-        let Some(ws_url) = fetch_packycode_devtools_page_ws_url_for_usage_context(port).await?
-        else {
-            return Err("Packycode browser page websocket not found".to_string());
-        };
-        let (mut socket, _) = connect_async(ws_url)
-            .await
-            .map_err(|err| format!("devtools websocket connect failed: {err}"))?;
-
-        let _ = send_packycode_devtools_command(
-            &mut socket,
-            1,
-            "Page.enable",
-            Value::Object(Default::default()),
-        )
-        .await?;
-        let _ = send_packycode_devtools_command(
-            &mut socket,
-            2,
-            "Runtime.enable",
-            Value::Object(Default::default()),
-        )
-        .await?;
-        let _ = send_packycode_devtools_command(
-            &mut socket,
-            3,
-            "Network.enable",
-            Value::Object(Default::default()),
-        )
-        .await?;
-
-        if let Some(token) = usage_token.map(str::trim).filter(|value| !value.is_empty()) {
-            let auth_storage_seed = serde_json::to_string(&build_packycode_auth_storage_seed(
-                token,
-            ))
-            .map_err(|err| format!("failed to encode Packycode auth-storage seed: {err}"))?;
-            let _ = send_packycode_devtools_command(
-                &mut socket,
-                4,
-                "Network.setCookie",
-                serde_json::json!({
-                    "name": "token",
-                    "value": token,
-                    "url": PACKYCODE_ORIGIN_URL,
-                    "path": "/",
-                    "secure": true,
-                }),
-            )
-            .await?;
-            let _ = send_packycode_devtools_command(
-                &mut socket,
-                5,
-                "Runtime.evaluate",
-                serde_json::json!({
-                    "expression": format!(
-                        "(() => {{ localStorage.setItem('auth-storage', {}); return true; }})()",
-                        auth_storage_seed
-                    ),
-                    "returnByValue": true,
-                }),
-            )
-            .await?;
-        }
-
-        let _ = send_packycode_devtools_command(
-            &mut socket,
-            6,
-            "Page.reload",
-            serde_json::json!({ "ignoreCache": true }),
-        )
-        .await?;
-        let mut last_err = "Packycode dashboard auth-storage missing user payload".to_string();
-        for attempt in 0..10 {
-            if attempt > 0 {
-                tokio::time::sleep(Duration::from_millis(700)).await;
-            } else {
-                tokio::time::sleep(Duration::from_millis(1200)).await;
-            }
-            let evaluated = send_packycode_devtools_command(
-                &mut socket,
-                7 + attempt,
-                "Runtime.evaluate",
-                serde_json::json!({
-                    "expression": r#"(() => {
-  const raw = localStorage.getItem('auth-storage');
-  if (!raw) {
-    return null;
-  }
-  try {
-    return JSON.parse(raw);
-  } catch (err) {
-    return {
-      __parseError: String(err),
-      __raw: String(raw).slice(0, 400),
-    };
-  }
-})()"#,
-                    "returnByValue": true,
-                }),
-            )
-            .await?;
-            match extract_packycode_browser_auth_storage_user(&evaluated) {
-                Ok(user) => {
-                    apply_packycode_budget_payload(&mut out, &user, base, unix_ms())?;
-                    out.effective_usage_source = Some("packycode_browser_session".to_string());
-                    out.package_expires_at_unix_ms =
-                        extract_packycode_package_expiry_from_value(&user);
-                    return Ok::<QuotaSnapshot, String>(out);
-                }
-                Err(err) => last_err = err,
-            }
-        }
-        Err(last_err)
-    }
-    .await;
-
-    let _ = child.kill().await;
-    match result {
-        Ok(snapshot) => snapshot,
-        Err(err) => {
-            let mut failed = QuotaSnapshot::empty(UsageKind::BudgetInfo);
-            failed.last_error = err;
-            failed
-        }
-    }
 }
 
 fn extract_token_stats(payload: &Value) -> Option<(Option<f64>, Option<f64>, Option<f64>)> {
@@ -1204,12 +799,16 @@ async fn fetch_budget_info_any(
     st: &GatewayState,
     provider_name: &str,
     bases: &[String],
-    jwt: Option<&str>,
+    credential_value: Option<&str>,
+    missing_credential_label: &str,
     package_expiry_strategy: PackageExpiryStrategy,
 ) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
-    let Some(token) = jwt else {
-        out.last_error = "missing usage token".to_string();
+    let Some(usage_token) = credential_value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        out.last_error = format!("missing {missing_credential_label}");
         return out;
     };
     if bases.is_empty() {
@@ -1242,7 +841,7 @@ async fn fetch_budget_info_any(
         }
         match client
             .get(&url)
-            .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(reqwest::header::AUTHORIZATION, format!("Bearer {usage_token}"))
             .timeout(Duration::from_secs(15))
             .send()
             .await
@@ -1283,7 +882,7 @@ async fn fetch_budget_info_any(
                     st,
                     provider_name,
                     bases,
-                    token,
+                    usage_token,
                     Some(base),
                     Some(root),
                 )
@@ -1323,4 +922,27 @@ fn as_f64(v: Option<&Value>) -> Option<f64> {
                 }
             })
         })
+}
+
+#[cfg(test)]
+mod usage_fetch_tests {
+    #[tokio::test]
+    async fn budget_info_without_usage_token_reports_missing_usage_token() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        let state = crate::app_state::build_state(config_path, data_dir).expect("build state");
+
+        let snapshot = super::fetch_budget_info_any(
+            &state.gateway,
+            "official",
+            &["https://usage.example.test".to_string()],
+            None,
+            "usage token",
+            crate::orchestrator::quota::PackageExpiryStrategy::None,
+        )
+        .await;
+
+        assert_eq!(snapshot.last_error, "missing usage token");
+    }
 }

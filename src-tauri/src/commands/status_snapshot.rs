@@ -1,3 +1,5 @@
+use sha2::Digest;
+
 fn app_startup_diag_path() -> Option<std::path::PathBuf> {
     let user_data_dir = std::env::var("API_ROUTER_USER_DATA_DIR").ok()?;
     let trimmed = user_data_dir.trim();
@@ -36,20 +38,71 @@ fn append_app_startup_stage(stage: &str, elapsed_ms: Option<u64>, detail: Option
     );
 }
 
+fn elapsed_ms_since(started_at: std::time::Instant) -> u64 {
+    started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn write_dashboard_status_slow_diag(
+    diagnostics_dir: &std::path::Path,
+    detail_level: &str,
+    total_elapsed_ms: u64,
+    response_bytes: usize,
+    phase_timings_ms: &serde_json::Map<String, serde_json::Value>,
+) {
+    let diag = serde_json::json!({
+        "captured_at_unix_ms": unix_ms(),
+        "detail_level": detail_level,
+        "total_elapsed_ms": total_elapsed_ms,
+        "response_bytes": response_bytes,
+        "phase_timings_ms": phase_timings_ms,
+    });
+    let path = diagnostics_dir.join(format!("status-dashboard-slow-{}.json", unix_ms()));
+    let _ = std::fs::write(path, serde_json::to_vec_pretty(&diag).unwrap_or_default());
+}
+
 #[tauri::command]
-pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_json::Value {
+pub(crate) fn get_status(
+    state: tauri::State<'_, app_state::AppState>,
+    detail_level: Option<String>,
+) -> serde_json::Value {
+    let command_started_at = std::time::Instant::now();
+    let mut phase_timings_ms = serde_json::Map::new();
+    let dashboard_detail = detail_level
+        .as_deref()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("dashboard"));
+    let phase_started_at = std::time::Instant::now();
     let cfg = state.gateway.cfg.read().clone();
+    let config_revision = config_revision(&state, &cfg);
     let wsl_gateway_host =
         crate::platform::wsl_gateway_host::cached_or_default_wsl_gateway_host(Some(&state.config_path));
+    phase_timings_ms.insert(
+        "config_and_revision".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
     let now = unix_ms();
+    let phase_started_at = std::time::Instant::now();
     state.gateway.router.sync_with_config(&cfg, now);
     let providers = state.gateway.router.snapshot(now);
+    phase_timings_ms.insert(
+        "router_snapshot".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
     let manual_override = state.gateway.router.manual_override.read().clone();
     // Keep status payload small: expose only a compact latest-error preview.
-    let recent_events = state
-        .gateway
-        .store
-        .list_recent_error_events(crate::constants::STATUS_RECENT_ERROR_PREVIEW_LIMIT);
+    let phase_started_at = std::time::Instant::now();
+    let recent_events = if dashboard_detail {
+        Vec::new()
+    } else {
+        state
+            .gateway
+            .store
+            .list_recent_error_events(crate::constants::STATUS_RECENT_ERROR_PREVIEW_LIMIT)
+    };
+    phase_timings_ms.insert(
+        "recent_events".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
+    let phase_started_at = std::time::Instant::now();
     let metrics = state.gateway.store.get_metrics();
     let quota = state.gateway.store.list_quota_snapshots();
     let mut providers = providers;
@@ -65,8 +118,14 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
         }
     }
     let ledgers = state.gateway.store.list_ledgers();
+    let projected_ledgers = projected_usage_ledgers(&state.gateway, &quota);
+    phase_timings_ms.insert(
+        "metrics_quota_ledgers".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
     let last_activity = state.gateway.last_activity_unix_ms.load(Ordering::Relaxed);
     let active_recent = last_activity > 0 && now.saturating_sub(last_activity) < 2 * 60 * 1000;
+    let phase_started_at = std::time::Instant::now();
     let (active_provider, active_reason, active_provider_counts) = if active_recent {
         let map = state.gateway.last_used_by_session.read();
 
@@ -101,159 +160,192 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
     } else {
         (None, None, std::collections::BTreeMap::<String, u64>::new())
     };
+    phase_timings_ms.insert(
+        "active_provider".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
+    let phase_started_at = std::time::Instant::now();
     let codex_account = state
         .gateway
         .store
         .get_codex_account_snapshot()
         .unwrap_or(serde_json::json!({"ok": false}));
+    phase_timings_ms.insert(
+        "codex_account".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
+    let phase_started_at = std::time::Instant::now();
+    let lan_sync = state
+        .lan_sync
+        .snapshot(cfg.listen.port, &cfg, &state.secrets);
+    phase_timings_ms.insert(
+        "lan_sync_snapshot".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
+    let phase_started_at = std::time::Instant::now();
+    let shared_quota_owners = if dashboard_detail {
+        Vec::new()
+    } else {
+        crate::orchestrator::quota::shared_quota_owner_statuses(&state.gateway, &state.lan_sync)
+    };
+    phase_timings_ms.insert(
+        "shared_quota_owners".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
 
+    let phase_started_at = std::time::Instant::now();
     let client_sessions = {
-        // Best-effort: discover running Codex processes configured to use this router, even before
-        // the first request is sent (Windows Terminal only).
-        let gateway_token = state.secrets.get_gateway_token().unwrap_or_default();
-        let expected = (!gateway_token.is_empty()).then_some(gateway_token.as_str());
-        let discovered_snapshot = crate::platform::windows_terminal::discover_sessions_using_router_snapshot(
-            cfg.listen.port,
-            expected,
-        );
-        let discovered = discovered_snapshot.items;
-        let discovery_is_fresh = discovered_snapshot.fresh;
-        let live_child_parent_session_ids = if discovery_is_fresh {
-            discovered_live_agent_parent_session_ids(&discovered)
-        } else {
-            std::collections::HashSet::new()
-        };
-        let mut seen_in_discovery: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let map = if !dashboard_detail {
+            // Full status may update runtime session discovery; keep this off the dashboard hot path.
+            // Session discovery can take seconds on Windows. If this is reintroduced into the
+            // dashboard polling path, clicks and scrolling will stutter again because
+            // get_status(detailLevel='dashboard') runs on a tight interval.
+            let gateway_token = state.secrets.get_gateway_token().unwrap_or_default();
+            let expected = (!gateway_token.is_empty()).then_some(gateway_token.as_str());
+            let discovered_snapshot = crate::platform::windows_terminal::discover_sessions_using_router_snapshot(
+                cfg.listen.port,
+                expected,
+            );
+            let discovered = discovered_snapshot.items;
+            let discovery_is_fresh = discovered_snapshot.fresh;
+            let live_child_parent_session_ids = if discovery_is_fresh {
+                discovered_live_agent_parent_session_ids(&discovered)
+            } else {
+                std::collections::HashSet::new()
+            };
+            let mut seen_in_discovery: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
 
-        // Track all discovered sessions, but only allow provider preference changes once we have
-        // strong evidence that the session is using this gateway.
-        {
-            let mut map = state.gateway.client_sessions.write();
-            for s in discovered {
-                if !discovery_is_fresh {
-                    // Stale discovery snapshots are display-only. Do not mutate runtime session
-                    // state with cached rows.
-                    continue;
-                }
-                let Some(codex_session_id) = s.codex_session_id.as_deref() else {
-                    continue;
-                };
-                seen_in_discovery.insert(codex_session_id.to_string());
-                let entry = map.entry(codex_session_id.to_string()).or_insert_with(|| {
-                    crate::orchestrator::gateway::ClientSessionRuntime {
-                        codex_session_id: codex_session_id.to_string(),
-                        pid: s.pid,
-                        wt_session: crate::platform::windows_terminal::merge_wt_session_marker(
-                            None,
-                            &s.wt_session,
-                        ),
-                        last_request_unix_ms: 0,
-                        last_discovered_unix_ms: 0,
-                        last_reported_model_provider: None,
-                        last_reported_model: None,
-                        last_reported_base_url: None,
-                        agent_parent_session_id: None,
-                        is_agent: s.is_agent,
-                        is_review: s.is_review,
-                        confirmed_router: s.router_confirmed,
+            {
+                let mut map = state.gateway.client_sessions.write();
+                for s in discovered {
+                    if !discovery_is_fresh {
+                        continue;
                     }
-                });
-                entry.pid = s.pid;
-                entry.wt_session = crate::platform::windows_terminal::merge_wt_session_marker(
-                    entry.wt_session.as_deref(),
-                    &s.wt_session,
-                );
-                entry.last_discovered_unix_ms =
-                    next_last_discovered_unix_ms(entry.last_discovered_unix_ms, now, true);
-                apply_discovered_router_confirmation(entry, s.router_confirmed, s.is_agent);
-                merge_discovered_model_provider(entry, s.reported_model_provider.as_deref());
-                if let Some(bu) = s.reported_base_url.as_deref() {
-                    entry.last_reported_base_url = Some(bu.to_string());
+                    let Some(codex_session_id) = s.codex_session_id.as_deref() else {
+                        continue;
+                    };
+                    seen_in_discovery.insert(codex_session_id.to_string());
+                    let entry = map.entry(codex_session_id.to_string()).or_insert_with(|| {
+                        crate::orchestrator::gateway::ClientSessionRuntime {
+                            codex_session_id: codex_session_id.to_string(),
+                            pid: s.pid,
+                            wt_session: crate::platform::windows_terminal::merge_wt_session_marker(
+                                None,
+                                &s.wt_session,
+                            ),
+                            last_request_unix_ms: 0,
+                            last_discovered_unix_ms: 0,
+                            last_reported_model_provider: None,
+                            last_reported_model: None,
+                            last_reported_base_url: None,
+                            agent_parent_session_id: None,
+                            is_agent: s.is_agent,
+                            is_review: s.is_review,
+                            confirmed_router: s.router_confirmed,
+                        }
+                    });
+                    entry.pid = s.pid;
+                    entry.wt_session = crate::platform::windows_terminal::merge_wt_session_marker(
+                        entry.wt_session.as_deref(),
+                        &s.wt_session,
+                    );
+                    entry.last_discovered_unix_ms =
+                        next_last_discovered_unix_ms(entry.last_discovered_unix_ms, now, true);
+                    apply_discovered_router_confirmation(entry, s.router_confirmed, s.is_agent);
+                    merge_discovered_model_provider(entry, s.reported_model_provider.as_deref());
+                    if let Some(bu) = s.reported_base_url.as_deref() {
+                        entry.last_reported_base_url = Some(bu.to_string());
+                    }
+                    if let Some(parent_sid) = s.agent_parent_session_id.as_deref() {
+                        entry.agent_parent_session_id = Some(parent_sid.to_string());
+                    }
+                    if s.is_agent {
+                        entry.is_agent = true;
+                    }
+                    if s.is_review {
+                        entry.is_review = true;
+                        entry.is_agent = true;
+                    }
                 }
-                if let Some(parent_sid) = s.agent_parent_session_id.as_deref() {
-                    entry.agent_parent_session_id = Some(parent_sid.to_string());
-                }
-                if s.is_agent {
-                    entry.is_agent = true;
-                }
-                if s.is_review {
-                    entry.is_review = true;
-                    entry.is_agent = true;
-                }
+                backfill_main_confirmation_from_verified_agent(&mut map, now);
             }
-            backfill_main_confirmation_from_verified_agent(&mut map, now);
-        }
 
-        // Drop dead sessions aggressively (e.g. user Ctrl+C'd Codex).
-        // We keep the persisted preference mapping in config; only the runtime list is pruned.
-        {
-            let mut map = state.gateway.client_sessions.write();
-            static WSL_DISCOVERY_MISS_COUNTS: std::sync::OnceLock<
-                std::sync::Mutex<std::collections::HashMap<String, u8>>,
-            > = std::sync::OnceLock::new();
-            let miss_counts = WSL_DISCOVERY_MISS_COUNTS
-                .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-            let mut miss_counts_guard = miss_counts.lock().ok();
-            let mut removed_main_sessions = Vec::new();
-            map.retain(|_, v| {
-                let codex_id = v.codex_session_id.clone();
-                let is_wsl_pidless = v.pid == 0
-                    && v.wt_session
-                        .as_deref()
-                        .unwrap_or_default()
-                        .trim()
-                        .to_ascii_lowercase()
-                        .starts_with("wsl:");
-                let seen_now = seen_in_discovery.contains(&codex_id);
-                let wsl_discovery_miss_count = if is_wsl_pidless {
-                    if seen_now {
+            {
+                let mut map = state.gateway.client_sessions.write();
+                static WSL_DISCOVERY_MISS_COUNTS: std::sync::OnceLock<
+                    std::sync::Mutex<std::collections::HashMap<String, u8>>,
+                > = std::sync::OnceLock::new();
+                let miss_counts = WSL_DISCOVERY_MISS_COUNTS
+                    .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+                let mut miss_counts_guard = miss_counts.lock().ok();
+                let mut removed_main_sessions = Vec::new();
+                map.retain(|_, v| {
+                    let codex_id = v.codex_session_id.clone();
+                    let is_wsl_pidless = v.pid == 0
+                        && v.wt_session
+                            .as_deref()
+                            .unwrap_or_default()
+                            .trim()
+                            .to_ascii_lowercase()
+                            .starts_with("wsl:");
+                    let seen_now = seen_in_discovery.contains(&codex_id);
+                    let wsl_discovery_miss_count = if is_wsl_pidless {
+                        if seen_now {
+                            if let Some(guard) = miss_counts_guard.as_mut() {
+                                guard.remove(&codex_id);
+                            }
+                            0
+                        } else if let Some(guard) = miss_counts_guard.as_mut() {
+                            let prev = guard.get(&codex_id).copied().unwrap_or(0);
+                            let next =
+                                next_wsl_discovery_miss_count(prev, seen_now, discovery_is_fresh);
+                            if discovery_is_fresh {
+                                guard.insert(codex_id.clone(), next);
+                            }
+                            next
+                        } else {
+                            0
+                        }
+                    } else {
                         if let Some(guard) = miss_counts_guard.as_mut() {
                             guard.remove(&codex_id);
                         }
                         0
-                    } else if let Some(guard) = miss_counts_guard.as_mut() {
-                        let prev = guard.get(&codex_id).copied().unwrap_or(0);
-                        let next =
-                            next_wsl_discovery_miss_count(prev, seen_now, discovery_is_fresh);
-                        if discovery_is_fresh {
-                            guard.insert(codex_id.clone(), next);
-                        }
-                        next
-                    } else {
-                        0
-                    }
-                } else {
-                    if let Some(guard) = miss_counts_guard.as_mut() {
-                        guard.remove(&codex_id);
-                    }
-                    0
-                };
+                    };
 
-                let keep = should_keep_runtime_session(
-                    v,
-                    now,
-                    crate::platform::windows_terminal::is_pid_alive,
-                    crate::platform::windows_terminal::is_wt_session_alive,
-                    wsl_discovery_miss_count,
-                    discovery_is_fresh,
-                ) || (!(v.is_agent || v.is_review)
-                    && live_child_parent_session_ids.contains(&codex_id));
-                if !(keep || v.is_agent || v.is_review) {
-                    removed_main_sessions.push(codex_id);
+                    let keep = should_keep_runtime_session(
+                        v,
+                        now,
+                        crate::platform::windows_terminal::is_pid_alive,
+                        crate::platform::windows_terminal::is_wt_session_alive,
+                        wsl_discovery_miss_count,
+                        discovery_is_fresh,
+                    ) || (!(v.is_agent || v.is_review)
+                        && live_child_parent_session_ids.contains(&codex_id));
+                    if !(keep || v.is_agent || v.is_review) {
+                        removed_main_sessions.push(codex_id);
+                    }
+                    keep
+                });
+                if let Some(guard) = miss_counts_guard.as_mut() {
+                    let live_ids: std::collections::HashSet<String> =
+                        map.keys().map(|k| k.to_string()).collect();
+                    guard.retain(|k, _| live_ids.contains(k));
                 }
-                keep
-            });
-            if let Some(guard) = miss_counts_guard.as_mut() {
-                let live_ids: std::collections::HashSet<String> =
-                    map.keys().map(|k| k.to_string()).collect();
-                guard.retain(|k, _| live_ids.contains(k));
+                clear_removed_main_session_routes_and_assignments(
+                    &state.gateway,
+                    &removed_main_sessions,
+                );
+                rebalance_balanced_assignments_on_main_session_change(&state.gateway, &cfg, &map);
             }
-            clear_removed_main_session_routes_and_assignments(&state.gateway, &removed_main_sessions);
-            rebalance_balanced_assignments_on_main_session_change(&state.gateway, &cfg, &map);
-        }
-
-        let map = state.gateway.client_sessions.read().clone();
+            state.gateway.client_sessions.read().clone()
+        } else {
+            // Dashboard must stay cache-only here. Do not run live session discovery in this branch.
+            // The cached runtime session map is refreshed by the non-dashboard status path and other
+            // session lifecycle updates; using it here keeps the dashboard responsive.
+            state.gateway.client_sessions.read().clone()
+        };
         let last_used_by_session = state.gateway.last_used_by_session.read().clone();
         let items = recent_client_sessions_with_main_parent_context(&map, 20);
         let sessions = items
@@ -306,9 +398,14 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
             .collect::<Vec<_>>();
         sessions
     };
+    phase_timings_ms.insert(
+        "client_sessions".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
 
-    serde_json::json!({
+    let response = serde_json::json!({
       "listen": { "host": cfg.listen.host, "port": cfg.listen.port },
+      "config_revision": config_revision,
       "wsl_gateway_host": wsl_gateway_host,
       "preferred_provider": cfg.routing.preferred_provider,
       "manual_override": manual_override,
@@ -320,10 +417,126 @@ pub(crate) fn get_status(state: tauri::State<'_, app_state::AppState>) -> serde_
       "active_provider_counts": active_provider_counts,
       "quota": quota,
       "ledgers": ledgers,
+      "projected_ledgers": projected_ledgers,
       "last_activity_unix_ms": last_activity,
       "codex_account": codex_account,
-      "client_sessions": client_sessions
-    })
+      "client_sessions": client_sessions,
+      "lan_sync": lan_sync,
+      "shared_quota_owners": shared_quota_owners
+    });
+    let total_elapsed_ms = elapsed_ms_since(command_started_at);
+    if total_elapsed_ms >= 1000 {
+        let response_bytes = serde_json::to_vec(&response).unwrap_or_default();
+        write_dashboard_status_slow_diag(
+            &state.diagnostics_dir,
+            if dashboard_detail { "dashboard" } else { "full" },
+            total_elapsed_ms,
+            response_bytes.len(),
+            &phase_timings_ms,
+        );
+    }
+    response
+}
+
+fn config_revision(state: &app_state::AppState, cfg: &crate::orchestrator::config::AppConfig) -> String {
+    let followed_source_node_id = state.secrets.get_followed_config_source_node_id();
+    let local_copied_shared_ids = crate::lan_sync::load_local_provider_copy_state(state)
+        .map(|snapshot| snapshot.copied_shared_provider_ids)
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut providers = Vec::new();
+    for provider_name in &cfg.provider_order {
+        let Some(provider_cfg) = cfg.providers.get(provider_name) else {
+            continue;
+        };
+        providers.push(serde_json::json!({
+            "name": provider_name,
+            "display_name": provider_cfg.display_name,
+            "base_url": provider_cfg.base_url,
+            "group": provider_cfg.group,
+            "disabled": provider_cfg.disabled,
+            "usage_adapter": provider_cfg.usage_adapter,
+            "usage_base_url": provider_cfg.usage_base_url,
+            "shared_provider_id": state.secrets.get_provider_shared_id(provider_name),
+            "key_storage": state.secrets.get_provider_key_storage_mode(provider_name),
+            "has_key": state.secrets.get_provider_key(provider_name).is_some(),
+            "account_email": state.secrets.get_provider_account_email(provider_name),
+            "has_usage_token": state.secrets.get_usage_token(provider_name).is_some(),
+            "has_usage_login": state.secrets.get_usage_login(provider_name).is_some(),
+        }));
+    }
+    for provider_name in cfg.providers.keys() {
+        if cfg.provider_order.iter().any(|entry| entry == provider_name) {
+            continue;
+        }
+        let Some(provider_cfg) = cfg.providers.get(provider_name) else {
+            continue;
+        };
+        providers.push(serde_json::json!({
+            "name": provider_name,
+            "display_name": provider_cfg.display_name,
+            "base_url": provider_cfg.base_url,
+            "group": provider_cfg.group,
+            "disabled": provider_cfg.disabled,
+            "usage_adapter": provider_cfg.usage_adapter,
+            "usage_base_url": provider_cfg.usage_base_url,
+            "shared_provider_id": state.secrets.get_provider_shared_id(provider_name),
+            "key_storage": state.secrets.get_provider_key_storage_mode(provider_name),
+            "has_key": state.secrets.get_provider_key(provider_name).is_some(),
+            "account_email": state.secrets.get_provider_account_email(provider_name),
+            "has_usage_token": state.secrets.get_usage_token(provider_name).is_some(),
+            "has_usage_login": state.secrets.get_usage_login(provider_name).is_some(),
+        }));
+    }
+    let payload = serde_json::json!({
+        "listen": cfg.listen,
+        "routing": cfg.routing,
+        "provider_order": cfg.provider_order,
+        "followed_source_node_id": followed_source_node_id,
+        "copied_shared_provider_ids": local_copied_shared_ids,
+        "providers": providers,
+    });
+    let digest = sha2::Sha256::digest(serde_json::to_vec(&payload).unwrap_or_default());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn projected_usage_ledgers(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    quota: &serde_json::Value,
+) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    let Some(quota_map) = quota.as_object() else {
+        return serde_json::Value::Object(out);
+    };
+
+    for (provider_name, snapshot) in quota_map {
+        let Some(kind) = snapshot.get("kind").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if kind != "budget_info" {
+            continue;
+        }
+        let Some(updated_at_unix_ms) = snapshot.get("updated_at_unix_ms").and_then(|value| value.as_u64()) else {
+            continue;
+        };
+        if updated_at_unix_ms == 0 {
+            continue;
+        }
+        let (request_count, total_tokens) = gateway
+            .store
+            .summarize_usage_requests_since_by_provider(provider_name, updated_at_unix_ms);
+        out.insert(
+            provider_name.clone(),
+            serde_json::json!({
+                "since_last_quota_refresh_requests": request_count,
+                "since_last_quota_refresh_total_tokens": total_tokens,
+                "last_reset_unix_ms": updated_at_unix_ms,
+            }),
+        );
+    }
+
+    serde_json::Value::Object(out)
 }
 
 #[tauri::command]
@@ -337,6 +550,220 @@ pub(crate) fn record_app_startup_stage(
         return;
     }
     append_app_startup_stage(stage, elapsed_ms, detail.as_deref());
+}
+
+#[tauri::command]
+pub(crate) fn record_ui_watchdog_heartbeat(
+    state: tauri::State<'_, app_state::AppState>,
+    active_page: String,
+    visible: bool,
+    status_in_flight: bool,
+    config_in_flight: bool,
+    provider_switch_in_flight: bool,
+) {
+    state.ui_watchdog.record_heartbeat(
+        &active_page,
+        visible,
+        status_in_flight,
+        config_in_flight,
+        provider_switch_in_flight,
+        unix_ms(),
+    );
+}
+
+#[tauri::command]
+pub(crate) fn record_ui_trace(
+    state: tauri::State<'_, app_state::AppState>,
+    kind: String,
+    active_page: String,
+    visible: bool,
+    fields: serde_json::Value,
+) {
+    state.ui_watchdog.record_trace(
+        &kind,
+        serde_json::json!({
+            "active_page": active_page,
+            "visible": visible,
+            "fields": fields,
+        }),
+        unix_ms(),
+    );
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct UiTraceBatchEntry {
+    kind: String,
+    active_page: String,
+    visible: bool,
+    fields: serde_json::Value,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct UiInvokeResultBatchEntry {
+    command: String,
+    elapsed_ms: u64,
+    ok: bool,
+    error_message: Option<String>,
+    active_page: String,
+    visible: bool,
+}
+
+#[tauri::command]
+pub(crate) fn record_ui_diagnostics_batch(
+    state: tauri::State<'_, app_state::AppState>,
+    traces: Option<Vec<UiTraceBatchEntry>>,
+    invoke_results: Option<Vec<UiInvokeResultBatchEntry>>,
+) {
+    let now = unix_ms();
+    for trace in traces.unwrap_or_default().into_iter().take(256) {
+        state.ui_watchdog.record_trace(
+            &trace.kind,
+            serde_json::json!({
+                "active_page": trace.active_page,
+                "visible": trace.visible,
+                "fields": trace.fields,
+            }),
+            now,
+        );
+    }
+    for result in invoke_results.unwrap_or_default().into_iter().take(256) {
+        state.ui_watchdog.record_invoke_result(
+            app_state::UiWatchdogRuntime {
+                store: &state.gateway.store,
+                diagnostics_dir: &state.diagnostics_dir,
+            },
+            app_state::UiWatchdogInvokeResult {
+                command: &result.command,
+                elapsed_ms: result.elapsed_ms,
+                ok: result.ok,
+                error_message: result.error_message.as_deref(),
+            },
+            app_state::UiWatchdogPageState {
+                active_page: &result.active_page,
+                visible: result.visible,
+            },
+            now,
+        );
+    }
+}
+
+#[tauri::command]
+pub(crate) fn record_ui_slow_refresh(
+    state: tauri::State<'_, app_state::AppState>,
+    kind: String,
+    elapsed_ms: u64,
+    active_page: String,
+    visible: bool,
+) {
+    state.ui_watchdog.record_slow_refresh(
+        app_state::UiWatchdogRuntime {
+            store: &state.gateway.store,
+            diagnostics_dir: &state.diagnostics_dir,
+        },
+        &kind,
+        elapsed_ms,
+        app_state::UiWatchdogPageState {
+            active_page: &active_page,
+            visible,
+        },
+        unix_ms(),
+    );
+}
+
+#[tauri::command]
+pub(crate) fn record_ui_long_task(
+    state: tauri::State<'_, app_state::AppState>,
+    elapsed_ms: u64,
+    active_page: String,
+    visible: bool,
+) {
+    state.ui_watchdog.record_long_task(
+        app_state::UiWatchdogRuntime {
+            store: &state.gateway.store,
+            diagnostics_dir: &state.diagnostics_dir,
+        },
+        elapsed_ms,
+        app_state::UiWatchdogPageState {
+            active_page: &active_page,
+            visible,
+        },
+        unix_ms(),
+    );
+}
+
+#[tauri::command]
+pub(crate) fn record_ui_frame_stall(
+    state: tauri::State<'_, app_state::AppState>,
+    elapsed_ms: u64,
+    monitor_kind: String,
+    active_page: String,
+    visible: bool,
+) {
+    state.ui_watchdog.record_frame_stall(
+        app_state::UiWatchdogRuntime {
+            store: &state.gateway.store,
+            diagnostics_dir: &state.diagnostics_dir,
+        },
+        elapsed_ms,
+        &monitor_kind,
+        app_state::UiWatchdogPageState {
+            active_page: &active_page,
+            visible,
+        },
+        unix_ms(),
+    );
+}
+
+#[tauri::command]
+pub(crate) fn record_ui_frontend_error(
+    state: tauri::State<'_, app_state::AppState>,
+    kind: String,
+    message: String,
+    active_page: String,
+    visible: bool,
+) {
+    state.ui_watchdog.record_frontend_error(
+        app_state::UiWatchdogRuntime {
+            store: &state.gateway.store,
+            diagnostics_dir: &state.diagnostics_dir,
+        },
+        &kind,
+        &message,
+        app_state::UiWatchdogPageState {
+            active_page: &active_page,
+            visible,
+        },
+        unix_ms(),
+    );
+}
+
+#[tauri::command]
+pub(crate) fn record_ui_invoke_result(
+    state: tauri::State<'_, app_state::AppState>,
+    command: String,
+    elapsed_ms: u64,
+    ok: bool,
+    error_message: Option<String>,
+    active_page: String,
+    visible: bool,
+) {
+    state.ui_watchdog.record_invoke_result(
+        app_state::UiWatchdogRuntime {
+            store: &state.gateway.store,
+            diagnostics_dir: &state.diagnostics_dir,
+        },
+        app_state::UiWatchdogInvokeResult {
+            command: &command,
+            elapsed_ms,
+            ok,
+            error_message: error_message.as_deref(),
+        },
+        app_state::UiWatchdogPageState {
+            active_page: &active_page,
+            visible,
+        },
+        unix_ms(),
+    );
 }
 
 fn merge_discovered_model_provider(
@@ -1031,6 +1458,183 @@ fn append_backup_event_daily_stats(
     }
 }
 
+fn display_event_minute_bucket(unix_ms: u64) -> u64 {
+    unix_ms / 60_000
+}
+
+fn display_event_compression_bucket(event: &Value) -> Option<String> {
+    let unix_ms = event.get("unix_ms")?.as_u64()?;
+    let code = event.get("code")?.as_str()?.trim();
+    let minute_bucket = display_event_minute_bucket(unix_ms);
+    let fields = event.get("fields").and_then(Value::as_object);
+    match code {
+        "lan.edit_sync_applied" => {
+            let source_node_id = fields
+                .and_then(|map| map.get("source_node_id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            Some(format!("{code}|{minute_bucket}|{source_node_id}"))
+        }
+        "usage.refresh_shared_applied" => {
+            let applied_from_node_id = fields
+                .and_then(|map| map.get("applied_from_node_id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            Some(format!("{code}|{minute_bucket}|{applied_from_node_id}"))
+        }
+        _ => None,
+    }
+}
+
+fn compress_noisy_display_events(events: Vec<Value>) -> Vec<Value> {
+    let mut passthrough = Vec::new();
+    let mut buckets: std::collections::HashMap<String, Vec<Value>> = std::collections::HashMap::new();
+
+    for event in events {
+        if let Some(bucket) = display_event_compression_bucket(&event) {
+            buckets.entry(bucket).or_default().push(event);
+        } else {
+            passthrough.push(event);
+        }
+    }
+
+    for mut bucket_events in buckets.into_values() {
+        if bucket_events.len() == 1 {
+            if let Some(event) = bucket_events.pop() {
+                passthrough.push(event);
+            }
+            continue;
+        }
+        bucket_events.sort_by_key(|event| event.get("unix_ms").and_then(Value::as_u64).unwrap_or(0));
+        let Some(latest) = bucket_events.last().cloned() else {
+            continue;
+        };
+        let code = latest
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+
+        let compressed = match code.as_str() {
+            "lan.edit_sync_applied" => {
+                let mut applied_total = 0_u64;
+                let mut received_total = 0_u64;
+                let mut source_node_name = String::new();
+                for event in &bucket_events {
+                    let fields = event.get("fields").and_then(Value::as_object);
+                    applied_total = applied_total.saturating_add(
+                        fields
+                            .and_then(|map| map.get("applied_events"))
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                    );
+                    received_total = received_total.saturating_add(
+                        fields
+                            .and_then(|map| map.get("received_events"))
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                    );
+                    if source_node_name.is_empty() {
+                        source_node_name = fields
+                            .and_then(|map| map.get("source_node_name"))
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .trim()
+                            .to_string();
+                    }
+                }
+                let mut fields = latest.get("fields").cloned().unwrap_or(Value::Null);
+                if let Some(map) = fields.as_object_mut() {
+                    map.insert("applied_events".to_string(), serde_json::json!(applied_total));
+                    map.insert("received_events".to_string(), serde_json::json!(received_total));
+                    map.insert("batch_count".to_string(), serde_json::json!(bucket_events.len()));
+                    map.insert("compressed".to_string(), serde_json::json!(true));
+                }
+                let source_suffix = if source_node_name.is_empty() {
+                    String::new()
+                } else {
+                    format!(" from {source_node_name}")
+                };
+                serde_json::json!({
+                    "unix_ms": latest.get("unix_ms").and_then(Value::as_u64).unwrap_or(0),
+                    "provider": latest.get("provider").and_then(Value::as_str).unwrap_or("gateway"),
+                    "level": latest.get("level").and_then(Value::as_str).unwrap_or("info"),
+                    "code": code,
+                    "message": format!(
+                        "Applied {applied_total} synced editable event(s) across {} batch(es){source_suffix}",
+                        bucket_events.len()
+                    ),
+                    "fields": fields,
+                })
+            }
+            "usage.refresh_shared_applied" => {
+                let mut applied_from_node_name = String::new();
+                let mut providers = std::collections::BTreeSet::new();
+                for event in &bucket_events {
+                    if let Some(provider) = event.get("provider").and_then(Value::as_str) {
+                        let trimmed = provider.trim();
+                        if !trimmed.is_empty() {
+                            let _ = providers.insert(trimmed.to_string());
+                        }
+                    }
+                    let fields = event.get("fields").and_then(Value::as_object);
+                    if applied_from_node_name.is_empty() {
+                        applied_from_node_name = fields
+                            .and_then(|map| map.get("applied_from_node_name"))
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .trim()
+                        .to_string();
+                    }
+                }
+                let provider_count = providers.len();
+                let mut fields = latest.get("fields").cloned().unwrap_or(Value::Null);
+                if let Some(map) = fields.as_object_mut() {
+                    map.insert("provider_count".to_string(), serde_json::json!(provider_count));
+                    map.insert("providers".to_string(), serde_json::json!(providers.clone()));
+                    map.insert("event_count".to_string(), serde_json::json!(bucket_events.len()));
+                    map.insert("compressed".to_string(), serde_json::json!(true));
+                }
+                let provider_name = if provider_count == 1 {
+                    providers.into_iter().next().unwrap_or_else(|| "gateway".to_string())
+                } else {
+                    "gateway".to_string()
+                };
+                let source_label = if applied_from_node_name.is_empty() {
+                    "remote peer".to_string()
+                } else {
+                    applied_from_node_name
+                };
+                serde_json::json!({
+                    "unix_ms": latest.get("unix_ms").and_then(Value::as_u64).unwrap_or(0),
+                    "provider": provider_name,
+                    "level": latest.get("level").and_then(Value::as_str).unwrap_or("info"),
+                    "code": code,
+                    "message": format!(
+                        "Applied shared usage update from {source_label} to {} provider(s)",
+                        provider_count
+                    ),
+                    "fields": fields,
+                })
+            }
+            _ => latest,
+        };
+        passthrough.push(compressed);
+    }
+
+    passthrough.sort_by(|a, b| {
+        let a_ts = a.get("unix_ms").and_then(Value::as_u64).unwrap_or(0);
+        let b_ts = b.get("unix_ms").and_then(Value::as_u64).unwrap_or(0);
+        b_ts.cmp(&a_ts)
+    });
+    passthrough
+}
+
 #[tauri::command]
 pub(crate) fn get_event_log_entries(
     state: tauri::State<'_, app_state::AppState>,
@@ -1056,11 +1660,7 @@ pub(crate) fn get_event_log_entries(
         .as_path();
     let backup_root = backup_data_root_from_config_path(backup_root);
     append_backup_events(&mut events, &mut dedup, &backup_root, from, to, cap);
-    events.sort_by(|a, b| {
-        let a_ts = a.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
-        let b_ts = b.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
-        b_ts.cmp(&a_ts)
-    });
+    events = compress_noisy_display_events(events);
     events.truncate(cap);
     serde_json::Value::Array(events)
 }
@@ -1097,21 +1697,24 @@ mod tests {
         apply_discovered_router_confirmation, backfill_main_confirmation_from_verified_agent,
         clear_removed_main_session_routes_and_assignments,
         append_backup_event_daily_stats, day_start_unix_ms_from_day_key, event_query_key,
+        config_revision,
         main_session_ids_excluding_agents_and_reviews,
         rebalance_balanced_assignments_on_main_session_change,
         displayed_session_route, merge_discovered_model_provider, next_last_discovered_unix_ms,
         normalize_event_query_limit, next_wsl_discovery_miss_count,
         should_keep_runtime_session,
+        compress_noisy_display_events,
     };
     use crate::orchestrator::config::{AppConfig, ListenConfig, ProviderConfig, RoutingConfig};
     use crate::orchestrator::gateway::{decide_provider, open_store_dir, GatewayState, LastUsedRoute};
     use crate::orchestrator::router::RouterState;
     use crate::orchestrator::secrets::SecretStore;
-    use crate::orchestrator::store::unix_ms;
+    use crate::orchestrator::store::{unix_ms, UsageRequestSyncRow};
     use crate::orchestrator::upstream::UpstreamClient;
     use crate::orchestrator::gateway::ClientSessionRuntime;
     use chrono::TimeZone;
     use parking_lot::RwLock;
+    use serde_json::Value;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
@@ -1136,6 +1739,94 @@ mod tests {
         assert_eq!(
             entry.last_reported_model_provider.as_deref(),
             Some(GATEWAY_MODEL_PROVIDER_ID)
+        );
+    }
+
+    #[test]
+    fn compress_noisy_display_events_aggregates_shared_usage_rows() {
+        let minute = 1_775_192_400_000_u64;
+        let events = vec![
+            serde_json::json!({
+                "unix_ms": minute + 15_000,
+                "provider": "aigateway",
+                "level": "info",
+                "code": "usage.refresh_shared_applied",
+                "message": "Shared usage update applied from DESKTOP-A",
+                "fields": {
+                    "applied_from_node_id": "node-a",
+                    "applied_from_node_name": "DESKTOP-A"
+                }
+            }),
+            serde_json::json!({
+                "unix_ms": minute + 20_000,
+                "provider": "packycode4",
+                "level": "info",
+                "code": "usage.refresh_shared_applied",
+                "message": "Shared usage update applied from DESKTOP-A",
+                "fields": {
+                    "applied_from_node_id": "node-a",
+                    "applied_from_node_name": "DESKTOP-A"
+                }
+            }),
+        ];
+
+        let compressed = compress_noisy_display_events(events);
+        assert_eq!(compressed.len(), 1);
+        assert_eq!(
+            compressed[0].get("provider").and_then(Value::as_str),
+            Some("gateway")
+        );
+        assert_eq!(
+            compressed[0].get("message").and_then(Value::as_str),
+            Some("Applied shared usage update from DESKTOP-A to 2 provider(s)")
+        );
+    }
+
+    #[test]
+    fn compress_noisy_display_events_aggregates_edit_sync_batches() {
+        let minute = 1_775_192_400_000_u64;
+        let events = vec![
+            serde_json::json!({
+                "unix_ms": minute + 5_000,
+                "provider": "gateway",
+                "level": "info",
+                "code": "lan.edit_sync_applied",
+                "message": "applied 10 synced editable event(s)",
+                "fields": {
+                    "source_node_id": "node-a",
+                    "source_node_name": "DESKTOP-A",
+                    "received_events": 10,
+                    "applied_events": 10
+                }
+            }),
+            serde_json::json!({
+                "unix_ms": minute + 40_000,
+                "provider": "gateway",
+                "level": "info",
+                "code": "lan.edit_sync_applied",
+                "message": "applied 64 synced editable event(s)",
+                "fields": {
+                    "source_node_id": "node-a",
+                    "source_node_name": "DESKTOP-A",
+                    "received_events": 64,
+                    "applied_events": 64
+                }
+            }),
+        ];
+
+        let compressed = compress_noisy_display_events(events);
+        assert_eq!(compressed.len(), 1);
+        assert_eq!(
+            compressed[0].get("message").and_then(Value::as_str),
+            Some("Applied 74 synced editable event(s) across 2 batch(es) from DESKTOP-A")
+        );
+        assert_eq!(
+            compressed[0]
+                .get("fields")
+                .and_then(Value::as_object)
+                .and_then(|fields| fields.get("batch_count"))
+                .and_then(Value::as_u64),
+            Some(2)
         );
     }
 
@@ -2553,6 +3244,94 @@ mod tests {
             main.last_reported_model_provider.as_deref(),
             Some(GATEWAY_MODEL_PROVIDER_ID)
         );
+    }
+
+    #[test]
+    fn projected_usage_ledgers_include_synced_requests_since_last_refresh() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("user-data").join("data");
+        let state = crate::app_state::build_state(config_path, data_dir).expect("build state");
+        let now = unix_ms();
+        state
+            .gateway
+            .store
+            .put_quota_snapshot(
+                "packycode",
+                &serde_json::json!({
+                    "kind": "budget_info",
+                    "updated_at_unix_ms": now,
+                    "daily_spent_usd": 1.0,
+                    "daily_budget_usd": 10.0,
+                    "weekly_spent_usd": 2.0,
+                    "weekly_budget_usd": 20.0,
+                    "monthly_spent_usd": 3.0,
+                    "monthly_budget_usd": 30.0,
+                    "last_error": "",
+                }),
+            )
+            .expect("quota snapshot");
+        let inserted = state
+            .gateway
+            .store
+            .upsert_usage_request_sync_rows(&[UsageRequestSyncRow {
+                id: "row-1".to_string(),
+                unix_ms: now.saturating_add(1),
+                ingested_at_unix_ms: now.saturating_add(1),
+                provider: "packycode".to_string(),
+                api_key_ref: "-".to_string(),
+                model: "gpt-4.1".to_string(),
+                origin: "windows".to_string(),
+                session_id: "session-1".to_string(),
+                node_id: "node-a".to_string(),
+                node_name: "DESKTOP-A".to_string(),
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 128,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            }]);
+        assert_eq!(inserted, 1);
+
+        let projected = super::projected_usage_ledgers(
+            &state.gateway,
+            &state.gateway.store.list_quota_snapshots(),
+        );
+        assert_eq!(
+            projected
+                .get("packycode")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|value| value.get("since_last_quota_refresh_requests"))
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            projected
+                .get("packycode")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|value| value.get("since_last_quota_refresh_total_tokens"))
+                .and_then(serde_json::Value::as_u64),
+            Some(128)
+        );
+    }
+
+    #[test]
+    fn config_revision_changes_when_provider_order_changes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("user-data").join("data");
+        let state = crate::app_state::build_state(config_path, data_dir).expect("build state");
+        let before_cfg = state.gateway.cfg.read().clone();
+        let before_revision = config_revision(&state, &before_cfg);
+
+        {
+            let mut cfg = state.gateway.cfg.write();
+            cfg.provider_order.reverse();
+        }
+
+        let after_cfg = state.gateway.cfg.read().clone();
+        let after_revision = config_revision(&state, &after_cfg);
+        assert_ne!(before_revision, after_revision);
     }
 
     #[test]

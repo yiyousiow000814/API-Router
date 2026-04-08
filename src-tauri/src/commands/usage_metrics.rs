@@ -31,15 +31,186 @@ fn normalize_usage_origin_filter(origins: Option<Vec<String>>) -> BTreeSet<Strin
         .collect()
 }
 
-fn list_usage_requests_for_statistics(
+fn usage_metrics_configured_provider_names(
+    cfg: &crate::orchestrator::config::AppConfig,
+) -> Vec<String> {
+    let mut providers = Vec::new();
+    for provider_name in &cfg.provider_order {
+        if cfg.providers.contains_key(provider_name) {
+            providers.push(provider_name.clone());
+        }
+    }
+    for provider_name in cfg.providers.keys() {
+        if !providers.iter().any(|entry| entry == provider_name) {
+            providers.push(provider_name.clone());
+        }
+    }
+    providers
+}
+
+fn effective_provider_filter(
+    cfg: &crate::orchestrator::config::AppConfig,
+    providers: Option<Vec<String>>,
+) -> BTreeSet<String> {
+    let explicit: BTreeSet<String> = providers
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !explicit.is_empty() {
+        return explicit;
+    }
+    usage_metrics_configured_provider_names(cfg)
+        .into_iter()
+        .map(|provider| provider.to_ascii_lowercase())
+        .collect()
+}
+
+fn usage_node_label(node_name: Option<&str>) -> String {
+    let trimmed = node_name.map(str::trim).unwrap_or_default();
+    if trimmed.is_empty() {
+        "Local".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn normalize_usage_node_filter(nodes: Option<Vec<String>>) -> BTreeSet<String> {
+    nodes
+        .unwrap_or_default()
+        .into_iter()
+        .map(|raw| raw.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn list_usage_requests_for_statistics_window(
     store: &crate::orchestrator::store::Store,
-) -> Vec<Value> {
-    // Keep historical backfill behavior bounded to the previous practical ceiling.
-    store.list_usage_requests(500_000)
+    since_unix_ms: u64,
+) -> Vec<crate::orchestrator::store::UsageRequestStatsRow> {
+    store.list_usage_request_stats_rows_window(since_unix_ms)
 }
 
 fn projection_hours_for_day_estimate() -> f64 {
     16.0
+}
+
+fn latest_day_budget_fallback_allowed(now_unix_ms: u64, since_unix_ms: u64) -> bool {
+    let now_ts = match i64::try_from(now_unix_ms) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    let now_dt = match chrono::Local.timestamp_millis_opt(now_ts).single() {
+        Some(value) => value,
+        None => return false,
+    };
+    let start_of_today = match now_dt.date_naive().and_hms_opt(0, 0, 0) {
+        Some(value) => value,
+        None => return false,
+    };
+    let start_of_today = match chrono::Local.from_local_datetime(&start_of_today).single() {
+        Some(value) => value,
+        None => return false,
+    };
+    since_unix_ms >= u64::try_from(start_of_today.timestamp_millis()).unwrap_or(0)
+}
+
+fn merge_usage_metrics_day_counts(
+    req_by_day: &mut BTreeMap<String, u64>,
+    req_by_day_from_req: Option<&BTreeMap<String, u64>>,
+) {
+    let Some(req_by_day_from_req) = req_by_day_from_req else {
+        return;
+    };
+    for (day_key, req_count) in req_by_day_from_req {
+        req_by_day.insert(day_key.clone(), *req_count);
+    }
+}
+
+fn request_window_ratio(day_req_total: f64, day_req_in_window: f64) -> f64 {
+    if day_req_total > 0.0 {
+        return (day_req_in_window / day_req_total).clamp(0.0, 1.0);
+    }
+    0.0
+}
+
+fn merge_manual_per_req_for_usage_metrics_day(
+    current_per_req: &mut Option<f64>,
+    current_per_req_updated_at: &mut u64,
+    manual_per_req: Option<f64>,
+    updated_at: u64,
+) {
+    let Some(candidate) = manual_per_req else {
+        return;
+    };
+    let should_replace = current_per_req.is_none()
+        || updated_at > *current_per_req_updated_at
+        || (updated_at == *current_per_req_updated_at
+            && candidate > current_per_req.unwrap_or_default());
+    if should_replace {
+        *current_per_req = Some(candidate);
+        *current_per_req_updated_at = updated_at;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UsageStatisticsDetailLevel {
+    Full,
+    Overview,
+}
+
+fn parse_usage_statistics_detail_level(raw: Option<&str>) -> UsageStatisticsDetailLevel {
+    match raw.map(str::trim).unwrap_or_default().to_ascii_lowercase().as_str() {
+        "overview" => UsageStatisticsDetailLevel::Overview,
+        _ => UsageStatisticsDetailLevel::Full,
+    }
+}
+
+struct UsageLocalTimeContext {
+    day_key: String,
+    day_start_unix_ms: u64,
+    hour_start_unix_ms: u64,
+}
+
+fn usage_local_time_context(ts_unix_ms: u64) -> Option<UsageLocalTimeContext> {
+    use chrono::{Datelike, Local, TimeZone, Timelike};
+
+    let ts = i64::try_from(ts_unix_ms).ok()?;
+    let dt = Local.timestamp_millis_opt(ts).single()?;
+    let day_start = Local
+        .with_ymd_and_hms(dt.year(), dt.month(), dt.day(), 0, 0, 0)
+        .single()?;
+    let hour_start = dt.with_minute(0)?.with_second(0)?.with_nanosecond(0)?;
+    Some(UsageLocalTimeContext {
+        day_key: dt.format("%Y-%m-%d").to_string(),
+        day_start_unix_ms: u64::try_from(day_start.timestamp_millis()).ok()?,
+        hour_start_unix_ms: u64::try_from(hour_start.timestamp_millis()).ok()?,
+    })
+}
+
+fn resolve_budget_or_token_rate_cost(
+    allow_latest_day_budget_fallback: bool,
+    provider_daily_spent_usd: Option<f64>,
+    provider_daily_cost_per_token: Option<f64>,
+    total_tokens: u64,
+) -> (Option<f64>, Option<f64>, String) {
+    if allow_latest_day_budget_fallback {
+        if let Some(spent_today) = provider_daily_spent_usd {
+            return (
+                Some(spent_today),
+                Some(spent_today),
+                "provider_budget_api_latest_day".to_string(),
+            );
+        }
+    }
+    if let Some(per_tok) = provider_daily_cost_per_token {
+        let estimated = per_tok * total_tokens as f64;
+        if estimated > 0.0 {
+            return (Some(estimated), None, "provider_token_rate".to_string());
+        }
+    }
+    (None, None, "none".to_string())
 }
 
 #[tauri::command]
@@ -49,6 +220,7 @@ pub(crate) fn get_usage_request_entries(
     hours: Option<u64>,
     from_unix_ms: Option<u64>,
     to_unix_ms: Option<u64>,
+    nodes: Option<Vec<String>>,
     providers: Option<Vec<String>>,
     models: Option<Vec<String>>,
     origins: Option<Vec<String>>,
@@ -57,21 +229,18 @@ pub(crate) fn get_usage_request_entries(
     offset: Option<u64>,
 ) -> serde_json::Value {
     let now = unix_ms();
+    let cfg = state.gateway.cfg.read().clone();
     let window_hours = hours.unwrap_or(24).clamp(1, 24 * 365 * 20);
     let window_ms = window_hours.saturating_mul(60 * 60 * 1000);
     let since_unix_ms = now.saturating_sub(window_ms);
-    let provider_filter: BTreeSet<String> = providers
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| s.trim().to_ascii_lowercase())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let provider_filter = effective_provider_filter(&cfg, providers);
     let model_filter: BTreeSet<String> = models
         .unwrap_or_default()
         .into_iter()
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
+    let node_filter: BTreeSet<String> = normalize_usage_node_filter(nodes);
     let origin_filter = normalize_usage_origin_filter(origins);
     let session_filter: BTreeSet<String> = sessions
         .unwrap_or_default()
@@ -79,6 +248,7 @@ pub(crate) fn get_usage_request_entries(
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
+    let has_node_filter = !node_filter.is_empty();
     let has_provider_filter = !provider_filter.is_empty();
     let has_model_filter = !model_filter.is_empty();
     let has_origin_filter = !origin_filter.is_empty();
@@ -98,6 +268,11 @@ pub(crate) fn get_usage_request_entries(
         }
     }
 
+    let node_filter_list: Vec<String> = if has_node_filter {
+        node_filter.iter().cloned().collect()
+    } else {
+        Vec::new()
+    };
     let provider_filter_list: Vec<String> = if has_provider_filter {
         provider_filter.iter().cloned().collect()
     } else {
@@ -122,6 +297,7 @@ pub(crate) fn get_usage_request_entries(
         since_unix_ms,
         range_from,
         range_to,
+        &node_filter_list,
         &provider_filter_list,
         &model_filter_list,
         &origin_filter_list,
@@ -145,27 +321,25 @@ pub(crate) fn get_usage_request_summary(
     hours: Option<u64>,
     from_unix_ms: Option<u64>,
     to_unix_ms: Option<u64>,
+    nodes: Option<Vec<String>>,
     providers: Option<Vec<String>>,
     models: Option<Vec<String>>,
     origins: Option<Vec<String>>,
     sessions: Option<Vec<String>>,
 ) -> serde_json::Value {
     let now = unix_ms();
+    let cfg = state.gateway.cfg.read().clone();
     let window_hours = hours.unwrap_or(24).clamp(1, 24 * 365 * 20);
     let window_ms = window_hours.saturating_mul(60 * 60 * 1000);
     let since_unix_ms = now.saturating_sub(window_ms);
-    let provider_filter: BTreeSet<String> = providers
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| s.trim().to_ascii_lowercase())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let provider_filter = effective_provider_filter(&cfg, providers);
     let model_filter: BTreeSet<String> = models
         .unwrap_or_default()
         .into_iter()
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
+    let node_filter = normalize_usage_node_filter(nodes);
     let origin_filter = normalize_usage_origin_filter(origins);
     let session_filter: BTreeSet<String> = sessions
         .unwrap_or_default()
@@ -173,6 +347,7 @@ pub(crate) fn get_usage_request_summary(
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
+    let node_filter_list: Vec<String> = node_filter.iter().cloned().collect();
     let provider_filter_list: Vec<String> = provider_filter.iter().cloned().collect();
     let model_filter_list: Vec<String> = model_filter.iter().cloned().collect();
     let origin_filter_list: Vec<String> = origin_filter.iter().cloned().collect();
@@ -183,6 +358,7 @@ pub(crate) fn get_usage_request_summary(
             since_unix_ms,
             from_unix_ms,
             to_unix_ms,
+            &node_filter_list,
             &provider_filter_list,
             &model_filter_list,
             &origin_filter_list,
@@ -206,6 +382,9 @@ pub(crate) fn get_usage_request_daily_totals(
     days: Option<u64>,
 ) -> serde_json::Value {
     let day_limit = days.unwrap_or(45).clamp(1, 180) as usize;
+    let visible_providers: BTreeSet<String> = usage_metrics_configured_provider_names(&state.gateway.cfg.read())
+        .into_iter()
+        .collect();
     let rows = state
         .gateway
         .store
@@ -221,6 +400,9 @@ pub(crate) fn get_usage_request_daily_totals(
         wsl_request_count,
     ) in rows
     {
+        if !visible_providers.contains(&provider) {
+            continue;
+        }
         let Some((day_start_unix_ms, _)) = local_day_range_from_key(&day_key) else {
             continue;
         };
@@ -288,11 +470,17 @@ pub(crate) fn get_usage_request_daily_totals(
 #[tauri::command]
 pub(crate) fn get_usage_statistics(
     state: tauri::State<'_, app_state::AppState>,
+    detail_level: Option<String>,
     hours: Option<u64>,
+    nodes: Option<Vec<String>>,
     providers: Option<Vec<String>>,
     models: Option<Vec<String>>,
     origins: Option<Vec<String>>,
 ) -> serde_json::Value {
+    let command_started_at = std::time::Instant::now();
+    let mut phase_timings_ms: Vec<(&'static str, u64)> = Vec::new();
+    let mut phase_started_at = std::time::Instant::now();
+
     fn as_f64(v: Option<&Value>) -> Option<f64> {
         v.and_then(|x| {
             x.as_f64().or_else(|| {
@@ -338,22 +526,23 @@ pub(crate) fn get_usage_statistics(
     }
 
     let now = unix_ms();
+    let detail_level = parse_usage_statistics_detail_level(detail_level.as_deref());
+    let cfg = state.gateway.cfg.read().clone();
     let window_hours = hours.unwrap_or(24).clamp(1, 24 * 30);
     let window_ms = window_hours.saturating_mul(60 * 60 * 1000);
     let since_unix_ms = now.saturating_sub(window_ms);
-    let provider_filter: BTreeSet<String> = providers
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| s.trim().to_ascii_lowercase())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let allow_latest_day_budget_fallback =
+        latest_day_budget_fallback_allowed(now, since_unix_ms);
+    let provider_filter = effective_provider_filter(&cfg, providers);
     let model_filter: BTreeSet<String> = models
         .unwrap_or_default()
         .into_iter()
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
+    let node_filter = normalize_usage_node_filter(nodes);
     let origin_filter = normalize_usage_origin_filter(origins);
+    let has_node_filter = !node_filter.is_empty();
     let has_provider_filter = !provider_filter.is_empty();
     let has_model_filter = !model_filter.is_empty();
     let has_origin_filter = !origin_filter.is_empty();
@@ -365,9 +554,22 @@ pub(crate) fn get_usage_statistics(
     let active_bucket_ms = 60 * 60 * 1000;
     let projection_hours = projection_hours_for_day_estimate();
 
-    let records = list_usage_requests_for_statistics(&state.gateway.store);
+    let records = list_usage_requests_for_statistics_window(&state.gateway.store, since_unix_ms);
+    phase_timings_ms.push((
+        "load_usage_requests",
+        phase_started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+    ));
+    phase_started_at = std::time::Instant::now();
     let quota = state.gateway.store.list_quota_snapshots();
-    let provider_pricing = state.secrets.list_provider_pricing();
+    let mut provider_pricing = state.gateway.store.list_provider_pricing_configs();
+    for (provider_name, config) in state.secrets.list_provider_pricing() {
+        provider_pricing.insert(provider_name, config);
+    }
+    phase_timings_ms.push((
+        "load_quota_and_pricing",
+        phase_started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+    ));
+    phase_started_at = std::time::Instant::now();
 
     let mut provider_tokens_24h: BTreeMap<String, u64> = BTreeMap::new();
     let mut provider_active_hour_buckets: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
@@ -375,10 +577,13 @@ pub(crate) fn get_usage_statistics(
     let mut catalog_providers: BTreeSet<String> = BTreeSet::new();
     let mut catalog_models: BTreeSet<String> = BTreeSet::new();
     let mut catalog_origins: BTreeSet<String> = BTreeSet::new();
+    let mut catalog_nodes: BTreeSet<String> = BTreeSet::new();
     let mut timeline: BTreeMap<u64, (u64, u64, u64, u64)> = BTreeMap::new();
     let mut filtered: Vec<UsageRow> = Vec::new();
     let last_24h_unix_ms = now.saturating_sub(24 * 60 * 60 * 1000);
     let mut total_requests = 0u64;
+    let mut total_input_tokens = 0u64;
+    let mut total_output_tokens = 0u64;
     let mut total_tokens = 0u64;
     let mut total_cache_creation_tokens = 0u64;
     let mut total_cache_read_tokens = 0u64;
@@ -393,52 +598,36 @@ pub(crate) fn get_usage_statistics(
     let mut provider_request_timestamps_in_window: BTreeMap<String, Vec<u64>> = BTreeMap::new();
 
     for rec in records {
-        let ts = rec.get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
-        let provider = rec
-            .get("provider")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let model = rec
-            .get("model")
-            .and_then(|v| v.as_str())
-            .map(|s| s.trim())
+        let ts = rec.unix_ms;
+        let provider = rec.provider;
+        let model = Some(rec.model.trim())
             .filter(|s| !s.is_empty())
             .unwrap_or("unknown")
             .to_string();
-        let origin = normalize_usage_origin(rec.get("origin").and_then(|v| v.as_str()));
+        let origin = normalize_usage_origin(Some(&rec.origin));
+        let node_name = usage_node_label(Some(&rec.node_name));
         let provider_lc = provider.to_ascii_lowercase();
         let model_lc = model.to_ascii_lowercase();
         let origin_lc = origin.to_ascii_lowercase();
-        let input_tokens = rec
-            .get("input_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let output_tokens = rec
-            .get("output_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let node_lc = node_name.to_ascii_lowercase();
+        let input_tokens = rec.input_tokens;
+        let output_tokens = rec.output_tokens;
         let total_tokens_row = rec
-            .get("total_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(input_tokens.saturating_add(output_tokens));
-        let cache_creation_input_tokens = rec
-            .get("cache_creation_input_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let cache_read_input_tokens = rec
-            .get("cache_read_input_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+            .total_tokens
+            .max(input_tokens.saturating_add(output_tokens));
+        let cache_creation_input_tokens = rec.cache_creation_input_tokens;
+        let cache_read_input_tokens = rec.cache_read_input_tokens;
 
+        let local_time = usage_local_time_context(ts);
         if ts >= last_24h_unix_ms {
             *provider_tokens_24h.entry(provider.clone()).or_default() += total_tokens_row;
         }
         let provider_matches = !has_provider_filter || provider_filter.contains(&provider_lc);
         let model_matches = !has_model_filter || model_filter.contains(&model_lc);
         let origin_matches = !has_origin_filter || origin_filter.contains(&origin_lc);
+        let node_matches = !has_node_filter || node_filter.contains(&node_lc);
         if provider_matches {
-            if let Some(day_key) = local_day_key_from_unix_ms(ts) {
+            if let Some(day_key) = local_time.as_ref().map(|ctx| ctx.day_key.clone()) {
                 provider_req_by_day_all_from_req
                     .entry(provider.clone())
                     .or_default()
@@ -450,27 +639,29 @@ pub(crate) fn get_usage_statistics(
         if ts < since_unix_ms {
             continue;
         }
-        if model_matches && origin_matches {
+        if model_matches && origin_matches && node_matches {
             catalog_providers.insert(provider.clone());
         }
-        if provider_matches && origin_matches {
+        if provider_matches && origin_matches && node_matches {
             catalog_models.insert(model.clone());
         }
-        if provider_matches && model_matches {
+        if provider_matches && model_matches && node_matches {
             catalog_origins.insert(origin.clone());
         }
-        if !provider_matches || !model_matches || !origin_matches {
+        if provider_matches && model_matches && origin_matches {
+            catalog_nodes.insert(node_name.clone());
+        }
+        if !provider_matches || !model_matches || !origin_matches || !node_matches {
             continue;
         }
-        let api_key_ref = rec
-            .get("api_key_ref")
-            .and_then(|v| v.as_str())
-            .map(|s| s.trim())
+        let api_key_ref = Some(rec.api_key_ref.trim())
             .filter(|s| !s.is_empty())
             .unwrap_or("-")
             .to_string();
 
         total_requests = total_requests.saturating_add(1);
+        total_input_tokens = total_input_tokens.saturating_add(input_tokens);
+        total_output_tokens = total_output_tokens.saturating_add(output_tokens);
         total_tokens = total_tokens.saturating_add(total_tokens_row);
         total_cache_creation_tokens =
             total_cache_creation_tokens.saturating_add(cache_creation_input_tokens);
@@ -501,7 +692,7 @@ pub(crate) fn get_usage_statistics(
             .entry(provider.clone())
             .or_default()
             .push(ts);
-        if let Some(day_key) = local_day_key_from_unix_ms(ts) {
+        if let Some(day_key) = local_time.as_ref().map(|ctx| ctx.day_key.clone()) {
             provider_req_by_day_in_window
                 .entry(provider.clone())
                 .or_default()
@@ -510,7 +701,9 @@ pub(crate) fn get_usage_statistics(
                 .or_insert(1);
         }
 
-        let active_hour_bucket = aligned_bucket_start_unix_ms(ts, active_bucket_ms)
+        let active_hour_bucket = local_time
+            .as_ref()
+            .map(|ctx| ctx.hour_start_unix_ms)
             .unwrap_or((ts / active_bucket_ms) * active_bucket_ms);
         provider_active_hour_buckets
             .entry(provider.clone())
@@ -518,8 +711,16 @@ pub(crate) fn get_usage_statistics(
             .insert(active_hour_bucket);
         active_window_hour_buckets.insert(active_hour_bucket);
 
-        let bucket =
-            aligned_bucket_start_unix_ms(ts, bucket_ms).unwrap_or((ts / bucket_ms) * bucket_ms);
+        let bucket = if bucket_ms == 24 * 60 * 60 * 1000 {
+            local_time
+                .as_ref()
+                .map(|ctx| ctx.day_start_unix_ms)
+                .unwrap_or((ts / bucket_ms) * bucket_ms)
+        } else if bucket_ms == 60 * 60 * 1000 {
+            active_hour_bucket
+        } else {
+            aligned_bucket_start_unix_ms(ts, bucket_ms).unwrap_or((ts / bucket_ms) * bucket_ms)
+        };
         let entry = timeline.entry(bucket).or_insert((0, 0, 0, 0));
         entry.0 += 1;
         entry.1 += total_tokens_row;
@@ -528,6 +729,11 @@ pub(crate) fn get_usage_statistics(
 
         filtered.push(UsageRow { provider, model });
     }
+    phase_timings_ms.push((
+        "aggregate_request_rows",
+        phase_started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+    ));
+    phase_started_at = std::time::Instant::now();
 
     let mut provider_daily_cost_per_token: BTreeMap<String, f64> = BTreeMap::new();
     let mut provider_daily_spent_usd: BTreeMap<String, f64> = BTreeMap::new();
@@ -576,24 +782,16 @@ pub(crate) fn get_usage_statistics(
             .map(|cfg| cfg.amount_usd)
             .filter(|v| v.is_finite() && *v > 0.0);
         let req_by_day_in_window = provider_req_by_day_in_window.get(provider);
-        let usage_days = state.gateway.store.list_usage_days(provider);
-        let mut req_by_day: BTreeMap<String, u64> = BTreeMap::new();
-        for day in usage_days {
-            let Some(day_key) = day.get("day_key").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            let req = day.get("req_count").and_then(|v| v.as_u64()).unwrap_or(0);
-            req_by_day
-                .entry(day_key.to_string())
-                .and_modify(|cur| *cur = cur.saturating_add(req))
-                .or_insert(req);
-        }
-        if let Some(by_day_from_req) = provider_req_by_day_all_from_req.get(provider) {
-            for (day_key, req_count) in by_day_from_req {
-                req_by_day.entry(day_key.clone()).or_insert(*req_count);
-            }
-        }
-        let mut manual_by_day: BTreeMap<String, (Option<f64>, Option<f64>)> = BTreeMap::new();
+        let mut req_by_day = state
+            .gateway
+            .store
+            .list_usage_request_day_counts_for_provider(provider);
+        merge_usage_metrics_day_counts(
+            &mut req_by_day,
+            provider_req_by_day_all_from_req.get(provider),
+        );
+        let mut manual_by_day: BTreeMap<String, (Option<f64>, Option<f64>, u64)> =
+            BTreeMap::new();
         for day in state.gateway.store.list_spend_manual_days(provider) {
             let Some(day_key) = day.get("day_key").and_then(|v| v.as_str()) else {
                 continue;
@@ -602,8 +800,28 @@ pub(crate) fn get_usage_statistics(
                 as_f64(day.get("manual_total_usd")).filter(|v| v.is_finite() && *v != 0.0);
             let manual_per_req =
                 as_f64(day.get("manual_usd_per_req")).filter(|v| v.is_finite() && *v > 0.0);
+            let updated_at = day
+                .get("updated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             if manual_total.is_some() || manual_per_req.is_some() {
-                manual_by_day.insert(day_key.to_string(), (manual_total, manual_per_req));
+                manual_by_day
+                    .entry(day_key.to_string())
+                    .and_modify(|(current_total, current_per_req, current_per_req_updated_at)| {
+                        *current_total = match (*current_total, manual_total) {
+                            (Some(left), Some(right)) => Some(left + right),
+                            (Some(left), None) => Some(left),
+                            (None, Some(right)) => Some(right),
+                            (None, None) => None,
+                        };
+                        merge_manual_per_req_for_usage_metrics_day(
+                            current_per_req,
+                            current_per_req_updated_at,
+                            manual_per_req,
+                            updated_at,
+                        );
+                    })
+                    .or_insert((manual_total, manual_per_req, updated_at));
             }
         }
 
@@ -681,15 +899,13 @@ pub(crate) fn get_usage_statistics(
                         }
 
                         let manual_window = manual_by_day.get(&day_key).and_then(
-                            |(manual_total, manual_per_req)| {
+                            |(manual_total, manual_per_req, _)| {
                                 let (day_start, day_end) = local_day_range_from_key(&day_key)?;
                                 let overlap_start = day_start.max(since_unix_ms);
                                 let overlap_end = day_end.min(now);
                                 if overlap_end <= overlap_start {
                                     return None;
                                 }
-                                let ratio = (overlap_end.saturating_sub(overlap_start)) as f64
-                                    / (day_end.saturating_sub(day_start).max(1) as f64);
                                 let day_req_total =
                                     req_by_day.get(&day_key).copied().unwrap_or(0) as f64;
                                 let day_req_in_window = req_by_day_in_window
@@ -700,20 +916,16 @@ pub(crate) fn get_usage_statistics(
                                 if let Some(v) = manual_total {
                                     if day_req_total > 0.0 {
                                         let req_ratio =
-                                            (day_req_in_window / day_req_total).clamp(0.0, 1.0);
+                                            request_window_ratio(day_req_total, day_req_in_window);
                                         Some(*v * req_ratio)
-                                    } else if has_model_filter {
-                                        Some(0.0)
                                     } else {
-                                        Some(*v * ratio)
+                                        Some(0.0)
                                     }
                                 } else if let Some(v) = manual_per_req {
                                     if day_req_in_window > 0.0 {
                                         Some(*v * day_req_in_window)
-                                    } else if has_model_filter {
-                                        Some(0.0)
                                     } else {
-                                        Some(*v * day_req_total * ratio)
+                                        Some(0.0)
                                     }
                                 } else {
                                     None
@@ -793,25 +1005,17 @@ pub(crate) fn get_usage_statistics(
                     if overlap_end <= overlap_start {
                         continue;
                     }
-                    let time_ratio = (overlap_end.saturating_sub(overlap_start)) as f64
-                        / (day_end.saturating_sub(day_start).max(1) as f64);
                     let day_req_total = req_by_day.get(&day_key).copied().unwrap_or(0) as f64;
                     let day_req_in_window = req_by_day_in_window
                         .and_then(|m| m.get(&day_key))
                         .copied()
                         .unwrap_or(0) as f64;
-                    let ratio = if day_req_total > 0.0 {
-                        (day_req_in_window / day_req_total).clamp(0.0, 1.0)
-                    } else if has_model_filter {
-                        0.0
-                    } else {
-                        time_ratio
-                    };
+                    let ratio = request_window_ratio(day_req_total, day_req_in_window);
                     tracked_in_window += tracked * ratio;
                 }
 
                 let mut manual_additional_in_window = 0.0_f64;
-                for (day_key, (manual_total, manual_per_req)) in manual_by_day.iter() {
+                for (day_key, (manual_total, manual_per_req, _)) in manual_by_day.iter() {
                     let Some((day_start, day_end)) = local_day_range_from_key(day_key) else {
                         continue;
                     };
@@ -820,8 +1024,6 @@ pub(crate) fn get_usage_statistics(
                     if overlap_end <= overlap_start {
                         continue;
                     }
-                    let ratio = (overlap_end.saturating_sub(overlap_start)) as f64
-                        / (day_end.saturating_sub(day_start).max(1) as f64);
                     let day_req_total = req_by_day.get(day_key).copied().unwrap_or(0) as f64;
                     let day_req_in_window = req_by_day_in_window
                         .and_then(|m| m.get(day_key))
@@ -829,20 +1031,16 @@ pub(crate) fn get_usage_statistics(
                         .unwrap_or(0) as f64;
                     if let Some(v) = manual_total {
                         if day_req_total > 0.0 {
-                            let req_ratio = (day_req_in_window / day_req_total).clamp(0.0, 1.0);
+                            let req_ratio = request_window_ratio(day_req_total, day_req_in_window);
                             manual_additional_in_window += *v * req_ratio;
-                        } else if has_model_filter {
-                            manual_additional_in_window += 0.0;
                         } else {
-                            manual_additional_in_window += *v * ratio;
+                            manual_additional_in_window += 0.0;
                         }
                     } else if let Some(v) = manual_per_req {
                         if day_req_in_window > 0.0 {
                             manual_additional_in_window += *v * day_req_in_window;
-                        } else if has_model_filter {
-                            manual_additional_in_window += 0.0;
                         } else {
-                            manual_additional_in_window += *v * day_req_total * ratio;
+                            manual_additional_in_window += 0.0;
                         }
                     }
                 }
@@ -864,15 +1062,18 @@ pub(crate) fn get_usage_statistics(
                     } else {
                         "manual_history".to_string()
                     };
-                } else if let Some(spent_today) = provider_daily_spent_usd.get(provider).copied() {
-                    total_used_cost_usd = Some(spent_today);
-                    actual_tracked_spend_usd = Some(spent_today);
-                    pricing_source = "provider_budget_api_latest_day".to_string();
-                } else if let Some(per_tok) = provider_daily_cost_per_token.get(provider).copied() {
-                    let estimated = per_tok * agg.total_tokens as f64;
-                    if estimated > 0.0 {
-                        total_used_cost_usd = Some(estimated);
-                        pricing_source = "provider_token_rate".to_string();
+                } else {
+                    let (fallback_total_used, fallback_actual_tracked, fallback_source) =
+                        resolve_budget_or_token_rate_cost(
+                            allow_latest_day_budget_fallback,
+                            provider_daily_spent_usd.get(provider).copied(),
+                            provider_daily_cost_per_token.get(provider).copied(),
+                            agg.total_tokens,
+                        );
+                    total_used_cost_usd = fallback_total_used;
+                    actual_tracked_spend_usd = fallback_actual_tracked;
+                    if total_used_cost_usd.is_some() {
+                        pricing_source = fallback_source;
                     }
                 }
 
@@ -1000,6 +1201,11 @@ pub(crate) fn get_usage_statistics(
             }));
         }
     }
+    phase_timings_ms.push((
+        "build_provider_costs",
+        phase_started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+    ));
+    phase_started_at = std::time::Instant::now();
     by_provider.sort_by(|a, b| {
         let ar = a.get("requests").and_then(|v| v.as_u64()).unwrap_or(0);
         let br = b.get("requests").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -1090,49 +1296,123 @@ pub(crate) fn get_usage_statistics(
     } else {
         Value::Null
     };
+    let filter_nodes_json = if has_node_filter {
+        serde_json::json!(node_filter.into_iter().collect::<Vec<_>>())
+    } else {
+        Value::Null
+    };
     let filter_origins_json = if has_origin_filter {
         serde_json::json!(origin_filter.into_iter().collect::<Vec<_>>())
     } else {
         Value::Null
     };
+    let catalog_node_values: Vec<String> = catalog_nodes.into_iter().collect();
     let catalog_provider_values: Vec<String> = catalog_providers.into_iter().collect();
     let catalog_model_values: Vec<String> = catalog_models.into_iter().collect();
     let catalog_origin_values: Vec<String> = catalog_origins.into_iter().collect();
+    let response_provider_count = by_provider.len();
+    let response_model_count = by_model.len();
+    let response_timeline_count = timeline_points.len();
+    let filtered_row_count = filtered.len();
+    let top_model = by_model.first().cloned().unwrap_or(Value::Null);
+    let mut summary = serde_json::json!({
+      "total_requests": total_requests,
+      "total_tokens": total_tokens,
+      "input_tokens": total_input_tokens,
+      "output_tokens": total_output_tokens,
+      "active_window_hours": round3(active_window_hours),
+      "cache_creation_tokens": total_cache_creation_tokens,
+      "cache_read_tokens": total_cache_read_tokens,
+      "unique_models": by_model.len(),
+      "top_model": top_model,
+      "estimated_total_cost_usd": round3(total_used_cost_usd),
+      "estimated_daily_cost_usd": round3(estimated_daily_cost_usd),
+      "by_provider": by_provider,
+      "timeline": timeline_points
+    });
+    if detail_level == UsageStatisticsDetailLevel::Full {
+        summary["by_model"] = serde_json::json!(by_model);
+    }
 
-    serde_json::json!({
+    let mut response = serde_json::json!({
       "ok": true,
       "generated_at_unix_ms": now,
       "window_hours": window_hours,
-      "filter": {
-        "providers": filter_providers_json,
-        "models": filter_models_json,
-        "origins": filter_origins_json
-      },
-      "catalog": {
-        "providers": catalog_provider_values,
-        "models": catalog_model_values,
-        "origins": catalog_origin_values
-      },
       "bucket_seconds": bucket_ms / 1000,
-      "summary": {
-        "total_requests": total_requests,
-        "total_tokens": total_tokens,
-        "active_window_hours": round3(active_window_hours),
-        "cache_creation_tokens": total_cache_creation_tokens,
-        "cache_read_tokens": total_cache_read_tokens,
-        "unique_models": by_model.len(),
-        "estimated_total_cost_usd": round3(total_used_cost_usd),
-        "estimated_daily_cost_usd": round3(estimated_daily_cost_usd),
-        "by_model": by_model,
-        "by_provider": by_provider,
-        "timeline": timeline_points
-      }
-    })
+      "summary": summary,
+    });
+    if detail_level == UsageStatisticsDetailLevel::Full {
+        response["filter"] = serde_json::json!({
+          "nodes": filter_nodes_json,
+          "providers": filter_providers_json,
+          "models": filter_models_json,
+          "origins": filter_origins_json
+        });
+        response["catalog"] = serde_json::json!({
+          "nodes": catalog_node_values,
+          "providers": catalog_provider_values,
+          "models": catalog_model_values,
+          "origins": catalog_origin_values
+        });
+    }
+    phase_timings_ms.push((
+        "finalize_response",
+        phase_started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+    ));
+    let response_encode_started_at = std::time::Instant::now();
+    let response_bytes = serde_json::to_vec(&response).unwrap_or_default();
+    let response_encode_elapsed_ms = response_encode_started_at
+        .elapsed()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    let total_elapsed_ms = command_started_at
+        .elapsed()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    if total_elapsed_ms >= 300
+        || response_encode_elapsed_ms >= 50
+        || response_bytes.len() >= 256 * 1024
+    {
+        let diag = serde_json::json!({
+          "captured_at_unix_ms": unix_ms(),
+          "detail_level": match detail_level {
+              UsageStatisticsDetailLevel::Full => "full",
+              UsageStatisticsDetailLevel::Overview => "overview",
+          },
+          "total_elapsed_ms": total_elapsed_ms,
+          "response_encode_elapsed_ms": response_encode_elapsed_ms,
+          "response_bytes": response_bytes.len(),
+          "window_hours": window_hours,
+          "record_count": filtered_row_count,
+          "provider_count": response_provider_count,
+          "model_count": response_model_count,
+          "timeline_points": response_timeline_count,
+          "phase_timings_ms": phase_timings_ms,
+        });
+        let path = state
+            .diagnostics_dir
+            .join(format!("usage-stats-slow-{}.json", unix_ms()));
+        let _ = std::fs::write(path, serde_json::to_vec_pretty(&diag).unwrap_or_default());
+    }
+    response
 }
 
 #[cfg(test)]
 mod usage_metrics_tests {
-    use super::{normalize_usage_origin, projection_hours_for_day_estimate};
+    use super::{
+        effective_provider_filter, latest_day_budget_fallback_allowed,
+        list_usage_requests_for_statistics_window,
+        merge_manual_per_req_for_usage_metrics_day, merge_usage_metrics_day_counts,
+        normalize_usage_origin,
+        parse_usage_statistics_detail_level,
+        projection_hours_for_day_estimate, request_window_ratio,
+        resolve_budget_or_token_rate_cost, UsageStatisticsDetailLevel,
+        usage_metrics_configured_provider_names,
+    };
+    use crate::orchestrator::config::{AppConfig, ProviderConfig};
+    use crate::orchestrator::store::{Store, UsageRequestSyncRow};
+    use chrono::TimeZone;
+    use std::collections::BTreeMap;
 
     #[test]
     fn normalize_usage_origin_maps_known_values() {
@@ -1150,5 +1430,236 @@ mod usage_metrics_tests {
     #[test]
     fn projection_hours_uses_fixed_16h_workday() {
         assert_eq!(projection_hours_for_day_estimate(), 16.0);
+    }
+
+    #[test]
+    fn usage_statistics_detail_level_defaults_to_full() {
+        assert_eq!(
+            parse_usage_statistics_detail_level(None),
+            UsageStatisticsDetailLevel::Full
+        );
+        assert_eq!(
+            parse_usage_statistics_detail_level(Some("full")),
+            UsageStatisticsDetailLevel::Full
+        );
+        assert_eq!(
+            parse_usage_statistics_detail_level(Some("overview")),
+            UsageStatisticsDetailLevel::Overview
+        );
+    }
+
+    #[test]
+    fn latest_day_budget_fallback_only_applies_within_current_local_day() {
+        use chrono::{Local, Timelike};
+
+        let now = Local::now()
+            .with_hour(12)
+            .and_then(|dt| dt.with_minute(0))
+            .and_then(|dt| dt.with_second(0))
+            .and_then(|dt| dt.with_nanosecond(0))
+            .expect("normalize now");
+        let now_unix_ms = u64::try_from(now.timestamp_millis()).expect("now unix ms");
+        let within_today =
+            u64::try_from((now - chrono::Duration::hours(2)).timestamp_millis()).expect("within");
+        let crosses_midnight =
+            u64::try_from((now - chrono::Duration::hours(24)).timestamp_millis()).expect("cross");
+
+        assert!(latest_day_budget_fallback_allowed(now_unix_ms, within_today));
+        assert!(!latest_day_budget_fallback_allowed(
+            now_unix_ms,
+            crosses_midnight
+        ));
+    }
+
+    #[test]
+    fn usage_metrics_prefers_raw_request_day_counts_over_cached_usage_day_counts() {
+        let mut cached = BTreeMap::from([("2026-03-31".to_string(), 2_u64)]);
+        let raw = BTreeMap::from([("2026-03-31".to_string(), 86_u64)]);
+        merge_usage_metrics_day_counts(&mut cached, Some(&raw));
+        assert_eq!(cached.get("2026-03-31"), Some(&86_u64));
+    }
+
+    #[test]
+    fn request_window_ratio_is_zero_when_day_has_no_requests() {
+        assert_eq!(request_window_ratio(0.0, 71.0), 0.0);
+        assert!((request_window_ratio(86.0, 71.0) - (71.0 / 86.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn manual_per_req_prefers_latest_source_value_for_metrics() {
+        let mut current_per_req = Some(0.05);
+        let mut current_updated_at = 100;
+
+        merge_manual_per_req_for_usage_metrics_day(
+            &mut current_per_req,
+            &mut current_updated_at,
+            Some(0.03),
+            90,
+        );
+        assert_eq!(current_per_req, Some(0.05));
+        assert_eq!(current_updated_at, 100);
+
+        merge_manual_per_req_for_usage_metrics_day(
+            &mut current_per_req,
+            &mut current_updated_at,
+            Some(0.03),
+            110,
+        );
+        assert_eq!(current_per_req, Some(0.03));
+        assert_eq!(current_updated_at, 110);
+    }
+
+    #[test]
+    fn budget_or_token_rate_cost_falls_back_to_per_token_when_budget_missing() {
+        let (total_used, tracked, source) =
+            resolve_budget_or_token_rate_cost(true, None, Some(0.002), 500);
+        assert_eq!(total_used, Some(1.0));
+        assert_eq!(tracked, None);
+        assert_eq!(source, "provider_token_rate");
+    }
+
+    fn sample_cfg() -> AppConfig {
+        let mut cfg = AppConfig::default_config();
+        cfg.providers = BTreeMap::from([
+            (
+                "official".to_string(),
+                ProviderConfig {
+                    display_name: "Official".to_string(),
+                    base_url: "https://official.example/v1".to_string(),
+                    group: None,
+                    disabled: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "packycode".to_string(),
+                ProviderConfig {
+                    display_name: "Packycode".to_string(),
+                    base_url: "https://packycode.example/v1".to_string(),
+                    group: None,
+                    disabled: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "aigateway".to_string(),
+                ProviderConfig {
+                    display_name: "AIGateway".to_string(),
+                    base_url: "https://aigateway.example/v1".to_string(),
+                    group: None,
+                    disabled: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            ),
+        ]);
+        cfg.provider_order = vec!["packycode".to_string(), "official".to_string()];
+        cfg
+    }
+
+    #[test]
+    fn configured_provider_names_follow_config_order_first() {
+        assert_eq!(
+            usage_metrics_configured_provider_names(&sample_cfg()),
+            vec![
+                "packycode".to_string(),
+                "official".to_string(),
+                "aigateway".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn effective_provider_filter_defaults_to_current_config_providers() {
+        assert_eq!(
+            effective_provider_filter(&sample_cfg(), None),
+            BTreeMap::from([
+                ("aigateway".to_string(), ()),
+                ("official".to_string(), ()),
+                ("packycode".to_string(), ())
+            ])
+            .into_keys()
+            .collect()
+        );
+    }
+
+    #[test]
+    fn effective_provider_filter_preserves_explicit_selection() {
+        assert_eq!(
+            effective_provider_filter(
+                &sample_cfg(),
+                Some(vec![" official ".to_string(), "PACKYCODE".to_string()])
+            ),
+            BTreeMap::from([
+                ("official".to_string(), ()),
+                ("packycode".to_string(), ())
+            ])
+            .into_keys()
+            .collect()
+        );
+    }
+
+    #[test]
+    fn usage_statistics_request_scan_is_limited_to_the_requested_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let older = chrono::Local
+            .with_ymd_and_hms(2026, 3, 1, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let newer = chrono::Local
+            .with_ymd_and_hms(2026, 4, 3, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        store.upsert_usage_request_sync_rows(&[
+            UsageRequestSyncRow {
+                id: "older-row".to_string(),
+                unix_ms: older as u64,
+                ingested_at_unix_ms: older as u64,
+                provider: "official".to_string(),
+                api_key_ref: "-".to_string(),
+                model: "gpt-5.2-codex".to_string(),
+                origin: "windows".to_string(),
+                session_id: "older".to_string(),
+                node_id: "node-a".to_string(),
+                node_name: "Desk A".to_string(),
+                input_tokens: 10,
+                output_tokens: 1,
+                total_tokens: 11,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            },
+            UsageRequestSyncRow {
+                id: "newer-row".to_string(),
+                unix_ms: newer as u64,
+                ingested_at_unix_ms: newer as u64,
+                provider: "official".to_string(),
+                api_key_ref: "-".to_string(),
+                model: "gpt-5.2-codex".to_string(),
+                origin: "windows".to_string(),
+                session_id: "newer".to_string(),
+                node_id: "node-a".to_string(),
+                node_name: "Desk A".to_string(),
+                input_tokens: 20,
+                output_tokens: 2,
+                total_tokens: 22,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            },
+        ]);
+
+        let rows = list_usage_requests_for_statistics_window(&store, newer as u64 - 60_000);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].provider, "official");
+        assert_eq!(rows[0].unix_ms, newer as u64);
+        assert_eq!(rows[0].node_name, "Desk A");
     }
 }
