@@ -222,6 +222,7 @@ fn remote_update_global_visible_window_key(
     )
 }
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 struct RemoteUpdateWorkerMonitorContext {
     repo_root: std::path::PathBuf,
     status_path: Option<std::path::PathBuf>,
@@ -1200,6 +1201,7 @@ fn monitor_remote_update_worker_exit(
 ) {
     std::thread::spawn(move || {
         let mut last_progress_key: Option<String> = None;
+        #[cfg(target_os = "windows")]
         let mut seen_shell_window_keys = std::collections::HashSet::<String>::new();
         #[cfg(target_os = "windows")]
         let visible_window_event_watcher =
@@ -1212,6 +1214,8 @@ fn monitor_remote_update_worker_exit(
             status_path: monitor_context.status_path.as_deref(),
             log_path: monitor_context.log_path.as_deref(),
         };
+        #[cfg(not(target_os = "windows"))]
+        let _ = &monitor_context;
         let (worker_exit_code, exit_detail) = loop {
             emit_remote_update_progress_event(
                 &gateway,
