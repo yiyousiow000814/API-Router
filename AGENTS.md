@@ -89,15 +89,6 @@ Guards/fallbacks are only allowed if:
 - skipping inputs/files to make tests pass
 - weakening assertions or deleting failing tests
 
-## Required PR / Patch Metadata (Put In Description)
-- Root cause:
-- Minimal repro:
-- Evidence (logs/trace/screenshots):
-- Fix summary:
-- New/updated tests:
-- Risk assessment:
-- Rollback plan:
-
 ## CSS Layering (z-index) Policy
 - Use the global sequential z-index scale (e.g. `--z-*` tokens) for cross-component layering.
 - **No scattered magic numbers** (e.g. 20/30/60/120). Keep the scale sequential without gaps.
