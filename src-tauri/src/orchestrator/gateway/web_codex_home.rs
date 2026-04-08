@@ -391,6 +391,7 @@ mod tests {
 
     #[test]
     fn rpc_home_override_uses_workspace_specific_home() {
+        let _test_guard = crate::codex_app_server::lock_test_globals();
         unsafe {
             std::env::set_var("API_ROUTER_WEB_CODEX_CODEX_HOME", r"C:\tmp\win-codex");
             std::env::set_var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", "/home/test/.codex");
