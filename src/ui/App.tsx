@@ -1339,7 +1339,7 @@ export default function App() {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [isDevPreview, lanRemoteUpdatePendingNodeIdsKey, refreshConfig, refreshStatus])
+  }, [isDevPreview, lanRemoteUpdatePendingNodeIdsKey, refreshConfig])
 
   async function requestLanRemoteUpdateSameVersion(nodeId: string) {
     if (lanRemoteUpdatePendingByNode[nodeId]) return

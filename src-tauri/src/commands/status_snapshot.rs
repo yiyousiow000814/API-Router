@@ -424,9 +424,9 @@ pub(crate) fn get_status(
       "lan_sync": lan_sync,
       "shared_quota_owners": shared_quota_owners
     });
-    let response_bytes = serde_json::to_vec(&response).unwrap_or_default();
     let total_elapsed_ms = elapsed_ms_since(command_started_at);
     if total_elapsed_ms >= 1000 {
+        let response_bytes = serde_json::to_vec(&response).unwrap_or_default();
         write_dashboard_status_slow_diag(
             &state.diagnostics_dir,
             if dashboard_detail { "dashboard" } else { "full" },
