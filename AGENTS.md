@@ -19,6 +19,7 @@
 - **PR body format**: PR bodies must include `## What`, `## Why`, `## Changes`, `## Verify`. If the PR is long, add `## TL;DR` at the very top.
 - **PR summary scope**: Titles and bodies must describe the overall changes relative to `main`, not just the latest commit.
 - **Resolve review threads**: After addressing review comments, resolve the corresponding review conversations (click "Resolve conversation").
+- **Efficiency review rule (required)**: If a PR/review comment calls out `efficiency`, `inefficiency`, redundant work, repeated allocation, unnecessary polling/rendering, or similar performance waste, treat it as actionable work by default and fix it before resolving the thread unless you can show clear evidence that the comment is incorrect.
 - **Format before commit**: Ensure formatting checks pass before committing.
 - **Pre-commit/push gate (required)**: Before every `git commit` and `git push`, run `npm run check:ci-local` (or at minimum run `cargo fmt --manifest-path src-tauri/Cargo.toml --check` and `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`). Do not commit/push when these fail.
 - **Conflict-resolution rule (required)**: Never resolve merge conflicts by dropping one side wholesale. Preserve both branch intent and incoming `main` functionality unless there is a documented reason to change behavior. After conflict resolution, run targeted checks/tests for the touched behavior before committing.
