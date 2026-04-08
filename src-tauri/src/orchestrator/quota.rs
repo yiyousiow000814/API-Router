@@ -1578,6 +1578,7 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
         let crossed_local_day =
             current_day_key.is_some() && open_day_key.is_some() && current_day_key != open_day_key;
         if crossed_local_day || current_daily_spent + epsilon < last_seen_daily_spent {
+            let spend_reset = current_daily_spent + epsilon < last_seen_daily_spent;
             if let Some(mut prev_day) = st
                 .store
                 .get_spend_day(provider_name, open_day_started_at_unix_ms)
@@ -1597,7 +1598,11 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
             open_day_started_at_unix_ms = now;
             let next_day_tracked_spend =
                 if provider_has_request_on_local_day(st, provider_name, now) {
-                    current_daily_spent
+                    if spend_reset {
+                        current_daily_spent
+                    } else {
+                        (current_daily_spent - last_seen_daily_spent).max(0.0)
+                    }
                 } else {
                     0.0
                 };

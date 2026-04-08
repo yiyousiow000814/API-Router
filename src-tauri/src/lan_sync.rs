@@ -2231,6 +2231,10 @@ fn spend_manual_day_seed_meta_key(entity_id: &str) -> String {
     format!("lan_spend_manual_day_seed:{entity_id}")
 }
 
+fn tracked_spend_day_seed_meta_key(entity_id: &str) -> String {
+    format!("lan_tracked_spend_day_seed:{entity_id}")
+}
+
 fn seed_payload_revision(value: &Value) -> Result<String, String> {
     serde_json::to_string(value).map_err(|err| err.to_string())
 }
@@ -2247,7 +2251,6 @@ fn spend_manual_day_entity_id(
     format!("{shared_provider_id}|{day_key}|{source_node_id}")
 }
 
-#[cfg(test)]
 fn tracked_spend_day_entity_id(
     shared_provider_id: &str,
     day_started_at_unix_ms: u64,
@@ -2277,6 +2280,31 @@ fn parse_day_scoped_entity_id<'a>(
         [shared_provider_id, day_scope] => Ok((shared_provider_id, day_scope, fallback_node_id)),
         _ => Err(format!("invalid source-scoped entity id: {entity_id}")),
     }
+}
+
+fn tracked_spend_day_source_identity(
+    row: &Value,
+    fallback_node_id: &str,
+    fallback_node_name: &str,
+) -> Option<(String, String)> {
+    let source_node_id = row
+        .get("producer_node_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback_node_id)
+        .to_string();
+    let source_node_name = row
+        .get("producer_node_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback_node_name)
+        .to_string();
+    if source_node_id.is_empty() {
+        return None;
+    }
+    Some((source_node_id, source_node_name))
 }
 
 fn tracked_spend_history_day_delete_entity_id(shared_provider_id: &str, day_key: &str) -> String {
@@ -2379,6 +2407,40 @@ pub fn ensure_local_edit_seed_state(state: &crate::app_state::AppState) -> Resul
                 "replace",
                 snapshot_payload,
                 &quota_snapshot_seed_meta_key(&shared_provider_id),
+            )?;
+        }
+
+        for row in state.gateway.store.list_spend_days(&provider) {
+            let Some(day_started_at_unix_ms) =
+                row.get("started_at_unix_ms").and_then(Value::as_u64)
+            else {
+                continue;
+            };
+            let Some((source_node_id, _source_node_name)) = tracked_spend_day_source_identity(
+                &row,
+                &state.lan_sync.local_node.node_id,
+                &state.lan_sync.local_node.node_name,
+            ) else {
+                continue;
+            };
+            let entity_id = tracked_spend_day_entity_id(
+                &shared_provider_id,
+                day_started_at_unix_ms,
+                &source_node_id,
+            );
+            let tracked_payload = serde_json::to_value(TrackedSpendDaySyncPayload {
+                provider_name: provider.clone(),
+                day_started_at_unix_ms,
+                row: row.clone(),
+            })
+            .map_err(|err| err.to_string())?;
+            seed_edit_event_if_changed(
+                state,
+                LAN_EDIT_ENTITY_TRACKED_SPEND_DAY,
+                &entity_id,
+                "replace",
+                tracked_payload,
+                &tracked_spend_day_seed_meta_key(&entity_id),
             )?;
         }
 
@@ -3030,14 +3092,17 @@ fn apply_tracked_spend_day_event(
         return Ok(());
     }
     let mut row = payload.row.clone();
+    let (producer_node_id, producer_node_name) =
+        tracked_spend_day_source_identity(&row, source_node_id, &event.node_name)
+            .ok_or_else(|| "tracked spend day row is missing a source node id".to_string())?;
     if let Some(map) = row.as_object_mut() {
         map.insert(
             "producer_node_id".to_string(),
-            Value::String(event.node_id.clone()),
+            Value::String(producer_node_id.clone()),
         );
         map.insert(
             "producer_node_name".to_string(),
-            Value::String(event.node_name.clone()),
+            Value::String(producer_node_name.clone()),
         );
         map.insert(
             "applied_from_node_id".to_string(),
@@ -3055,7 +3120,7 @@ fn apply_tracked_spend_day_event(
     gateway.store.put_remote_spend_day(
         &provider_name,
         source_node_id,
-        &event.node_name,
+        &producer_node_name,
         payload.day_started_at_unix_ms,
         &row,
     );
@@ -7282,6 +7347,10 @@ mod tests {
     #[test]
     fn ensure_local_edit_seed_state_includes_existing_usage_entities() {
         let (_tmp, state) = build_test_state();
+        let shared_provider_id = state
+            .secrets
+            .ensure_provider_shared_id("provider_1")
+            .expect("shared id");
         state
             .secrets
             .set_provider_pricing("provider_1", "per_request", 0.035, None, None)
@@ -7315,10 +7384,36 @@ mod tests {
                 "updated_at_unix_ms": 6000u64,
             }),
         );
+        state.gateway.store.put_spend_day(
+            "provider_1",
+            1_711_929_600_000u64,
+            &serde_json::json!({
+                "provider": "provider_1",
+                "started_at_unix_ms": 1_711_929_600_000u64,
+                "tracked_spend_usd": 8.5,
+                "updated_at_unix_ms": 7000u64,
+                "producer_node_id": state.lan_sync.local_node_id(),
+                "producer_node_name": state.lan_sync.local_node_name(),
+            }),
+        );
+        state.gateway.store.put_remote_spend_day(
+            "provider_1",
+            "node-remote",
+            "Remote Node",
+            1_711_933_200_000u64,
+            &serde_json::json!({
+                "provider": "provider_1",
+                "started_at_unix_ms": 1_711_933_200_000u64,
+                "tracked_spend_usd": 12.25,
+                "updated_at_unix_ms": 7100u64,
+                "producer_node_id": "node-remote",
+                "producer_node_name": "Remote Node",
+            }),
+        );
 
         super::ensure_local_edit_seed_state(&state).expect("seed local edit state");
 
-        let (events, _) = state.gateway.store.list_lan_edit_events_batch(0, None, 20);
+        let (events, _) = state.gateway.store.list_lan_edit_events_batch(0, None, 50);
         assert!(events
             .iter()
             .any(|event| event.entity_type == "provider_pricing"));
@@ -7328,6 +7423,27 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event.entity_type == "spend_manual_day"));
+        let tracked_spend_events = events
+            .iter()
+            .filter(|event| event.entity_type == "tracked_spend_day")
+            .collect::<Vec<_>>();
+        assert_eq!(tracked_spend_events.len(), 2);
+        assert!(tracked_spend_events.iter().any(|event| {
+            event.entity_id
+                == tracked_spend_day_entity_id(
+                    &shared_provider_id,
+                    1_711_929_600_000u64,
+                    &state.lan_sync.local_node_id(),
+                )
+        }));
+        assert!(tracked_spend_events.iter().any(|event| {
+            event.entity_id
+                == tracked_spend_day_entity_id(
+                    &shared_provider_id,
+                    1_711_933_200_000u64,
+                    "node-remote",
+                )
+        }));
     }
 
     #[test]
@@ -7789,6 +7905,73 @@ mod tests {
                 .and_then(|value| value.get("last_seen_daily_spent_usd").cloned())
                 .and_then(|value| value.as_f64()),
             Some(17.47)
+        );
+    }
+
+    #[test]
+    fn tracked_spend_seed_relay_preserves_original_remote_producer() {
+        let (_tmp, state) = build_test_state();
+        let shared_provider_id = state
+            .secrets
+            .ensure_provider_shared_id("provider_1")
+            .expect("shared id");
+        let local_node_id = state.lan_sync.local_node_id();
+        let local_node_name = state.lan_sync.local_node_name();
+        let event = crate::orchestrator::store::LanEditSyncEvent {
+            event_id: "seeded_remote_tracked_spend".to_string(),
+            node_id: local_node_id.clone(),
+            node_name: local_node_name.clone(),
+            created_at_unix_ms: 5,
+            lamport_ts: 5,
+            entity_type: "tracked_spend_day".to_string(),
+            entity_id: tracked_spend_day_entity_id(
+                &shared_provider_id,
+                1_711_929_600_000u64,
+                "node-remote",
+            ),
+            op: "replace".to_string(),
+            payload: serde_json::json!({
+                "provider_name": "provider_1",
+                "day_started_at_unix_ms": 1_711_929_600_000u64,
+                "row": {
+                    "provider": "provider_1",
+                    "started_at_unix_ms": 1_711_929_600_000u64,
+                    "tracked_spend_usd": 17.47,
+                    "updated_at_unix_ms": 2222u64,
+                    "producer_node_id": "node-remote",
+                    "producer_node_name": "Remote Node"
+                }
+            }),
+        };
+
+        apply_lan_edit_event(&state.gateway, &state.config_path, &event)
+            .expect("apply seeded tracked spend relay");
+
+        let remote_tracked_days = state.gateway.store.list_remote_spend_days("provider_1");
+        assert_eq!(remote_tracked_days.len(), 1);
+        assert_eq!(
+            remote_tracked_days[0]
+                .get("producer_node_id")
+                .and_then(|value| value.as_str()),
+            Some("node-remote")
+        );
+        assert_eq!(
+            remote_tracked_days[0]
+                .get("producer_node_name")
+                .and_then(|value| value.as_str()),
+            Some("Remote Node")
+        );
+        assert_eq!(
+            remote_tracked_days[0]
+                .get("applied_from_node_id")
+                .and_then(|value| value.as_str()),
+            Some(local_node_id.as_str())
+        );
+        assert_eq!(
+            remote_tracked_days[0]
+                .get("applied_from_node_name")
+                .and_then(|value| value.as_str()),
+            Some(local_node_name.as_str())
         );
     }
 

@@ -1748,7 +1748,7 @@ mod tests {
             spend_days[1]
                 .get("tracked_spend_usd")
                 .and_then(|value| value.as_f64()),
-            Some(120.0)
+            Some(40.0)
         );
         assert_eq!(
             spend_days[1]
