@@ -184,6 +184,34 @@ describe('ProvidersTable', () => {
     expect(html).not.toContain('>no<')
   })
 
+  it('shows offline when unknown state comes from local connectivity outage', () => {
+    const status = buildStatus()
+    status.providers = {
+      packycode: {
+        status: 'unknown',
+        consecutive_failures: 0,
+        cooldown_until_unix_ms: 0,
+        last_error:
+          'request error (connect); url=https://api.example.com/v1/models; cause=dns error: failed to lookup address information: No such host is known. (os error 11001)',
+        last_ok_at_unix_ms: 1_000,
+        last_fail_at_unix_ms: 2_000,
+      },
+    }
+
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['packycode']}
+        status={status}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
+
+    expect(html).toContain('offline')
+    expect(html).not.toContain('>unknown<')
+  })
+
   it('hides unticked hard-cap usage rows from dashboard usage preview', () => {
     const config: Config = {
       listen: { host: '127.0.0.1', port: 4000 },

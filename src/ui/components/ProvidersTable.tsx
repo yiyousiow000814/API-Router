@@ -4,6 +4,26 @@ import { simulateQuotaForDisplay } from '../utils/quotaSimulation'
 
 const mono = 'ui-monospace, "Cascadia Mono", "Consolas", monospace'
 
+function isOfflineProviderError(message: string | null | undefined): boolean {
+  const normalized = (message ?? '').trim().toLowerCase()
+  if (!normalized) return false
+
+  return [
+    'dns error',
+    'failed to lookup address information',
+    'no such host is known',
+    'temporary failure in name resolution',
+    'name or service not known',
+    'network is unreachable',
+    'host is unreachable',
+    'network unreachable',
+    'os error 11001',
+    'os error 101',
+    'os error 113',
+    'os error 1231',
+  ].some((needle) => normalized.includes(needle))
+}
+
 export type LastErrorJump = {
   provider: string
   unixMs: number
@@ -55,6 +75,7 @@ export function ProvidersTable({
       <tbody>
         {providers.map((p) => {
           const h = status.providers[p]
+          const isOffline = h.status === 'unknown' && isOfflineProviderError(h.last_error)
           const q = simulateQuotaForDisplay(
             p,
             status.quota?.[p],
@@ -74,6 +95,8 @@ export function ProvidersTable({
                 ? 'effective'
                 : retryDue
                   ? 'retry'
+                : isOffline
+                  ? 'offline'
                 : h.status === 'healthy'
                   ? 'yes'
                   : h.status === 'unhealthy' || h.status === 'cooldown'
