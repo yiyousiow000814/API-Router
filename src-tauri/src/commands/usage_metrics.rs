@@ -1479,7 +1479,7 @@ mod usage_metrics_tests {
     }
 
     #[test]
-    fn usage_metrics_prefers_raw_request_day_counts_over_cached_usage_day_counts() {
+    fn usage_metrics_uses_more_complete_request_day_count_for_ratio_inputs() {
         let mut cached = BTreeMap::from([("2026-03-31".to_string(), 2_u64)]);
         let raw = BTreeMap::from([("2026-03-31".to_string(), 86_u64)]);
         merge_usage_metrics_day_counts(&mut cached, Some(&raw));
