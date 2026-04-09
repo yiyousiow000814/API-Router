@@ -95,7 +95,7 @@ impl LocalNetworkState {
         }
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", test))]
     fn apply_detected_online(&self, next_online: bool) -> bool {
         let previous_known = self.known.swap(true, Ordering::Relaxed);
         let previous_online = self.online.swap(next_online, Ordering::Relaxed);
@@ -294,8 +294,10 @@ wlan0\t00000000\t00000000\t0000\t0\t0\t100\t00000000\t0\t0\t0\n";
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "windows")]
     use super::LocalNetworkSnapshot;
     use super::LocalNetworkState;
+    #[cfg(target_os = "windows")]
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
