@@ -136,6 +136,7 @@ dependencies = [
  "tower",
  "urlencoding",
  "uuid",
+ "windows",
  "windows-sys 0.52.0",
 ]
 
