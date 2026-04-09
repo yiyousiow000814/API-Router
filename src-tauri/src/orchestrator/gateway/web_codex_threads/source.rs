@@ -1482,14 +1482,17 @@ mod tests {
             concat!(
                 "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-1\",\"cwd\":\"/repo\"}}\n",
                 "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"# AGENTS.md instructions for /repo\"}]}}\n",
-                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"æ˜¨å¤©çš„é—®é¢˜\"}]}}\n",
-                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"æœ€æ–°çš„é—®é¢˜\"}]}}\n"
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"\\u6628\\u5929\\u7684\\u95ee\\u9898\"}]}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"\\u6700\\u65b0\\u7684\\u95ee\\u9898\"}]}}\n"
             ),
         )
         .expect("write session");
 
         let scan = scan_session_file(&session_path).expect("scan session");
-        assert_eq!(scan.preview.as_deref(), Some("æ˜¨å¤©çš„é—®é¢˜"));
+        assert_eq!(
+            scan.preview.as_deref(),
+            Some("\u{6628}\u{5929}\u{7684}\u{95EE}\u{9898}")
+        );
         assert_eq!(scan.filter_reason, None);
     }
 

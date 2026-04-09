@@ -190,9 +190,12 @@ impl Default for EventPolicy {
 }
 
 macro_rules! define_event_codes {
-    ($( $name:ident => ($level:literal, $code:literal), )+) => {
+    ($( $(#[$meta:meta])* $name:ident => ($level:literal, $code:literal), )+) => {
         impl EventCode {
-            $(pub const $name: Self = Self { level: $level, code: $code };)+
+            $(
+                $(#[$meta])*
+                pub const $name: Self = Self { level: $level, code: $code };
+            )+
 
             pub const fn level(self) -> &'static str {
                 self.level
@@ -272,7 +275,9 @@ define_event_codes! {
     GATEWAY_PREVIOUS_RESPONSE_ID_PRESENT => ("debug", "gateway.previous_response_id_present"),
     GATEWAY_REQUEST_PARSE_ERROR => ("error", "gateway.request_parse_error"),
     GATEWAY_RETRY_WITHOUT_PREV_ID => ("info", "gateway.retry_without_prev_id"),
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     GATEWAY_RUNTIME_LISTENER_FAILED => ("warning", "gateway.runtime_listener_failed"),
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     GATEWAY_RUNTIME_LISTENER_SKIPPED => ("info", "gateway.runtime_listener_skipped"),
     GATEWAY_STREAM_FALLBACK_TO_NON_STREAM => ("warning", "gateway.stream_fallback_to_non_stream"),
     GATEWAY_UPSTREAM_RETRY => ("warning", "gateway.upstream_retry"),

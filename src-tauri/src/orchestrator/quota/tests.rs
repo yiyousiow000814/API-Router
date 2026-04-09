@@ -719,7 +719,7 @@ mod tests {
         let payload = serde_json::json!({
             "isValid": true,
             "mode": "unrestricted",
-            "planName": "è½»äº«å¡ 3å¤©",
+            "planName": "\u{8f7b}\u{4eab}\u{5361} 3\u{5929}",
             "remaining": 200,
             "subscription": {
                 "daily_limit_usd": 200,
@@ -761,7 +761,7 @@ mod tests {
         let payload = serde_json::json!({
             "isValid": true,
             "mode": "unrestricted",
-            "planName": "å­£å¡ 90å¤©",
+            "planName": "\u{5b63}\u{5361} 90\u{5929}",
             "remaining": 0,
             "subscription": {
                 "daily_limit_usd": 300,
