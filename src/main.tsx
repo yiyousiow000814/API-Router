@@ -3,9 +3,11 @@ import ReactDOM from 'react-dom/client'
 import './style.css'
 import { BootstrapApp } from './ui/BootstrapApp'
 import { flushQueuedStartupStages, recordStartupStage } from './ui/startupTrace'
+import { initUiFreezeCapture } from './ui/uiFreezeCapture'
 
 const root = ReactDOM.createRoot(document.getElementById('app')!)
 flushQueuedStartupStages()
+initUiFreezeCapture()
 recordStartupStage('frontend_main_module_start')
 recordStartupStage('frontend_create_root')
 

@@ -57,25 +57,4 @@ describe('UsageBaseModal', () => {
 
     expect(html).toContain('disabled=""')
   })
-
-  it('renders packycode auth action inside usage url modal', () => {
-    const html = renderToStaticMarkup(
-      <UsageBaseModal
-        open
-        provider="packycode"
-        value=""
-        effectiveValue=""
-        showPackycodeLogin
-        hasUsageLogin
-        onChange={noop}
-        onCancel={noop}
-        onClear={noop}
-        onSave={noop}
-        onAuthAction={noop}
-      />,
-    )
-
-    expect(html).toContain('Usage URL sets the endpoint. Packycode Login is a fallback when the endpoint alone cannot return usage.')
-    expect(html).toContain('Logout')
-  })
 })

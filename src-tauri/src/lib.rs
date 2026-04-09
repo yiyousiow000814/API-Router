@@ -5,11 +5,15 @@ mod codex_home_env;
 mod codex_wsl_bridge;
 mod commands;
 mod constants;
+mod diagnostics;
+mod lan_sync;
 mod orchestrator;
 mod platform;
 mod provider_switchboard;
 
 use tauri::Manager;
+#[cfg(target_os = "windows")]
+use tauri_plugin_notification::NotificationExt;
 
 use crate::app_state::build_state;
 use crate::orchestrator::gateway::serve_in_background;
@@ -80,28 +84,90 @@ fn app_profile_name() -> String {
     app_profile_name_from_inputs(Some(raw.as_str()), exe_stem.as_deref())
 }
 
+fn app_launch_args() -> Vec<String> {
+    std::env::args().collect()
+}
+
+fn app_launch_requests_hidden(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--start-hidden")
+}
+
+fn should_reveal_main_window_on_setup(start_hidden: bool, is_ui_tauri: bool) -> bool {
+    !start_hidden && !is_ui_tauri
+}
+
+fn reveal_main_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_skip_taskbar(false);
+        let _ = w.set_focusable(true);
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+fn hide_main_window_for_background_launch(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_skip_taskbar(true);
+        let _ = w.set_focusable(false);
+        let _ = w.minimize();
+        let _ = w.hide();
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn maybe_notify_hidden_remote_update_success(app: &tauri::AppHandle) {
+    let target_ref = std::env::var("API_ROUTER_REMOTE_UPDATE_TARGET_REF")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let Some(target_ref) = target_ref else {
+        write_app_startup_diag(
+            "remote_update_success_notification_skipped",
+            0,
+            Some("no target ref"),
+        );
+        return;
+    };
+    let short_target = target_ref.chars().take(8).collect::<String>();
+    let body = if short_target.is_empty() {
+        "API Router updated successfully and is running in the background.".to_string()
+    } else {
+        format!(
+            "API Router updated successfully to {short_target} and is running in the background."
+        )
+    };
+    if let Err(err) = app
+        .notification()
+        .builder()
+        .title("API Router updated")
+        .body(&body)
+        .show()
+    {
+        write_app_startup_diag(
+            "remote_update_success_notification_failed",
+            0,
+            Some(&err.to_string()),
+        );
+        log::warn!("failed to show remote update notification: {err}");
+    } else {
+        write_app_startup_diag(
+            "remote_update_success_notification_shown",
+            0,
+            Some(&format!("target_ref={short_target}")),
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn maybe_notify_hidden_remote_update_success(_app: &tauri::AppHandle) {}
+
 fn profile_data_dir_name(profile: &str) -> String {
     if profile == "default" {
         "user-data".to_string()
     } else {
         format!("user-data-{profile}")
     }
-}
-
-fn should_use_local_user_data_dir(local_user_data_dir: &std::path::Path) -> bool {
-    // Default to a stable per-user app-data directory so rebuilds don't force re-login.
-    // Only use a local ./user-data (next to the EXE) when explicitly requested for portability.
-    //
-    // This avoids the common dev-repo footgun: a checked-in ./user-data directory would otherwise
-    // silently override the real app data directory and make users appear "signed out".
-    if std::env::var("API_ROUTER_USE_LOCAL_USER_DATA")
-        .ok()
-        .as_deref()
-        == Some("1")
-    {
-        return true;
-    }
-    local_user_data_dir.join(".portable").exists()
 }
 
 fn should_reset_profile_data(profile: &str, is_ui_tauri: bool) -> bool {
@@ -236,6 +302,10 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
         None,
         Some("-".to_string()),
     );
+    state
+        .gateway
+        .store
+        .sync_provider_pricing_configs(&state.secrets.list_provider_pricing());
 
     let seed_usage_requests =
         |provider: &str, model: &str, count: usize, input_tokens: u64, output_tokens: u64| {
@@ -257,6 +327,8 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
                     crate::constants::USAGE_ORIGIN_WSL2
                 };
                 let session_id = format!("test-session-{}", (i % 9) + 1);
+                let local_node_id = state.lan_sync.local_node_id();
+                let local_node_name = state.lan_sync.local_node_name();
                 state.gateway.store.record_success_with_model(
                     provider,
                     &json!({
@@ -270,10 +342,14 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
                             "cache_read_input_tokens": cache_read,
                         }
                     }),
-                    Some("test"),
+                    crate::orchestrator::store::UsageRequestContext {
+                        api_key_ref: Some("test"),
+                        origin,
+                        session_id: Some(session_id.as_str()),
+                        node_id: Some(local_node_id.as_str()),
+                        node_name: Some(local_node_name.as_str()),
+                    },
                     None,
-                    origin,
-                    Some(session_id.as_str()),
                 );
             }
         };
@@ -321,10 +397,9 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
         } else {
             "official"
         };
-        state.gateway.store.add_event(
+        state.gateway.store.events().emit(
             provider,
-            "info",
-            "test_profile.bulk_event",
+            crate::orchestrator::store::EventCode::TEST_PROFILE_BULK_EVENT,
             &format!("test profile bulk event #{i}"),
             json!({
                 "seed": true,
@@ -334,10 +409,9 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
         );
     }
 
-    state.gateway.store.add_event(
+    state.gateway.store.events().emit(
         "gateway",
-        "info",
-        "test_profile.mock_seeded",
+        crate::orchestrator::store::EventCode::TEST_PROFILE_MOCK_SEEDED,
         "test profile mock data seeded",
         json!({
             "providers": ["provider_1", "provider_2"],
@@ -352,14 +426,16 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
 pub fn run() {
     let is_ui_tauri = std::env::var("UI_TAURI").ok().as_deref() == Some("1");
     let app_profile = app_profile_name();
-    let mut builder = tauri::Builder::default();
+    let launch_args = app_launch_args();
+    let start_hidden = app_launch_requests_hidden(&launch_args);
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
     if !is_ui_tauri && app_profile != "test" {
         // Ensure clicking the EXE again focuses the existing instance instead of launching a second one.
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.set_focus();
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if app_launch_requests_hidden(&argv) {
+                return;
             }
+            reveal_main_window(app);
         }));
     }
     let app_profile_for_setup = app_profile.clone();
@@ -380,6 +456,13 @@ pub fn run() {
                 }
             }
 
+            let hidden_remote_update_launch = start_hidden && !is_ui_tauri;
+            if hidden_remote_update_launch {
+                hide_main_window_for_background_launch(app.handle());
+            } else if should_reveal_main_window_on_setup(start_hidden, is_ui_tauri) {
+                reveal_main_window(app.handle());
+            }
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -388,8 +471,8 @@ pub fn run() {
                 )?;
             }
 
-            // Prefer a stable per-user app data directory so rebuilds don't force re-login.
-            // If a local ./user-data already exists next to the EXE, keep using it for portability.
+            // Canonical runtime layout is always local to the running EXE so config, secrets,
+            // SQLite, logs, and diagnostics stay together and are easy to inspect/port.
             // Layout:
             // - user-data/config.toml
             // - user-data/secrets.json
@@ -408,22 +491,15 @@ pub fn run() {
                     let _ = std::fs::create_dir_all(&p);
                     p
                 }
-            } else if app_profile != "default" {
-                let base = app.path().app_data_dir()?;
-                let p = base.join(profile_data_dir_name(&app_profile));
+            } else {
+                let exe = std::env::current_exe()?;
+                let dir = exe
+                    .parent()
+                    .map(std::path::Path::to_path_buf)
+                    .ok_or_else(|| anyhow::anyhow!("failed to resolve EXE directory"))?;
+                let p = dir.join(profile_data_dir_name(&app_profile));
                 let _ = std::fs::create_dir_all(&p);
                 p
-            } else {
-                (|| -> Option<std::path::PathBuf> {
-                    let exe = std::env::current_exe().ok()?;
-                    let dir = exe.parent()?.to_path_buf();
-                    let local = dir.join("user-data");
-                    if local.exists() && should_use_local_user_data_dir(&local) {
-                        return Some(local);
-                    }
-                    None
-                })()
-                .unwrap_or(app.path().app_data_dir()?)
             };
 
             if should_reset_profile_data(&app_profile, is_ui_tauri) {
@@ -444,6 +520,12 @@ pub fn run() {
             }
             std::env::set_var("API_ROUTER_USER_DATA_DIR", &user_data_dir);
             reset_app_startup_diag();
+            if hidden_remote_update_launch {
+                // The remote-update completion notification is emitted by the restarted Tauri
+                // process, not the hidden PowerShell worker. This path is more reliable and now
+                // leaves app-startup diagnostics when Windows accepts or rejects the notification.
+                maybe_notify_hidden_remote_update_success(app.handle());
+            }
 
             let build_state_started = Instant::now();
             let state = build_state(
@@ -461,6 +543,49 @@ pub fn run() {
                 }
             }
             app.manage(state);
+            {
+                let st = app.state::<app_state::AppState>();
+                crate::lan_sync::register_gateway_status_runtime(st.lan_sync.clone());
+                crate::platform::local_network::spawn_monitor(
+                    app.handle(),
+                    st.local_network.clone(),
+                );
+                if let Some(local_node) = crate::lan_sync::current_local_node_identity() {
+                    if let Ok((migrated_spend_days, migrated_manual_days)) = st
+                        .gateway
+                        .store
+                        .migrate_legacy_remote_usage_sources_if_needed(&local_node.node_id)
+                    {
+                        if migrated_spend_days > 0 || migrated_manual_days > 0 {
+                            st.gateway.store.events().emit(
+                                "gateway",
+                                crate::orchestrator::store::EventCode::LAN_LEGACY_USAGE_SOURCES_MIGRATED,
+                                "Migrated legacy LAN usage history into source-scoped remote storage",
+                                serde_json::json!({
+                                    "migrated_spend_days": migrated_spend_days,
+                                    "migrated_manual_days": migrated_manual_days,
+                                    "local_node_id": local_node.node_id,
+                                }),
+                            );
+                        }
+                    }
+                }
+            }
+            if !is_ui_tauri {
+                let st = app.state::<app_state::AppState>();
+                if cfg!(target_os = "windows") {
+                    if let Ok(app_path) = std::env::current_exe() {
+                        std::thread::spawn(move || {
+                            crate::platform::windows_firewall::ensure_api_router_udp_firewall_rule(
+                                &app_path,
+                            );
+                        });
+                    }
+                }
+                st.lan_sync
+                    .start_background(st.gateway.clone(), st.config_path.clone());
+                crate::lan_sync::reconcile_remote_update_terminal_event(&st.gateway);
+            }
             if !is_ui_tauri {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -474,14 +599,29 @@ pub fn run() {
                         Some(&detail),
                     );
                 });
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let st = app_handle.state::<app_state::AppState>();
+                    let started = Instant::now();
+                    let updated = app_state::run_startup_usage_request_node_backfill(&st);
+                    let detail = format!("updated_rows={updated}");
+                    write_app_startup_diag(
+                        "usage_request_node_backfill",
+                        started.elapsed().as_millis(),
+                        Some(&detail),
+                    );
+                });
             }
 
             if !is_ui_tauri {
                 // Spawn the local OpenAI-compatible gateway without blocking Tauri setup.
                 let app_handle = app.handle().clone();
+                write_app_startup_diag("gateway_spawn_scheduled", 0, None);
                 tauri::async_runtime::spawn(async move {
+                    write_app_startup_diag("gateway_spawn_enter", 0, None);
                     let (gateway, prepared_gateway) = {
                         let st = app_handle.state::<app_state::AppState>();
+                        write_app_startup_diag("gateway_prepare_enter", 0, None);
                         let prepare_started = Instant::now();
                         let prepared_gateway = match prepare_gateway_listeners(&st) {
                             Ok(prepared) => prepared,
@@ -511,16 +651,51 @@ pub fn run() {
                         );
                         (st.gateway.clone(), prepared_gateway)
                     };
+                    write_app_startup_diag(
+                        "serve_in_background_enter",
+                        0,
+                        Some(&format!("listen_port={}", prepared_gateway.listen_port)),
+                    );
                     if let Err(e) = serve_in_background(gateway, prepared_gateway).await {
+                        write_app_startup_diag(
+                            "serve_in_background_failed",
+                            0,
+                            Some(&e.to_string()),
+                        );
                         log::error!("gateway exited: {e:?}");
+                    } else {
+                        write_app_startup_diag("serve_in_background_completed", 0, None);
                     }
                 });
 
                 // Quota refresh scheduler: only runs when the gateway is actively being used.
                 let st = app.state::<app_state::AppState>();
                 let gateway = st.gateway.clone();
+                let lan_sync = st.lan_sync.clone();
                 tauri::async_runtime::spawn(async move {
-                    crate::orchestrator::quota::run_quota_scheduler(gateway).await;
+                    crate::orchestrator::quota::run_quota_scheduler(gateway, lan_sync).await;
+                });
+
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                        let st = app_handle.state::<app_state::AppState>();
+                        let _ = app_state::disable_expired_package_providers(&st);
+                    }
+                });
+
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        let st = app_handle.state::<app_state::AppState>();
+                        st.ui_watchdog.check_unresponsive(
+                            &st.gateway.store,
+                            &st.diagnostics_dir,
+                            unix_ms(),
+                        );
+                    }
                 });
             }
 
@@ -547,10 +722,7 @@ pub fn run() {
                     .on_menu_event(|app: &tauri::AppHandle, event: tauri::menu::MenuEvent| {
                         match event.id().as_ref() {
                             "show" => {
-                                if let Some(w) = app.get_webview_window("main") {
-                                    let _ = w.show();
-                                    let _ = w.set_focus();
-                                }
+                                reveal_main_window(app);
                             }
                             "quit" => {
                                 app.exit(0);
@@ -590,11 +762,29 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::record_app_startup_stage,
+            commands::record_ui_watchdog_heartbeat,
+            commands::record_ui_trace,
+            commands::record_ui_diagnostics_batch,
+            commands::record_ui_slow_refresh,
+            commands::record_ui_long_task,
+            commands::record_ui_frame_stall,
+            commands::record_ui_frontend_error,
+            commands::record_ui_invoke_result,
+            commands::open_external_url,
             commands::get_event_log_entries,
             commands::get_event_log_years,
             commands::get_event_log_daily_stats,
             commands::set_manual_override,
             commands::get_config,
+            commands::request_lan_pair,
+            commands::approve_lan_pair,
+            commands::submit_lan_pair_pin,
+            commands::request_lan_remote_update,
+            commands::request_lan_remote_update_same_version,
+            commands::fetch_lan_peer_remote_update_debug,
+            commands::set_followed_config_source,
+            commands::clear_followed_config_source,
+            commands::copy_provider_from_config_source,
             commands::get_gateway_token_preview,
             commands::get_gateway_token,
             commands::rotate_gateway_token,
@@ -616,7 +806,6 @@ pub fn run() {
             commands::refresh_quota,
             commands::refresh_quota_shared,
             commands::refresh_quota_all,
-            commands::open_packycode_login_window,
             commands::get_usage_auth,
             commands::set_usage_auth,
             commands::clear_usage_auth,
@@ -653,7 +842,8 @@ pub fn run() {
             commands::get_usage_request_summary,
             commands::get_usage_request_daily_totals,
             commands::get_spend_history,
-            commands::set_spend_history_entry
+            commands::set_spend_history_entry,
+            commands::remove_tracked_spend_history_entries
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -662,8 +852,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        app_profile_name_from_inputs, profile_data_dir_name, resolve_codex_home,
-        should_reset_profile_data, should_seed_mock_data, should_use_local_user_data_dir,
+        app_launch_requests_hidden, app_profile_name_from_inputs, profile_data_dir_name,
+        resolve_codex_home, should_reset_profile_data, should_reveal_main_window_on_setup,
+        should_seed_mock_data,
     };
 
     #[test]
@@ -695,28 +886,6 @@ mod tests {
     }
 
     #[test]
-    fn local_user_data_requires_portable_marker_or_env_flag() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let local = tmp.path().join("user-data");
-        std::fs::create_dir_all(&local).unwrap();
-
-        // No marker, no env => do not use local.
-        std::env::remove_var("API_ROUTER_USE_LOCAL_USER_DATA");
-        assert!(!should_use_local_user_data_dir(&local));
-
-        // Marker file enables local.
-        std::fs::write(local.join(".portable"), b"").unwrap();
-        assert!(should_use_local_user_data_dir(&local));
-
-        // Env flag enables local even without marker.
-        let local2 = tmp.path().join("user-data-2");
-        std::fs::create_dir_all(&local2).unwrap();
-        std::env::set_var("API_ROUTER_USE_LOCAL_USER_DATA", "1");
-        assert!(should_use_local_user_data_dir(&local2));
-        std::env::remove_var("API_ROUTER_USE_LOCAL_USER_DATA");
-    }
-
-    #[test]
     fn resolve_codex_home_defaults_to_isolated() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let user_data = tmp.path().join("user-data");
@@ -724,5 +893,21 @@ mod tests {
         std::env::remove_var("API_ROUTER_CODEX_HOME");
         let got = resolve_codex_home(&user_data, false, "default");
         assert_eq!(got, user_data.join("codex-home"));
+    }
+
+    #[test]
+    fn start_hidden_launch_flag_is_detected() {
+        assert!(app_launch_requests_hidden(&[
+            "API Router.exe".to_string(),
+            "--start-hidden".to_string(),
+        ]));
+        assert!(!app_launch_requests_hidden(&["API Router.exe".to_string()]));
+    }
+
+    #[test]
+    fn setup_only_reveals_window_for_normal_launches() {
+        assert!(should_reveal_main_window_on_setup(false, false));
+        assert!(!should_reveal_main_window_on_setup(true, false));
+        assert!(!should_reveal_main_window_on_setup(false, true));
     }
 }

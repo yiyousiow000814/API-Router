@@ -1,4 +1,11 @@
-import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status, UsageStatistics } from '../types'
+import type {
+  CodexSwapStatus,
+  Config,
+  ProviderSwitchboardStatus,
+  Status,
+  UsageStatistics,
+  UsageStatisticsOverview,
+} from '../types'
 import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
 import { normalizePathForCompare } from './path'
 import { simulateQuotaForDisplay } from './quotaSimulation'
@@ -210,7 +217,7 @@ export function buildSwitchboardProviderCards(
   managedProviderNames: string[],
   config: Config | null,
   status: Status | null,
-  usageStatistics: UsageStatistics | null,
+  usageStatistics: UsageStatistics | UsageStatisticsOverview | null,
   options: {
     fmtPct: (value: number | null) => string
     fmtAmount: (value: number | null) => string
@@ -223,7 +230,7 @@ export function buildSwitchboardProviderCards(
     const quota = simulateQuotaForDisplay(
       name,
       status?.quota?.[name],
-      status?.ledgers?.[name],
+      status?.projected_ledgers?.[name] ?? status?.ledgers?.[name],
       usageStatistics,
     )
     const kind = (quota?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info' | 'balance_info'

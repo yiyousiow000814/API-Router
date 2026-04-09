@@ -8,6 +8,15 @@ type HeroStatusProps = {
   onShowRotate: () => void
 }
 
+export function lanPeersSummary(status: Status): string {
+  const lanPeers = status.lan_sync?.peers ?? []
+  const aliveLabel = `${lanPeers.length} alive`
+  const updateAvailableCount = lanPeers.filter((peer) => peer.build_matches_local === false).length
+  if (updateAvailableCount <= 0) return aliveLabel
+  const updateLabel = updateAvailableCount === 1 ? 'update available' : `${updateAvailableCount} updates available`
+  return `${aliveLabel} (${updateLabel})`
+}
+
 export function HeroStatusCard({
   status,
   gatewayTokenPreview,
@@ -15,6 +24,7 @@ export function HeroStatusCard({
   onShowRotate,
 }: HeroStatusProps) {
   const wslGatewayHost = status.wsl_gateway_host?.trim() || GATEWAY_WSL2_HOST
+  const lanNode = status.lan_sync?.local_node
   return (
     <div className="aoCard aoHeroCard aoHeroStatus">
       <div className="aoCardHeader">
@@ -33,10 +43,16 @@ export function HeroStatusCard({
         <div className="aoStatValue">
           http://{wslGatewayHost}:{status.listen.port}/v1
         </div>
-        <div className="aoStatLabel">Preferred</div>
-        <div className="aoStatValue">{status.preferred_provider}</div>
-        <div className="aoStatLabel">Override</div>
-        <div className="aoStatValue">{status.manual_override ?? '(auto)'}</div>
+        {lanNode ? (
+          <>
+            <div className="aoStatLabel">LAN node</div>
+            <div className="aoStatValue">
+              {lanNode.node_name} · {lanNode.node_id.slice(0, 8)}
+            </div>
+            <div className="aoStatLabel">LAN peers</div>
+            <div className="aoStatValue">{lanPeersSummary(status)}</div>
+          </>
+        ) : null}
       </div>
       <div className="aoDivider" />
       <div className="aoTokenRow">

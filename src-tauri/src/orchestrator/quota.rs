@@ -1,17 +1,26 @@
 use std::collections::HashMap;
 use std::error::Error;
-use std::sync::atomic::Ordering;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use chrono::{TimeZone, Timelike};
-use futures_util::{SinkExt, StreamExt};
+use serde::Serialize;
 use serde_json::Value;
-use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::Message as WebSocketMessage;
+
+use crate::orchestrator::config::AppConfig;
 
 use super::config::ProviderConfig;
 use super::gateway::GatewayState;
+pub(crate) use super::providers::normalize_usage_base_url;
+use super::providers::{
+    default_budget_info_mapping, map_canonical_usage, resolve_quota_profile, BudgetInfoAuthSource,
+    CanonicalProviderUsage, CanonicalUsageContext, CanonicalUsageMapping, PackageExpiryStrategy,
+    ProviderQuotaProfile,
+};
+#[cfg(test)]
+pub(crate) use super::providers::{
+    derive_origin, explicit_usage_endpoint_url, explicit_usage_mapping,
+};
 use super::secrets::UsageLoginConfig;
 use super::store::unix_ms;
 
@@ -107,6 +116,11 @@ pub struct QuotaSnapshot {
     pub last_error: String,
     pub effective_usage_base: Option<String>,
     pub effective_usage_source: Option<String>,
+    pub producer_node_id: Option<String>,
+    pub producer_node_name: Option<String>,
+    pub applied_from_node_id: Option<String>,
+    pub applied_from_node_name: Option<String>,
+    pub applied_at_unix_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -122,11 +136,22 @@ struct UsageRequestKey {
 struct UsageSharedKey {
     // Shared "usage base" (normalized), not the whole candidate list.
     //
-    // The candidate list may include provider-specific origins / fallbacks that differ even when
-    // the *actual* usage endpoint is shared (e.g. ppchat/pumpkinai). Using only the shared base
+    // The candidate list may include different provider origins that still converge on the same
+    // shared usage host. Using only the shared base
     // makes "same base + same key => same quota snapshot" deterministic.
     base_key: String,
     auth_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SharedQuotaOwnerStatus {
+    pub provider: String,
+    pub shared_provider_id: String,
+    pub shared_provider_fingerprint: String,
+    pub owner_node_id: String,
+    pub owner_node_name: String,
+    pub local_is_owner: bool,
+    pub contender_count: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -134,12 +159,6 @@ struct QuotaCredentials<'a> {
     provider_key: Option<&'a str>,
     usage_token: Option<&'a str>,
     usage_login: Option<&'a UsageLoginConfig>,
-}
-
-#[derive(Clone, Copy)]
-struct QuotaSnapshotStrategies {
-    provider_strategy: PackageExpiryStrategy,
-    package_expiry_fetch_strategy: PackageExpiryStrategy,
 }
 
 const USAGE_BASE_MIN_GAP_MS: u64 = 1_250;
@@ -289,6 +308,11 @@ impl QuotaSnapshot {
             last_error: String::new(),
             effective_usage_base: None,
             effective_usage_source: None,
+            producer_node_id: None,
+            producer_node_name: None,
+            applied_from_node_id: None,
+            applied_from_node_name: None,
+            applied_at_unix_ms: 0,
         }
     }
 
@@ -309,8 +333,64 @@ impl QuotaSnapshot {
             "last_error": self.last_error,
             "effective_usage_base": self.effective_usage_base,
             "effective_usage_source": self.effective_usage_source,
+            "producer_node_id": self.producer_node_id,
+            "producer_node_name": self.producer_node_name,
+            "applied_from_node_id": self.applied_from_node_id,
+            "applied_from_node_name": self.applied_from_node_name,
+            "applied_at_unix_ms": self.applied_at_unix_ms,
         })
     }
+
+    fn from_canonical(usage: CanonicalProviderUsage) -> Self {
+        Self {
+            kind: usage.usage_kind,
+            updated_at_unix_ms: usage.updated_at_unix_ms,
+            remaining: usage.remaining,
+            today_used: usage.today_used,
+            today_added: usage.today_added,
+            daily_spent_usd: usage.daily_used,
+            daily_budget_usd: usage.daily_limit,
+            weekly_spent_usd: usage.weekly_used,
+            weekly_budget_usd: usage.weekly_limit,
+            monthly_spent_usd: usage.monthly_used,
+            monthly_budget_usd: usage.monthly_limit,
+            package_expires_at_unix_ms: usage.expires_at_unix_ms,
+            last_error: String::new(),
+            effective_usage_base: usage.effective_usage_base,
+            effective_usage_source: usage.effective_usage_source,
+            producer_node_id: None,
+            producer_node_name: None,
+            applied_from_node_id: None,
+            applied_from_node_name: None,
+            applied_at_unix_ms: 0,
+        }
+    }
+}
+
+fn canonical_usage_from_snapshot(snapshot: &QuotaSnapshot) -> Option<CanonicalProviderUsage> {
+    if !snapshot.last_error.is_empty() || snapshot.updated_at_unix_ms == 0 {
+        return None;
+    }
+
+    Some(CanonicalProviderUsage {
+        usage_kind: snapshot.kind,
+        plan_name: None,
+        mode: None,
+        currency_unit: None,
+        remaining: snapshot.remaining,
+        today_used: snapshot.today_used,
+        today_added: snapshot.today_added,
+        daily_used: snapshot.daily_spent_usd,
+        daily_limit: snapshot.daily_budget_usd,
+        weekly_used: snapshot.weekly_spent_usd,
+        weekly_limit: snapshot.weekly_budget_usd,
+        monthly_used: snapshot.monthly_spent_usd,
+        monthly_limit: snapshot.monthly_budget_usd,
+        expires_at_unix_ms: snapshot.package_expires_at_unix_ms,
+        effective_usage_base: snapshot.effective_usage_base.clone(),
+        effective_usage_source: snapshot.effective_usage_source.clone(),
+        updated_at_unix_ms: snapshot.updated_at_unix_ms,
+    })
 }
 
 fn normalized_usage_proxy_pool(st: &GatewayState, provider_name: &str) -> Vec<String> {
@@ -350,16 +430,6 @@ fn build_usage_http_client(
         .map_err(|e| format!("failed to build usage http client: {e}"))
 }
 
-pub fn detect_usage_kind(provider: &ProviderConfig) -> UsageKind {
-    let explicit = UsageKind::from_str(&provider.usage_adapter);
-    if explicit != UsageKind::None {
-        return explicit;
-    }
-
-    // Intentionally do not infer from domains; keep it provider-agnostic.
-    UsageKind::None
-}
-
 fn next_daily_reset_refresh_at<Tz>(now: chrono::DateTime<Tz>) -> chrono::DateTime<Tz>
 where
     Tz: chrono::TimeZone,
@@ -380,7 +450,7 @@ where
         .unwrap_or(base + chrono::Duration::days(1))
 }
 
-fn next_packycode_refresh_at<Tz>(now: chrono::DateTime<Tz>) -> chrono::DateTime<Tz>
+fn next_priority_quota_refresh_at<Tz>(now: chrono::DateTime<Tz>) -> chrono::DateTime<Tz>
 where
     Tz: chrono::TimeZone,
     Tz::Offset: Copy,
@@ -389,14 +459,21 @@ where
         .with_second(0)
         .and_then(|dt| dt.with_nanosecond(0))
         .unwrap_or(now);
-    if base.minute() < 58 {
-        return base.with_minute(58).unwrap_or(base);
+    let hourly = if base.minute() < 58 {
+        base.with_minute(58).unwrap_or(base)
+    } else {
+        (base + chrono::Duration::hours(1))
+            .with_minute(58)
+            .and_then(|dt| dt.with_second(0))
+            .and_then(|dt| dt.with_nanosecond(0))
+            .unwrap_or(base + chrono::Duration::hours(1))
+    };
+    let daily = next_daily_reset_refresh_at(now);
+    if hourly <= daily {
+        hourly
+    } else {
+        daily
     }
-    (base + chrono::Duration::hours(1))
-        .with_minute(58)
-        .and_then(|dt| dt.with_second(0))
-        .and_then(|dt| dt.with_nanosecond(0))
-        .unwrap_or(base + chrono::Duration::hours(1))
 }
 
 fn next_standard_quota_refresh_at<Tz>(now: chrono::DateTime<Tz>) -> chrono::DateTime<Tz>
@@ -404,7 +481,7 @@ where
     Tz: chrono::TimeZone,
     Tz::Offset: Copy,
 {
-    let hourly = next_packycode_refresh_at(now);
+    let hourly = next_priority_quota_refresh_at(now);
     let daily = next_daily_reset_refresh_at(now);
     if hourly <= daily {
         hourly
@@ -423,21 +500,13 @@ fn next_standard_quota_refresh_due_unix_ms(now_ms: u64) -> u64 {
         .max(0) as u64
 }
 
-fn next_packycode_refresh_due_unix_ms(now_ms: u64) -> u64 {
-    let now = chrono::Local
-        .timestamp_millis_opt(now_ms as i64)
-        .single()
-        .unwrap_or_else(chrono::Local::now);
-    next_packycode_refresh_at(now).timestamp_millis().max(0) as u64
-}
-
 include!("quota/base_resolution.rs");
 include!("quota/package_expiry.rs");
 pub async fn effective_usage_base(st: &GatewayState, provider_name: &str) -> Option<String> {
     let cfg = st.cfg.read().clone();
     let p = cfg.providers.get(provider_name)?;
     let api_key = st.secrets.get_provider_key(provider_name);
-    let bases = candidate_quota_bases(p);
+    let bases = resolve_quota_profile(p).candidate_bases;
     if bases.is_empty() {
         return None;
     }
@@ -446,6 +515,7 @@ pub async fn effective_usage_base(st: &GatewayState, provider_name: &str) -> Opt
 }
 
 fn usage_request_key(
+    provider: &ProviderConfig,
     bases: &[String],
     provider_key: &Option<String>,
     usage_token: &Option<String>,
@@ -464,7 +534,7 @@ fn usage_request_key(
     } else {
         normalized.join("|")
     };
-    let auth_key = usage_auth_key(provider_key, usage_token, usage_login);
+    let auth_key = usage_auth_key_for_provider(provider, provider_key, usage_token, usage_login);
     UsageRequestKey {
         bases_key,
         auth_key,
@@ -473,13 +543,14 @@ fn usage_request_key(
 }
 
 fn usage_shared_key(
+    provider: &ProviderConfig,
     base: &str,
     provider_key: &Option<String>,
     usage_token: &Option<String>,
     usage_login: &Option<UsageLoginConfig>,
 ) -> UsageSharedKey {
     let base_key = base.trim().trim_end_matches('/').to_string();
-    let auth_key = usage_auth_key(provider_key, usage_token, usage_login);
+    let auth_key = usage_auth_key_for_provider(provider, provider_key, usage_token, usage_login);
     UsageSharedKey { base_key, auth_key }
 }
 
@@ -498,220 +569,358 @@ fn usage_auth_key(
         })
 }
 
+fn usage_auth_key_for_provider(
+    provider: &ProviderConfig,
+    provider_key: &Option<String>,
+    usage_token: &Option<String>,
+    usage_login: &Option<UsageLoginConfig>,
+) -> Option<String> {
+    if resolve_quota_profile(provider).budget_info_auth_source == BudgetInfoAuthSource::ProviderKey
+    {
+        return provider_key.clone();
+    }
+    usage_auth_key(provider_key, usage_token, usage_login)
+}
+
+fn canonicalize_snapshot_result(
+    snapshot: QuotaSnapshot,
+    fallback_kind: UsageKind,
+) -> Result<CanonicalProviderUsage, String> {
+    let last_error = snapshot.last_error.clone();
+    canonical_usage_from_snapshot(&snapshot).ok_or_else(|| {
+        if last_error.is_empty() {
+            format!("{} usage normalization failed", fallback_kind.as_str())
+        } else {
+            last_error
+        }
+    })
+}
+
+fn stable_shared_fingerprint_component(input: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in input.trim().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+pub fn provider_runtime_identity(
+    provider: &ProviderConfig,
+    provider_key: &Option<String>,
+    usage_token: &Option<String>,
+    usage_login: &Option<UsageLoginConfig>,
+) -> Option<String> {
+    let shared_base = resolve_quota_profile(provider)
+        .candidate_bases
+        .first()?
+        .clone();
+    let shared_key = usage_shared_key(
+        provider,
+        &shared_base,
+        provider_key,
+        usage_token,
+        usage_login,
+    );
+    let auth_component = shared_key
+        .auth_key
+        .as_deref()
+        .map(stable_shared_fingerprint_component)
+        .unwrap_or_else(|| "anon".to_string());
+    Some(format!(
+        "{}|{}",
+        shared_key.base_key.trim().to_ascii_lowercase(),
+        auth_component
+    ))
+}
+
+pub fn shared_provider_fingerprint(
+    cfg: &AppConfig,
+    secrets: &super::secrets::SecretStore,
+    provider_name: &str,
+) -> Option<String> {
+    let provider = cfg.providers.get(provider_name)?;
+    let provider_key = secrets.get_provider_key(provider_name);
+    let usage_token = secrets.get_usage_token(provider_name);
+    let usage_login = secrets.get_usage_login(provider_name);
+    provider_runtime_identity(provider, &provider_key, &usage_token, &usage_login)
+}
+
+fn shared_provider_fingerprint_for_provider(
+    st: &GatewayState,
+    provider_name: &str,
+) -> Option<String> {
+    let cfg = st.cfg.read().clone();
+    shared_provider_fingerprint(&cfg, &st.secrets, provider_name)
+}
+
+pub fn shared_quota_owner_for_provider(
+    st: &GatewayState,
+    lan_sync: &crate::lan_sync::LanSyncRuntime,
+    provider_name: &str,
+) -> Option<crate::lan_sync::LanQuotaOwnerDecision> {
+    let fingerprint = shared_provider_fingerprint_for_provider(st, provider_name)?;
+    let trusted_node_ids = st.secrets.trusted_lan_node_ids();
+    lan_sync.quota_owner_for_fingerprint(&fingerprint, &trusted_node_ids)
+}
+
+pub fn shared_quota_owner_statuses(
+    st: &GatewayState,
+    lan_sync: &crate::lan_sync::LanSyncRuntime,
+) -> Vec<SharedQuotaOwnerStatus> {
+    let cfg = st.cfg.read().clone();
+    let mut out = Vec::new();
+    for provider_name in cfg.providers.keys() {
+        let Some(shared_provider_fingerprint) =
+            shared_provider_fingerprint(&cfg, &st.secrets, provider_name)
+        else {
+            continue;
+        };
+        let trusted_node_ids = st.secrets.trusted_lan_node_ids();
+        let Some(owner) =
+            lan_sync.quota_owner_for_fingerprint(&shared_provider_fingerprint, &trusted_node_ids)
+        else {
+            continue;
+        };
+        let shared_provider_id = st
+            .secrets
+            .get_provider_shared_id(provider_name)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| provider_name.clone());
+        out.push(SharedQuotaOwnerStatus {
+            provider: provider_name.clone(),
+            shared_provider_id,
+            shared_provider_fingerprint,
+            owner_node_id: owner.owner_node_id,
+            owner_node_name: owner.owner_node_name,
+            local_is_owner: owner.local_is_owner,
+            contender_count: owner.contender_count,
+        });
+    }
+    out.sort_by(|a, b| a.provider.cmp(&b.provider));
+    out
+}
+
 async fn compute_quota_snapshot(
     st: &GatewayState,
     provider_name: &str,
-    kind: UsageKind,
+    profile: &ProviderQuotaProfile,
     bases: &[String],
-    explicit_usage_endpoint: Option<&str>,
     credentials: QuotaCredentials<'_>,
-    strategies: QuotaSnapshotStrategies,
+    package_expiry_fetch_strategy: PackageExpiryStrategy,
 ) -> QuotaSnapshot {
-    let should_use_packycode_usage_flow = strategies.provider_strategy
-        == PackageExpiryStrategy::Packycode
+    let should_use_backend_usage_info_flow = profile.uses_backend_users_info_expiry()
         && (credentials.usage_token.is_some()
-            || strategies.package_expiry_fetch_strategy == PackageExpiryStrategy::Packycode);
-    if should_use_packycode_usage_flow {
-        let mut budget_errors: Vec<String> = Vec::new();
-
-        if credentials.usage_token.is_some() {
-            let browser_base = bases
-                .first()
-                .map(|value| value.as_str())
-                .unwrap_or("https://codex.packycode.com");
-            let budget = fetch_packycode_budget_info_via_browser_context(
-                st,
-                provider_name,
-                browser_base,
-                credentials.usage_token,
-            )
-            .await;
-            if budget.last_error.is_empty() {
-                return budget;
-            }
-            budget_errors.push(format!("packycode browser session: {}", budget.last_error));
-
-            if let Some(token) = credentials.usage_token {
-                let budget = fetch_budget_info_any(
-                    st,
-                    provider_name,
-                    bases,
-                    Some(token),
-                    strategies.package_expiry_fetch_strategy,
-                )
-                .await;
-                if budget.last_error.is_empty() {
-                    return budget;
-                }
-                budget_errors.push(format!("packycode login token: {}", budget.last_error));
-            }
-        }
-
-        if let Some(token) = credentials.provider_key {
-            if credentials.usage_token != Some(token) {
-                let budget = fetch_budget_info_any(
-                    st,
-                    provider_name,
-                    bases,
-                    Some(token),
-                    strategies.package_expiry_fetch_strategy,
-                )
-                .await;
-                if budget.last_error.is_empty() {
-                    return budget;
-                }
-                budget_errors.push(format!("provider key: {}", budget.last_error));
-            }
-        }
-
-        if credentials.provider_key.is_some() {
-            let mut stats = fetch_token_stats_any(
-                st,
-                provider_name,
-                bases,
-                explicit_usage_endpoint,
-                credentials.provider_key,
-                credentials.usage_token,
-                strategies.package_expiry_fetch_strategy,
-            )
-            .await;
-            if !stats.last_error.is_empty() && !budget_errors.is_empty() {
-                stats.last_error = format!(
-                    "{}; token stats fallback: {}",
-                    budget_errors.join("; "),
-                    stats.last_error
-                );
-            }
-            return stats;
-        }
-
-        if !budget_errors.is_empty() {
-            let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
-            out.last_error = budget_errors.join("; ");
-            return out;
-        }
-    }
-
-    if is_codex_for_me_base(provider_name, bases) {
-        return fetch_codex_for_me_balance_any(
-            st,
-            provider_name,
-            bases,
-            credentials.usage_token,
-            credentials.usage_login,
-        )
-        .await;
-    }
-
-    if let Some(endpoint_url) = explicit_usage_endpoint {
-        let direct = fetch_explicit_usage_endpoint_any(
-            st,
-            provider_name,
-            endpoint_url,
-            credentials.provider_key,
-            credentials.usage_token,
-        )
-        .await;
-        if direct.last_error.is_empty() {
-            return direct;
-        }
-    }
-
-    match kind {
-        UsageKind::TokenStats => {
-            fetch_token_stats_any(
-                st,
-                provider_name,
-                bases,
-                explicit_usage_endpoint,
-                credentials.provider_key,
-                credentials.usage_token,
-                strategies.package_expiry_fetch_strategy,
-            )
-            .await
-        }
-        UsageKind::BudgetInfo => {
+            || package_expiry_fetch_strategy == PackageExpiryStrategy::BackendUsersInfo);
+    if should_use_backend_usage_info_flow {
+        return match canonicalize_snapshot_result(
             fetch_budget_info_any(
                 st,
                 provider_name,
                 bases,
-                credentials.usage_token,
-                strategies.package_expiry_fetch_strategy,
+                credentials.provider_key,
+                "provider key",
+                profile
+                    .budget_info_mapping
+                    .unwrap_or_else(default_budget_info_mapping),
+                package_expiry_fetch_strategy,
             )
-            .await
-        }
-        UsageKind::BalanceInfo => {
-            fetch_codex_for_me_balance_any(
+            .await,
+            UsageKind::BudgetInfo,
+        ) {
+            Ok(usage) => QuotaSnapshot::from_canonical(usage),
+            Err(err) => {
+                let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+                out.last_error = err;
+                out
+            }
+        };
+    }
+
+    if profile.uses_login_summary_refresh() {
+        return match canonicalize_snapshot_result(
+            fetch_login_summary_any(
                 st,
                 provider_name,
                 bases,
                 credentials.usage_token,
                 credentials.usage_login,
+                profile.summary_mapping,
             )
-            .await
+            .await,
+            UsageKind::BalanceInfo,
+        ) {
+            Ok(usage) => QuotaSnapshot::from_canonical(usage),
+            Err(err) => {
+                let mut out = QuotaSnapshot::empty(UsageKind::BalanceInfo);
+                out.last_error = err;
+                out
+            }
+        };
+    }
+
+    if let Some(endpoint_url) = profile.explicit_usage_endpoint.as_deref() {
+        let direct = match canonicalize_snapshot_result(
+            fetch_explicit_usage_endpoint_any(
+                st,
+                provider_name,
+                endpoint_url,
+                profile
+                    .explicit_usage_mapping
+                    .unwrap_or_else(|| super::providers::explicit_usage_mapping(endpoint_url)),
+                credentials.provider_key,
+                credentials.usage_token,
+            )
+            .await,
+            UsageKind::BudgetInfo,
+        ) {
+            Ok(usage) => QuotaSnapshot::from_canonical(usage),
+            Err(err) => {
+                let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+                out.last_error = err;
+                out
+            }
+        };
+        if direct.last_error.is_empty() {
+            return direct;
         }
+    }
+
+    let canonical_result = match profile.usage_kind {
+        UsageKind::TokenStats => canonicalize_snapshot_result(
+            fetch_token_stats_any(
+                st,
+                provider_name,
+                bases,
+                TokenStatsFetchConfig {
+                    explicit_usage_endpoint: profile.explicit_usage_endpoint.as_deref(),
+                    explicit_usage_mapping: profile.explicit_usage_mapping,
+                    provider_key: credentials.provider_key,
+                    usage_token: credentials.usage_token,
+                    package_expiry_strategy: package_expiry_fetch_strategy,
+                },
+            )
+            .await,
+            UsageKind::TokenStats,
+        ),
+        UsageKind::BudgetInfo => canonicalize_snapshot_result(
+            fetch_budget_info_any(
+                st,
+                provider_name,
+                bases,
+                credentials.usage_token,
+                "usage token",
+                profile
+                    .budget_info_mapping
+                    .unwrap_or_else(default_budget_info_mapping),
+                package_expiry_fetch_strategy,
+            )
+            .await,
+            UsageKind::BudgetInfo,
+        ),
+        UsageKind::BalanceInfo => canonicalize_snapshot_result(
+            fetch_login_summary_any(
+                st,
+                provider_name,
+                bases,
+                credentials.usage_token,
+                credentials.usage_login,
+                profile.summary_mapping,
+            )
+            .await,
+            UsageKind::BalanceInfo,
+        ),
         UsageKind::None => {
             if credentials.provider_key.is_some() {
                 let s = fetch_token_stats_any(
                     st,
                     provider_name,
                     bases,
-                    explicit_usage_endpoint,
-                    credentials.provider_key,
-                    credentials.usage_token,
-                    strategies.package_expiry_fetch_strategy,
+                    TokenStatsFetchConfig {
+                        explicit_usage_endpoint: profile.explicit_usage_endpoint.as_deref(),
+                        explicit_usage_mapping: profile.explicit_usage_mapping,
+                        provider_key: credentials.provider_key,
+                        usage_token: credentials.usage_token,
+                        package_expiry_strategy: package_expiry_fetch_strategy,
+                    },
                 )
                 .await;
                 if s.last_error.is_empty() {
-                    s
+                    canonicalize_snapshot_result(s, UsageKind::TokenStats)
                 } else if credentials.usage_token.is_some() {
+                    canonicalize_snapshot_result(
+                        fetch_budget_info_any(
+                            st,
+                            provider_name,
+                            bases,
+                            credentials.usage_token,
+                            "usage token",
+                            profile
+                                .budget_info_mapping
+                                .unwrap_or_else(default_budget_info_mapping),
+                            package_expiry_fetch_strategy,
+                        )
+                        .await,
+                        UsageKind::BudgetInfo,
+                    )
+                } else if credentials.usage_login.is_some() && profile.uses_login_summary_refresh()
+                {
+                    canonicalize_snapshot_result(
+                        fetch_login_summary_any(
+                            st,
+                            provider_name,
+                            bases,
+                            credentials.usage_token,
+                            credentials.usage_login,
+                            profile.summary_mapping,
+                        )
+                        .await,
+                        UsageKind::BalanceInfo,
+                    )
+                } else {
+                    canonicalize_snapshot_result(s, UsageKind::TokenStats)
+                }
+            } else if credentials.usage_token.is_some() {
+                canonicalize_snapshot_result(
                     fetch_budget_info_any(
                         st,
                         provider_name,
                         bases,
                         credentials.usage_token,
-                        strategies.package_expiry_fetch_strategy,
+                        "usage token",
+                        profile
+                            .budget_info_mapping
+                            .unwrap_or_else(default_budget_info_mapping),
+                        package_expiry_fetch_strategy,
                     )
-                    .await
-                } else if credentials.usage_login.is_some()
-                    && is_codex_for_me_base(provider_name, bases)
-                {
-                    fetch_codex_for_me_balance_any(
+                    .await,
+                    UsageKind::BudgetInfo,
+                )
+            } else if credentials.usage_login.is_some() && profile.uses_login_summary_refresh() {
+                canonicalize_snapshot_result(
+                    fetch_login_summary_any(
                         st,
                         provider_name,
                         bases,
                         credentials.usage_token,
                         credentials.usage_login,
+                        profile.summary_mapping,
                     )
-                    .await
-                } else {
-                    s
-                }
-            } else if credentials.usage_token.is_some() {
-                fetch_budget_info_any(
-                    st,
-                    provider_name,
-                    bases,
-                    credentials.usage_token,
-                    strategies.package_expiry_fetch_strategy,
+                    .await,
+                    UsageKind::BalanceInfo,
                 )
-                .await
-            } else if credentials.usage_login.is_some()
-                && is_codex_for_me_base(provider_name, bases)
-            {
-                fetch_codex_for_me_balance_any(
-                    st,
-                    provider_name,
-                    bases,
-                    credentials.usage_token,
-                    credentials.usage_login,
-                )
-                .await
             } else {
-                let mut out = QuotaSnapshot::empty(UsageKind::None);
-                out.last_error = "missing credentials for quota refresh".to_string();
-                out
+                Err("missing credentials for quota refresh".to_string())
             }
+        }
+    };
+
+    match canonical_result {
+        Ok(usage) => QuotaSnapshot::from_canonical(usage),
+        Err(err) => {
+            let mut out = QuotaSnapshot::empty(profile.usage_kind);
+            out.last_error = err;
+            out
         }
     }
 }
@@ -721,10 +930,25 @@ fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnap
         .store
         .get_quota_snapshot(provider_name)
         .and_then(|value| quota_snapshot_from_json(&value));
-    let snapshot_to_store = preserved_quota_snapshot_for_storage(st, provider_name, snap);
+    let mut snapshot_to_store = preserved_quota_snapshot_for_storage(st, provider_name, snap);
+    if let Some(local_node) = crate::lan_sync::current_local_node_identity() {
+        if snapshot_to_store.updated_at_unix_ms > 0 && snapshot_to_store.last_error.is_empty() {
+            snapshot_to_store.producer_node_id = Some(local_node.node_id.clone());
+            snapshot_to_store.producer_node_name = Some(local_node.node_name.clone());
+        }
+        snapshot_to_store.applied_from_node_id = Some(local_node.node_id);
+        snapshot_to_store.applied_from_node_name = Some(local_node.node_name);
+        snapshot_to_store.applied_at_unix_ms = snapshot_to_store.updated_at_unix_ms.max(unix_ms());
+    }
     let _ = st
         .store
         .put_quota_snapshot(provider_name, &snapshot_to_store.to_json());
+    let _ = crate::lan_sync::record_quota_snapshot_from_gateway(
+        st,
+        &st.secrets,
+        provider_name,
+        &snapshot_to_store,
+    );
     track_budget_spend(st, provider_name, &snapshot_to_store);
     if snap.last_error.is_empty() && snap.updated_at_unix_ms > 0 {
         st.router
@@ -745,10 +969,9 @@ fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnap
             } else {
                 format!("usage refresh recovered via {source}")
             };
-            st.store.add_event(
+            st.store.events().emit(
                 provider_name,
-                "info",
-                "usage.refresh_recovered",
+                crate::orchestrator::store::EventCode::USAGE_REFRESH_RECOVERED,
                 &message,
                 serde_json::json!({
                     "source": snapshot_to_store.effective_usage_source,
@@ -768,10 +991,9 @@ fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnap
             return;
         }
         let err = snap.last_error.chars().take(300).collect::<String>();
-        st.store.add_event(
+        st.store.events().emit(
             provider_name,
-            "error",
-            "usage.refresh_failed",
+            crate::orchestrator::store::EventCode::USAGE_REFRESH_FAILED,
             &format!("usage refresh failed: {err}"),
             Value::Null,
         );
@@ -785,12 +1007,104 @@ pub(crate) fn clear_quota_snapshot(st: &GatewayState, provider_name: &str) {
 
 fn store_quota_snapshot_silent(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
     let _ = st.store.put_quota_snapshot(provider_name, &snap.to_json());
-    // Propagation writes should not affect per-provider ledgers; only a real refresh should reset.
-    // Tracking budget spend here would duplicate the same shared-key delta across propagated
-    // providers and inflate total usage cost.
+    // Silent propagation writes must not affect per-provider ledgers.
+    // The primary remote snapshot path records tracked spend before sibling propagation, so only
+    // propagated sibling updates remain silent here to avoid duplicating the same shared-key delta.
 }
 
-fn quota_snapshot_from_json(value: &Value) -> Option<QuotaSnapshot> {
+pub(crate) fn apply_remote_quota_snapshot(
+    st: &GatewayState,
+    provider_name: &str,
+    snap: &QuotaSnapshot,
+    applied_from_node_id: Option<&str>,
+    applied_from_node_name: Option<&str>,
+) {
+    let cfg = st.cfg.read().clone();
+    if cfg
+        .providers
+        .get(provider_name)
+        .is_some_and(|provider| provider.disabled)
+    {
+        return;
+    }
+    let existing = st
+        .store
+        .get_quota_snapshot(provider_name)
+        .and_then(|value| quota_snapshot_from_json(&value));
+    if existing
+        .as_ref()
+        .is_some_and(|previous| previous.updated_at_unix_ms > snap.updated_at_unix_ms)
+    {
+        return;
+    }
+    let mut snapshot_to_store = snap.clone();
+    snapshot_to_store.applied_from_node_id = applied_from_node_id.map(ToString::to_string);
+    snapshot_to_store.applied_from_node_name = applied_from_node_name.map(ToString::to_string);
+    snapshot_to_store.applied_at_unix_ms = unix_ms();
+    store_quota_snapshot_silent(st, provider_name, &snapshot_to_store);
+    track_budget_spend(st, provider_name, &snapshot_to_store);
+    if let Some(remote_node_name) = applied_from_node_name.filter(|value| !value.trim().is_empty())
+    {
+        st.store.events().emit(
+            provider_name,
+            crate::orchestrator::store::EventCode::USAGE_REFRESH_SHARED_APPLIED,
+            &format!("Shared usage update applied from {remote_node_name}"),
+            serde_json::json!({
+                "provider": provider_name,
+                "producer_node_id": snapshot_to_store.producer_node_id,
+                "producer_node_name": snapshot_to_store.producer_node_name,
+                "applied_from_node_id": snapshot_to_store.applied_from_node_id,
+                "applied_from_node_name": snapshot_to_store.applied_from_node_name,
+                "updated_at_unix_ms": snapshot_to_store.updated_at_unix_ms,
+            }),
+        );
+    }
+    let provider_key = st.secrets.get_provider_key(provider_name);
+    let usage_token = st.secrets.get_usage_token(provider_name);
+    let usage_login = st.secrets.get_usage_login(provider_name);
+    let Some(shared_base) = cfg.providers.get(provider_name).and_then(|provider| {
+        resolve_quota_profile(provider)
+            .candidate_bases
+            .first()
+            .cloned()
+    }) else {
+        return;
+    };
+    let Some(source_provider) = cfg.providers.get(provider_name) else {
+        return;
+    };
+    let shared_key = usage_shared_key(
+        source_provider,
+        &shared_base,
+        &provider_key,
+        &usage_token,
+        &usage_login,
+    );
+    for (name, provider) in cfg.providers.iter() {
+        if name == provider_name {
+            continue;
+        }
+        if provider.disabled {
+            continue;
+        }
+        let other_key = usage_shared_key(
+            provider,
+            resolve_quota_profile(provider)
+                .candidate_bases
+                .first()
+                .map(String::as_str)
+                .unwrap_or_default(),
+            &st.secrets.get_provider_key(name),
+            &st.secrets.get_usage_token(name),
+            &st.secrets.get_usage_login(name),
+        );
+        if other_key == shared_key {
+            store_quota_snapshot_silent(st, name, &snapshot_to_store);
+        }
+    }
+}
+
+pub(crate) fn quota_snapshot_from_json(value: &Value) -> Option<QuotaSnapshot> {
     Some(QuotaSnapshot {
         kind: UsageKind::from_str(value.get("kind")?.as_str().unwrap_or("none")),
         updated_at_unix_ms: value
@@ -822,6 +1136,26 @@ fn quota_snapshot_from_json(value: &Value) -> Option<QuotaSnapshot> {
             .get("effective_usage_source")
             .and_then(Value::as_str)
             .map(ToString::to_string),
+        producer_node_id: value
+            .get("producer_node_id")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        producer_node_name: value
+            .get("producer_node_name")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        applied_from_node_id: value
+            .get("applied_from_node_id")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        applied_from_node_name: value
+            .get("applied_from_node_name")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        applied_at_unix_ms: value
+            .get("applied_at_unix_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
     })
 }
 
@@ -872,17 +1206,147 @@ fn preserved_quota_snapshot_for_storage(
         last_error: snap.last_error.clone(),
         effective_usage_base: previous.effective_usage_base,
         effective_usage_source: previous.effective_usage_source,
+        producer_node_id: previous.producer_node_id,
+        producer_node_name: previous.producer_node_name,
+        applied_from_node_id: previous.applied_from_node_id,
+        applied_from_node_name: previous.applied_from_node_name,
+        applied_at_unix_ms: previous.applied_at_unix_ms,
     }
 }
 
 fn quota_refresh_source_label(source: &str) -> &'static str {
     match source.trim() {
-        "packycode_browser_session" => "Packycode dashboard session",
         "usage_base" => "usage base",
         "token_stats" => "token stats",
-        "codex_for_me_balance" => "codex-for.me dashboard",
+        "login_summary" => "login summary",
         _ => "",
     }
+}
+
+fn annotate_local_tracked_spend_day(mut day: Value) -> Value {
+    annotate_local_tracked_spend_day_in_place(&mut day);
+    day
+}
+
+fn annotate_local_tracked_spend_day_in_place(day: &mut Value) {
+    let Some(local_node) = crate::lan_sync::current_local_node_identity() else {
+        return;
+    };
+    let Some(map) = day.as_object_mut() else {
+        return;
+    };
+    map.insert(
+        "producer_node_id".to_string(),
+        Value::String(local_node.node_id.clone()),
+    );
+    map.insert(
+        "producer_node_name".to_string(),
+        Value::String(local_node.node_name.clone()),
+    );
+    map.insert(
+        "applied_from_node_id".to_string(),
+        Value::String(local_node.node_id),
+    );
+    map.insert(
+        "applied_from_node_name".to_string(),
+        Value::String(local_node.node_name),
+    );
+    let applied_at = map
+        .get("updated_at_unix_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(unix_ms);
+    map.insert(
+        "applied_at_unix_ms".to_string(),
+        serde_json::json!(applied_at),
+    );
+}
+
+pub(crate) fn reconcile_spend_state_from_history(
+    st: &GatewayState,
+    provider_name: &str,
+) -> Option<Value> {
+    let previous_state = st.store.get_spend_state(provider_name);
+    let spend_days = st.store.list_local_spend_days(provider_name);
+    let mut tracking_started_unix_ms: Option<u64> = None;
+    let mut canonical_open_row: Option<(u64, u64, f64)> = None;
+
+    for day in spend_days {
+        let Some(started_at_unix_ms) = day.get("started_at_unix_ms").and_then(Value::as_u64) else {
+            continue;
+        };
+        if started_at_unix_ms == 0 {
+            continue;
+        }
+        tracking_started_unix_ms = Some(
+            tracking_started_unix_ms
+                .map(|current| current.min(started_at_unix_ms))
+                .unwrap_or(started_at_unix_ms),
+        );
+
+        let ended_at_unix_ms = day.get("ended_at_unix_ms").and_then(Value::as_u64);
+        if ended_at_unix_ms.is_some_and(|ended| ended > started_at_unix_ms) {
+            continue;
+        }
+
+        let updated_at_unix_ms = day
+            .get("updated_at_unix_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(started_at_unix_ms);
+        let last_seen_daily_spent_usd = as_f64(day.get("last_seen_daily_spent_usd"))
+            .or_else(|| as_f64(day.get("tracked_spend_usd")))
+            .unwrap_or(0.0);
+        let next = (
+            started_at_unix_ms,
+            updated_at_unix_ms,
+            last_seen_daily_spent_usd,
+        );
+        let should_replace = canonical_open_row
+            .as_ref()
+            .map(|current| (next.1, next.0, next.2) > (current.1, current.0, current.2))
+            .unwrap_or(true);
+        if should_replace {
+            canonical_open_row = Some(next);
+        }
+    }
+
+    let Some((open_day_started_at_unix_ms, updated_at_unix_ms, last_seen_daily_spent_usd)) =
+        canonical_open_row
+    else {
+        if previous_state.is_some() {
+            st.store.remove_spend_state(provider_name);
+        }
+        return None;
+    };
+
+    let state = serde_json::json!({
+        "provider": provider_name,
+        "tracking_started_unix_ms": tracking_started_unix_ms.unwrap_or(open_day_started_at_unix_ms),
+        "open_day_started_at_unix_ms": open_day_started_at_unix_ms,
+        "last_seen_daily_spent_usd": last_seen_daily_spent_usd,
+        "updated_at_unix_ms": updated_at_unix_ms,
+    });
+    st.store.put_spend_state(provider_name, &state);
+    Some(state)
+}
+
+fn load_spend_state_for_tracking(st: &GatewayState, provider_name: &str) -> Option<Value> {
+    let Some(state) = st.store.get_spend_state(provider_name) else {
+        return reconcile_spend_state_from_history(st, provider_name);
+    };
+    let Some(open_day_started_at_unix_ms) = state
+        .get("open_day_started_at_unix_ms")
+        .and_then(Value::as_u64)
+    else {
+        return reconcile_spend_state_from_history(st, provider_name);
+    };
+    if st
+        .store
+        .get_spend_day(provider_name, open_day_started_at_unix_ms)
+        .is_some()
+    {
+        return Some(state);
+    }
+    reconcile_spend_state_from_history(st, provider_name)
 }
 
 fn quota_refresh_error_log_key(err: &str) -> String {
@@ -899,7 +1363,7 @@ pub(crate) fn clear_usage_refresh_gate_for_provider(st: &GatewayState, provider_
     let Some(provider) = cfg.providers.get(provider_name) else {
         return;
     };
-    for base in candidate_quota_bases(provider) {
+    for base in resolve_quota_profile(provider).candidate_bases {
         clear_usage_base_refresh_gate_for_base(&base);
     }
 }
@@ -910,18 +1374,22 @@ fn is_quota_refresh_config_gap(err: &str) -> bool {
         "missing credentials for quota refresh"
             | "missing usage auth"
             | "missing usage token"
+            | "missing provider key"
             | "missing quota base"
             | "missing base_url"
             | "usage endpoint not found (set Usage base URL)"
     )
 }
 
-fn should_run_background_quota_refresh(
-    has_any_credential: bool,
-    is_recently_used: bool,
-    has_quota_source: bool,
+fn should_run_background_quota_scheduler(
+    now_ms: u64,
+    last_activity_unix_ms: u64,
+    has_alive_peers: bool,
 ) -> bool {
-    has_any_credential && is_recently_used && has_quota_source
+    if has_alive_peers {
+        return true;
+    }
+    last_activity_unix_ms != 0 && now_ms.saturating_sub(last_activity_unix_ms) < 10 * 60 * 1000
 }
 
 fn can_refresh_quota_for_provider(
@@ -929,21 +1397,27 @@ fn can_refresh_quota_for_provider(
     provider_name: &str,
     provider: &ProviderConfig,
 ) -> bool {
-    let bases = candidate_quota_bases(provider);
+    if provider.disabled {
+        return false;
+    }
+    let profile = resolve_quota_profile(provider);
+    let allows_login_only_refresh = profile.uses_login_summary_refresh();
+    let bases = profile.candidate_bases;
     if bases.is_empty() {
         return false;
     }
     let provider_key = st.secrets.get_provider_key(provider_name);
     let usage_token = st.secrets.get_usage_token(provider_name);
     let usage_login = st.secrets.get_usage_login(provider_name);
-    if is_codex_for_me_base(provider_name, &bases) {
+    if allows_login_only_refresh {
         return usage_token.is_some() || usage_login.is_some();
     }
-    provider_key.is_some() || usage_token.is_some() || usage_login.is_some()
-}
-
-pub(crate) fn uses_packycode_usage_schedule(provider: &ProviderConfig) -> bool {
-    detect_package_expiry_strategy(&provider.base_url) == PackageExpiryStrategy::Packycode
+    match profile.budget_info_auth_source {
+        BudgetInfoAuthSource::ProviderKey => provider_key.is_some(),
+        BudgetInfoAuthSource::UsageToken => {
+            provider_key.is_some() || usage_token.is_some() || usage_login.is_some()
+        }
+    }
 }
 
 fn quota_refresh_interval_ms(
@@ -955,10 +1429,17 @@ fn quota_refresh_interval_ms(
     _last_error: &str,
     provider_strategy: PackageExpiryStrategy,
 ) -> u64 {
-    if provider_strategy == PackageExpiryStrategy::Packycode {
-        return next_packycode_refresh_due_unix_ms(now_ms).saturating_sub(now_ms);
-    }
-    next_standard_quota_refresh_due_unix_ms(now_ms).saturating_sub(now_ms)
+    let now = chrono::Local
+        .timestamp_millis_opt(now_ms as i64)
+        .single()
+        .unwrap_or_else(chrono::Local::now);
+    let due = match provider_strategy {
+        PackageExpiryStrategy::BackendUsersInfo => next_priority_quota_refresh_at(now)
+            .timestamp_millis()
+            .max(0) as u64,
+        _ => next_standard_quota_refresh_due_unix_ms(now_ms),
+    };
+    due.saturating_sub(now_ms)
 }
 
 fn initial_quota_refresh_due_unix_ms(
@@ -969,13 +1450,21 @@ fn initial_quota_refresh_due_unix_ms(
     _shared_provider_count: usize,
     provider_strategy: PackageExpiryStrategy,
 ) -> Option<u64> {
-    if provider_strategy == PackageExpiryStrategy::Packycode {
-        return Some(next_packycode_refresh_due_unix_ms(now_ms));
-    }
-    if existing_snapshot.is_some_and(|existing| existing.updated_at_unix_ms == 0) {
-        return None;
-    }
-    Some(next_standard_quota_refresh_due_unix_ms(now_ms))
+    let now = chrono::Local
+        .timestamp_millis_opt(now_ms as i64)
+        .single()
+        .unwrap_or_else(chrono::Local::now);
+    Some(match provider_strategy {
+        PackageExpiryStrategy::BackendUsersInfo => next_priority_quota_refresh_at(now)
+            .timestamp_millis()
+            .max(0) as u64,
+        _ => {
+            if existing_snapshot.is_some_and(|existing| existing.updated_at_unix_ms == 0) {
+                return None;
+            }
+            next_standard_quota_refresh_due_unix_ms(now_ms)
+        }
+    })
 }
 
 fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
@@ -1001,6 +1490,23 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
         format!("{start}******{end}")
     }
 
+    fn provider_has_request_on_local_day(
+        st: &GatewayState,
+        provider_name: &str,
+        unix_ms: u64,
+    ) -> bool {
+        let Some(local_dt) = chrono::Local.timestamp_millis_opt(unix_ms as i64).single() else {
+            return false;
+        };
+        let day_key = local_dt.format("%Y-%m-%d").to_string();
+        st.store
+            .list_usage_request_day_counts_for_provider(provider_name)
+            .get(&day_key)
+            .copied()
+            .unwrap_or(0)
+            > 0
+    }
+
     if snap.kind != UsageKind::BudgetInfo {
         return;
     }
@@ -1014,7 +1520,7 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
 
     let now = snap.updated_at_unix_ms;
     let api_key_ref = api_key_ref_from_raw(st.secrets.get_provider_key(provider_name).as_deref());
-    let existing_state = st.store.get_spend_state(provider_name);
+    let existing_state = load_spend_state_for_tracking(st, provider_name);
 
     let mut tracking_started_unix_ms = existing_state
         .as_ref()
@@ -1030,27 +1536,40 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
         .as_ref()
         .and_then(|s| as_f64(s.get("last_seen_daily_spent_usd")))
         .unwrap_or(current_daily_spent);
+    let current_day_key = crate::orchestrator::store::Store::local_day_key_from_unix_ms(now);
+    let open_day_key =
+        crate::orchestrator::store::Store::local_day_key_from_unix_ms(open_day_started_at_unix_ms);
 
     // First observed snapshot for this provider: initialize tracking baseline.
     if existing_state.is_none() {
         tracking_started_unix_ms = now;
         open_day_started_at_unix_ms = now;
         last_seen_daily_spent = current_daily_spent;
+        let initial_tracked_spend = if provider_has_request_on_local_day(st, provider_name, now) {
+            current_daily_spent
+        } else {
+            0.0
+        };
         let day = serde_json::json!({
             "provider": provider_name,
             "api_key_ref": api_key_ref.clone(),
             "started_at_unix_ms": open_day_started_at_unix_ms,
             "ended_at_unix_ms": Value::Null,
-            // First snapshot of the day already includes spend that happened before refresh.
-            "tracked_spend_usd": current_daily_spent,
+            // If we have not observed any request on this local day yet, treat the first
+            // non-zero snapshot as a baseline only instead of attributing spend to a zero-request day.
+            "tracked_spend_usd": initial_tracked_spend,
             "last_seen_daily_spent_usd": current_daily_spent,
             "updated_at_unix_ms": now
         });
+        let day = annotate_local_tracked_spend_day(day);
         st.store
             .put_spend_day(provider_name, open_day_started_at_unix_ms, &day);
     } else {
         let epsilon = 1e-7_f64;
-        if current_daily_spent + epsilon < last_seen_daily_spent {
+        let crossed_local_day =
+            current_day_key.is_some() && open_day_key.is_some() && current_day_key != open_day_key;
+        if crossed_local_day || current_daily_spent + epsilon < last_seen_daily_spent {
+            let spend_reset = current_daily_spent + epsilon < last_seen_daily_spent;
             if let Some(mut prev_day) = st
                 .store
                 .get_spend_day(provider_name, open_day_started_at_unix_ms)
@@ -1062,21 +1581,34 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
                 }
                 prev_day["updated_at_unix_ms"] = serde_json::json!(now);
                 prev_day["last_seen_daily_spent_usd"] = serde_json::json!(last_seen_daily_spent);
+                annotate_local_tracked_spend_day_in_place(&mut prev_day);
                 st.store
                     .put_spend_day(provider_name, open_day_started_at_unix_ms, &prev_day);
             }
 
             open_day_started_at_unix_ms = now;
+            let next_day_tracked_spend =
+                if provider_has_request_on_local_day(st, provider_name, now) {
+                    if spend_reset {
+                        current_daily_spent
+                    } else {
+                        (current_daily_spent - last_seen_daily_spent).max(0.0)
+                    }
+                } else {
+                    0.0
+                };
             let day = serde_json::json!({
                 "provider": provider_name,
                 "api_key_ref": api_key_ref.clone(),
                 "started_at_unix_ms": open_day_started_at_unix_ms,
                 "ended_at_unix_ms": Value::Null,
-                // New day baseline can be non-zero if first refresh happens after early usage.
-                "tracked_spend_usd": current_daily_spent,
+                // Same rule as initial bootstrap: only attribute the baseline when this day
+                // already has observed request rows.
+                "tracked_spend_usd": next_day_tracked_spend,
                 "last_seen_daily_spent_usd": current_daily_spent,
                 "updated_at_unix_ms": now
             });
+            let day = annotate_local_tracked_spend_day(day);
             st.store
                 .put_spend_day(provider_name, open_day_started_at_unix_ms, &day);
             last_seen_daily_spent = current_daily_spent;
@@ -1100,6 +1632,7 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
             day["tracked_spend_usd"] = serde_json::json!(tracked + delta);
             day["last_seen_daily_spent_usd"] = serde_json::json!(current_daily_spent);
             day["updated_at_unix_ms"] = serde_json::json!(now);
+            annotate_local_tracked_spend_day_in_place(&mut day);
             st.store
                 .put_spend_day(provider_name, open_day_started_at_unix_ms, &day);
             last_seen_daily_spent = current_daily_spent;
@@ -1130,10 +1663,13 @@ async fn propagate_quota_snapshot_shared(
     let source_package_expiry_strategy = cfg
         .providers
         .get(source_provider)
-        .map(|p| detect_package_expiry_strategy(&p.base_url))
+        .map(|p| resolve_quota_profile(p).package_expiry_strategy)
         .unwrap_or(PackageExpiryStrategy::None);
     for (name, p) in cfg.providers.iter() {
         if name == source_provider {
+            continue;
+        }
+        if p.disabled {
             continue;
         }
 
@@ -1141,24 +1677,25 @@ async fn propagate_quota_snapshot_shared(
         let usage_token = st.secrets.get_usage_token(name);
         let usage_login = st.secrets.get_usage_login(name);
 
-        let bases = candidate_quota_bases(p);
+        let profile = resolve_quota_profile(p);
+        let bases = profile.candidate_bases;
         let Some(shared_base) = bases.first().map(|s| s.as_str()) else {
             continue;
         };
-        let shared = usage_shared_key(shared_base, &provider_key, &usage_token, &usage_login);
+        let shared = usage_shared_key(p, shared_base, &provider_key, &usage_token, &usage_login);
         if &shared != source_shared_key {
             continue;
         }
 
         // If the target provider explicitly pins a usage adapter, only propagate matching snapshots.
         // (Auto-detected providers use `UsageKind::None` and can accept either kind.)
-        let other_kind = detect_usage_kind(p);
+        let other_kind = profile.usage_kind;
         if other_kind != UsageKind::None && other_kind != snap.kind {
             continue;
         }
 
         let mut copied = snap.clone();
-        let target_package_expiry_strategy = detect_package_expiry_strategy(&p.base_url);
+        let target_package_expiry_strategy = profile.package_expiry_strategy;
         if target_package_expiry_strategy != source_package_expiry_strategy {
             copied.package_expires_at_unix_ms = None;
         }
@@ -1178,7 +1715,8 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
     let provider_key = st.secrets.get_provider_key(provider_name);
     let usage_token = st.secrets.get_usage_token(provider_name);
     let usage_login = st.secrets.get_usage_login(provider_name);
-    let bases_raw = candidate_quota_bases(p);
+    let profile = resolve_quota_profile(p);
+    let bases_raw = profile.candidate_bases.clone();
     let Some(shared_base) = bases_raw.first().cloned() else {
         let mut out = QuotaSnapshot::empty(UsageKind::None);
         out.last_error = "missing base_url".to_string();
@@ -1188,33 +1726,28 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
         reorder_bases_for_speed(st, provider_name, bases_raw, provider_key.as_deref()).await;
     let effective_base = bases.first().cloned();
 
-    let kind = detect_usage_kind(p);
     let cached_package_expiry =
         cached_future_package_expiry_for_provider(st, provider_name, unix_ms());
-    let provider_strategy = detect_package_expiry_strategy(&p.base_url);
+    let provider_strategy = profile.package_expiry_strategy;
     let package_expiry_fetch_strategy = if cached_package_expiry.is_some()
-        && provider_strategy != PackageExpiryStrategy::Packycode
+        && provider_strategy != PackageExpiryStrategy::BackendUsersInfo
     {
         PackageExpiryStrategy::None
     } else {
         provider_strategy
     };
-    let shared_key = usage_shared_key(&shared_base, &provider_key, &usage_token, &usage_login);
+    let shared_key = usage_shared_key(p, &shared_base, &provider_key, &usage_token, &usage_login);
     let mut snap = compute_quota_snapshot(
         st,
         provider_name,
-        kind,
+        &profile,
         &bases,
-        explicit_usage_endpoint_url(p).as_deref(),
         QuotaCredentials {
             provider_key: provider_key.as_deref(),
             usage_token: usage_token.as_deref(),
             usage_login: usage_login.as_ref(),
         },
-        QuotaSnapshotStrategies {
-            provider_strategy,
-            package_expiry_fetch_strategy,
-        },
+        package_expiry_fetch_strategy,
     )
     .await;
     if snap.effective_usage_base.is_none() {
@@ -1243,7 +1776,8 @@ async fn refresh_quota_for_provider_cached(
     let provider_key = st.secrets.get_provider_key(provider_name);
     let usage_token = st.secrets.get_usage_token(provider_name);
     let usage_login = st.secrets.get_usage_login(provider_name);
-    let bases_raw = candidate_quota_bases(p);
+    let profile = resolve_quota_profile(p);
+    let bases_raw = profile.candidate_bases.clone();
     let Some(shared_base) = bases_raw.first().cloned() else {
         let mut out = QuotaSnapshot::empty(UsageKind::None);
         out.last_error = "missing base_url".to_string();
@@ -1253,37 +1787,39 @@ async fn refresh_quota_for_provider_cached(
         reorder_bases_for_speed(st, provider_name, bases_raw, provider_key.as_deref()).await;
     let effective_base = bases.first().cloned();
 
-    let kind = detect_usage_kind(p);
     let cached_package_expiry =
         cached_future_package_expiry_for_provider(st, provider_name, unix_ms());
-    let provider_strategy = detect_package_expiry_strategy(&p.base_url);
+    let provider_strategy = profile.package_expiry_strategy;
     let package_expiry_fetch_strategy = if cached_package_expiry.is_some()
-        && provider_strategy != PackageExpiryStrategy::Packycode
+        && provider_strategy != PackageExpiryStrategy::BackendUsersInfo
     {
         PackageExpiryStrategy::None
     } else {
         provider_strategy
     };
-    let key = usage_request_key(&bases, &provider_key, &usage_token, &usage_login, kind);
-    let shared_key = usage_shared_key(&shared_base, &provider_key, &usage_token, &usage_login);
+    let key = usage_request_key(
+        p,
+        &bases,
+        &provider_key,
+        &usage_token,
+        &usage_login,
+        profile.usage_kind,
+    );
+    let shared_key = usage_shared_key(p, &shared_base, &provider_key, &usage_token, &usage_login);
     let snap = if let Some(existing) = cache.get(&key) {
         existing.clone()
     } else {
         let mut computed = compute_quota_snapshot(
             st,
             provider_name,
-            kind,
+            &profile,
             &bases,
-            explicit_usage_endpoint_url(p).as_deref(),
             QuotaCredentials {
                 provider_key: provider_key.as_deref(),
                 usage_token: usage_token.as_deref(),
                 usage_login: usage_login.as_ref(),
             },
-            QuotaSnapshotStrategies {
-                provider_strategy,
-                package_expiry_fetch_strategy,
-            },
+            package_expiry_fetch_strategy,
         )
         .await;
         if computed.effective_usage_base.is_none() {
@@ -1310,9 +1846,10 @@ fn usage_shared_key_for_provider(st: &GatewayState, provider_name: &str) -> Opti
     let provider_key = st.secrets.get_provider_key(provider_name);
     let usage_token = st.secrets.get_usage_token(provider_name);
     let usage_login = st.secrets.get_usage_login(provider_name);
-    let bases = candidate_quota_bases(p);
+    let bases = resolve_quota_profile(p).candidate_bases;
     let shared_base = bases.first()?.as_str();
     Some(usage_shared_key(
+        p,
         shared_base,
         &provider_key,
         &usage_token,
@@ -1322,12 +1859,21 @@ fn usage_shared_key_for_provider(st: &GatewayState, provider_name: &str) -> Opti
 
 pub async fn refresh_quota_shared(
     st: &GatewayState,
+    lan_sync: &crate::lan_sync::LanSyncRuntime,
     provider_name: &str,
 ) -> Result<Vec<String>, String> {
     let cfg = st.cfg.read().clone();
     let Some(provider) = cfg.providers.get(provider_name) else {
         return Err(format!("unknown provider: {provider_name}"));
     };
+    if let Some(owner) = shared_quota_owner_for_provider(st, lan_sync, provider_name) {
+        if !owner.local_is_owner {
+            return Err(format!(
+                "shared quota refresh is owned by {} ({})",
+                owner.owner_node_name, owner.owner_node_id
+            ));
+        }
+    }
     if !can_refresh_quota_for_provider(st, provider_name, provider) {
         return Ok(Vec::new());
     }
@@ -1364,7 +1910,10 @@ pub async fn refresh_quota_shared(
     Ok(group)
 }
 
-pub async fn refresh_quota_all_with_summary(st: &GatewayState) -> (usize, usize, Vec<String>) {
+pub async fn refresh_quota_all_with_summary(
+    st: &GatewayState,
+    lan_sync: &crate::lan_sync::LanSyncRuntime,
+) -> (usize, usize, Vec<String>) {
     let cfg = st.cfg.read().clone();
     let mut cache: HashMap<UsageRequestKey, QuotaSnapshot> = HashMap::new();
     let mut ok = 0usize;
@@ -1372,10 +1921,12 @@ pub async fn refresh_quota_all_with_summary(st: &GatewayState) -> (usize, usize,
     let mut failed = Vec::new();
 
     for (name, provider) in cfg.providers.iter() {
-        if uses_packycode_usage_schedule(provider) {
+        if !can_refresh_quota_for_provider(st, name, provider) {
             continue;
         }
-        if !can_refresh_quota_for_provider(st, name, provider) {
+        if shared_quota_owner_for_provider(st, lan_sync, name)
+            .is_some_and(|owner| !owner.local_is_owner)
+        {
             continue;
         }
         let snap = refresh_quota_for_provider_cached(st, name, &mut cache).await;
@@ -1392,27 +1943,21 @@ pub async fn refresh_quota_all_with_summary(st: &GatewayState) -> (usize, usize,
     (ok, err, failed)
 }
 
-pub async fn run_quota_scheduler(st: GatewayState) {
+pub async fn run_quota_scheduler(st: GatewayState, lan_sync: crate::lan_sync::LanSyncRuntime) {
     let mut next_refresh_unix_ms: HashMap<String, u64> = HashMap::new();
 
     loop {
         tokio::time::sleep(Duration::from_millis(900)).await;
 
         let now = unix_ms();
-        let last = st.last_activity_unix_ms.load(Ordering::Relaxed);
-        let active = last > 0 && now.saturating_sub(last) < 10 * 60 * 1000;
-        if !active {
+        let last_activity = st
+            .last_activity_unix_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let has_alive_peers = lan_sync.has_alive_peers();
+        if !should_run_background_quota_scheduler(now, last_activity, has_alive_peers) {
             continue;
         }
-
         let cfg = st.cfg.read().clone();
-        let active_providers: std::collections::HashSet<String> = st
-            .last_used_by_session
-            .read()
-            .values()
-            .filter(|route| now.saturating_sub(route.unix_ms) < 2 * 60 * 1000)
-            .map(|route| route.provider.clone())
-            .collect();
         let mut shared_provider_counts: HashMap<String, usize> = HashMap::new();
         for name in cfg.providers.keys() {
             if let Some(shared_key) = usage_shared_key_for_provider(&st, name) {
@@ -1423,15 +1968,8 @@ pub async fn run_quota_scheduler(st: GatewayState) {
         }
         let mut cache: HashMap<UsageRequestKey, QuotaSnapshot> = HashMap::new();
         for (name, p) in cfg.providers.iter() {
-            let has_any_credential = st.secrets.get_provider_key(name).is_some()
-                || st.secrets.get_usage_token(name).is_some();
-            let is_recently_used = active_providers.contains(name);
-            let has_quota_source = !candidate_quota_bases(p).is_empty();
-            if !should_run_background_quota_refresh(
-                has_any_credential,
-                is_recently_used,
-                has_quota_source,
-            ) {
+            let profile = resolve_quota_profile(p);
+            if !can_refresh_quota_for_provider(&st, name, p) {
                 continue;
             }
 
@@ -1446,15 +1984,32 @@ pub async fn run_quota_scheduler(st: GatewayState) {
                 initial_quota_refresh_due_unix_ms(
                     now,
                     existing_snapshot.as_ref(),
-                    is_recently_used,
+                    false,
                     name == &cfg.routing.preferred_provider,
                     shared_provider_count,
-                    detect_package_expiry_strategy(&p.base_url),
+                    profile.package_expiry_strategy,
                 )
                 .unwrap_or(0)
             });
             if due != 0 && now < due {
                 next_refresh_unix_ms.insert(name.clone(), due);
+                continue;
+            }
+            if shared_quota_owner_for_provider(&st, &lan_sync, name)
+                .is_some_and(|owner| !owner.local_is_owner)
+            {
+                let jitter_ms = quota_refresh_interval_ms(
+                    now,
+                    false,
+                    name == &cfg.routing.preferred_provider,
+                    existing_snapshot.as_ref().is_some_and(|existing| {
+                        existing.last_error.is_empty() && existing.updated_at_unix_ms > 0
+                    }),
+                    shared_provider_count,
+                    "",
+                    profile.package_expiry_strategy,
+                );
+                next_refresh_unix_ms.insert(name.clone(), now.saturating_add(jitter_ms));
                 continue;
             }
 
@@ -1464,12 +2019,12 @@ pub async fn run_quota_scheduler(st: GatewayState) {
             });
             let jitter_ms = quota_refresh_interval_ms(
                 now,
-                active_providers.contains(name),
+                false,
                 name == &cfg.routing.preferred_provider,
                 previous_success,
                 shared_provider_count,
                 &snap.last_error,
-                detect_package_expiry_strategy(&p.base_url),
+                profile.package_expiry_strategy,
             );
             next_refresh_unix_ms.insert(name.clone(), now.saturating_add(jitter_ms));
 

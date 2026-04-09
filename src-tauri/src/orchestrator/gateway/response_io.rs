@@ -204,10 +204,9 @@ fn passthrough_sse_and_persist(
                     } else {
                         "before completion; downstream output may be incomplete"
                     };
-                    st_err.store.add_event(
+                    st_err.store.events().emit(
                         &provider_err,
-                        "error",
-                        "stream.idle_timeout",
+                        crate::orchestrator::store::EventCode::STREAM_IDLE_TIMEOUT,
                         &format!(
                             "stream idle timeout ({note}); completed={completed}; forwarded_bytes={forwarded_bytes}; upstream_status={upstream_status}; url={}",
                             redact_url_for_logs(&upstream_url)
@@ -272,10 +271,9 @@ fn passthrough_sse_and_persist(
                         "before completion; downstream output may be incomplete"
                     };
                     let err = format_reqwest_error_for_logs(&e);
-                    st_err.store.add_event(
+                    st_err.store.events().emit(
                         &provider_err,
-                        "error",
-                        "stream.read_error",
+                        crate::orchestrator::store::EventCode::STREAM_READ_ERROR,
                         &format!(
                             "stream read error ({note}); completed={completed}; forwarded_bytes={forwarded_bytes}; upstream_status={upstream_status}; url={}; content_type={ct}; content_encoding={enc}; transfer_encoding={transfer}; {err}",
                             redact_url_for_logs(&upstream_url)
@@ -315,14 +313,19 @@ fn passthrough_sse_and_persist(
                     }
                 }
             }
+            let local_node = st2.secrets.get_lan_node_identity();
             st2.store
                 .record_success_with_model(
                     &provider2,
                     &resp_obj,
-                    Some(&api_key_ref2),
+                    crate::orchestrator::store::UsageRequestContext {
+                        api_key_ref: Some(&api_key_ref2),
+                        origin: &request_origin2,
+                        session_id: Some(session_key2.as_str()),
+                        node_id: local_node.as_ref().map(|value| value.node_id.as_str()),
+                        node_name: local_node.as_ref().map(|value| value.node_name.as_str()),
+                    },
                     created_model_for_usage.as_deref(),
-                    &request_origin2,
-                    Some(session_key2.as_str()),
                 );
         }
     };

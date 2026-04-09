@@ -60,7 +60,7 @@ describe('resolveSummaryFetchWindow', () => {
   it('falls back to unbounded summary when no rows are from default day', () => {
     const window = resolveSummaryFetchWindow({
       requestFetchFromUnixMs: null,
-      hasExplicitRequestFilters: false,
+      hasExplicitTimeFilter: false,
       rowsForRequestRender: [makeRow(new Date(2026, 1, 20, 12, 0, 0, 0).getTime())],
       requestDefaultDay: new Date(2026, 1, 22, 0, 0, 0, 0).getTime(),
     })
@@ -72,12 +72,36 @@ describe('resolveSummaryFetchWindow', () => {
     const day = new Date(2026, 1, 22, 0, 0, 0, 0).getTime()
     const window = resolveSummaryFetchWindow({
       requestFetchFromUnixMs: null,
-      hasExplicitRequestFilters: false,
+      hasExplicitTimeFilter: false,
       rowsForRequestRender: [makeRow(day + 1000)],
       requestDefaultDay: day,
     })
     expect(window.fromUnixMs).toBe(day)
     expect(window.toUnixMs).toBe(day + 24 * 60 * 60 * 1000)
+  })
+
+  it('keeps today-only summary even when non-time filters are active', () => {
+    const day = new Date(2026, 1, 22, 0, 0, 0, 0).getTime()
+    const window = resolveSummaryFetchWindow({
+      requestFetchFromUnixMs: null,
+      hasExplicitTimeFilter: false,
+      rowsForRequestRender: [makeRow(day + 5_000)],
+      requestDefaultDay: day,
+    })
+    expect(window.fromUnixMs).toBe(day)
+    expect(window.toUnixMs).toBe(day + 24 * 60 * 60 * 1000)
+  })
+
+  it('does not force today-only summary when an explicit date filter is active', () => {
+    const day = new Date(2026, 1, 22, 0, 0, 0, 0).getTime()
+    const window = resolveSummaryFetchWindow({
+      requestFetchFromUnixMs: null,
+      hasExplicitTimeFilter: true,
+      rowsForRequestRender: [makeRow(day + 5_000)],
+      requestDefaultDay: day,
+    })
+    expect(window.fromUnixMs).toBeNull()
+    expect(window.toUnixMs).toBeNull()
   })
 })
 
@@ -157,6 +181,7 @@ describe('buildUsageRequestsQueryKey', () => {
         hours: 24 * 365 * 20,
         from_unix_ms: null,
         to_unix_ms: null,
+        nodes: [],
         providers: [],
         models: [],
         origins: [],

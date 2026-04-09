@@ -3,6 +3,7 @@ import {
   applyProviderSwitchStatusResult,
   mergeProviderSwitchDirs,
   runGatewaySwitchPreflight,
+  shouldRefreshConfigForRevision,
   summarizeProviderSwitchState,
 } from './useSwitchboardStatusActions'
 
@@ -80,5 +81,14 @@ describe('applyProviderSwitchStatusResult', () => {
 
     const merged = applyProviderSwitchStatusResult(prevStatus, partialRes, true)
     expect(merged.mode).toBe('mixed')
+  })
+})
+
+describe('shouldRefreshConfigForRevision', () => {
+  it('refreshes only when a known revision changes', () => {
+    expect(shouldRefreshConfigForRevision(null, 'rev-1')).toBe(false)
+    expect(shouldRefreshConfigForRevision('', 'rev-1')).toBe(false)
+    expect(shouldRefreshConfigForRevision('rev-1', 'rev-1')).toBe(false)
+    expect(shouldRefreshConfigForRevision('rev-1', 'rev-2')).toBe(true)
   })
 })

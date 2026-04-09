@@ -8,7 +8,19 @@ mod tests {
     use crate::orchestrator::upstream::UpstreamClient;
     use parking_lot::RwLock;
     use std::sync::atomic::AtomicU64;
-    use std::sync::Arc;
+    use std::sync::{Arc, OnceLock};
+
+    fn usage_base_gate_test_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
+    fn mk_lan_sync() -> crate::lan_sync::LanSyncRuntime {
+        crate::lan_sync::LanSyncRuntime::new(crate::lan_sync::LanNodeIdentity {
+            node_id: "node-self".to_string(),
+            node_name: "self".to_string(),
+        })
+    }
 
     async fn start_mock_server(token_stats_ok: bool) -> (String, tokio::task::JoinHandle<()>) {
         use axum::http::StatusCode;
@@ -254,6 +266,12 @@ mod tests {
             prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
             client_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
+        crate::lan_sync::register_gateway_status_runtime(crate::lan_sync::LanSyncRuntime::new(
+            crate::lan_sync::LanNodeIdentity {
+                node_id: "node-self".to_string(),
+                node_name: "self".to_string(),
+            },
+        ));
 
         let previous = QuotaSnapshot {
             kind: UsageKind::BudgetInfo,
@@ -271,6 +289,11 @@ mod tests {
             last_error: String::new(),
             effective_usage_base: Some("https://codex-for.me".to_string()),
             effective_usage_source: Some("codex_for_me_balance".to_string()),
+            producer_node_id: Some("node-owner".to_string()),
+            producer_node_name: Some("owner".to_string()),
+            applied_from_node_id: Some("node-owner".to_string()),
+            applied_from_node_name: Some("owner".to_string()),
+            applied_at_unix_ms: 1_000,
         };
         store_quota_snapshot(&st, provider_name, &previous);
 
@@ -290,6 +313,11 @@ mod tests {
             last_error: "http 500 from https://codex-for.me".to_string(),
             effective_usage_base: None,
             effective_usage_source: None,
+            producer_node_id: None,
+            producer_node_name: None,
+            applied_from_node_id: None,
+            applied_from_node_name: None,
+            applied_at_unix_ms: 0,
         };
 
         let preserved = preserved_quota_snapshot_for_storage(&st, provider_name, &failed_refresh);
@@ -297,6 +325,8 @@ mod tests {
         assert_eq!(preserved.remaining, previous.remaining);
         assert_eq!(preserved.daily_spent_usd, previous.daily_spent_usd);
         assert_eq!(preserved.monthly_spent_usd, previous.monthly_spent_usd);
+        assert_eq!(preserved.producer_node_id.as_deref(), Some("node-self"));
+        assert_eq!(preserved.applied_from_node_id.as_deref(), Some("node-self"));
         assert_eq!(preserved.last_error, failed_refresh.last_error);
     }
 
@@ -430,7 +460,7 @@ mod tests {
             usage_base_url: None,
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert!(bases.is_empty());
     }
 
@@ -445,7 +475,7 @@ mod tests {
             usage_base_url: Some("https://explicit.example.com/".to_string()),
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://explicit.example.com".to_string()]);
     }
 
@@ -460,7 +490,7 @@ mod tests {
             usage_base_url: None,
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://codex.packycode.com".to_string()]);
     }
 
@@ -475,7 +505,7 @@ mod tests {
             usage_base_url: Some("https://www.packycode.com".to_string()),
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://codex.packycode.com".to_string()]);
     }
 
@@ -503,6 +533,8 @@ mod tests {
             "p1",
             &[base.clone()],
             Some("test-token"),
+            "usage token",
+            crate::orchestrator::providers::default_budget_info_mapping(),
             PackageExpiryStrategy::None,
         )
         .await;
@@ -515,6 +547,15 @@ mod tests {
 
     #[test]
     fn usage_request_key_normalizes_bases_order() {
+        let provider = ProviderConfig {
+            display_name: "Test".to_string(),
+            base_url: "https://usage-router.example/v1".to_string(),
+            group: None,
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        };
         let bases_a = vec![
             "https://code.ppchat.vip".to_string(),
             "https://code.pumpkinai.vip".to_string(),
@@ -524,6 +565,7 @@ mod tests {
             "https://code.ppchat.vip/".to_string(),
         ];
         let key_a = usage_request_key(
+            &provider,
             &bases_a,
             &Some("sk-test".to_string()),
             &None,
@@ -531,6 +573,7 @@ mod tests {
             UsageKind::TokenStats,
         );
         let key_b = usage_request_key(
+            &provider,
             &bases_b,
             &Some("sk-test".to_string()),
             &None,
@@ -562,19 +605,21 @@ mod tests {
             api_key: String::new(),
         };
 
-        let bases_pp = candidate_quota_bases(&pp);
-        let bases_pumpkin = candidate_quota_bases(&pumpkin);
+        let bases_pp = resolve_quota_profile(&pp).candidate_bases;
+        let bases_pumpkin = resolve_quota_profile(&pumpkin).candidate_bases;
         assert_eq!(bases_pp, bases_pumpkin);
         assert_eq!(bases_pp.first().unwrap(), "https://his.ppchat.vip");
         assert_eq!(bases_pumpkin.first().unwrap(), "https://his.ppchat.vip");
 
         let k1 = usage_shared_key(
+            &pp,
             bases_pp.first().unwrap(),
             &Some("k".to_string()),
             &None,
             &None,
         );
         let k2 = usage_shared_key(
+            &pumpkin,
             bases_pumpkin.first().unwrap(),
             &Some("k".to_string()),
             &None,
@@ -594,7 +639,7 @@ mod tests {
             usage_base_url: None,
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://api-vip.codex-for.me".to_string()]);
     }
 
@@ -609,7 +654,7 @@ mod tests {
             usage_base_url: None,
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://api-vip.codex-for.vip".to_string()]);
     }
 
@@ -631,6 +676,125 @@ mod tests {
 
         provider.usage_base_url = Some("https://yunyi.rdzhvip.com/user/api/v1".to_string());
         assert_eq!(explicit_usage_endpoint_url(&provider), None);
+    }
+
+    #[test]
+    fn explicit_usage_endpoint_url_infers_aigateway_usage_endpoint() {
+        let provider = ProviderConfig {
+            display_name: "AI Gateway".to_string(),
+            base_url: "https://aigateway.chat/v1".to_string(),
+            group: None,
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        };
+
+        assert_eq!(
+            explicit_usage_endpoint_url(&provider).as_deref(),
+            Some("https://aigateway.chat/v1/usage")
+        );
+    }
+
+    #[test]
+    fn explicit_usage_endpoint_url_ignores_invalid_explicit_url_for_aigateway() {
+        let provider = ProviderConfig {
+            display_name: "AI Gateway".to_string(),
+            base_url: "https://aigateway.chat/v1".to_string(),
+            group: None,
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: Some("not-a-url".to_string()),
+            api_key: String::new(),
+        };
+
+        assert_eq!(
+            explicit_usage_endpoint_url(&provider).as_deref(),
+            Some("https://aigateway.chat/v1/usage")
+        );
+    }
+
+    #[test]
+    fn explicit_usage_endpoint_payload_reads_aigateway_usage_shape() {
+        let payload = serde_json::json!({
+            "isValid": true,
+            "mode": "unrestricted",
+            "planName": "\u{8f7b}\u{4eab}\u{5361} 3\u{5929}",
+            "remaining": 200,
+            "subscription": {
+                "daily_limit_usd": 200,
+                "daily_usage_usd": 0,
+                "expires_at": "2026-04-02T14:02:27.679994+08:00"
+            },
+            "unit": "USD",
+            "usage": {
+                "today": {
+                    "actual_cost": 0,
+                    "requests": 0,
+                    "total_tokens": 0
+                }
+            }
+        });
+
+        let snap = map_snapshot_from_usage_payload(
+            &payload,
+            explicit_usage_mapping("https://aigateway.chat/v1/usage"),
+            "https://aigateway.chat/v1/usage",
+            "usage_base",
+            1_700_000_000_000,
+        )
+        .expect("aigateway usage payload should parse");
+
+        assert_eq!(snap.kind, UsageKind::BudgetInfo);
+        assert_eq!(snap.remaining, None);
+        assert_eq!(snap.daily_budget_usd, Some(200.0));
+        assert_eq!(snap.daily_spent_usd, Some(0.0));
+        assert_eq!(snap.package_expires_at_unix_ms, Some(1_775_109_747_679));
+        assert_eq!(
+            snap.effective_usage_base.as_deref(),
+            Some("https://aigateway.chat/v1/usage")
+        );
+    }
+
+    #[test]
+    fn explicit_usage_endpoint_prefers_aigateway_today_actual_cost_when_remaining_is_depleted() {
+        let payload = serde_json::json!({
+            "isValid": true,
+            "mode": "unrestricted",
+            "planName": "\u{5b63}\u{5361} 90\u{5929}",
+            "remaining": 0,
+            "subscription": {
+                "daily_limit_usd": 300,
+                "daily_usage_usd": 300.043385,
+                "expires_at": "2026-10-04T09:29:39.391714+08:00"
+            },
+            "unit": "USD",
+            "usage": {
+                "today": {
+                    "actual_cost": 0,
+                    "cost": 0,
+                    "requests": 0,
+                    "total_tokens": 0
+                }
+            }
+        });
+
+        let snap = map_snapshot_from_usage_payload(
+            &payload,
+            explicit_usage_mapping("https://aigateway.chat/v1/usage"),
+            "https://aigateway.chat/v1/usage",
+            "usage_base",
+            1_700_000_000_000,
+        )
+        .expect("aigateway usage payload should parse");
+
+        assert_eq!(snap.daily_budget_usd, Some(300.0));
+        assert_eq!(snap.remaining, None);
+        assert_eq!(
+            snap.daily_spent_usd,
+            Some(0.0),
+            "aigateway snapshots should trust usage.today.actual_cost instead of stale remaining or subscription daily usage"
+        );
     }
 
     #[tokio::test]
@@ -740,11 +904,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn packycode_quota_refresh_requires_provider_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "api-key").unwrap();
+        let st = mk_state("https://codex.packycode.com/v1".to_string(), secrets);
+        let cfg = st.cfg.read().clone();
+        let provider = cfg.providers.get("p1").unwrap();
+        assert!(can_refresh_quota_for_provider(&st, "p1", provider));
+    }
+
+    #[tokio::test]
+    async fn packycode_usage_login_without_provider_key_is_not_refreshable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_usage_login("p1", "alice", "secret").unwrap();
+        let st = mk_state("https://codex.packycode.com/v1".to_string(), secrets);
+        let cfg = st.cfg.read().clone();
+        let provider = cfg.providers.get("p1").unwrap();
+        assert!(!can_refresh_quota_for_provider(&st, "p1", provider));
+    }
+
+    #[tokio::test]
+    async fn packycode_budget_info_without_provider_key_reports_missing_provider_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://codex.packycode.com/v1".to_string(), secrets);
+
+        let snap = refresh_quota_for_provider(&st, "p1").await;
+
+        assert_eq!(snap.last_error, "missing provider key");
+    }
+
+    #[tokio::test]
     async fn auto_probe_prefers_token_stats_when_key_present() {
         let (base, _h) = start_mock_server(true).await;
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "k1").unwrap();
+        secrets.set_usage_token("p1", "jwt-token").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
 
         let snap = refresh_quota_for_provider(&st, "p1").await;
@@ -759,6 +957,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "k1").unwrap();
+        secrets.set_usage_token("p1", "jwt-token").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
 
         let before = st.router.snapshot(unix_ms());
@@ -775,7 +974,7 @@ mod tests {
         let health = after.get("p1").expect("provider health snapshot");
         assert_eq!(health.status, "healthy");
         assert_eq!(health.consecutive_failures, 0);
-        assert_eq!(health.last_ok_at_unix_ms, 0);
+        assert_eq!(health.last_ok_at_unix_ms, snap.updated_at_unix_ms);
     }
 
     #[tokio::test]
@@ -799,7 +998,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "k1").unwrap();
-        secrets.set_usage_token("p1", "t1").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
         {
             let mut cfg = st.cfg.write();
@@ -909,13 +1107,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn packycode_budget_info_prefers_login_token_over_provider_key() {
+    async fn packycode_budget_info_uses_provider_key_only() {
         use axum::extract::State;
         use axum::http::{HeaderMap, StatusCode};
         use axum::routing::get;
         use axum::{Json, Router};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
+
+        let _guard = usage_base_gate_test_lock().lock().await;
 
         #[derive(Clone)]
         struct MockState {
@@ -937,13 +1137,7 @@ mod tests {
                             .get(axum::http::header::AUTHORIZATION)
                             .and_then(|value| value.to_str().ok())
                             .unwrap_or_default();
-                        if auth == "Bearer api-key" {
-                            return (
-                                StatusCode::TOO_MANY_REQUESTS,
-                                Json(serde_json::json!({ "error": "rate limited" })),
-                            );
-                        }
-                        if auth != "Bearer jwt-token" {
+                        if auth != "Bearer api-key" {
                             return (
                                 StatusCode::UNAUTHORIZED,
                                 Json(serde_json::json!({ "error": "invalid token" })),
@@ -979,7 +1173,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "api-key").unwrap();
-        secrets.set_usage_token("p1", "jwt-token").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
         {
             let mut cfg = st.cfg.write();
@@ -1003,13 +1196,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn packycode_budget_info_labels_login_provider_key_and_token_stats_failures() {
+    async fn packycode_budget_info_returns_api_error_without_packycode_fallbacks() {
         use axum::extract::State;
         use axum::http::{HeaderMap, StatusCode};
         use axum::routing::get;
         use axum::{Json, Router};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
+
+        let _guard = usage_base_gate_test_lock().lock().await;
 
         clear_usage_base_refresh_gate();
 
@@ -1031,7 +1226,7 @@ mod tests {
                         .get(axum::http::header::AUTHORIZATION)
                         .and_then(|value| value.to_str().ok())
                         .unwrap_or_default();
-                    let status = if auth == "Bearer jwt-token" {
+                    let status = if auth == "Bearer api-key" {
                         StatusCode::UNAUTHORIZED
                     } else {
                         StatusCode::TOO_MANY_REQUESTS
@@ -1063,7 +1258,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "api-key").unwrap();
-        secrets.set_usage_token("p1", "jwt-token").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
         {
             let mut cfg = st.cfg.write();
@@ -1078,64 +1272,8 @@ mod tests {
         clear_usage_base_refresh_gate();
 
         assert_eq!(snap.updated_at_unix_ms, 0);
-        assert!(snap.last_error.contains("packycode browser session:"));
-        assert!(snap.last_error.contains("packycode login token: http 401"));
-        assert!(snap.last_error.contains("provider key: http 429"));
-        assert!(snap.last_error.contains("token stats fallback: "));
-        assert!(token_stats_hits.load(Ordering::Relaxed) <= 1);
-    }
-
-    #[test]
-    fn extract_packycode_browser_auth_storage_user_reads_runtime_evaluate_value() {
-        let payload = serde_json::json!({
-            "result": {
-                "result": {
-                    "value": {
-                        "state": {
-                            "user": {
-                                "daily_spent_usd": 1,
-                                "plan_expires_at": "2030-01-01T00:00:00Z"
-                            }
-                        }
-                    }
-                }
-            }
-        });
-        let extracted = extract_packycode_browser_auth_storage_user(&payload).expect("payload");
-        assert_eq!(extracted["daily_spent_usd"], 1);
-        assert_eq!(extracted["plan_expires_at"], "2030-01-01T00:00:00Z");
-    }
-
-    #[test]
-    fn extract_packycode_browser_auth_storage_user_reads_stringified_storage() {
-        let payload = serde_json::json!({
-            "result": {
-                "result": {
-                    "value": "{\"state\":{\"user\":{\"monthly_spent_usd\":\"699.7540\",\"monthly_budget_usd\":\"3600.00000000\"}}}"
-                }
-            }
-        });
-        let extracted = extract_packycode_browser_auth_storage_user(&payload).expect("payload");
-        assert_eq!(extracted["monthly_spent_usd"], "699.7540");
-        assert_eq!(extracted["monthly_budget_usd"], "3600.00000000");
-    }
-
-    #[test]
-    fn packycode_usage_browser_args_are_headless() {
-        let args = packycode_usage_browser_args(
-            std::path::Path::new("C:/tmp/packycode-login/provider-1"),
-            "https://codex.packycode.com/dashboard",
-        );
-        assert!(args.iter().any(|arg| arg == "--headless=new"));
-        assert!(args.iter().any(|arg| arg == "--remote-debugging-port=0"));
-        assert!(args
-            .iter()
-            .any(|arg| arg == "--user-data-dir=C:/tmp/packycode-login/provider-1"));
-        assert!(!args.iter().any(|arg| arg == "--new-window"));
-        assert_eq!(
-            args.last().map(String::as_str),
-            Some("https://codex.packycode.com/dashboard")
-        );
+        assert_eq!(snap.last_error, format!("http 401 from {base}"));
+        assert_eq!(token_stats_hits.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
@@ -1145,6 +1283,8 @@ mod tests {
         use axum::{Json, Router};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
+
+        let _guard = usage_base_gate_test_lock().lock().await;
 
         let user_info_hits = Arc::new(AtomicU64::new(0));
         let subscriptions_hits = Arc::new(AtomicU64::new(0));
@@ -1174,6 +1314,8 @@ mod tests {
                         (
                             StatusCode::OK,
                             Json(serde_json::json!({
+                              "daily_spent_usd": 1.0,
+                              "daily_budget_usd": 60,
                               "plan_expires_at": "2030-01-01T00:00:00Z"
                             })),
                         )
@@ -1201,6 +1343,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "k1").unwrap();
+        secrets.set_usage_token("p1", "jwt-token").unwrap();
         let st = mk_state(format!("{base}/v1"), secrets);
         {
             let mut cfg = st.cfg.write();
@@ -1235,12 +1378,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cached_future_package_expiry_does_not_disable_packycode_browser_fallback() {
+    async fn cached_future_package_expiry_does_not_disable_packycode_api_refresh() {
         use axum::http::StatusCode;
         use axum::routing::get;
         use axum::{Json, Router};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
+
+        let _guard = usage_base_gate_test_lock().lock().await;
 
         clear_usage_base_refresh_gate();
 
@@ -1314,12 +1459,9 @@ mod tests {
         clear_usage_base_refresh_gate();
 
         assert_eq!(snap.updated_at_unix_ms, 0);
-        assert!(snap.last_error.contains("packycode browser session:"));
-        assert!(snap.last_error.contains("packycode login token: http 429"));
-        assert!(
-            snap.last_error.contains("provider key:")
-                || snap.last_error.contains("token stats fallback:")
-        );
+        assert_eq!(snap.last_error, format!("http 429 from {base}"));
+        assert_eq!(budget_hits.load(Ordering::Relaxed), 1);
+        assert_eq!(token_stats_hits.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
@@ -1329,8 +1471,6 @@ mod tests {
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "k-shared").unwrap();
         secrets.set_provider_key("p2", "k-shared").unwrap();
-        secrets.set_usage_token("p1", "t-shared").unwrap();
-        secrets.set_usage_token("p2", "t-shared").unwrap();
 
         let providers = std::collections::BTreeMap::from([
             (
@@ -1395,6 +1535,413 @@ mod tests {
         assert!(p2_days.is_empty());
         assert!(st.store.get_spend_state("p1").is_some());
         assert!(st.store.get_spend_state("p2").is_none());
+    }
+
+    #[test]
+    fn track_budget_spend_reuses_remote_open_day_after_state_rebuild() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "sk-remote-owner").unwrap();
+        let st = mk_state("https://usage.example/v1".to_string(), secrets);
+
+        st.store.put_spend_day(
+            "p1",
+            1_711_929_600_000,
+            &serde_json::json!({
+                "provider": "p1",
+                "started_at_unix_ms": 1_711_929_600_000u64,
+                "ended_at_unix_ms": Value::Null,
+                "tracked_spend_usd": 17.47,
+                "last_seen_daily_spent_usd": 17.47,
+                "updated_at_unix_ms": 2_222u64,
+                "producer_node_id": "node-remote",
+                "producer_node_name": "remote",
+                "applied_from_node_id": "node-remote",
+                "applied_from_node_name": "remote"
+            }),
+        );
+        assert!(st.store.get_spend_state("p1").is_none());
+
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.updated_at_unix_ms = 1_711_929_603_333;
+        snap.daily_spent_usd = Some(20.0);
+
+        track_budget_spend(&st, "p1", &snap);
+
+        let spend_days = st.store.list_spend_days("p1");
+        assert_eq!(spend_days.len(), 1, "should update existing open row");
+        assert_eq!(
+            spend_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(20.0)
+        );
+        assert_eq!(
+            spend_days[0]
+                .get("last_seen_daily_spent_usd")
+                .and_then(|value| value.as_f64()),
+            Some(20.0)
+        );
+
+        let spend_state = st.store.get_spend_state("p1").expect("rebuilt spend state");
+        assert_eq!(
+            spend_state
+                .get("open_day_started_at_unix_ms")
+                .and_then(|value| value.as_u64()),
+            Some(1_711_929_600_000)
+        );
+        assert_eq!(
+            spend_state
+                .get("last_seen_daily_spent_usd")
+                .and_then(|value| value.as_f64()),
+            Some(20.0)
+        );
+    }
+
+    #[test]
+    fn track_budget_spend_skips_non_zero_initial_baseline_without_same_day_requests() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://usage.example/v1".to_string(), secrets);
+
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.updated_at_unix_ms = chrono::Local
+            .with_ymd_and_hms(2026, 4, 1, 0, 58, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        snap.daily_spent_usd = Some(17.4690825);
+
+        track_budget_spend(&st, "p1", &snap);
+
+        let spend_days = st.store.list_spend_days("p1");
+        assert_eq!(spend_days.len(), 1);
+        assert_eq!(
+            spend_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(0.0)
+        );
+        assert_eq!(
+            spend_days[0]
+                .get("last_seen_daily_spent_usd")
+                .and_then(|value| value.as_f64()),
+            Some(17.4690825)
+        );
+    }
+
+    #[test]
+    fn track_budget_spend_keeps_non_zero_initial_baseline_when_same_day_requests_exist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://usage.example/v1".to_string(), secrets);
+        let ts = chrono::Local
+            .with_ymd_and_hms(2026, 4, 1, 0, 58, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        st.store.upsert_usage_request_sync_rows(&[crate::orchestrator::store::UsageRequestSyncRow {
+            id: "req-1".to_string(),
+            unix_ms: ts,
+            ingested_at_unix_ms: ts,
+            provider: "p1".to_string(),
+            api_key_ref: "-".to_string(),
+            model: String::new(),
+            origin: "windows".to_string(),
+            session_id: String::new(),
+            node_id: String::new(),
+            node_name: String::new(),
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 100,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        }]);
+
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.updated_at_unix_ms = ts;
+        snap.daily_spent_usd = Some(17.4690825);
+
+        track_budget_spend(&st, "p1", &snap);
+
+        let spend_days = st.store.list_spend_days("p1");
+        assert_eq!(spend_days.len(), 1);
+        assert_eq!(
+            spend_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(17.4690825)
+        );
+    }
+
+    #[test]
+    fn track_budget_spend_starts_new_local_day_without_waiting_for_spend_reset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://usage.example/v1".to_string(), secrets);
+        let first_ts = chrono::Local
+            .with_ymd_and_hms(2026, 4, 7, 23, 58, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        let second_ts = chrono::Local
+            .with_ymd_and_hms(2026, 4, 8, 0, 5, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        st.store.upsert_usage_request_sync_rows(&[
+            crate::orchestrator::store::UsageRequestSyncRow {
+                id: "req-1".to_string(),
+                unix_ms: first_ts,
+                ingested_at_unix_ms: first_ts,
+                provider: "p1".to_string(),
+                api_key_ref: "-".to_string(),
+                model: String::new(),
+                origin: "windows".to_string(),
+                session_id: String::new(),
+                node_id: "node-a".to_string(),
+                node_name: "desk-a".to_string(),
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 100,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            },
+            crate::orchestrator::store::UsageRequestSyncRow {
+                id: "req-2".to_string(),
+                unix_ms: second_ts,
+                ingested_at_unix_ms: second_ts,
+                provider: "p1".to_string(),
+                api_key_ref: "-".to_string(),
+                model: String::new(),
+                origin: "windows".to_string(),
+                session_id: String::new(),
+                node_id: "node-b".to_string(),
+                node_name: "desk-b".to_string(),
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 200,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            },
+        ]);
+
+        let mut first = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        first.updated_at_unix_ms = first_ts;
+        first.daily_spent_usd = Some(80.0);
+        track_budget_spend(&st, "p1", &first);
+
+        let mut second = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        second.updated_at_unix_ms = second_ts;
+        second.daily_spent_usd = Some(120.0);
+        track_budget_spend(&st, "p1", &second);
+
+        let spend_days = st.store.list_local_spend_days("p1");
+        assert_eq!(spend_days.len(), 2, "crossing midnight must open a new tracked day");
+        assert_eq!(
+            spend_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(80.0)
+        );
+        assert_eq!(
+            spend_days[1]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(40.0)
+        );
+        assert_eq!(
+            spend_days[1]
+                .get("started_at_unix_ms")
+                .and_then(|value| value.as_u64()),
+            Some(second_ts)
+        );
+    }
+
+    #[test]
+    fn remote_quota_snapshot_updates_shared_tracked_spend_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://usage.example/v1".to_string(), secrets);
+        let ts = chrono::Local
+            .with_ymd_and_hms(2026, 4, 8, 16, 58, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        st.store.upsert_usage_request_sync_rows(&[crate::orchestrator::store::UsageRequestSyncRow {
+            id: "req-remote".to_string(),
+            unix_ms: ts,
+            ingested_at_unix_ms: ts,
+            provider: "p1".to_string(),
+            api_key_ref: "-".to_string(),
+            model: String::new(),
+            origin: "windows".to_string(),
+            session_id: String::new(),
+            node_id: "node-remote".to_string(),
+            node_name: "remote-box".to_string(),
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 123,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        }]);
+
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.updated_at_unix_ms = ts;
+        snap.daily_spent_usd = Some(126.4827855);
+        snap.producer_node_id = Some("node-remote".to_string());
+        snap.producer_node_name = Some("remote-box".to_string());
+
+        apply_remote_quota_snapshot(
+            &st,
+            "p1",
+            &snap,
+            Some("node-remote"),
+            Some("remote-box"),
+        );
+
+        let spend_days = st.store.list_local_spend_days("p1");
+        assert_eq!(spend_days.len(), 1);
+        assert_eq!(
+            spend_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(126.4827855)
+        );
+        let spend_state = st.store.get_spend_state("p1").expect("shared spend state");
+        assert_eq!(
+            spend_state
+                .get("last_seen_daily_spent_usd")
+                .and_then(|value| value.as_f64()),
+            Some(126.4827855)
+        );
+    }
+
+    #[test]
+    fn track_budget_spend_rebuilds_only_when_state_points_to_missing_open_day() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "sk-remote-owner").unwrap();
+        let st = mk_state("https://usage.example/v1".to_string(), secrets);
+
+        st.store.put_spend_day(
+            "p1",
+            1_711_929_600_000,
+            &serde_json::json!({
+                "provider": "p1",
+                "started_at_unix_ms": 1_711_929_600_000u64,
+                "ended_at_unix_ms": Value::Null,
+                "tracked_spend_usd": 17.47,
+                "last_seen_daily_spent_usd": 17.47,
+                "updated_at_unix_ms": 2_222u64,
+            }),
+        );
+        st.store.put_spend_state(
+            "p1",
+            &serde_json::json!({
+                "provider": "p1",
+                "tracking_started_unix_ms": 1_700_000_000_000u64,
+                "open_day_started_at_unix_ms": 1_700_000_000_001u64,
+                "last_seen_daily_spent_usd": 10.0,
+                "updated_at_unix_ms": 1_111u64,
+            }),
+        );
+
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.updated_at_unix_ms = 1_711_929_603_333;
+        snap.daily_spent_usd = Some(20.0);
+
+        track_budget_spend(&st, "p1", &snap);
+
+        let spend_days = st.store.list_spend_days("p1");
+        assert_eq!(spend_days.len(), 1, "should recover onto canonical open row");
+        assert_eq!(
+            spend_days[0]
+                .get("started_at_unix_ms")
+                .and_then(|value| value.as_u64()),
+            Some(1_711_929_600_000)
+        );
+        assert_eq!(
+            spend_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(20.0)
+        );
+
+        let spend_state = st.store.get_spend_state("p1").expect("rebuilt spend state");
+        assert_eq!(
+            spend_state
+                .get("open_day_started_at_unix_ms")
+                .and_then(|value| value.as_u64()),
+            Some(1_711_929_600_000)
+        );
+        assert_eq!(
+            spend_state
+                .get("tracking_started_unix_ms")
+                .and_then(|value| value.as_u64()),
+            Some(1_711_929_600_000)
+        );
+    }
+
+    #[test]
+    fn remote_quota_snapshot_skips_disabled_siblings_and_logs_shared_apply() {
+        let providers = std::collections::BTreeMap::from([
+            (
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url: "https://usage-router.example/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some("https://usage-router.example".to_string()),
+                    group: None,
+                    disabled: false,
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "p2".to_string(),
+                ProviderConfig {
+                    display_name: "P2".to_string(),
+                    base_url: "https://usage-router.example/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some("https://usage-router.example".to_string()),
+                    group: None,
+                    disabled: true,
+                    api_key: String::new(),
+                },
+            ),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "sk-shared").unwrap();
+        secrets.set_provider_key("p2", "sk-shared").unwrap();
+        let st = mk_state_with_providers(
+            providers,
+            vec!["p1".to_string(), "p2".to_string()],
+            secrets,
+        );
+
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.updated_at_unix_ms = 1_739_120_000_000;
+        snap.daily_spent_usd = Some(5.0);
+        snap.producer_node_id = Some("node-owner".to_string());
+        snap.producer_node_name = Some("Owner".to_string());
+
+        apply_remote_quota_snapshot(&st, "p1", &snap, Some("node-owner"), Some("Owner"));
+
+        assert!(st.store.get_quota_snapshot("p1").is_some());
+        assert!(
+            st.store.get_quota_snapshot("p2").is_none(),
+            "disabled sibling should not receive propagated shared quota"
+        );
+        let events = st.store.list_events_range(None, None, Some(10));
+        assert!(
+            events.iter().any(|event| {
+                event.get("code").and_then(|value| value.as_str())
+                    == Some("usage.refresh_shared_applied")
+            }),
+            "requester should see that the shared usage result came back"
+        );
     }
 
     async fn start_mock_server_token_info() -> (String, tokio::task::JoinHandle<()>) {
@@ -1560,11 +2107,100 @@ mod tests {
     }
 
     #[test]
+    fn shared_provider_fingerprint_ignores_local_shared_provider_id() {
+        let tmp_a = tempfile::tempdir().expect("tempdir a");
+        let tmp_b = tempfile::tempdir().expect("tempdir b");
+        let secrets_a = SecretStore::new(tmp_a.path().join("secrets.json"));
+        let secrets_b = SecretStore::new(tmp_b.path().join("secrets.json"));
+        let cfg = AppConfig {
+            listen: crate::orchestrator::config::ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 4000,
+            },
+            routing: crate::orchestrator::config::RoutingConfig {
+                preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 1,
+                failure_threshold: 1,
+                cooldown_seconds: 600,
+                request_timeout_seconds: 5,
+            },
+            providers: std::collections::BTreeMap::from([(
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url: "https://quota.example/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some("https://quota.example".to_string()),
+                    group: None,
+                    disabled: false,
+                    api_key: String::new(),
+                },
+            )]),
+            provider_order: vec!["p1".to_string()],
+        };
+        secrets_a.set_provider_key("p1", "sk-same").unwrap();
+        secrets_b.set_provider_key("p1", "sk-same").unwrap();
+        secrets_a.set_provider_shared_id("p1", "sp_node_a").unwrap();
+        secrets_b.set_provider_shared_id("p1", "sp_node_b").unwrap();
+
+        let a = shared_provider_fingerprint(&cfg, &secrets_a, "p1").expect("fingerprint a");
+        let b = shared_provider_fingerprint(&cfg, &secrets_b, "p1").expect("fingerprint b");
+
+        assert_eq!(a, b);
+    }
+
+    #[test]
     fn as_f64_strips_commas_and_percent() {
         let v = serde_json::json!("14,993");
         assert_eq!(as_f64(Some(&v)).unwrap_or(0.0), 14993.0);
         let v = serde_json::json!("13%");
         assert_eq!(as_f64(Some(&v)).unwrap_or(0.0), 13.0);
+    }
+
+    #[test]
+    fn quota_snapshot_roundtrips_through_canonical_usage() {
+        let snapshot = QuotaSnapshot {
+            kind: UsageKind::BudgetInfo,
+            updated_at_unix_ms: 1_700_000_000_000,
+            remaining: Some(42.5),
+            today_used: Some(2.0),
+            today_added: Some(5.0),
+            daily_spent_usd: Some(7.5),
+            daily_budget_usd: Some(20.0),
+            weekly_spent_usd: Some(12.0),
+            weekly_budget_usd: Some(50.0),
+            monthly_spent_usd: Some(30.0),
+            monthly_budget_usd: Some(200.0),
+            package_expires_at_unix_ms: Some(1_800_000_000_000),
+            last_error: String::new(),
+            effective_usage_base: Some("https://usage.example".to_string()),
+            effective_usage_source: Some("usage_base".to_string()),
+            producer_node_id: None,
+            producer_node_name: None,
+            applied_from_node_id: None,
+            applied_from_node_name: None,
+            applied_at_unix_ms: 0,
+        };
+
+        let canonical =
+            canonical_usage_from_snapshot(&snapshot).expect("successful snapshot should normalize");
+        let rebuilt = QuotaSnapshot::from_canonical(canonical);
+
+        assert_eq!(rebuilt.kind, snapshot.kind);
+        assert_eq!(rebuilt.remaining, snapshot.remaining);
+        assert_eq!(rebuilt.daily_spent_usd, snapshot.daily_spent_usd);
+        assert_eq!(rebuilt.daily_budget_usd, snapshot.daily_budget_usd);
+        assert_eq!(rebuilt.weekly_spent_usd, snapshot.weekly_spent_usd);
+        assert_eq!(rebuilt.monthly_budget_usd, snapshot.monthly_budget_usd);
+        assert_eq!(
+            rebuilt.package_expires_at_unix_ms,
+            snapshot.package_expires_at_unix_ms
+        );
+        assert_eq!(rebuilt.effective_usage_base, snapshot.effective_usage_base);
+        assert_eq!(rebuilt.effective_usage_source, snapshot.effective_usage_source);
     }
 
     #[test]
@@ -1701,7 +2337,7 @@ mod tests {
         recovered.daily_spent_usd = Some(1.0);
         recovered.daily_budget_usd = Some(10.0);
         recovered.effective_usage_base = Some("https://codex.packycode.com".to_string());
-        recovered.effective_usage_source = Some("packycode_browser_session".to_string());
+        recovered.effective_usage_source = Some("usage_base".to_string());
         store_quota_snapshot(&st, "p1", &recovered);
 
         let recovered_event = st
@@ -1719,16 +2355,17 @@ mod tests {
                 .get("message")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
-                .contains("Packycode dashboard session")
+                .contains("usage base")
         );
     }
 
     #[test]
-    fn background_quota_refresh_requires_real_recent_provider_usage() {
-        assert!(!should_run_background_quota_refresh(false, false, true));
-        assert!(!should_run_background_quota_refresh(true, false, true));
-        assert!(!should_run_background_quota_refresh(true, true, false));
-        assert!(should_run_background_quota_refresh(true, true, true));
+    fn background_quota_scheduler_requires_recent_activity_without_alive_peers() {
+        let now = 10 * 60 * 1000;
+        assert!(!should_run_background_quota_scheduler(now, 0, false));
+        assert!(!should_run_background_quota_scheduler(now, now.saturating_sub(10 * 60 * 1000), false));
+        assert!(should_run_background_quota_scheduler(now, now - 1_000, false));
+        assert!(should_run_background_quota_scheduler(now, 0, true));
     }
 
     #[test]
@@ -1808,14 +2445,20 @@ mod tests {
 
         let tz = FixedOffset::east_opt(8 * 3600).unwrap();
         let now = tz.with_ymd_and_hms(2026, 3, 11, 11, 25, 42).unwrap();
-        let due = next_packycode_refresh_at(now);
+        let due = next_priority_quota_refresh_at(now);
         assert_eq!(due.minute(), 58);
         assert_eq!(due.second(), 0);
 
         let now = tz.with_ymd_and_hms(2026, 3, 11, 11, 58, 0).unwrap();
-        let due = next_packycode_refresh_at(now);
+        let due = next_priority_quota_refresh_at(now);
         assert_eq!(due.hour(), 12);
         assert_eq!(due.minute(), 58);
+        assert_eq!(due.second(), 0);
+
+        let now = tz.with_ymd_and_hms(2026, 3, 10, 23, 58, 0).unwrap();
+        let due = next_priority_quota_refresh_at(now);
+        assert_eq!(due.hour(), 0);
+        assert_eq!(due.minute(), 1);
         assert_eq!(due.second(), 0);
     }
 
@@ -1834,12 +2477,12 @@ mod tests {
             true,
             true,
             1,
-            PackageExpiryStrategy::Packycode,
+            PackageExpiryStrategy::BackendUsersInfo,
         )
         .expect("packycode due");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
         assert!(due > now_ms);
-        assert_eq!(due_dt.minute(), 58);
+        assert!(matches!(due_dt.minute(), 1 | 58));
         assert_eq!(due_dt.second(), 0);
     }
 
@@ -1856,12 +2499,37 @@ mod tests {
             true,
             true,
             1,
-            PackageExpiryStrategy::Packycode,
+            PackageExpiryStrategy::BackendUsersInfo,
         )
         .expect("packycode due without snapshot");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
         assert!(due > now_ms);
-        assert_eq!(due_dt.minute(), 58);
+        assert!(matches!(due_dt.minute(), 1 | 58));
+        assert_eq!(due_dt.second(), 0);
+    }
+
+    #[test]
+    fn initial_packycode_refresh_due_retries_even_after_failed_snapshot() {
+        use chrono::{Local, Timelike};
+
+        let now = Local::now();
+        let now_ms = now.timestamp_millis().max(0) as u64;
+        let mut snapshot = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snapshot.updated_at_unix_ms = 0;
+        snapshot.last_error = "initial refresh failed".to_string();
+
+        let due = initial_quota_refresh_due_unix_ms(
+            now_ms,
+            Some(&snapshot),
+            true,
+            true,
+            1,
+            PackageExpiryStrategy::BackendUsersInfo,
+        )
+        .expect("packycode due after failed snapshot");
+        let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
+        assert!(due > now_ms);
+        assert!(matches!(due_dt.minute(), 1 | 58));
         assert_eq!(due_dt.second(), 0);
     }
 
@@ -1925,13 +2593,15 @@ mod tests {
 
     #[tokio::test]
     async fn manual_refresh_does_not_block_on_long_rate_limit_backoff() {
+        let _guard = usage_base_gate_test_lock().lock().await;
         clear_usage_base_refresh_gate();
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_provider_key("p1", "k1").unwrap();
-        let st = mk_state("https://example.com/v1".to_string(), secrets);
+        let gated_base = "https://manual-refresh-backoff.invalid";
+        let st = mk_state(format!("{gated_base}/v1"), secrets);
         let now = unix_ms();
-        note_usage_base_rate_limited("https://example.com", now, 15 * 60_000);
+        note_usage_base_rate_limited(gated_base, now, 15 * 60_000);
 
         let snap = tokio::time::timeout(
             Duration::from_millis(250),
@@ -1943,7 +2613,7 @@ mod tests {
         assert_eq!(snap.updated_at_unix_ms, 0);
         assert!(
             snap.last_error
-                .starts_with("usage base rate limited: https://example.com"),
+                .starts_with(&format!("usage base rate limited: {gated_base}")),
             "unexpected error: {}",
             snap.last_error
         );
@@ -2058,6 +2728,8 @@ mod tests {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
 
+        let _guard = usage_base_gate_test_lock().lock().await;
+
         clear_usage_base_refresh_gate();
         let last_hit_at_ms = Arc::new(AtomicU64::new(0));
         let gate = Arc::clone(&last_hit_at_ms);
@@ -2126,7 +2798,8 @@ mod tests {
         secrets.set_usage_token("p2", "t2").unwrap();
         let st = mk_state_with_providers(providers, vec!["p1".to_string(), "p2".to_string()], secrets);
 
-        let (ok, err, failed) = refresh_quota_all_with_summary(&st).await;
+        let lan_sync = mk_lan_sync();
+        let (ok, err, failed) = refresh_quota_all_with_summary(&st, &lan_sync).await;
         handle.abort();
         clear_usage_base_refresh_gate();
 
@@ -2175,7 +2848,8 @@ mod tests {
             secrets,
         );
 
-        let (ok, err, failed) = refresh_quota_all_with_summary(&st).await;
+        let lan_sync = mk_lan_sync();
+        let (ok, err, failed) = refresh_quota_all_with_summary(&st, &lan_sync).await;
 
         assert_eq!(ok, 1);
         assert_eq!(err, 0);
@@ -2185,7 +2859,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_quota_all_skips_packycode_providers_even_when_credentials_exist() {
+    async fn refresh_quota_all_includes_packycode_providers_with_credentials() {
         let (base, _h) = start_mock_server(false).await;
         let providers = std::collections::BTreeMap::from([
             (
@@ -2215,7 +2889,7 @@ mod tests {
         ]);
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
-        secrets.set_usage_token("packycode", "packy-token").unwrap();
+        secrets.set_provider_key("packycode", "packy-key").unwrap();
         secrets.set_usage_token("p2", "p2-token").unwrap();
         let st = mk_state_with_providers(
             providers,
@@ -2223,18 +2897,219 @@ mod tests {
             secrets,
         );
 
-        let (ok, err, failed) = refresh_quota_all_with_summary(&st).await;
+        let lan_sync = mk_lan_sync();
+        let (ok, err, failed) = refresh_quota_all_with_summary(&st, &lan_sync).await;
 
-        assert_eq!(ok, 1);
+        assert_eq!(ok, 2);
         assert_eq!(err, 0);
         assert!(failed.is_empty());
         assert!(
-            st.store.get_quota_snapshot("packycode").is_none(),
-            "all-provider refresh should not touch packycode"
+            st.store.get_quota_snapshot("packycode").is_some(),
+            "all-provider refresh should include packycode now"
         );
         assert!(
             st.store.get_quota_snapshot("p2").is_some(),
             "non-packycode providers should still refresh"
         );
     }
+
+    #[tokio::test]
+    async fn refresh_quota_all_skips_packycode_without_provider_key() {
+        let (base, _h) = start_mock_server(false).await;
+        let providers = std::collections::BTreeMap::from([(
+            "packycode".to_string(),
+            ProviderConfig {
+                display_name: "Packycode".to_string(),
+                base_url: "https://codex.packycode.com/v1".to_string(),
+                usage_adapter: String::new(),
+                usage_base_url: Some(base),
+                group: None,
+                disabled: false,
+                api_key: String::new(),
+            },
+        )]);
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state_with_providers(providers, vec!["packycode".to_string()], secrets);
+
+        let lan_sync = mk_lan_sync();
+        let (ok, err, failed) = refresh_quota_all_with_summary(&st, &lan_sync).await;
+
+        assert_eq!(ok, 0);
+        assert_eq!(err, 0);
+        assert!(failed.is_empty());
+        assert!(
+            st.store.get_quota_snapshot("packycode").is_none(),
+            "packycode refresh should require provider key"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_quota_all_skips_disabled_provider_even_with_credentials() {
+        let (base, _h) = start_mock_server(false).await;
+        let providers = std::collections::BTreeMap::from([
+            (
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url: "https://usage-router.example/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some(base.clone()),
+                    group: None,
+                    disabled: false,
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "p2".to_string(),
+                ProviderConfig {
+                    display_name: "P2".to_string(),
+                    base_url: "https://usage-router.example/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some(base),
+                    group: None,
+                    disabled: true,
+                    api_key: String::new(),
+                },
+            ),
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_usage_token("p1", "token-1").unwrap();
+        secrets.set_usage_token("p2", "token-2").unwrap();
+        let st = mk_state_with_providers(providers, vec!["p1".to_string(), "p2".to_string()], secrets);
+
+        let lan_sync = mk_lan_sync();
+        let (ok, err, failed) = refresh_quota_all_with_summary(&st, &lan_sync).await;
+
+        assert_eq!(ok, 1);
+        assert_eq!(err, 0);
+        assert!(failed.is_empty());
+        assert!(st.store.get_quota_snapshot("p1").is_some());
+        assert!(
+            st.store.get_quota_snapshot("p2").is_none(),
+            "disabled provider must not be refreshed just because it still has credentials"
+        );
+    }
+
+    #[test]
+    fn explicit_usage_mapping_normalizes_user_me_payload_to_usd() {
+        let payload = serde_json::json!({
+            "quota": {
+                "daily_quota": 4500,
+                "daily_spent": 28,
+                "daily_remaining": 4472
+            },
+            "timestamps": {
+                "expires_at": "2026-04-04T14:57:44.674Z"
+            }
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            explicit_usage_mapping("https://yunyi.rdzhvip.com/user/api/v1/me"),
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://yunyi.rdzhvip.com/user/api/v1/me".to_string()),
+                effective_usage_source: Some("usage_base".to_string()),
+                updated_at_unix_ms: 123,
+            },
+        )
+        .expect("mapped usage");
+
+        assert_eq!(usage.usage_kind, UsageKind::BudgetInfo);
+        assert_eq!(usage.daily_limit, Some(45.0));
+        assert_eq!(usage.daily_used, Some(0.28));
+        assert_eq!(usage.remaining, Some(44.72));
+        assert_eq!(usage.expires_at_unix_ms, Some(1_775_314_664_674));
+    }
+
+    #[test]
+    fn packycode_mapping_reads_alias_fields_into_canonical_usage() {
+        let provider = ProviderConfig {
+            display_name: "Packycode".to_string(),
+            base_url: "https://codex.packycode.com/v1".to_string(),
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            group: None,
+            disabled: false,
+            api_key: String::new(),
+        };
+        let mapping = resolve_quota_profile(&provider)
+            .budget_info_mapping
+            .expect("budget info mapping");
+        let payload = serde_json::json!({
+            "daily_spent_usd": "0.5",
+            "daily_budget_usd": 1,
+            "weekly_spent": 2.5,
+            "weekly_budget": "8",
+            "monthly_spent_usd": 4,
+            "monthly_budget_usd": 10,
+            "remaining_quota": 123
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            mapping,
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://codex.packycode.com".to_string()),
+                effective_usage_source: Some("usage_base".to_string()),
+                updated_at_unix_ms: 456,
+            },
+        )
+        .expect("mapped usage");
+
+        assert_eq!(usage.daily_used, Some(0.5));
+        assert_eq!(usage.daily_limit, Some(1.0));
+        assert_eq!(usage.weekly_used, Some(2.5));
+        assert_eq!(usage.weekly_limit, Some(8.0));
+        assert_eq!(usage.monthly_used, Some(4.0));
+        assert_eq!(usage.monthly_limit, Some(10.0));
+        assert_eq!(usage.remaining, Some(123.0));
+    }
+
+    #[test]
+    fn codex_for_me_mapping_preserves_balance_fields_and_budget_signal() {
+        let provider = ProviderConfig {
+            display_name: "Codex For Me".to_string(),
+            base_url: "https://api-vip.codex-for.me/v1".to_string(),
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            group: None,
+            disabled: false,
+            api_key: String::new(),
+        };
+        let mapping = resolve_quota_profile(&provider)
+            .summary_mapping
+            .expect("summary mapping");
+        let payload = serde_json::json!({
+            "data": {
+                "card_balance": "42.5",
+                "card_expire_date": "2027-12-31",
+                "card_name": "VIP",
+                "card_daily_limit": "200",
+                "today_spent_amount": "26.03",
+                "card_total_spent_amount": "40.92"
+            }
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            mapping,
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://api-vip.codex-for.me".to_string()),
+                effective_usage_source: Some("login_summary".to_string()),
+                updated_at_unix_ms: 789,
+            },
+        )
+        .expect("mapped usage");
+
+        assert_eq!(usage.usage_kind, UsageKind::BudgetInfo);
+        assert_eq!(usage.plan_name.as_deref(), Some("VIP"));
+        assert_eq!(usage.remaining, Some(42.5));
+        assert_eq!(usage.daily_limit, Some(200.0));
+        assert_eq!(usage.daily_used, Some(26.03));
+        assert_eq!(usage.monthly_used, Some(40.92));
+        assert_eq!(usage.expires_at_unix_ms, Some(1_830_254_400_000));
+    }
+
 }

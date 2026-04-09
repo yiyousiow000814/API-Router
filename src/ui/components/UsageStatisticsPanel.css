@@ -648,7 +648,11 @@
 }
 
 .aoUsageReqColTime {
-  width: 134px;
+  width: 114px;
+}
+
+.aoUsageReqColNode {
+  width: 104px;
 }
 
 .aoUsageReqColProvider {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 
 type TopPage =
   | 'dashboard'
@@ -29,7 +29,7 @@ function isPointerNearButton(event: React.MouseEvent<HTMLDivElement>, button: HT
   )
 }
 
-export function AppTopNav({
+export const AppTopNav = memo(function AppTopNav({
   activePage,
   onSwitchPage,
   onOpenGettingStarted,
@@ -42,6 +42,7 @@ export function AppTopNav({
   const switchboardBtnRef = useRef<HTMLButtonElement | null>(null)
   const eventsBtnRef = useRef<HTMLButtonElement | null>(null)
   const webCodexBtnRef = useRef<HTMLButtonElement | null>(null)
+  const pointerActivatedPageRef = useRef<TopPage | null>(null)
   const [visualActivePage, setVisualActivePage] = useState<TopPage>(activePage)
 
   const applyImmediateNavActive = useCallback((next: TopPage) => {
@@ -75,6 +76,25 @@ export function AppTopNav({
     [applyImmediateNavActive, onSwitchPage],
   )
 
+  const activateFromPointer = useCallback(
+    (next: TopPage) => {
+      pointerActivatedPageRef.current = next
+      activateAndSwitch(next)
+    },
+    [activateAndSwitch],
+  )
+
+  const activateFromClick = useCallback(
+    (next: TopPage) => {
+      if (pointerActivatedPageRef.current === next) {
+        pointerActivatedPageRef.current = null
+        return
+      }
+      activateAndSwitch(next)
+    },
+    [activateAndSwitch],
+  )
+
   const handleTopNavPointerIntent = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
       if (isPointerNearButton(event, usageBtnRef.current)) onUsageStatisticsIntent?.()
@@ -93,9 +113,9 @@ export function AppTopNav({
           aria-selected={visualActivePage === 'dashboard'}
           onPointerDown={(event) => {
             if (event.button !== 0) return
-            activateAndSwitch('dashboard')
+            activateFromPointer('dashboard')
           }}
-          onClick={() => activateAndSwitch('dashboard')}
+          onClick={() => activateFromClick('dashboard')}
         >
           <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
             <rect x="4" y="4" width="6.5" height="6.5" rx="1.2" />
@@ -113,9 +133,9 @@ export function AppTopNav({
           onPointerDown={(event) => {
             if (event.button !== 0) return
             onUsageRequestsIntent?.()
-            activateAndSwitch('usage_requests')
+            activateFromPointer('usage_requests')
           }}
-          onClick={() => activateAndSwitch('usage_requests')}
+          onClick={() => activateFromClick('usage_requests')}
           onFocus={() => onUsageRequestsIntent?.()}
         >
           <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
@@ -138,9 +158,9 @@ export function AppTopNav({
           aria-selected={visualActivePage === 'usage_statistics'}
           onPointerDown={(event) => {
             if (event.button !== 0) return
-            activateAndSwitch('usage_statistics')
+            activateFromPointer('usage_statistics')
           }}
-          onClick={() => activateAndSwitch('usage_statistics')}
+          onClick={() => activateFromClick('usage_statistics')}
           onFocus={() => onUsageStatisticsIntent?.()}
         >
           <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
@@ -159,9 +179,9 @@ export function AppTopNav({
           aria-selected={visualActivePage === 'provider_switchboard'}
           onPointerDown={(event) => {
             if (event.button !== 0) return
-            activateAndSwitch('provider_switchboard')
+            activateFromPointer('provider_switchboard')
           }}
-          onClick={() => activateAndSwitch('provider_switchboard')}
+          onClick={() => activateFromClick('provider_switchboard')}
         >
           <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 7h11" />
@@ -178,9 +198,9 @@ export function AppTopNav({
           aria-selected={visualActivePage === 'web_codex'}
           onPointerDown={(event) => {
             if (event.button !== 0) return
-            activateAndSwitch('web_codex')
+            activateFromPointer('web_codex')
           }}
-          onClick={() => activateAndSwitch('web_codex')}
+          onClick={() => activateFromClick('web_codex')}
         >
           <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
             <circle cx="12" cy="12" r="9" />
@@ -196,9 +216,9 @@ export function AppTopNav({
           aria-selected={visualActivePage === 'event_log'}
           onPointerDown={(event) => {
             if (event.button !== 0) return
-            activateAndSwitch('event_log')
+            activateFromPointer('event_log')
           }}
-          onClick={() => activateAndSwitch('event_log')}
+          onClick={() => activateFromClick('event_log')}
         >
           <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M5 4.5h14" />
@@ -214,4 +234,4 @@ export function AppTopNav({
       </button>
     </div>
   )
-}
+})

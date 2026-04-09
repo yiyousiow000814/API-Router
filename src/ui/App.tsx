@@ -3,7 +3,14 @@ import { invoke } from '@tauri-apps/api/core'
 import './App.css'
 import './components/AppShared.css'
 import { recordStartupStage } from './startupTrace'
-import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status, UsageStatistics } from './types'
+import type {
+  CodexSwapStatus,
+  Config,
+  ProviderSwitchboardStatus,
+  Status,
+  UsageStatistics,
+  UsageStatisticsOverview,
+} from './types'
 import { fmtAmount, fmtPct, fmtUsd, pctOf } from './utils/format'
 import {
   fmtKpiTokens as formatKpiTokens,
@@ -11,7 +18,7 @@ import {
   fmtUsdMaybe as formatUsdMaybe,
   fmtUsageBucketLabel as formatUsageBucketLabel,
 } from './utils/usageDisplay'
-import { devConfig, devStatus, evolveDevStatus, parseDevFlag, type SpendHistoryRow } from './devMockData'
+import type { SpendHistoryRow } from './devMockData'
 import type {
   ProviderScheduleDraft,
   UsageHistoryDraft,
@@ -25,19 +32,21 @@ import {
   normalizeCurrencyCode,
   parsePositiveAmount,
 } from './utils/currency'
-import { AppMainContent } from './components/AppMainContent'
+import { AppMainContent, preloadAppMainContentModules } from './components/AppMainContent'
 import { AppTopNav } from './components/AppTopNav'
-import type { EventLogDailyStat, EventLogEntry } from './components/EventLogPanel'
 import type { LastErrorJump } from './components/ProvidersTable'
 import { useConfigDrag } from './hooks/useConfigDrag'
 import { useProviderActions } from './hooks/useProviderActions'
 import { useUsageHistoryScrollbar } from './hooks/useUsageHistoryScrollbar'
 import { useAppPolling } from './hooks/useAppPolling'
 import { useAppPrefs } from './hooks/useAppPrefs'
+import { useRefreshScheduler } from './hooks/useRefreshScheduler'
 import { useSwitchboardStatusActions } from './hooks/useSwitchboardStatusActions'
 import { useStatusDerivations } from './hooks/useStatusDerivations'
 import { usePageScroll } from './hooks/usePageScroll'
 import { useAppUsageEffects } from './hooks/useAppUsageEffects'
+import { buildUsageRefreshRevision } from './hooks/useAppUsageEffects'
+import { buildUsageHistoryQuotaRefreshToken } from './hooks/useAppUsageEffects'
 import { useDashboardDerivations } from './hooks/useDashboardDerivations'
 import { useProviderPanelUi } from './hooks/useProviderPanelUi'
 import { useAppActions } from './hooks/useAppActions'
@@ -57,10 +66,19 @@ import {
   resolveCliHomes,
 } from './utils/switchboard'
 import { usageProviderRowKey } from './utils/usageStatisticsView'
+import { isRemoteUpdateStatusCurrentForPending } from './utils/remoteUpdateStatus'
 import {
   USAGE_REQUESTS_CANONICAL_QUERY_KEY,
   primeUsageRequestsPrefetchCache,
 } from './components/UsageStatisticsPanel'
+import {
+  buildDevPreviewFollowConfig,
+  copyDevPreviewBorrowedProvider,
+  getDevPreviewSourceProviders,
+  updateDevPreviewPairState,
+} from './utils/devPreviewConfigSource'
+import { lanConfigSourceSyncSignature } from './utils/lanConfigSourceSync'
+import { ensureLanConfigSourceTrust, waitForLanConfigSourceTrust } from './utils/lanPairCompletion'
 
 const AppModals = lazy(async () => {
   const module = await import('./components/AppModals')
@@ -85,33 +103,56 @@ const RAW_DRAFT_STORAGE_KEY = 'ao.rawConfigDraft.shared.v1'
 const RAW_DRAFT_WINDOWS_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.windows.v1'
 const RAW_DRAFT_WSL_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.wsl2.v1'
 const USAGE_PROVIDER_SHOW_DETAILS_KEY = 'ao.usage.provider.showDetails.v1'
-const EVENT_LOG_PRELOAD_REFRESH_MS = 15_000
-const EVENT_LOG_PRELOAD_LIMIT = 5000
-const STATUS_CACHE_STORAGE_KEY = 'ao.startup.status.v1'
-const CONFIG_CACHE_STORAGE_KEY = 'ao.startup.config.v1'
-const TOKEN_CACHE_STORAGE_KEY = 'ao.startup.gatewayTokenPreview.v1'
+
+type CopyProviderResult = {
+  target_name: string
+  local_copy_state: 'copied' | 'linked'
+}
+
+type DevPreviewModule = typeof import('./devMockData')
+type LocalNetworkConnectivityPayload = {
+  online: boolean
+}
+
+function parseDevFlag(raw: string | null): boolean {
+  const normalized = String(raw ?? '').trim().toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on'
+}
+
+function createEmptyDevStatus(): Status {
+  return {
+    listen: { host: '127.0.0.1', port: 4000 },
+    local_network_online: true,
+    preferred_provider: '',
+    manual_override: null,
+    providers: {},
+    metrics: {},
+    recent_events: [],
+    quota: {},
+    ledgers: {},
+    last_activity_unix_ms: 0,
+    codex_account: { ok: false, signed_in: false },
+  }
+}
+
+function createEmptyDevConfig(): Config {
+  return {
+    listen: { host: '127.0.0.1', port: 4000 },
+    routing: {
+      preferred_provider: '',
+      session_preferred_providers: {},
+      auto_return_to_preferred: true,
+      preferred_stable_seconds: 30,
+      failure_threshold: 2,
+      cooldown_seconds: 60,
+      request_timeout_seconds: 300,
+    },
+    providers: {},
+    provider_order: [],
+  }
+}
 
 recordStartupStage('frontend_app_module_loaded')
-
-function readStartupCache<T>(key: string): T | null {
-  if (typeof window === 'undefined') return null
-  try {
-    const raw = window.localStorage.getItem(key)
-    if (!raw) return null
-    return JSON.parse(raw) as T
-  } catch {
-    return null
-  }
-}
-
-function writeStartupCache(key: string, value: unknown) {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value))
-  } catch {
-    // Ignore cache write failures; startup cache is best-effort only.
-  }
-}
 
 export default function App() {
   useEffect(() => {
@@ -127,11 +168,14 @@ export default function App() {
     if (typeof window === 'undefined') return new URLSearchParams()
     return new URLSearchParams(window.location.search)
   }, [])
+  const [devPreviewModule, setDevPreviewModule] = useState<DevPreviewModule | null>(null)
   const devMockHistoryEnabled = useMemo(() => parseDevFlag(devFlags.get('mockHistory')), [devFlags])
   const devAutoOpenHistory = useMemo(() => parseDevFlag(devFlags.get('openHistory')), [devFlags])
   const rawConfigTestMode = useMemo(() => parseDevFlag(devFlags.get('test')), [devFlags])
-  const [status, setStatus] = useState<Status | null>(() => readStartupCache<Status>(STATUS_CACHE_STORAGE_KEY))
-  const [config, setConfig] = useState<Config | null>(() => readStartupCache<Config>(CONFIG_CACHE_STORAGE_KEY))
+  const devStatus = useMemo(() => devPreviewModule?.devStatus ?? createEmptyDevStatus(), [devPreviewModule])
+  const devConfig = useMemo(() => devPreviewModule?.devConfig ?? createEmptyDevConfig(), [devPreviewModule])
+  const [status, setStatus] = useState<Status | null>(null)
+  const [config, setConfig] = useState<Config | null>(null)
   const [, setBaselineBaseUrls] = useState<Record<string, string>>({})
   const [toast, setToast] = useState<string>('')
   const [override, setOverride] = useState<string>('') // '' => auto
@@ -158,8 +202,6 @@ export default function App() {
     provider: '',
     baseUrl: '',
     showUrlInput: true,
-    showPackycodeLogin: false,
-    hasUsageLogin: false,
     value: '',
     auto: false,
     explicitValue: '',
@@ -186,9 +228,7 @@ export default function App() {
     value: '',
   })
   const overrideDirtyRef = useRef<boolean>(false)
-  const [gatewayTokenPreview, setGatewayTokenPreview] = useState<string>(
-    () => readStartupCache<string>(TOKEN_CACHE_STORAGE_KEY) ?? '',
-  )
+  const [gatewayTokenPreview, setGatewayTokenPreview] = useState<string>('')
   const [gatewayTokenReveal, setGatewayTokenReveal] = useState<string>('')
   const [gatewayModalOpen, setGatewayModalOpen] = useState<boolean>(false)
   const [configModalOpen, setConfigModalOpen] = useState<boolean>(false)
@@ -214,22 +254,73 @@ export default function App() {
   const [refreshingProviders, setRefreshingProviders] = useState<Record<string, boolean>>({})
   const [codexRefreshing, setCodexRefreshing] = useState<boolean>(false)
   const [activePage, setActivePage] = useState<TopPage>('dashboard')
+  const { runPrimaryRefresh, enqueueBackgroundRefresh } = useRefreshScheduler(activePage)
   const [eventLogFocusRequest, setEventLogFocusRequest] = useState<{
     provider: string
     unixMs: number
     message: string
     nonce: number
   } | null>(null)
-  const [eventLogPreloadEntries, setEventLogPreloadEntries] = useState<EventLogEntry[]>([])
-  const [eventLogPreloadDailyStats, setEventLogPreloadDailyStats] = useState<EventLogDailyStat[]>([])
   const [providerSwitchStatus, setProviderSwitchStatus] = useState<ProviderSwitchboardStatus | null>(null)
+
+  useEffect(() => {
+    if (isDevPreview || typeof window === 'undefined') return
+    let disposed = false
+    let unlisten: null | (() => void) = null
+    void import('@tauri-apps/api/event')
+      .then(({ listen }) =>
+        listen<LocalNetworkConnectivityPayload>('local-network-connectivity-changed', (event) => {
+          setStatus((prev) => {
+            if (!prev) return prev
+            if (prev.local_network_online === event.payload.online) return prev
+            return {
+              ...prev,
+              local_network_online: event.payload.online,
+            }
+          })
+        }),
+      )
+      .then((cleanup) => {
+        if (disposed) {
+          cleanup()
+          return
+        }
+        unlisten = cleanup
+      })
+      .catch(() => {})
+    return () => {
+      disposed = true
+      if (unlisten) {
+        unlisten()
+      }
+    }
+  }, [isDevPreview])
   const [providerGroupManagerOpen, setProviderGroupManagerOpen] = useState<boolean>(false)
   const [providerGroupManagerFocusProvider, setProviderGroupManagerFocusProvider] = useState<string | null>(null)
+  const [usageOverview, setUsageOverview] = useState<UsageStatisticsOverview | null>(null)
   const [usageStatistics, setUsageStatistics] = useState<UsageStatistics | null>(null)
   const [usageWindowHours, setUsageWindowHours] = useState<number>(24)
+  const [usageFilterNodes, setUsageFilterNodes] = useState<string[]>([])
   const [usageFilterProviders, setUsageFilterProviders] = useState<string[]>([])
   const [usageFilterModels, setUsageFilterModels] = useState<string[]>([])
   const [usageFilterOrigins, setUsageFilterOrigins] = useState<string[]>([])
+  const usageRefreshRevision = useMemo(
+    () =>
+      buildUsageRefreshRevision({
+        usageWindowHours,
+        usageFilterNodes,
+        usageFilterProviders,
+        usageFilterModels,
+        usageFilterOrigins,
+      }),
+    [
+      usageWindowHours,
+      usageFilterNodes,
+      usageFilterProviders,
+      usageFilterModels,
+      usageFilterOrigins,
+    ],
+  )
   const [usageStatisticsLoading, setUsageStatisticsLoading] = useState<boolean>(false)
   const [usagePricingModalOpen, setUsagePricingModalOpen] = useState<boolean>(false)
   const [usagePricingDrafts, setUsagePricingDrafts] = useState<Record<string, UsagePricingDraft>>({})
@@ -311,9 +402,12 @@ export default function App() {
   const usageScheduleLastSavedByProviderRef = useRef<Record<string, string>>({})
   const toastTimerRef = useRef<number | null>(null)
   const rawConfigTestFailOnceRef = useRef<Record<string, boolean>>({})
-  const eventLogPreloadSeqRef = useRef(0)
+  const devPreviewLocalConfigRef = useRef<Config | null>(null)
+  const devPreviewFollowSourceProvidersRef = useRef<Config['providers'] | null>(null)
   const rawConfigTextsRef = useRef<Record<string, string>>({})
   const rawConfigDraftAutoSaveTimerRef = useRef<Record<string, number>>({})
+  const lastLanConfigSyncSignatureRef = useRef<string>('')
+  const pairCompletionWatchSeqRef = useRef(0)
   const setRawConfigTextsSync = (
     updater: Record<string, string> | ((prev: Record<string, string>) => Record<string, string>),
   ) => {
@@ -340,10 +434,7 @@ export default function App() {
       return current.nonce === nonce ? null : current
     })
   }
-  const eventLogSeedEvents = useMemo(
-    () => (eventLogPreloadEntries.length > 0 ? eventLogPreloadEntries : status?.recent_events ?? []),
-    [eventLogPreloadEntries, status?.recent_events],
-  )
+  const eventLogSeedEvents = useMemo(() => status?.recent_events ?? [], [status?.recent_events])
   useEffect(() => {
     if (typeof window === 'undefined') return
     const w = window as Window & {
@@ -351,12 +442,15 @@ export default function App() {
         jumpToEventLogError?: ((payload?: { provider: string; unixMs: number; message: string }) => boolean) | undefined
         primeRequestsPrefetchCache?: ((payload: {
           rows: Array<{
+            id: string
             provider: string
             api_key_ref: string
             model: string
             origin: string
             session_id: string
             unix_ms: number
+            node_id: string
+            node_name: string
             input_tokens: number
             output_tokens: number
             total_tokens: number
@@ -416,72 +510,24 @@ export default function App() {
     }
   }, [eventLogSeedEvents, handleOpenLastErrorInEventLog])
   useEffect(() => {
-    if (!status) return
-    writeStartupCache(STATUS_CACHE_STORAGE_KEY, status)
-  }, [status])
-  useEffect(() => {
-    if (!config) return
-    writeStartupCache(CONFIG_CACHE_STORAGE_KEY, config)
-  }, [config])
-  useEffect(() => {
-    if (!gatewayTokenPreview.trim()) return
-    writeStartupCache(TOKEN_CACHE_STORAGE_KEY, gatewayTokenPreview)
-  }, [gatewayTokenPreview])
-  useEffect(() => {
-    if (activePage !== 'event_log') return
+    if (!isDevPreview) return
     let cancelled = false
-    const loadEventLogPreload = async () => {
-      const reqId = ++eventLogPreloadSeqRef.current
-      try {
-        const [entriesRaw, dailyRaw] = await Promise.all([
-          invoke<EventLogEntry[]>('get_event_log_entries', {
-            fromUnixMs: null,
-            toUnixMs: null,
-            limit: EVENT_LOG_PRELOAD_LIMIT,
-          }),
-          invoke<EventLogDailyStat[]>('get_event_log_daily_stats', {
-            fromUnixMs: null,
-            toUnixMs: null,
-          }),
-        ])
-        if (cancelled || eventLogPreloadSeqRef.current !== reqId) return
-        if (Array.isArray(entriesRaw)) {
-          setEventLogPreloadEntries([...entriesRaw].sort((a, b) => b.unix_ms - a.unix_ms))
-        }
-        if (Array.isArray(dailyRaw)) {
-          const normalized = dailyRaw
-            .filter((row) =>
-              row != null &&
-              Number.isFinite(Number(row.day_start_unix_ms)) &&
-              Number.isFinite(Number(row.total)) &&
-              Number.isFinite(Number(row.infos)) &&
-              Number.isFinite(Number(row.warnings)) &&
-              Number.isFinite(Number(row.errors)),
-            )
-            .map((row) => ({
-              day: String(row.day ?? ''),
-              day_start_unix_ms: Number(row.day_start_unix_ms),
-              total: Number(row.total),
-              infos: Number(row.infos),
-              warnings: Number(row.warnings),
-              errors: Number(row.errors),
-            }))
-            .sort((a, b) => a.day_start_unix_ms - b.day_start_unix_ms)
-          setEventLogPreloadDailyStats(normalized)
-        }
-      } catch {
-        // Keep the last successful preload snapshot if refresh fails transiently.
-      }
-    }
-    void loadEventLogPreload()
-    const timer = window.setInterval(() => {
-      void loadEventLogPreload()
-    }, EVENT_LOG_PRELOAD_REFRESH_MS)
+    void import('./devMockData').then((module) => {
+      if (cancelled) return
+      setDevPreviewModule(module)
+      setStatus(module.devStatus)
+      setConfig(module.devConfig)
+      setBaselineBaseUrls(
+        Object.fromEntries(
+          Object.entries(module.devConfig.providers).map(([name, provider]) => [name, provider.base_url]),
+        ),
+      )
+      setGatewayTokenPreview('ao_dev********7f2a')
+    })
     return () => {
       cancelled = true
-      window.clearInterval(timer)
     }
-  }, [activePage])
+  }, [isDevPreview])
   useEffect(() => {
     rawConfigTextsRef.current = rawConfigTexts
   }, [rawConfigTexts])
@@ -757,6 +803,7 @@ export default function App() {
     providerSwitchBusy,
     toggleCodexSwap,
     refreshProviderSwitchStatus,
+    refreshGatewayTokenPreview,
     refreshStatus,
     refreshConfig,
     setProviderSwitchTarget,
@@ -860,8 +907,9 @@ export default function App() {
     })
   }, [config, setBaselineBaseUrls])
   const onDevPreviewTick = useCallback(() => {
-    setStatus((prev) => evolveDevStatus(prev))
-  }, [])
+    if (!devPreviewModule) return
+    setStatus((prev) => devPreviewModule.evolveDevStatus(prev))
+  }, [devPreviewModule])
   const codexSwapBadge = useMemo(() => {
     const windowsHome = codexSwapUseWindows ? codexSwapDir1.trim() : ''
     const wslHome = codexSwapUseWsl ? codexSwapDir2.trim() : ''
@@ -932,6 +980,7 @@ export default function App() {
     clearAutoSaveTimer,
     clearAutoSaveTimersByPrefix,
     queueAutoSaveTimer,
+    refreshUsageOverview,
     refreshUsageStatistics,
     usageCurrencyOptions,
     providerApiKeyLabel,
@@ -960,9 +1009,11 @@ export default function App() {
   } = useUsageOpsBridge({
     isDevPreview,
     usageWindowHours,
+    usageFilterNodes,
     usageFilterProviders,
     usageFilterModels,
     usageFilterOrigins,
+    setUsageOverview,
     setUsageStatistics,
     setUsageStatisticsLoading,
     flashToast,
@@ -1009,41 +1060,44 @@ export default function App() {
     refreshUsageStatistics,
     clientSessions: status?.client_sessions ?? [],
   })
-  const usageRequestsWarmupStartedRef = useRef(false)
+  const usageHistoryQuotaRefreshToken = useMemo(
+    () => buildUsageHistoryQuotaRefreshToken(status?.quota),
+    [status?.quota],
+  )
   useEffect(() => {
-    if (usageRequestsWarmupStartedRef.current) return
-    usageRequestsWarmupStartedRef.current = true
     if (typeof window === 'undefined') return
-
-    const runWarmup = () => {
-      handleUsageRequestsIntentPrefetch()
+    let cancelled = false
+    let idleId: number | null = null
+    let timerId: number | null = null
+    const runPreload = () => {
+      if (cancelled) return
+      void preloadAppMainContentModules()
     }
-
-    const w = window as unknown as {
-      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number
-      cancelIdleCallback?: (id: number) => void
-      setTimeout: typeof window.setTimeout
-      clearTimeout: typeof window.clearTimeout
+    if (typeof window.requestIdleCallback === 'function') {
+      idleId = window.requestIdleCallback(runPreload, { timeout: 1200 })
+    } else {
+      timerId = window.setTimeout(runPreload, 300)
     }
-
-    if (typeof w.requestIdleCallback === 'function') {
-      const id = w.requestIdleCallback(runWarmup, { timeout: 1500 })
-      return () => w.cancelIdleCallback?.(id)
+    return () => {
+      cancelled = true
+      if (idleId != null && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(idleId)
+      }
+      if (timerId != null) {
+        window.clearTimeout(timerId)
+      }
     }
-
-    const timer = w.setTimeout(runWarmup, 450)
-    return () => w.clearTimeout(timer)
-  }, [handleUsageRequestsIntentPrefetch])
+  }, [])
   const {
     providerGroupLabelByName, linkedProvidersForApiKey, switchboardProviderCards, switchboardModeLabel,
     switchboardModelProviderLabel, switchboardTargetDirsLabel, usageSummary, usageByProvider, usageTotalInputTokens,
-    usageTotalOutputTokens, usageAvgTokensPerRequest, usageTopModel, usageProviderFilterOptions,
+    usageTotalOutputTokens, usageAvgTokensPerRequest, usageTopModel, usageNodeFilterOptions, usageProviderFilterOptions,
     usageProviderFilterDisplayOptions, usageModelFilterOptions,
     usageOriginFilterOptions,
     usageProviderDisplayGroups, usagePricedRequestCount, usageDedupedTotalUsedUsd, usagePricedCoveragePct,
     usageActiveWindowHours, usageAvgRequestsPerHour, usageAvgTokensPerHour, usageWindowLabel,
     usageProviderTotalsAndAverages, usagePricingProviderNames, usagePricingGroups, usageScheduleProviderOptions,
-    usageAnomalies, toggleUsageProviderFilterDisplayOption, toggleUsageModelFilter, toggleUsageOriginFilter, usageChart, showUsageChartHover,
+    usageAnomalies, toggleUsageProviderFilterDisplayOption, toggleUsageModelFilter, toggleUsageNodeFilter, toggleUsageOriginFilter, usageChart, showUsageChartHover,
   } = useDashboardDerivations({
     config,
     orderedConfigProviders,
@@ -1054,7 +1108,10 @@ export default function App() {
     fmtAmount,
     fmtUsd,
     pctOf,
+    usageOverview,
     usageStatistics,
+    usageFilterNodes,
+    setUsageFilterNodes,
     usageFilterProviders,
     setUsageFilterProviders,
     usageFilterModels,
@@ -1069,6 +1126,8 @@ export default function App() {
     providerGroupLabelByName,
     usageScheduleSaveState,
     usageScheduleSaveError,
+    setUsageFilterNodes,
+    usageNodeFilterOptions,
     setUsageFilterProviders,
     usageProviderFilterOptions,
     setUsageFilterModels,
@@ -1080,11 +1139,12 @@ export default function App() {
     setProviderDisabled, deleteProvider, saveKey, clearKey, saveProviderBaseUrl, refreshQuota,
     saveUsageBaseUrl, saveUsageAuth, clearUsageAuth, saveProviderEmail, clearProviderEmail,
     setUsageBaseUrl, clearUsageBaseUrl, setProviderQuotaHardCap,
-    openKeyModal, openProviderBaseUrlModal, openUsageBaseModal, openUsageAuthModal, openPackycodeLogin, openProviderEmailModal, addProvider,
+    openKeyModal, openProviderBaseUrlModal, openUsageBaseModal, openUsageAuthModal, openProviderEmailModal, addProvider,
     setProvidersGroup,
   } = useProviderActions({
     config,
     status,
+    setStatus,
     isDevPreview,
     setConfig,
     keyModal,
@@ -1110,26 +1170,356 @@ export default function App() {
     refreshConfig,
     flashToast,
   })
+  async function followConfigSource(nodeId: string) {
+    try {
+      if (isDevPreview) {
+        setConfig((prev) => {
+          if (!prev) return prev
+          const localSnapshot = devPreviewLocalConfigRef.current ?? prev
+          if (prev.config_source?.mode !== 'follow') {
+            devPreviewLocalConfigRef.current = prev
+          }
+          devPreviewFollowSourceProvidersRef.current = getDevPreviewSourceProviders(nodeId, localSnapshot)
+          return buildDevPreviewFollowConfig(
+            prev,
+            nodeId,
+            localSnapshot,
+            devPreviewFollowSourceProvidersRef.current,
+          )
+        })
+        flashToast(`Following config source [TEST]: ${nodeId}`)
+        return
+      }
+      await invoke('set_followed_config_source', { nodeId })
+      flashToast(`Following config source: ${nodeId}`)
+      await refreshStatus()
+      await refreshConfig()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
+  }
+  async function clearFollowedConfigSource() {
+    try {
+      if (isDevPreview) {
+        setConfig(devPreviewLocalConfigRef.current ?? devConfig)
+        devPreviewLocalConfigRef.current = null
+        devPreviewFollowSourceProvidersRef.current = null
+        flashToast('Returned to local config source [TEST]')
+        return
+      }
+      await invoke('clear_followed_config_source')
+      flashToast('Returned to local config source')
+      await refreshStatus()
+      await refreshConfig()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
+  }
+  async function requestLanPair(nodeId: string): Promise<string | null> {
+    try {
+      if (isDevPreview) {
+        const requestId = `pair_${nodeId}`
+        setConfig((prev) => {
+          if (!prev) return prev
+          return updateDevPreviewPairState(prev, nodeId, (source) => ({
+            ...source,
+            trusted: false,
+            pair_state: 'pin_required',
+            pair_request_id: requestId,
+            follow_allowed: false,
+            follow_blocked_reason: 'pair this device before following its config',
+          }))
+        })
+        return requestId
+      }
+      const requestId = await invoke<string>('request_lan_pair', { nodeId })
+      await refreshConfig()
+      return requestId
+    } catch (e) {
+      flashToast(String(e), 'error')
+      return null
+    }
+  }
+  async function watchLanPairTrust(nodeId: string): Promise<boolean> {
+    if (isDevPreview) return true
+    const watchSeq = ++pairCompletionWatchSeqRef.current
+    return waitForLanConfigSourceTrust({
+      nodeId,
+      loadStatus: () => invoke<Status>('get_status'),
+      loadConfig: () => invoke<Config>('get_config'),
+      applyStatus: (nextStatus) => {
+        if (pairCompletionWatchSeqRef.current !== watchSeq) return
+        setStatus(nextStatus)
+        if (!overrideDirtyRef.current) setOverride(nextStatus.manual_override ?? '')
+      },
+      applyConfig: (nextConfig) => {
+        if (pairCompletionWatchSeqRef.current !== watchSeq) return
+        setConfig(nextConfig)
+        setBaselineBaseUrls(
+          Object.fromEntries(Object.entries(nextConfig.providers ?? {}).map(([name, provider]) => [name, provider.base_url])),
+        )
+      },
+    })
+  }
+  async function approveLanPair(requestId: string): Promise<string | null> {
+    try {
+      const nodeId = config?.config_source?.sources.find((entry) => entry.pair_request_id === requestId)?.node_id ?? ''
+      if (isDevPreview) {
+        if (!nodeId) {
+          flashToast('Pair request not found [TEST]', 'error')
+          return null
+        }
+        setConfig((prev) => {
+          if (!prev) return prev
+          return updateDevPreviewPairState(prev, nodeId, (source) => ({
+            ...source,
+            trusted: false,
+            pair_state: 'pin_required',
+            pair_request_id: requestId,
+            follow_allowed: false,
+            follow_blocked_reason: 'pair this device before following its config',
+          }))
+        })
+        return '123456'
+      }
+      const pinCode = await invoke<string>('approve_lan_pair', { requestId })
+      await refreshConfig()
+      if (nodeId) {
+        void watchLanPairTrust(nodeId)
+      }
+      return pinCode
+    } catch (e) {
+      flashToast(String(e), 'error')
+      return null
+    }
+  }
+  async function submitLanPairPin(nodeId: string, requestId: string, pinCode: string) {
+    if (isDevPreview) {
+      setConfig((prev) => {
+        if (!prev) return prev
+        return updateDevPreviewPairState(prev, nodeId, (source) => ({
+          ...source,
+          trusted: true,
+          pair_state: 'trusted',
+          pair_request_id: null,
+          follow_allowed: true,
+          follow_blocked_reason: null,
+        }))
+      })
+      return
+    }
+    await invoke('submit_lan_pair_pin', { nodeId, requestId, pinCode })
+    await refreshConfig()
+    await ensureLanConfigSourceTrust({
+      nodeId,
+      loadStatus: () => invoke<Status>('get_status'),
+      loadConfig: () => invoke<Config>('get_config'),
+      applyStatus: (nextStatus) => {
+        setStatus(nextStatus)
+        if (!overrideDirtyRef.current) setOverride(nextStatus.manual_override ?? '')
+      },
+      applyConfig: (nextConfig) => {
+        setConfig(nextConfig)
+        setBaselineBaseUrls(
+          Object.fromEntries(Object.entries(nextConfig.providers ?? {}).map(([name, provider]) => [name, provider.base_url])),
+        )
+      },
+    })
+  }
+  const [lanRemoteUpdatePendingByNode, setLanRemoteUpdatePendingByNode] = useState<
+    Record<string, { stage: 'requesting' | 'refreshing'; detail: string; startedAtUnixMs: number }>
+  >({})
+
+  useEffect(() => {
+    const sources = config?.config_source?.sources ?? []
+    setLanRemoteUpdatePendingByNode((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const nodeId of Object.keys(prev)) {
+        const source = sources.find((item) => item.node_id === nodeId && item.kind === 'peer')
+        if (!source) continue
+        const pendingStage = prev[nodeId]
+        const remoteState = source.remote_update_status?.state?.trim() || ''
+        const hasCurrentTerminalRemoteUpdateStatus =
+          Boolean(source.remote_update_status?.state?.trim()) &&
+          isRemoteUpdateStatusCurrentForPending(source, pendingStage) &&
+          ['failed', 'succeeded', 'superseded'].includes(remoteState)
+        if (hasCurrentTerminalRemoteUpdateStatus || !source.version_sync_required) {
+          delete next[nodeId]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [config])
+
+  const lanRemoteUpdatePendingNodeIdsKey = Object.keys(lanRemoteUpdatePendingByNode).sort().join('|')
+
+  useEffect(() => {
+    if (isDevPreview || !lanRemoteUpdatePendingNodeIdsKey) return
+    let cancelled = false
+    let refreshInFlight = false
+    const refreshRemoteUpdateProgress = async () => {
+      if (cancelled || refreshInFlight) return
+      refreshInFlight = true
+      try {
+        await refreshConfig({ refreshProviderSwitchStatus: false, force: true })
+      } finally {
+        refreshInFlight = false
+      }
+    }
+    void refreshRemoteUpdateProgress()
+    const timer = window.setInterval(() => {
+      void refreshRemoteUpdateProgress()
+    }, 1000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [isDevPreview, lanRemoteUpdatePendingNodeIdsKey, refreshConfig])
+
+  async function requestLanRemoteUpdateSameVersion(nodeId: string) {
+    if (lanRemoteUpdatePendingByNode[nodeId]) return
+    setLanRemoteUpdatePendingByNode((prev) => ({
+      ...prev,
+      [nodeId]: {
+        stage: 'requesting',
+        detail: 'Sending update request to peer',
+        startedAtUnixMs: Date.now(),
+      },
+    }))
+    try {
+      if (isDevPreview) {
+        flashToast(`Requested ${nodeId} to sync to this build [TEST]`)
+        setLanRemoteUpdatePendingByNode((prev) => {
+          const next = { ...prev }
+          delete next[nodeId]
+          return next
+        })
+        return
+      }
+      await invoke('request_lan_remote_update_same_version', { nodeId })
+      setLanRemoteUpdatePendingByNode((prev) => ({
+        ...prev,
+        [nodeId]: {
+          stage: 'refreshing',
+          detail: 'Peer accepted request. Refreshing remote progress',
+          startedAtUnixMs: prev[nodeId]?.startedAtUnixMs ?? Date.now(),
+        },
+      }))
+      flashToast('Peer version sync requested')
+      await refreshConfig({ refreshProviderSwitchStatus: false, force: true })
+    } catch (error) {
+      setLanRemoteUpdatePendingByNode((prev) => {
+        const next = { ...prev }
+        delete next[nodeId]
+        return next
+      })
+      flashToast(String(error), 'error')
+    }
+  }
+  async function copyProviderFromConfigSource(sourceNodeId: string, sharedProviderId: string) {
+    try {
+      if (isDevPreview) {
+        const activeConfig = config
+        const localBase = devPreviewLocalConfigRef.current ?? activeConfig ?? devConfig
+        if (!activeConfig) {
+          flashToast('Borrowed provider not found [TEST]', 'error')
+          return
+        }
+        const sourceProviders =
+          devPreviewFollowSourceProvidersRef.current ?? getDevPreviewSourceProviders(sourceNodeId, localBase)
+        const copied = copyDevPreviewBorrowedProvider({
+          activeConfig,
+          localBase,
+          sourceNodeId,
+          sharedProviderId,
+          sourceProviders,
+        })
+        if (!copied) {
+          flashToast('Borrowed provider not found [TEST]', 'error')
+          return
+        }
+        devPreviewLocalConfigRef.current = copied.nextLocalConfig
+        setConfig((prev) => {
+          if (!prev || prev.config_source?.mode !== 'follow') return prev
+          return copied.nextFollowConfig
+        })
+        flashToast(
+          copied.localCopyState === 'linked'
+            ? `Linked provider [TEST]: ${copied.targetName}`
+            : `Copied provider [TEST]: ${copied.targetName}`,
+        )
+        return
+      }
+      const result = await invoke<CopyProviderResult>('copy_provider_from_config_source', {
+        sourceNodeId,
+        sharedProviderId,
+      })
+      setConfig((prev) => {
+        if (!prev || prev.config_source?.mode !== 'follow') return prev
+        return {
+          ...prev,
+          providers: Object.fromEntries(
+            Object.entries(prev.providers).map(([name, provider]) => [
+              name,
+              provider.source_node_id === sourceNodeId && provider.shared_provider_id === sharedProviderId
+                ? { ...provider, local_copy_state: result.local_copy_state }
+                : provider,
+            ]),
+          ),
+        }
+      })
+      flashToast(
+        result.local_copy_state === 'linked'
+          ? `Linked provider: ${result.target_name}`
+          : `Copied provider: ${result.target_name}`,
+      )
+      await refreshStatus()
+      await refreshConfig()
+    } catch (e) {
+      flashToast(String(e), 'error')
+    }
+  }
   useAppPolling({
     activePage,
     isDevPreview,
+    configModalOpen,
+    codexSwapModalOpen,
     codexSwapDir1,
     codexSwapDir2,
     codexSwapUseWindows,
     codexSwapUseWsl,
+    runPrimaryRefresh,
+    enqueueBackgroundRefresh,
     refreshStatus,
     refreshConfig,
     refreshProviderSwitchStatus,
+    refreshGatewayTokenPreview,
     onDevPreviewBootstrap,
     onDevPreviewTick,
   })
+  useEffect(() => {
+    if (isDevPreview || !status) return
+    const nextSignature = lanConfigSourceSyncSignature(status.lan_sync)
+    const prevSignature = lastLanConfigSyncSignatureRef.current
+    lastLanConfigSyncSignatureRef.current = nextSignature
+    if (!prevSignature || prevSignature === nextSignature) return
+    void refreshConfig({ refreshProviderSwitchStatus: false, force: true })
+  }, [isDevPreview, refreshConfig, status])
+  useEffect(() => {
+    if (!isDevPreview) return
+    devPreviewLocalConfigRef.current = null
+    devPreviewFollowSourceProvidersRef.current = null
+  }, [isDevPreview])
   useAppUsageEffects({
     activePage,
+    usageRefreshRevision,
+    enqueueBackgroundRefresh,
+    refreshUsageOverview,
     refreshUsageStatistics,
-    usageWindowHours,
-    usageFilterProviders,
-    usageFilterModels,
-    usageFilterOrigins,
+    hasUsageOverview: usageOverview !== null,
+    hasUsageStatistics: usageStatistics !== null,
     isDevPreview,
     refreshFxRatesDaily,
     usagePricingModalOpen,
@@ -1148,6 +1538,7 @@ export default function App() {
     resetUsageHistoryScrollbarState,
     clearUsageHistoryScrollbarTimers,
     usageHistoryLoadedRef,
+    usageHistoryQuotaRefreshToken,
     refreshUsageHistory,
     refreshUsageHistoryScrollbarUi,
     usageHistoryRows,
@@ -1189,6 +1580,7 @@ export default function App() {
     openProviderGroupManager,
     setProviderDisabled,
     deleteProvider,
+    copyProviderFromConfigSource,
     openKeyModal,
     openProviderBaseUrlModal,
     clearKey,
@@ -1214,6 +1606,145 @@ export default function App() {
     usageHistoryModalOpen ||
     usagePricingModalOpen ||
     usageScheduleModalOpen
+
+  const usageProps = useMemo(
+    () => ({
+      config,
+      usageWindowHours,
+      setUsageWindowHours,
+      usageStatisticsLoading,
+      usageFilterNodes,
+      setUsageFilterNodes,
+      usageNodeFilterOptions,
+      toggleUsageNodeFilter,
+      usageFilterProviders,
+      setUsageFilterProviders,
+      usageProviderFilterOptions,
+      usageProviderFilterDisplayOptions,
+      toggleUsageProviderFilterDisplayOption,
+      usageFilterModels,
+      setUsageFilterModels,
+      usageModelFilterOptions,
+      toggleUsageModelFilter,
+      usageFilterOrigins,
+      setUsageFilterOrigins,
+      usageOriginFilterOptions,
+      toggleUsageOriginFilter,
+      usageAnomalies,
+      usageSummary,
+      formatKpiTokens,
+      usageTopModel,
+      formatUsdMaybe,
+      usageDedupedTotalUsedUsd,
+      usageTotalInputTokens,
+      usageTotalOutputTokens,
+      usageAvgTokensPerRequest,
+      usageActiveWindowHours,
+      usagePricedRequestCount,
+      usagePricedCoveragePct,
+      usageAvgRequestsPerHour,
+      usageAvgTokensPerHour,
+      usageWindowLabel,
+      usageStatistics,
+      usageChart,
+      setUsageChartHover,
+      showUsageChartHover,
+      usageChartHover,
+      formatUsageBucketLabel,
+      setUsageHistoryModalOpen,
+      setUsagePricingModalOpen,
+      usageScheduleProviderOptions,
+      usageByProvider,
+      openUsageScheduleModal,
+      providerPreferredCurrency,
+      setUsageProviderShowDetails,
+      usageProviderShowDetails,
+      usageProviderShowDetailsStorageKey: USAGE_PROVIDER_SHOW_DETAILS_KEY,
+      usageProviderDisplayGroups,
+      usageProviderRowKey,
+      formatPricingSource,
+      usageProviderTotalsAndAverages,
+      usageActivityUnixMs: status?.last_activity_unix_ms ?? null,
+      clientSessions: status?.client_sessions ?? [],
+    }),
+    [
+      config,
+      usageWindowHours,
+      usageStatisticsLoading,
+      usageFilterNodes,
+      usageNodeFilterOptions,
+      toggleUsageNodeFilter,
+      usageFilterProviders,
+      usageProviderFilterOptions,
+      usageProviderFilterDisplayOptions,
+      toggleUsageProviderFilterDisplayOption,
+      usageFilterModels,
+      usageModelFilterOptions,
+      toggleUsageModelFilter,
+      usageFilterOrigins,
+      usageOriginFilterOptions,
+      toggleUsageOriginFilter,
+      usageAnomalies,
+      usageSummary,
+      usageTopModel,
+      usageDedupedTotalUsedUsd,
+      usageTotalInputTokens,
+      usageTotalOutputTokens,
+      usageAvgTokensPerRequest,
+      usageActiveWindowHours,
+      usagePricedRequestCount,
+      usagePricedCoveragePct,
+      usageAvgRequestsPerHour,
+      usageAvgTokensPerHour,
+      usageWindowLabel,
+      usageStatistics,
+      usageChart,
+      showUsageChartHover,
+      usageChartHover,
+      usageScheduleProviderOptions,
+      usageByProvider,
+      openUsageScheduleModal,
+      providerPreferredCurrency,
+      usageProviderShowDetails,
+      usageProviderDisplayGroups,
+      usageProviderRowKey,
+      usageProviderTotalsAndAverages,
+      status?.last_activity_unix_ms,
+      status?.client_sessions,
+    ],
+  )
+
+  const switchboardProps = useMemo(
+    () => ({
+      providerSwitchStatus,
+      providerSwitchBusy,
+      codexSwapDir1,
+      codexSwapDir2,
+      codexSwapUseWindows,
+      codexSwapUseWsl,
+      switchboardModeLabel,
+      switchboardModelProviderLabel,
+      switchboardTargetDirsLabel,
+      switchboardProviderCards,
+      onSetProviderSwitchTarget: setProviderSwitchTarget,
+      onOpenConfigureDirs: () => setCodexSwapModalOpen(true),
+      onOpenRawConfig: () => void openRawConfigModal(),
+    }),
+    [
+      providerSwitchStatus,
+      providerSwitchBusy,
+      codexSwapDir1,
+      codexSwapDir2,
+      codexSwapUseWindows,
+      codexSwapUseWsl,
+      switchboardModeLabel,
+      switchboardModelProviderLabel,
+      switchboardTargetDirsLabel,
+      switchboardProviderCards,
+      setProviderSwitchTarget,
+      openRawConfigModal,
+    ],
+  )
 
   return (
     <div className="aoRoot" ref={containerRef}>
@@ -1279,80 +1810,12 @@ export default function App() {
               onSetSessionPreferred={(sessionId, provider) => void setSessionPreferred(sessionId, provider)}
               onOpenLastErrorInEventLog={handleOpenLastErrorInEventLog}
               eventLogSeedEvents={eventLogSeedEvents}
-              eventLogSeedDailyStats={eventLogPreloadDailyStats}
+              eventLogSeedDailyStats={[]}
               eventLogFocusRequest={eventLogFocusRequest}
               onEventLogFocusRequestHandled={handleEventLogFocusRequestHandled}
-              usageStatistics={usageStatistics}
-              usageProps={{
-                config,
-                usageWindowHours,
-                setUsageWindowHours,
-                usageStatisticsLoading,
-                usageFilterProviders,
-                setUsageFilterProviders,
-                usageProviderFilterOptions,
-                usageProviderFilterDisplayOptions,
-                toggleUsageProviderFilterDisplayOption,
-                usageFilterModels,
-                setUsageFilterModels,
-                usageModelFilterOptions,
-                toggleUsageModelFilter,
-                usageFilterOrigins,
-                setUsageFilterOrigins,
-                usageOriginFilterOptions,
-                toggleUsageOriginFilter,
-                usageAnomalies,
-                usageSummary,
-                formatKpiTokens,
-                usageTopModel,
-                formatUsdMaybe,
-                usageDedupedTotalUsedUsd,
-                usageTotalInputTokens,
-                usageTotalOutputTokens,
-                usageAvgTokensPerRequest,
-                usageActiveWindowHours,
-                usagePricedRequestCount,
-                usagePricedCoveragePct,
-                usageAvgRequestsPerHour,
-                usageAvgTokensPerHour,
-                usageWindowLabel,
-                usageStatistics,
-                usageChart,
-                setUsageChartHover,
-                showUsageChartHover,
-                usageChartHover,
-                formatUsageBucketLabel,
-                setUsageHistoryModalOpen,
-                setUsagePricingModalOpen,
-                usageScheduleProviderOptions,
-                usageByProvider,
-                openUsageScheduleModal,
-                providerPreferredCurrency,
-                setUsageProviderShowDetails,
-                usageProviderShowDetails,
-                usageProviderShowDetailsStorageKey: USAGE_PROVIDER_SHOW_DETAILS_KEY,
-                usageProviderDisplayGroups,
-                usageProviderRowKey,
-                formatPricingSource,
-                usageProviderTotalsAndAverages,
-                usageActivityUnixMs: status?.last_activity_unix_ms ?? null,
-                clientSessions: status?.client_sessions ?? [],
-              }}
-              switchboardProps={{
-                providerSwitchStatus,
-                providerSwitchBusy,
-                codexSwapDir1,
-                codexSwapDir2,
-                codexSwapUseWindows,
-                codexSwapUseWsl,
-                switchboardModeLabel,
-                switchboardModelProviderLabel,
-                switchboardTargetDirsLabel,
-                switchboardProviderCards,
-                onSetProviderSwitchTarget: setProviderSwitchTarget,
-                onOpenConfigureDirs: () => setCodexSwapModalOpen(true),
-                onOpenRawConfig: () => void openRawConfigModal(),
-              }}
+              usageOverview={usageOverview}
+              usageProps={usageProps}
+              switchboardProps={switchboardProps}
             />
           </div>
         </div>
@@ -1377,7 +1840,6 @@ export default function App() {
             usageBaseModal={usageBaseModal}
             setUsageBaseModal={setUsageBaseModal}
             saveUsageBaseUrl={saveUsageBaseUrl}
-            openPackycodeLogin={openPackycodeLogin}
             instructionModalOpen={instructionModalOpen}
             setInstructionModalOpen={setInstructionModalOpen}
             openRawConfigModal={openRawConfigModal}
@@ -1393,6 +1855,13 @@ export default function App() {
             setNewProviderKey={setNewProviderKey}
             setNewProviderKeyStorage={setNewProviderKeyStorage}
             addProvider={addProvider}
+            followConfigSource={followConfigSource}
+            clearFollowedConfigSource={clearFollowedConfigSource}
+            requestLanPair={requestLanPair}
+            approveLanPair={approveLanPair}
+            submitLanPairPin={submitLanPairPin}
+            requestLanRemoteUpdateSameVersion={requestLanRemoteUpdateSameVersion}
+            lanRemoteUpdatePendingByNode={lanRemoteUpdatePendingByNode}
             openProviderGroupManager={openProviderGroupManager}
             setConfigModalOpen={setConfigModalOpen}
             rawConfigModalOpen={rawConfigModalOpen}
@@ -1425,6 +1894,7 @@ export default function App() {
             setUsageHistoryModalOpen={setUsageHistoryModalOpen}
             usageHistoryLoading={usageHistoryLoading}
             usageHistoryRows={usageHistoryRows}
+            setUsageHistoryRows={setUsageHistoryRows}
             usageHistoryDrafts={usageHistoryDrafts}
             usageHistoryEditCell={usageHistoryEditCell}
             setUsageHistoryDrafts={setUsageHistoryDrafts}
@@ -1536,7 +2006,6 @@ export default function App() {
             onClearUsageAuth={clearUsageAuth}
             onSetHardCap={setProviderQuotaHardCap}
             onOpenProviderEmailModal={openProviderEmailModal}
-            onOpenPackycodeLogin={openPackycodeLogin}
             onOpenUsageAuthModal={openUsageAuthModal}
           />
         </Suspense>

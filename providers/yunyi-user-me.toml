@@ -1,0 +1,57 @@
+id = "yunyi-user-me"
+
+[match]
+base_url_prefixes = ["https://yunyi.rdzhvip.com/codex"]
+usage_base_url_suffixes = ["/user/api/v1/me"]
+
+[usage]
+refresh_flow = "auto"
+budget_info_auth_source = "usage_token"
+candidate_base_sources = ["explicit_usage_base_url"]
+fixed_candidate_bases = []
+explicit_endpoint_mode = "explicit_usage_base_url_if_direct_path"
+
+[usage.explicit_mapping]
+usage_kind = "budget_info"
+requires_any = [
+  "/quota/daily_quota",
+  "/daily_quota",
+  "/quota/daily_spent",
+  "/daily_spent_usd",
+  "/quota/daily_remaining",
+  "/timestamps/expires_at",
+]
+
+[usage.explicit_mapping.remaining]
+aliases = ["/quota/daily_remaining", "/remaining", "/remaining_quota", "/balance"]
+transform = "divide_by_100"
+
+[usage.explicit_mapping.daily_used]
+aliases = [
+  "/usage/today/actual_cost",
+  "/usage/today/cost",
+  "/quota/daily_spent",
+  "/quota/daily_total_spent",
+  "/usage/daily_spent",
+  "/usage/daily_total_spent",
+  "/daily_spent_usd",
+  "/daily_usage_usd",
+  "/subscription/daily_usage_usd",
+]
+transform = "divide_by_100"
+
+[usage.explicit_mapping.daily_limit]
+aliases = [
+  "/quota/daily_quota",
+  "/daily_quota",
+  "/daily_budget_usd",
+  "/daily_limit_usd",
+  "/subscription/daily_limit_usd",
+]
+transform = "divide_by_100"
+
+[usage.explicit_mapping.expires_at_unix_ms]
+aliases = ["/timestamps/expires_at", "/expires_at", "/subscription/expires_at"]
+
+[package_expiry]
+strategy = "none"

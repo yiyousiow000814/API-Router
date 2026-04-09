@@ -1,0 +1,20 @@
+id = "pumpkinai"
+
+[match]
+base_url_host_suffixes = ["pumpkinai.vip"]
+
+[usage]
+refresh_flow = "auto"
+budget_info_auth_source = "usage_token"
+candidate_base_sources = []
+fixed_candidate_bases = [
+  "https://his.ppchat.vip",
+  "https://code.ppchat.vip",
+  "https://code.pumpkinai.vip",
+]
+speed_probe_bases = ["https://code.ppchat.vip", "https://code.pumpkinai.vip"]
+request_prefers_simple_input_list = true
+explicit_endpoint_mode = "none"
+
+[package_expiry]
+strategy = "none"

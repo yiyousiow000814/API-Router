@@ -302,14 +302,14 @@ describe("messageData", () => {
       toolItemToMessage(
         {
           type: "commandExecution",
-          command: "Get-Content scripts/codex-web-e2e-send-turn-live.mjs",
+      command: "Get-Content tests/ui/e2e/codex-web/send-turn-live.mjs",
           status: "completed",
           output: "const note = \"command failed\";",
           exitCode: 0,
         },
         { compact: true }
       )
-    ).toBe("Ran `Get-Content scripts/codex-web-e2e-send-turn-live.mjs`");
+    ).toBe("Ran `Get-Content tests/ui/e2e/codex-web/send-turn-live.mjs`");
   });
 
   it("summarizes tail-based file reads as a read action in compact mode", () => {

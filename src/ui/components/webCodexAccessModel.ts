@@ -1,4 +1,3 @@
-import { devTailscaleStatus } from '../devMockData'
 import { normalizeGatewayPort } from '../utils/gatewayUrl'
 
 export type TailscaleStatus = {
@@ -39,6 +38,13 @@ type TailscaleStatusInput = Partial<Omit<TailscaleStatus, 'ipv4' | 'reachableIpv
 }
 
 const DEFAULT_DOWNLOAD_URL = 'https://tailscale.com/download'
+const DEV_PREVIEW_TAILSCALE_STATUS = {
+  installed: true,
+  connected: true,
+  dnsName: 'desktop-kk6sa2d-1.tail997985.ts.net',
+  ipv4: ['100.64.208.117'],
+  downloadUrl: DEFAULT_DOWNLOAD_URL,
+} as const
 
 export function isDevPreviewRuntime() {
   if (!import.meta.env.DEV) return false
@@ -70,8 +76,8 @@ export function normalizeTailscaleStatus(
 export function buildDevPreviewTailscaleStatus(state: 'on' | 'off'): TailscaleStatus {
   if (state === 'on') {
     return normalizeTailscaleStatus({
-      ...devTailscaleStatus,
-      reachableIpv4: [...devTailscaleStatus.ipv4],
+      ...DEV_PREVIEW_TAILSCALE_STATUS,
+      reachableIpv4: [...DEV_PREVIEW_TAILSCALE_STATUS.ipv4],
       gatewayReachable: true,
     })
   }

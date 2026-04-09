@@ -3,6 +3,7 @@ async fn health() -> impl IntoResponse {
 }
 
 pub(crate) fn provider_has_remaining_quota_with_hard_cap(
+    cfg: &AppConfig,
     quota_snapshots: &Value,
     provider: &str,
     hard_cap: &crate::orchestrator::secrets::ProviderQuotaHardCapConfig,
@@ -30,15 +31,26 @@ pub(crate) fn provider_has_remaining_quota_with_hard_cap(
             snap.get("monthly_budget_usd").and_then(|v| v.as_f64()),
         ),
     ];
+    let mut saw_enabled_budget_pair = false;
     for (enabled, spent, budget) in budget_pairs {
         if !enabled {
             continue;
         }
         if let (Some(spent), Some(budget)) = (spent, budget) {
+            saw_enabled_budget_pair = true;
             if budget <= 0.0 || spent >= budget {
                 return false;
             }
         }
+    }
+
+    let prefers_budget_over_remaining = cfg
+        .providers
+        .get(provider)
+        .map(crate::orchestrator::providers::resolve_quota_profile)
+        .is_some_and(|profile| profile.ignore_remaining_when_budget_present);
+    if prefers_budget_over_remaining && saw_enabled_budget_pair {
+        return true;
     }
 
     if let Some(remaining) = snap.get("remaining").and_then(|v| v.as_f64()) {
@@ -55,6 +67,7 @@ pub(crate) fn provider_has_remaining_quota_with_hard_cap(
 }
 
 pub(crate) fn quota_snapshot_confirms_available(
+    cfg: &AppConfig,
     quota_snapshots: &Value,
     provider: &str,
     hard_cap: &crate::orchestrator::secrets::ProviderQuotaHardCapConfig,
@@ -72,7 +85,7 @@ pub(crate) fn quota_snapshot_confirms_available(
         .unwrap_or("");
     updated_at_unix_ms > 0
         && last_error.trim().is_empty()
-        && provider_has_remaining_quota_with_hard_cap(quota_snapshots, provider, hard_cap)
+        && provider_has_remaining_quota_with_hard_cap(cfg, quota_snapshots, provider, hard_cap)
 }
 
 fn provider_is_routable_for_selection(
@@ -85,7 +98,7 @@ fn provider_is_routable_for_selection(
     let hard_cap = st.secrets.get_provider_quota_hard_cap(provider);
     let waiting_usage_confirmation = st.router.is_waiting_usage_confirmation(provider);
     if waiting_usage_confirmation {
-        if quota_snapshot_confirms_available(quota_snapshots, provider, &hard_cap) {
+        if quota_snapshot_confirms_available(cfg, quota_snapshots, provider, &hard_cap) {
             if clear_usage_confirmation_requirement {
                 st.router.clear_usage_confirmation_requirement(provider);
             }
@@ -102,7 +115,7 @@ fn provider_is_routable_for_selection(
         .get(provider)
         .is_some_and(|provider_cfg| !provider_cfg.disabled)
         && router_routable
-        && provider_has_remaining_quota_with_hard_cap(quota_snapshots, provider, &hard_cap)
+        && provider_has_remaining_quota_with_hard_cap(cfg, quota_snapshots, provider, &hard_cap)
 }
 
 fn fallback_with_quota(
@@ -339,6 +352,7 @@ fn session_demand_ratio_for_balancing(st: &GatewayState, session_key: &str, now_
         since,
         Some(since),
         None,
+        &[],
         &[],
         &[],
         &[],
@@ -933,6 +947,7 @@ fn decide_provider_with_balanced_mode(
         for provider_name in cfg.providers.keys() {
             let hard_cap = st.secrets.get_provider_quota_hard_cap(provider_name);
             let is_closed = !provider_has_remaining_quota_with_hard_cap(
+                cfg,
                 &quota_snapshots,
                 provider_name,
                 &hard_cap,
@@ -952,10 +967,9 @@ fn decide_provider_with_balanced_mode(
             let cleared_assignments = st.store.delete_all_session_route_assignments();
             if cleared_assignments > 0 {
                 if !reopened_providers.is_empty() {
-                    st.store.add_event(
+                    st.store.events().emit(
                         "gateway",
-                        "info",
-                        "routing.balanced_reassign_on_reopen",
+                        crate::orchestrator::store::EventCode::ROUTING_BALANCED_REASSIGN_ON_REOPEN,
                         "cleared balanced assignments after closed provider reopened",
                         json!({
                             "reopened_providers": reopened_providers,
@@ -964,10 +978,9 @@ fn decide_provider_with_balanced_mode(
                     );
                 }
                 if !recovered_unhealthy_providers.is_empty() {
-                    st.store.add_event(
+                    st.store.events().emit(
                         "gateway",
-                        "info",
-                        "routing.balanced_reassign_on_health_recovery",
+                        crate::orchestrator::store::EventCode::ROUTING_BALANCED_REASSIGN_ON_HEALTH_RECOVERY,
                         "cleared balanced assignments after unhealthy provider recovered",
                         json!({
                             "recovered_providers": recovered_unhealthy_providers,
@@ -1129,6 +1142,8 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
     let now = unix_ms();
     let mut providers = st.router.snapshot(now);
     let manual_override = st.router.manual_override.read().clone();
+    let lan_sync = crate::lan_sync::gateway_status_snapshot(cfg.listen.port, &cfg, &st.secrets);
+    let windows_firewall = crate::platform::windows_firewall::status_snapshot();
 
     let recent_events = st
         .store
@@ -1137,7 +1152,7 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
     let quota = st.store.list_quota_snapshots();
     for (provider_name, snapshot) in providers.iter_mut() {
         let hard_cap = st.secrets.get_provider_quota_hard_cap(provider_name);
-        if !provider_has_remaining_quota_with_hard_cap(&quota, provider_name, &hard_cap) {
+        if !provider_has_remaining_quota_with_hard_cap(&cfg, &quota, provider_name, &hard_cap) {
             snapshot.status = "closed".to_string();
             snapshot.cooldown_until_unix_ms = 0;
         }
@@ -1171,7 +1186,9 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
         "active_reason": active_reason,
         "quota": quota,
         "ledgers": ledgers,
-        "last_activity_unix_ms": last_activity
+        "last_activity_unix_ms": last_activity,
+        "lan_sync": lan_sync,
+        "windows_firewall": windows_firewall
     }))
 }
 
@@ -1406,6 +1423,61 @@ mod routing_and_status_tests {
         assert!(
             pressure >= BALANCED_DAILY_BUDGET_PRESSURE_CRITICAL_FLOOR,
             "expected near-cap pressure floor, got {pressure}"
+        );
+    }
+
+    #[test]
+    fn provider_stays_open_when_budget_fields_show_remaining_capacity_and_token_remaining_is_absent() {
+        let cfg = AppConfig::default_config();
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        let available = provider_has_remaining_quota_with_hard_cap(
+            &cfg,
+            &json!({
+                "aigateway2": {
+                    "daily_spent_usd": 0.0,
+                    "daily_budget_usd": 300.0
+                }
+            }),
+            "aigateway2",
+            &hard_cap,
+        );
+        assert!(
+            available,
+            "budget-backed providers should stay open when daily spend is below the daily limit"
+        );
+    }
+
+    #[test]
+    fn aigateway_budget_snapshot_ignores_stale_remaining_zero_when_daily_spend_is_below_limit() {
+        let mut cfg = AppConfig::default_config();
+        cfg.providers.insert(
+            "aigateway2".to_string(),
+            crate::orchestrator::config::ProviderConfig {
+                display_name: "AI Gateway 2".to_string(),
+                base_url: "https://aigateway.chat/v1".to_string(),
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                group: None,
+                disabled: false,
+                api_key: String::new(),
+            },
+        );
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        let available = provider_has_remaining_quota_with_hard_cap(
+            &cfg,
+            &json!({
+                "aigateway2": {
+                    "remaining": 0.0,
+                    "daily_spent_usd": 0.0,
+                    "daily_budget_usd": 300.0
+                }
+            }),
+            "aigateway2",
+            &hard_cap,
+        );
+        assert!(
+            available,
+            "aigateway should stay open when actual daily spend is below the daily limit even if stale remaining is zero"
         );
     }
 
