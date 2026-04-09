@@ -184,32 +184,45 @@ describe('ProvidersTable', () => {
     expect(html).not.toContain('>no<')
   })
 
-  it('shows offline when unknown state comes from local connectivity outage', () => {
+  it('shows offline immediately when browser reports offline', () => {
     const status = buildStatus()
     status.providers = {
       packycode: {
-        status: 'unknown',
+        status: 'healthy',
         consecutive_failures: 0,
         cooldown_until_unix_ms: 0,
-        last_error:
-          'request error (connect); url=https://api.example.com/v1/models; cause=dns error: failed to lookup address information: No such host is known. (os error 11001)',
+        last_error: '',
         last_ok_at_unix_ms: 1_000,
-        last_fail_at_unix_ms: 2_000,
+        last_fail_at_unix_ms: 0,
       },
     }
 
-    const html = renderToStaticMarkup(
-      <ProvidersTable
-        providers={['packycode']}
-        status={status}
-        refreshingProviders={{}}
-        onRefreshQuota={() => {}}
-        onOpenLastErrorInEventLog={() => {}}
-      />,
-    )
+    const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { onLine: false },
+    })
 
-    expect(html).toContain('offline')
-    expect(html).not.toContain('>unknown<')
+    try {
+      const html = renderToStaticMarkup(
+        <ProvidersTable
+          providers={['packycode']}
+          status={status}
+          refreshingProviders={{}}
+          onRefreshQuota={() => {}}
+          onOpenLastErrorInEventLog={() => {}}
+        />,
+      )
+
+      expect(html).toContain('offline')
+      expect(html).not.toContain('>yes<')
+    } finally {
+      if (originalNavigator) {
+        Object.defineProperty(globalThis, 'navigator', originalNavigator)
+      } else {
+        delete (globalThis as { navigator?: Navigator }).navigator
+      }
+    }
   })
 
   it('hides unticked hard-cap usage rows from dashboard usage preview', () => {

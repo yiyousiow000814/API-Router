@@ -1,27 +1,15 @@
+import { useEffect, useState } from 'react'
 import { fmtAmount, fmtPct, fmtUsd, fmtWhen, pctOf } from '../utils/format'
 import type { Config, Status, UsageStatistics, UsageStatisticsOverview } from '../types'
 import { simulateQuotaForDisplay } from '../utils/quotaSimulation'
 
 const mono = 'ui-monospace, "Cascadia Mono", "Consolas", monospace'
 
-function isOfflineProviderError(message: string | null | undefined): boolean {
-  const normalized = (message ?? '').trim().toLowerCase()
-  if (!normalized) return false
-
-  return [
-    'dns error',
-    'failed to lookup address information',
-    'no such host is known',
-    'temporary failure in name resolution',
-    'name or service not known',
-    'network is unreachable',
-    'host is unreachable',
-    'network unreachable',
-    'os error 11001',
-    'os error 101',
-    'os error 113',
-    'os error 1231',
-  ].some((needle) => normalized.includes(needle))
+function browserReportsOffline(): boolean {
+  if (typeof navigator === 'undefined') {
+    return false
+  }
+  return navigator.onLine === false
 }
 
 export type LastErrorJump = {
@@ -50,8 +38,23 @@ export function ProvidersTable({
   onOpenLastErrorInEventLog,
 }: Props) {
   const ONE_DAY_MS = 24 * 60 * 60 * 1000
+  const [browserOffline, setBrowserOffline] = useState<boolean>(() => browserReportsOffline())
   const fmtDateOnly = (unixMs: number): string => fmtWhen(unixMs).split(' ')[0] ?? '-'
   const isExpiryUrgent = (unixMs: number): boolean => Number.isFinite(unixMs) && unixMs > 0 && unixMs - Date.now() <= ONE_DAY_MS
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+      return
+    }
+    const syncBrowserOffline = () => setBrowserOffline(browserReportsOffline())
+    syncBrowserOffline()
+    window.addEventListener('online', syncBrowserOffline)
+    window.addEventListener('offline', syncBrowserOffline)
+    return () => {
+      window.removeEventListener('online', syncBrowserOffline)
+      window.removeEventListener('offline', syncBrowserOffline)
+    }
+  }, [])
 
   return (
     <table className="aoTable aoTableFixed">
@@ -75,7 +78,7 @@ export function ProvidersTable({
       <tbody>
         {providers.map((p) => {
           const h = status.providers[p]
-          const isOffline = h.status === 'unknown' && isOfflineProviderError(h.last_error)
+          const isOffline = browserOffline
           const q = simulateQuotaForDisplay(
             p,
             status.quota?.[p],
@@ -91,12 +94,12 @@ export function ProvidersTable({
           const healthLabel =
             isClosed
               ? 'closed'
-              : isActive
+              : isOffline
+                ? 'offline'
+                : isActive
                 ? 'effective'
                 : retryDue
                   ? 'retry'
-                : isOffline
-                  ? 'offline'
                 : h.status === 'healthy'
                   ? 'yes'
                   : h.status === 'unhealthy' || h.status === 'cooldown'
@@ -105,7 +108,9 @@ export function ProvidersTable({
           const dotClass =
             isClosed
               ? 'aoDot aoDotBad'
-              : isActive
+              : isOffline
+                ? 'aoDot aoDotMuted'
+                : isActive
                 ? 'aoDot'
                 : retryDue
                   ? 'aoDot aoDotMuted'
