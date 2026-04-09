@@ -3757,18 +3757,63 @@ fn emit_http_sync_recovered_event(
     message: &str,
     recovered: &LanHttpSyncProbeSnapshot,
 ) {
-    gateway.store.events().emit(
-        "gateway",
-        event_code,
-        message,
-        serde_json::json!({
-            "peer_node_id": recovered.peer_node_id,
-            "peer_listen_addr": recovered.peer_listen_addr,
-            "route": recovered.route,
-            "previous_outcome": recovered.outcome,
-            "previous_detail": recovered.detail,
-        }),
-    );
+    match event_code {
+        crate::orchestrator::store::EventCode::LAN_USAGE_SYNC_HTTP_RECOVERED => {
+            gateway.store.events().lan().usage_sync_http_recovered(
+                "gateway",
+                message,
+                serde_json::json!({
+                    "peer_node_id": recovered.peer_node_id,
+                    "peer_listen_addr": recovered.peer_listen_addr,
+                    "route": recovered.route,
+                    "previous_outcome": recovered.outcome,
+                    "previous_detail": recovered.detail,
+                }),
+            )
+        }
+        crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_HTTP_RECOVERED => {
+            gateway.store.events().lan().edit_sync_http_recovered(
+                "gateway",
+                message,
+                serde_json::json!({
+                    "peer_node_id": recovered.peer_node_id,
+                    "peer_listen_addr": recovered.peer_listen_addr,
+                    "route": recovered.route,
+                    "previous_outcome": recovered.outcome,
+                    "previous_detail": recovered.detail,
+                }),
+            )
+        }
+        crate::orchestrator::store::EventCode::LAN_PROVIDER_DEFINITIONS_SYNC_HTTP_RECOVERED => {
+            gateway
+                .store
+                .events()
+                .lan()
+                .provider_definitions_sync_http_recovered(
+                    "gateway",
+                    message,
+                    serde_json::json!({
+                        "peer_node_id": recovered.peer_node_id,
+                        "peer_listen_addr": recovered.peer_listen_addr,
+                        "route": recovered.route,
+                        "previous_outcome": recovered.outcome,
+                        "previous_detail": recovered.detail,
+                    }),
+                )
+        }
+        _ => gateway.store.events().emit(
+            "gateway",
+            event_code,
+            message,
+            serde_json::json!({
+                "peer_node_id": recovered.peer_node_id,
+                "peer_listen_addr": recovered.peer_listen_addr,
+                "route": recovered.route,
+                "previous_outcome": recovered.outcome,
+                "previous_detail": recovered.detail,
+            }),
+        ),
+    }
 }
 
 fn sync_edit_events_from_peer(

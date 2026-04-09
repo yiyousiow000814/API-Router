@@ -20,6 +20,31 @@ pub struct EventReporter<'a> {
     store: &'a Store,
 }
 
+#[derive(Clone, Copy)]
+pub struct AppEventReporter<'a> {
+    reporter: EventReporter<'a>,
+}
+
+#[derive(Clone, Copy)]
+pub struct CodexEventReporter<'a> {
+    reporter: EventReporter<'a>,
+}
+
+#[derive(Clone, Copy)]
+pub struct ConfigEventReporter<'a> {
+    reporter: EventReporter<'a>,
+}
+
+#[derive(Clone, Copy)]
+pub struct LanEventReporter<'a> {
+    reporter: EventReporter<'a>,
+}
+
+#[derive(Clone, Copy)]
+pub struct RoutingEventReporter<'a> {
+    reporter: EventReporter<'a>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EventCode {
     level: &'static str,
@@ -180,6 +205,18 @@ macro_rules! define_event_codes {
     };
 }
 
+macro_rules! define_scoped_event_methods {
+    ($reporter:ident { $( $method:ident => $code:ident, )+ }) => {
+        impl<'a> $reporter<'a> {
+            $(
+                pub fn $method(self, provider: &str, message: &str, fields: Value) {
+                    self.reporter.emit(provider, EventCode::$code, message, fields);
+                }
+            )+
+        }
+    };
+}
+
 define_event_codes! {
     APP_UI_FRAME_STALL => ("warning", "app.ui_frame_stall"),
     APP_UI_FRONTEND_ERROR => ("warning", "app.ui_frontend_error"),
@@ -304,6 +341,26 @@ define_event_codes! {
 }
 
 impl<'a> EventReporter<'a> {
+    pub fn app(self) -> AppEventReporter<'a> {
+        AppEventReporter { reporter: self }
+    }
+
+    pub fn codex(self) -> CodexEventReporter<'a> {
+        CodexEventReporter { reporter: self }
+    }
+
+    pub fn config(self) -> ConfigEventReporter<'a> {
+        ConfigEventReporter { reporter: self }
+    }
+
+    pub fn lan(self) -> LanEventReporter<'a> {
+        LanEventReporter { reporter: self }
+    }
+
+    pub fn routing(self) -> RoutingEventReporter<'a> {
+        RoutingEventReporter { reporter: self }
+    }
+
     pub fn emit(self, provider: &str, event_code: EventCode, message: &str, fields: Value) {
         self.emit_at_unix_ms(provider, event_code, message, fields, unix_ms());
     }
@@ -324,6 +381,96 @@ impl<'a> EventReporter<'a> {
             fields,
             unix_ms,
         );
+    }
+}
+
+define_scoped_event_methods!(CodexEventReporter {
+    cli_auth_config_swapped => CODEX_CLI_AUTH_CONFIG_SWAPPED,
+    provider_switchboard_gateway_token_sync_failed => CODEX_PROVIDER_SWITCHBOARD_GATEWAY_TOKEN_SYNC_FAILED,
+    provider_switchboard_rename_sync_failed => CODEX_PROVIDER_SWITCHBOARD_RENAME_SYNC_FAILED,
+    provider_switchboard_sync_failed => CODEX_PROVIDER_SWITCHBOARD_SYNC_FAILED,
+});
+
+define_scoped_event_methods!(ConfigEventReporter {
+    followed_source_cleared => CONFIG_FOLLOWED_SOURCE_CLEARED,
+    followed_source_rollback_failed => CONFIG_FOLLOWED_SOURCE_ROLLBACK_FAILED,
+    followed_source_snapshot_missing => CONFIG_FOLLOWED_SOURCE_SNAPSHOT_MISSING,
+    followed_source_updated => CONFIG_FOLLOWED_SOURCE_UPDATED,
+    preferred_provider_updated => CONFIG_PREFERRED_PROVIDER_UPDATED,
+    provider_account_email_cleared => CONFIG_PROVIDER_ACCOUNT_EMAIL_CLEARED,
+    provider_account_email_updated => CONFIG_PROVIDER_ACCOUNT_EMAIL_UPDATED,
+    provider_copied_from_source => CONFIG_PROVIDER_COPIED_FROM_SOURCE,
+    provider_activated => CONFIG_PROVIDER_ACTIVATED,
+    provider_deactivated => CONFIG_PROVIDER_DEACTIVATED,
+    provider_deleted => CONFIG_PROVIDER_DELETED,
+    provider_group_bulk_updated => CONFIG_PROVIDER_GROUP_BULK_UPDATED,
+    provider_group_updated => CONFIG_PROVIDER_GROUP_UPDATED,
+    provider_key_cleared => CONFIG_PROVIDER_KEY_CLEARED,
+    provider_key_updated => CONFIG_PROVIDER_KEY_UPDATED,
+    provider_linked_from_source => CONFIG_PROVIDER_LINKED_FROM_SOURCE,
+    provider_order_updated => CONFIG_PROVIDER_ORDER_UPDATED,
+    provider_renamed => CONFIG_PROVIDER_RENAMED,
+    provider_upserted => CONFIG_PROVIDER_UPSERTED,
+    route_mode_updated => CONFIG_ROUTE_MODE_UPDATED,
+    session_preferred_provider_cleared => CONFIG_SESSION_PREFERRED_PROVIDER_CLEARED,
+    session_preferred_provider_updated => CONFIG_SESSION_PREFERRED_PROVIDER_UPDATED,
+});
+
+define_scoped_event_methods!(LanEventReporter {
+    edit_sync_http_recovered => LAN_EDIT_SYNC_HTTP_RECOVERED,
+    edit_sync_record_failed => LAN_EDIT_SYNC_RECORD_FAILED,
+    provider_definitions_sync_http_recovered => LAN_PROVIDER_DEFINITIONS_SYNC_HTTP_RECOVERED,
+    remote_update_accepted => LAN_REMOTE_UPDATE_ACCEPTED,
+    remote_update_failed => LAN_REMOTE_UPDATE_FAILED,
+    remote_update_progress => LAN_REMOTE_UPDATE_PROGRESS,
+    remote_update_requested => LAN_REMOTE_UPDATE_REQUESTED,
+    remote_update_succeeded => LAN_REMOTE_UPDATE_SUCCEEDED,
+    usage_sync_http_recovered => LAN_USAGE_SYNC_HTTP_RECOVERED,
+});
+
+define_scoped_event_methods!(RoutingEventReporter {
+    manual_override_changed => ROUTING_MANUAL_OVERRIDE_CHANGED,
+});
+
+impl<'a> AppEventReporter<'a> {
+    pub fn ui_frame_stall_at(self, provider: &str, message: &str, fields: Value, unix_ms: u64) {
+        self.reporter.emit_at_unix_ms(
+            provider,
+            EventCode::APP_UI_FRAME_STALL,
+            message,
+            fields,
+            unix_ms,
+        );
+    }
+
+    pub fn ui_frontend_error_at(self, provider: &str, message: &str, fields: Value, unix_ms: u64) {
+        self.reporter.emit_at_unix_ms(
+            provider,
+            EventCode::APP_UI_FRONTEND_ERROR,
+            message,
+            fields,
+            unix_ms,
+        );
+    }
+
+    pub fn ui_invoke_error_at(self, provider: &str, message: &str, fields: Value, unix_ms: u64) {
+        self.reporter.emit_at_unix_ms(
+            provider,
+            EventCode::APP_UI_INVOKE_ERROR,
+            message,
+            fields,
+            unix_ms,
+        );
+    }
+
+    pub fn ui_recovered(self, provider: &str, message: &str, fields: Value) {
+        self.reporter
+            .emit(provider, EventCode::APP_UI_RECOVERED, message, fields);
+    }
+
+    pub fn ui_unresponsive(self, provider: &str, message: &str, fields: Value) {
+        self.reporter
+            .emit(provider, EventCode::APP_UI_UNRESPONSIVE, message, fields);
     }
 }
 

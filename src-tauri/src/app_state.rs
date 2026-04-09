@@ -282,9 +282,8 @@ impl UiWatchdogState {
                 "visible": page.visible,
             }),
         );
-        runtime.store.events().emit_at_unix_ms(
+        runtime.store.events().app().ui_frame_stall_at(
             "gateway",
-            crate::orchestrator::store::EventCode::APP_UI_FRAME_STALL,
             &format!("ui frame stalled for {elapsed_ms}ms"),
             serde_json::json!({
                 "elapsed_ms": elapsed_ms,
@@ -329,9 +328,8 @@ impl UiWatchdogState {
                 "visible": page.visible,
             }),
         );
-        runtime.store.events().emit_at_unix_ms(
+        runtime.store.events().app().ui_frontend_error_at(
             "gateway",
-            crate::orchestrator::store::EventCode::APP_UI_FRONTEND_ERROR,
             &format!("frontend runtime {kind}: {}", message.trim()),
             serde_json::json!({
                 "kind": kind.trim(),
@@ -383,9 +381,8 @@ impl UiWatchdogState {
         );
 
         if !ok {
-            runtime.store.events().emit_at_unix_ms(
+            runtime.store.events().app().ui_invoke_error_at(
                 "gateway",
-                crate::orchestrator::store::EventCode::APP_UI_INVOKE_ERROR,
                 &format!("ui invoke failed: {command}"),
                 serde_json::json!({
                     "command": command,
@@ -448,9 +445,8 @@ impl UiWatchdogState {
             }
             snapshot.unresponsive_logged = true;
             snapshot.unresponsive_since_unix_ms = last_heartbeat;
-            store.events().emit(
+            store.events().app().ui_unresponsive(
                 "gateway",
-                crate::orchestrator::store::EventCode::APP_UI_UNRESPONSIVE,
                 "ui heartbeat stalled",
                 serde_json::json!({
                     "heartbeat_age_ms": heartbeat_age_ms,
@@ -470,9 +466,8 @@ impl UiWatchdogState {
         let stalled_for_ms = now_unix_ms.saturating_sub(snapshot.unresponsive_since_unix_ms);
         snapshot.unresponsive_logged = false;
         snapshot.unresponsive_since_unix_ms = 0;
-        store.events().emit(
+        store.events().app().ui_recovered(
             "gateway",
-            crate::orchestrator::store::EventCode::APP_UI_RECOVERED,
             "ui heartbeat recovered",
             serde_json::json!({
                 "stalled_for_ms": stalled_for_ms,
@@ -487,21 +482,29 @@ pub fn run_startup_gateway_token_sync(state: &AppState) {
     match crate::provider_switchboard::sync_gateway_target_for_current_token_on_startup(state) {
         Ok(failed_targets) => {
             if !failed_targets.is_empty() {
-                state.gateway.store.events().emit(
-                    "gateway",
-                    crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_GATEWAY_TOKEN_SYNC_FAILED,
-                    "Gateway token sync at startup failed for some targets.",
-                    serde_json::json!({ "failed_targets": failed_targets }),
-                );
+                state
+                    .gateway
+                    .store
+                    .events()
+                    .codex()
+                    .provider_switchboard_gateway_token_sync_failed(
+                        "gateway",
+                        "Gateway token sync at startup failed for some targets.",
+                        serde_json::json!({ "failed_targets": failed_targets }),
+                    );
             }
         }
         Err(e) => {
-            state.gateway.store.events().emit(
-                "gateway",
-                crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_GATEWAY_TOKEN_SYNC_FAILED,
-                &format!("Gateway token sync at startup failed: {e}"),
-                serde_json::Value::Null,
-            );
+            state
+                .gateway
+                .store
+                .events()
+                .codex()
+                .provider_switchboard_gateway_token_sync_failed(
+                    "gateway",
+                    &format!("Gateway token sync at startup failed: {e}"),
+                    serde_json::Value::Null,
+                );
         }
     }
 }
@@ -598,9 +601,8 @@ pub fn disable_expired_package_providers(state: &AppState) -> Vec<String> {
             provider_name,
             serde_json::json!({ "disabled": true }),
         ) {
-            state.gateway.store.events().emit(
+            state.gateway.store.events().lan().edit_sync_record_failed(
                 provider_name,
-                crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
                 &format!("failed to record expired provider disable for LAN sync: {err}"),
                 serde_json::Value::Null,
             );

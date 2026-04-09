@@ -232,9 +232,8 @@ fn set_manual_override_impl(
     state.gateway.router.set_manual_override(provider.clone());
     let cleared_assignments = state.gateway.store.delete_all_session_route_assignments();
     let cleared_observed_routes = clear_observed_session_routes(state);
-    state.gateway.store.events().emit(
+    state.gateway.store.events().routing().manual_override_changed(
         provider.as_deref().unwrap_or("-"),
-        crate::orchestrator::store::EventCode::ROUTING_MANUAL_OVERRIDE_CHANGED,
         "manual override changed",
         serde_json::json!({
             "previous_manual_override": prev_override,
@@ -641,9 +640,8 @@ fn set_followed_config_source_impl(
             )
         },
         |rollback_err| {
-            state.gateway.store.events().emit(
+            state.gateway.store.events().config().followed_source_rollback_failed(
                 "gateway",
-                crate::orchestrator::store::EventCode::CONFIG_FOLLOWED_SOURCE_ROLLBACK_FAILED,
                 &format!("failed to roll back followed config source change: {rollback_err}"),
                 serde_json::json!({
                     "previous_followed": previous_followed,
@@ -653,9 +651,8 @@ fn set_followed_config_source_impl(
             );
         },
     )?;
-    state.gateway.store.events().emit(
+    state.gateway.store.events().config().followed_source_updated(
         "gateway",
-        crate::orchestrator::store::EventCode::CONFIG_FOLLOWED_SOURCE_UPDATED,
         "followed config source updated",
         serde_json::json!({ "node_id": normalized_node_id }),
     );
@@ -802,9 +799,8 @@ fn copy_provider_from_config_source_impl(
         if local_provider_definitions_are_locked(state) && changed {
             crate::lan_sync::write_local_provider_copy_state(state, &local_copy_state_snapshot)?;
         }
-        state.gateway.store.events().emit(
+        state.gateway.store.events().config().provider_linked_from_source(
             "gateway",
-            crate::orchestrator::store::EventCode::CONFIG_PROVIDER_LINKED_FROM_SOURCE,
             "provider linked from config source",
             serde_json::json!({
                 "source_node_id": source_node_id,
@@ -925,9 +921,8 @@ fn copy_provider_from_config_source_impl(
         }
         state.gateway.router.sync_with_config(&cfg, unix_ms());
     }
-    state.gateway.store.events().emit(
+    state.gateway.store.events().config().provider_copied_from_source(
         "gateway",
-        crate::orchestrator::store::EventCode::CONFIG_PROVIDER_COPIED_FROM_SOURCE,
         "provider copied from config source",
         serde_json::json!({
             "source_node_id": source_node_id,
@@ -959,16 +954,14 @@ pub(crate) fn set_provider_account_email(
         &provider,
         serde_json::json!({ "account_email": email.clone() }),
     ) {
-        state.gateway.store.events().emit(
+        state.gateway.store.events().lan().edit_sync_record_failed(
             &provider,
-            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
             &format!("failed to record account email update for LAN sync: {err}"),
             serde_json::Value::Null,
         );
     }
-    state.gateway.store.events().emit(
+    state.gateway.store.events().config().provider_account_email_updated(
         &provider,
-        crate::orchestrator::store::EventCode::CONFIG_PROVIDER_ACCOUNT_EMAIL_UPDATED,
         "provider account email updated (user-data/secrets.json)",
         serde_json::json!({ "has_email": !email.trim().is_empty() }),
     );
@@ -990,16 +983,14 @@ pub(crate) fn clear_provider_account_email(
         &provider,
         serde_json::json!({ "account_email": serde_json::Value::Null }),
     ) {
-        state.gateway.store.events().emit(
+        state.gateway.store.events().lan().edit_sync_record_failed(
             &provider,
-            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
             &format!("failed to record account email clear for LAN sync: {err}"),
             serde_json::Value::Null,
         );
     }
-    state.gateway.store.events().emit(
+    state.gateway.store.events().config().provider_account_email_cleared(
         &provider,
-        crate::orchestrator::store::EventCode::CONFIG_PROVIDER_ACCOUNT_EMAIL_CLEARED,
         "provider account email cleared (user-data/secrets.json)",
         serde_json::Value::Null,
     );
@@ -1028,9 +1019,8 @@ pub(crate) fn rotate_gateway_token(
         ) {
             Ok(v) => (v, false),
             Err(e) => {
-                state.gateway.store.events().emit(
+                state.gateway.store.events().codex().provider_switchboard_gateway_token_sync_failed(
                     "gateway",
-                    crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_GATEWAY_TOKEN_SYNC_FAILED,
                     &format!(
                         "Gateway token rotated, but failed to sync active gateway targets: {e}"
                     ),
@@ -1040,9 +1030,8 @@ pub(crate) fn rotate_gateway_token(
             }
         };
     if !sync_hard_failed && !failed_targets.is_empty() {
-        state.gateway.store.events().emit(
+        state.gateway.store.events().codex().provider_switchboard_gateway_token_sync_failed(
             "gateway",
-            crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_GATEWAY_TOKEN_SYNC_FAILED,
             "Gateway token rotated, but failed to sync some gateway targets.",
             serde_json::json!({ "failed_targets": failed_targets }),
         );
@@ -1069,9 +1058,8 @@ pub(crate) fn set_preferred_provider(
         cfg.routing.preferred_provider = provider.clone();
     }
     persist_config(&state).map_err(|e| e.to_string())?;
-    state.gateway.store.events().emit(
+    state.gateway.store.events().config().preferred_provider_updated(
         &provider,
-        crate::orchestrator::store::EventCode::CONFIG_PREFERRED_PROVIDER_UPDATED,
         "preferred_provider updated",
         serde_json::Value::Null,
     );
@@ -1099,9 +1087,8 @@ fn set_route_mode_impl(state: &app_state::AppState, mode: &str) -> Result<(), St
     let cleared_assignments = state.gateway.store.delete_all_session_route_assignments();
     let cleared_observed_routes = clear_observed_session_routes(state);
 
-    state.gateway.store.events().emit(
+    state.gateway.store.events().config().route_mode_updated(
         "gateway",
-        crate::orchestrator::store::EventCode::CONFIG_ROUTE_MODE_UPDATED,
         "route_mode updated",
         serde_json::json!({
             "route_mode": mode,
@@ -1204,9 +1191,8 @@ fn set_session_preferred_provider_impl(
         Some(prev) => format!("session preferred_provider updated: {prev} -> {provider}"),
         None => format!("session preferred_provider set: {provider}"),
     };
-    state.gateway.store.events().emit(
+    state.gateway.store.events().config().session_preferred_provider_updated(
         &provider,
-        crate::orchestrator::store::EventCode::CONFIG_SESSION_PREFERRED_PROVIDER_UPDATED,
         &msg,
         serde_json::json!({
             "codex_session_id": codex_session_id,
@@ -1265,9 +1251,8 @@ fn clear_session_preferred_provider_impl(
         .last_used_by_session
         .write()
         .remove(&codex_session_id);
-    state.gateway.store.events().emit(
+    state.gateway.store.events().config().session_preferred_provider_cleared(
         "gateway",
-        crate::orchestrator::store::EventCode::CONFIG_SESSION_PREFERRED_PROVIDER_CLEARED,
         &format!(
             "session preferred_provider cleared (was {})",
             prev_provider.as_deref().unwrap_or("unknown")
@@ -1354,16 +1339,14 @@ fn upsert_provider_impl(
     let patch_payload = provider_definition_patch_payload(state, &name, &name)?;
     if let Err(err) = crate::lan_sync::record_provider_definition_patch(state, &name, patch_payload)
     {
-        state.gateway.store.events().emit(
+        state.gateway.store.events().lan().edit_sync_record_failed(
             &name,
-            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
             &format!("failed to record provider upsert for LAN sync: {err}"),
             serde_json::Value::Null,
         );
     }
-    state.gateway.store.events().emit(
+    state.gateway.store.events().config().provider_upserted(
         &name,
-        crate::orchestrator::store::EventCode::CONFIG_PROVIDER_UPSERTED,
         "provider upserted",
         serde_json::Value::Null,
     );
@@ -1448,31 +1431,28 @@ pub(crate) fn set_provider_disabled(
         &name,
         serde_json::json!({ "disabled": disabled }),
     ) {
-        state.gateway.store.events().emit(
+        state.gateway.store.events().lan().edit_sync_record_failed(
             &name,
-            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
             &format!("failed to record provider disabled state for LAN sync: {err}"),
             serde_json::Value::Null,
         );
     }
-    state.gateway.store.events().emit(
-        &name,
-        if disabled {
-            crate::orchestrator::store::EventCode::CONFIG_PROVIDER_DEACTIVATED
-        } else {
-            crate::orchestrator::store::EventCode::CONFIG_PROVIDER_ACTIVATED
-        },
-        if disabled {
-            "provider deactivated"
-        } else {
-            "provider activated"
-        },
-        serde_json::Value::Null,
-    );
+    if disabled {
+        state.gateway.store.events().config().provider_deactivated(
+            &name,
+            "provider deactivated",
+            serde_json::Value::Null,
+        );
+    } else {
+        state.gateway.store.events().config().provider_activated(
+            &name,
+            "provider activated",
+            serde_json::Value::Null,
+        );
+    }
     if switched_preferred {
-        state.gateway.store.events().emit(
+        state.gateway.store.events().config().preferred_provider_updated(
             "gateway",
-            crate::orchestrator::store::EventCode::CONFIG_PREFERRED_PROVIDER_UPDATED,
             "preferred_provider updated (deactivated old preferred)",
             serde_json::Value::Null,
         );
@@ -1496,16 +1476,14 @@ pub(crate) fn set_provider_group(
         &name,
         serde_json::json!({ "group": normalized_group }),
     ) {
-        state.gateway.store.events().emit(
+        state.gateway.store.events().lan().edit_sync_record_failed(
             &name,
-            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
             &format!("failed to record provider group update for LAN sync: {err}"),
             serde_json::Value::Null,
         );
     }
-    state.gateway.store.events().emit(
+    state.gateway.store.events().config().provider_group_updated(
         &name,
-        crate::orchestrator::store::EventCode::CONFIG_PROVIDER_GROUP_UPDATED,
         "provider group updated",
         serde_json::json!({ "group": normalized_group }),
     );
@@ -1633,17 +1611,15 @@ pub(crate) fn set_providers_group(
             provider,
             serde_json::json!({ "group": normalized_group.clone() }),
         ) {
-            state.gateway.store.events().emit(
+            state.gateway.store.events().lan().edit_sync_record_failed(
                 provider,
-                crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
                 &format!("failed to record provider group bulk update for LAN sync: {err}"),
                 serde_json::Value::Null,
             );
         }
     }
-    state.gateway.store.events().emit(
+    state.gateway.store.events().config().provider_group_bulk_updated(
         "gateway",
-        crate::orchestrator::store::EventCode::CONFIG_PROVIDER_GROUP_BULK_UPDATED,
         "provider groups updated",
         serde_json::json!({ "group": normalized_group, "providers": updated }),
     );
@@ -1656,16 +1632,14 @@ pub(crate) fn delete_provider(
     name: String,
 ) -> Result<(), String> {
     let next_preferred = delete_provider_impl(&state, &name)?;
-    state.gateway.store.events().emit(
+    state.gateway.store.events().config().provider_deleted(
         &name,
-        crate::orchestrator::store::EventCode::CONFIG_PROVIDER_DELETED,
         "provider deleted",
         serde_json::Value::Null,
     );
     if let Some(p) = next_preferred {
-        state.gateway.store.events().emit(
+        state.gateway.store.events().config().preferred_provider_updated(
             &p,
-            crate::orchestrator::store::EventCode::CONFIG_PREFERRED_PROVIDER_UPDATED,
             "preferred_provider updated (deleted old preferred)",
             serde_json::Value::Null,
         );
@@ -1713,9 +1687,8 @@ fn delete_provider_impl(
         }
     }
     if let Err(err) = crate::lan_sync::record_provider_definition_tombstone(state, name) {
-        state.gateway.store.events().emit(
+        state.gateway.store.events().lan().edit_sync_record_failed(
             name,
-            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
             &format!("failed to record provider delete tombstone for LAN sync: {err}"),
             serde_json::Value::Null,
         );
@@ -1741,9 +1714,8 @@ fn clear_followed_config_source_impl(state: &app_state::AppState) -> Result<(), 
             Ok(())
         },
         |rollback_err| {
-            state.gateway.store.events().emit(
+            state.gateway.store.events().config().followed_source_rollback_failed(
                 "gateway",
-                crate::orchestrator::store::EventCode::CONFIG_FOLLOWED_SOURCE_ROLLBACK_FAILED,
                 &format!("failed to roll back followed config source change: {rollback_err}"),
                 serde_json::json!({
                     "previous_followed": previous_followed,
@@ -1754,16 +1726,14 @@ fn clear_followed_config_source_impl(state: &app_state::AppState) -> Result<(), 
         },
     )?;
     if !had_snapshot {
-        state.gateway.store.events().emit(
+        state.gateway.store.events().config().followed_source_snapshot_missing(
             "gateway",
-            crate::orchestrator::store::EventCode::CONFIG_FOLLOWED_SOURCE_SNAPSHOT_MISSING,
             "followed config source cleared without saved local snapshot",
             serde_json::Value::Null,
         );
     }
-    state.gateway.store.events().emit(
+    state.gateway.store.events().config().followed_source_cleared(
         "gateway",
-        crate::orchestrator::store::EventCode::CONFIG_FOLLOWED_SOURCE_CLEARED,
         "followed config source cleared",
         serde_json::Value::Null,
     );
@@ -1876,9 +1846,8 @@ pub(crate) fn rename_provider(
         .sync_with_config(&state.gateway.cfg.read(), unix_ms());
 
     if let Err(e) = crate::provider_switchboard::on_provider_renamed(&state, old, new) {
-        state.gateway.store.events().emit(
+        state.gateway.store.events().codex().provider_switchboard_rename_sync_failed(
             new,
-            crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_RENAME_SYNC_FAILED,
             &format!("provider rename sync to active switchboard target failed: {e}"),
             serde_json::json!({
                 "old": old,
@@ -1889,16 +1858,14 @@ pub(crate) fn rename_provider(
     let patch_payload = provider_definition_patch_payload(&state, new, new)?;
     if let Err(err) = crate::lan_sync::record_provider_definition_patch(&state, new, patch_payload)
     {
-        state.gateway.store.events().emit(
+        state.gateway.store.events().lan().edit_sync_record_failed(
             new,
-            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
             &format!("failed to record provider rename for LAN sync: {err}"),
             serde_json::Value::Null,
         );
     }
-    state.gateway.store.events().emit(
+    state.gateway.store.events().config().provider_renamed(
         new,
-        crate::orchestrator::store::EventCode::CONFIG_PROVIDER_RENAMED,
         "provider renamed",
         serde_json::json!({
             "renamed_observed_session_routes": renamed_observed_session_routes,
@@ -1929,9 +1896,8 @@ pub(crate) fn set_provider_key(
     if let Err(e) =
         crate::provider_switchboard::sync_active_provider_target_for_key(&state, &provider)
     {
-        state.gateway.store.events().emit(
+        state.gateway.store.events().codex().provider_switchboard_sync_failed(
             &provider,
-            crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_SYNC_FAILED,
             &format!("provider key sync to active switchboard target failed: {e}"),
             serde_json::json!({
                 "provider": provider.clone(),
@@ -1946,16 +1912,14 @@ pub(crate) fn set_provider_key(
             "key_storage": storage_mode_for_event.clone(),
         }),
     ) {
-        state.gateway.store.events().emit(
+        state.gateway.store.events().lan().edit_sync_record_failed(
             &provider,
-            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
             &format!("failed to record provider key update for LAN sync: {err}"),
             serde_json::Value::Null,
         );
     }
-    state.gateway.store.events().emit(
+    state.gateway.store.events().config().provider_key_updated(
         &provider,
-        crate::orchestrator::store::EventCode::CONFIG_PROVIDER_KEY_UPDATED,
         "provider key updated",
         serde_json::json!({
             "storage_mode": storage_mode_for_event
@@ -1983,9 +1947,8 @@ pub(crate) fn set_provider_order(
             provider_name,
             serde_json::json!({ "order_index": index }),
         ) {
-            state.gateway.store.events().emit(
+            state.gateway.store.events().lan().edit_sync_record_failed(
                 provider_name,
-                crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
                 &format!("failed to record provider order update for LAN sync: {err}"),
                 serde_json::json!({
                     "order_index": index,
@@ -1993,9 +1956,8 @@ pub(crate) fn set_provider_order(
             );
         }
     }
-    state.gateway.store.events().emit(
+    state.gateway.store.events().config().provider_order_updated(
         "-",
-        crate::orchestrator::store::EventCode::CONFIG_PROVIDER_ORDER_UPDATED,
         "provider order updated",
         serde_json::Value::Null,
     );
@@ -2028,16 +1990,14 @@ pub(crate) fn clear_provider_key(
         &provider,
         serde_json::json!({ "key": serde_json::Value::Null }),
     ) {
-        state.gateway.store.events().emit(
+        state.gateway.store.events().lan().edit_sync_record_failed(
             &provider,
-            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
             &format!("failed to record provider key clear for LAN sync: {err}"),
             serde_json::Value::Null,
         );
     }
-    state.gateway.store.events().emit(
+    state.gateway.store.events().config().provider_key_cleared(
         &provider,
-        crate::orchestrator::store::EventCode::CONFIG_PROVIDER_KEY_CLEARED,
         "provider key cleared (user-data/secrets.json)",
         serde_json::Value::Null,
     );
