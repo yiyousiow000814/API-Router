@@ -1563,7 +1563,7 @@ mod tests {
         assert!(st.store.get_spend_state("p1").is_none());
 
         let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
-        snap.updated_at_unix_ms = 3_333;
+        snap.updated_at_unix_ms = 1_711_929_603_333;
         snap.daily_spent_usd = Some(20.0);
 
         track_budget_spend(&st, "p1", &snap);
@@ -1675,6 +1675,149 @@ mod tests {
     }
 
     #[test]
+    fn track_budget_spend_starts_new_local_day_without_waiting_for_spend_reset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://usage.example/v1".to_string(), secrets);
+        let first_ts = chrono::Local
+            .with_ymd_and_hms(2026, 4, 7, 23, 58, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        let second_ts = chrono::Local
+            .with_ymd_and_hms(2026, 4, 8, 0, 5, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        st.store.upsert_usage_request_sync_rows(&[
+            crate::orchestrator::store::UsageRequestSyncRow {
+                id: "req-1".to_string(),
+                unix_ms: first_ts,
+                ingested_at_unix_ms: first_ts,
+                provider: "p1".to_string(),
+                api_key_ref: "-".to_string(),
+                model: String::new(),
+                origin: "windows".to_string(),
+                session_id: String::new(),
+                node_id: "node-a".to_string(),
+                node_name: "desk-a".to_string(),
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 100,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            },
+            crate::orchestrator::store::UsageRequestSyncRow {
+                id: "req-2".to_string(),
+                unix_ms: second_ts,
+                ingested_at_unix_ms: second_ts,
+                provider: "p1".to_string(),
+                api_key_ref: "-".to_string(),
+                model: String::new(),
+                origin: "windows".to_string(),
+                session_id: String::new(),
+                node_id: "node-b".to_string(),
+                node_name: "desk-b".to_string(),
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 200,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            },
+        ]);
+
+        let mut first = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        first.updated_at_unix_ms = first_ts;
+        first.daily_spent_usd = Some(80.0);
+        track_budget_spend(&st, "p1", &first);
+
+        let mut second = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        second.updated_at_unix_ms = second_ts;
+        second.daily_spent_usd = Some(120.0);
+        track_budget_spend(&st, "p1", &second);
+
+        let spend_days = st.store.list_local_spend_days("p1");
+        assert_eq!(spend_days.len(), 2, "crossing midnight must open a new tracked day");
+        assert_eq!(
+            spend_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(80.0)
+        );
+        assert_eq!(
+            spend_days[1]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(40.0)
+        );
+        assert_eq!(
+            spend_days[1]
+                .get("started_at_unix_ms")
+                .and_then(|value| value.as_u64()),
+            Some(second_ts)
+        );
+    }
+
+    #[test]
+    fn remote_quota_snapshot_updates_shared_tracked_spend_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://usage.example/v1".to_string(), secrets);
+        let ts = chrono::Local
+            .with_ymd_and_hms(2026, 4, 8, 16, 58, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        st.store.upsert_usage_request_sync_rows(&[crate::orchestrator::store::UsageRequestSyncRow {
+            id: "req-remote".to_string(),
+            unix_ms: ts,
+            ingested_at_unix_ms: ts,
+            provider: "p1".to_string(),
+            api_key_ref: "-".to_string(),
+            model: String::new(),
+            origin: "windows".to_string(),
+            session_id: String::new(),
+            node_id: "node-remote".to_string(),
+            node_name: "remote-box".to_string(),
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 123,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        }]);
+
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.updated_at_unix_ms = ts;
+        snap.daily_spent_usd = Some(126.4827855);
+        snap.producer_node_id = Some("node-remote".to_string());
+        snap.producer_node_name = Some("remote-box".to_string());
+
+        apply_remote_quota_snapshot(
+            &st,
+            "p1",
+            &snap,
+            Some("node-remote"),
+            Some("remote-box"),
+        );
+
+        let spend_days = st.store.list_local_spend_days("p1");
+        assert_eq!(spend_days.len(), 1);
+        assert_eq!(
+            spend_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(126.4827855)
+        );
+        let spend_state = st.store.get_spend_state("p1").expect("shared spend state");
+        assert_eq!(
+            spend_state
+                .get("last_seen_daily_spent_usd")
+                .and_then(|value| value.as_f64()),
+            Some(126.4827855)
+        );
+    }
+
+    #[test]
     fn track_budget_spend_rebuilds_only_when_state_points_to_missing_open_day() {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
@@ -1705,7 +1848,7 @@ mod tests {
         );
 
         let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
-        snap.updated_at_unix_ms = 3_333;
+        snap.updated_at_unix_ms = 1_711_929_603_333;
         snap.daily_spent_usd = Some(20.0);
 
         track_budget_spend(&st, "p1", &snap);

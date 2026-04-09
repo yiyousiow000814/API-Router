@@ -1068,7 +1068,7 @@ impl Store {
         }
     }
 
-    fn local_day_key_from_unix_ms(ts_unix_ms: u64) -> Option<String> {
+    pub(crate) fn local_day_key_from_unix_ms(ts_unix_ms: u64) -> Option<String> {
         let ts = i64::try_from(ts_unix_ms).ok()?;
         let dt = Local.timestamp_millis_opt(ts).single()?;
         Some(dt.format("%Y-%m-%d").to_string())
