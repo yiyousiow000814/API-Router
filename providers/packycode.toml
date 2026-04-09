@@ -1,0 +1,47 @@
+id = "packycode"
+
+[match]
+base_url_host_suffixes = ["packycode.com"]
+
+[usage]
+refresh_flow = "auto"
+budget_info_auth_source = "provider_key"
+candidate_base_sources = ["explicit_usage_base_url"]
+fixed_candidate_bases = ["https://codex.packycode.com"]
+request_prefers_simple_input_list = true
+explicit_endpoint_mode = "none"
+
+[usage.budget_info_mapping]
+usage_kind = "budget_info"
+requires_any = ["/daily_spent_usd", "/monthly_spent_usd", "/weekly_spent_usd", "/weekly_spent"]
+
+[usage.budget_info_mapping.remaining]
+aliases = ["/remaining_quota"]
+transform = "none"
+
+[usage.budget_info_mapping.daily_used]
+aliases = ["/daily_spent_usd"]
+transform = "none"
+
+[usage.budget_info_mapping.daily_limit]
+aliases = ["/daily_budget_usd"]
+transform = "none"
+
+[usage.budget_info_mapping.weekly_used]
+aliases = ["/weekly_spent_usd", "/weekly_spent"]
+transform = "none"
+
+[usage.budget_info_mapping.weekly_limit]
+aliases = ["/weekly_budget_usd", "/weekly_budget"]
+transform = "none"
+
+[usage.budget_info_mapping.monthly_used]
+aliases = ["/monthly_spent_usd"]
+transform = "none"
+
+[usage.budget_info_mapping.monthly_limit]
+aliases = ["/monthly_budget_usd"]
+transform = "none"
+
+[package_expiry]
+strategy = "backend_users_info"

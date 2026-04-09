@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -71,6 +71,12 @@ pub struct GatewayState {
     pub client_sessions: Arc<RwLock<HashMap<String, ClientSessionRuntime>>>,
 }
 
+static RUNTIME_BOUND_LISTENER_ADDRS: OnceLock<Mutex<HashSet<SocketAddr>>> = OnceLock::new();
+
+fn runtime_bound_listener_addrs() -> &'static Mutex<HashSet<SocketAddr>> {
+    RUNTIME_BOUND_LISTENER_ADDRS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
 #[derive(Clone, Debug)]
 pub struct LastUsedRoute {
     pub provider: String,
@@ -138,10 +144,9 @@ fn maybe_record_model_mismatch(
     if !model_mismatch_should_log_transition(provider_name, session_key, req, resp) {
         return;
     }
-    st.store.add_event(
+    st.store.events().emit(
         provider_name,
-        "warning",
-        "routing.model_mismatch",
+        crate::orchestrator::store::EventCode::ROUTING_MODEL_MISMATCH,
         &format!("requested model {req}, upstream returned {resp}"),
         json!({
             "requested_model": req,
@@ -291,10 +296,9 @@ where
                 let msg = msg.chars().take(500).collect::<String>();
                 let resp = rej.into_response();
                 let code = resp.status().as_u16();
-                state.store.add_event(
+                state.store.events().emit(
                     "gateway",
-                    "error",
-                    "gateway.request_parse_error",
+                    crate::orchestrator::store::EventCode::GATEWAY_REQUEST_PARSE_ERROR,
                     &format!("{code} {method} {path}: {msg}"),
                     json!({ "http_status": code, "method": method, "path": path }),
                 );
@@ -357,6 +361,7 @@ async fn refresh_usage_once_after_first_failure(
         let err = snap.last_error.trim();
         let is_config_gap = err == "missing credentials for quota refresh"
             || err == "missing usage token"
+            || err == "missing provider key"
             || err == "missing quota base"
             || err == "missing base_url"
             || err == "usage endpoint not found (set Usage base URL)";
@@ -366,10 +371,9 @@ async fn refresh_usage_once_after_first_failure(
             st.router
                 .clear_usage_confirmation_requirement(provider_name);
         } else {
-            st.store.add_event(
+            st.store.events().emit(
                 provider_name,
-                "warning",
-                "routing.usage_refresh_unconfirmed_after_failure",
+                crate::orchestrator::store::EventCode::ROUTING_USAGE_REFRESH_UNCONFIRMED_AFTER_FAILURE,
                 "usage refresh failed after first failure; provider kept out of routing until confirmation",
                 json!({ "error": snap.last_error }),
             );
@@ -379,18 +383,18 @@ async fn refresh_usage_once_after_first_failure(
 
     let quota_snapshots = st.store.list_quota_snapshots();
     let hard_cap = st.secrets.get_provider_quota_hard_cap(provider_name);
-    if quota_snapshot_confirms_available(&quota_snapshots, provider_name, &hard_cap) {
+    if quota_snapshot_confirms_available(&cfg, &quota_snapshots, provider_name, &hard_cap) {
         st.router
             .clear_usage_confirmation_requirement(provider_name);
     } else if !provider_has_remaining_quota_with_hard_cap(
+        &cfg,
         &quota_snapshots,
         provider_name,
         &hard_cap,
     ) {
-        st.store.add_event(
+        st.store.events().emit(
             provider_name,
-            "warning",
-            "routing.closed_after_failure_usage_refresh",
+            crate::orchestrator::store::EventCode::ROUTING_CLOSED_AFTER_FAILURE_USAGE_REFRESH,
             "provider quota exhausted after first-failure usage refresh",
             Value::Null,
         );
@@ -441,10 +445,9 @@ fn log_upstream_retry_event(
     let cfg = st.cfg.read().clone();
     st.router
         .mark_transient_warning(provider_name, &cfg, detail, unix_ms());
-    st.store.add_event(
+    st.store.events().emit(
         provider_name,
-        "warning",
-        "gateway.upstream_retry",
+        crate::orchestrator::store::EventCode::GATEWAY_UPSTREAM_RETRY,
         detail,
         json!({
             "kind": kind,
@@ -492,6 +495,18 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         .route(
             "/lan-sync/provider-definitions",
             post(crate::lan_sync::lan_sync_provider_definitions_http),
+        )
+        .route(
+            "/lan-sync/remote-update",
+            post(crate::lan_sync::lan_sync_remote_update_http),
+        )
+        .route(
+            "/lan-sync/debug/tracked-spend-history",
+            post(crate::lan_sync::lan_sync_tracked_spend_history_debug_http),
+        )
+        .route(
+            "/lan-sync/debug/remote-update",
+            post(crate::lan_sync::lan_sync_remote_update_debug_http),
         )
         .route("/v1/models", get(models))
         .route("/v1/responses", post(responses))
@@ -677,6 +692,10 @@ pub async fn serve_in_background(
         .join(", ");
     {
         state.cfg.write().listen.port = prepared.listen_port;
+        let mut bound_listener_addrs = runtime_bound_listener_addrs().lock();
+        for (addr, _) in &prepared.listeners {
+            bound_listener_addrs.insert(*addr);
+        }
     }
     write_gateway_startup_diag("binding", diag_addr, Some(&diag_binding));
 
@@ -711,6 +730,97 @@ pub async fn serve_in_background(
         }
     }
     Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn ensure_runtime_gateway_listener_bindings(
+    state: GatewayState,
+    addrs: &[SocketAddr],
+) -> anyhow::Result<Vec<SocketAddr>> {
+    let mut pending = Vec::new();
+    let mut newly_bound = Vec::new();
+    {
+        let bound_listener_addrs = runtime_bound_listener_addrs().lock();
+        for addr in addrs {
+            if bound_listener_addrs.contains(addr) {
+                continue;
+            }
+            let listener = match std::net::TcpListener::bind(addr) {
+                Ok(listener) => listener,
+                Err(err) => {
+                    state.gateway_event_optional_overlay_bind_skip(*addr, &err.to_string());
+                    continue;
+                }
+            };
+            listener.set_nonblocking(true)?;
+            pending.push((*addr, listener));
+        }
+    }
+
+    if pending.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    write_gateway_startup_diag(
+        "runtime_listener_bound",
+        pending.first().map(|(addr, _)| *addr),
+        Some(
+            &pending
+                .iter()
+                .map(|(addr, _)| addr.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+    );
+    let app = build_router(state.clone());
+    for (addr, listener) in pending {
+        let listener = tokio::net::TcpListener::from_std(listener)?;
+        runtime_bound_listener_addrs().lock().insert(addr);
+        newly_bound.push(addr);
+        let app_for_addr = app.clone();
+        let state_for_addr = state.clone();
+        tauri::async_runtime::spawn(async move {
+            let result = axum::serve(
+                listener,
+                app_for_addr.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await;
+            runtime_bound_listener_addrs().lock().remove(&addr);
+            if let Err(err) = result {
+                write_gateway_startup_diag(
+                    "runtime_listener_failed",
+                    Some(addr),
+                    Some(&err.to_string()),
+                );
+                state_for_addr.store.events().emit(
+                    "gateway",
+                    crate::orchestrator::store::EventCode::GATEWAY_RUNTIME_LISTENER_FAILED,
+                    &format!("runtime gateway listener exited on {addr}: {err}"),
+                    json!({ "listen_addr": addr.to_string() }),
+                );
+            }
+        });
+    }
+
+    Ok(newly_bound)
+}
+
+#[cfg(windows)]
+trait GatewayRuntimeListenerEventExt {
+    fn gateway_event_optional_overlay_bind_skip(&self, addr: SocketAddr, detail: &str);
+}
+
+#[cfg(windows)]
+impl GatewayRuntimeListenerEventExt for GatewayState {
+    fn gateway_event_optional_overlay_bind_skip(&self, addr: SocketAddr, detail: &str) {
+        write_gateway_startup_diag("runtime_listener_skipped", Some(addr), Some(detail));
+        self.store.events().emit(
+            "gateway",
+            crate::orchestrator::store::EventCode::GATEWAY_RUNTIME_LISTENER_SKIPPED,
+            &format!("Skipped runtime gateway listener bind for {addr}: {detail}"),
+            json!({ "listen_addr": addr.to_string(), "detail": detail }),
+        );
+    }
 }
 
 include!("gateway/store_recovery.rs");
@@ -928,10 +1038,9 @@ async fn responses(
 
     if has_prev {
         let summary = summarize_input_for_debug(&input);
-        st.store.add_event(
+        st.store.events().emit(
             "gateway",
-            "debug",
-            "gateway.previous_response_id_present",
+            crate::orchestrator::store::EventCode::GATEWAY_PREVIOUS_RESPONSE_ID_PRESENT,
             &format!("previous_response_id present (tools={input_has_tools}); input={summary}"),
             json!({ "tools": input_has_tools }),
         );
@@ -1091,10 +1200,9 @@ async fn responses(
                                 preferred,
                                 is_first_attempt,
                             ) {
-                                st.store.add_event(
+                                st.store.events().emit(
                                     &provider_name,
-                                    "info",
-                                    "routing.stream",
+                                    crate::orchestrator::store::EventCode::ROUTING_STREAM,
                                     &format!("Streaming via {provider_name} ({reason})"),
                                     json!({
                                         "provider": provider_name,
@@ -1109,10 +1217,9 @@ async fn responses(
                                 &provider_name,
                                 preferred,
                             ) {
-                                st.store.add_event(
+                                st.store.events().emit(
                                     &provider_name,
-                                    "info",
-                                    "routing.back_to_preferred",
+                                    crate::orchestrator::store::EventCode::ROUTING_BACK_TO_PREFERRED,
                                     &format!(
                                         "Back to preferred: {provider_name} (from {})",
                                         prev.as_ref()
@@ -1152,10 +1259,9 @@ async fn responses(
                                 st.prev_id_support_cache
                                     .write()
                                     .insert(provider_name.clone(), false);
-                                st.store.add_event(
+                                st.store.events().emit(
                                     &provider_name,
-                                    "info",
-                                    "gateway.retry_without_prev_id",
+                                    crate::orchestrator::store::EventCode::GATEWAY_RETRY_WITHOUT_PREV_ID,
                                     "retrying without previous_response_id",
                                     Value::Null,
                                 );
@@ -1188,10 +1294,9 @@ async fn responses(
                                 last_err = format!(
                                     "upstream {provider_name} returned {code} (responses stream): {txt}"
                                 );
-                                st.store.add_event(
+                                st.store.events().emit(
                                     &provider_name,
-                                    "warning",
-                                    "gateway.stream_fallback_to_non_stream",
+                                    crate::orchestrator::store::EventCode::GATEWAY_STREAM_FALLBACK_TO_NON_STREAM,
                                     "streaming failed; retrying once with non-stream responses",
                                     json!({
                                         "http_status": code,
@@ -1212,10 +1317,9 @@ async fn responses(
                             );
                             st.router
                                 .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
-                            st.store.add_event(
+                            st.store.events().emit(
                                 &provider_name,
-                                "error",
-                                "upstream.http_error",
+                                crate::orchestrator::store::EventCode::UPSTREAM_HTTP_ERROR,
                                 &last_err,
                                 json!({
                                     "http_status": code,
@@ -1257,10 +1361,9 @@ async fn responses(
                                 last_err = format!(
                                     "upstream {provider_name} error (responses stream): {e}"
                                 );
-                                st.store.add_event(
+                                st.store.events().emit(
                                     &provider_name,
-                                    "warning",
-                                    "gateway.stream_fallback_to_non_stream",
+                                    crate::orchestrator::store::EventCode::GATEWAY_STREAM_FALLBACK_TO_NON_STREAM,
                                     "streaming request failed; retrying once with non-stream responses",
                                     json!({ "endpoint": "/v1/responses", "stream": true }),
                                 );
@@ -1276,10 +1379,9 @@ async fn responses(
                                 format!("upstream {provider_name} error (responses stream): {e}");
                             st.router
                                 .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
-                            st.store.add_event(
+                            st.store.events().emit(
                                 &provider_name,
-                                "error",
-                                "upstream.request_error",
+                                crate::orchestrator::store::EventCode::UPSTREAM_REQUEST_ERROR,
                                 &last_err,
                                 json!({ "endpoint": "/v1/responses", "stream": true }),
                             );
@@ -1418,10 +1520,9 @@ async fn responses(
                         preferred,
                         is_first_attempt,
                     ) {
-                        st.store.add_event(
+                        st.store.events().emit(
                             &provider_name,
-                            "info",
-                            "routing.route",
+                            crate::orchestrator::store::EventCode::ROUTING_ROUTE,
                             &format!("Routed via {provider_name} ({reason})"),
                             json!({
                                 "provider": provider_name,
@@ -1436,10 +1537,9 @@ async fn responses(
                         &provider_name,
                         preferred,
                     ) {
-                        st.store.add_event(
+                        st.store.events().emit(
                             &provider_name,
-                            "info",
-                            "routing.back_to_preferred",
+                            crate::orchestrator::store::EventCode::ROUTING_BACK_TO_PREFERRED,
                             &format!(
                                 "Back to preferred: {provider_name} (from {})",
                                 prev.as_ref()
@@ -1472,10 +1572,9 @@ async fn responses(
                         st.prev_id_support_cache
                             .write()
                             .insert(provider_name.clone(), false);
-                        st.store.add_event(
+                        st.store.events().emit(
                             &provider_name,
-                            "info",
-                            "gateway.retry_without_prev_id",
+                            crate::orchestrator::store::EventCode::GATEWAY_RETRY_WITHOUT_PREV_ID,
                             "retrying without previous_response_id",
                             Value::Null,
                         );
@@ -1485,10 +1584,9 @@ async fn responses(
                     st.router
                         .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
                     st.store.record_failure(&provider_name);
-                    st.store.add_event(
+                    st.store.events().emit(
                         &provider_name,
-                        "error",
-                        "upstream.http_error",
+                        crate::orchestrator::store::EventCode::UPSTREAM_HTTP_ERROR,
                         &last_err,
                         json!({ "http_status": code, "endpoint": "/v1/responses", "stream": false }),
                     );
@@ -1505,10 +1603,9 @@ async fn responses(
                     st.router
                         .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
                     st.store.record_failure(&provider_name);
-                    st.store.add_event(
+                    st.store.events().emit(
                         &provider_name,
-                        "error",
-                        "upstream.request_error",
+                        crate::orchestrator::store::EventCode::UPSTREAM_REQUEST_ERROR,
                         &last_err,
                         json!({ "endpoint": "/v1/responses", "stream": false }),
                     );

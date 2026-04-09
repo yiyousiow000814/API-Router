@@ -130,6 +130,33 @@ describe('ProvidersTable', () => {
     expect(jumpButtons).toHaveLength(2)
   })
 
+  it('hides stale last error once a newer healthy check succeeded', () => {
+    const status = buildStatus()
+    status.providers = {
+      packycode: {
+        status: 'healthy',
+        consecutive_failures: 0,
+        cooldown_until_unix_ms: 0,
+        last_error: 'old refresh failure',
+        last_ok_at_unix_ms: 3_000,
+        last_fail_at_unix_ms: 2_000,
+      },
+    }
+
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['packycode']}
+        status={status}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
+
+    expect(html).not.toContain('aoLastErrorViewBtn')
+    expect(html).toContain('<td>-</td>')
+  })
+
   it('shows retry when unhealthy cooldown has already expired', () => {
     const status = buildStatus()
     status.providers = {
@@ -155,6 +182,34 @@ describe('ProvidersTable', () => {
 
     expect(html).toContain('retry')
     expect(html).not.toContain('>no<')
+  })
+
+  it('shows offline immediately when local network state is offline', () => {
+    const status = buildStatus()
+    status.local_network_online = false
+    status.providers = {
+      packycode: {
+        status: 'healthy',
+        consecutive_failures: 0,
+        cooldown_until_unix_ms: 0,
+        last_error: '',
+        last_ok_at_unix_ms: 1_000,
+        last_fail_at_unix_ms: 0,
+      },
+    }
+
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['packycode']}
+        status={status}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
+
+    expect(html).toContain('offline')
+    expect(html).not.toContain('>yes<')
   })
 
   it('hides unticked hard-cap usage rows from dashboard usage preview', () => {

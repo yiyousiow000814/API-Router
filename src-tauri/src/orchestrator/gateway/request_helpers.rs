@@ -1,11 +1,5 @@
 fn prefers_simple_input_list(base_url: &str) -> bool {
-    let host = reqwest::Url::parse(base_url)
-        .ok()
-        .and_then(|u| u.host_str().map(|s| s.to_string()))
-        .unwrap_or_default();
-    host.ends_with("ppchat.vip")
-        || host.ends_with("pumpkinai.vip")
-        || host.ends_with("packycode.com")
+    crate::orchestrator::providers::prefers_simple_input_list(base_url)
 }
 
 fn input_contains_tools(input: &Value) -> bool {

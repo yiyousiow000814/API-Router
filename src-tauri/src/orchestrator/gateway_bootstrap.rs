@@ -25,6 +25,25 @@ fn push_unique_addr(addrs: &mut Vec<SocketAddr>, addr: SocketAddr) {
 }
 
 #[cfg(windows)]
+pub(crate) fn tailscale_overlay_listener_addrs(
+    listen_host: &str,
+    listen_port: u16,
+    extra_ips: &[IpAddr],
+) -> anyhow::Result<Vec<SocketAddr>> {
+    let primary: SocketAddr = format!("{listen_host}:{listen_port}").parse()?;
+    if primary.ip().to_string() != crate::constants::GATEWAY_WINDOWS_HOST {
+        return Ok(Vec::new());
+    }
+    let mut addrs = Vec::new();
+    for extra_ip in extra_ips {
+        if *extra_ip != primary.ip() {
+            push_unique_addr(&mut addrs, SocketAddr::new(*extra_ip, listen_port));
+        }
+    }
+    Ok(addrs)
+}
+
+#[cfg(windows)]
 fn gateway_listen_addrs_with_overlays(
     listen_host: &str,
     listen_port: u16,
@@ -235,10 +254,9 @@ fn persist_gateway_runtime_port(
         cfg.clone()
     };
     std::fs::write(&state.config_path, toml::to_string_pretty(&cfg_to_write)?)?;
-    state.gateway.store.add_event(
+    state.gateway.store.events().emit(
         "gateway",
-        "warning",
-        "gateway.listen_port_reassigned",
+        crate::orchestrator::store::EventCode::GATEWAY_LISTEN_PORT_REASSIGNED,
         &format!("Gateway listen port reassigned to {next_port} because the configured port was unavailable."),
         json!({ "listen_port": next_port }),
     );
@@ -341,9 +359,9 @@ pub(crate) fn prepare_gateway_listeners(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        bind_listener_addrs_with_policy, gateway_listen_addrs, gateway_listen_addrs_with_overlays,
-    };
+    use super::{bind_listener_addrs_with_policy, gateway_listen_addrs};
+    #[cfg(windows)]
+    use super::{gateway_listen_addrs_with_overlays, tailscale_overlay_listener_addrs};
     use std::io::ErrorKind;
     use std::net::SocketAddr;
 
@@ -375,6 +393,23 @@ mod tests {
         assert!(addrs
             .iter()
             .any(|addr| addr.to_string() == "100.64.208.117:4000"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tailscale_overlay_listener_addrs_only_returns_tailscale_ips() {
+        let overlays = vec![
+            "100.64.208.117".parse().unwrap(),
+            "100.118.0.115".parse().unwrap(),
+        ];
+        let addrs = tailscale_overlay_listener_addrs("127.0.0.1", 4000, &overlays).unwrap();
+        assert_eq!(
+            addrs,
+            vec![
+                "100.64.208.117:4000".parse().unwrap(),
+                "100.118.0.115:4000".parse().unwrap(),
+            ]
+        );
     }
 
     #[cfg(windows)]

@@ -18,7 +18,7 @@ import {
   fmtUsdMaybe as formatUsdMaybe,
   fmtUsageBucketLabel as formatUsageBucketLabel,
 } from './utils/usageDisplay'
-import { devConfig, devStatus, evolveDevStatus, parseDevFlag, type SpendHistoryRow } from './devMockData'
+import type { SpendHistoryRow } from './devMockData'
 import type {
   ProviderScheduleDraft,
   UsageHistoryDraft,
@@ -34,7 +34,6 @@ import {
 } from './utils/currency'
 import { AppMainContent, preloadAppMainContentModules } from './components/AppMainContent'
 import { AppTopNav } from './components/AppTopNav'
-import type { EventLogDailyStat, EventLogEntry } from './components/EventLogPanel'
 import type { LastErrorJump } from './components/ProvidersTable'
 import { useConfigDrag } from './hooks/useConfigDrag'
 import { useProviderActions } from './hooks/useProviderActions'
@@ -55,7 +54,6 @@ import { useUsageOpsBridge } from './hooks/useUsageOpsBridge'
 import { useUsageUiDerived } from './hooks/useUsageUiDerived'
 import { useMainContentCallbacks } from './hooks/useMainContentCallbacks'
 import { useTopNavIntentPrefetch } from './hooks/useTopNavIntentPrefetch'
-import { buildUsageStatisticsOverviewFromFull } from './utils/usageStatisticsOverview'
 import type {
   KeyModalState,
   ProviderAdvancedModalState,
@@ -69,6 +67,7 @@ import {
   resolveCliHomes,
 } from './utils/switchboard'
 import { usageProviderRowKey } from './utils/usageStatisticsView'
+import { isRemoteUpdateStatusCurrentForPending } from './utils/remoteUpdateStatus'
 import {
   USAGE_REQUESTS_CANONICAL_QUERY_KEY,
   primeUsageRequestsPrefetchCache,
@@ -105,56 +104,61 @@ const RAW_DRAFT_STORAGE_KEY = 'ao.rawConfigDraft.shared.v1'
 const RAW_DRAFT_WINDOWS_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.windows.v1'
 const RAW_DRAFT_WSL_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.wsl2.v1'
 const USAGE_PROVIDER_SHOW_DETAILS_KEY = 'ao.usage.provider.showDetails.v1'
-const EVENT_LOG_PRELOAD_REFRESH_MS = 15_000
-const EVENT_LOG_PRELOAD_LIMIT = 5000
-const STATUS_CACHE_STORAGE_KEY = 'ao.startup.status.v1'
-const CONFIG_CACHE_STORAGE_KEY = 'ao.startup.config.v1'
-const TOKEN_CACHE_STORAGE_KEY = 'ao.startup.gatewayTokenPreview.v1'
-const USAGE_OVERVIEW_CACHE_STORAGE_KEY = 'ao.startup.usageOverview.v1'
-const USAGE_STATS_CACHE_STORAGE_KEY = 'ao.startup.usageStatistics.v1'
 
 type CopyProviderResult = {
   target_name: string
   local_copy_state: 'copied' | 'linked'
 }
 
+type DevPreviewModule = typeof import('./devMockData')
+type LocalNetworkConnectivityPayload = {
+  online: boolean
+}
+
+function parseDevFlag(raw: string | null): boolean {
+  const normalized = String(raw ?? '').trim().toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on'
+}
+
+function createEmptyDevStatus(): Status {
+  return {
+    listen: { host: '127.0.0.1', port: 4000 },
+    local_network_online: true,
+    preferred_provider: '',
+    manual_override: null,
+    providers: {},
+    metrics: {},
+    recent_events: [],
+    quota: {},
+    ledgers: {},
+    last_activity_unix_ms: 0,
+    codex_account: { ok: false, signed_in: false },
+  }
+}
+
+function createEmptyDevConfig(): Config {
+  return {
+    listen: { host: '127.0.0.1', port: 4000 },
+    routing: {
+      preferred_provider: '',
+      session_preferred_providers: {},
+      auto_return_to_preferred: true,
+      preferred_stable_seconds: 30,
+      failure_threshold: 2,
+      cooldown_seconds: 60,
+      request_timeout_seconds: 300,
+    },
+    providers: {},
+    provider_order: [],
+  }
+}
+
 recordStartupStage('frontend_app_module_loaded')
-
-function readStartupCache<T>(key: string): T | null {
-  if (typeof window === 'undefined') return null
-  try {
-    const raw = window.localStorage.getItem(key)
-    if (!raw) return null
-    return JSON.parse(raw) as T
-  } catch {
-    return null
-  }
-}
-
-function writeStartupCache(key: string, value: unknown) {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value))
-  } catch {
-    // Ignore cache write failures; startup cache is best-effort only.
-  }
-}
-
 
 export default function App() {
   useEffect(() => {
     recordStartupStage('frontend_app_component_mounted')
   }, [])
-  const cachedUsageStatistics = useMemo(
-    () => readStartupCache<UsageStatistics>(USAGE_STATS_CACHE_STORAGE_KEY),
-    [],
-  )
-  const cachedUsageOverview = useMemo(
-    () =>
-      readStartupCache<UsageStatisticsOverview>(USAGE_OVERVIEW_CACHE_STORAGE_KEY) ??
-      buildUsageStatisticsOverviewFromFull(cachedUsageStatistics),
-    [cachedUsageStatistics],
-  )
   const isDevPreview = useMemo(() => {
     if (!import.meta.env.DEV) return false
     if (typeof window === 'undefined') return false
@@ -165,11 +169,14 @@ export default function App() {
     if (typeof window === 'undefined') return new URLSearchParams()
     return new URLSearchParams(window.location.search)
   }, [])
+  const [devPreviewModule, setDevPreviewModule] = useState<DevPreviewModule | null>(null)
   const devMockHistoryEnabled = useMemo(() => parseDevFlag(devFlags.get('mockHistory')), [devFlags])
   const devAutoOpenHistory = useMemo(() => parseDevFlag(devFlags.get('openHistory')), [devFlags])
   const rawConfigTestMode = useMemo(() => parseDevFlag(devFlags.get('test')), [devFlags])
-  const [status, setStatus] = useState<Status | null>(() => readStartupCache<Status>(STATUS_CACHE_STORAGE_KEY))
-  const [config, setConfig] = useState<Config | null>(() => readStartupCache<Config>(CONFIG_CACHE_STORAGE_KEY))
+  const devStatus = useMemo(() => devPreviewModule?.devStatus ?? createEmptyDevStatus(), [devPreviewModule])
+  const devConfig = useMemo(() => devPreviewModule?.devConfig ?? createEmptyDevConfig(), [devPreviewModule])
+  const [status, setStatus] = useState<Status | null>(null)
+  const [config, setConfig] = useState<Config | null>(null)
   const [, setBaselineBaseUrls] = useState<Record<string, string>>({})
   const [toast, setToast] = useState<string>('')
   const [override, setOverride] = useState<string>('') // '' => auto
@@ -227,9 +234,7 @@ export default function App() {
     value: '',
   })
   const overrideDirtyRef = useRef<boolean>(false)
-  const [gatewayTokenPreview, setGatewayTokenPreview] = useState<string>(
-    () => readStartupCache<string>(TOKEN_CACHE_STORAGE_KEY) ?? '',
-  )
+  const [gatewayTokenPreview, setGatewayTokenPreview] = useState<string>('')
   const [gatewayTokenReveal, setGatewayTokenReveal] = useState<string>('')
   const [gatewayModalOpen, setGatewayModalOpen] = useState<boolean>(false)
   const [configModalOpen, setConfigModalOpen] = useState<boolean>(false)
@@ -262,17 +267,44 @@ export default function App() {
     message: string
     nonce: number
   } | null>(null)
-  const [eventLogPreloadEntries, setEventLogPreloadEntries] = useState<EventLogEntry[]>([])
-  const [eventLogPreloadDailyStats, setEventLogPreloadDailyStats] = useState<EventLogDailyStat[]>([])
   const [providerSwitchStatus, setProviderSwitchStatus] = useState<ProviderSwitchboardStatus | null>(null)
+
+  useEffect(() => {
+    if (isDevPreview || typeof window === 'undefined') return
+    let disposed = false
+    let unlisten: null | (() => void) = null
+    void import('@tauri-apps/api/event')
+      .then(({ listen }) =>
+        listen<LocalNetworkConnectivityPayload>('local-network-connectivity-changed', (event) => {
+          setStatus((prev) => {
+            if (!prev) return prev
+            if (prev.local_network_online === event.payload.online) return prev
+            return {
+              ...prev,
+              local_network_online: event.payload.online,
+            }
+          })
+        }),
+      )
+      .then((cleanup) => {
+        if (disposed) {
+          cleanup()
+          return
+        }
+        unlisten = cleanup
+      })
+      .catch(() => {})
+    return () => {
+      disposed = true
+      if (unlisten) {
+        unlisten()
+      }
+    }
+  }, [isDevPreview])
   const [providerGroupManagerOpen, setProviderGroupManagerOpen] = useState<boolean>(false)
   const [providerGroupManagerFocusProvider, setProviderGroupManagerFocusProvider] = useState<string | null>(null)
-  const [usageOverview, setUsageOverview] = useState<UsageStatisticsOverview | null>(
-    cachedUsageOverview,
-  )
-  const [usageStatistics, setUsageStatistics] = useState<UsageStatistics | null>(
-    cachedUsageStatistics,
-  )
+  const [usageOverview, setUsageOverview] = useState<UsageStatisticsOverview | null>(null)
+  const [usageStatistics, setUsageStatistics] = useState<UsageStatistics | null>(null)
   const [usageWindowHours, setUsageWindowHours] = useState<number>(24)
   const [usageFilterNodes, setUsageFilterNodes] = useState<string[]>([])
   const [usageFilterProviders, setUsageFilterProviders] = useState<string[]>([])
@@ -376,7 +408,6 @@ export default function App() {
   const usageScheduleLastSavedByProviderRef = useRef<Record<string, string>>({})
   const toastTimerRef = useRef<number | null>(null)
   const rawConfigTestFailOnceRef = useRef<Record<string, boolean>>({})
-  const eventLogPreloadSeqRef = useRef(0)
   const devPreviewLocalConfigRef = useRef<Config | null>(null)
   const devPreviewFollowSourceProvidersRef = useRef<Config['providers'] | null>(null)
   const rawConfigTextsRef = useRef<Record<string, string>>({})
@@ -409,10 +440,7 @@ export default function App() {
       return current.nonce === nonce ? null : current
     })
   }
-  const eventLogSeedEvents = useMemo(
-    () => (eventLogPreloadEntries.length > 0 ? eventLogPreloadEntries : status?.recent_events ?? []),
-    [eventLogPreloadEntries, status?.recent_events],
-  )
+  const eventLogSeedEvents = useMemo(() => status?.recent_events ?? [], [status?.recent_events])
   useEffect(() => {
     if (typeof window === 'undefined') return
     const w = window as Window & {
@@ -488,80 +516,24 @@ export default function App() {
     }
   }, [eventLogSeedEvents, handleOpenLastErrorInEventLog])
   useEffect(() => {
-    if (!status) return
-    writeStartupCache(STATUS_CACHE_STORAGE_KEY, status)
-  }, [status])
-  useEffect(() => {
-    if (!config) return
-    writeStartupCache(CONFIG_CACHE_STORAGE_KEY, config)
-  }, [config])
-  useEffect(() => {
-    if (!gatewayTokenPreview.trim()) return
-    writeStartupCache(TOKEN_CACHE_STORAGE_KEY, gatewayTokenPreview)
-  }, [gatewayTokenPreview])
-  useEffect(() => {
-    if (!usageOverview) return
-    writeStartupCache(USAGE_OVERVIEW_CACHE_STORAGE_KEY, usageOverview)
-  }, [usageOverview])
-  useEffect(() => {
-    if (!usageStatistics) return
-    writeStartupCache(USAGE_STATS_CACHE_STORAGE_KEY, usageStatistics)
-  }, [usageStatistics])
-  useEffect(() => {
-    if (activePage !== 'event_log') return
+    if (!isDevPreview) return
     let cancelled = false
-    const loadEventLogPreload = async () => {
-      const reqId = ++eventLogPreloadSeqRef.current
-      try {
-        const [entriesRaw, dailyRaw] = await Promise.all([
-          invoke<EventLogEntry[]>('get_event_log_entries', {
-            fromUnixMs: null,
-            toUnixMs: null,
-            limit: EVENT_LOG_PRELOAD_LIMIT,
-          }),
-          invoke<EventLogDailyStat[]>('get_event_log_daily_stats', {
-            fromUnixMs: null,
-            toUnixMs: null,
-          }),
-        ])
-        if (cancelled || eventLogPreloadSeqRef.current !== reqId) return
-        if (Array.isArray(entriesRaw)) {
-          setEventLogPreloadEntries([...entriesRaw].sort((a, b) => b.unix_ms - a.unix_ms))
-        }
-        if (Array.isArray(dailyRaw)) {
-          const normalized = dailyRaw
-            .filter((row) =>
-              row != null &&
-              Number.isFinite(Number(row.day_start_unix_ms)) &&
-              Number.isFinite(Number(row.total)) &&
-              Number.isFinite(Number(row.infos)) &&
-              Number.isFinite(Number(row.warnings)) &&
-              Number.isFinite(Number(row.errors)),
-            )
-            .map((row) => ({
-              day: String(row.day ?? ''),
-              day_start_unix_ms: Number(row.day_start_unix_ms),
-              total: Number(row.total),
-              infos: Number(row.infos),
-              warnings: Number(row.warnings),
-              errors: Number(row.errors),
-            }))
-            .sort((a, b) => a.day_start_unix_ms - b.day_start_unix_ms)
-          setEventLogPreloadDailyStats(normalized)
-        }
-      } catch {
-        // Keep the last successful preload snapshot if refresh fails transiently.
-      }
-    }
-    void loadEventLogPreload()
-    const timer = window.setInterval(() => {
-      void loadEventLogPreload()
-    }, EVENT_LOG_PRELOAD_REFRESH_MS)
+    void import('./devMockData').then((module) => {
+      if (cancelled) return
+      setDevPreviewModule(module)
+      setStatus(module.devStatus)
+      setConfig(module.devConfig)
+      setBaselineBaseUrls(
+        Object.fromEntries(
+          Object.entries(module.devConfig.providers).map(([name, provider]) => [name, provider.base_url]),
+        ),
+      )
+      setGatewayTokenPreview('ao_dev********7f2a')
+    })
     return () => {
       cancelled = true
-      window.clearInterval(timer)
     }
-  }, [activePage])
+  }, [isDevPreview])
   useEffect(() => {
     rawConfigTextsRef.current = rawConfigTexts
   }, [rawConfigTexts])
@@ -941,8 +913,9 @@ export default function App() {
     })
   }, [config, setBaselineBaseUrls])
   const onDevPreviewTick = useCallback(() => {
-    setStatus((prev) => evolveDevStatus(prev))
-  }, [])
+    if (!devPreviewModule) return
+    setStatus((prev) => devPreviewModule.evolveDevStatus(prev))
+  }, [devPreviewModule])
   const codexSwapBadge = useMemo(() => {
     const windowsHome = codexSwapUseWindows ? codexSwapDir1.trim() : ''
     const wslHome = codexSwapUseWsl ? codexSwapDir2.trim() : ''
@@ -1361,6 +1334,98 @@ export default function App() {
       },
     })
   }
+  const [lanRemoteUpdatePendingByNode, setLanRemoteUpdatePendingByNode] = useState<
+    Record<string, { stage: 'requesting' | 'refreshing'; detail: string; startedAtUnixMs: number }>
+  >({})
+
+  useEffect(() => {
+    const sources = config?.config_source?.sources ?? []
+    setLanRemoteUpdatePendingByNode((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const nodeId of Object.keys(prev)) {
+        const source = sources.find((item) => item.node_id === nodeId && item.kind === 'peer')
+        if (!source) continue
+        const pendingStage = prev[nodeId]
+        const remoteState = source.remote_update_status?.state?.trim() || ''
+        const hasCurrentTerminalRemoteUpdateStatus =
+          Boolean(source.remote_update_status?.state?.trim()) &&
+          isRemoteUpdateStatusCurrentForPending(source, pendingStage) &&
+          ['failed', 'succeeded', 'superseded'].includes(remoteState)
+        if (hasCurrentTerminalRemoteUpdateStatus || !source.version_sync_required) {
+          delete next[nodeId]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [config])
+
+  const lanRemoteUpdatePendingNodeIdsKey = Object.keys(lanRemoteUpdatePendingByNode).sort().join('|')
+
+  useEffect(() => {
+    if (isDevPreview || !lanRemoteUpdatePendingNodeIdsKey) return
+    let cancelled = false
+    let refreshInFlight = false
+    const refreshRemoteUpdateProgress = async () => {
+      if (cancelled || refreshInFlight) return
+      refreshInFlight = true
+      try {
+        await refreshConfig({ refreshProviderSwitchStatus: false, force: true })
+      } finally {
+        refreshInFlight = false
+      }
+    }
+    void refreshRemoteUpdateProgress()
+    const timer = window.setInterval(() => {
+      void refreshRemoteUpdateProgress()
+    }, 1000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [isDevPreview, lanRemoteUpdatePendingNodeIdsKey, refreshConfig])
+
+  async function requestLanRemoteUpdateSameVersion(nodeId: string) {
+    if (lanRemoteUpdatePendingByNode[nodeId]) return
+    setLanRemoteUpdatePendingByNode((prev) => ({
+      ...prev,
+      [nodeId]: {
+        stage: 'requesting',
+        detail: 'Sending update request to peer',
+        startedAtUnixMs: Date.now(),
+      },
+    }))
+    try {
+      if (isDevPreview) {
+        flashToast(`Requested ${nodeId} to sync to this build [TEST]`)
+        setLanRemoteUpdatePendingByNode((prev) => {
+          const next = { ...prev }
+          delete next[nodeId]
+          return next
+        })
+        return
+      }
+      await invoke('request_lan_remote_update_same_version', { nodeId })
+      setLanRemoteUpdatePendingByNode((prev) => ({
+        ...prev,
+        [nodeId]: {
+          stage: 'refreshing',
+          detail: 'Peer accepted request. Refreshing remote progress',
+          startedAtUnixMs: prev[nodeId]?.startedAtUnixMs ?? Date.now(),
+        },
+      }))
+      flashToast('Peer version sync requested')
+      await refreshConfig({ refreshProviderSwitchStatus: false, force: true })
+    } catch (error) {
+      setLanRemoteUpdatePendingByNode((prev) => {
+        const next = { ...prev }
+        delete next[nodeId]
+        return next
+      })
+      flashToast(String(error), 'error')
+    }
+  }
   async function copyProviderFromConfigSource(sourceNodeId: string, sharedProviderId: string) {
     try {
       if (isDevPreview) {
@@ -1427,6 +1492,7 @@ export default function App() {
   useAppPolling({
     activePage,
     isDevPreview,
+    configModalOpen,
     codexSwapModalOpen,
     codexSwapDir1,
     codexSwapDir2,
@@ -1447,7 +1513,7 @@ export default function App() {
     const prevSignature = lastLanConfigSyncSignatureRef.current
     lastLanConfigSyncSignatureRef.current = nextSignature
     if (!prevSignature || prevSignature === nextSignature) return
-    void refreshConfig({ refreshProviderSwitchStatus: false })
+    void refreshConfig({ refreshProviderSwitchStatus: false, force: true })
   }, [isDevPreview, refreshConfig, status])
   useEffect(() => {
     if (!isDevPreview) return
@@ -1754,7 +1820,7 @@ export default function App() {
               onSetSessionPreferred={(sessionId, provider) => void setSessionPreferred(sessionId, provider)}
               onOpenLastErrorInEventLog={handleOpenLastErrorInEventLog}
               eventLogSeedEvents={eventLogSeedEvents}
-              eventLogSeedDailyStats={eventLogPreloadDailyStats}
+              eventLogSeedDailyStats={[]}
               eventLogFocusRequest={eventLogFocusRequest}
               onEventLogFocusRequestHandled={handleEventLogFocusRequestHandled}
               usageOverview={usageOverview}
@@ -1807,6 +1873,8 @@ export default function App() {
             requestLanPair={requestLanPair}
             approveLanPair={approveLanPair}
             submitLanPairPin={submitLanPairPin}
+            requestLanRemoteUpdateSameVersion={requestLanRemoteUpdateSameVersion}
+            lanRemoteUpdatePendingByNode={lanRemoteUpdatePendingByNode}
             openProviderGroupManager={openProviderGroupManager}
             setConfigModalOpen={setConfigModalOpen}
             rawConfigModalOpen={rawConfigModalOpen}
@@ -1839,6 +1907,7 @@ export default function App() {
             setUsageHistoryModalOpen={setUsageHistoryModalOpen}
             usageHistoryLoading={usageHistoryLoading}
             usageHistoryRows={usageHistoryRows}
+            setUsageHistoryRows={setUsageHistoryRows}
             usageHistoryDrafts={usageHistoryDrafts}
             usageHistoryEditCell={usageHistoryEditCell}
             setUsageHistoryDrafts={setUsageHistoryDrafts}

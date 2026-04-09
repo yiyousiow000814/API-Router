@@ -12,6 +12,7 @@ type TopPage =
 type UseAppPollingOptions = {
   activePage: TopPage
   isDevPreview: boolean
+  configModalOpen: boolean
   codexSwapModalOpen: boolean
   codexSwapDir1: string
   codexSwapDir2: string
@@ -59,6 +60,10 @@ export function statusPollIntervalMs(activePage: TopPage, isDocumentVisible: boo
   return 5_000
 }
 
+export function configPollIntervalMs(isDocumentVisible: boolean): number {
+  return isDocumentVisible ? 2_000 : 15_000
+}
+
 export function statusPollDetailLevel(activePage: TopPage): 'dashboard' | 'full' {
   return activePage === 'dashboard' ? 'dashboard' : 'full'
 }
@@ -73,6 +78,7 @@ export function shouldPollSwapStatusOnStatusRefresh(
 export function useAppPolling({
   activePage,
   isDevPreview,
+  configModalOpen,
   codexSwapModalOpen,
   codexSwapDir1,
   codexSwapDir2,
@@ -186,6 +192,30 @@ export function useAppPolling({
     }
   }
 
+  const scheduleStatusRefresh = (
+    source: 'status_poll_bootstrap' | 'status_poll_interval',
+    interactive: boolean,
+  ) => {
+    if (statusRefreshInFlightCountRef.current > 0) {
+      return
+    }
+    void runPrimaryRefreshRef.current('status:poll', 'any', (guard) =>
+      runTrackedRefresh('status', statusRefreshInFlightCountRef, () =>
+        refreshStatusRef.current({
+          source,
+          applyGuard: guard,
+          interactive,
+          detailLevel: statusPollDetailLevel(activePageRef.current),
+          refreshSwapStatus: shouldPollSwapStatusOnStatusRefresh(
+            activePageRef.current,
+            codexSwapModalOpen,
+          ),
+          swapStatusSource: `${source}:swap`,
+        }),
+      ),
+    )
+  }
+
   useEffect(() => {
     if (isDevPreview) return
     const timer = window.setInterval(() => {
@@ -219,39 +249,10 @@ export function useAppPolling({
     statusBootstrappedRef.current = true
     previousVisibleRef.current = isDocumentVisible
     if (shouldRunImmediateStatusRefresh) {
-      void runPrimaryRefreshRef.current('status:poll', 'any', (guard) =>
-        runTrackedRefresh('status', statusRefreshInFlightCountRef, () =>
-          refreshStatusRef.current({
-            source: 'status_poll_bootstrap',
-            applyGuard: guard,
-            interactive: false,
-            detailLevel: statusPollDetailLevel(activePageRef.current),
-            refreshSwapStatus: shouldPollSwapStatusOnStatusRefresh(
-              activePageRef.current,
-              codexSwapModalOpen,
-            ),
-            swapStatusSource: 'status_poll_bootstrap:swap',
-          }),
-        ),
-      )
+      scheduleStatusRefresh('status_poll_bootstrap', false)
     }
     const t = setInterval(
-      () =>
-        void runPrimaryRefreshRef.current('status:poll', 'any', (guard) =>
-          runTrackedRefresh('status', statusRefreshInFlightCountRef, () =>
-            refreshStatusRef.current({
-              source: 'status_poll_interval',
-              applyGuard: guard,
-              interactive: false,
-              detailLevel: statusPollDetailLevel(activePageRef.current),
-              refreshSwapStatus: shouldPollSwapStatusOnStatusRefresh(
-                activePageRef.current,
-                codexSwapModalOpen,
-              ),
-              swapStatusSource: 'status_poll_interval:swap',
-            }),
-          ),
-        ),
+      () => scheduleStatusRefresh('status_poll_interval', false),
       statusPollIntervalMs(activePage, isDocumentVisible),
     )
     const codexRefresh = window.setInterval(() => {
@@ -264,6 +265,35 @@ export function useAppPolling({
       window.clearInterval(codexRefresh)
     }
   }, [activePage, codexSwapModalOpen, isDevPreview, isDocumentVisible])
+
+  useEffect(() => {
+    if (isDevPreview || !configModalOpen) return
+    void runPrimaryRefreshRef.current('config:modal-poll', 'any', (guard) =>
+      runTrackedRefresh('config', configRefreshInFlightCountRef, () =>
+        refreshConfigRef.current({
+          refreshProviderSwitchStatus: false,
+          applyGuard: guard,
+          interactive: false,
+        }),
+      ),
+    )
+    const timer = window.setInterval(
+      () =>
+        void runPrimaryRefreshRef.current('config:modal-poll', 'any', (guard) =>
+          runTrackedRefresh('config', configRefreshInFlightCountRef, () =>
+            refreshConfigRef.current({
+              refreshProviderSwitchStatus: false,
+              applyGuard: guard,
+              interactive: false,
+            }),
+          ),
+        ),
+      configPollIntervalMs(isDocumentVisible),
+    )
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [configModalOpen, isDevPreview, isDocumentVisible])
 
   useEffect(() => {
     if (isDevPreview) return

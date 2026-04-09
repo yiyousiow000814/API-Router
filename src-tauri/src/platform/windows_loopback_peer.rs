@@ -41,6 +41,59 @@ pub fn duplicate_process_stdin_write_handle(_pid: u32) -> Option<isize> {
     None
 }
 
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub fn list_process_ids_by_name(_names: &[&str]) -> Vec<u32> {
+    Vec::new()
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub fn visible_window_title(_pid: u32) -> Option<String> {
+    None
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibleWindowSnapshot {
+    pub hwnd: isize,
+    pub pid: u32,
+    pub title: String,
+    pub class_name: String,
+}
+
+#[allow(dead_code)]
+pub struct VisibleWindowEventWatcher {
+    #[cfg(windows)]
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(windows)]
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(windows)]
+impl Drop for VisibleWindowEventWatcher {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub fn list_visible_windows() -> Vec<VisibleWindowSnapshot> {
+    Vec::new()
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub fn watch_visible_window_show_events() -> Option<(
+    VisibleWindowEventWatcher,
+    std::sync::mpsc::Receiver<VisibleWindowSnapshot>,
+)> {
+    None
+}
+
 #[cfg(windows)]
 mod windows_impl {
     use super::*;
@@ -48,19 +101,35 @@ mod windows_impl {
     use std::mem::{size_of, MaybeUninit};
     use std::os::windows::ffi::OsStringExt;
     use std::ptr::null_mut;
+    use std::sync::{mpsc, Arc, Mutex, OnceLock};
 
     use windows_sys::Win32::Foundation::{
-        CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE,
+        CloseHandle, DuplicateHandle, BOOL, DUPLICATE_SAME_ACCESS, HANDLE, HWND,
+        INVALID_HANDLE_VALUE, LPARAM,
     };
     use windows_sys::Win32::NetworkManagement::IpHelper::{
         GetExtendedTcpTable, TCP_TABLE_OWNER_PID_ALL,
     };
     use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
     use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, GetExitCodeProcess, OpenProcess, PROCESS_DUP_HANDLE,
         PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
     };
+    use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, EnumWindows, GetClassNameW, GetWindowTextLengthW, GetWindowTextW,
+        GetWindowThreadProcessId, IsWindowVisible, PeekMessageW, TranslateMessage,
+        EVENT_OBJECT_SHOW, MSG, OBJID_WINDOW, PM_REMOVE, WINEVENT_OUTOFCONTEXT,
+    };
+
+    static VISIBLE_WINDOW_EVENT_SENDER: OnceLock<
+        Mutex<Option<mpsc::Sender<VisibleWindowSnapshot>>>,
+    > = OnceLock::new();
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -189,6 +258,209 @@ mod windows_impl {
             let out = duplicate_process_stdin_write_handle_impl(h);
             let _ = CloseHandle(h);
             out
+        }
+    }
+
+    pub fn list_process_ids_by_name(names: &[&str]) -> Vec<u32> {
+        let wanted = names
+            .iter()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .collect::<std::collections::HashSet<_>>();
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snapshot == INVALID_HANDLE_VALUE {
+                return Vec::new();
+            }
+            let mut entry = PROCESSENTRY32W {
+                dwSize: size_of::<PROCESSENTRY32W>() as u32,
+                ..std::mem::zeroed()
+            };
+            let mut out = Vec::new();
+            if Process32FirstW(snapshot, &mut entry as *mut PROCESSENTRY32W) != 0 {
+                loop {
+                    let exe_name = widestr_to_string(&entry.szExeFile);
+                    if wanted.contains(&exe_name.to_ascii_lowercase()) {
+                        out.push(entry.th32ProcessID);
+                    }
+                    if Process32NextW(snapshot, &mut entry as *mut PROCESSENTRY32W) == 0 {
+                        break;
+                    }
+                }
+            }
+            let _ = CloseHandle(snapshot);
+            out
+        }
+    }
+
+    pub fn visible_window_title(pid: u32) -> Option<String> {
+        #[derive(Default)]
+        struct VisibleWindowMatch {
+            pid: u32,
+            title: Option<String>,
+        }
+
+        unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            let state = &mut *(lparam as *mut VisibleWindowMatch);
+            let mut owner_pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, &mut owner_pid as *mut u32);
+            if owner_pid != state.pid || IsWindowVisible(hwnd) == 0 {
+                return 1;
+            }
+            let title_len = GetWindowTextLengthW(hwnd);
+            if title_len <= 0 {
+                state.title = Some(String::new());
+                return 0;
+            }
+            let mut buf = vec![0u16; title_len as usize + 1];
+            let copied = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+            if copied <= 0 {
+                state.title = Some(String::new());
+            } else {
+                state.title = Some(String::from_utf16_lossy(&buf[..copied as usize]));
+            }
+            0
+        }
+
+        let mut state = VisibleWindowMatch { pid, title: None };
+        unsafe {
+            let _ = EnumWindows(Some(enum_windows_proc), &mut state as *mut _ as LPARAM);
+        }
+        state.title
+    }
+
+    pub fn list_visible_windows() -> Vec<VisibleWindowSnapshot> {
+        unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            let windows = &mut *(lparam as *mut Vec<VisibleWindowSnapshot>);
+            if IsWindowVisible(hwnd) == 0 {
+                return 1;
+            }
+            let title = read_window_text(hwnd);
+            let class_name = read_window_class_name(hwnd);
+            if title.trim().is_empty() && class_name.trim().is_empty() {
+                return 1;
+            }
+            let mut pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, &mut pid as *mut u32);
+            windows.push(VisibleWindowSnapshot {
+                hwnd,
+                pid,
+                title,
+                class_name,
+            });
+            1
+        }
+
+        let mut windows = Vec::new();
+        unsafe {
+            let _ = EnumWindows(Some(enum_windows_proc), &mut windows as *mut _ as LPARAM);
+        }
+        windows
+    }
+
+    pub fn watch_visible_window_show_events() -> Option<(
+        VisibleWindowEventWatcher,
+        mpsc::Receiver<VisibleWindowSnapshot>,
+    )> {
+        let (tx, rx) = mpsc::channel();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let thread = std::thread::Builder::new()
+            .name("remote-update-window-event-watch".to_string())
+            .spawn(move || {
+                let sender_cell = VISIBLE_WINDOW_EVENT_SENDER.get_or_init(|| Mutex::new(None));
+                if let Ok(mut sender) = sender_cell.lock() {
+                    *sender = Some(tx);
+                }
+
+                // Remote update console flashes can be shorter than the polling interval.
+                // A WinEvent hook records window show events during the worker lifetime so
+                // future hidden-launch regressions leave evidence in diagnostics.
+                let hook = unsafe {
+                    SetWinEventHook(
+                        EVENT_OBJECT_SHOW,
+                        EVENT_OBJECT_SHOW,
+                        0,
+                        Some(visible_window_event_proc),
+                        0,
+                        0,
+                        WINEVENT_OUTOFCONTEXT,
+                    )
+                };
+                if hook == 0 {
+                    if let Ok(mut sender) = sender_cell.lock() {
+                        *sender = None;
+                    }
+                    return;
+                }
+
+                let mut message: MSG = unsafe { std::mem::zeroed() };
+                while !thread_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    unsafe {
+                        while PeekMessageW(&mut message as *mut MSG, 0, 0, 0, PM_REMOVE) != 0 {
+                            TranslateMessage(&message as *const MSG);
+                            DispatchMessageW(&message as *const MSG);
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+
+                unsafe {
+                    UnhookWinEvent(hook);
+                }
+                if let Ok(mut sender) = sender_cell.lock() {
+                    *sender = None;
+                }
+            })
+            .ok()?;
+
+        Some((
+            VisibleWindowEventWatcher {
+                stop,
+                thread: Some(thread),
+            },
+            rx,
+        ))
+    }
+
+    unsafe extern "system" fn visible_window_event_proc(
+        _hook: isize,
+        event: u32,
+        hwnd: HWND,
+        id_object: i32,
+        _id_child: i32,
+        _event_thread: u32,
+        _event_time: u32,
+    ) {
+        if event != EVENT_OBJECT_SHOW
+            || hwnd == 0
+            || id_object != OBJID_WINDOW
+            || IsWindowVisible(hwnd) == 0
+        {
+            return;
+        }
+        let title = read_window_text(hwnd);
+        let class_name = read_window_class_name(hwnd);
+        if title.trim().is_empty() && class_name.trim().is_empty() {
+            return;
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, &mut pid as *mut u32);
+        let snapshot = VisibleWindowSnapshot {
+            hwnd,
+            pid,
+            title,
+            class_name,
+        };
+        if let Some(sender_cell) = VISIBLE_WINDOW_EVENT_SENDER.get() {
+            if let Ok(sender) = sender_cell.lock() {
+                if let Some(sender) = sender.as_ref() {
+                    let _ = sender.send(snapshot);
+                }
+            }
         }
     }
 
@@ -536,12 +808,47 @@ mod windows_impl {
         }
         Some(duplicated)
     }
+
+    fn widestr_to_string(value: &[u16]) -> String {
+        let end = value
+            .iter()
+            .position(|wide| *wide == 0)
+            .unwrap_or(value.len());
+        OsString::from_wide(&value[..end])
+            .to_string_lossy()
+            .to_string()
+    }
+
+    fn read_window_text(hwnd: HWND) -> String {
+        let title_len = unsafe { GetWindowTextLengthW(hwnd) };
+        if title_len <= 0 {
+            return String::new();
+        }
+        let mut buf = vec![0u16; title_len as usize + 1];
+        let copied = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
+        if copied <= 0 {
+            String::new()
+        } else {
+            String::from_utf16_lossy(&buf[..copied as usize])
+        }
+    }
+
+    fn read_window_class_name(hwnd: HWND) -> String {
+        let mut buf = vec![0u16; 256];
+        let copied = unsafe { GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
+        if copied <= 0 {
+            String::new()
+        } else {
+            String::from_utf16_lossy(&buf[..copied as usize])
+        }
+    }
 }
 
 #[cfg(windows)]
 pub use windows_impl::{
     duplicate_process_stdin_write_handle, infer_loopback_peer_pid, is_pid_alive,
-    read_process_command_line, read_process_cwd, read_process_env_var,
+    list_process_ids_by_name, list_visible_windows, read_process_command_line, read_process_cwd,
+    read_process_env_var, visible_window_title, watch_visible_window_show_events,
 };
 
 #[cfg(all(test, windows))]

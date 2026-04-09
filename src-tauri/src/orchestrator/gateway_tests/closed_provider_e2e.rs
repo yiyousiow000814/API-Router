@@ -103,7 +103,7 @@ async fn assert_closed_provider_not_used_e2e(tag: &str, p2_snapshot: serde_json:
     // Force preferred p1 into cooldown so fallback selection is exercised.
     router.mark_failure("p1", &cfg, "forced fail for test", unix_ms());
     let state = GatewayState {
-        cfg: Arc::new(RwLock::new(cfg)),
+        cfg: Arc::new(RwLock::new(cfg.clone())),
         router,
         store,
         upstream: UpstreamClient::new(),
@@ -384,7 +384,7 @@ async fn e2e_first_failure_refreshes_usage_once_and_closes_provider_before_retry
         .expect("set usage token");
     let router_state = Arc::new(RouterState::new(&cfg, unix_ms()));
     let state = GatewayState {
-        cfg: Arc::new(RwLock::new(cfg)),
+        cfg: Arc::new(RwLock::new(cfg.clone())),
         router: router_state,
         store: store.clone(),
         upstream: UpstreamClient::new(),
@@ -449,6 +449,7 @@ async fn e2e_first_failure_refreshes_usage_once_and_closes_provider_before_retry
     let quota_snapshots = store.list_quota_snapshots();
     assert!(
         !provider_has_remaining_quota_with_hard_cap(
+            &cfg,
             &quota_snapshots,
             "p1",
             &ProviderQuotaHardCapConfig::default(),
@@ -459,6 +460,21 @@ async fn e2e_first_failure_refreshes_usage_once_and_closes_provider_before_retry
 
 #[test]
 fn weekly_budget_can_be_excluded_from_hard_cap_close() {
+    let mut cfg = AppConfig::default_config();
+    cfg.providers = std::collections::BTreeMap::from([(
+            "p1".to_string(),
+            ProviderConfig {
+                display_name: "P1".to_string(),
+                base_url: "https://example.com/v1".to_string(),
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                group: None,
+                disabled: false,
+                api_key: String::new(),
+            },
+        )]);
+    cfg.provider_order = vec!["p1".to_string()];
+    cfg.routing.preferred_provider = "p1".to_string();
     let quota_snapshots = json!({
         "p1": {
             "kind": "budget_info",
@@ -478,7 +494,7 @@ fn weekly_budget_can_be_excluded_from_hard_cap_close() {
         monthly: true,
     };
     assert!(
-        provider_has_remaining_quota_with_hard_cap(&quota_snapshots, "p1", &no_weekly_hard_cap),
+        provider_has_remaining_quota_with_hard_cap(&cfg, &quota_snapshots, "p1", &no_weekly_hard_cap),
         "weekly budget should not close provider when weekly hard cap is disabled"
     );
 }
