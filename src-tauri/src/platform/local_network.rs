@@ -59,7 +59,7 @@ impl LocalNetworkState {
     pub fn snapshot_for_status_poll(&self) -> LocalNetworkSnapshot {
         #[cfg(target_os = "windows")]
         {
-            self.snapshot()
+            self.snapshot_or_refresh_if_unknown(|state| state.refresh_from_system())
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -77,6 +77,17 @@ impl LocalNetworkState {
             online,
             source: detect_source(),
             last_error: self.last_error.lock().ok().and_then(|guard| guard.clone()),
+        }
+    }
+
+    fn snapshot_or_refresh_if_unknown<F>(&self, refresh: F) -> LocalNetworkSnapshot
+    where
+        F: FnOnce(&Self) -> LocalNetworkSnapshot,
+    {
+        if self.known.load(Ordering::Relaxed) {
+            self.snapshot()
+        } else {
+            refresh(self)
         }
     }
 
@@ -283,7 +294,9 @@ wlan0\t00000000\t00000000\t0000\t0\t0\t100\t00000000\t0\t0\t0\n";
 
 #[cfg(test)]
 mod tests {
+    use super::LocalNetworkSnapshot;
     use super::LocalNetworkState;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn snapshot_starts_unknown_until_first_success() {
@@ -298,5 +311,39 @@ mod tests {
         assert!(!state.apply_detected_online(false));
         assert!(state.apply_detected_online(true));
         assert!(!state.apply_detected_online(true));
+    }
+
+    #[test]
+    fn snapshot_or_refresh_if_unknown_refreshes_unknown_state() {
+        let state = LocalNetworkState::default();
+        let refresh_calls = AtomicUsize::new(0);
+
+        let snapshot = state.snapshot_or_refresh_if_unknown(|state| {
+            refresh_calls.fetch_add(1, Ordering::Relaxed);
+            assert!(state.apply_detected_online(false));
+            state.snapshot()
+        });
+
+        assert_eq!(refresh_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(snapshot.online, Some(false));
+    }
+
+    #[test]
+    fn snapshot_or_refresh_if_unknown_keeps_known_cached_state() {
+        let state = LocalNetworkState::default();
+        assert!(state.apply_detected_online(true));
+        let refresh_calls = AtomicUsize::new(0);
+
+        let snapshot = state.snapshot_or_refresh_if_unknown(|_| {
+            refresh_calls.fetch_add(1, Ordering::Relaxed);
+            LocalNetworkSnapshot {
+                online: Some(false),
+                source: "test_probe",
+                last_error: Some("should not run".to_string()),
+            }
+        });
+
+        assert_eq!(refresh_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(snapshot.online, Some(true));
     }
 }
