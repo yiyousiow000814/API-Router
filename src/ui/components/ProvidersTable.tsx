@@ -1,16 +1,8 @@
-import { useEffect, useState } from 'react'
 import { fmtAmount, fmtPct, fmtUsd, fmtWhen, pctOf } from '../utils/format'
 import type { Config, Status, UsageStatistics, UsageStatisticsOverview } from '../types'
 import { simulateQuotaForDisplay } from '../utils/quotaSimulation'
 
 const mono = 'ui-monospace, "Cascadia Mono", "Consolas", monospace'
-
-function browserReportsOffline(): boolean {
-  if (typeof navigator === 'undefined') {
-    return false
-  }
-  return navigator.onLine === false
-}
 
 export type LastErrorJump = {
   provider: string
@@ -38,23 +30,9 @@ export function ProvidersTable({
   onOpenLastErrorInEventLog,
 }: Props) {
   const ONE_DAY_MS = 24 * 60 * 60 * 1000
-  const [browserOffline, setBrowserOffline] = useState<boolean>(() => browserReportsOffline())
   const fmtDateOnly = (unixMs: number): string => fmtWhen(unixMs).split(' ')[0] ?? '-'
   const isExpiryUrgent = (unixMs: number): boolean => Number.isFinite(unixMs) && unixMs > 0 && unixMs - Date.now() <= ONE_DAY_MS
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof navigator === 'undefined') {
-      return
-    }
-    const syncBrowserOffline = () => setBrowserOffline(browserReportsOffline())
-    syncBrowserOffline()
-    window.addEventListener('online', syncBrowserOffline)
-    window.addEventListener('offline', syncBrowserOffline)
-    return () => {
-      window.removeEventListener('online', syncBrowserOffline)
-      window.removeEventListener('offline', syncBrowserOffline)
-    }
-  }, [])
+  const localNetworkOffline = status.local_network_online === false
 
   return (
     <table className="aoTable aoTableFixed">
@@ -78,7 +56,7 @@ export function ProvidersTable({
       <tbody>
         {providers.map((p) => {
           const h = status.providers[p]
-          const isOffline = browserOffline
+          const isOffline = localNetworkOffline
           const q = simulateQuotaForDisplay(
             p,
             status.quota?.[p],

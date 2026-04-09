@@ -184,8 +184,9 @@ describe('ProvidersTable', () => {
     expect(html).not.toContain('>no<')
   })
 
-  it('shows offline immediately when browser reports offline', () => {
+  it('shows offline immediately when local network state is offline', () => {
     const status = buildStatus()
+    status.local_network_online = false
     status.providers = {
       packycode: {
         status: 'healthy',
@@ -197,32 +198,18 @@ describe('ProvidersTable', () => {
       },
     }
 
-    const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
-    Object.defineProperty(globalThis, 'navigator', {
-      configurable: true,
-      value: { onLine: false },
-    })
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['packycode']}
+        status={status}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
 
-    try {
-      const html = renderToStaticMarkup(
-        <ProvidersTable
-          providers={['packycode']}
-          status={status}
-          refreshingProviders={{}}
-          onRefreshQuota={() => {}}
-          onOpenLastErrorInEventLog={() => {}}
-        />,
-      )
-
-      expect(html).toContain('offline')
-      expect(html).not.toContain('>yes<')
-    } finally {
-      if (originalNavigator) {
-        Object.defineProperty(globalThis, 'navigator', originalNavigator)
-      } else {
-        delete (globalThis as { navigator?: Navigator }).navigator
-      }
-    }
+    expect(html).toContain('offline')
+    expect(html).not.toContain('>yes<')
   })
 
   it('hides unticked hard-cap usage rows from dashboard usage preview', () => {

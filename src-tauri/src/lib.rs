@@ -548,6 +548,10 @@ pub fn run() {
             {
                 let st = app.state::<app_state::AppState>();
                 crate::lan_sync::register_gateway_status_runtime(st.lan_sync.clone());
+                crate::platform::local_network::spawn_monitor(
+                    app.handle(),
+                    st.local_network.clone(),
+                );
                 if let Some(local_node) = crate::lan_sync::current_local_node_identity() {
                     if let Ok((migrated_spend_days, migrated_manual_days)) = st
                         .gateway

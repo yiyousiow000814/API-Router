@@ -11,6 +11,7 @@ export type Status = {
   listen: { host: string; port: number }
   config_revision?: string
   wsl_gateway_host?: string
+  local_network_online?: boolean
   preferred_provider: string
   manual_override: string | null
   providers: Record<string, ProviderHealth>
