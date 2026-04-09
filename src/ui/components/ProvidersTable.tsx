@@ -267,7 +267,7 @@ export function ProvidersTable({
                 </td>
                 <td className="aoCellCenter">
                   <div className="aoCellCenterInner">
-                    <span className={`aoPill ${isActive ? 'aoPulse' : ''}`.trim()}>
+                    <span className={`aoPill ${isActive && !isOffline ? 'aoPulse' : ''}`.trim()}>
                       <span className={dotClass} />
                       <span className="aoPillText">{healthLabel}</span>
                     </span>

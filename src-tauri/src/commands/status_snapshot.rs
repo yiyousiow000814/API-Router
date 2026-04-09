@@ -75,7 +75,7 @@ pub(crate) fn get_status(
     let config_revision = config_revision(&state, &cfg);
     let wsl_gateway_host =
         crate::platform::wsl_gateway_host::cached_or_default_wsl_gateway_host(Some(&state.config_path));
-    let local_network_online = state.local_network.refresh_from_system();
+    let local_network = state.local_network.snapshot_for_status_poll();
     phase_timings_ms.insert(
         "config_and_revision".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
@@ -409,7 +409,9 @@ pub(crate) fn get_status(
       "listen": { "host": cfg.listen.host, "port": cfg.listen.port },
       "config_revision": config_revision,
       "wsl_gateway_host": wsl_gateway_host,
-      "local_network_online": local_network_online,
+      "local_network_online": local_network.online,
+      "local_network_source": local_network.source,
+      "local_network_last_error": local_network.last_error,
       "preferred_provider": cfg.routing.preferred_provider,
       "manual_override": manual_override,
       "providers": providers,
