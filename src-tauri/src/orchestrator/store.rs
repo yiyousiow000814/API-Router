@@ -117,6 +117,42 @@ pub struct SessionRouteAssignment {
     pub assigned_at_unix_ms: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EventDailyCountBucketKind {
+    ProviderCodePerMinute,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EventRawDedupScope {
+    ExactRow,
+    ProviderAndCode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EventDisplayBucketKind {
+    EditSyncAppliedPerMinuteAndSourceNode,
+    SharedUsageAppliedPerMinuteAndSourceNode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EventPolicy {
+    raw_dedup_window_ms: Option<u64>,
+    raw_dedup_scope: EventRawDedupScope,
+    daily_count_bucket: Option<EventDailyCountBucketKind>,
+    display_bucket: Option<EventDisplayBucketKind>,
+}
+
+impl Default for EventPolicy {
+    fn default() -> Self {
+        Self {
+            raw_dedup_window_ms: None,
+            raw_dedup_scope: EventRawDedupScope::ExactRow,
+            daily_count_bucket: None,
+            display_bucket: None,
+        }
+    }
+}
+
 pub(crate) fn extract_response_model_option(response_obj: &Value) -> Option<String> {
     response_obj
         .get("model")
@@ -1112,26 +1148,53 @@ impl Store {
         Ok(())
     }
 
-    fn should_compress_daily_event_count(code: &str) -> bool {
-        matches!(
-            code.trim(),
-            "lan.shared_health_applied"
-                | "lan.usage_sync_applied"
-                | "lan.edit_sync_applied"
-                | "routing.balanced_reassign_on_session_topology_change"
-        )
-    }
+    fn event_policy(level: &str, code: &str) -> EventPolicy {
+        let level = level.trim();
+        let code = code.trim();
 
-    fn event_spam_dedup_window_ms(level: &str, code: &str) -> Option<u64> {
-        if !level.trim().eq_ignore_ascii_case("warning") {
-            return None;
-        }
-        match code.trim() {
-            "lan.edit_sync_http_failed"
-            | "lan.usage_sync_http_failed"
-            | "lan.provider_definitions_sync_failed"
-            | "lan.shared_recovery_probe_failed" => Some(30_000),
+        let (raw_dedup_window_ms, raw_dedup_scope) = if level.eq_ignore_ascii_case("warning") {
+            match code {
+                "lan.edit_sync_http_failed"
+                | "lan.usage_sync_http_failed"
+                | "lan.provider_definitions_sync_failed"
+                | "lan.shared_recovery_probe_failed" => {
+                    (Some(30_000), EventRawDedupScope::ExactRow)
+                }
+                "app.ui_frame_stall" => (Some(10_000), EventRawDedupScope::ProviderAndCode),
+                "app.ui_frontend_error" | "app.ui_invoke_error" => {
+                    (Some(60_000), EventRawDedupScope::ProviderAndCode)
+                }
+                _ => (None, EventRawDedupScope::ExactRow),
+            }
+        } else {
+            (None, EventRawDedupScope::ExactRow)
+        };
+
+        let daily_count_bucket = match code {
+            "lan.shared_health_applied"
+            | "lan.usage_sync_applied"
+            | "lan.edit_sync_applied"
+            | "routing.balanced_reassign_on_session_topology_change" => {
+                Some(EventDailyCountBucketKind::ProviderCodePerMinute)
+            }
             _ => None,
+        };
+
+        let display_bucket = match code {
+            "lan.edit_sync_applied" => {
+                Some(EventDisplayBucketKind::EditSyncAppliedPerMinuteAndSourceNode)
+            }
+            "usage.refresh_shared_applied" => {
+                Some(EventDisplayBucketKind::SharedUsageAppliedPerMinuteAndSourceNode)
+            }
+            _ => None,
+        };
+
+        EventPolicy {
+            raw_dedup_window_ms,
+            raw_dedup_scope,
+            daily_count_bucket,
+            display_bucket,
         }
     }
 
@@ -1144,25 +1207,38 @@ impl Store {
         fields_json: &str,
         ts_i64: i64,
     ) -> rusqlite::Result<bool> {
-        let Some(window_ms) = Self::event_spam_dedup_window_ms(level, code) else {
+        let policy = Self::event_policy(level, code);
+        let Some(window_ms) = policy.raw_dedup_window_ms else {
             return Ok(false);
         };
         let cutoff = ts_i64.saturating_sub(i64::try_from(window_ms).unwrap_or(i64::MAX));
-        tx.query_row(
-            "SELECT 1
-             FROM events
-             WHERE provider = ?1
-               AND level = ?2
-               AND code = ?3
-               AND message = ?4
-               AND fields_json = ?5
-               AND unix_ms >= ?6
-             LIMIT 1",
-            params![provider, level, code, message, fields_json, cutoff],
-            |_| Ok(()),
-        )
-        .optional()
-        .map(|row| row.is_some())
+        let row = match policy.raw_dedup_scope {
+            EventRawDedupScope::ExactRow => tx.query_row(
+                "SELECT 1
+                 FROM events
+                 WHERE provider = ?1
+                   AND level = ?2
+                   AND code = ?3
+                   AND message = ?4
+                   AND fields_json = ?5
+                   AND unix_ms >= ?6
+                 LIMIT 1",
+                params![provider, level, code, message, fields_json, cutoff],
+                |_| Ok(()),
+            ),
+            EventRawDedupScope::ProviderAndCode => tx.query_row(
+                "SELECT 1
+                 FROM events
+                 WHERE provider = ?1
+                   AND level = ?2
+                   AND code = ?3
+                   AND unix_ms >= ?4
+                 LIMIT 1",
+                params![provider, level, code, cutoff],
+                |_| Ok(()),
+            ),
+        };
+        row.optional().map(|row| row.is_some())
     }
 
     fn compressed_daily_event_bucket_key(
@@ -1170,17 +1246,229 @@ impl Store {
         code: &str,
         unix_ms_i64: i64,
     ) -> Option<String> {
-        if !Self::should_compress_daily_event_count(code) {
-            return None;
-        }
+        let bucket_kind = Self::event_policy("", code).daily_count_bucket?;
         let unix_ms = u64::try_from(unix_ms_i64).ok()?;
         let minute_bucket = unix_ms / 60_000;
-        Some(format!(
-            "{}|{}|{}",
-            provider.trim().to_ascii_lowercase(),
-            code.trim(),
-            minute_bucket
-        ))
+        match bucket_kind {
+            EventDailyCountBucketKind::ProviderCodePerMinute => Some(format!(
+                "{}|{}|{}",
+                provider.trim().to_ascii_lowercase(),
+                code.trim(),
+                minute_bucket
+            )),
+        }
+    }
+
+    fn display_event_compression_bucket(event: &Value) -> Option<String> {
+        let unix_ms = event.get("unix_ms")?.as_u64()?;
+        let code = event.get("code")?.as_str()?.trim();
+        let minute_bucket = unix_ms / 60_000;
+        let fields = event.get("fields").and_then(Value::as_object);
+        match Self::event_policy(
+            event
+                .get("level")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            code,
+        )
+        .display_bucket
+        {
+            Some(EventDisplayBucketKind::EditSyncAppliedPerMinuteAndSourceNode) => {
+                let source_node_id = fields
+                    .and_then(|map| map.get("source_node_id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase();
+                Some(format!("{code}|{minute_bucket}|{source_node_id}"))
+            }
+            Some(EventDisplayBucketKind::SharedUsageAppliedPerMinuteAndSourceNode) => {
+                let applied_from_node_id = fields
+                    .and_then(|map| map.get("applied_from_node_id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase();
+                Some(format!("{code}|{minute_bucket}|{applied_from_node_id}"))
+            }
+            None => None,
+        }
+    }
+
+    pub(crate) fn compress_events_for_display(events: Vec<Value>) -> Vec<Value> {
+        let mut passthrough = Vec::new();
+        let mut buckets: std::collections::HashMap<String, Vec<Value>> =
+            std::collections::HashMap::new();
+
+        for event in events {
+            if let Some(bucket) = Self::display_event_compression_bucket(&event) {
+                buckets.entry(bucket).or_default().push(event);
+            } else {
+                passthrough.push(event);
+            }
+        }
+
+        for mut bucket_events in buckets.into_values() {
+            if bucket_events.len() == 1 {
+                if let Some(event) = bucket_events.pop() {
+                    passthrough.push(event);
+                }
+                continue;
+            }
+            bucket_events
+                .sort_by_key(|event| event.get("unix_ms").and_then(Value::as_u64).unwrap_or(0));
+            let Some(latest) = bucket_events.last().cloned() else {
+                continue;
+            };
+            let code = latest
+                .get("code")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+
+            let compressed = match Self::event_policy(
+                latest
+                    .get("level")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                &code,
+            )
+            .display_bucket
+            {
+                Some(EventDisplayBucketKind::EditSyncAppliedPerMinuteAndSourceNode) => {
+                    let mut applied_total = 0_u64;
+                    let mut received_total = 0_u64;
+                    let mut source_node_name = String::new();
+                    for event in &bucket_events {
+                        let fields = event.get("fields").and_then(Value::as_object);
+                        applied_total = applied_total.saturating_add(
+                            fields
+                                .and_then(|map| map.get("applied_events"))
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0),
+                        );
+                        received_total = received_total.saturating_add(
+                            fields
+                                .and_then(|map| map.get("received_events"))
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0),
+                        );
+                        if source_node_name.is_empty() {
+                            source_node_name = fields
+                                .and_then(|map| map.get("source_node_name"))
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .trim()
+                                .to_string();
+                        }
+                    }
+                    let mut fields = latest.get("fields").cloned().unwrap_or(Value::Null);
+                    if let Some(map) = fields.as_object_mut() {
+                        map.insert(
+                            "applied_events".to_string(),
+                            serde_json::json!(applied_total),
+                        );
+                        map.insert(
+                            "received_events".to_string(),
+                            serde_json::json!(received_total),
+                        );
+                        map.insert(
+                            "batch_count".to_string(),
+                            serde_json::json!(bucket_events.len()),
+                        );
+                        map.insert("compressed".to_string(), serde_json::json!(true));
+                    }
+                    let source_suffix = if source_node_name.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" from {source_node_name}")
+                    };
+                    serde_json::json!({
+                        "unix_ms": latest.get("unix_ms").and_then(Value::as_u64).unwrap_or(0),
+                        "provider": latest.get("provider").and_then(Value::as_str).unwrap_or("gateway"),
+                        "level": latest.get("level").and_then(Value::as_str).unwrap_or("info"),
+                        "code": code,
+                        "message": format!(
+                            "Applied {applied_total} synced editable event(s) across {} batch(es){source_suffix}",
+                            bucket_events.len()
+                        ),
+                        "fields": fields,
+                    })
+                }
+                Some(EventDisplayBucketKind::SharedUsageAppliedPerMinuteAndSourceNode) => {
+                    let mut applied_from_node_name = String::new();
+                    let mut providers = std::collections::BTreeSet::new();
+                    for event in &bucket_events {
+                        if let Some(provider) = event.get("provider").and_then(Value::as_str) {
+                            let trimmed = provider.trim();
+                            if !trimmed.is_empty() {
+                                let _ = providers.insert(trimmed.to_string());
+                            }
+                        }
+                        let fields = event.get("fields").and_then(Value::as_object);
+                        if applied_from_node_name.is_empty() {
+                            applied_from_node_name = fields
+                                .and_then(|map| map.get("applied_from_node_name"))
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .trim()
+                                .to_string();
+                        }
+                    }
+                    let provider_count = providers.len();
+                    let mut fields = latest.get("fields").cloned().unwrap_or(Value::Null);
+                    if let Some(map) = fields.as_object_mut() {
+                        map.insert(
+                            "provider_count".to_string(),
+                            serde_json::json!(provider_count),
+                        );
+                        map.insert(
+                            "providers".to_string(),
+                            serde_json::json!(providers.clone()),
+                        );
+                        map.insert(
+                            "event_count".to_string(),
+                            serde_json::json!(bucket_events.len()),
+                        );
+                        map.insert("compressed".to_string(), serde_json::json!(true));
+                    }
+                    let provider_name = if provider_count == 1 {
+                        providers
+                            .into_iter()
+                            .next()
+                            .unwrap_or_else(|| "gateway".to_string())
+                    } else {
+                        "gateway".to_string()
+                    };
+                    let source_label = if applied_from_node_name.is_empty() {
+                        "remote peer".to_string()
+                    } else {
+                        applied_from_node_name
+                    };
+                    serde_json::json!({
+                        "unix_ms": latest.get("unix_ms").and_then(Value::as_u64).unwrap_or(0),
+                        "provider": provider_name,
+                        "level": latest.get("level").and_then(Value::as_str).unwrap_or("info"),
+                        "code": code,
+                        "message": format!(
+                            "Applied shared usage update from {source_label} to {} provider(s)",
+                            provider_count
+                        ),
+                        "fields": fields,
+                    })
+                }
+                None => latest,
+            };
+            passthrough.push(compressed);
+        }
+
+        passthrough.sort_by(|a, b| {
+            let a_ts = a.get("unix_ms").and_then(Value::as_u64).unwrap_or(0);
+            let b_ts = b.get("unix_ms").and_then(Value::as_u64).unwrap_or(0);
+            b_ts.cmp(&a_ts)
+        });
+        passthrough
     }
 
     fn rebuild_event_day_counts_index_if_needed(&self) -> anyhow::Result<()> {
@@ -1675,8 +1963,15 @@ impl Store {
         Ok(())
     }
 
-    pub fn add_event(&self, provider: &str, level: &str, code: &str, message: &str, fields: Value) {
-        let ts = unix_ms();
+    pub(crate) fn add_event_at_unix_ms(
+        &self,
+        provider: &str,
+        level: &str,
+        code: &str,
+        message: &str,
+        fields: Value,
+        ts: u64,
+    ) {
         let id = uuid::Uuid::new_v4().to_string();
         let fields = match fields {
             Value::Object(_) => fields,
@@ -1754,6 +2049,10 @@ impl Store {
             return;
         }
         let _ = tx.commit();
+    }
+
+    pub fn add_event(&self, provider: &str, level: &str, code: &str, message: &str, fields: Value) {
+        self.add_event_at_unix_ms(provider, level, code, message, fields, unix_ms());
     }
 
     pub fn record_success(

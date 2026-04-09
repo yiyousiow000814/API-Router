@@ -282,14 +282,7 @@ impl UiWatchdogState {
                 "visible": page.visible,
             }),
         );
-        if snapshot.last_frame_stall_log_unix_ms > 0
-            && now_unix_ms.saturating_sub(snapshot.last_frame_stall_log_unix_ms)
-                < UI_WATCHDOG_FRAME_STALL_LOG_COOLDOWN_MS
-        {
-            return;
-        }
-        snapshot.last_frame_stall_log_unix_ms = now_unix_ms;
-        runtime.store.add_event(
+        runtime.store.add_event_at_unix_ms(
             "gateway",
             "warning",
             "app.ui_frame_stall",
@@ -300,7 +293,15 @@ impl UiWatchdogState {
                 "active_page": page.active_page.trim(),
                 "visible": page.visible,
             }),
+            now_unix_ms,
         );
+        if snapshot.last_frame_stall_log_unix_ms > 0
+            && now_unix_ms.saturating_sub(snapshot.last_frame_stall_log_unix_ms)
+                < UI_WATCHDOG_FRAME_STALL_LOG_COOLDOWN_MS
+        {
+            return;
+        }
+        snapshot.last_frame_stall_log_unix_ms = now_unix_ms;
         self.write_dump(
             runtime.diagnostics_dir,
             "frame-stall",
@@ -329,14 +330,7 @@ impl UiWatchdogState {
                 "visible": page.visible,
             }),
         );
-        if snapshot.last_frontend_error_log_unix_ms > 0
-            && now_unix_ms.saturating_sub(snapshot.last_frontend_error_log_unix_ms)
-                < UI_WATCHDOG_LONG_TASK_LOG_COOLDOWN_MS
-        {
-            return;
-        }
-        snapshot.last_frontend_error_log_unix_ms = now_unix_ms;
-        runtime.store.add_event(
+        runtime.store.add_event_at_unix_ms(
             "gateway",
             "warning",
             "app.ui_frontend_error",
@@ -347,7 +341,15 @@ impl UiWatchdogState {
                 "active_page": page.active_page.trim(),
                 "visible": page.visible,
             }),
+            now_unix_ms,
         );
+        if snapshot.last_frontend_error_log_unix_ms > 0
+            && now_unix_ms.saturating_sub(snapshot.last_frontend_error_log_unix_ms)
+                < UI_WATCHDOG_LONG_TASK_LOG_COOLDOWN_MS
+        {
+            return;
+        }
+        snapshot.last_frontend_error_log_unix_ms = now_unix_ms;
         self.write_dump(
             runtime.diagnostics_dir,
             "frontend-error",
@@ -383,14 +385,7 @@ impl UiWatchdogState {
         );
 
         if !ok {
-            if snapshot.last_invoke_error_log_unix_ms > 0
-                && now_unix_ms.saturating_sub(snapshot.last_invoke_error_log_unix_ms)
-                    < UI_WATCHDOG_INVOKE_LOG_COOLDOWN_MS
-            {
-                return;
-            }
-            snapshot.last_invoke_error_log_unix_ms = now_unix_ms;
-            runtime.store.add_event(
+            runtime.store.add_event_at_unix_ms(
                 "gateway",
                 "warning",
                 "app.ui_invoke_error",
@@ -402,7 +397,15 @@ impl UiWatchdogState {
                     "active_page": page.active_page.trim(),
                     "visible": page.visible,
                 }),
+                now_unix_ms,
             );
+            if snapshot.last_invoke_error_log_unix_ms > 0
+                && now_unix_ms.saturating_sub(snapshot.last_invoke_error_log_unix_ms)
+                    < UI_WATCHDOG_INVOKE_LOG_COOLDOWN_MS
+            {
+                return;
+            }
+            snapshot.last_invoke_error_log_unix_ms = now_unix_ms;
             self.write_dump(
                 runtime.diagnostics_dir,
                 "invoke-error",
@@ -1141,8 +1144,9 @@ mod tests {
             active_page: "requests",
             visible: true,
         };
+        let base_unix_ms = 1_700_000_000_000_u64;
 
-        watchdog.record_frame_stall(runtime, 123, "startup", page, 10_000);
+        watchdog.record_frame_stall(runtime, 123, "startup", page, base_unix_ms + 10_000);
         watchdog.record_frame_stall(
             UiWatchdogRuntime {
                 store: &state.gateway.store,
@@ -1154,7 +1158,7 @@ mod tests {
                 active_page: "requests",
                 visible: true,
             },
-            15_000,
+            base_unix_ms + 15_000,
         );
         watchdog.record_frame_stall(
             UiWatchdogRuntime {
@@ -1167,7 +1171,7 @@ mod tests {
                 active_page: "requests",
                 visible: true,
             },
-            21_000,
+            base_unix_ms + 21_000,
         );
 
         let events = state.gateway.store.list_events_range(None, None, Some(10));

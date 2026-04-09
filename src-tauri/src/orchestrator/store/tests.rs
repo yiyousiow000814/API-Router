@@ -331,6 +331,39 @@ mod tests {
     }
 
     #[test]
+    fn add_event_suppresses_duplicate_ui_warning_events_within_store_policy_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        let fields = serde_json::json!({
+            "command": "get_status",
+            "active_page": "dashboard",
+        });
+
+        store.add_event(
+            "gateway",
+            "warning",
+            "app.ui_invoke_error",
+            "ui invoke failed: get_status",
+            fields.clone(),
+        );
+        store.add_event(
+            "gateway",
+            "warning",
+            "app.ui_invoke_error",
+            "ui invoke failed: get_status",
+            fields,
+        );
+
+        let raw = store.list_events_range(None, None, Some(10));
+        assert_eq!(raw.len(), 1);
+
+        let rows = store.list_event_daily_counts_range(None, None);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("warnings").and_then(|v| v.as_u64()), Some(1));
+    }
+
+    #[test]
     fn list_session_route_assignments_since_filters_old_rows() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();
