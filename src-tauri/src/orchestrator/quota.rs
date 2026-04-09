@@ -1352,13 +1352,6 @@ fn load_spend_state_for_tracking(st: &GatewayState, provider_name: &str) -> Opti
     reconcile_spend_state_from_history(st, provider_name)
 }
 
-fn local_day_key_for_tracking(unix_ms: u64) -> Option<String> {
-    chrono::Local
-        .timestamp_millis_opt(unix_ms as i64)
-        .single()
-        .map(|dt| dt.format("%Y-%m-%d").to_string())
-}
-
 fn quota_refresh_error_log_key(err: &str) -> String {
     let trimmed = err.trim();
     if let Some(rest) = trimmed.strip_prefix("usage base rate limited: ") {
@@ -1546,8 +1539,9 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
         .as_ref()
         .and_then(|s| as_f64(s.get("last_seen_daily_spent_usd")))
         .unwrap_or(current_daily_spent);
-    let current_day_key = local_day_key_for_tracking(now);
-    let open_day_key = local_day_key_for_tracking(open_day_started_at_unix_ms);
+    let current_day_key = crate::orchestrator::store::Store::local_day_key_from_unix_ms(now);
+    let open_day_key =
+        crate::orchestrator::store::Store::local_day_key_from_unix_ms(open_day_started_at_unix_ms);
 
     // First observed snapshot for this provider: initialize tracking baseline.
     if existing_state.is_none() {

@@ -2307,6 +2307,16 @@ fn tracked_spend_day_source_identity(
     Some((source_node_id, source_node_name))
 }
 
+fn normalize_tracked_spend_day_seed_row(row: &Value) -> Value {
+    let mut normalized = row.clone();
+    if let Some(map) = normalized.as_object_mut() {
+        map.remove("applied_at_unix_ms");
+        map.remove("applied_from_node_id");
+        map.remove("applied_from_node_name");
+    }
+    normalized
+}
+
 fn tracked_spend_history_day_delete_entity_id(shared_provider_id: &str, day_key: &str) -> String {
     format!("{shared_provider_id}|{day_key}")
 }
@@ -2431,7 +2441,7 @@ pub fn ensure_local_edit_seed_state(state: &crate::app_state::AppState) -> Resul
             let tracked_payload = serde_json::to_value(TrackedSpendDaySyncPayload {
                 provider_name: provider.clone(),
                 day_started_at_unix_ms,
-                row: row.clone(),
+                row: normalize_tracked_spend_day_seed_row(&row),
             })
             .map_err(|err| err.to_string())?;
             seed_edit_event_if_changed(
@@ -7444,6 +7454,32 @@ mod tests {
                     "node-remote",
                 )
         }));
+    }
+
+    #[test]
+    fn normalize_tracked_spend_day_seed_row_strips_applied_metadata() {
+        let normalized = super::normalize_tracked_spend_day_seed_row(&serde_json::json!({
+            "provider": "provider_1",
+            "started_at_unix_ms": 1_711_933_200_000u64,
+            "tracked_spend_usd": 12.25,
+            "updated_at_unix_ms": 7100u64,
+            "producer_node_id": "node-remote",
+            "producer_node_name": "Remote Node",
+            "applied_from_node_id": "node-self",
+            "applied_from_node_name": "Self Node",
+            "applied_at_unix_ms": 9999u64,
+        }));
+        assert_eq!(
+            normalized.get("applied_from_node_id"),
+            None,
+            "seed payload should not drift with receiver metadata"
+        );
+        assert_eq!(normalized.get("applied_from_node_name"), None);
+        assert_eq!(normalized.get("applied_at_unix_ms"), None);
+        assert_eq!(
+            normalized.get("producer_node_id").and_then(Value::as_str),
+            Some("node-remote")
+        );
     }
 
     #[test]
