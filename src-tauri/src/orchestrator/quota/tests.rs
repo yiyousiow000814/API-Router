@@ -460,7 +460,7 @@ mod tests {
             usage_base_url: None,
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert!(bases.is_empty());
     }
 
@@ -475,7 +475,7 @@ mod tests {
             usage_base_url: Some("https://explicit.example.com/".to_string()),
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://explicit.example.com".to_string()]);
     }
 
@@ -490,7 +490,7 @@ mod tests {
             usage_base_url: None,
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://codex.packycode.com".to_string()]);
     }
 
@@ -505,7 +505,7 @@ mod tests {
             usage_base_url: Some("https://www.packycode.com".to_string()),
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://codex.packycode.com".to_string()]);
     }
 
@@ -534,6 +534,7 @@ mod tests {
             &[base.clone()],
             Some("test-token"),
             "usage token",
+            crate::orchestrator::providers::default_budget_info_mapping(),
             PackageExpiryStrategy::None,
         )
         .await;
@@ -604,8 +605,8 @@ mod tests {
             api_key: String::new(),
         };
 
-        let bases_pp = candidate_quota_bases(&pp);
-        let bases_pumpkin = candidate_quota_bases(&pumpkin);
+        let bases_pp = resolve_quota_profile(&pp).candidate_bases;
+        let bases_pumpkin = resolve_quota_profile(&pumpkin).candidate_bases;
         assert_eq!(bases_pp, bases_pumpkin);
         assert_eq!(bases_pp.first().unwrap(), "https://his.ppchat.vip");
         assert_eq!(bases_pumpkin.first().unwrap(), "https://his.ppchat.vip");
@@ -638,7 +639,7 @@ mod tests {
             usage_base_url: None,
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://api-vip.codex-for.me".to_string()]);
     }
 
@@ -653,7 +654,7 @@ mod tests {
             usage_base_url: None,
             api_key: String::new(),
         };
-        let bases = candidate_quota_bases(&p);
+        let bases = resolve_quota_profile(&p).candidate_bases;
         assert_eq!(bases, vec!["https://api-vip.codex-for.vip".to_string()]);
     }
 
@@ -715,11 +716,10 @@ mod tests {
 
     #[test]
     fn explicit_usage_endpoint_payload_reads_aigateway_usage_shape() {
-        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
         let payload = serde_json::json!({
             "isValid": true,
             "mode": "unrestricted",
-            "planName": "轻享卡 3天",
+            "planName": "\u{8f7b}\u{4eab}\u{5361} 3\u{5929}",
             "remaining": 200,
             "subscription": {
                 "daily_limit_usd": 200,
@@ -736,16 +736,17 @@ mod tests {
             }
         });
 
-        apply_explicit_usage_endpoint_payload(
-            &mut snap,
+        let snap = map_snapshot_from_usage_payload(
             &payload,
+            explicit_usage_mapping("https://aigateway.chat/v1/usage"),
             "https://aigateway.chat/v1/usage",
+            "usage_base",
             1_700_000_000_000,
         )
         .expect("aigateway usage payload should parse");
 
         assert_eq!(snap.kind, UsageKind::BudgetInfo);
-        assert_eq!(snap.remaining, Some(200.0));
+        assert_eq!(snap.remaining, None);
         assert_eq!(snap.daily_budget_usd, Some(200.0));
         assert_eq!(snap.daily_spent_usd, Some(0.0));
         assert_eq!(snap.package_expires_at_unix_ms, Some(1_775_109_747_679));
@@ -756,17 +757,16 @@ mod tests {
     }
 
     #[test]
-    fn explicit_usage_endpoint_prefers_aigateway_usage_today_cost_over_subscription_daily_usage() {
-        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+    fn explicit_usage_endpoint_prefers_aigateway_today_actual_cost_when_remaining_is_depleted() {
         let payload = serde_json::json!({
             "isValid": true,
             "mode": "unrestricted",
-            "planName": "轻享卡 3天",
-            "remaining": 121.9059165,
+            "planName": "\u{5b63}\u{5361} 90\u{5929}",
+            "remaining": 0,
             "subscription": {
-                "daily_limit_usd": 200,
-                "daily_usage_usd": 78.0940835,
-                "expires_at": "2026-04-06T14:02:27.679994+08:00"
+                "daily_limit_usd": 300,
+                "daily_usage_usd": 300.043385,
+                "expires_at": "2026-10-04T09:29:39.391714+08:00"
             },
             "unit": "USD",
             "usage": {
@@ -779,20 +779,21 @@ mod tests {
             }
         });
 
-        apply_explicit_usage_endpoint_payload(
-            &mut snap,
+        let snap = map_snapshot_from_usage_payload(
             &payload,
+            explicit_usage_mapping("https://aigateway.chat/v1/usage"),
             "https://aigateway.chat/v1/usage",
+            "usage_base",
             1_700_000_000_000,
         )
         .expect("aigateway usage payload should parse");
 
-        assert_eq!(snap.daily_budget_usd, Some(200.0));
-        assert_eq!(snap.remaining, Some(121.9059165));
+        assert_eq!(snap.daily_budget_usd, Some(300.0));
+        assert_eq!(snap.remaining, None);
         assert_eq!(
             snap.daily_spent_usd,
             Some(0.0),
-            "aigateway today usage should come from usage.today, not subscription.daily_usage_usd"
+            "aigateway snapshots should trust usage.today.actual_cost instead of stale remaining or subscription daily usage"
         );
     }
 
@@ -911,6 +912,17 @@ mod tests {
         let cfg = st.cfg.read().clone();
         let provider = cfg.providers.get("p1").unwrap();
         assert!(can_refresh_quota_for_provider(&st, "p1", provider));
+    }
+
+    #[tokio::test]
+    async fn packycode_usage_login_without_provider_key_is_not_refreshable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_usage_login("p1", "alice", "secret").unwrap();
+        let st = mk_state("https://codex.packycode.com/v1".to_string(), secrets);
+        let cfg = st.cfg.read().clone();
+        let provider = cfg.providers.get("p1").unwrap();
+        assert!(!can_refresh_quota_for_provider(&st, "p1", provider));
     }
 
     #[tokio::test]
@@ -1551,7 +1563,7 @@ mod tests {
         assert!(st.store.get_spend_state("p1").is_none());
 
         let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
-        snap.updated_at_unix_ms = 3_333;
+        snap.updated_at_unix_ms = 1_711_929_603_333;
         snap.daily_spent_usd = Some(20.0);
 
         track_budget_spend(&st, "p1", &snap);
@@ -1663,6 +1675,149 @@ mod tests {
     }
 
     #[test]
+    fn track_budget_spend_starts_new_local_day_without_waiting_for_spend_reset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://usage.example/v1".to_string(), secrets);
+        let first_ts = chrono::Local
+            .with_ymd_and_hms(2026, 4, 7, 23, 58, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        let second_ts = chrono::Local
+            .with_ymd_and_hms(2026, 4, 8, 0, 5, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        st.store.upsert_usage_request_sync_rows(&[
+            crate::orchestrator::store::UsageRequestSyncRow {
+                id: "req-1".to_string(),
+                unix_ms: first_ts,
+                ingested_at_unix_ms: first_ts,
+                provider: "p1".to_string(),
+                api_key_ref: "-".to_string(),
+                model: String::new(),
+                origin: "windows".to_string(),
+                session_id: String::new(),
+                node_id: "node-a".to_string(),
+                node_name: "desk-a".to_string(),
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 100,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            },
+            crate::orchestrator::store::UsageRequestSyncRow {
+                id: "req-2".to_string(),
+                unix_ms: second_ts,
+                ingested_at_unix_ms: second_ts,
+                provider: "p1".to_string(),
+                api_key_ref: "-".to_string(),
+                model: String::new(),
+                origin: "windows".to_string(),
+                session_id: String::new(),
+                node_id: "node-b".to_string(),
+                node_name: "desk-b".to_string(),
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 200,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            },
+        ]);
+
+        let mut first = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        first.updated_at_unix_ms = first_ts;
+        first.daily_spent_usd = Some(80.0);
+        track_budget_spend(&st, "p1", &first);
+
+        let mut second = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        second.updated_at_unix_ms = second_ts;
+        second.daily_spent_usd = Some(120.0);
+        track_budget_spend(&st, "p1", &second);
+
+        let spend_days = st.store.list_local_spend_days("p1");
+        assert_eq!(spend_days.len(), 2, "crossing midnight must open a new tracked day");
+        assert_eq!(
+            spend_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(80.0)
+        );
+        assert_eq!(
+            spend_days[1]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(40.0)
+        );
+        assert_eq!(
+            spend_days[1]
+                .get("started_at_unix_ms")
+                .and_then(|value| value.as_u64()),
+            Some(second_ts)
+        );
+    }
+
+    #[test]
+    fn remote_quota_snapshot_updates_shared_tracked_spend_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://usage.example/v1".to_string(), secrets);
+        let ts = chrono::Local
+            .with_ymd_and_hms(2026, 4, 8, 16, 58, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        st.store.upsert_usage_request_sync_rows(&[crate::orchestrator::store::UsageRequestSyncRow {
+            id: "req-remote".to_string(),
+            unix_ms: ts,
+            ingested_at_unix_ms: ts,
+            provider: "p1".to_string(),
+            api_key_ref: "-".to_string(),
+            model: String::new(),
+            origin: "windows".to_string(),
+            session_id: String::new(),
+            node_id: "node-remote".to_string(),
+            node_name: "remote-box".to_string(),
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 123,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        }]);
+
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.updated_at_unix_ms = ts;
+        snap.daily_spent_usd = Some(126.4827855);
+        snap.producer_node_id = Some("node-remote".to_string());
+        snap.producer_node_name = Some("remote-box".to_string());
+
+        apply_remote_quota_snapshot(
+            &st,
+            "p1",
+            &snap,
+            Some("node-remote"),
+            Some("remote-box"),
+        );
+
+        let spend_days = st.store.list_local_spend_days("p1");
+        assert_eq!(spend_days.len(), 1);
+        assert_eq!(
+            spend_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(126.4827855)
+        );
+        let spend_state = st.store.get_spend_state("p1").expect("shared spend state");
+        assert_eq!(
+            spend_state
+                .get("last_seen_daily_spent_usd")
+                .and_then(|value| value.as_f64()),
+            Some(126.4827855)
+        );
+    }
+
+    #[test]
     fn track_budget_spend_rebuilds_only_when_state_points_to_missing_open_day() {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
@@ -1693,7 +1848,7 @@ mod tests {
         );
 
         let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
-        snap.updated_at_unix_ms = 3_333;
+        snap.updated_at_unix_ms = 1_711_929_603_333;
         snap.daily_spent_usd = Some(20.0);
 
         track_budget_spend(&st, "p1", &snap);
@@ -2006,6 +2161,49 @@ mod tests {
     }
 
     #[test]
+    fn quota_snapshot_roundtrips_through_canonical_usage() {
+        let snapshot = QuotaSnapshot {
+            kind: UsageKind::BudgetInfo,
+            updated_at_unix_ms: 1_700_000_000_000,
+            remaining: Some(42.5),
+            today_used: Some(2.0),
+            today_added: Some(5.0),
+            daily_spent_usd: Some(7.5),
+            daily_budget_usd: Some(20.0),
+            weekly_spent_usd: Some(12.0),
+            weekly_budget_usd: Some(50.0),
+            monthly_spent_usd: Some(30.0),
+            monthly_budget_usd: Some(200.0),
+            package_expires_at_unix_ms: Some(1_800_000_000_000),
+            last_error: String::new(),
+            effective_usage_base: Some("https://usage.example".to_string()),
+            effective_usage_source: Some("usage_base".to_string()),
+            producer_node_id: None,
+            producer_node_name: None,
+            applied_from_node_id: None,
+            applied_from_node_name: None,
+            applied_at_unix_ms: 0,
+        };
+
+        let canonical =
+            canonical_usage_from_snapshot(&snapshot).expect("successful snapshot should normalize");
+        let rebuilt = QuotaSnapshot::from_canonical(canonical);
+
+        assert_eq!(rebuilt.kind, snapshot.kind);
+        assert_eq!(rebuilt.remaining, snapshot.remaining);
+        assert_eq!(rebuilt.daily_spent_usd, snapshot.daily_spent_usd);
+        assert_eq!(rebuilt.daily_budget_usd, snapshot.daily_budget_usd);
+        assert_eq!(rebuilt.weekly_spent_usd, snapshot.weekly_spent_usd);
+        assert_eq!(rebuilt.monthly_budget_usd, snapshot.monthly_budget_usd);
+        assert_eq!(
+            rebuilt.package_expires_at_unix_ms,
+            snapshot.package_expires_at_unix_ms
+        );
+        assert_eq!(rebuilt.effective_usage_base, snapshot.effective_usage_base);
+        assert_eq!(rebuilt.effective_usage_source, snapshot.effective_usage_source);
+    }
+
+    #[test]
     fn rate_limit_backoff_prefers_retry_after_header() {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(reqwest::header::RETRY_AFTER, "12".parse().unwrap());
@@ -2247,18 +2445,18 @@ mod tests {
 
         let tz = FixedOffset::east_opt(8 * 3600).unwrap();
         let now = tz.with_ymd_and_hms(2026, 3, 11, 11, 25, 42).unwrap();
-        let due = next_packycode_refresh_at(now);
+        let due = next_priority_quota_refresh_at(now);
         assert_eq!(due.minute(), 58);
         assert_eq!(due.second(), 0);
 
         let now = tz.with_ymd_and_hms(2026, 3, 11, 11, 58, 0).unwrap();
-        let due = next_packycode_refresh_at(now);
+        let due = next_priority_quota_refresh_at(now);
         assert_eq!(due.hour(), 12);
         assert_eq!(due.minute(), 58);
         assert_eq!(due.second(), 0);
 
         let now = tz.with_ymd_and_hms(2026, 3, 10, 23, 58, 0).unwrap();
-        let due = next_packycode_refresh_at(now);
+        let due = next_priority_quota_refresh_at(now);
         assert_eq!(due.hour(), 0);
         assert_eq!(due.minute(), 1);
         assert_eq!(due.second(), 0);
@@ -2279,7 +2477,7 @@ mod tests {
             true,
             true,
             1,
-            PackageExpiryStrategy::Packycode,
+            PackageExpiryStrategy::BackendUsersInfo,
         )
         .expect("packycode due");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
@@ -2301,7 +2499,7 @@ mod tests {
             true,
             true,
             1,
-            PackageExpiryStrategy::Packycode,
+            PackageExpiryStrategy::BackendUsersInfo,
         )
         .expect("packycode due without snapshot");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
@@ -2326,7 +2524,7 @@ mod tests {
             true,
             true,
             1,
-            PackageExpiryStrategy::Packycode,
+            PackageExpiryStrategy::BackendUsersInfo,
         )
         .expect("packycode due after failed snapshot");
         let due_dt = Local.timestamp_millis_opt(due as i64).single().unwrap();
@@ -2792,6 +2990,126 @@ mod tests {
             st.store.get_quota_snapshot("p2").is_none(),
             "disabled provider must not be refreshed just because it still has credentials"
         );
+    }
+
+    #[test]
+    fn explicit_usage_mapping_normalizes_user_me_payload_to_usd() {
+        let payload = serde_json::json!({
+            "quota": {
+                "daily_quota": 4500,
+                "daily_spent": 28,
+                "daily_remaining": 4472
+            },
+            "timestamps": {
+                "expires_at": "2026-04-04T14:57:44.674Z"
+            }
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            explicit_usage_mapping("https://yunyi.rdzhvip.com/user/api/v1/me"),
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://yunyi.rdzhvip.com/user/api/v1/me".to_string()),
+                effective_usage_source: Some("usage_base".to_string()),
+                updated_at_unix_ms: 123,
+            },
+        )
+        .expect("mapped usage");
+
+        assert_eq!(usage.usage_kind, UsageKind::BudgetInfo);
+        assert_eq!(usage.daily_limit, Some(45.0));
+        assert_eq!(usage.daily_used, Some(0.28));
+        assert_eq!(usage.remaining, Some(44.72));
+        assert_eq!(usage.expires_at_unix_ms, Some(1_775_314_664_674));
+    }
+
+    #[test]
+    fn packycode_mapping_reads_alias_fields_into_canonical_usage() {
+        let provider = ProviderConfig {
+            display_name: "Packycode".to_string(),
+            base_url: "https://codex.packycode.com/v1".to_string(),
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            group: None,
+            disabled: false,
+            api_key: String::new(),
+        };
+        let mapping = resolve_quota_profile(&provider)
+            .budget_info_mapping
+            .expect("budget info mapping");
+        let payload = serde_json::json!({
+            "daily_spent_usd": "0.5",
+            "daily_budget_usd": 1,
+            "weekly_spent": 2.5,
+            "weekly_budget": "8",
+            "monthly_spent_usd": 4,
+            "monthly_budget_usd": 10,
+            "remaining_quota": 123
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            mapping,
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://codex.packycode.com".to_string()),
+                effective_usage_source: Some("usage_base".to_string()),
+                updated_at_unix_ms: 456,
+            },
+        )
+        .expect("mapped usage");
+
+        assert_eq!(usage.daily_used, Some(0.5));
+        assert_eq!(usage.daily_limit, Some(1.0));
+        assert_eq!(usage.weekly_used, Some(2.5));
+        assert_eq!(usage.weekly_limit, Some(8.0));
+        assert_eq!(usage.monthly_used, Some(4.0));
+        assert_eq!(usage.monthly_limit, Some(10.0));
+        assert_eq!(usage.remaining, Some(123.0));
+    }
+
+    #[test]
+    fn codex_for_me_mapping_preserves_balance_fields_and_budget_signal() {
+        let provider = ProviderConfig {
+            display_name: "Codex For Me".to_string(),
+            base_url: "https://api-vip.codex-for.me/v1".to_string(),
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            group: None,
+            disabled: false,
+            api_key: String::new(),
+        };
+        let mapping = resolve_quota_profile(&provider)
+            .summary_mapping
+            .expect("summary mapping");
+        let payload = serde_json::json!({
+            "data": {
+                "card_balance": "42.5",
+                "card_expire_date": "2027-12-31",
+                "card_name": "VIP",
+                "card_daily_limit": "200",
+                "today_spent_amount": "26.03",
+                "card_total_spent_amount": "40.92"
+            }
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            mapping,
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://api-vip.codex-for.me".to_string()),
+                effective_usage_source: Some("login_summary".to_string()),
+                updated_at_unix_ms: 789,
+            },
+        )
+        .expect("mapped usage");
+
+        assert_eq!(usage.usage_kind, UsageKind::BudgetInfo);
+        assert_eq!(usage.plan_name.as_deref(), Some("VIP"));
+        assert_eq!(usage.remaining, Some(42.5));
+        assert_eq!(usage.daily_limit, Some(200.0));
+        assert_eq!(usage.daily_used, Some(26.03));
+        assert_eq!(usage.monthly_used, Some(40.92));
+        assert_eq!(usage.expires_at_unix_ms, Some(1_830_254_400_000));
     }
 
 }

@@ -204,10 +204,9 @@ fn passthrough_sse_and_persist(
                     } else {
                         "before completion; downstream output may be incomplete"
                     };
-                    st_err.store.add_event(
+                    st_err.store.events().emit(
                         &provider_err,
-                        "error",
-                        "stream.idle_timeout",
+                        crate::orchestrator::store::EventCode::STREAM_IDLE_TIMEOUT,
                         &format!(
                             "stream idle timeout ({note}); completed={completed}; forwarded_bytes={forwarded_bytes}; upstream_status={upstream_status}; url={}",
                             redact_url_for_logs(&upstream_url)
@@ -272,10 +271,9 @@ fn passthrough_sse_and_persist(
                         "before completion; downstream output may be incomplete"
                     };
                     let err = format_reqwest_error_for_logs(&e);
-                    st_err.store.add_event(
+                    st_err.store.events().emit(
                         &provider_err,
-                        "error",
-                        "stream.read_error",
+                        crate::orchestrator::store::EventCode::STREAM_READ_ERROR,
                         &format!(
                             "stream read error ({note}); completed={completed}; forwarded_bytes={forwarded_bytes}; upstream_status={upstream_status}; url={}; content_type={ct}; content_encoding={enc}; transfer_encoding={transfer}; {err}",
                             redact_url_for_logs(&upstream_url)

@@ -184,6 +184,34 @@ describe('ProvidersTable', () => {
     expect(html).not.toContain('>no<')
   })
 
+  it('shows offline immediately when local network state is offline', () => {
+    const status = buildStatus()
+    status.local_network_online = false
+    status.providers = {
+      packycode: {
+        status: 'healthy',
+        consecutive_failures: 0,
+        cooldown_until_unix_ms: 0,
+        last_error: '',
+        last_ok_at_unix_ms: 1_000,
+        last_fail_at_unix_ms: 0,
+      },
+    }
+
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['packycode']}
+        status={status}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
+
+    expect(html).toContain('offline')
+    expect(html).not.toContain('>yes<')
+  })
+
   it('hides unticked hard-cap usage rows from dashboard usage preview', () => {
     const config: Config = {
       listen: { host: '127.0.0.1', port: 4000 },

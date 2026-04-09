@@ -124,7 +124,12 @@ fn merge_usage_metrics_day_counts(
         return;
     };
     for (day_key, req_count) in req_by_day_from_req {
-        req_by_day.insert(day_key.clone(), *req_count);
+        req_by_day
+            .entry(day_key.clone())
+            .and_modify(|current| {
+                *current = (*current).max(*req_count);
+            })
+            .or_insert(*req_count);
     }
 }
 
@@ -983,7 +988,8 @@ pub(crate) fn get_usage_statistics(
                 }
             }
             _ => {
-                let spend_days = state.gateway.store.list_spend_days(provider);
+                let spend_days =
+                    tracked_spend_days_with_remote_fallback(&state.gateway.store, provider);
                 let mut tracked_in_window = 0.0_f64;
                 for day in spend_days {
                     let tracked = as_f64(day.get("tracked_spend_usd")).unwrap_or(0.0);
@@ -1406,7 +1412,8 @@ mod usage_metrics_tests {
         normalize_usage_origin,
         parse_usage_statistics_detail_level,
         projection_hours_for_day_estimate, request_window_ratio,
-        resolve_budget_or_token_rate_cost, UsageStatisticsDetailLevel,
+        resolve_budget_or_token_rate_cost, tracked_spend_day_key,
+        tracked_spend_days_with_remote_fallback, UsageStatisticsDetailLevel,
         usage_metrics_configured_provider_names,
     };
     use crate::orchestrator::config::{AppConfig, ProviderConfig};
@@ -1472,11 +1479,19 @@ mod usage_metrics_tests {
     }
 
     #[test]
-    fn usage_metrics_prefers_raw_request_day_counts_over_cached_usage_day_counts() {
+    fn usage_metrics_uses_more_complete_request_day_count_for_ratio_inputs() {
         let mut cached = BTreeMap::from([("2026-03-31".to_string(), 2_u64)]);
         let raw = BTreeMap::from([("2026-03-31".to_string(), 86_u64)]);
         merge_usage_metrics_day_counts(&mut cached, Some(&raw));
         assert_eq!(cached.get("2026-03-31"), Some(&86_u64));
+    }
+
+    #[test]
+    fn usage_metrics_keeps_full_day_request_counts_when_window_only_has_partial_day() {
+        let mut cached = BTreeMap::from([("2026-04-08".to_string(), 1_625_u64)]);
+        let raw_window = BTreeMap::from([("2026-04-08".to_string(), 365_u64)]);
+        merge_usage_metrics_day_counts(&mut cached, Some(&raw_window));
+        assert_eq!(cached.get("2026-04-08"), Some(&1_625_u64));
     }
 
     #[test]
@@ -1661,5 +1676,113 @@ mod usage_metrics_tests {
         assert_eq!(rows[0].provider, "official");
         assert_eq!(rows[0].unix_ms, newer as u64);
         assert_eq!(rows[0].node_name, "Desk A");
+    }
+
+    #[test]
+    fn tracked_spend_days_fall_back_to_remote_when_local_day_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let started_at = chrono::Local
+            .with_ymd_and_hms(2026, 4, 7, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+
+        store.put_remote_spend_day(
+            "aigateway2",
+            "node-remote",
+            "Remote Node",
+            started_at,
+            &serde_json::json!({
+                "provider": "aigateway2",
+                "started_at_unix_ms": started_at,
+                "tracked_spend_usd": 22.0,
+                "updated_at_unix_ms": started_at,
+                "producer_node_id": "node-remote",
+                "producer_node_name": "Remote Node"
+            }),
+        );
+
+        let days = tracked_spend_days_with_remote_fallback(&store, "aigateway2");
+
+        assert_eq!(days.len(), 1);
+        assert_eq!(
+            days[0]
+                .get("tracked_spend_usd")
+                .and_then(serde_json::Value::as_f64),
+            Some(22.0)
+        );
+        assert_eq!(
+            days[0]
+                .get("producer_node_id")
+                .and_then(serde_json::Value::as_str),
+            Some("node-remote")
+        );
+    }
+
+    #[test]
+    fn tracked_spend_days_keep_remote_when_local_same_day_is_zero_placeholder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let local_started_at = chrono::Local
+            .with_ymd_and_hms(2026, 4, 7, 8, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        let remote_started_at = chrono::Local
+            .with_ymd_and_hms(2026, 4, 7, 9, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+
+        store.put_spend_day(
+            "aigateway2",
+            local_started_at,
+            &serde_json::json!({
+                "provider": "aigateway2",
+                "started_at_unix_ms": local_started_at,
+                "tracked_spend_usd": 0.0,
+                "updated_at_unix_ms": local_started_at,
+                "producer_node_id": "node-local",
+                "producer_node_name": "Local Node"
+            }),
+        );
+        store.put_remote_spend_day(
+            "aigateway2",
+            "node-remote",
+            "Remote Node",
+            remote_started_at,
+            &serde_json::json!({
+                "provider": "aigateway2",
+                "started_at_unix_ms": remote_started_at,
+                "tracked_spend_usd": 22.0,
+                "updated_at_unix_ms": remote_started_at,
+                "producer_node_id": "node-remote",
+                "producer_node_name": "Remote Node"
+            }),
+        );
+
+        let days = tracked_spend_days_with_remote_fallback(&store, "aigateway2");
+        let tracked_days = days
+            .iter()
+            .filter_map(|day| {
+                let tracked = day.get("tracked_spend_usd").and_then(serde_json::Value::as_f64)?;
+                if tracked <= 0.0 {
+                    return None;
+                }
+                Some((
+                    tracked_spend_day_key(day)?,
+                    tracked,
+                    day.get("updated_at_unix_ms")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0),
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            tracked_days,
+            vec![("2026-04-07".to_string(), 22.0, remote_started_at)]
+        );
     }
 }

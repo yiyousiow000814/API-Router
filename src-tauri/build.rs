@@ -51,6 +51,18 @@ fn prepend_env_path(name: &str, value: &str) {
 
 #[cfg(windows)]
 fn find_windows_sdk_bin_dir() -> Option<PathBuf> {
+    if let (Ok(sdk_dir), Ok(sdk_version)) =
+        (env::var("WindowsSdkDir"), env::var("WindowsSDKVersion"))
+    {
+        let normalized_version = sdk_version.trim().trim_end_matches('\\');
+        let candidate = PathBuf::from(sdk_dir)
+            .join("bin")
+            .join(normalized_version)
+            .join("x64");
+        if candidate.join("rc.exe").is_file() {
+            return Some(candidate);
+        }
+    }
     let pf86 = env::var("ProgramFiles(x86)")
         .ok()
         .filter(|value| !value.trim().is_empty())

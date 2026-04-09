@@ -2887,6 +2887,20 @@ mod tests {
         });
         assert_eq!(tool_completion_status(&failed), "failed");
     }
+
+    #[test]
+    fn validated_external_http_url_allows_http_and_https_only() {
+        assert_eq!(
+            validated_external_http_url(" https://tailscale.com/download "),
+            Ok("https://tailscale.com/download")
+        );
+        assert_eq!(
+            validated_external_http_url("http://127.0.0.1:4000/codex-web"),
+            Ok("http://127.0.0.1:4000/codex-web")
+        );
+        assert!(validated_external_http_url("file:///C:/Windows/System32/calc.exe").is_err());
+        assert!(validated_external_http_url("ms-settings:").is_err());
+    }
 }
 
 pub async fn request_in_home(
@@ -3037,6 +3051,16 @@ pub async fn request(method: &str, params: Value) -> Result<Value, String> {
     request_in_home(None, method, params).await
 }
 
+fn validated_external_http_url(url: &str) -> Result<&str, String> {
+    let trimmed = url.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return Err(format!("refusing to open non-http url: {trimmed}"));
+    }
+    Ok(trimmed)
+}
+
 pub fn open_external_url(url: &str) -> Result<(), String> {
-    open::that(url).map_err(|e| e.to_string())
+    let validated = validated_external_http_url(url)?;
+    open::that(validated).map_err(|e| e.to_string())
 }

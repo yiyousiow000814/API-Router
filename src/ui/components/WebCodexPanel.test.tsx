@@ -42,7 +42,19 @@ describe('WebCodexPanel', () => {
     expect(html).toContain('Desktop')
     expect(html).toContain('Phone')
     expect(html).toContain('Preview')
+    expect(html).toContain('Preview (Vite dev server required)')
+    expect(html).toContain('Start `npm run dev` first, then open the preview URL.')
     expect(html).toContain('Install Tailscale')
+  })
+
+  it('uses the Tauri external opener for the desktop app and keeps browser fallback for dev preview', () => {
+    const source = fs.readFileSync(new URL('./WebCodexPanel.tsx', import.meta.url), 'utf8')
+
+    expect(source).toContain("await invoke('open_external_url', { url })")
+    expect(source).toContain("window.open(url, '_blank', 'noopener,noreferrer')")
+    expect(source).toContain("console.error('Failed to open external URL from Web Codex.', { url, error })")
+    expect(source).not.toContain("window.open(url, '_blank', 'noopener,noreferrer')\n  }")
+    expect(source).not.toContain('target="_blank"')
   })
 
   it('uses dedicated content columns so actions stay aligned to the card text', () => {

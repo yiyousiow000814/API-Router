@@ -75,6 +75,7 @@ pub(crate) fn get_status(
     let config_revision = config_revision(&state, &cfg);
     let wsl_gateway_host =
         crate::platform::wsl_gateway_host::cached_or_default_wsl_gateway_host(Some(&state.config_path));
+    let local_network = state.local_network.snapshot_for_status_poll();
     phase_timings_ms.insert(
         "config_and_revision".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
@@ -109,6 +110,7 @@ pub(crate) fn get_status(
     for (provider_name, snapshot) in providers.iter_mut() {
         let hard_cap = state.secrets.get_provider_quota_hard_cap(provider_name);
         if !crate::orchestrator::gateway::provider_has_remaining_quota_with_hard_cap(
+            &cfg,
             &quota,
             provider_name,
             &hard_cap,
@@ -413,6 +415,9 @@ pub(crate) fn get_status(
       "listen": { "host": cfg.listen.host, "port": cfg.listen.port },
       "config_revision": config_revision,
       "wsl_gateway_host": wsl_gateway_host,
+      "local_network_online": local_network.online,
+      "local_network_source": local_network.source,
+      "local_network_last_error": local_network.last_error,
       "preferred_provider": cfg.routing.preferred_provider,
       "manual_override": manual_override,
       "providers": providers,
@@ -880,10 +885,9 @@ fn rebalance_balanced_assignments_on_main_session_change(
         routes.retain(|session_id, _| kept_agent_or_review_ids.contains(session_id));
     }
     let cleared_assignments = gateway.store.delete_all_session_route_assignments();
-    gateway.store.add_event(
+    gateway.store.events().emit(
         "gateway",
-        "info",
-        "routing.balanced_reassign_on_session_topology_change",
+        crate::orchestrator::store::EventCode::ROUTING_BALANCED_REASSIGN_ON_SESSION_TOPOLOGY_CHANGE,
         "cleared balanced assignments after codex session topology changed",
         serde_json::json!({
             "main_session_count": main_session_ids.len(),
@@ -1465,183 +1469,6 @@ fn append_backup_event_daily_stats(
     }
 }
 
-fn display_event_minute_bucket(unix_ms: u64) -> u64 {
-    unix_ms / 60_000
-}
-
-fn display_event_compression_bucket(event: &Value) -> Option<String> {
-    let unix_ms = event.get("unix_ms")?.as_u64()?;
-    let code = event.get("code")?.as_str()?.trim();
-    let minute_bucket = display_event_minute_bucket(unix_ms);
-    let fields = event.get("fields").and_then(Value::as_object);
-    match code {
-        "lan.edit_sync_applied" => {
-            let source_node_id = fields
-                .and_then(|map| map.get("source_node_id"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim()
-                .to_ascii_lowercase();
-            Some(format!("{code}|{minute_bucket}|{source_node_id}"))
-        }
-        "usage.refresh_shared_applied" => {
-            let applied_from_node_id = fields
-                .and_then(|map| map.get("applied_from_node_id"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim()
-                .to_ascii_lowercase();
-            Some(format!("{code}|{minute_bucket}|{applied_from_node_id}"))
-        }
-        _ => None,
-    }
-}
-
-fn compress_noisy_display_events(events: Vec<Value>) -> Vec<Value> {
-    let mut passthrough = Vec::new();
-    let mut buckets: std::collections::HashMap<String, Vec<Value>> = std::collections::HashMap::new();
-
-    for event in events {
-        if let Some(bucket) = display_event_compression_bucket(&event) {
-            buckets.entry(bucket).or_default().push(event);
-        } else {
-            passthrough.push(event);
-        }
-    }
-
-    for mut bucket_events in buckets.into_values() {
-        if bucket_events.len() == 1 {
-            if let Some(event) = bucket_events.pop() {
-                passthrough.push(event);
-            }
-            continue;
-        }
-        bucket_events.sort_by_key(|event| event.get("unix_ms").and_then(Value::as_u64).unwrap_or(0));
-        let Some(latest) = bucket_events.last().cloned() else {
-            continue;
-        };
-        let code = latest
-            .get("code")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-
-        let compressed = match code.as_str() {
-            "lan.edit_sync_applied" => {
-                let mut applied_total = 0_u64;
-                let mut received_total = 0_u64;
-                let mut source_node_name = String::new();
-                for event in &bucket_events {
-                    let fields = event.get("fields").and_then(Value::as_object);
-                    applied_total = applied_total.saturating_add(
-                        fields
-                            .and_then(|map| map.get("applied_events"))
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
-                    );
-                    received_total = received_total.saturating_add(
-                        fields
-                            .and_then(|map| map.get("received_events"))
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
-                    );
-                    if source_node_name.is_empty() {
-                        source_node_name = fields
-                            .and_then(|map| map.get("source_node_name"))
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .trim()
-                            .to_string();
-                    }
-                }
-                let mut fields = latest.get("fields").cloned().unwrap_or(Value::Null);
-                if let Some(map) = fields.as_object_mut() {
-                    map.insert("applied_events".to_string(), serde_json::json!(applied_total));
-                    map.insert("received_events".to_string(), serde_json::json!(received_total));
-                    map.insert("batch_count".to_string(), serde_json::json!(bucket_events.len()));
-                    map.insert("compressed".to_string(), serde_json::json!(true));
-                }
-                let source_suffix = if source_node_name.is_empty() {
-                    String::new()
-                } else {
-                    format!(" from {source_node_name}")
-                };
-                serde_json::json!({
-                    "unix_ms": latest.get("unix_ms").and_then(Value::as_u64).unwrap_or(0),
-                    "provider": latest.get("provider").and_then(Value::as_str).unwrap_or("gateway"),
-                    "level": latest.get("level").and_then(Value::as_str).unwrap_or("info"),
-                    "code": code,
-                    "message": format!(
-                        "Applied {applied_total} synced editable event(s) across {} batch(es){source_suffix}",
-                        bucket_events.len()
-                    ),
-                    "fields": fields,
-                })
-            }
-            "usage.refresh_shared_applied" => {
-                let mut applied_from_node_name = String::new();
-                let mut providers = std::collections::BTreeSet::new();
-                for event in &bucket_events {
-                    if let Some(provider) = event.get("provider").and_then(Value::as_str) {
-                        let trimmed = provider.trim();
-                        if !trimmed.is_empty() {
-                            let _ = providers.insert(trimmed.to_string());
-                        }
-                    }
-                    let fields = event.get("fields").and_then(Value::as_object);
-                    if applied_from_node_name.is_empty() {
-                        applied_from_node_name = fields
-                            .and_then(|map| map.get("applied_from_node_name"))
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .trim()
-                        .to_string();
-                    }
-                }
-                let provider_count = providers.len();
-                let mut fields = latest.get("fields").cloned().unwrap_or(Value::Null);
-                if let Some(map) = fields.as_object_mut() {
-                    map.insert("provider_count".to_string(), serde_json::json!(provider_count));
-                    map.insert("providers".to_string(), serde_json::json!(providers.clone()));
-                    map.insert("event_count".to_string(), serde_json::json!(bucket_events.len()));
-                    map.insert("compressed".to_string(), serde_json::json!(true));
-                }
-                let provider_name = if provider_count == 1 {
-                    providers.into_iter().next().unwrap_or_else(|| "gateway".to_string())
-                } else {
-                    "gateway".to_string()
-                };
-                let source_label = if applied_from_node_name.is_empty() {
-                    "remote peer".to_string()
-                } else {
-                    applied_from_node_name
-                };
-                serde_json::json!({
-                    "unix_ms": latest.get("unix_ms").and_then(Value::as_u64).unwrap_or(0),
-                    "provider": provider_name,
-                    "level": latest.get("level").and_then(Value::as_str).unwrap_or("info"),
-                    "code": code,
-                    "message": format!(
-                        "Applied shared usage update from {source_label} to {} provider(s)",
-                        provider_count
-                    ),
-                    "fields": fields,
-                })
-            }
-            _ => latest,
-        };
-        passthrough.push(compressed);
-    }
-
-    passthrough.sort_by(|a, b| {
-        let a_ts = a.get("unix_ms").and_then(Value::as_u64).unwrap_or(0);
-        let b_ts = b.get("unix_ms").and_then(Value::as_u64).unwrap_or(0);
-        b_ts.cmp(&a_ts)
-    });
-    passthrough
-}
-
 #[tauri::command]
 pub(crate) fn get_event_log_entries(
     state: tauri::State<'_, app_state::AppState>,
@@ -1667,7 +1494,7 @@ pub(crate) fn get_event_log_entries(
         .as_path();
     let backup_root = backup_data_root_from_config_path(backup_root);
     append_backup_events(&mut events, &mut dedup, &backup_root, from, to, cap);
-    events = compress_noisy_display_events(events);
+    events = crate::orchestrator::store::Store::compress_events_for_display(events);
     events.truncate(cap);
     serde_json::Value::Array(events)
 }
@@ -1710,7 +1537,6 @@ mod tests {
         displayed_session_route, merge_discovered_model_provider, next_last_discovered_unix_ms,
         normalize_event_query_limit, next_wsl_discovery_miss_count,
         should_keep_runtime_session,
-        compress_noisy_display_events,
     };
     use crate::orchestrator::config::{AppConfig, ListenConfig, ProviderConfig, RoutingConfig};
     use crate::orchestrator::gateway::{decide_provider, open_store_dir, GatewayState, LastUsedRoute};
@@ -1777,7 +1603,7 @@ mod tests {
             }),
         ];
 
-        let compressed = compress_noisy_display_events(events);
+        let compressed = crate::orchestrator::store::Store::compress_events_for_display(events);
         assert_eq!(compressed.len(), 1);
         assert_eq!(
             compressed[0].get("provider").and_then(Value::as_str),
@@ -1821,7 +1647,7 @@ mod tests {
             }),
         ];
 
-        let compressed = compress_noisy_display_events(events);
+        let compressed = crate::orchestrator::store::Store::compress_events_for_display(events);
         assert_eq!(compressed.len(), 1);
         assert_eq!(
             compressed[0].get("message").and_then(Value::as_str),

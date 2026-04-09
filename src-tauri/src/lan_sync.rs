@@ -1233,10 +1233,9 @@ impl LanSyncRuntime {
                 sent_at_unix_ms: now,
             }),
         )?;
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "info",
-            "lan.pair.request_sent",
+            crate::orchestrator::store::EventCode::LAN_PAIR_REQUEST_SENT,
             "sent LAN pair request",
             serde_json::json!({
                 "peer_node_id": normalized,
@@ -1284,10 +1283,9 @@ impl LanSyncRuntime {
                 sent_at_unix_ms: now,
             }),
         )?;
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "info",
-            "lan.pair.approved",
+            crate::orchestrator::store::EventCode::LAN_PAIR_APPROVED,
             "approved LAN pair request and generated PIN",
             serde_json::json!({
                 "request_id": normalized,
@@ -1346,10 +1344,9 @@ impl LanSyncRuntime {
                 sent_at_unix_ms: now,
             }),
         )?;
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "info",
-            "lan.pair.pin_submitted",
+            crate::orchestrator::store::EventCode::LAN_PAIR_PIN_SUBMITTED,
             "submitted LAN pairing PIN",
             serde_json::json!({
                 "peer_node_id": normalized_node_id,
@@ -2239,12 +2236,12 @@ fn quota_snapshot_seed_meta_key(shared_provider_id: &str) -> String {
     format!("lan_quota_snapshot_seed:{shared_provider_id}")
 }
 
-fn tracked_spend_day_seed_meta_key(entity_id: &str) -> String {
-    format!("lan_tracked_spend_day_seed:{entity_id}")
-}
-
 fn spend_manual_day_seed_meta_key(entity_id: &str) -> String {
     format!("lan_spend_manual_day_seed:{entity_id}")
+}
+
+fn tracked_spend_day_seed_meta_key(entity_id: &str) -> String {
+    format!("lan_tracked_spend_day_seed:{entity_id}")
 }
 
 fn seed_payload_revision(value: &Value) -> Result<String, String> {
@@ -2292,6 +2289,41 @@ fn parse_day_scoped_entity_id<'a>(
         [shared_provider_id, day_scope] => Ok((shared_provider_id, day_scope, fallback_node_id)),
         _ => Err(format!("invalid source-scoped entity id: {entity_id}")),
     }
+}
+
+fn tracked_spend_day_source_identity(
+    row: &Value,
+    fallback_node_id: &str,
+    fallback_node_name: &str,
+) -> Option<(String, String)> {
+    let source_node_id = row
+        .get("producer_node_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback_node_id)
+        .to_string();
+    let source_node_name = row
+        .get("producer_node_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback_node_name)
+        .to_string();
+    if source_node_id.is_empty() {
+        return None;
+    }
+    Some((source_node_id, source_node_name))
+}
+
+fn normalize_tracked_spend_day_seed_row(row: &Value) -> Value {
+    let mut normalized = row.clone();
+    if let Some(map) = normalized.as_object_mut() {
+        map.remove("applied_at_unix_ms");
+        map.remove("applied_from_node_id");
+        map.remove("applied_from_node_name");
+    }
+    normalized
 }
 
 fn tracked_spend_history_day_delete_entity_id(shared_provider_id: &str, day_key: &str) -> String {
@@ -2397,27 +2429,33 @@ pub fn ensure_local_edit_seed_state(state: &crate::app_state::AppState) -> Resul
             )?;
         }
 
-        for row in state.gateway.store.list_local_spend_days(&provider) {
-            let Some(day_started_at_unix_ms) = row
-                .get("started_at_unix_ms")
-                .and_then(|value| value.as_u64())
+        for row in state.gateway.store.list_spend_days(&provider) {
+            let Some(day_started_at_unix_ms) =
+                row.get("started_at_unix_ms").and_then(Value::as_u64)
             else {
+                continue;
+            };
+            let Some((source_node_id, _source_node_name)) = tracked_spend_day_source_identity(
+                &row,
+                &state.lan_sync.local_node.node_id,
+                &state.lan_sync.local_node.node_name,
+            ) else {
                 continue;
             };
             let entity_id = tracked_spend_day_entity_id(
                 &shared_provider_id,
                 day_started_at_unix_ms,
-                &state.lan_sync.local_node.node_id,
+                &source_node_id,
             );
             let tracked_payload = serde_json::to_value(TrackedSpendDaySyncPayload {
                 provider_name: provider.clone(),
                 day_started_at_unix_ms,
-                row,
+                row: normalize_tracked_spend_day_seed_row(&row),
             })
             .map_err(|err| err.to_string())?;
             seed_edit_event_if_changed(
                 state,
-                "tracked_spend_day",
+                LAN_EDIT_ENTITY_TRACKED_SPEND_DAY,
                 &entity_id,
                 "replace",
                 tracked_payload,
@@ -2559,39 +2597,6 @@ pub fn record_quota_snapshot_from_gateway(
         &local_node,
         "quota_snapshot",
         &shared_provider_id,
-        "replace",
-        payload,
-    )?;
-    Ok(())
-}
-
-pub fn record_tracked_spend_day_from_gateway(
-    gateway: &crate::orchestrator::gateway::GatewayState,
-    secrets: &SecretStore,
-    provider: &str,
-    day_started_at_unix_ms: u64,
-    row: &Value,
-) -> Result<(), String> {
-    let Some(local_node) = local_node_identity_for_edit_recording() else {
-        return Ok(());
-    };
-    let shared_provider_id = shared_provider_id_for_provider(secrets, provider)?;
-    let entity_id = tracked_spend_day_entity_id(
-        &shared_provider_id,
-        day_started_at_unix_ms,
-        &local_node.node_id,
-    );
-    let payload = serde_json::to_value(TrackedSpendDaySyncPayload {
-        provider_name: provider.to_string(),
-        day_started_at_unix_ms,
-        row: row.clone(),
-    })
-    .map_err(|err| err.to_string())?;
-    let _ = record_edit_event(
-        gateway,
-        &local_node,
-        "tracked_spend_day",
-        &entity_id,
         "replace",
         payload,
     )?;
@@ -3106,14 +3111,17 @@ fn apply_tracked_spend_day_event(
         return Ok(());
     }
     let mut row = payload.row.clone();
+    let (producer_node_id, producer_node_name) =
+        tracked_spend_day_source_identity(&row, source_node_id, &event.node_name)
+            .ok_or_else(|| "tracked spend day row is missing a source node id".to_string())?;
     if let Some(map) = row.as_object_mut() {
         map.insert(
             "producer_node_id".to_string(),
-            Value::String(event.node_id.clone()),
+            Value::String(producer_node_id.clone()),
         );
         map.insert(
             "producer_node_name".to_string(),
-            Value::String(event.node_name.clone()),
+            Value::String(producer_node_name.clone()),
         );
         map.insert(
             "applied_from_node_id".to_string(),
@@ -3131,7 +3139,7 @@ fn apply_tracked_spend_day_event(
     gateway.store.put_remote_spend_day(
         &provider_name,
         source_node_id,
-        &event.node_name,
+        &producer_node_name,
         payload.day_started_at_unix_ms,
         &row,
     );
@@ -3533,10 +3541,9 @@ fn handle_pair_request(
             requester_addr: SocketAddr::new(source.ip(), LAN_DISCOVERY_PORT),
         },
     );
-    gateway.store.add_event(
+    gateway.store.events().emit(
         "gateway",
-        "info",
-        "lan.pair.request_received",
+        crate::orchestrator::store::EventCode::LAN_PAIR_REQUEST_RECEIVED,
         "received LAN pair request",
         serde_json::json!({
             "request_id": packet.request_id,
@@ -3564,10 +3571,9 @@ fn handle_pair_approval_ready(
         return;
     }
     request.approval_ready = true;
-    gateway.store.add_event(
+    gateway.store.events().emit(
         "gateway",
-        "info",
-        "lan.pair.approval_ready",
+        crate::orchestrator::store::EventCode::LAN_PAIR_APPROVAL_READY,
         "remote LAN pair approval is ready for PIN entry",
         serde_json::json!({
             "request_id": packet.request_id,
@@ -3593,10 +3599,9 @@ fn handle_pair_pin_submit(
         .get(packet.request_id.as_str())
         .cloned()
     else {
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "warning",
-            "lan.pair.pin_rejected_missing_approval",
+            crate::orchestrator::store::EventCode::LAN_PAIR_PIN_REJECTED_MISSING_APPROVAL,
             "rejected LAN pairing PIN because no approval state exists",
             serde_json::json!({
                 "request_id": packet.request_id,
@@ -3608,10 +3613,9 @@ fn handle_pair_pin_submit(
     if approval.requester_node_id != normalized_node_id
         || approval.pin_code != packet.pin_code.trim()
     {
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "warning",
-            "lan.pair.pin_rejected_mismatch",
+            crate::orchestrator::store::EventCode::LAN_PAIR_PIN_REJECTED_MISMATCH,
             "rejected LAN pairing PIN due to request or PIN mismatch",
             serde_json::json!({
                 "request_id": packet.request_id,
@@ -3648,10 +3652,9 @@ fn handle_pair_pin_submit(
         .pair_approvals
         .write()
         .remove(packet.request_id.as_str());
-    gateway.store.add_event(
+    gateway.store.events().emit(
         "gateway",
-        "info",
-        "lan.pair.pin_accepted",
+        crate::orchestrator::store::EventCode::LAN_PAIR_PIN_ACCEPTED,
         "accepted LAN pairing PIN and sent trust bundle",
         serde_json::json!({
             "request_id": packet.request_id,
@@ -3681,10 +3684,9 @@ fn handle_pair_trust_bundle(
         .write()
         .remove(packet.request_id.as_str())
     else {
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "warning",
-            "lan.pair.trust_bundle_ignored_missing_pin",
+            crate::orchestrator::store::EventCode::LAN_PAIR_TRUST_BUNDLE_IGNORED_MISSING_PIN,
             "ignored LAN trust bundle because no pending PIN exists",
             serde_json::json!({
                 "request_id": packet.request_id,
@@ -3699,10 +3701,9 @@ fn handle_pair_trust_bundle(
         &packet.nonce_b64,
         &packet.ciphertext_b64,
     ) else {
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "warning",
-            "lan.pair.trust_bundle_decrypt_failed",
+            crate::orchestrator::store::EventCode::LAN_PAIR_TRUST_BUNDLE_DECRYPT_FAILED,
             "failed to decrypt LAN trust bundle with submitted PIN",
             serde_json::json!({
                 "request_id": packet.request_id,
@@ -3732,10 +3733,9 @@ fn handle_pair_trust_bundle(
         .outbound_pair_requests
         .write()
         .remove(packet.node_id.as_str());
-    gateway.store.add_event(
+    gateway.store.events().emit(
         "gateway",
-        "info",
-        "lan.pair.trust_bundle_applied",
+        crate::orchestrator::store::EventCode::LAN_PAIR_TRUST_BUNDLE_APPLIED,
         "applied LAN trust bundle and trusted peer",
         serde_json::json!({
             "request_id": packet.request_id,
@@ -3772,23 +3772,67 @@ fn lan_http_sync_failure_key(peer_node_id: &str, route: &str) -> String {
 
 fn emit_http_sync_recovered_event(
     gateway: &crate::orchestrator::gateway::GatewayState,
-    code: &str,
+    event_code: crate::orchestrator::store::EventCode,
     message: &str,
     recovered: &LanHttpSyncProbeSnapshot,
 ) {
-    gateway.store.add_event(
-        "gateway",
-        "info",
-        code,
-        message,
-        serde_json::json!({
-            "peer_node_id": recovered.peer_node_id,
-            "peer_listen_addr": recovered.peer_listen_addr,
-            "route": recovered.route,
-            "previous_outcome": recovered.outcome,
-            "previous_detail": recovered.detail,
-        }),
-    );
+    match event_code {
+        crate::orchestrator::store::EventCode::LAN_USAGE_SYNC_HTTP_RECOVERED => {
+            gateway.store.events().lan().usage_sync_http_recovered(
+                "gateway",
+                message,
+                serde_json::json!({
+                    "peer_node_id": recovered.peer_node_id,
+                    "peer_listen_addr": recovered.peer_listen_addr,
+                    "route": recovered.route,
+                    "previous_outcome": recovered.outcome,
+                    "previous_detail": recovered.detail,
+                }),
+            )
+        }
+        crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_HTTP_RECOVERED => {
+            gateway.store.events().lan().edit_sync_http_recovered(
+                "gateway",
+                message,
+                serde_json::json!({
+                    "peer_node_id": recovered.peer_node_id,
+                    "peer_listen_addr": recovered.peer_listen_addr,
+                    "route": recovered.route,
+                    "previous_outcome": recovered.outcome,
+                    "previous_detail": recovered.detail,
+                }),
+            )
+        }
+        crate::orchestrator::store::EventCode::LAN_PROVIDER_DEFINITIONS_SYNC_HTTP_RECOVERED => {
+            gateway
+                .store
+                .events()
+                .lan()
+                .provider_definitions_sync_http_recovered(
+                    "gateway",
+                    message,
+                    serde_json::json!({
+                        "peer_node_id": recovered.peer_node_id,
+                        "peer_listen_addr": recovered.peer_listen_addr,
+                        "route": recovered.route,
+                        "previous_outcome": recovered.outcome,
+                        "previous_detail": recovered.detail,
+                    }),
+                )
+        }
+        _ => gateway.store.events().emit(
+            "gateway",
+            event_code,
+            message,
+            serde_json::json!({
+                "peer_node_id": recovered.peer_node_id,
+                "peer_listen_addr": recovered.peer_listen_addr,
+                "route": recovered.route,
+                "previous_outcome": recovered.outcome,
+                "previous_detail": recovered.detail,
+            }),
+        ),
+    }
 }
 
 fn sync_edit_events_from_peer(
@@ -4013,10 +4057,9 @@ fn ensure_peer_sync_contract(
     let key = format!("{}:{domain}", peer.node_id);
     let Some(reason) = sync_contract_mismatch_reason(peer, domain) else {
         if reported.remove(&key).is_some() {
-            gateway.store.add_event(
+            gateway.store.events().emit(
                 "gateway",
-                "info",
-                "lan.sync_contract_recovered",
+                crate::orchestrator::store::EventCode::LAN_SYNC_CONTRACT_RECOVERED,
                 &format!(
                     "LAN {domain} sync with {} is compatible again and has resumed",
                     peer.node_name
@@ -4033,10 +4076,9 @@ fn ensure_peer_sync_contract(
         return true;
     };
     if reported.get(&key) != Some(&reason) {
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "warning",
-            "lan.sync_contract_mismatch",
+            crate::orchestrator::store::EventCode::LAN_SYNC_CONTRACT_MISMATCH,
             &reason,
             serde_json::json!({
                 "peer_node_id": peer.node_id,
@@ -4213,7 +4255,7 @@ async fn fetch_usage_sync_batch_http(
     {
         emit_http_sync_recovered_event(
             gateway,
-            "lan.usage_sync_http_recovered",
+            crate::orchestrator::store::EventCode::LAN_USAGE_SYNC_HTTP_RECOVERED,
             "LAN usage sync request recovered",
             &recovered,
         );
@@ -4294,7 +4336,7 @@ async fn fetch_edit_sync_batch_http(
     {
         emit_http_sync_recovered_event(
             gateway,
-            "lan.edit_sync_http_recovered",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_HTTP_RECOVERED,
             "LAN edit sync request recovered",
             &recovered,
         );
@@ -4363,7 +4405,7 @@ async fn fetch_provider_definitions_http(
     {
         emit_http_sync_recovered_event(
             gateway,
-            "lan.provider_definitions_sync_http_recovered",
+            crate::orchestrator::store::EventCode::LAN_PROVIDER_DEFINITIONS_SYNC_HTTP_RECOVERED,
             "LAN provider definitions sync request recovered",
             &recovered,
         );
@@ -4429,10 +4471,9 @@ fn handle_quota_refresh_request(
     let gateway = gateway.clone();
     let runtime = runtime.clone();
     tauri::async_runtime::spawn(async move {
-        gateway.store.add_event(
+        gateway.store.events().emit(
             &provider_name,
-            "info",
-            "lan.quota_refresh_forwarded_started",
+            crate::orchestrator::store::EventCode::LAN_QUOTA_REFRESH_FORWARDED_STARTED,
             &format!("Shared usage refresh received from {}", requester_node_name),
             serde_json::json!({
                 "provider": provider_name,
@@ -4443,10 +4484,9 @@ fn handle_quota_refresh_request(
         match crate::orchestrator::quota::refresh_quota_shared(&gateway, &runtime, &provider_name)
             .await
         {
-            Ok(group) => gateway.store.add_event(
+            Ok(group) => gateway.store.events().emit(
                 &provider_name,
-                "info",
-                "lan.quota_refresh_forwarded_succeeded",
+                crate::orchestrator::store::EventCode::LAN_QUOTA_REFRESH_FORWARDED_SUCCEEDED,
                 &format!("Shared usage refresh completed for {}", requester_node_name),
                 serde_json::json!({
                     "provider": provider_name,
@@ -4455,10 +4495,9 @@ fn handle_quota_refresh_request(
                     "requester_node_name": requester_node_name,
                 }),
             ),
-            Err(err) => gateway.store.add_event(
+            Err(err) => gateway.store.events().emit(
                 &provider_name,
-                "warning",
-                "lan.quota_refresh_forwarded_failed",
+                crate::orchestrator::store::EventCode::LAN_QUOTA_REFRESH_FORWARDED_FAILED,
                 &format!(
                     "Shared usage refresh failed for {}: {err}",
                     requester_node_name
@@ -4492,10 +4531,9 @@ fn handle_edit_sync_hint(
         .live_peer_by_node_id(sender_node_id)
         .or_else(|| runtime.recent_peer_by_node_id(sender_node_id, LAN_PEER_HTTP_GRACE_AFTER_MS))
     else {
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "debug",
-            "lan.edit_sync_hint_ignored_unknown_peer",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_HINT_IGNORED_UNKNOWN_PEER,
             "ignored LAN edit sync hint because the sender has no live or recent peer snapshot",
             serde_json::json!({
                 "peer_node_id": sender_node_id,
@@ -4537,10 +4575,9 @@ fn apply_edit_sync_batch(
     let mut applied = 0usize;
     for event in &packet.events {
         let Some(domain) = lan_edit_entity_sync_domain(&event.entity_type) else {
-            gateway.store.add_event(
+            gateway.store.events().emit(
                 "gateway",
-                "warning",
-                "lan.edit_sync_entity_domain_missing",
+                crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_ENTITY_DOMAIN_MISSING,
                 &format!(
                     "Rejected LAN edit sync entity {} from {} because it is not mapped to a sync domain",
                     event.entity_type, peer.node_name
@@ -4578,10 +4615,9 @@ fn apply_edit_sync_batch(
         );
     }
     if applied > 0 {
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "info",
-            "lan.edit_sync_applied",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_APPLIED,
             &format!("applied {applied} synced editable event(s)"),
             serde_json::json!({
                 "source_node_id": packet.node_id,
@@ -4621,10 +4657,9 @@ fn run_usage_sync_loop(
                 )) {
                     Ok(batch) => batch,
                     Err(err) => {
-                        gateway.store.add_event(
+                        gateway.store.events().emit(
                             "gateway",
-                            "warning",
-                            "lan.usage_sync_http_failed",
+                            crate::orchestrator::store::EventCode::LAN_USAGE_SYNC_HTTP_FAILED,
                             &err,
                             serde_json::json!({
                                 "peer_node_id": peer.node_id,
@@ -4698,10 +4733,9 @@ fn run_edit_sync_loop(
                                 .insert(peer.node_id.clone(), applied_revision);
                         }
                         Err(err) => {
-                            gateway.store.add_event(
+                            gateway.store.events().emit(
                                 "gateway",
-                                "warning",
-                                "lan.provider_definitions_sync_failed",
+                                crate::orchestrator::store::EventCode::LAN_PROVIDER_DEFINITIONS_SYNC_FAILED,
                                 &err,
                                 serde_json::json!({
                                     "peer_node_id": peer.node_id,
@@ -4726,10 +4760,9 @@ fn run_edit_sync_loop(
                 &peer,
                 &mut reported_sync_blocks,
             ) {
-                gateway.store.add_event(
+                gateway.store.events().emit(
                     "gateway",
-                    "warning",
-                    "lan.edit_sync_http_failed",
+                    crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_HTTP_FAILED,
                     &err,
                     serde_json::json!({
                         "peer_node_id": peer.node_id,
@@ -4899,10 +4932,9 @@ fn run_single_owner_recovery_probe(
     match result {
         Ok((status, _payload)) if (200..300).contains(&status) => {
             let _ = gateway.router.mark_success(provider_name, now);
-            gateway.store.add_event(
+            gateway.store.events().emit(
                 provider_name,
-                "info",
-                "lan.shared_recovery_probe_ok",
+                crate::orchestrator::store::EventCode::LAN_SHARED_RECOVERY_PROBE_OK,
                 "shared cooldown recovery probe succeeded",
                 serde_json::json!({ "owner_node": "local" }),
             );
@@ -4910,10 +4942,9 @@ fn run_single_owner_recovery_probe(
         Ok((status, _payload)) => {
             let err = format!("shared recovery probe failed: http {status}");
             let _ = gateway.router.mark_failure(provider_name, cfg, &err, now);
-            gateway.store.add_event(
+            gateway.store.events().emit(
                 provider_name,
-                "warning",
-                "lan.shared_recovery_probe_failed",
+                crate::orchestrator::store::EventCode::LAN_SHARED_RECOVERY_PROBE_FAILED,
                 &err,
                 serde_json::json!({ "owner_node": "local", "http_status": status }),
             );
@@ -4923,10 +4954,9 @@ fn run_single_owner_recovery_probe(
             let _ = gateway
                 .router
                 .mark_failure(provider_name, cfg, &detail, now);
-            gateway.store.add_event(
+            gateway.store.events().emit(
                 provider_name,
-                "warning",
-                "lan.shared_recovery_probe_failed",
+                crate::orchestrator::store::EventCode::LAN_SHARED_RECOVERY_PROBE_FAILED,
                 &detail,
                 serde_json::json!({ "owner_node": "local" }),
             );
@@ -7383,33 +7413,20 @@ mod tests {
             &snapshot,
         )
         .expect("record quota snapshot");
-        let tracked_row = serde_json::json!({
-            "provider": "provider_1",
-            "started_at_unix_ms": 1711929600000u64,
-            "tracked_spend_usd": 12.34,
-            "updated_at_unix_ms": 5000u64
-        });
-        super::record_tracked_spend_day_from_gateway(
-            &state.gateway,
-            &state.secrets,
-            "provider_1",
-            1711929600000,
-            &tracked_row,
-        )
-        .expect("record tracked spend");
 
         let (events, _) = state.gateway.store.list_lan_edit_events_batch(0, None, 10);
         assert!(events
             .iter()
             .any(|event| event.entity_type == "quota_snapshot"));
-        assert!(events
-            .iter()
-            .any(|event| event.entity_type == "tracked_spend_day"));
     }
 
     #[test]
     fn ensure_local_edit_seed_state_includes_existing_usage_entities() {
         let (_tmp, state) = build_test_state();
+        let shared_provider_id = state
+            .secrets
+            .ensure_provider_shared_id("provider_1")
+            .expect("shared id");
         state
             .secrets
             .set_provider_pricing("provider_1", "per_request", 0.035, None, None)
@@ -7432,16 +7449,6 @@ mod tests {
                 }),
             )
             .expect("seed quota snapshot");
-        state.gateway.store.put_spend_day(
-            "provider_1",
-            1711929600000,
-            &serde_json::json!({
-                "provider": "provider_1",
-                "started_at_unix_ms": 1711929600000u64,
-                "tracked_spend_usd": 12.34,
-                "updated_at_unix_ms": 5000u64,
-            }),
-        );
         state.gateway.store.put_spend_manual_day(
             "provider_1",
             "2026-04-02",
@@ -7453,10 +7460,36 @@ mod tests {
                 "updated_at_unix_ms": 6000u64,
             }),
         );
+        state.gateway.store.put_spend_day(
+            "provider_1",
+            1_711_929_600_000u64,
+            &serde_json::json!({
+                "provider": "provider_1",
+                "started_at_unix_ms": 1_711_929_600_000u64,
+                "tracked_spend_usd": 8.5,
+                "updated_at_unix_ms": 7000u64,
+                "producer_node_id": state.lan_sync.local_node_id(),
+                "producer_node_name": state.lan_sync.local_node_name(),
+            }),
+        );
+        state.gateway.store.put_remote_spend_day(
+            "provider_1",
+            "node-remote",
+            "Remote Node",
+            1_711_933_200_000u64,
+            &serde_json::json!({
+                "provider": "provider_1",
+                "started_at_unix_ms": 1_711_933_200_000u64,
+                "tracked_spend_usd": 12.25,
+                "updated_at_unix_ms": 7100u64,
+                "producer_node_id": "node-remote",
+                "producer_node_name": "Remote Node",
+            }),
+        );
 
         super::ensure_local_edit_seed_state(&state).expect("seed local edit state");
 
-        let (events, _) = state.gateway.store.list_lan_edit_events_batch(0, None, 20);
+        let (events, _) = state.gateway.store.list_lan_edit_events_batch(0, None, 50);
         assert!(events
             .iter()
             .any(|event| event.entity_type == "provider_pricing"));
@@ -7465,10 +7498,54 @@ mod tests {
             .any(|event| event.entity_type == "quota_snapshot"));
         assert!(events
             .iter()
-            .any(|event| event.entity_type == "tracked_spend_day"));
-        assert!(events
-            .iter()
             .any(|event| event.entity_type == "spend_manual_day"));
+        let tracked_spend_events = events
+            .iter()
+            .filter(|event| event.entity_type == "tracked_spend_day")
+            .collect::<Vec<_>>();
+        assert_eq!(tracked_spend_events.len(), 2);
+        assert!(tracked_spend_events.iter().any(|event| {
+            event.entity_id
+                == tracked_spend_day_entity_id(
+                    &shared_provider_id,
+                    1_711_929_600_000u64,
+                    &state.lan_sync.local_node_id(),
+                )
+        }));
+        assert!(tracked_spend_events.iter().any(|event| {
+            event.entity_id
+                == tracked_spend_day_entity_id(
+                    &shared_provider_id,
+                    1_711_933_200_000u64,
+                    "node-remote",
+                )
+        }));
+    }
+
+    #[test]
+    fn normalize_tracked_spend_day_seed_row_strips_applied_metadata() {
+        let normalized = super::normalize_tracked_spend_day_seed_row(&serde_json::json!({
+            "provider": "provider_1",
+            "started_at_unix_ms": 1_711_933_200_000u64,
+            "tracked_spend_usd": 12.25,
+            "updated_at_unix_ms": 7100u64,
+            "producer_node_id": "node-remote",
+            "producer_node_name": "Remote Node",
+            "applied_from_node_id": "node-self",
+            "applied_from_node_name": "Self Node",
+            "applied_at_unix_ms": 9999u64,
+        }));
+        assert_eq!(
+            normalized.get("applied_from_node_id"),
+            None,
+            "seed payload should not drift with receiver metadata"
+        );
+        assert_eq!(normalized.get("applied_from_node_name"), None);
+        assert_eq!(normalized.get("applied_at_unix_ms"), None);
+        assert_eq!(
+            normalized.get("producer_node_id").and_then(Value::as_str),
+            Some("node-remote")
+        );
     }
 
     #[test]
@@ -7904,28 +7981,114 @@ mod tests {
         );
 
         let tracked_days = state.gateway.store.list_spend_days("provider_1");
-        assert_eq!(tracked_days.len(), 1);
+        assert_eq!(tracked_days.len(), 2);
+        let local_tracked_days = state.gateway.store.list_local_spend_days("provider_1");
+        assert_eq!(local_tracked_days.len(), 1);
         assert_eq!(
-            tracked_days[0]
+            local_tracked_days[0]
+                .get("tracked_spend_usd")
+                .and_then(|value| value.as_f64()),
+            Some(0.0)
+        );
+        let remote_tracked_days = state.gateway.store.list_remote_spend_days("provider_1");
+        assert_eq!(remote_tracked_days.len(), 1);
+        assert_eq!(
+            remote_tracked_days[0]
                 .get("tracked_spend_usd")
                 .and_then(|value| value.as_f64()),
             Some(17.47)
         );
         assert_eq!(
-            tracked_days[0]
+            remote_tracked_days[0]
                 .get("producer_node_id")
                 .and_then(|value| value.as_str()),
             Some("node-remote")
         );
         assert_eq!(
-            tracked_days[0]
+            remote_tracked_days[0]
                 .get("applied_from_node_id")
                 .and_then(|value| value.as_str()),
             Some("node-remote")
         );
         assert!(
-            state.gateway.store.get_spend_state("provider_1").is_none(),
-            "remote tracked spend must not mutate local tracking state"
+            state.gateway.store.get_spend_state("provider_1").is_some(),
+            "remote quota observations should now advance the shared local tracking state"
+        );
+        assert_eq!(
+            state
+                .gateway
+                .store
+                .get_spend_state("provider_1")
+                .and_then(|value| value.get("last_seen_daily_spent_usd").cloned())
+                .and_then(|value| value.as_f64()),
+            Some(17.47)
+        );
+    }
+
+    #[test]
+    fn tracked_spend_seed_relay_preserves_original_remote_producer() {
+        let (_tmp, state) = build_test_state();
+        let shared_provider_id = state
+            .secrets
+            .ensure_provider_shared_id("provider_1")
+            .expect("shared id");
+        let local_node_id = state.lan_sync.local_node_id();
+        let local_node_name = state.lan_sync.local_node_name();
+        let event = crate::orchestrator::store::LanEditSyncEvent {
+            event_id: "seeded_remote_tracked_spend".to_string(),
+            node_id: local_node_id.clone(),
+            node_name: local_node_name.clone(),
+            created_at_unix_ms: 5,
+            lamport_ts: 5,
+            entity_type: "tracked_spend_day".to_string(),
+            entity_id: tracked_spend_day_entity_id(
+                &shared_provider_id,
+                1_711_929_600_000u64,
+                "node-remote",
+            ),
+            op: "replace".to_string(),
+            payload: serde_json::json!({
+                "provider_name": "provider_1",
+                "day_started_at_unix_ms": 1_711_929_600_000u64,
+                "row": {
+                    "provider": "provider_1",
+                    "started_at_unix_ms": 1_711_929_600_000u64,
+                    "tracked_spend_usd": 17.47,
+                    "updated_at_unix_ms": 2222u64,
+                    "producer_node_id": "node-remote",
+                    "producer_node_name": "Remote Node"
+                }
+            }),
+        };
+
+        apply_lan_edit_event(&state.gateway, &state.config_path, &event)
+            .expect("apply seeded tracked spend relay");
+
+        let remote_tracked_days = state.gateway.store.list_remote_spend_days("provider_1");
+        assert_eq!(remote_tracked_days.len(), 1);
+        assert_eq!(
+            remote_tracked_days[0]
+                .get("producer_node_id")
+                .and_then(|value| value.as_str()),
+            Some("node-remote")
+        );
+        assert_eq!(
+            remote_tracked_days[0]
+                .get("producer_node_name")
+                .and_then(|value| value.as_str()),
+            Some("Remote Node")
+        );
+        assert_eq!(
+            remote_tracked_days[0]
+                .get("applied_from_node_id")
+                .and_then(|value| value.as_str()),
+            Some(local_node_id.as_str())
+        );
+        assert_eq!(
+            remote_tracked_days[0]
+                .get("applied_from_node_name")
+                .and_then(|value| value.as_str()),
+            Some(local_node_name.as_str())
         );
     }
 
@@ -8119,10 +8282,9 @@ mod tests {
                     "day_started_at_unix_ms": 1774976280809u64
                 }),
             });
-        state.gateway.store.add_event(
+        state.gateway.store.events().emit(
             "provider_1",
-            "warning",
-            "usage.tracked_spend_history_entries_removed",
+            crate::orchestrator::store::EventCode::USAGE_TRACKED_SPEND_HISTORY_ENTRIES_REMOVED,
             "tracked spend history entries removed",
             serde_json::json!({
                 "day_key": expected_day_key,

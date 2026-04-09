@@ -453,6 +453,7 @@ mod tests {
 
     #[test]
     fn wsl_history_cache_root_stays_under_codex_home() {
+        let _test_guard = crate::codex_app_server::lock_test_globals();
         let _home = EnvGuard::set("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", "/home/test/.codex");
         assert_eq!(
             wsl_history_cache_root().expect("cache root"),

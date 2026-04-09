@@ -398,10 +398,9 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
         } else {
             "official"
         };
-        state.gateway.store.add_event(
+        state.gateway.store.events().emit(
             provider,
-            "info",
-            "test_profile.bulk_event",
+            crate::orchestrator::store::EventCode::TEST_PROFILE_BULK_EVENT,
             &format!("test profile bulk event #{i}"),
             json!({
                 "seed": true,
@@ -411,10 +410,9 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
         );
     }
 
-    state.gateway.store.add_event(
+    state.gateway.store.events().emit(
         "gateway",
-        "info",
-        "test_profile.mock_seeded",
+        crate::orchestrator::store::EventCode::TEST_PROFILE_MOCK_SEEDED,
         "test profile mock data seeded",
         json!({
             "providers": ["provider_1", "provider_2"],
@@ -549,6 +547,10 @@ pub fn run() {
             {
                 let st = app.state::<app_state::AppState>();
                 crate::lan_sync::register_gateway_status_runtime(st.lan_sync.clone());
+                crate::platform::local_network::spawn_monitor(
+                    app.handle(),
+                    st.local_network.clone(),
+                );
                 if let Some(local_node) = crate::lan_sync::current_local_node_identity() {
                     if let Ok((migrated_spend_days, migrated_manual_days)) = st
                         .gateway
@@ -556,10 +558,9 @@ pub fn run() {
                         .migrate_legacy_remote_usage_sources_if_needed(&local_node.node_id)
                     {
                         if migrated_spend_days > 0 || migrated_manual_days > 0 {
-                            st.gateway.store.add_event(
+                            st.gateway.store.events().emit(
                                 "gateway",
-                                "info",
-                                "lan.legacy_usage_sources_migrated",
+                                crate::orchestrator::store::EventCode::LAN_LEGACY_USAGE_SOURCES_MIGRATED,
                                 "Migrated legacy LAN usage history into source-scoped remote storage",
                                 serde_json::json!({
                                     "migrated_spend_days": migrated_spend_days,
@@ -770,6 +771,7 @@ pub fn run() {
             commands::record_ui_frame_stall,
             commands::record_ui_frontend_error,
             commands::record_ui_invoke_result,
+            commands::open_external_url,
             commands::get_event_log_entries,
             commands::get_event_log_years,
             commands::get_event_log_daily_stats,
