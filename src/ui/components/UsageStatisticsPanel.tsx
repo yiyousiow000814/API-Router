@@ -371,6 +371,16 @@ export function buildUsageRequestEntriesArgs(input: {
   }
 }
 
+export function intersectUsageRequestFilterValues(
+  primary: string[] | null,
+  secondary: string[] | null,
+): string[] | null {
+  if (primary == null) return secondary
+  if (secondary == null) return primary
+  const secondaryKeys = new Set(secondary.map((value) => value.trim().toLocaleLowerCase()))
+  return primary.filter((value) => secondaryKeys.has(value.trim().toLocaleLowerCase()))
+}
+
 function buildUsageRequestSummaryArgs(input: {
   hours: number
   fromUnixMs: number | null
@@ -390,6 +400,27 @@ function buildUsageRequestSummaryArgs(input: {
     models: input.models,
     origins: input.origins,
     sessions: input.sessions,
+  }
+}
+
+export function resolveEffectiveSummaryRequestFilters(input: {
+  globalNodes: string[] | null
+  globalProviders: string[] | null
+  globalModels: string[] | null
+  globalOrigins: string[] | null
+  globalSessions: string[] | null
+  columnNodes: string[] | null
+  columnProviders: string[] | null
+  columnModels: string[] | null
+  columnOrigins: string[] | null
+  columnSessions: string[] | null
+}) {
+  return {
+    nodes: intersectUsageRequestFilterValues(input.globalNodes, input.columnNodes),
+    providers: intersectUsageRequestFilterValues(input.globalProviders, input.columnProviders),
+    models: intersectUsageRequestFilterValues(input.globalModels, input.columnModels),
+    origins: intersectUsageRequestFilterValues(input.globalOrigins, input.columnOrigins),
+    sessions: intersectUsageRequestFilterValues(input.globalSessions, input.columnSessions),
   }
 }
 
@@ -732,7 +763,7 @@ export function filterUsageRequestRowsByProviderIds(
 
 export function resolveSummaryFetchWindow(input: {
   requestFetchFromUnixMs: number | null
-  hasExplicitRequestFilters: boolean
+  hasExplicitTimeFilter: boolean
   rowsForRequestRender: UsageRequestEntry[]
   requestDefaultDay: number
 }): { fromUnixMs: number | null; toUnixMs: number | null } {
@@ -741,7 +772,7 @@ export function resolveSummaryFetchWindow(input: {
   )
   const fromUnixMs =
     input.requestFetchFromUnixMs ??
-    (!input.hasExplicitRequestFilters && hasTodayRowsInRender ? input.requestDefaultDay : null)
+    (!input.hasExplicitTimeFilter && hasTodayRowsInRender ? input.requestDefaultDay : null)
   return {
     fromUnixMs,
     toUnixMs: fromUnixMs == null ? null : fromUnixMs + 24 * 60 * 60 * 1000,
@@ -1539,6 +1570,29 @@ export function UsageStatisticsPanel({
     (usageRequestMultiFilters.model !== null && usageRequestMultiFilters.model.length === 0) ||
     (usageRequestMultiFilters.origin !== null && usageRequestMultiFilters.origin.length === 0) ||
     (usageRequestMultiFilters.session !== null && usageRequestMultiFilters.session.length === 0)
+  const effectiveSummaryRequestFilters = useMemo(
+    () =>
+      resolveEffectiveSummaryRequestFilters({
+        globalNodes: requestFetchNodes,
+        globalProviders: requestFetchProviders,
+        globalModels: requestFetchModels,
+        globalOrigins: requestFetchOrigins,
+        globalSessions: requestFetchSessions,
+        columnNodes: usageRequestMultiFilters.node,
+        columnProviders: usageRequestMultiFilters.provider,
+        columnModels: usageRequestMultiFilters.model,
+        columnOrigins: usageRequestMultiFilters.origin,
+        columnSessions: usageRequestMultiFilters.session,
+      }),
+    [
+      requestFetchModels,
+      requestFetchNodes,
+      requestFetchOrigins,
+      requestFetchProviders,
+      requestFetchSessions,
+      usageRequestMultiFilters,
+    ],
+  )
   const [requestDefaultDay, setRequestDefaultDay] = useState<number>(() =>
     startOfDayUnixMs(Date.now()),
   )
@@ -1858,7 +1912,7 @@ export function UsageStatisticsPanel({
     const { fromUnixMs: summaryFetchFromUnixMs, toUnixMs: summaryFetchToUnixMs } =
       resolveSummaryFetchWindow({
         requestFetchFromUnixMs,
-        hasExplicitRequestFilters,
+        hasExplicitTimeFilter,
         rowsForRequestRender,
         requestDefaultDay,
       })
@@ -1869,11 +1923,11 @@ export function UsageStatisticsPanel({
           hours: requestFetchHours,
           fromUnixMs: summaryFetchFromUnixMs,
           toUnixMs: summaryFetchToUnixMs,
-          nodes: requestFetchNodes,
-          providers: requestFetchProviders,
-          models: requestFetchModels,
-          origins: requestFetchOrigins,
-          sessions: requestFetchSessions,
+          nodes: effectiveSummaryRequestFilters.nodes,
+          providers: effectiveSummaryRequestFilters.providers,
+          models: effectiveSummaryRequestFilters.models,
+          origins: effectiveSummaryRequestFilters.origins,
+          sessions: effectiveSummaryRequestFilters.sessions,
         }),
       )
       if (usageRequestSummaryFetchSeqRef.current !== requestSeq) return
@@ -1884,15 +1938,11 @@ export function UsageStatisticsPanel({
     }
   }, [
     hasImpossibleRequestFilters,
+    effectiveSummaryRequestFilters,
     isRequestsTab,
     requestFetchHours,
     requestFetchFromUnixMs,
-    requestFetchNodes,
-    requestFetchModels,
-    requestFetchOrigins,
-    requestFetchProviders,
-    requestFetchSessions,
-    hasExplicitRequestFilters,
+    hasExplicitTimeFilter,
     requestDefaultDay,
     rowsForRequestRender,
   ])
