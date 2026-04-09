@@ -546,24 +546,24 @@ impl RouterState {
                     h.last_fail_at_unix_ms = now_ms;
                     Self::mark_local_runtime_update(h, now_ms);
                     out = Some(Self::snapshot_from_health(h, now_ms));
-                    return out;
-                }
-                h.transient_warning_timestamps_unix_ms.clear();
-                h.state = HealthState::Unhealthy;
-                h.consecutive_failures = h.consecutive_failures.saturating_add(1);
-                h.last_error = err.to_string();
-                h.last_fail_at_unix_ms = now_ms;
+                } else {
+                    h.transient_warning_timestamps_unix_ms.clear();
+                    h.state = HealthState::Unhealthy;
+                    h.consecutive_failures = h.consecutive_failures.saturating_add(1);
+                    h.last_error = err.to_string();
+                    h.last_fail_at_unix_ms = now_ms;
 
-                if h.consecutive_failures >= threshold {
-                    h.cooldown_from_transient_warnings = false;
-                    h.cooldown_until_unix_ms = now_ms
-                        + cfg
-                            .routing
-                            .effective_cooldown_seconds()
-                            .saturating_mul(1000);
+                    if h.consecutive_failures >= threshold {
+                        h.cooldown_from_transient_warnings = false;
+                        h.cooldown_until_unix_ms = now_ms
+                            + cfg
+                                .routing
+                                .effective_cooldown_seconds()
+                                .saturating_mul(1000);
+                    }
+                    Self::mark_local_runtime_update(h, now_ms);
+                    out = Some(Self::snapshot_from_health(h, now_ms));
                 }
-                Self::mark_local_runtime_update(h, now_ms);
-                out = Some(Self::snapshot_from_health(h, now_ms));
             }
         }
         if out.is_some() {
@@ -1036,6 +1036,37 @@ mod tests {
         assert_eq!(health.status, "cooldown");
         assert_eq!(health.last_error, "boom");
         assert_eq!(health.consecutive_failures, 1);
+    }
+
+    #[test]
+    fn offline_transition_clears_persisted_healthy_state() {
+        let mut cfg = AppConfig::default_config();
+        cfg.routing.failure_threshold = 1;
+        let provider = "official";
+        let (_tmp, store) = build_test_store();
+        let router = RouterState::new_with_store(&cfg, 0, Some(store.clone()));
+
+        let _ = router.mark_success(provider, 1_000);
+        let _ = router.mark_failure(
+            provider,
+            &cfg,
+            "request error (connect); url=https://api.example.com/v1/models; cause=dns error: failed to lookup address information: No such host is known. (os error 11001)",
+            2_000,
+        );
+
+        let persisted = store
+            .get_event_meta(SHARED_HEALTH_STATE_META_KEY)
+            .expect("read persisted shared health");
+        assert!(
+            persisted.is_none(),
+            "unknown state should not remain persisted"
+        );
+
+        let restored = RouterState::new_with_store(&cfg, 3_000, Some(store));
+        let snapshot = restored.snapshot(3_000);
+        let health = snapshot.get(provider).expect("provider health snapshot");
+        assert_eq!(health.status, "unknown");
+        assert_eq!(health.last_error, "");
     }
 
     #[test]
