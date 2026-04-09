@@ -878,10 +878,9 @@ fn rebalance_balanced_assignments_on_main_session_change(
         routes.retain(|session_id, _| kept_agent_or_review_ids.contains(session_id));
     }
     let cleared_assignments = gateway.store.delete_all_session_route_assignments();
-    gateway.store.add_event(
+    gateway.store.events().emit(
         "gateway",
-        "info",
-        "routing.balanced_reassign_on_session_topology_change",
+        crate::orchestrator::store::EventCode::ROUTING_BALANCED_REASSIGN_ON_SESSION_TOPOLOGY_CHANGE,
         "cleared balanced assignments after codex session topology changed",
         serde_json::json!({
             "main_session_count": main_session_ids.len(),

@@ -15,6 +15,17 @@ pub struct Store {
     events_db: Arc<Mutex<rusqlite::Connection>>,
 }
 
+#[derive(Clone, Copy)]
+pub struct EventReporter<'a> {
+    store: &'a Store,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EventCode {
+    level: &'static str,
+    code: &'static str,
+}
+
 const LEDGER_DEFAULT: &str = r#"{"since_last_quota_refresh_requests":0,"since_last_quota_refresh_input_tokens":0,"since_last_quota_refresh_output_tokens":0,"since_last_quota_refresh_total_tokens":0,"last_reset_unix_ms":0}"#;
 
 #[derive(Clone, Copy)]
@@ -153,6 +164,169 @@ impl Default for EventPolicy {
     }
 }
 
+macro_rules! define_event_codes {
+    ($( $name:ident => ($level:literal, $code:literal), )+) => {
+        impl EventCode {
+            $(pub const $name: Self = Self { level: $level, code: $code };)+
+
+            pub const fn level(self) -> &'static str {
+                self.level
+            }
+
+            pub const fn code(self) -> &'static str {
+                self.code
+            }
+        }
+    };
+}
+
+define_event_codes! {
+    APP_UI_FRAME_STALL => ("warning", "app.ui_frame_stall"),
+    APP_UI_FRONTEND_ERROR => ("warning", "app.ui_frontend_error"),
+    APP_UI_INVOKE_ERROR => ("warning", "app.ui_invoke_error"),
+    APP_UI_RECOVERED => ("info", "app.ui_recovered"),
+    APP_UI_UNRESPONSIVE => ("warning", "app.ui_unresponsive"),
+    CODEX_CLI_AUTH_CONFIG_SWAPPED => ("info", "codex.cli_auth_config_swapped"),
+    CODEX_PROVIDER_SWITCHBOARD_BASE_META_SAVE_FAILED => ("error", "codex.provider_switchboard.base_meta_save_failed"),
+    CODEX_PROVIDER_SWITCHBOARD_BASE_SAVE_FAILED => ("error", "codex.provider_switchboard.base_save_failed"),
+    CODEX_PROVIDER_SWITCHBOARD_GATEWAY_TOKEN_SYNC_FAILED => ("error", "codex.provider_switchboard.gateway_token_sync_failed"),
+    CODEX_PROVIDER_SWITCHBOARD_RENAME_SYNC_FAILED => ("error", "codex.provider_switchboard.rename_sync_failed"),
+    CODEX_PROVIDER_SWITCHBOARD_STATE_SAVE_FAILED => ("error", "codex.provider_switchboard.state_save_failed"),
+    CODEX_PROVIDER_SWITCHBOARD_SYNC_FAILED => ("error", "codex.provider_switchboard.sync_failed"),
+    CODEX_PROVIDER_SWITCHBOARD_UPDATED => ("info", "codex.provider_switchboard.updated"),
+    CONFIG_FOLLOWED_SOURCE_CLEARED => ("info", "config.followed_source_cleared"),
+    CONFIG_FOLLOWED_SOURCE_ROLLBACK_FAILED => ("error", "config.followed_source_rollback_failed"),
+    CONFIG_FOLLOWED_SOURCE_SNAPSHOT_MISSING => ("warning", "config.followed_source_snapshot_missing"),
+    CONFIG_FOLLOWED_SOURCE_UPDATED => ("info", "config.followed_source_updated"),
+    CONFIG_PREFERRED_PROVIDER_UPDATED => ("info", "config.preferred_provider_updated"),
+    CONFIG_PROVIDER_ACCOUNT_EMAIL_CLEARED => ("info", "config.provider_account_email_cleared"),
+    CONFIG_PROVIDER_ACCOUNT_EMAIL_UPDATED => ("info", "config.provider_account_email_updated"),
+    CONFIG_PROVIDER_COPIED_FROM_SOURCE => ("info", "config.provider_copied_from_source"),
+    CONFIG_PROVIDER_ACTIVATED => ("info", "config.provider_activated"),
+    CONFIG_PROVIDER_DEACTIVATED => ("info", "config.provider_deactivated"),
+    CONFIG_PROVIDER_DELETED => ("info", "config.provider_deleted"),
+    CONFIG_PROVIDER_DISABLED_AFTER_PACKAGE_EXPIRY => ("warning", "config.provider_disabled_after_package_expiry"),
+    CONFIG_PROVIDER_GAP_FILL_CLEARED => ("info", "config.provider_gap_fill_cleared"),
+    CONFIG_PROVIDER_GAP_FILL_UPDATED => ("info", "config.provider_gap_fill_updated"),
+    CONFIG_PROVIDER_GROUP_BULK_UPDATED => ("info", "config.provider_group_bulk_updated"),
+    CONFIG_PROVIDER_GROUP_UPDATED => ("info", "config.provider_group_updated"),
+    CONFIG_PROVIDER_KEY_CLEARED => ("info", "config.provider_key_cleared"),
+    CONFIG_PROVIDER_KEY_UPDATED => ("info", "config.provider_key_updated"),
+    CONFIG_PROVIDER_LINKED_FROM_SOURCE => ("info", "config.provider_linked_from_source"),
+    CONFIG_PROVIDER_ORDER_UPDATED => ("info", "config.provider_order_updated"),
+    CONFIG_PROVIDER_PRICING_CLEARED => ("info", "config.provider_pricing_cleared"),
+    CONFIG_PROVIDER_PRICING_UPDATED => ("info", "config.provider_pricing_updated"),
+    CONFIG_PROVIDER_QUOTA_HARD_CAP_UPDATED => ("info", "config.provider_quota_hard_cap_updated"),
+    CONFIG_PROVIDER_RENAMED => ("info", "config.provider_renamed"),
+    CONFIG_PROVIDER_SCHEDULE_UPDATED => ("info", "config.provider_schedule_updated"),
+    CONFIG_PROVIDER_TIMELINE_UPDATED => ("info", "config.provider_timeline_updated"),
+    CONFIG_PROVIDER_UPSERTED => ("info", "config.provider_upserted"),
+    CONFIG_ROUTE_MODE_UPDATED => ("info", "config.route_mode_updated"),
+    CONFIG_SESSION_PREFERRED_PROVIDER_CLEARED => ("info", "config.session_preferred_provider_cleared"),
+    CONFIG_SESSION_PREFERRED_PROVIDER_UPDATED => ("info", "config.session_preferred_provider_updated"),
+    CONFIG_USAGE_AUTH_CLEARED => ("info", "config.usage_auth_cleared"),
+    CONFIG_USAGE_AUTH_UPDATED => ("info", "config.usage_auth_updated"),
+    CONFIG_USAGE_BASE_URL_CLEARED => ("info", "config.usage_base_url_cleared"),
+    CONFIG_USAGE_BASE_URL_UPDATED => ("info", "config.usage_base_url_updated"),
+    CONFIG_USAGE_PROXY_POOL_UPDATED => ("info", "config.usage_proxy_pool_updated"),
+    CONFIG_USAGE_TOKEN_CLEARED => ("info", "config.usage_token_cleared"),
+    CONFIG_USAGE_TOKEN_UPDATED => ("info", "config.usage_token_updated"),
+    GATEWAY_LISTEN_PORT_REASSIGNED => ("warning", "gateway.listen_port_reassigned"),
+    GATEWAY_PREVIOUS_RESPONSE_ID_PRESENT => ("debug", "gateway.previous_response_id_present"),
+    GATEWAY_REQUEST_PARSE_ERROR => ("error", "gateway.request_parse_error"),
+    GATEWAY_RETRY_WITHOUT_PREV_ID => ("info", "gateway.retry_without_prev_id"),
+    GATEWAY_RUNTIME_LISTENER_FAILED => ("warning", "gateway.runtime_listener_failed"),
+    GATEWAY_RUNTIME_LISTENER_SKIPPED => ("info", "gateway.runtime_listener_skipped"),
+    GATEWAY_STREAM_FALLBACK_TO_NON_STREAM => ("warning", "gateway.stream_fallback_to_non_stream"),
+    GATEWAY_UPSTREAM_RETRY => ("warning", "gateway.upstream_retry"),
+    HEALTH_PROBE_FAILED => ("error", "health.probe_failed"),
+    HEALTH_PROBE_OK => ("info", "health.probe_ok"),
+    LAN_EDIT_SYNC_APPLIED => ("info", "lan.edit_sync_applied"),
+    LAN_EDIT_SYNC_ENTITY_DOMAIN_MISSING => ("warning", "lan.edit_sync_entity_domain_missing"),
+    LAN_EDIT_SYNC_HINT_IGNORED_UNKNOWN_PEER => ("warning", "lan.edit_sync_hint_ignored_unknown_peer"),
+    LAN_EDIT_SYNC_HTTP_RECOVERED => ("info", "lan.edit_sync_http_recovered"),
+    LAN_EDIT_SYNC_HTTP_FAILED => ("warning", "lan.edit_sync_http_failed"),
+    LAN_EDIT_SYNC_RECORD_FAILED => ("error", "lan.edit_sync_record_failed"),
+    LAN_LEGACY_USAGE_SOURCES_MIGRATED => ("info", "lan.legacy_usage_sources_migrated"),
+    LAN_PAIR_APPROVAL_READY => ("info", "lan.pair.approval_ready"),
+    LAN_PAIR_APPROVED => ("info", "lan.pair.approved"),
+    LAN_PAIR_PIN_ACCEPTED => ("info", "lan.pair.pin_accepted"),
+    LAN_PAIR_PIN_REJECTED_MISMATCH => ("warning", "lan.pair.pin_rejected_mismatch"),
+    LAN_PAIR_PIN_REJECTED_MISSING_APPROVAL => ("warning", "lan.pair.pin_rejected_missing_approval"),
+    LAN_PAIR_PIN_SUBMITTED => ("info", "lan.pair.pin_submitted"),
+    LAN_PAIR_REQUEST_RECEIVED => ("info", "lan.pair.request_received"),
+    LAN_PAIR_REQUEST_SENT => ("info", "lan.pair.request_sent"),
+    LAN_PAIR_TRUST_BUNDLE_APPLIED => ("info", "lan.pair.trust_bundle_applied"),
+    LAN_PAIR_TRUST_BUNDLE_DECRYPT_FAILED => ("error", "lan.pair.trust_bundle_decrypt_failed"),
+    LAN_PAIR_TRUST_BUNDLE_IGNORED_MISSING_PIN => ("warning", "lan.pair.trust_bundle_ignored_missing_pin"),
+    LAN_PROVIDER_DEFINITIONS_SYNC_FAILED => ("warning", "lan.provider_definitions_sync_failed"),
+    LAN_PROVIDER_DEFINITIONS_SYNC_HTTP_RECOVERED => ("info", "lan.provider_definitions_sync_http_recovered"),
+    LAN_QUOTA_REFRESH_FORWARDED_FAILED => ("error", "lan.quota_refresh_forwarded_failed"),
+    LAN_QUOTA_REFRESH_FORWARDED_STARTED => ("info", "lan.quota_refresh_forwarded_started"),
+    LAN_QUOTA_REFRESH_FORWARDED_SUCCEEDED => ("info", "lan.quota_refresh_forwarded_succeeded"),
+    LAN_REMOTE_UPDATE_ACCEPTED => ("warning", "lan.remote_update_accepted"),
+    LAN_REMOTE_UPDATE_FAILED => ("warning", "lan.remote_update_failed"),
+    LAN_REMOTE_UPDATE_PROGRESS => ("warning", "lan.remote_update_progress"),
+    LAN_REMOTE_UPDATE_REQUESTED => ("info", "lan.remote_update_requested"),
+    LAN_REMOTE_UPDATE_SUCCEEDED => ("info", "lan.remote_update_succeeded"),
+    LAN_SHARED_RECOVERY_PROBE_FAILED => ("warning", "lan.shared_recovery_probe_failed"),
+    LAN_SHARED_RECOVERY_PROBE_OK => ("info", "lan.shared_recovery_probe_ok"),
+    LAN_SYNC_CONTRACT_MISMATCH => ("warning", "lan.sync_contract_mismatch"),
+    LAN_SYNC_CONTRACT_RECOVERED => ("info", "lan.sync_contract_recovered"),
+    LAN_USAGE_SYNC_HTTP_RECOVERED => ("info", "lan.usage_sync_http_recovered"),
+    LAN_USAGE_SYNC_HTTP_FAILED => ("warning", "lan.usage_sync_http_failed"),
+    ROUTING_BACK_TO_PREFERRED => ("info", "routing.back_to_preferred"),
+    ROUTING_BALANCED_REASSIGN_ON_HEALTH_RECOVERY => ("info", "routing.balanced_reassign_on_health_recovery"),
+    ROUTING_BALANCED_REASSIGN_ON_REOPEN => ("info", "routing.balanced_reassign_on_reopen"),
+    ROUTING_BALANCED_REASSIGN_ON_SESSION_TOPOLOGY_CHANGE => ("info", "routing.balanced_reassign_on_session_topology_change"),
+    ROUTING_CLOSED_AFTER_FAILURE_USAGE_REFRESH => ("warning", "routing.closed_after_failure_usage_refresh"),
+    ROUTING_MANUAL_OVERRIDE_CHANGED => ("info", "routing.manual_override_changed"),
+    ROUTING_MODEL_MISMATCH => ("warning", "routing.model_mismatch"),
+    ROUTING_ROUTE => ("info", "routing.route"),
+    ROUTING_STREAM => ("info", "routing.stream"),
+    ROUTING_USAGE_REFRESH_UNCONFIRMED_AFTER_FAILURE => ("warning", "routing.usage_refresh_unconfirmed_after_failure"),
+    STREAM_IDLE_TIMEOUT => ("error", "stream.idle_timeout"),
+    STREAM_READ_ERROR => ("error", "stream.read_error"),
+    TEST_PROFILE_BULK_EVENT => ("info", "test_profile.bulk_event"),
+    TEST_PROFILE_MOCK_SEEDED => ("info", "test_profile.mock_seeded"),
+    UPSTREAM_HTTP_ERROR => ("error", "upstream.http_error"),
+    UPSTREAM_REQUEST_ERROR => ("error", "upstream.request_error"),
+    USAGE_REFRESH_FAILED => ("error", "usage.refresh_failed"),
+    USAGE_REFRESH_FORWARDED => ("info", "usage.refresh_forwarded"),
+    USAGE_REFRESH_PARTIAL => ("error", "usage.refresh_partial"),
+    USAGE_REFRESH_RECOVERED => ("info", "usage.refresh_recovered"),
+    USAGE_REFRESH_SHARED_APPLIED => ("info", "usage.refresh_shared_applied"),
+    USAGE_REFRESH_SUCCEEDED => ("info", "usage.refresh_succeeded"),
+    USAGE_REFRESH_SUCCEEDED_SUMMARY => ("info", "usage.refresh_succeeded_summary"),
+    USAGE_SPEND_HISTORY_ENTRY_CLEARED => ("info", "usage.spend_history_entry_cleared"),
+    USAGE_SPEND_HISTORY_ENTRY_UPDATED => ("info", "usage.spend_history_entry_updated"),
+    USAGE_TRACKED_SPEND_HISTORY_ENTRIES_REMOVED => ("warning", "usage.tracked_spend_history_entries_removed"),
+}
+
+impl<'a> EventReporter<'a> {
+    pub fn emit(self, provider: &str, event_code: EventCode, message: &str, fields: Value) {
+        self.emit_at_unix_ms(provider, event_code, message, fields, unix_ms());
+    }
+
+    pub fn emit_at_unix_ms(
+        self,
+        provider: &str,
+        event_code: EventCode,
+        message: &str,
+        fields: Value,
+        unix_ms: u64,
+    ) {
+        self.store.add_event_at_unix_ms(
+            provider,
+            event_code.level(),
+            event_code.code(),
+            message,
+            fields,
+            unix_ms,
+        );
+    }
+}
+
 pub(crate) fn extract_response_model_option(response_obj: &Value) -> Option<String> {
     response_obj
         .get("model")
@@ -168,6 +342,10 @@ pub(crate) fn extract_response_model_option(response_obj: &Value) -> Option<Stri
 }
 
 impl Store {
+    pub fn events(&self) -> EventReporter<'_> {
+        EventReporter { store: self }
+    }
+
     const MAX_DB_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB, best-effort cap via compaction
     const EVENTS_SQLITE_SCHEMA_VERSION: &'static str = "1";
     const EVENTS_SQLITE_MIGRATED_FROM_SLED_KEY: &'static str = "migrated_from_sled_v1";
@@ -1963,7 +2141,7 @@ impl Store {
         Ok(())
     }
 
-    pub(crate) fn add_event_at_unix_ms(
+    fn add_event_at_unix_ms(
         &self,
         provider: &str,
         level: &str,
@@ -2049,10 +2227,6 @@ impl Store {
             return;
         }
         let _ = tx.commit();
-    }
-
-    pub fn add_event(&self, provider: &str, level: &str, code: &str, message: &str, fields: Value) {
-        self.add_event_at_unix_ms(provider, level, code, message, fields, unix_ms());
     }
 
     pub fn record_success(

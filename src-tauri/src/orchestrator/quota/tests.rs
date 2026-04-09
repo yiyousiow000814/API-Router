@@ -719,7 +719,7 @@ mod tests {
         let payload = serde_json::json!({
             "isValid": true,
             "mode": "unrestricted",
-            "planName": "轻享卡 3天",
+            "planName": "è½»äº«å¡ 3å¤©",
             "remaining": 200,
             "subscription": {
                 "daily_limit_usd": 200,
@@ -761,7 +761,7 @@ mod tests {
         let payload = serde_json::json!({
             "isValid": true,
             "mode": "unrestricted",
-            "planName": "季卡 90天",
+            "planName": "å­£å¡ 90å¤©",
             "remaining": 0,
             "subscription": {
                 "daily_limit_usd": 300,

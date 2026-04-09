@@ -404,10 +404,9 @@ fn switch_to_gateway_home_impl(state: &AppState, cli_home: &Path) -> Result<(), 
 
     let base_cfg = read_cfg_base_text(&state.config_path, cli_home)?;
     if let Err(e) = save_switchboard_base_cfg(&state.config_path, cli_home, &base_cfg) {
-        state.gateway.store.add_event(
+        state.gateway.store.events().emit(
             "codex",
-            "error",
-            "codex.provider_switchboard.base_save_failed",
+            crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_BASE_SAVE_FAILED,
             &format!("Provider switchboard base save failed: {e}"),
             json!({
               "cli_home": cli_home.to_string_lossy(),
@@ -416,10 +415,9 @@ fn switch_to_gateway_home_impl(state: &AppState, cli_home: &Path) -> Result<(), 
         );
     }
     if let Err(e) = save_switchboard_base_meta(&state.config_path, cli_home, &base_cfg) {
-        state.gateway.store.add_event(
+        state.gateway.store.events().emit(
             "codex",
-            "error",
-            "codex.provider_switchboard.base_meta_save_failed",
+            crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_BASE_META_SAVE_FAILED,
             &format!("Provider switchboard base meta save failed: {e}"),
             json!({
               "cli_home": cli_home.to_string_lossy(),

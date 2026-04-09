@@ -400,10 +400,9 @@ pub fn toggle_cli_auth_config_swap(
     }
 
     // Emit an event for auditability.
-    state.gateway.store.add_event(
+    state.gateway.store.events().emit(
         "codex",
-        "info",
-        "codex.cli_auth_config_swapped",
+        crate::orchestrator::store::EventCode::CODEX_CLI_AUTH_CONFIG_SWAPPED,
         "Codex CLI auth/config swapped",
         json!({
           "cli_homes": homes.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),

@@ -117,7 +117,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();
 
-        store.add_event("p1", "warning", "test_event", "hello", serde_json::json!({}));
+        store.events().emit(
+            "p1",
+            crate::orchestrator::store::EventCode::ROUTING_MODEL_MISMATCH,
+            "hello",
+            serde_json::json!({}),
+        );
         let rows = store.list_event_daily_counts_range(None, None);
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
@@ -227,17 +232,15 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();
 
-        store.add_event(
+        store.events().emit(
             "p1",
-            "info",
-            "lan.usage_sync_applied",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_APPLIED,
             "first",
             serde_json::json!({}),
         );
-        store.add_event(
+        store.events().emit(
             "p1",
-            "info",
-            "lan.usage_sync_applied",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_APPLIED,
             "second",
             serde_json::json!({}),
         );
@@ -257,31 +260,27 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();
 
-        store.add_event(
+        store.events().emit(
             "gateway",
-            "info",
-            "lan.edit_sync_applied",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_APPLIED,
             "applied 1 synced editable event(s)",
             serde_json::json!({}),
         );
-        store.add_event(
+        store.events().emit(
             "gateway",
-            "info",
-            "lan.edit_sync_applied",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_APPLIED,
             "applied 2 synced editable event(s)",
             serde_json::json!({}),
         );
-        store.add_event(
+        store.events().emit(
             "gateway",
-            "info",
-            "routing.balanced_reassign_on_session_topology_change",
+            crate::orchestrator::store::EventCode::ROUTING_BALANCED_REASSIGN_ON_SESSION_TOPOLOGY_CHANGE,
             "cleared balanced assignments after codex session topology changed",
             serde_json::json!({}),
         );
-        store.add_event(
+        store.events().emit(
             "gateway",
-            "info",
-            "routing.balanced_reassign_on_session_topology_change",
+            crate::orchestrator::store::EventCode::ROUTING_BALANCED_REASSIGN_ON_SESSION_TOPOLOGY_CHANGE,
             "cleared balanced assignments after codex session topology changed",
             serde_json::json!({}),
         );
@@ -306,17 +305,15 @@ mod tests {
             "peer_node_id": "node-remote",
         });
 
-        store.add_event(
+        store.events().emit(
             "gateway",
-            "warning",
-            "lan.edit_sync_http_failed",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_HTTP_FAILED,
             message,
             fields.clone(),
         );
-        store.add_event(
+        store.events().emit(
             "gateway",
-            "warning",
-            "lan.edit_sync_http_failed",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_HTTP_FAILED,
             message,
             fields,
         );
@@ -340,17 +337,15 @@ mod tests {
             "active_page": "dashboard",
         });
 
-        store.add_event(
+        store.events().emit(
             "gateway",
-            "warning",
-            "app.ui_invoke_error",
+            crate::orchestrator::store::EventCode::APP_UI_INVOKE_ERROR,
             "ui invoke failed: get_status",
             fields.clone(),
         );
-        store.add_event(
+        store.events().emit(
             "gateway",
-            "warning",
-            "app.ui_invoke_error",
+            crate::orchestrator::store::EventCode::APP_UI_INVOKE_ERROR,
             "ui invoke failed: get_status",
             fields,
         );

@@ -164,7 +164,7 @@ fn normalize_preview_text(raw: &str) -> Option<String> {
     }
     let mut out = trimmed.to_string();
     if out.chars().count() > 120 {
-        out = out.chars().take(119).collect::<String>() + "…";
+        out = out.chars().take(119).collect::<String>() + "â€¦";
     }
     Some(out)
 }
@@ -602,7 +602,7 @@ def normalize_preview_text(raw):
     text = " ".join(str(raw).split()).strip()
     if not text:
         return None
-    return text[:119] + "…" if len(text) > 120 else text
+    return text[:119] + "â€¦" if len(text) > 120 else text
 
 def is_auxiliary_instruction_text(raw):
     text = str(raw).strip().lower()
@@ -1482,14 +1482,14 @@ mod tests {
             concat!(
                 "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-1\",\"cwd\":\"/repo\"}}\n",
                 "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"# AGENTS.md instructions for /repo\"}]}}\n",
-                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"昨天的问题\"}]}}\n",
-                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"最新的问题\"}]}}\n"
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"æ˜¨å¤©çš„é—®é¢˜\"}]}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"æœ€æ–°çš„é—®é¢˜\"}]}}\n"
             ),
         )
         .expect("write session");
 
         let scan = scan_session_file(&session_path).expect("scan session");
-        assert_eq!(scan.preview.as_deref(), Some("昨天的问题"));
+        assert_eq!(scan.preview.as_deref(), Some("æ˜¨å¤©çš„é—®é¢˜"));
         assert_eq!(scan.filter_reason, None);
     }
 
@@ -1626,13 +1626,13 @@ mod tests {
                 "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-1\",\"cwd\":\"/repo\"}}\n",
                 "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<user_action> <context>User initiated a review task.\"}]}}\n",
                 "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Use the shell to run rg -n command failed\"}]}}\n",
-                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"真正的用户问题\"}]}}\n"
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"çœŸæ­£çš„ç”¨æˆ·é—®é¢˜\"}]}}\n"
             ),
         )
         .expect("write session");
 
         let scan = scan_session_file(&session_path).expect("scan session");
-        assert_eq!(scan.preview.as_deref(), Some("真正的用户问题"));
+        assert_eq!(scan.preview.as_deref(), Some("çœŸæ­£çš„ç”¨æˆ·é—®é¢˜"));
         assert_eq!(scan.filter_reason, None);
     }
 

@@ -969,10 +969,9 @@ fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnap
             } else {
                 format!("usage refresh recovered via {source}")
             };
-            st.store.add_event(
+            st.store.events().emit(
                 provider_name,
-                "info",
-                "usage.refresh_recovered",
+                crate::orchestrator::store::EventCode::USAGE_REFRESH_RECOVERED,
                 &message,
                 serde_json::json!({
                     "source": snapshot_to_store.effective_usage_source,
@@ -992,10 +991,9 @@ fn store_quota_snapshot(st: &GatewayState, provider_name: &str, snap: &QuotaSnap
             return;
         }
         let err = snap.last_error.chars().take(300).collect::<String>();
-        st.store.add_event(
+        st.store.events().emit(
             provider_name,
-            "error",
-            "usage.refresh_failed",
+            crate::orchestrator::store::EventCode::USAGE_REFRESH_FAILED,
             &format!("usage refresh failed: {err}"),
             Value::Null,
         );
@@ -1047,10 +1045,9 @@ pub(crate) fn apply_remote_quota_snapshot(
     track_budget_spend(st, provider_name, &snapshot_to_store);
     if let Some(remote_node_name) = applied_from_node_name.filter(|value| !value.trim().is_empty())
     {
-        st.store.add_event(
+        st.store.events().emit(
             provider_name,
-            "info",
-            "usage.refresh_shared_applied",
+            crate::orchestrator::store::EventCode::USAGE_REFRESH_SHARED_APPLIED,
             &format!("Shared usage update applied from {remote_node_name}"),
             serde_json::json!({
                 "provider": provider_name,

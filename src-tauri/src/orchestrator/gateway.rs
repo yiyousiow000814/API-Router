@@ -144,10 +144,9 @@ fn maybe_record_model_mismatch(
     if !model_mismatch_should_log_transition(provider_name, session_key, req, resp) {
         return;
     }
-    st.store.add_event(
+    st.store.events().emit(
         provider_name,
-        "warning",
-        "routing.model_mismatch",
+        crate::orchestrator::store::EventCode::ROUTING_MODEL_MISMATCH,
         &format!("requested model {req}, upstream returned {resp}"),
         json!({
             "requested_model": req,
@@ -297,10 +296,9 @@ where
                 let msg = msg.chars().take(500).collect::<String>();
                 let resp = rej.into_response();
                 let code = resp.status().as_u16();
-                state.store.add_event(
+                state.store.events().emit(
                     "gateway",
-                    "error",
-                    "gateway.request_parse_error",
+                    crate::orchestrator::store::EventCode::GATEWAY_REQUEST_PARSE_ERROR,
                     &format!("{code} {method} {path}: {msg}"),
                     json!({ "http_status": code, "method": method, "path": path }),
                 );
@@ -373,10 +371,9 @@ async fn refresh_usage_once_after_first_failure(
             st.router
                 .clear_usage_confirmation_requirement(provider_name);
         } else {
-            st.store.add_event(
+            st.store.events().emit(
                 provider_name,
-                "warning",
-                "routing.usage_refresh_unconfirmed_after_failure",
+                crate::orchestrator::store::EventCode::ROUTING_USAGE_REFRESH_UNCONFIRMED_AFTER_FAILURE,
                 "usage refresh failed after first failure; provider kept out of routing until confirmation",
                 json!({ "error": snap.last_error }),
             );
@@ -395,10 +392,9 @@ async fn refresh_usage_once_after_first_failure(
         provider_name,
         &hard_cap,
     ) {
-        st.store.add_event(
+        st.store.events().emit(
             provider_name,
-            "warning",
-            "routing.closed_after_failure_usage_refresh",
+            crate::orchestrator::store::EventCode::ROUTING_CLOSED_AFTER_FAILURE_USAGE_REFRESH,
             "provider quota exhausted after first-failure usage refresh",
             Value::Null,
         );
@@ -449,10 +445,9 @@ fn log_upstream_retry_event(
     let cfg = st.cfg.read().clone();
     st.router
         .mark_transient_warning(provider_name, &cfg, detail, unix_ms());
-    st.store.add_event(
+    st.store.events().emit(
         provider_name,
-        "warning",
-        "gateway.upstream_retry",
+        crate::orchestrator::store::EventCode::GATEWAY_UPSTREAM_RETRY,
         detail,
         json!({
             "kind": kind,
@@ -797,10 +792,9 @@ pub(crate) fn ensure_runtime_gateway_listener_bindings(
                     Some(addr),
                     Some(&err.to_string()),
                 );
-                state_for_addr.store.add_event(
+                state_for_addr.store.events().emit(
                     "gateway",
-                    "warning",
-                    "gateway.runtime_listener_failed",
+                    crate::orchestrator::store::EventCode::GATEWAY_RUNTIME_LISTENER_FAILED,
                     &format!("runtime gateway listener exited on {addr}: {err}"),
                     json!({ "listen_addr": addr.to_string() }),
                 );
@@ -820,10 +814,9 @@ trait GatewayRuntimeListenerEventExt {
 impl GatewayRuntimeListenerEventExt for GatewayState {
     fn gateway_event_optional_overlay_bind_skip(&self, addr: SocketAddr, detail: &str) {
         write_gateway_startup_diag("runtime_listener_skipped", Some(addr), Some(detail));
-        self.store.add_event(
+        self.store.events().emit(
             "gateway",
-            "info",
-            "gateway.runtime_listener_skipped",
+            crate::orchestrator::store::EventCode::GATEWAY_RUNTIME_LISTENER_SKIPPED,
             &format!("Skipped runtime gateway listener bind for {addr}: {detail}"),
             json!({ "listen_addr": addr.to_string(), "detail": detail }),
         );
@@ -1045,10 +1038,9 @@ async fn responses(
 
     if has_prev {
         let summary = summarize_input_for_debug(&input);
-        st.store.add_event(
+        st.store.events().emit(
             "gateway",
-            "debug",
-            "gateway.previous_response_id_present",
+            crate::orchestrator::store::EventCode::GATEWAY_PREVIOUS_RESPONSE_ID_PRESENT,
             &format!("previous_response_id present (tools={input_has_tools}); input={summary}"),
             json!({ "tools": input_has_tools }),
         );
@@ -1208,10 +1200,9 @@ async fn responses(
                                 preferred,
                                 is_first_attempt,
                             ) {
-                                st.store.add_event(
+                                st.store.events().emit(
                                     &provider_name,
-                                    "info",
-                                    "routing.stream",
+                                    crate::orchestrator::store::EventCode::ROUTING_STREAM,
                                     &format!("Streaming via {provider_name} ({reason})"),
                                     json!({
                                         "provider": provider_name,
@@ -1226,10 +1217,9 @@ async fn responses(
                                 &provider_name,
                                 preferred,
                             ) {
-                                st.store.add_event(
+                                st.store.events().emit(
                                     &provider_name,
-                                    "info",
-                                    "routing.back_to_preferred",
+                                    crate::orchestrator::store::EventCode::ROUTING_BACK_TO_PREFERRED,
                                     &format!(
                                         "Back to preferred: {provider_name} (from {})",
                                         prev.as_ref()
@@ -1269,10 +1259,9 @@ async fn responses(
                                 st.prev_id_support_cache
                                     .write()
                                     .insert(provider_name.clone(), false);
-                                st.store.add_event(
+                                st.store.events().emit(
                                     &provider_name,
-                                    "info",
-                                    "gateway.retry_without_prev_id",
+                                    crate::orchestrator::store::EventCode::GATEWAY_RETRY_WITHOUT_PREV_ID,
                                     "retrying without previous_response_id",
                                     Value::Null,
                                 );
@@ -1305,10 +1294,9 @@ async fn responses(
                                 last_err = format!(
                                     "upstream {provider_name} returned {code} (responses stream): {txt}"
                                 );
-                                st.store.add_event(
+                                st.store.events().emit(
                                     &provider_name,
-                                    "warning",
-                                    "gateway.stream_fallback_to_non_stream",
+                                    crate::orchestrator::store::EventCode::GATEWAY_STREAM_FALLBACK_TO_NON_STREAM,
                                     "streaming failed; retrying once with non-stream responses",
                                     json!({
                                         "http_status": code,
@@ -1329,10 +1317,9 @@ async fn responses(
                             );
                             st.router
                                 .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
-                            st.store.add_event(
+                            st.store.events().emit(
                                 &provider_name,
-                                "error",
-                                "upstream.http_error",
+                                crate::orchestrator::store::EventCode::UPSTREAM_HTTP_ERROR,
                                 &last_err,
                                 json!({
                                     "http_status": code,
@@ -1374,10 +1361,9 @@ async fn responses(
                                 last_err = format!(
                                     "upstream {provider_name} error (responses stream): {e}"
                                 );
-                                st.store.add_event(
+                                st.store.events().emit(
                                     &provider_name,
-                                    "warning",
-                                    "gateway.stream_fallback_to_non_stream",
+                                    crate::orchestrator::store::EventCode::GATEWAY_STREAM_FALLBACK_TO_NON_STREAM,
                                     "streaming request failed; retrying once with non-stream responses",
                                     json!({ "endpoint": "/v1/responses", "stream": true }),
                                 );
@@ -1393,10 +1379,9 @@ async fn responses(
                                 format!("upstream {provider_name} error (responses stream): {e}");
                             st.router
                                 .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
-                            st.store.add_event(
+                            st.store.events().emit(
                                 &provider_name,
-                                "error",
-                                "upstream.request_error",
+                                crate::orchestrator::store::EventCode::UPSTREAM_REQUEST_ERROR,
                                 &last_err,
                                 json!({ "endpoint": "/v1/responses", "stream": true }),
                             );
@@ -1535,10 +1520,9 @@ async fn responses(
                         preferred,
                         is_first_attempt,
                     ) {
-                        st.store.add_event(
+                        st.store.events().emit(
                             &provider_name,
-                            "info",
-                            "routing.route",
+                            crate::orchestrator::store::EventCode::ROUTING_ROUTE,
                             &format!("Routed via {provider_name} ({reason})"),
                             json!({
                                 "provider": provider_name,
@@ -1553,10 +1537,9 @@ async fn responses(
                         &provider_name,
                         preferred,
                     ) {
-                        st.store.add_event(
+                        st.store.events().emit(
                             &provider_name,
-                            "info",
-                            "routing.back_to_preferred",
+                            crate::orchestrator::store::EventCode::ROUTING_BACK_TO_PREFERRED,
                             &format!(
                                 "Back to preferred: {provider_name} (from {})",
                                 prev.as_ref()
@@ -1589,10 +1572,9 @@ async fn responses(
                         st.prev_id_support_cache
                             .write()
                             .insert(provider_name.clone(), false);
-                        st.store.add_event(
+                        st.store.events().emit(
                             &provider_name,
-                            "info",
-                            "gateway.retry_without_prev_id",
+                            crate::orchestrator::store::EventCode::GATEWAY_RETRY_WITHOUT_PREV_ID,
                             "retrying without previous_response_id",
                             Value::Null,
                         );
@@ -1602,10 +1584,9 @@ async fn responses(
                     st.router
                         .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
                     st.store.record_failure(&provider_name);
-                    st.store.add_event(
+                    st.store.events().emit(
                         &provider_name,
-                        "error",
-                        "upstream.http_error",
+                        crate::orchestrator::store::EventCode::UPSTREAM_HTTP_ERROR,
                         &last_err,
                         json!({ "http_status": code, "endpoint": "/v1/responses", "stream": false }),
                     );
@@ -1622,10 +1603,9 @@ async fn responses(
                     st.router
                         .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
                     st.store.record_failure(&provider_name);
-                    st.store.add_event(
+                    st.store.events().emit(
                         &provider_name,
-                        "error",
-                        "upstream.request_error",
+                        crate::orchestrator::store::EventCode::UPSTREAM_REQUEST_ERROR,
                         &last_err,
                         json!({ "endpoint": "/v1/responses", "stream": false }),
                     );

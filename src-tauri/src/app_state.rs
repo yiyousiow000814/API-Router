@@ -282,10 +282,9 @@ impl UiWatchdogState {
                 "visible": page.visible,
             }),
         );
-        runtime.store.add_event_at_unix_ms(
+        runtime.store.events().emit_at_unix_ms(
             "gateway",
-            "warning",
-            "app.ui_frame_stall",
+            crate::orchestrator::store::EventCode::APP_UI_FRAME_STALL,
             &format!("ui frame stalled for {elapsed_ms}ms"),
             serde_json::json!({
                 "elapsed_ms": elapsed_ms,
@@ -330,10 +329,9 @@ impl UiWatchdogState {
                 "visible": page.visible,
             }),
         );
-        runtime.store.add_event_at_unix_ms(
+        runtime.store.events().emit_at_unix_ms(
             "gateway",
-            "warning",
-            "app.ui_frontend_error",
+            crate::orchestrator::store::EventCode::APP_UI_FRONTEND_ERROR,
             &format!("frontend runtime {kind}: {}", message.trim()),
             serde_json::json!({
                 "kind": kind.trim(),
@@ -385,10 +383,9 @@ impl UiWatchdogState {
         );
 
         if !ok {
-            runtime.store.add_event_at_unix_ms(
+            runtime.store.events().emit_at_unix_ms(
                 "gateway",
-                "warning",
-                "app.ui_invoke_error",
+                crate::orchestrator::store::EventCode::APP_UI_INVOKE_ERROR,
                 &format!("ui invoke failed: {command}"),
                 serde_json::json!({
                     "command": command,
@@ -451,10 +448,9 @@ impl UiWatchdogState {
             }
             snapshot.unresponsive_logged = true;
             snapshot.unresponsive_since_unix_ms = last_heartbeat;
-            store.add_event(
+            store.events().emit(
                 "gateway",
-                "warning",
-                "app.ui_unresponsive",
+                crate::orchestrator::store::EventCode::APP_UI_UNRESPONSIVE,
                 "ui heartbeat stalled",
                 serde_json::json!({
                     "heartbeat_age_ms": heartbeat_age_ms,
@@ -474,10 +470,9 @@ impl UiWatchdogState {
         let stalled_for_ms = now_unix_ms.saturating_sub(snapshot.unresponsive_since_unix_ms);
         snapshot.unresponsive_logged = false;
         snapshot.unresponsive_since_unix_ms = 0;
-        store.add_event(
+        store.events().emit(
             "gateway",
-            "info",
-            "app.ui_recovered",
+            crate::orchestrator::store::EventCode::APP_UI_RECOVERED,
             "ui heartbeat recovered",
             serde_json::json!({
                 "stalled_for_ms": stalled_for_ms,
@@ -492,20 +487,18 @@ pub fn run_startup_gateway_token_sync(state: &AppState) {
     match crate::provider_switchboard::sync_gateway_target_for_current_token_on_startup(state) {
         Ok(failed_targets) => {
             if !failed_targets.is_empty() {
-                state.gateway.store.add_event(
+                state.gateway.store.events().emit(
                     "gateway",
-                    "error",
-                    "codex.provider_switchboard.gateway_token_sync_failed",
+                    crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_GATEWAY_TOKEN_SYNC_FAILED,
                     "Gateway token sync at startup failed for some targets.",
                     serde_json::json!({ "failed_targets": failed_targets }),
                 );
             }
         }
         Err(e) => {
-            state.gateway.store.add_event(
+            state.gateway.store.events().emit(
                 "gateway",
-                "error",
-                "codex.provider_switchboard.gateway_token_sync_failed",
+                crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_GATEWAY_TOKEN_SYNC_FAILED,
                 &format!("Gateway token sync at startup failed: {e}"),
                 serde_json::Value::Null,
             );
@@ -605,18 +598,16 @@ pub fn disable_expired_package_providers(state: &AppState) -> Vec<String> {
             provider_name,
             serde_json::json!({ "disabled": true }),
         ) {
-            state.gateway.store.add_event(
+            state.gateway.store.events().emit(
                 provider_name,
-                "error",
-                "lan.edit_sync_record_failed",
+                crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
                 &format!("failed to record expired provider disable for LAN sync: {err}"),
                 serde_json::Value::Null,
             );
         }
-        state.gateway.store.add_event(
+        state.gateway.store.events().emit(
             provider_name,
-            "warning",
-            "config.provider_disabled_after_package_expiry",
+            crate::orchestrator::store::EventCode::CONFIG_PROVIDER_DISABLED_AFTER_PACKAGE_EXPIRY,
             "provider disabled automatically after package expiry",
             serde_json::json!({ "expired_at_unix_ms": now }),
         );

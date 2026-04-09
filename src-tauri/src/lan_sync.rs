@@ -1221,10 +1221,9 @@ impl LanSyncRuntime {
                 sent_at_unix_ms: now,
             }),
         )?;
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "info",
-            "lan.pair.request_sent",
+            crate::orchestrator::store::EventCode::LAN_PAIR_REQUEST_SENT,
             "sent LAN pair request",
             serde_json::json!({
                 "peer_node_id": normalized,
@@ -1272,10 +1271,9 @@ impl LanSyncRuntime {
                 sent_at_unix_ms: now,
             }),
         )?;
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "info",
-            "lan.pair.approved",
+            crate::orchestrator::store::EventCode::LAN_PAIR_APPROVED,
             "approved LAN pair request and generated PIN",
             serde_json::json!({
                 "request_id": normalized,
@@ -1334,10 +1332,9 @@ impl LanSyncRuntime {
                 sent_at_unix_ms: now,
             }),
         )?;
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "info",
-            "lan.pair.pin_submitted",
+            crate::orchestrator::store::EventCode::LAN_PAIR_PIN_SUBMITTED,
             "submitted LAN pairing PIN",
             serde_json::json!({
                 "peer_node_id": normalized_node_id,
@@ -3525,10 +3522,9 @@ fn handle_pair_request(
             requester_addr: SocketAddr::new(source.ip(), LAN_DISCOVERY_PORT),
         },
     );
-    gateway.store.add_event(
+    gateway.store.events().emit(
         "gateway",
-        "info",
-        "lan.pair.request_received",
+        crate::orchestrator::store::EventCode::LAN_PAIR_REQUEST_RECEIVED,
         "received LAN pair request",
         serde_json::json!({
             "request_id": packet.request_id,
@@ -3556,10 +3552,9 @@ fn handle_pair_approval_ready(
         return;
     }
     request.approval_ready = true;
-    gateway.store.add_event(
+    gateway.store.events().emit(
         "gateway",
-        "info",
-        "lan.pair.approval_ready",
+        crate::orchestrator::store::EventCode::LAN_PAIR_APPROVAL_READY,
         "remote LAN pair approval is ready for PIN entry",
         serde_json::json!({
             "request_id": packet.request_id,
@@ -3585,10 +3580,9 @@ fn handle_pair_pin_submit(
         .get(packet.request_id.as_str())
         .cloned()
     else {
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "warning",
-            "lan.pair.pin_rejected_missing_approval",
+            crate::orchestrator::store::EventCode::LAN_PAIR_PIN_REJECTED_MISSING_APPROVAL,
             "rejected LAN pairing PIN because no approval state exists",
             serde_json::json!({
                 "request_id": packet.request_id,
@@ -3600,10 +3594,9 @@ fn handle_pair_pin_submit(
     if approval.requester_node_id != normalized_node_id
         || approval.pin_code != packet.pin_code.trim()
     {
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "warning",
-            "lan.pair.pin_rejected_mismatch",
+            crate::orchestrator::store::EventCode::LAN_PAIR_PIN_REJECTED_MISMATCH,
             "rejected LAN pairing PIN due to request or PIN mismatch",
             serde_json::json!({
                 "request_id": packet.request_id,
@@ -3640,10 +3633,9 @@ fn handle_pair_pin_submit(
         .pair_approvals
         .write()
         .remove(packet.request_id.as_str());
-    gateway.store.add_event(
+    gateway.store.events().emit(
         "gateway",
-        "info",
-        "lan.pair.pin_accepted",
+        crate::orchestrator::store::EventCode::LAN_PAIR_PIN_ACCEPTED,
         "accepted LAN pairing PIN and sent trust bundle",
         serde_json::json!({
             "request_id": packet.request_id,
@@ -3673,10 +3665,9 @@ fn handle_pair_trust_bundle(
         .write()
         .remove(packet.request_id.as_str())
     else {
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "warning",
-            "lan.pair.trust_bundle_ignored_missing_pin",
+            crate::orchestrator::store::EventCode::LAN_PAIR_TRUST_BUNDLE_IGNORED_MISSING_PIN,
             "ignored LAN trust bundle because no pending PIN exists",
             serde_json::json!({
                 "request_id": packet.request_id,
@@ -3691,10 +3682,9 @@ fn handle_pair_trust_bundle(
         &packet.nonce_b64,
         &packet.ciphertext_b64,
     ) else {
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "warning",
-            "lan.pair.trust_bundle_decrypt_failed",
+            crate::orchestrator::store::EventCode::LAN_PAIR_TRUST_BUNDLE_DECRYPT_FAILED,
             "failed to decrypt LAN trust bundle with submitted PIN",
             serde_json::json!({
                 "request_id": packet.request_id,
@@ -3724,10 +3714,9 @@ fn handle_pair_trust_bundle(
         .outbound_pair_requests
         .write()
         .remove(packet.node_id.as_str());
-    gateway.store.add_event(
+    gateway.store.events().emit(
         "gateway",
-        "info",
-        "lan.pair.trust_bundle_applied",
+        crate::orchestrator::store::EventCode::LAN_PAIR_TRUST_BUNDLE_APPLIED,
         "applied LAN trust bundle and trusted peer",
         serde_json::json!({
             "request_id": packet.request_id,
@@ -3764,14 +3753,13 @@ fn lan_http_sync_failure_key(peer_node_id: &str, route: &str) -> String {
 
 fn emit_http_sync_recovered_event(
     gateway: &crate::orchestrator::gateway::GatewayState,
-    code: &str,
+    event_code: crate::orchestrator::store::EventCode,
     message: &str,
     recovered: &LanHttpSyncProbeSnapshot,
 ) {
-    gateway.store.add_event(
+    gateway.store.events().emit(
         "gateway",
-        "info",
-        code,
+        event_code,
         message,
         serde_json::json!({
             "peer_node_id": recovered.peer_node_id,
@@ -4005,10 +3993,9 @@ fn ensure_peer_sync_contract(
     let key = format!("{}:{domain}", peer.node_id);
     let Some(reason) = sync_contract_mismatch_reason(peer, domain) else {
         if reported.remove(&key).is_some() {
-            gateway.store.add_event(
+            gateway.store.events().emit(
                 "gateway",
-                "info",
-                "lan.sync_contract_recovered",
+                crate::orchestrator::store::EventCode::LAN_SYNC_CONTRACT_RECOVERED,
                 &format!(
                     "LAN {domain} sync with {} is compatible again and has resumed",
                     peer.node_name
@@ -4025,10 +4012,9 @@ fn ensure_peer_sync_contract(
         return true;
     };
     if reported.get(&key) != Some(&reason) {
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "warning",
-            "lan.sync_contract_mismatch",
+            crate::orchestrator::store::EventCode::LAN_SYNC_CONTRACT_MISMATCH,
             &reason,
             serde_json::json!({
                 "peer_node_id": peer.node_id,
@@ -4205,7 +4191,7 @@ async fn fetch_usage_sync_batch_http(
     {
         emit_http_sync_recovered_event(
             gateway,
-            "lan.usage_sync_http_recovered",
+            crate::orchestrator::store::EventCode::LAN_USAGE_SYNC_HTTP_RECOVERED,
             "LAN usage sync request recovered",
             &recovered,
         );
@@ -4286,7 +4272,7 @@ async fn fetch_edit_sync_batch_http(
     {
         emit_http_sync_recovered_event(
             gateway,
-            "lan.edit_sync_http_recovered",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_HTTP_RECOVERED,
             "LAN edit sync request recovered",
             &recovered,
         );
@@ -4355,7 +4341,7 @@ async fn fetch_provider_definitions_http(
     {
         emit_http_sync_recovered_event(
             gateway,
-            "lan.provider_definitions_sync_http_recovered",
+            crate::orchestrator::store::EventCode::LAN_PROVIDER_DEFINITIONS_SYNC_HTTP_RECOVERED,
             "LAN provider definitions sync request recovered",
             &recovered,
         );
@@ -4421,10 +4407,9 @@ fn handle_quota_refresh_request(
     let gateway = gateway.clone();
     let runtime = runtime.clone();
     tauri::async_runtime::spawn(async move {
-        gateway.store.add_event(
+        gateway.store.events().emit(
             &provider_name,
-            "info",
-            "lan.quota_refresh_forwarded_started",
+            crate::orchestrator::store::EventCode::LAN_QUOTA_REFRESH_FORWARDED_STARTED,
             &format!("Shared usage refresh received from {}", requester_node_name),
             serde_json::json!({
                 "provider": provider_name,
@@ -4435,10 +4420,9 @@ fn handle_quota_refresh_request(
         match crate::orchestrator::quota::refresh_quota_shared(&gateway, &runtime, &provider_name)
             .await
         {
-            Ok(group) => gateway.store.add_event(
+            Ok(group) => gateway.store.events().emit(
                 &provider_name,
-                "info",
-                "lan.quota_refresh_forwarded_succeeded",
+                crate::orchestrator::store::EventCode::LAN_QUOTA_REFRESH_FORWARDED_SUCCEEDED,
                 &format!("Shared usage refresh completed for {}", requester_node_name),
                 serde_json::json!({
                     "provider": provider_name,
@@ -4447,10 +4431,9 @@ fn handle_quota_refresh_request(
                     "requester_node_name": requester_node_name,
                 }),
             ),
-            Err(err) => gateway.store.add_event(
+            Err(err) => gateway.store.events().emit(
                 &provider_name,
-                "warning",
-                "lan.quota_refresh_forwarded_failed",
+                crate::orchestrator::store::EventCode::LAN_QUOTA_REFRESH_FORWARDED_FAILED,
                 &format!(
                     "Shared usage refresh failed for {}: {err}",
                     requester_node_name
@@ -4484,10 +4467,9 @@ fn handle_edit_sync_hint(
         .live_peer_by_node_id(sender_node_id)
         .or_else(|| runtime.recent_peer_by_node_id(sender_node_id, LAN_PEER_HTTP_GRACE_AFTER_MS))
     else {
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "debug",
-            "lan.edit_sync_hint_ignored_unknown_peer",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_HINT_IGNORED_UNKNOWN_PEER,
             "ignored LAN edit sync hint because the sender has no live or recent peer snapshot",
             serde_json::json!({
                 "peer_node_id": sender_node_id,
@@ -4529,10 +4511,9 @@ fn apply_edit_sync_batch(
     let mut applied = 0usize;
     for event in &packet.events {
         let Some(domain) = lan_edit_entity_sync_domain(&event.entity_type) else {
-            gateway.store.add_event(
+            gateway.store.events().emit(
                 "gateway",
-                "warning",
-                "lan.edit_sync_entity_domain_missing",
+                crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_ENTITY_DOMAIN_MISSING,
                 &format!(
                     "Rejected LAN edit sync entity {} from {} because it is not mapped to a sync domain",
                     event.entity_type, peer.node_name
@@ -4570,10 +4551,9 @@ fn apply_edit_sync_batch(
         );
     }
     if applied > 0 {
-        gateway.store.add_event(
+        gateway.store.events().emit(
             "gateway",
-            "info",
-            "lan.edit_sync_applied",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_APPLIED,
             &format!("applied {applied} synced editable event(s)"),
             serde_json::json!({
                 "source_node_id": packet.node_id,
@@ -4613,10 +4593,9 @@ fn run_usage_sync_loop(
                 )) {
                     Ok(batch) => batch,
                     Err(err) => {
-                        gateway.store.add_event(
+                        gateway.store.events().emit(
                             "gateway",
-                            "warning",
-                            "lan.usage_sync_http_failed",
+                            crate::orchestrator::store::EventCode::LAN_USAGE_SYNC_HTTP_FAILED,
                             &err,
                             serde_json::json!({
                                 "peer_node_id": peer.node_id,
@@ -4690,10 +4669,9 @@ fn run_edit_sync_loop(
                                 .insert(peer.node_id.clone(), applied_revision);
                         }
                         Err(err) => {
-                            gateway.store.add_event(
+                            gateway.store.events().emit(
                                 "gateway",
-                                "warning",
-                                "lan.provider_definitions_sync_failed",
+                                crate::orchestrator::store::EventCode::LAN_PROVIDER_DEFINITIONS_SYNC_FAILED,
                                 &err,
                                 serde_json::json!({
                                     "peer_node_id": peer.node_id,
@@ -4718,10 +4696,9 @@ fn run_edit_sync_loop(
                 &peer,
                 &mut reported_sync_blocks,
             ) {
-                gateway.store.add_event(
+                gateway.store.events().emit(
                     "gateway",
-                    "warning",
-                    "lan.edit_sync_http_failed",
+                    crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_HTTP_FAILED,
                     &err,
                     serde_json::json!({
                         "peer_node_id": peer.node_id,
@@ -4891,10 +4868,9 @@ fn run_single_owner_recovery_probe(
     match result {
         Ok((status, _payload)) if (200..300).contains(&status) => {
             let _ = gateway.router.mark_success(provider_name, now);
-            gateway.store.add_event(
+            gateway.store.events().emit(
                 provider_name,
-                "info",
-                "lan.shared_recovery_probe_ok",
+                crate::orchestrator::store::EventCode::LAN_SHARED_RECOVERY_PROBE_OK,
                 "shared cooldown recovery probe succeeded",
                 serde_json::json!({ "owner_node": "local" }),
             );
@@ -4902,10 +4878,9 @@ fn run_single_owner_recovery_probe(
         Ok((status, _payload)) => {
             let err = format!("shared recovery probe failed: http {status}");
             let _ = gateway.router.mark_failure(provider_name, cfg, &err, now);
-            gateway.store.add_event(
+            gateway.store.events().emit(
                 provider_name,
-                "warning",
-                "lan.shared_recovery_probe_failed",
+                crate::orchestrator::store::EventCode::LAN_SHARED_RECOVERY_PROBE_FAILED,
                 &err,
                 serde_json::json!({ "owner_node": "local", "http_status": status }),
             );
@@ -4915,10 +4890,9 @@ fn run_single_owner_recovery_probe(
             let _ = gateway
                 .router
                 .mark_failure(provider_name, cfg, &detail, now);
-            gateway.store.add_event(
+            gateway.store.events().emit(
                 provider_name,
-                "warning",
-                "lan.shared_recovery_probe_failed",
+                crate::orchestrator::store::EventCode::LAN_SHARED_RECOVERY_PROBE_FAILED,
                 &detail,
                 serde_json::json!({ "owner_node": "local" }),
             );
@@ -8198,10 +8172,9 @@ mod tests {
                     "day_started_at_unix_ms": 1774976280809u64
                 }),
             });
-        state.gateway.store.add_event(
+        state.gateway.store.events().emit(
             "provider_1",
-            "warning",
-            "usage.tracked_spend_history_entries_removed",
+            crate::orchestrator::store::EventCode::USAGE_TRACKED_SPEND_HISTORY_ENTRIES_REMOVED,
             "tracked spend history entries removed",
             serde_json::json!({
                 "day_key": expected_day_key,

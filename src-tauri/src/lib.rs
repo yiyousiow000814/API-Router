@@ -397,10 +397,9 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
         } else {
             "official"
         };
-        state.gateway.store.add_event(
+        state.gateway.store.events().emit(
             provider,
-            "info",
-            "test_profile.bulk_event",
+            crate::orchestrator::store::EventCode::TEST_PROFILE_BULK_EVENT,
             &format!("test profile bulk event #{i}"),
             json!({
                 "seed": true,
@@ -410,10 +409,9 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
         );
     }
 
-    state.gateway.store.add_event(
+    state.gateway.store.events().emit(
         "gateway",
-        "info",
-        "test_profile.mock_seeded",
+        crate::orchestrator::store::EventCode::TEST_PROFILE_MOCK_SEEDED,
         "test profile mock data seeded",
         json!({
             "providers": ["provider_1", "provider_2"],
@@ -559,10 +557,9 @@ pub fn run() {
                         .migrate_legacy_remote_usage_sources_if_needed(&local_node.node_id)
                     {
                         if migrated_spend_days > 0 || migrated_manual_days > 0 {
-                            st.gateway.store.add_event(
+                            st.gateway.store.events().emit(
                                 "gateway",
-                                "info",
-                                "lan.legacy_usage_sources_migrated",
+                                crate::orchestrator::store::EventCode::LAN_LEGACY_USAGE_SOURCES_MIGRATED,
                                 "Migrated legacy LAN usage history into source-scoped remote storage",
                                 serde_json::json!({
                                     "migrated_spend_days": migrated_spend_days,
