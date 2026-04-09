@@ -1122,6 +1122,49 @@ impl Store {
         )
     }
 
+    fn event_spam_dedup_window_ms(level: &str, code: &str) -> Option<u64> {
+        if !level.trim().eq_ignore_ascii_case("warning") {
+            return None;
+        }
+        match code.trim() {
+            "lan.edit_sync_http_failed"
+            | "lan.usage_sync_http_failed"
+            | "lan.provider_definitions_sync_failed"
+            | "lan.shared_recovery_probe_failed" => Some(30_000),
+            _ => None,
+        }
+    }
+
+    fn has_recent_duplicate_event(
+        tx: &rusqlite::Transaction<'_>,
+        provider: &str,
+        level: &str,
+        code: &str,
+        message: &str,
+        fields_json: &str,
+        ts_i64: i64,
+    ) -> rusqlite::Result<bool> {
+        let Some(window_ms) = Self::event_spam_dedup_window_ms(level, code) else {
+            return Ok(false);
+        };
+        let cutoff = ts_i64.saturating_sub(i64::try_from(window_ms).unwrap_or(i64::MAX));
+        tx.query_row(
+            "SELECT 1
+             FROM events
+             WHERE provider = ?1
+               AND level = ?2
+               AND code = ?3
+               AND message = ?4
+               AND fields_json = ?5
+               AND unix_ms >= ?6
+             LIMIT 1",
+            params![provider, level, code, message, fields_json, cutoff],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|row| row.is_some())
+    }
+
     fn compressed_daily_event_bucket_key(
         provider: &str,
         code: &str,
@@ -1656,6 +1699,21 @@ impl Store {
         let Ok(tx) = conn.transaction() else {
             return;
         };
+        if matches!(
+            Self::has_recent_duplicate_event(
+                &tx,
+                provider,
+                level,
+                code,
+                message,
+                &fields_json,
+                ts_i64
+            ),
+            Ok(true)
+        ) {
+            let _ = tx.rollback();
+            return;
+        }
         let inserted = tx.execute(
             "INSERT OR REPLACE INTO events(id, unix_ms, provider, level, code, message, fields_json)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",

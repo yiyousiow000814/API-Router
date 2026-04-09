@@ -297,6 +297,40 @@ mod tests {
     }
 
     #[test]
+    fn add_event_suppresses_duplicate_lan_edit_sync_http_failures_within_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        let message = "LAN edit sync request failed: LAN sync request error (connect); url=http://192.168.3.137:4000/lan-sync/edit; cause=client error (Connect) | tcp connect error";
+        let fields = serde_json::json!({
+            "peer_node_id": "node-remote",
+        });
+
+        store.add_event(
+            "gateway",
+            "warning",
+            "lan.edit_sync_http_failed",
+            message,
+            fields.clone(),
+        );
+        store.add_event(
+            "gateway",
+            "warning",
+            "lan.edit_sync_http_failed",
+            message,
+            fields,
+        );
+
+        let raw = store.list_events_range(None, None, Some(10));
+        assert_eq!(raw.len(), 1, "duplicate LAN sync warnings should not spam raw event rows");
+
+        let rows = store.list_event_daily_counts_range(None, None);
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.get("warnings").and_then(|v| v.as_u64()), Some(1));
+    }
+
+    #[test]
     fn list_session_route_assignments_since_filters_old_rows() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();
