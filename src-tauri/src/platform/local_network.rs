@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 
+#[cfg(target_os = "windows")]
 pub const LOCAL_NETWORK_EVENT: &str = "local-network-connectivity-changed";
 
 #[derive(Clone)]
@@ -12,6 +13,7 @@ pub struct LocalNetworkState {
     last_error: Arc<Mutex<Option<String>>>,
 }
 
+#[cfg(target_os = "windows")]
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct LocalNetworkConnectivityPayload {
@@ -80,6 +82,7 @@ impl LocalNetworkState {
         }
     }
 
+    #[cfg(target_os = "windows")]
     fn snapshot_or_refresh_if_unknown<F>(&self, refresh: F) -> LocalNetworkSnapshot
     where
         F: FnOnce(&Self) -> LocalNetworkSnapshot,
@@ -91,6 +94,7 @@ impl LocalNetworkState {
         }
     }
 
+    #[cfg(target_os = "windows")]
     fn apply_detected_online(&self, next_online: bool) -> bool {
         let previous_known = self.known.swap(true, Ordering::Relaxed);
         let previous_online = self.online.swap(next_online, Ordering::Relaxed);
@@ -313,6 +317,7 @@ mod tests {
         assert!(!state.apply_detected_online(true));
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn snapshot_or_refresh_if_unknown_refreshes_unknown_state() {
         let state = LocalNetworkState::default();
@@ -328,6 +333,7 @@ mod tests {
         assert_eq!(snapshot.online, Some(false));
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn snapshot_or_refresh_if_unknown_keeps_known_cached_state() {
         let state = LocalNetworkState::default();
