@@ -1,6 +1,8 @@
 #[cfg(windows)]
 const TAILSCALE_CREATE_NO_WINDOW: u32 = 0x08000000;
 
+#[cfg(windows)]
+use std::net::IpAddr;
 use std::net::{SocketAddr, TcpStream};
 
 fn tailscale_hidden_command(program: &str) -> std::process::Command {
@@ -81,11 +83,64 @@ fn resolve_reachable_gateway_ipv4(
         .collect()
 }
 
+async fn resolve_reachable_gateway_ipv4_blocking(
+    ipv4: Vec<String>,
+    listen_port: u16,
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        resolve_reachable_gateway_ipv4(&ipv4, listen_port, probe_gateway_addr)
+    })
+    .await
+    .map_err(|err| format!("tailscale_probe_join_failed: {err}"))
+}
+
+#[cfg(windows)]
+fn parse_tailscale_ipv4_addrs(ipv4: &[String]) -> Vec<IpAddr> {
+    ipv4.iter()
+        .filter_map(|ip| ip.parse::<IpAddr>().ok())
+        .collect()
+}
+
+#[cfg(windows)]
+fn maybe_refresh_runtime_tailscale_listener(
+    state: &crate::app_state::AppState,
+    connected: bool,
+    ipv4: &[String],
+    gateway_reachable: bool,
+) -> usize {
+    if !connected || ipv4.is_empty() || gateway_reachable {
+        return 0;
+    }
+    let listen = state.gateway.cfg.read().listen.clone();
+    let parsed_ips = parse_tailscale_ipv4_addrs(ipv4);
+    let Ok(addrs) = crate::orchestrator::gateway_bootstrap::tailscale_overlay_listener_addrs(
+        &listen.host,
+        listen.port,
+        &parsed_ips,
+    ) else {
+        return 0;
+    };
+    crate::orchestrator::gateway::ensure_runtime_gateway_listener_bindings(state.gateway.clone(), &addrs)
+        .map(|newly_bound| newly_bound.len())
+        .unwrap_or(0)
+}
+
+fn needs_gateway_restart(
+    connected: bool,
+    ipv4: &[String],
+    gateway_reachable: bool,
+    runtime_binding_in_progress: bool,
+) -> bool {
+    connected && !ipv4.is_empty() && !gateway_reachable && !runtime_binding_in_progress
+}
+
 #[tauri::command]
 pub(crate) async fn tailscale_status(
     state: tauri::State<'_, crate::app_state::AppState>,
 ) -> Result<Value, String> {
-    let parsed = tailscale_status_json();
+    let parsed = tauri::async_runtime::spawn_blocking(tailscale_status_json)
+        .await
+        .map_err(|err| format!("tailscale_status_join_failed: {err}"))?;
     let Ok(parsed) = parsed else {
         let err = parsed.err().unwrap_or_default();
         return Ok(serde_json::json!({
@@ -102,13 +157,34 @@ pub(crate) async fn tailscale_status(
     };
     let (connected, dns_name, ipv4) = parse_tailscale_summary(&parsed);
     let listen_port = state.gateway.cfg.read().listen.port;
+    #[cfg(windows)]
+    let runtime_binding_in_progress = {
+        let initial_reachable_ipv4 = if connected {
+            resolve_reachable_gateway_ipv4_blocking(ipv4.clone(), listen_port).await?
+        } else {
+            Vec::new()
+        };
+        maybe_refresh_runtime_tailscale_listener(
+            &state,
+            connected,
+            &ipv4,
+            !initial_reachable_ipv4.is_empty(),
+        ) > 0
+    };
+    #[cfg(not(windows))]
+    let runtime_binding_in_progress = false;
     let reachable_ipv4 = if connected {
-        resolve_reachable_gateway_ipv4(&ipv4, listen_port, probe_gateway_addr)
+        resolve_reachable_gateway_ipv4_blocking(ipv4.clone(), listen_port).await?
     } else {
         Vec::new()
     };
     let gateway_reachable = !reachable_ipv4.is_empty();
-    let needs_gateway_restart = connected && !ipv4.is_empty() && !gateway_reachable;
+    let needs_gateway_restart = needs_gateway_restart(
+        connected,
+        &ipv4,
+        gateway_reachable,
+        runtime_binding_in_progress,
+    );
 
     Ok(serde_json::json!({
         "ok": true,
@@ -149,4 +225,38 @@ fn reachable_gateway_ipv4_only_keeps_probeable_addrs() {
     );
 
     assert_eq!(reachable, vec!["100.64.208.117"]);
+}
+
+#[cfg(test)]
+#[test]
+fn restart_hint_waits_for_next_poll_after_runtime_bind_progress() {
+    assert!(!needs_gateway_restart(
+        true,
+        &["100.64.208.117".to_string()],
+        false,
+        true,
+    ));
+}
+
+#[cfg(test)]
+#[test]
+fn restart_hint_remains_when_gateway_is_still_unreachable_without_new_binding_progress() {
+    assert!(needs_gateway_restart(
+        true,
+        &["100.64.208.117".to_string()],
+        false,
+        false,
+    ));
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn parse_tailscale_ipv4_addrs_skips_invalid_rows() {
+    let parsed = parse_tailscale_ipv4_addrs(&[
+        "100.64.208.117".to_string(),
+        "not-an-ip".to_string(),
+        "100.118.0.115".to_string(),
+    ]);
+    let rendered = parsed.iter().map(ToString::to_string).collect::<Vec<_>>();
+    assert_eq!(rendered, vec!["100.64.208.117", "100.118.0.115"]);
 }

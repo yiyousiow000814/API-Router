@@ -11,6 +11,12 @@
 - Dev hot-reload sandbox (read-only): `http://127.0.0.1:5173/sandbox/codex-web`
 - App/runtime Web Codex: `http://127.0.0.1:4000/codex-web`
 
+## Important note for the preview URL
+
+- `http://127.0.0.1:5173/codex-web` only works when the Vite dev server is running.
+- Start it with `npm run dev` before opening the preview URL.
+- If Vite is not running, use the app/runtime URL on port `4000` instead.
+
 ## Expected behavior
 
 - In **dev** (`5173/codex-web`), frontend changes update immediately via Vite HMR.

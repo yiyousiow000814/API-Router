@@ -91,7 +91,7 @@ export function fmtKpiTokens(value?: number | null): string {
 }
 
 export function fmtPricingSource(source?: string | null): string {
-  if (!source || source === 'none') return 'unconfigured'
+  if (!source || source === 'none') return 'monthly credit'
   if (source === 'token_rate') return 'monthly credit'
   if (source === 'provider_budget_api') return 'monthly credit'
   if (source === 'provider_budget_api+manual_history') return 'monthly credit'

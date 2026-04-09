@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  configPollIntervalMs,
   shouldPollSwapStatusOnStatusRefresh,
   statusPollDetailLevel,
   statusPollIntervalMs,
@@ -19,6 +20,11 @@ describe('useAppPolling', () => {
   it('uses the slowest poll interval when hidden', () => {
     expect(statusPollIntervalMs('dashboard', false)).toBe(15000)
     expect(statusPollIntervalMs('web_codex', false)).toBe(15000)
+  })
+
+  it('keeps config polling responsive only while visible', () => {
+    expect(configPollIntervalMs(true)).toBe(2000)
+    expect(configPollIntervalMs(false)).toBe(15000)
   })
 
   it('only polls swap status in switchboard-focused flows', () => {

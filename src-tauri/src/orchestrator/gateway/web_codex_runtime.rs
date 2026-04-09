@@ -256,13 +256,8 @@ fn resolve_repo_root_for_git() -> Option<PathBuf> {
 
 fn detect_repo_git_sha() -> Option<String> {
     let repo_root = resolve_repo_root_for_git()?;
-    let mut cmd = std::process::Command::new("git");
+    let mut cmd = crate::platform::git_exec::new_git_command();
     cmd.arg("-C").arg(repo_root).arg("rev-parse").arg("HEAD");
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
-    }
     let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;

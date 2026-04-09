@@ -8,7 +8,6 @@ import { formatDraftAmount, parsePositiveAmount } from '../utils/currency'
 import { runSingleFlight } from '../utils/singleFlight'
 import { resolvePricingAmountUsd as computePricingAmountUsd } from '../utils/usagePricing'
 import { historyDraftFromRow as buildHistoryDraftFromRow } from '../utils/usageSchedule'
-import { buildDevMockHistoryRows } from '../devMockData'
 
 type TimelinePeriod = {
   id: string
@@ -312,7 +311,10 @@ export function useUsagePricingHistoryActions(params: Params) {
     if (!silent) setUsageHistoryLoading(true)
     try {
       let rows: SpendHistoryRow[] = []
-      if (devMockHistoryEnabled) rows = buildDevMockHistoryRows(120)
+      if (devMockHistoryEnabled) {
+        const module = await import('../devMockData')
+        rows = module.buildDevMockHistoryRows(120)
+      }
       else if (isDevPreview) rows = []
       else {
         rows = await runSingleFlight(

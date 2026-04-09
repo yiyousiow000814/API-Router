@@ -124,7 +124,12 @@ fn merge_usage_metrics_day_counts(
         return;
     };
     for (day_key, req_count) in req_by_day_from_req {
-        req_by_day.insert(day_key.clone(), *req_count);
+        req_by_day
+            .entry(day_key.clone())
+            .and_modify(|current| {
+                *current = (*current).max(*req_count);
+            })
+            .or_insert(*req_count);
     }
 }
 
@@ -133,6 +138,25 @@ fn request_window_ratio(day_req_total: f64, day_req_in_window: f64) -> f64 {
         return (day_req_in_window / day_req_total).clamp(0.0, 1.0);
     }
     0.0
+}
+
+fn merge_manual_per_req_for_usage_metrics_day(
+    current_per_req: &mut Option<f64>,
+    current_per_req_updated_at: &mut u64,
+    manual_per_req: Option<f64>,
+    updated_at: u64,
+) {
+    let Some(candidate) = manual_per_req else {
+        return;
+    };
+    let should_replace = current_per_req.is_none()
+        || updated_at > *current_per_req_updated_at
+        || (updated_at == *current_per_req_updated_at
+            && candidate > current_per_req.unwrap_or_default());
+    if should_replace {
+        *current_per_req = Some(candidate);
+        *current_per_req_updated_at = updated_at;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -771,7 +795,8 @@ pub(crate) fn get_usage_statistics(
             &mut req_by_day,
             provider_req_by_day_all_from_req.get(provider),
         );
-        let mut manual_by_day: BTreeMap<String, (Option<f64>, Option<f64>)> = BTreeMap::new();
+        let mut manual_by_day: BTreeMap<String, (Option<f64>, Option<f64>, u64)> =
+            BTreeMap::new();
         for day in state.gateway.store.list_spend_manual_days(provider) {
             let Some(day_key) = day.get("day_key").and_then(|v| v.as_str()) else {
                 continue;
@@ -780,8 +805,28 @@ pub(crate) fn get_usage_statistics(
                 as_f64(day.get("manual_total_usd")).filter(|v| v.is_finite() && *v != 0.0);
             let manual_per_req =
                 as_f64(day.get("manual_usd_per_req")).filter(|v| v.is_finite() && *v > 0.0);
+            let updated_at = day
+                .get("updated_at_unix_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             if manual_total.is_some() || manual_per_req.is_some() {
-                manual_by_day.insert(day_key.to_string(), (manual_total, manual_per_req));
+                manual_by_day
+                    .entry(day_key.to_string())
+                    .and_modify(|(current_total, current_per_req, current_per_req_updated_at)| {
+                        *current_total = match (*current_total, manual_total) {
+                            (Some(left), Some(right)) => Some(left + right),
+                            (Some(left), None) => Some(left),
+                            (None, Some(right)) => Some(right),
+                            (None, None) => None,
+                        };
+                        merge_manual_per_req_for_usage_metrics_day(
+                            current_per_req,
+                            current_per_req_updated_at,
+                            manual_per_req,
+                            updated_at,
+                        );
+                    })
+                    .or_insert((manual_total, manual_per_req, updated_at));
             }
         }
 
@@ -859,7 +904,7 @@ pub(crate) fn get_usage_statistics(
                         }
 
                         let manual_window = manual_by_day.get(&day_key).and_then(
-                            |(manual_total, manual_per_req)| {
+                            |(manual_total, manual_per_req, _)| {
                                 let (day_start, day_end) = local_day_range_from_key(&day_key)?;
                                 let overlap_start = day_start.max(since_unix_ms);
                                 let overlap_end = day_end.min(now);
@@ -943,7 +988,8 @@ pub(crate) fn get_usage_statistics(
                 }
             }
             _ => {
-                let spend_days = state.gateway.store.list_spend_days(provider);
+                let spend_days =
+                    tracked_spend_days_with_remote_fallback(&state.gateway.store, provider);
                 let mut tracked_in_window = 0.0_f64;
                 for day in spend_days {
                     let tracked = as_f64(day.get("tracked_spend_usd")).unwrap_or(0.0);
@@ -975,7 +1021,7 @@ pub(crate) fn get_usage_statistics(
                 }
 
                 let mut manual_additional_in_window = 0.0_f64;
-                for (day_key, (manual_total, manual_per_req)) in manual_by_day.iter() {
+                for (day_key, (manual_total, manual_per_req, _)) in manual_by_day.iter() {
                     let Some((day_start, day_end)) = local_day_range_from_key(day_key) else {
                         continue;
                     };
@@ -1362,10 +1408,12 @@ mod usage_metrics_tests {
     use super::{
         effective_provider_filter, latest_day_budget_fallback_allowed,
         list_usage_requests_for_statistics_window,
-        merge_usage_metrics_day_counts, normalize_usage_origin,
+        merge_manual_per_req_for_usage_metrics_day, merge_usage_metrics_day_counts,
+        normalize_usage_origin,
         parse_usage_statistics_detail_level,
         projection_hours_for_day_estimate, request_window_ratio,
-        resolve_budget_or_token_rate_cost, UsageStatisticsDetailLevel,
+        resolve_budget_or_token_rate_cost, tracked_spend_day_key,
+        tracked_spend_days_with_remote_fallback, UsageStatisticsDetailLevel,
         usage_metrics_configured_provider_names,
     };
     use crate::orchestrator::config::{AppConfig, ProviderConfig};
@@ -1431,7 +1479,7 @@ mod usage_metrics_tests {
     }
 
     #[test]
-    fn usage_metrics_prefers_raw_request_day_counts_over_cached_usage_day_counts() {
+    fn usage_metrics_uses_more_complete_request_day_count_for_ratio_inputs() {
         let mut cached = BTreeMap::from([("2026-03-31".to_string(), 2_u64)]);
         let raw = BTreeMap::from([("2026-03-31".to_string(), 86_u64)]);
         merge_usage_metrics_day_counts(&mut cached, Some(&raw));
@@ -1439,9 +1487,41 @@ mod usage_metrics_tests {
     }
 
     #[test]
+    fn usage_metrics_keeps_full_day_request_counts_when_window_only_has_partial_day() {
+        let mut cached = BTreeMap::from([("2026-04-08".to_string(), 1_625_u64)]);
+        let raw_window = BTreeMap::from([("2026-04-08".to_string(), 365_u64)]);
+        merge_usage_metrics_day_counts(&mut cached, Some(&raw_window));
+        assert_eq!(cached.get("2026-04-08"), Some(&1_625_u64));
+    }
+
+    #[test]
     fn request_window_ratio_is_zero_when_day_has_no_requests() {
         assert_eq!(request_window_ratio(0.0, 71.0), 0.0);
         assert!((request_window_ratio(86.0, 71.0) - (71.0 / 86.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn manual_per_req_prefers_latest_source_value_for_metrics() {
+        let mut current_per_req = Some(0.05);
+        let mut current_updated_at = 100;
+
+        merge_manual_per_req_for_usage_metrics_day(
+            &mut current_per_req,
+            &mut current_updated_at,
+            Some(0.03),
+            90,
+        );
+        assert_eq!(current_per_req, Some(0.05));
+        assert_eq!(current_updated_at, 100);
+
+        merge_manual_per_req_for_usage_metrics_day(
+            &mut current_per_req,
+            &mut current_updated_at,
+            Some(0.03),
+            110,
+        );
+        assert_eq!(current_per_req, Some(0.03));
+        assert_eq!(current_updated_at, 110);
     }
 
     #[test]
@@ -1596,5 +1676,113 @@ mod usage_metrics_tests {
         assert_eq!(rows[0].provider, "official");
         assert_eq!(rows[0].unix_ms, newer as u64);
         assert_eq!(rows[0].node_name, "Desk A");
+    }
+
+    #[test]
+    fn tracked_spend_days_fall_back_to_remote_when_local_day_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let started_at = chrono::Local
+            .with_ymd_and_hms(2026, 4, 7, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+
+        store.put_remote_spend_day(
+            "aigateway2",
+            "node-remote",
+            "Remote Node",
+            started_at,
+            &serde_json::json!({
+                "provider": "aigateway2",
+                "started_at_unix_ms": started_at,
+                "tracked_spend_usd": 22.0,
+                "updated_at_unix_ms": started_at,
+                "producer_node_id": "node-remote",
+                "producer_node_name": "Remote Node"
+            }),
+        );
+
+        let days = tracked_spend_days_with_remote_fallback(&store, "aigateway2");
+
+        assert_eq!(days.len(), 1);
+        assert_eq!(
+            days[0]
+                .get("tracked_spend_usd")
+                .and_then(serde_json::Value::as_f64),
+            Some(22.0)
+        );
+        assert_eq!(
+            days[0]
+                .get("producer_node_id")
+                .and_then(serde_json::Value::as_str),
+            Some("node-remote")
+        );
+    }
+
+    #[test]
+    fn tracked_spend_days_keep_remote_when_local_same_day_is_zero_placeholder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let local_started_at = chrono::Local
+            .with_ymd_and_hms(2026, 4, 7, 8, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+        let remote_started_at = chrono::Local
+            .with_ymd_and_hms(2026, 4, 7, 9, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+
+        store.put_spend_day(
+            "aigateway2",
+            local_started_at,
+            &serde_json::json!({
+                "provider": "aigateway2",
+                "started_at_unix_ms": local_started_at,
+                "tracked_spend_usd": 0.0,
+                "updated_at_unix_ms": local_started_at,
+                "producer_node_id": "node-local",
+                "producer_node_name": "Local Node"
+            }),
+        );
+        store.put_remote_spend_day(
+            "aigateway2",
+            "node-remote",
+            "Remote Node",
+            remote_started_at,
+            &serde_json::json!({
+                "provider": "aigateway2",
+                "started_at_unix_ms": remote_started_at,
+                "tracked_spend_usd": 22.0,
+                "updated_at_unix_ms": remote_started_at,
+                "producer_node_id": "node-remote",
+                "producer_node_name": "Remote Node"
+            }),
+        );
+
+        let days = tracked_spend_days_with_remote_fallback(&store, "aigateway2");
+        let tracked_days = days
+            .iter()
+            .filter_map(|day| {
+                let tracked = day.get("tracked_spend_usd").and_then(serde_json::Value::as_f64)?;
+                if tracked <= 0.0 {
+                    return None;
+                }
+                Some((
+                    tracked_spend_day_key(day)?,
+                    tracked,
+                    day.get("updated_at_unix_ms")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0),
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            tracked_days,
+            vec![("2026-04-07".to_string(), 22.0, remote_started_at)]
+        );
     }
 }

@@ -9,6 +9,82 @@
   border-color: rgba(255, 94, 125, 0.32);
 }
 
+.aoTrackedRemovalConfirmModal {
+  width: min(332px, calc(100vw - 40px));
+  padding: 16px 16px 14px;
+}
+
+.aoTrackedRemovalConfirmTitle {
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: rgba(13, 18, 32, 0.96);
+}
+
+.aoTrackedRemovalConfirmText {
+  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.82);
+}
+
+.aoTrackedRemovalConfirmSub {
+  margin-top: 7px;
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.6);
+  line-height: 1.45;
+}
+
+.aoTrackedRemovalConfirmSummary {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  background: rgba(13, 18, 32, 0.03);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aoTrackedRemovalConfirmSummaryRow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+}
+
+.aoTrackedRemovalConfirmSummaryItem {
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.aoTrackedRemovalConfirmSummaryLabel {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.5);
+}
+
+.aoTrackedRemovalConfirmSummaryValue {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.84);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aoTrackedRemovalConfirmActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .aoConfigModalBody {
   display: flex;
   flex-direction: column;
@@ -53,6 +129,12 @@
   justify-self: center;
 }
 
+.aoConfigSourceControls {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .aoConfigSourceSelect {
   min-width: 248px;
   max-width: min(360px, 100%);
@@ -65,6 +147,223 @@
 
 .aoConfigSourceMenuWrap {
   justify-content: center;
+}
+
+.aoConfigDiagPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 18, 32, 0.1);
+  background: rgba(255, 255, 255, 0.78);
+  color: rgba(13, 18, 32, 0.72);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.aoConfigDiagPill:hover {
+  border-color: rgba(13, 18, 32, 0.16);
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.aoConfigDiagPill.is-alert {
+  border-color: rgba(176, 63, 44, 0.18);
+  background: rgba(255, 243, 239, 0.92);
+  color: rgba(145, 47, 30, 0.92);
+}
+
+.aoConfigDiagBadge {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(13, 18, 32, 0.06);
+  color: rgba(13, 18, 32, 0.7);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.aoConfigDiagBadge.is-alert {
+  background: rgba(255, 243, 239, 0.92);
+  color: rgba(145, 47, 30, 0.92);
+}
+
+.aoConfigDiagCard {
+  padding: 15px 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.aoConfigDiagLocalCard {
+  padding: 15px 16px;
+  display: grid;
+  gap: 12px;
+  border-style: dashed;
+  background: linear-gradient(180deg, rgba(251, 252, 255, 0.96), rgba(247, 249, 252, 0.92));
+}
+
+.aoConfigDiagLocalHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.aoConfigDiagCardHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.aoConfigDiagPeerBlock {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.aoConfigDiagPeerName {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: rgba(13, 18, 32, 0.96);
+}
+
+.aoConfigDiagPeerMeta {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.56);
+}
+
+.aoConfigDiagBadgeRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.aoConfigDiagBuildValue {
+  font-size: 14px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.86);
+  font-variant-numeric: tabular-nums;
+}
+
+.aoConfigDiagCompareValue {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(13, 18, 32, 0.72);
+  font-variant-numeric: tabular-nums;
+}
+
+.aoConfigDiagRemoteUpdateBlock {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.aoConfigDiagRemoteUpdateState {
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.84);
+}
+
+.aoConfigDiagRemoteUpdateDetail {
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(13, 18, 32, 0.7);
+}
+
+.aoConfigDiagRemoteUpdateTime {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(13, 18, 32, 0.5);
+  font-variant-numeric: tabular-nums;
+}
+
+.aoModal.aoConfigDiagnosticsModal {
+  width: min(860px, calc(100vw - 96px));
+  max-height: min(860px, calc(100vh - 96px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.aoConfigDiagnosticsModalBody {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 8px;
+}
+
+.aoConfigDiagBody {
+  display: grid;
+  gap: 10px;
+}
+
+.aoConfigDiagSection {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.aoConfigDiagSectionLabel {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.46);
+  padding-top: 2px;
+}
+
+.aoConfigDiagWhyText {
+  font-family:
+    "Segoe UI Variable Text",
+    "Segoe UI Variable",
+    "Segoe UI",
+    "Helvetica Neue",
+    sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.45;
+  letter-spacing: 0.002em;
+  color: rgba(13, 18, 32, 0.84);
+}
+
+.aoConfigDiagPausedWrap {
+  min-width: 0;
+}
+
+.aoConfigDiagPausedList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.aoConfigDiagPausedItem {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(145, 47, 30, 0.16);
+  background: rgba(255, 243, 239, 0.76);
+  color: rgba(145, 47, 30, 0.92);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
 }
 
 .aoConfigSourceTrigger {
@@ -148,6 +447,9 @@
 }
 
 .aoConfigSourceMenuItem {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center;
   justify-content: flex-start;
   text-align: left;
   min-height: 44px;
@@ -188,10 +490,49 @@
 }
 
 .aoConfigSourceMenuMeta {
-  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  line-height: 1;
   font-size: 11px;
   color: rgba(13, 18, 32, 0.46);
   font-weight: 700;
+}
+
+.aoConfigSourceMenuMetaBlock {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.aoConfigSourceMenuMetaDetail {
+  max-width: 230px;
+  text-align: right;
+  font-size: 10px;
+  line-height: 1.25;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: rgba(13, 18, 32, 0.5);
+}
+
+.aoConfigSourceMenuSpinnerWrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.aoConfigSourceMenuSpinner {
+  width: 12px;
+  height: 12px;
+  border-width: 1.75px;
 }
 
 .aoConfigHeaderBtn {

@@ -32,6 +32,7 @@ export function ProvidersTable({
   const ONE_DAY_MS = 24 * 60 * 60 * 1000
   const fmtDateOnly = (unixMs: number): string => fmtWhen(unixMs).split(' ')[0] ?? '-'
   const isExpiryUrgent = (unixMs: number): boolean => Number.isFinite(unixMs) && unixMs > 0 && unixMs - Date.now() <= ONE_DAY_MS
+  const localNetworkOffline = status.local_network_online === false
 
   return (
     <table className="aoTable aoTableFixed">
@@ -55,6 +56,7 @@ export function ProvidersTable({
       <tbody>
         {providers.map((p) => {
           const h = status.providers[p]
+          const isOffline = localNetworkOffline
           const q = simulateQuotaForDisplay(
             p,
             status.quota?.[p],
@@ -70,7 +72,9 @@ export function ProvidersTable({
           const healthLabel =
             isClosed
               ? 'closed'
-              : isActive
+              : isOffline
+                ? 'offline'
+                : isActive
                 ? 'effective'
                 : retryDue
                   ? 'retry'
@@ -82,7 +86,9 @@ export function ProvidersTable({
           const dotClass =
             isClosed
               ? 'aoDot aoDotBad'
-              : isActive
+              : isOffline
+                ? 'aoDot aoDotMuted'
+                : isActive
                 ? 'aoDot'
                 : retryDue
                   ? 'aoDot aoDotMuted'
@@ -233,7 +239,11 @@ export function ProvidersTable({
             const lastErrorAt = h.last_fail_at_unix_ms
             // Show each provider's own latest failure in-place. Event Log jump remains best-effort:
             // the Event Log page re-runs a provider+message+time search against its full loaded window.
-            const showLastError = lastErrorAt > 0 && lastErrorMessage.length > 0
+            const providerIsHealthy = h.status === 'healthy'
+            const showLastError =
+              lastErrorAt > 0 &&
+              lastErrorMessage.length > 0 &&
+              (!providerIsHealthy || lastErrorAt >= (h.last_ok_at_unix_ms ?? 0))
 
             return (
               <tr key={p}>
@@ -257,7 +267,7 @@ export function ProvidersTable({
                 </td>
                 <td className="aoCellCenter">
                   <div className="aoCellCenterInner">
-                    <span className={`aoPill ${isActive ? 'aoPulse' : ''}`.trim()}>
+                    <span className={`aoPill ${isActive && !isOffline ? 'aoPulse' : ''}`.trim()}>
                       <span className={dotClass} />
                       <span className="aoPillText">{healthLabel}</span>
                     </span>

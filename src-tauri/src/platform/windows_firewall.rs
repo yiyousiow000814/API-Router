@@ -68,19 +68,45 @@ fn hidden_command(program: &str) -> std::process::Command {
 #[cfg(target_os = "windows")]
 pub fn ensure_api_router_udp_firewall_rule(app_path: &std::path::Path) {
     let now = crate::orchestrator::store::unix_ms();
-    let inspection = inspect_rule();
+    let mut inspection = inspect_rule();
+    let mut last_fix_error = None;
+    let mut last_fix_requested_unix_ms = 0;
+    if !inspection.sufficient {
+        match ensure_firewall_rule_present() {
+            Ok(()) => {
+                inspection = inspect_rule();
+                last_fix_requested_unix_ms = now;
+                if !inspection.sufficient {
+                    last_fix_error = Some(format!(
+                        "missing or insufficient firewall rule for {} on UDP {} after add attempt",
+                        app_path.display(),
+                        API_ROUTER_UDP_RULE_PORT
+                    ));
+                }
+            }
+            Err(err) => {
+                last_fix_requested_unix_ms = now;
+                last_fix_error = Some(format!(
+                    "failed to add firewall rule for {} on UDP {}: {}",
+                    app_path.display(),
+                    API_ROUTER_UDP_RULE_PORT,
+                    err
+                ));
+            }
+        }
+    }
+    if !inspection.sufficient && last_fix_error.is_none() {
+        last_fix_error = Some(format!(
+            "missing or insufficient firewall rule for {} on UDP {}",
+            app_path.display(),
+            API_ROUTER_UDP_RULE_PORT
+        ));
+    }
     {
         let mut status = firewall_runtime_status().write();
         status.last_checked_unix_ms = now;
-        if inspection.sufficient {
-            status.last_fix_error = None;
-        } else {
-            status.last_fix_error = Some(format!(
-                "missing or insufficient firewall rule for {} on UDP {}",
-                app_path.display(),
-                API_ROUTER_UDP_RULE_PORT
-            ));
-        }
+        status.last_fix_requested_unix_ms = last_fix_requested_unix_ms;
+        status.last_fix_error = last_fix_error;
     }
 }
 
@@ -131,6 +157,29 @@ fn show_firewall_rule(rule_name: &str) -> Result<String, String> {
         .output()
         .map_err(|err| format!("failed to inspect firewall rule: {err}"))?;
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_firewall_rule_present() -> Result<(), String> {
+    let output = hidden_command("netsh")
+        .args([
+            "advfirewall",
+            "firewall",
+            "add",
+            "rule",
+            &format!("name={API_ROUTER_UDP_RULE_NAME}"),
+            "dir=in",
+            "action=allow",
+            &format!("profile={API_ROUTER_UDP_RULE_PROFILES}"),
+            "protocol=UDP",
+            &format!("localport={API_ROUTER_UDP_RULE_PORT}"),
+        ])
+        .output()
+        .map_err(|err| format!("failed to add firewall rule: {err}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
 }
 
 #[cfg(any(test, target_os = "windows"))]

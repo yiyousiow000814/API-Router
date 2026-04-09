@@ -117,7 +117,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();
 
-        store.add_event("p1", "warning", "test_event", "hello", serde_json::json!({}));
+        store.events().emit(
+            "p1",
+            crate::orchestrator::store::EventCode::ROUTING_MODEL_MISMATCH,
+            "hello",
+            serde_json::json!({}),
+        );
         let rows = store.list_event_daily_counts_range(None, None);
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
@@ -227,17 +232,15 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();
 
-        store.add_event(
+        store.events().emit(
             "p1",
-            "info",
-            "lan.usage_sync_applied",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_APPLIED,
             "first",
             serde_json::json!({}),
         );
-        store.add_event(
+        store.events().emit(
             "p1",
-            "info",
-            "lan.usage_sync_applied",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_APPLIED,
             "second",
             serde_json::json!({}),
         );
@@ -257,31 +260,27 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();
 
-        store.add_event(
+        store.events().emit(
             "gateway",
-            "info",
-            "lan.edit_sync_applied",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_APPLIED,
             "applied 1 synced editable event(s)",
             serde_json::json!({}),
         );
-        store.add_event(
+        store.events().emit(
             "gateway",
-            "info",
-            "lan.edit_sync_applied",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_APPLIED,
             "applied 2 synced editable event(s)",
             serde_json::json!({}),
         );
-        store.add_event(
+        store.events().emit(
             "gateway",
-            "info",
-            "routing.balanced_reassign_on_session_topology_change",
+            crate::orchestrator::store::EventCode::ROUTING_BALANCED_REASSIGN_ON_SESSION_TOPOLOGY_CHANGE,
             "cleared balanced assignments after codex session topology changed",
             serde_json::json!({}),
         );
-        store.add_event(
+        store.events().emit(
             "gateway",
-            "info",
-            "routing.balanced_reassign_on_session_topology_change",
+            crate::orchestrator::store::EventCode::ROUTING_BALANCED_REASSIGN_ON_SESSION_TOPOLOGY_CHANGE,
             "cleared balanced assignments after codex session topology changed",
             serde_json::json!({}),
         );
@@ -294,6 +293,69 @@ mod tests {
 
         let raw = store.list_events_range(None, None, Some(10));
         assert_eq!(raw.len(), 4);
+    }
+
+    #[test]
+    fn add_event_suppresses_duplicate_lan_edit_sync_http_failures_within_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        let message = "LAN edit sync request failed: LAN sync request error (connect); url=http://192.168.3.137:4000/lan-sync/edit; cause=client error (Connect) | tcp connect error";
+        let fields = serde_json::json!({
+            "peer_node_id": "node-remote",
+        });
+
+        store.events().emit(
+            "gateway",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_HTTP_FAILED,
+            message,
+            fields.clone(),
+        );
+        store.events().emit(
+            "gateway",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_HTTP_FAILED,
+            message,
+            fields,
+        );
+
+        let raw = store.list_events_range(None, None, Some(10));
+        assert_eq!(raw.len(), 1, "duplicate LAN sync warnings should not spam raw event rows");
+
+        let rows = store.list_event_daily_counts_range(None, None);
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.get("warnings").and_then(|v| v.as_u64()), Some(1));
+    }
+
+    #[test]
+    fn add_event_suppresses_duplicate_ui_warning_events_within_store_policy_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        let fields = serde_json::json!({
+            "command": "get_status",
+            "active_page": "dashboard",
+        });
+
+        store.events().emit(
+            "gateway",
+            crate::orchestrator::store::EventCode::APP_UI_INVOKE_ERROR,
+            "ui invoke failed: get_status",
+            fields.clone(),
+        );
+        store.events().emit(
+            "gateway",
+            crate::orchestrator::store::EventCode::APP_UI_INVOKE_ERROR,
+            "ui invoke failed: get_status",
+            fields,
+        );
+
+        let raw = store.list_events_range(None, None, Some(10));
+        assert_eq!(raw.len(), 1);
+
+        let rows = store.list_event_daily_counts_range(None, None);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("warnings").and_then(|v| v.as_u64()), Some(1));
     }
 
     #[test]
@@ -983,6 +1045,56 @@ mod tests {
         assert_eq!(total, 330);
         assert_eq!(cache_create, 0);
         assert_eq!(cache_read, 0);
+    }
+
+    #[test]
+    fn summarize_usage_requests_since_by_provider_matches_cross_day_usage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let day1_morning = chrono::Local
+            .with_ymd_and_hms(2026, 4, 2, 9, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let day1_afternoon = chrono::Local
+            .with_ymd_and_hms(2026, 4, 2, 15, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let day2_noon = chrono::Local
+            .with_ymd_and_hms(2026, 4, 3, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let day3_noon = chrono::Local
+            .with_ymd_and_hms(2026, 4, 4, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        {
+            let conn = store.events_db.lock();
+            let insert = |id: &str, ts: i64, provider: &str, total: i64| {
+                conn.execute(
+                    "INSERT INTO usage_requests(
+                        id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                        input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                     ) VALUES(?1, ?2, ?3, '-', 'gpt-5.2-codex', 'windows', 's', ?4, 0, ?4, 0, 0)",
+                    rusqlite::params![id, ts, provider, total],
+                )
+                .unwrap();
+            };
+            insert("id-1", day1_morning, "provider_1", 100);
+            insert("id-2", day1_afternoon, "provider_1", 200);
+            insert("id-3", day2_noon, "provider_1", 300);
+            insert("id-4", day3_noon, "provider_1", 400);
+            insert("id-5", day3_noon + 1_000, "provider_2", 999);
+        }
+
+        let (request_count, total_tokens) = store
+            .summarize_usage_requests_since_by_provider("provider_1", day1_afternoon as u64);
+        assert_eq!(request_count, 3);
+        assert_eq!(total_tokens, 900);
     }
 
     #[test]
