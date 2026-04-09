@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[cfg(target_os = "windows")]
 use serde::Serialize;
 
 #[cfg(target_os = "windows")]
@@ -160,11 +161,6 @@ fn detect_online() -> Result<bool, String> {
 #[cfg(target_os = "windows")]
 fn wait_for_connectivity_change() -> bool {
     windows::wait_for_connectivity_change()
-}
-
-#[cfg(not(target_os = "windows"))]
-fn wait_for_connectivity_change() -> bool {
-    false
 }
 
 #[cfg(target_os = "windows")]
