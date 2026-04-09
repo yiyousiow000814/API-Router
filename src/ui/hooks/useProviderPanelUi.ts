@@ -5,8 +5,6 @@ import type { Config, Status } from '../types'
 import { createProviderCardRenderer } from '../utils/providerCardRenderer'
 
 type Params = {
-  orderedConfigProviders: string[]
-  providerPanelsOpen: Record<string, boolean>
   setProviderPanelsOpen: Dispatch<SetStateAction<Record<string, boolean>>>
   setEditingProviderName: Dispatch<SetStateAction<string | null>>
   setProviderNameDrafts: Dispatch<SetStateAction<Record<string, string>>>
@@ -21,15 +19,16 @@ type Params = {
   onProviderHandlePointerDown: (name: string, event: ReactPointerEvent<Element>) => void
   config: Config | null
   status: Status | null
-  setConfig: Dispatch<SetStateAction<Config | null>>
-  baselineBaseUrls: Record<string, string>
-  saveProvider: (name: string) => Promise<void>
   openProviderGroupManager: (provider: string) => void
   setProviderDisabled: (name: string, disabled: boolean) => Promise<void>
   deleteProvider: (name: string) => Promise<void>
+  openProviderBaseUrlModal: (provider: string, current: string) => void
   openKeyModal: (provider: string) => Promise<void>
   clearKey: (provider: string) => Promise<void>
+  copyProviderFromConfigSource: (sourceNodeId: string, sharedProviderId: string) => Promise<void>
   openUsageBaseModal: (provider: string, current: string | null | undefined) => Promise<void>
+  openUsageAuthModal: (provider: string) => Promise<void>
+  openProviderEmailModal: (provider: string, current: string | null | undefined) => void
   clearUsageBaseUrl: (provider: string) => Promise<void>
   setProviderQuotaHardCap: (
     provider: string,
@@ -41,8 +40,6 @@ type Params = {
 
 export function useProviderPanelUi(params: Params) {
   const {
-    orderedConfigProviders,
-    providerPanelsOpen,
     setProviderPanelsOpen,
     setEditingProviderName,
     setProviderNameDrafts,
@@ -57,43 +54,20 @@ export function useProviderPanelUi(params: Params) {
     onProviderHandlePointerDown,
     config,
     status,
-    setConfig,
-    baselineBaseUrls,
-    saveProvider,
     openProviderGroupManager,
     setProviderDisabled,
     deleteProvider,
+    openProviderBaseUrlModal,
     openKeyModal,
     clearKey,
+    copyProviderFromConfigSource,
     openUsageBaseModal,
+    openUsageAuthModal,
+    openProviderEmailModal,
     clearUsageBaseUrl,
     setProviderQuotaHardCap,
     editingProviderName,
   } = params
-
-  const setAllProviderPanels = useCallback((open: boolean) => {
-    setProviderPanelsOpen((prev) => {
-      const next: Record<string, boolean> = { ...prev }
-      for (const name of orderedConfigProviders) {
-        next[name] = open
-      }
-      return next
-    })
-  }, [orderedConfigProviders])
-
-  const allProviderPanelsOpen = useMemo(
-    () => orderedConfigProviders.every((name: string) => providerPanelsOpen[name] ?? true),
-    [orderedConfigProviders, providerPanelsOpen],
-  )
-
-  const isProviderOpen = useCallback(
-    (name: string) => providerPanelsOpen[name] ?? true,
-    [providerPanelsOpen],
-  )
-
-  const toggleProviderOpen = useCallback((name: string) => {
-    setProviderPanelsOpen((prev) => ({ ...prev, [name]: !(prev[name] ?? true) }))
-  }, [])
 
   const beginRename = useCallback((name: string) => {
     setEditingProviderName(name)
@@ -135,19 +109,18 @@ export function useProviderPanelUi(params: Params) {
         onProviderHandlePointerDown,
         config,
         status,
-        setConfig,
-        baselineBaseUrls,
-        saveProvider,
         openProviderGroupManager,
         setProviderDisabled,
         deleteProvider,
+        openProviderBaseUrlModal,
         openKeyModal,
         clearKey,
+        copyProviderFromConfigSource,
         openUsageBaseModal,
+        openUsageAuthModal,
+        openProviderEmailModal,
         clearUsageBaseUrl,
         setProviderQuotaHardCap,
-        isProviderOpen,
-        toggleProviderOpen,
         beginRenameProvider: beginRename,
         commitRenameProvider: commitRename,
         editingProviderName,
@@ -163,19 +136,18 @@ export function useProviderPanelUi(params: Params) {
       onProviderHandlePointerDown,
       config,
       status,
-      setConfig,
-      baselineBaseUrls,
-      saveProvider,
       openProviderGroupManager,
       setProviderDisabled,
       deleteProvider,
+      openProviderBaseUrlModal,
       openKeyModal,
       clearKey,
+      copyProviderFromConfigSource,
       openUsageBaseModal,
+      openUsageAuthModal,
+      openProviderEmailModal,
       clearUsageBaseUrl,
       setProviderQuotaHardCap,
-      isProviderOpen,
-      toggleProviderOpen,
       beginRename,
       commitRename,
       editingProviderName,
@@ -186,8 +158,6 @@ export function useProviderPanelUi(params: Params) {
   )
 
   return {
-    setAllProviderPanels,
-    allProviderPanelsOpen,
     renderProviderCard,
   }
 }

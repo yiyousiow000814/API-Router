@@ -7,6 +7,8 @@ type Params = {
   providerGroupLabelByName: Record<string, string>
   usageScheduleSaveState: UsageScheduleSaveState
   usageScheduleSaveError: string
+  setUsageFilterNodes: Dispatch<SetStateAction<string[]>>
+  usageNodeFilterOptions: string[]
   setUsageFilterProviders: Dispatch<SetStateAction<string[]>>
   usageProviderFilterOptions: string[]
   setUsageFilterModels: Dispatch<SetStateAction<string[]>>
@@ -20,6 +22,8 @@ export function useUsageUiDerived(params: Params) {
     providerGroupLabelByName,
     usageScheduleSaveState,
     usageScheduleSaveError,
+    setUsageFilterNodes,
+    usageNodeFilterOptions,
     setUsageFilterProviders,
     usageProviderFilterOptions,
     setUsageFilterModels,
@@ -45,6 +49,16 @@ export function useUsageUiDerived(params: Params) {
     }
     return 'Auto-save'
   }, [usageScheduleSaveError, usageScheduleSaveState])
+
+  useEffect(() => {
+    setUsageFilterNodes((prev: string[]) => {
+      const next = sanitizeSelectedFilterValues(prev, usageNodeFilterOptions)
+      if (next.length === prev.length && next.every((value, index) => value === prev[index])) {
+        return prev
+      }
+      return next
+    })
+  }, [usageNodeFilterOptions])
 
   useEffect(() => {
     setUsageFilterProviders((prev: string[]) => {

@@ -117,7 +117,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();
 
-        store.add_event("p1", "warning", "test_event", "hello", serde_json::json!({}));
+        store.events().emit(
+            "p1",
+            crate::orchestrator::store::EventCode::ROUTING_MODEL_MISMATCH,
+            "hello",
+            serde_json::json!({}),
+        );
         let rows = store.list_event_daily_counts_range(None, None);
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
@@ -125,6 +130,232 @@ mod tests {
         assert_eq!(row.get("infos").and_then(|v| v.as_u64()), Some(0));
         assert_eq!(row.get("warnings").and_then(|v| v.as_u64()), Some(1));
         assert_eq!(row.get("errors").and_then(|v| v.as_u64()), Some(0));
+    }
+
+    #[test]
+    fn model_mismatch_versioned_variants_do_not_pollute_daily_counts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        // Insert raw events (simulating legacy polluted history).
+        {
+            let conn = store.events_db.lock();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('m1', 1_700_000_000_000, 'p1', 'warning', 'routing.model_mismatch', 'x', ?1)",
+                [r#"{"requested_model":"gpt-5.2","response_model":"gpt-5.2-2025-12-11"}"#],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('m2', 1_700_000_000_100, 'p1', 'warning', 'routing.model_mismatch', 'y', ?1)",
+                [r#"{"requested_model":"gpt-5.2","response_model":"gpt-5.3-codex"}"#],
+            )
+            .unwrap();
+            // Duplicate spam of the same mismatch should only count once per day after rebuild.
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('m3', 1_700_000_000_200, 'p1', 'warning', 'routing.model_mismatch', 'x2', ?1)",
+                [r#"{"requested_model":"gpt-5.2","response_model":"gpt-5.2-2025-12-11"}"#],
+            )
+            .unwrap();
+            // Force rebuild even if Store::open already ran it.
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES(?1, '0')
+                 ON CONFLICT(key) DO UPDATE SET value='0'",
+                [Store::EVENT_DAY_COUNTS_INDEX_VERSION_KEY],
+            )
+            .unwrap();
+        }
+
+        store.rebuild_event_day_counts_index_if_needed().unwrap();
+        let rows = store.list_event_daily_counts_range(None, None);
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        // Dedupe duplicates: (gpt-5.2 -> gpt-5.2-2025-12-11) counts once, and the real mismatch counts once.
+        assert_eq!(row.get("total").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(row.get("warnings").and_then(|v| v.as_u64()), Some(2));
+    }
+
+    #[test]
+    fn noisy_lan_events_are_compressed_in_daily_counts_but_raw_rows_remain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let base_ts = chrono::Local
+            .with_ymd_and_hms(2026, 4, 2, 10, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        {
+            let conn = store.events_db.lock();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('lan-a', ?1, 'p1', 'info', 'lan.shared_health_applied', 'a', '{}')",
+                [base_ts],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('lan-b', ?1, 'p1', 'info', 'lan.shared_health_applied', 'b', '{}')",
+                [base_ts + 5_000],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('lan-c', ?1, 'p1', 'info', 'lan.shared_health_applied', 'c', '{}')",
+                [base_ts + 65_000],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES(?1, '0')
+                 ON CONFLICT(key) DO UPDATE SET value='0'",
+                [Store::EVENT_DAY_COUNTS_INDEX_VERSION_KEY],
+            )
+            .unwrap();
+        }
+
+        store.rebuild_event_day_counts_index_if_needed().unwrap();
+
+        let rows = store.list_event_daily_counts_range(None, None);
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.get("total").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(row.get("infos").and_then(|v| v.as_u64()), Some(2));
+
+        let raw = store.list_events_range(None, None, Some(10));
+        assert_eq!(raw.len(), 3);
+    }
+
+    #[test]
+    fn add_event_compresses_noisy_lan_daily_counts_per_minute() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        store.events().emit(
+            "p1",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_APPLIED,
+            "first",
+            serde_json::json!({}),
+        );
+        store.events().emit(
+            "p1",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_APPLIED,
+            "second",
+            serde_json::json!({}),
+        );
+
+        let rows = store.list_event_daily_counts_range(None, None);
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.get("total").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(row.get("infos").and_then(|v| v.as_u64()), Some(1));
+
+        let raw = store.list_events_range(None, None, Some(10));
+        assert_eq!(raw.len(), 2);
+    }
+
+    #[test]
+    fn add_event_compresses_repeated_sync_and_rebalance_info_per_minute() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        store.events().emit(
+            "gateway",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_APPLIED,
+            "applied 1 synced editable event(s)",
+            serde_json::json!({}),
+        );
+        store.events().emit(
+            "gateway",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_APPLIED,
+            "applied 2 synced editable event(s)",
+            serde_json::json!({}),
+        );
+        store.events().emit(
+            "gateway",
+            crate::orchestrator::store::EventCode::ROUTING_BALANCED_REASSIGN_ON_SESSION_TOPOLOGY_CHANGE,
+            "cleared balanced assignments after codex session topology changed",
+            serde_json::json!({}),
+        );
+        store.events().emit(
+            "gateway",
+            crate::orchestrator::store::EventCode::ROUTING_BALANCED_REASSIGN_ON_SESSION_TOPOLOGY_CHANGE,
+            "cleared balanced assignments after codex session topology changed",
+            serde_json::json!({}),
+        );
+
+        let rows = store.list_event_daily_counts_range(None, None);
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.get("total").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(row.get("infos").and_then(|v| v.as_u64()), Some(2));
+
+        let raw = store.list_events_range(None, None, Some(10));
+        assert_eq!(raw.len(), 4);
+    }
+
+    #[test]
+    fn add_event_suppresses_duplicate_lan_edit_sync_http_failures_within_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        let message = "LAN edit sync request failed: LAN sync request error (connect); url=http://192.168.3.137:4000/lan-sync/edit; cause=client error (Connect) | tcp connect error";
+        let fields = serde_json::json!({
+            "peer_node_id": "node-remote",
+        });
+
+        store.events().emit(
+            "gateway",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_HTTP_FAILED,
+            message,
+            fields.clone(),
+        );
+        store.events().emit(
+            "gateway",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_HTTP_FAILED,
+            message,
+            fields,
+        );
+
+        let raw = store.list_events_range(None, None, Some(10));
+        assert_eq!(raw.len(), 1, "duplicate LAN sync warnings should not spam raw event rows");
+
+        let rows = store.list_event_daily_counts_range(None, None);
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.get("warnings").and_then(|v| v.as_u64()), Some(1));
+    }
+
+    #[test]
+    fn add_event_suppresses_duplicate_ui_warning_events_within_store_policy_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        let fields = serde_json::json!({
+            "command": "get_status",
+            "active_page": "dashboard",
+        });
+
+        store.events().emit(
+            "gateway",
+            crate::orchestrator::store::EventCode::APP_UI_INVOKE_ERROR,
+            "ui invoke failed: get_status",
+            fields.clone(),
+        );
+        store.events().emit(
+            "gateway",
+            crate::orchestrator::store::EventCode::APP_UI_INVOKE_ERROR,
+            "ui invoke failed: get_status",
+            fields,
+        );
+
+        let raw = store.list_events_range(None, None, Some(10));
+        assert_eq!(raw.len(), 1);
+
+        let rows = store.list_event_daily_counts_range(None, None);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("warnings").and_then(|v| v.as_u64()), Some(1));
     }
 
     #[test]
@@ -336,6 +567,97 @@ mod tests {
     }
 
     #[test]
+    fn open_migrates_legacy_usage_requests_before_creating_new_indexes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sqlite_path = tmp.path().join("events.sqlite3");
+
+        {
+            let conn = rusqlite::Connection::open(&sqlite_path).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS event_meta(
+                  key TEXT PRIMARY KEY,
+                  value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS events(
+                  id TEXT PRIMARY KEY,
+                  unix_ms INTEGER NOT NULL,
+                  provider TEXT NOT NULL,
+                  level TEXT NOT NULL,
+                  code TEXT NOT NULL,
+                  message TEXT NOT NULL,
+                  fields_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS event_day_counts(
+                  day_key TEXT PRIMARY KEY,
+                  day_start_unix_ms INTEGER NOT NULL,
+                  total INTEGER NOT NULL,
+                  infos INTEGER NOT NULL,
+                  warnings INTEGER NOT NULL,
+                  errors INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS usage_requests(
+                  id TEXT PRIMARY KEY,
+                  unix_ms INTEGER NOT NULL,
+                  provider TEXT NOT NULL,
+                  api_key_ref TEXT NOT NULL,
+                  model TEXT NOT NULL,
+                  origin TEXT NOT NULL,
+                  session_id TEXT NOT NULL,
+                  input_tokens INTEGER NOT NULL,
+                  output_tokens INTEGER NOT NULL,
+                  total_tokens INTEGER NOT NULL,
+                  cache_creation_input_tokens INTEGER NOT NULL,
+                  cache_read_input_tokens INTEGER NOT NULL
+                );
+                ",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO usage_requests(
+                    id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                    input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES('legacy-row', 123, 'p1', '-', 'gpt-5.2', 'windows', 's1', 1, 2, 3, 0, 0)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(tmp.path()).unwrap();
+
+        {
+            let conn = store.events_db.lock();
+            let mut stmt = conn.prepare("PRAGMA table_info(usage_requests)").unwrap();
+            let columns = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert!(columns.iter().any(|col| col == "ingested_at_unix_ms"));
+            assert!(columns.iter().any(|col| col == "node_id"));
+            assert!(columns.iter().any(|col| col == "node_name"));
+
+            let ingested: i64 = conn
+                .query_row(
+                    "SELECT ingested_at_unix_ms FROM usage_requests WHERE id='legacy-row'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(ingested, 123);
+
+            let index_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_index_list('usage_requests') WHERE name='idx_usage_requests_ingested_at_id'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(index_count, 1);
+        }
+    }
+
+    #[test]
     fn list_usage_requests_page_is_stable_on_same_timestamp() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();
@@ -382,9 +704,9 @@ mod tests {
         }
 
         let (page1, has_more1) =
-            store.list_usage_requests_page(0, None, None, &[], &[], &[], &[], 1, 0);
+            store.list_usage_requests_page(0, None, None, &[], &[], &[], &[], &[], 1, 0);
         let (page2, has_more2) =
-            store.list_usage_requests_page(0, None, None, &[], &[], &[], &[], 1, 1);
+            store.list_usage_requests_page(0, None, None, &[], &[], &[], &[], &[], 1, 1);
         assert_eq!(page1.len(), 1);
         assert_eq!(page2.len(), 1);
         assert!(has_more1);
@@ -470,6 +792,95 @@ mod tests {
             .map(|(_, _, _, request_count, _, _)| *request_count)
             .sum();
         assert_eq!(req_2026_02_21, 2);
+    }
+
+    #[test]
+    fn list_usage_request_day_rollups_for_provider_groups_by_day_and_api_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let day1 = chrono::Local
+            .with_ymd_and_hms(2026, 4, 2, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let day2 = chrono::Local
+            .with_ymd_and_hms(2026, 4, 3, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        {
+            let conn = store.events_db.lock();
+            let insert = |id: &str, ts: i64, provider: &str, key_ref: &str, total: i64| {
+                conn.execute(
+                    "INSERT INTO usage_requests(
+                        id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                        input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                     ) VALUES(?1, ?2, ?3, ?4, 'gpt-5.2-codex', 'windows', 's', ?5, 0, ?5, 0, 0)",
+                    rusqlite::params![id, ts, provider, key_ref, total],
+                )
+                .unwrap();
+            };
+            insert("rollup-1", day1, "aigateway", "key-a", 100);
+            insert("rollup-2", day1 + 1_000, "aigateway", "key-a", 200);
+            insert("rollup-3", day1 + 2_000, "aigateway", "key-b", 300);
+            insert("rollup-4", day2, "aigateway", "", 400);
+            insert("rollup-5", day2, "other", "key-x", 500);
+        }
+
+        let rows = store.list_usage_request_day_rollups_for_provider("aigateway", 0);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows,
+            vec![
+                ("2026-04-02".to_string(), "key-a".to_string(), 2, 300, day1 as u64 + 1_000),
+                ("2026-04-02".to_string(), "key-b".to_string(), 1, 300, day1 as u64 + 2_000),
+                ("2026-04-03".to_string(), "-".to_string(), 1, 400, day2 as u64),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_usage_request_day_counts_for_provider_reads_sqlite_daily_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let day1 = chrono::Local
+            .with_ymd_and_hms(2026, 4, 2, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let day2 = chrono::Local
+            .with_ymd_and_hms(2026, 4, 3, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        {
+            let conn = store.events_db.lock();
+            let insert = |id: &str, ts: i64, provider: &str| {
+                conn.execute(
+                    "INSERT INTO usage_requests(
+                        id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                        input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                     ) VALUES(?1, ?2, ?3, '-', 'gpt-5.2-codex', 'windows', 's', 10, 1, 11, 0, 0)",
+                    rusqlite::params![id, ts, provider],
+                )
+                .unwrap();
+            };
+            insert("count-1", day1, "official");
+            insert("count-2", day1 + 1_000, "official");
+            insert("count-3", day2, "official");
+            insert("count-4", day2, "other");
+        }
+
+        let out = store.list_usage_request_day_counts_for_provider("official");
+        assert_eq!(
+            out,
+            std::collections::BTreeMap::from([
+                ("2026-04-02".to_string(), 2_u64),
+                ("2026-04-03".to_string(), 1_u64),
+            ])
+        );
     }
 
     #[test]
@@ -573,6 +984,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
             50,
             0,
         );
@@ -625,6 +1037,7 @@ mod tests {
                 &[],
                 &[],
                 &[],
+                &[],
             );
         assert_eq!(requests, 3);
         assert_eq!(input, 300);
@@ -632,6 +1045,56 @@ mod tests {
         assert_eq!(total, 330);
         assert_eq!(cache_create, 0);
         assert_eq!(cache_read, 0);
+    }
+
+    #[test]
+    fn summarize_usage_requests_since_by_provider_matches_cross_day_usage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let day1_morning = chrono::Local
+            .with_ymd_and_hms(2026, 4, 2, 9, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let day1_afternoon = chrono::Local
+            .with_ymd_and_hms(2026, 4, 2, 15, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let day2_noon = chrono::Local
+            .with_ymd_and_hms(2026, 4, 3, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        let day3_noon = chrono::Local
+            .with_ymd_and_hms(2026, 4, 4, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        {
+            let conn = store.events_db.lock();
+            let insert = |id: &str, ts: i64, provider: &str, total: i64| {
+                conn.execute(
+                    "INSERT INTO usage_requests(
+                        id, unix_ms, provider, api_key_ref, model, origin, session_id,
+                        input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                     ) VALUES(?1, ?2, ?3, '-', 'gpt-5.2-codex', 'windows', 's', ?4, 0, ?4, 0, 0)",
+                    rusqlite::params![id, ts, provider, total],
+                )
+                .unwrap();
+            };
+            insert("id-1", day1_morning, "provider_1", 100);
+            insert("id-2", day1_afternoon, "provider_1", 200);
+            insert("id-3", day2_noon, "provider_1", 300);
+            insert("id-4", day3_noon, "provider_1", 400);
+            insert("id-5", day3_noon + 1_000, "provider_2", 999);
+        }
+
+        let (request_count, total_tokens) = store
+            .summarize_usage_requests_since_by_provider("provider_1", day1_afternoon as u64);
+        assert_eq!(request_count, 3);
+        assert_eq!(total_tokens, 900);
     }
 
     #[test]
@@ -671,7 +1134,7 @@ mod tests {
 
         let since = (newer - 3_600_000) as u64;
         let (rows, has_more) =
-            store.list_usage_requests_page(since, None, None, &[], &[], &[], &[], 50, 0);
+            store.list_usage_requests_page(since, None, None, &[], &[], &[], &[], &[], 50, 0);
         assert!(!has_more);
         assert_eq!(rows.len(), 1);
         assert_eq!(
@@ -683,11 +1146,154 @@ mod tests {
         );
 
         let (requests, input, output, total, cache_create, cache_read) = store
-            .summarize_usage_requests(since, None, None, &[], &[], &[], &[]);
+            .summarize_usage_requests(since, None, None, &[], &[], &[], &[], &[]);
         assert_eq!(requests, 1);
         assert_eq!(input, 20);
         assert_eq!(output, 2);
         assert_eq!(total, 22);
+        assert_eq!(cache_create, 0);
+        assert_eq!(cache_read, 0);
+    }
+
+    #[test]
+    fn usage_request_sync_batch_uses_ingested_cursor_for_late_backfill() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        {
+            let conn = store.events_db.lock();
+            conn.execute(
+                "INSERT INTO usage_requests(
+                    id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, session_id, node_id, node_name,
+                    input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES(?1, ?2, ?3, 'official', '-', 'gpt-5.2-codex', 'windows', 's-old', 'node-a', 'Desk A', 10, 1, 11, 0, 0)",
+                rusqlite::params!["row-old", 1_000_i64, 1_000_i64],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO usage_requests(
+                    id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, session_id, node_id, node_name,
+                    input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                 ) VALUES(?1, ?2, ?3, 'official', '-', 'gpt-5.2-codex', 'windows', 's-late', 'node-b', 'Desk B', 20, 2, 22, 0, 0)",
+                rusqlite::params!["row-late", 500_i64, 2_000_i64],
+            )
+            .unwrap();
+        }
+
+        let (rows, has_more) = store.list_usage_request_sync_batch(1_000, Some("row-old"), 10);
+        assert!(!has_more);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "row-late");
+        assert_eq!(rows[0].unix_ms, 500);
+    }
+
+    #[test]
+    fn usage_request_sync_upsert_converges_union_without_duplicates() {
+        let tmp_a = tempfile::tempdir().unwrap();
+        let store_a = Store::open(tmp_a.path()).unwrap();
+        let tmp_b = tempfile::tempdir().unwrap();
+        let store_b = Store::open(tmp_b.path()).unwrap();
+
+        let mut rows = Vec::new();
+        for i in 0..300u64 {
+            rows.push(UsageRequestSyncRow {
+                id: format!("row-{i:03}"),
+                unix_ms: 10_000 + i,
+                ingested_at_unix_ms: 20_000 + i,
+                provider: "official".to_string(),
+                api_key_ref: "-".to_string(),
+                model: "gpt-5.2-codex".to_string(),
+                origin: if i % 2 == 0 { "windows" } else { "wsl2" }.to_string(),
+                session_id: format!("session-{i:03}"),
+                node_id: if i % 2 == 0 { "node-a" } else { "node-b" }.to_string(),
+                node_name: if i % 2 == 0 { "Desk A" } else { "Desk B" }.to_string(),
+                input_tokens: 100 + i,
+                output_tokens: 10,
+                total_tokens: 110 + i,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            });
+        }
+
+        assert_eq!(store_a.upsert_usage_request_sync_rows(&rows), 300);
+        assert_eq!(store_b.upsert_usage_request_sync_rows(&rows[..200]), 200);
+
+        let (missing_rows, has_more) = store_a.list_usage_request_sync_batch(20_199, Some("row-199"), 200);
+        assert!(!has_more);
+        assert_eq!(missing_rows.len(), 100);
+        assert_eq!(store_b.upsert_usage_request_sync_rows(&missing_rows), 100);
+        assert_eq!(store_b.upsert_usage_request_sync_rows(&missing_rows), 0);
+
+        let rows_b = store_b.list_usage_requests(400);
+        assert_eq!(rows_b.len(), 300);
+        assert!(rows_b.iter().any(|row| row.get("node_name").and_then(|v| v.as_str()) == Some("Desk A")));
+        assert!(rows_b.iter().any(|row| row.get("node_name").and_then(|v| v.as_str()) == Some("Desk B")));
+    }
+
+    #[test]
+    fn usage_request_queries_support_node_filter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+
+        let rows = [
+            ("node-a-1", "Desk A", "session-a", 110_i64),
+            ("node-a-2", "Desk A", "session-b", 220_i64),
+            ("node-b-1", "Desk B", "session-c", 330_i64),
+        ];
+        {
+            let conn = store.events_db.lock();
+            for (idx, (node_id, node_name, session_id, total_tokens)) in rows.iter().enumerate() {
+                conn.execute(
+                    "INSERT INTO usage_requests(
+                        id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, session_id, node_id, node_name,
+                        input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                     ) VALUES(?1, ?2, ?2, 'official', '-', 'gpt-5.2-codex', 'windows', ?3, ?4, ?5, ?6, 0, ?6, 0, 0)",
+                    rusqlite::params![
+                        format!("row-{idx}"),
+                        50_000_i64 + idx as i64,
+                        session_id,
+                        node_id,
+                        node_name,
+                        total_tokens,
+                    ],
+                )
+                .unwrap();
+            }
+        }
+
+        let (desk_a_rows, has_more) = store.list_usage_requests_page(
+            0,
+            None,
+            None,
+            &["Desk A".to_string()],
+            &[],
+            &[],
+            &[],
+            &[],
+            50,
+            0,
+        );
+        assert!(!has_more);
+        assert_eq!(desk_a_rows.len(), 2);
+        assert!(desk_a_rows
+            .iter()
+            .all(|row| row.get("node_name").and_then(|v| v.as_str()) == Some("Desk A")));
+
+        let (requests, input, output, total, cache_create, cache_read) = store
+            .summarize_usage_requests(
+                0,
+                None,
+                None,
+                &["Desk B".to_string()],
+                &[],
+                &[],
+                &[],
+                &[],
+            );
+        assert_eq!(requests, 1);
+        assert_eq!(input, 330);
+        assert_eq!(output, 0);
+        assert_eq!(total, 330);
         assert_eq!(cache_create, 0);
         assert_eq!(cache_read, 0);
     }

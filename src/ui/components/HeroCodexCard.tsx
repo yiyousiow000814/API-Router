@@ -175,7 +175,7 @@ export function HeroCodexCard({
               </button>
             </div>
             {menuOpen ? (
-              <div className="aoMenu aoMenuCompact" role="menu" aria-label="Swap options menu">
+              <div className="aoMenu aoMenuCompact aoMenuCompactOffset" role="menu" aria-label="Swap options menu">
                 {canChooseTarget && availableTargets.includes('both') ? (
                   <button
                     className="aoMenuItem"

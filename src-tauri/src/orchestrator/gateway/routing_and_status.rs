@@ -3,6 +3,7 @@ async fn health() -> impl IntoResponse {
 }
 
 pub(crate) fn provider_has_remaining_quota_with_hard_cap(
+    cfg: &AppConfig,
     quota_snapshots: &Value,
     provider: &str,
     hard_cap: &crate::orchestrator::secrets::ProviderQuotaHardCapConfig,
@@ -30,15 +31,26 @@ pub(crate) fn provider_has_remaining_quota_with_hard_cap(
             snap.get("monthly_budget_usd").and_then(|v| v.as_f64()),
         ),
     ];
+    let mut saw_enabled_budget_pair = false;
     for (enabled, spent, budget) in budget_pairs {
         if !enabled {
             continue;
         }
         if let (Some(spent), Some(budget)) = (spent, budget) {
+            saw_enabled_budget_pair = true;
             if budget <= 0.0 || spent >= budget {
                 return false;
             }
         }
+    }
+
+    let prefers_budget_over_remaining = cfg
+        .providers
+        .get(provider)
+        .map(crate::orchestrator::providers::resolve_quota_profile)
+        .is_some_and(|profile| profile.ignore_remaining_when_budget_present);
+    if prefers_budget_over_remaining && saw_enabled_budget_pair {
+        return true;
     }
 
     if let Some(remaining) = snap.get("remaining").and_then(|v| v.as_f64()) {
@@ -55,6 +67,7 @@ pub(crate) fn provider_has_remaining_quota_with_hard_cap(
 }
 
 pub(crate) fn quota_snapshot_confirms_available(
+    cfg: &AppConfig,
     quota_snapshots: &Value,
     provider: &str,
     hard_cap: &crate::orchestrator::secrets::ProviderQuotaHardCapConfig,
@@ -72,7 +85,7 @@ pub(crate) fn quota_snapshot_confirms_available(
         .unwrap_or("");
     updated_at_unix_ms > 0
         && last_error.trim().is_empty()
-        && provider_has_remaining_quota_with_hard_cap(quota_snapshots, provider, hard_cap)
+        && provider_has_remaining_quota_with_hard_cap(cfg, quota_snapshots, provider, hard_cap)
 }
 
 fn provider_is_routable_for_selection(
@@ -85,7 +98,7 @@ fn provider_is_routable_for_selection(
     let hard_cap = st.secrets.get_provider_quota_hard_cap(provider);
     let waiting_usage_confirmation = st.router.is_waiting_usage_confirmation(provider);
     if waiting_usage_confirmation {
-        if quota_snapshot_confirms_available(quota_snapshots, provider, &hard_cap) {
+        if quota_snapshot_confirms_available(cfg, quota_snapshots, provider, &hard_cap) {
             if clear_usage_confirmation_requirement {
                 st.router.clear_usage_confirmation_requirement(provider);
             }
@@ -102,7 +115,7 @@ fn provider_is_routable_for_selection(
         .get(provider)
         .is_some_and(|provider_cfg| !provider_cfg.disabled)
         && router_routable
-        && provider_has_remaining_quota_with_hard_cap(quota_snapshots, provider, &hard_cap)
+        && provider_has_remaining_quota_with_hard_cap(cfg, quota_snapshots, provider, &hard_cap)
 }
 
 fn fallback_with_quota(
@@ -165,7 +178,7 @@ fn assignment_is_fresh_for_current_window(assigned_at_unix_ms: u64, now_ms: u64)
 }
 
 fn unhealthy_retry_delay_ms(cfg: &AppConfig) -> u64 {
-    cfg.routing.cooldown_seconds.max(1).saturating_mul(1000)
+    cfg.routing.effective_cooldown_seconds().saturating_mul(1000)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -342,19 +355,45 @@ fn session_demand_ratio_for_balancing(st: &GatewayState, session_key: &str, now_
         &[],
         &[],
         &[],
+        &[],
         &sessions,
     );
     session_demand_ratio_from_usage(request_count, total_tokens)
 }
 
 fn provider_per_request_cost_signal(
+    st: &GatewayState,
     pricing_map: &std::collections::BTreeMap<String, crate::orchestrator::secrets::ProviderPricingConfig>,
     provider: &str,
+    now_ms: u64,
 ) -> Option<f64> {
-    let pricing = pricing_map.get(provider)?;
-    let mode = pricing.mode.trim().to_ascii_lowercase();
-    if mode == "per_request" && pricing.amount_usd.is_finite() && pricing.amount_usd > 0.0 {
-        return Some(pricing.amount_usd);
+    let api_key_ref = st.secrets.get_provider_key(provider).map(|key| {
+        let chars: Vec<char> = key.trim().chars().collect();
+        if chars.len() < 10 {
+            return "set".to_string();
+        }
+        let start_len = std::cmp::min(6, chars.len().saturating_sub(4));
+        let start: String = chars.iter().take(start_len).collect();
+        let end: String = chars
+            .iter()
+            .rev()
+            .take(4)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        format!("{start}******{end}")
+    });
+    let pricing = crate::orchestrator::secrets::resolve_provider_pricing_config(
+        pricing_map,
+        provider,
+        api_key_ref.as_deref(),
+        now_ms,
+    )?;
+    if let Some(amount) =
+        crate::orchestrator::secrets::pricing_per_request_amount_at(Some(pricing), now_ms)
+    {
+        return Some(amount);
     }
     if pricing
         .gap_fill_mode
@@ -529,7 +568,7 @@ fn pick_balanced_provider(
     let provider_pricing = st.secrets.list_provider_pricing();
     let mut provider_costs: HashMap<String, f64> = HashMap::new();
     for provider in candidates.iter() {
-        if let Some(cost) = provider_per_request_cost_signal(&provider_pricing, provider) {
+        if let Some(cost) = provider_per_request_cost_signal(st, &provider_pricing, provider, now_ms) {
             provider_costs.insert(provider.clone(), cost);
         }
     }
@@ -908,6 +947,7 @@ fn decide_provider_with_balanced_mode(
         for provider_name in cfg.providers.keys() {
             let hard_cap = st.secrets.get_provider_quota_hard_cap(provider_name);
             let is_closed = !provider_has_remaining_quota_with_hard_cap(
+                cfg,
                 &quota_snapshots,
                 provider_name,
                 &hard_cap,
@@ -927,10 +967,9 @@ fn decide_provider_with_balanced_mode(
             let cleared_assignments = st.store.delete_all_session_route_assignments();
             if cleared_assignments > 0 {
                 if !reopened_providers.is_empty() {
-                    st.store.add_event(
+                    st.store.events().emit(
                         "gateway",
-                        "info",
-                        "routing.balanced_reassign_on_reopen",
+                        crate::orchestrator::store::EventCode::ROUTING_BALANCED_REASSIGN_ON_REOPEN,
                         "cleared balanced assignments after closed provider reopened",
                         json!({
                             "reopened_providers": reopened_providers,
@@ -939,10 +978,9 @@ fn decide_provider_with_balanced_mode(
                     );
                 }
                 if !recovered_unhealthy_providers.is_empty() {
-                    st.store.add_event(
+                    st.store.events().emit(
                         "gateway",
-                        "info",
-                        "routing.balanced_reassign_on_health_recovery",
+                        crate::orchestrator::store::EventCode::ROUTING_BALANCED_REASSIGN_ON_HEALTH_RECOVERY,
                         "cleared balanced assignments after unhealthy provider recovered",
                         json!({
                             "recovered_providers": recovered_unhealthy_providers,
@@ -1104,6 +1142,8 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
     let now = unix_ms();
     let mut providers = st.router.snapshot(now);
     let manual_override = st.router.manual_override.read().clone();
+    let lan_sync = crate::lan_sync::gateway_status_snapshot(cfg.listen.port, &cfg, &st.secrets);
+    let windows_firewall = crate::platform::windows_firewall::status_snapshot();
 
     let recent_events = st
         .store
@@ -1112,7 +1152,7 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
     let quota = st.store.list_quota_snapshots();
     for (provider_name, snapshot) in providers.iter_mut() {
         let hard_cap = st.secrets.get_provider_quota_hard_cap(provider_name);
-        if !provider_has_remaining_quota_with_hard_cap(&quota, provider_name, &hard_cap) {
+        if !provider_has_remaining_quota_with_hard_cap(&cfg, &quota, provider_name, &hard_cap) {
             snapshot.status = "closed".to_string();
             snapshot.cooldown_until_unix_ms = 0;
         }
@@ -1146,7 +1186,9 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
         "active_reason": active_reason,
         "quota": quota,
         "ledgers": ledgers,
-        "last_activity_unix_ms": last_activity
+        "last_activity_unix_ms": last_activity,
+        "lan_sync": lan_sync,
+        "windows_firewall": windows_firewall
     }))
 }
 
@@ -1158,7 +1200,6 @@ async fn models(
     if let Some(resp) = require_gateway_auth(&st, &headers) {
         return resp;
     }
-    st.last_activity_unix_ms.store(unix_ms(), Ordering::Relaxed);
     let cfg = st.cfg.read().clone();
 
     // Respect per-session preferred providers (keyed by Codex session id). Fall back to the global
@@ -1204,8 +1245,9 @@ async fn models(
         Ok((code, j)) if (200..300).contains(&code) => {
             // Do not update `last_used_by_session` for `/v1/models` since Codex may call it
             // opportunistically. We only want to track actual routing decisions for user
-            // requests (/v1/responses) to keep "back to preferred" semantics stable.
-            st.router.mark_success(&provider_name, unix_ms());
+            // requests (/v1/responses) to keep "back to preferred" semantics stable. It also
+            // must not update last activity / last_ok, otherwise startup model probes would look
+            // like real Codex usage and trigger quota refresh scheduling.
             (StatusCode::OK, Json(j)).into_response()
         }
         _ => (StatusCode::OK, Json(json!({"object":"list","data":[]}))).into_response(),
@@ -1385,6 +1427,61 @@ mod routing_and_status_tests {
     }
 
     #[test]
+    fn provider_stays_open_when_budget_fields_show_remaining_capacity_and_token_remaining_is_absent() {
+        let cfg = AppConfig::default_config();
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        let available = provider_has_remaining_quota_with_hard_cap(
+            &cfg,
+            &json!({
+                "aigateway2": {
+                    "daily_spent_usd": 0.0,
+                    "daily_budget_usd": 300.0
+                }
+            }),
+            "aigateway2",
+            &hard_cap,
+        );
+        assert!(
+            available,
+            "budget-backed providers should stay open when daily spend is below the daily limit"
+        );
+    }
+
+    #[test]
+    fn aigateway_budget_snapshot_ignores_stale_remaining_zero_when_daily_spend_is_below_limit() {
+        let mut cfg = AppConfig::default_config();
+        cfg.providers.insert(
+            "aigateway2".to_string(),
+            crate::orchestrator::config::ProviderConfig {
+                display_name: "AI Gateway 2".to_string(),
+                base_url: "https://aigateway.chat/v1".to_string(),
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                group: None,
+                disabled: false,
+                api_key: String::new(),
+            },
+        );
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
+        let available = provider_has_remaining_quota_with_hard_cap(
+            &cfg,
+            &json!({
+                "aigateway2": {
+                    "remaining": 0.0,
+                    "daily_spent_usd": 0.0,
+                    "daily_budget_usd": 300.0
+                }
+            }),
+            "aigateway2",
+            &hard_cap,
+        );
+        assert!(
+            available,
+            "aigateway should stay open when actual daily spend is below the daily limit even if stale remaining is zero"
+        );
+    }
+
+    #[test]
     fn dense_rank_u64_assigns_same_rank_to_equal_values() {
         let ranks = dense_rank_u64(&[5, 1, 5, 9, 1]);
         assert_eq!(ranks.get(&1), Some(&0));
@@ -1417,6 +1514,27 @@ mod routing_and_status_tests {
 
     #[test]
     fn provider_per_request_cost_signal_handles_primary_and_gap_fill_modes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = crate::orchestrator::gateway::open_store_dir(tmp.path().join("data"))
+            .expect("store");
+        let secrets = crate::orchestrator::secrets::SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("primary", "sk-primary-1234").expect("key primary");
+        secrets.set_provider_key("renamed", "sk-primary-1234").expect("key renamed");
+        secrets.set_provider_key("gap_fill", "sk-gapfill-1234").expect("key gap_fill");
+        let now = crate::orchestrator::store::unix_ms();
+        let cfg = crate::orchestrator::config::AppConfig::default_config();
+        let state = crate::orchestrator::gateway::GatewayState {
+            cfg: std::sync::Arc::new(parking_lot::RwLock::new(cfg.clone())),
+            router: std::sync::Arc::new(crate::orchestrator::router::RouterState::new(&cfg, now)),
+            store,
+            upstream: crate::orchestrator::upstream::UpstreamClient::new(),
+            secrets: secrets.clone(),
+            last_activity_unix_ms: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            last_used_by_session: std::sync::Arc::new(parking_lot::RwLock::new(HashMap::new())),
+            usage_base_speed_cache: std::sync::Arc::new(parking_lot::RwLock::new(HashMap::new())),
+            prev_id_support_cache: std::sync::Arc::new(parking_lot::RwLock::new(HashMap::new())),
+            client_sessions: std::sync::Arc::new(parking_lot::RwLock::new(HashMap::new())),
+        };
         let mut pricing = std::collections::BTreeMap::new();
         pricing.insert(
             "primary".to_string(),
@@ -1424,6 +1542,23 @@ mod routing_and_status_tests {
                 mode: "per_request".to_string(),
                 amount_usd: 0.02,
                 periods: Vec::new(),
+                gap_fill_mode: None,
+                gap_fill_amount_usd: None,
+            },
+        );
+        pricing.insert(
+            "codex-for.me".to_string(),
+            crate::orchestrator::secrets::ProviderPricingConfig {
+                mode: "per_request".to_string(),
+                amount_usd: 0.0,
+                periods: vec![crate::orchestrator::secrets::ProviderPricingPeriod {
+                    id: "period-1".to_string(),
+                    mode: "per_request".to_string(),
+                    amount_usd: 0.017,
+                    api_key_ref: "sk-pri******1234".to_string(),
+                    started_at_unix_ms: now.saturating_sub(10_000),
+                    ended_at_unix_ms: Some(now.saturating_add(10_000)),
+                }],
                 gap_fill_mode: None,
                 gap_fill_amount_usd: None,
             },
@@ -1460,18 +1595,22 @@ mod routing_and_status_tests {
         );
 
         assert_eq!(
-            provider_per_request_cost_signal(&pricing, "primary"),
+            provider_per_request_cost_signal(&state, &pricing, "primary", now),
             Some(0.02)
         );
         assert_eq!(
-            provider_per_request_cost_signal(&pricing, "gap_fill"),
+            provider_per_request_cost_signal(&state, &pricing, "renamed", now),
+            Some(0.017)
+        );
+        assert_eq!(
+            provider_per_request_cost_signal(&state, &pricing, "gap_fill", now),
             Some(0.03)
         );
-        assert_eq!(provider_per_request_cost_signal(&pricing, "none"), None);
+        assert_eq!(provider_per_request_cost_signal(&state, &pricing, "none", now), None);
         assert_eq!(
-            provider_per_request_cost_signal(&pricing, "gap_fill_zero"),
+            provider_per_request_cost_signal(&state, &pricing, "gap_fill_zero", now),
             None
         );
-        assert_eq!(provider_per_request_cost_signal(&pricing, "missing"), None);
+        assert_eq!(provider_per_request_cost_signal(&state, &pricing, "missing", now), None);
     }
 }

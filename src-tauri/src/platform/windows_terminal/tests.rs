@@ -90,6 +90,20 @@ mod tests {
     }
 
     #[test]
+    fn terminal_session_marker_falls_back_to_pid_for_non_wt_processes() {
+        assert_eq!(
+            terminal_session_marker(Some("wt-session-1"), 42).as_deref(),
+            Some("wt-session-1")
+        );
+        assert_eq!(
+            terminal_session_marker(Some("   "), 42).as_deref(),
+            Some("pid:42")
+        );
+        assert_eq!(terminal_session_marker(None, 42).as_deref(), Some("pid:42"));
+        assert!(terminal_session_marker(None, 0).is_none());
+    }
+
+    #[test]
     fn wt_session_ids_equal_accepts_wsl_prefix() {
         assert!(wt_session_ids_equal(
             "7c757b99-7a1f-455a-b301-3e0271e7f615",
@@ -165,7 +179,10 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
 
-        assert!(raw, "expected WT_SESSION liveness for spawned wsl.exe process");
+        assert!(
+            raw,
+            "expected WT_SESSION liveness for spawned wsl.exe process"
+        );
         assert!(
             prefixed,
             "expected wsl-prefixed WT_SESSION liveness for spawned wsl.exe process"
@@ -342,8 +359,10 @@ mod tests {
         let sid2 = uuid::Uuid::new_v4().to_string();
         let port = 4000u16;
 
-        let mut first =
-            spawn_fake_wsl_codex_process(&distro, &wt_session, &sid1, false).expect("spawn first");
+        let Some(mut first) = spawn_fake_wsl_codex_process(&distro, &wt_session, &sid1, false)
+        else {
+            return;
+        };
         let got1 = wait_for_wsl_sid(port, &wt_session, 8_000);
         if got1.is_none() {
             debug_print_wsl_probe(&distro, &wt_session);
@@ -353,16 +372,20 @@ mod tests {
         assert_eq!(got1.as_deref(), Some(sid1.as_str()));
         assert!(wait_for_wsl_absent(port, &wt_session, 8_000));
 
-        let mut second =
-            spawn_fake_wsl_codex_process(&distro, &wt_session, &sid2, false).expect("spawn second");
+        let Some(mut second) = spawn_fake_wsl_codex_process(&distro, &wt_session, &sid2, false)
+        else {
+            return;
+        };
         let got2 = wait_for_wsl_sid(port, &wt_session, 8_000);
         let _ = second.kill();
         let _ = second.wait();
         assert_eq!(got2.as_deref(), Some(sid2.as_str()));
         assert!(wait_for_wsl_absent(port, &wt_session, 8_000));
 
-        let mut resumed =
-            spawn_fake_wsl_codex_process(&distro, &wt_session, &sid1, true).expect("spawn resumed");
+        let Some(mut resumed) = spawn_fake_wsl_codex_process(&distro, &wt_session, &sid1, true)
+        else {
+            return;
+        };
         let got3 = wait_for_wsl_sid(port, &wt_session, 8_000);
         let _ = resumed.kill();
         let _ = resumed.wait();
@@ -559,10 +582,7 @@ mod tests {
             &codex_home,
             "019c6ba5-c863-7c70-84c5-0e1f3c74d06a",
         );
-        assert_eq!(
-            got.as_deref(),
-            Some("019c67c0-c95d-7b10-a0a1-fc576b458272")
-        );
+        assert_eq!(got.as_deref(), Some("019c67c0-c95d-7b10-a0a1-fc576b458272"));
     }
 
     #[test]

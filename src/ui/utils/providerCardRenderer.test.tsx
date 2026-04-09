@@ -4,7 +4,12 @@ import { describe, expect, it } from 'vitest'
 import type { Config, Status } from '../types'
 import { createProviderCardRenderer } from './providerCardRenderer'
 
-function buildConfig(group: string | null): Config {
+function buildConfig(
+  group: string | null,
+  baseUrl = 'https://example.com',
+  accountEmail: string | null = null,
+  hasUsageToken = false,
+): Config {
   return {
     listen: { host: '127.0.0.1', port: 4000 },
     routing: {
@@ -18,9 +23,11 @@ function buildConfig(group: string | null): Config {
     providers: {
       p1: {
         display_name: 'Provider 1',
-        base_url: 'https://example.com',
+        base_url: baseUrl,
         group,
         has_key: true,
+        account_email: accountEmail,
+        has_usage_token: hasUsageToken,
       },
     },
   }
@@ -86,15 +93,12 @@ function renderCardHtml(config: Config, status: Status): string {
   const setEditingProviderName = (() => undefined) as React.Dispatch<
     React.SetStateAction<string | null>
   >
-  const setConfig = (() => undefined) as React.Dispatch<React.SetStateAction<Config | null>>
   const renderer = createProviderCardRenderer({
     config,
     status,
-    baselineBaseUrls: { p1: 'https://example.com' },
     dragOverProvider: null,
     dragBaseTop: 0,
     dragOffsetY: 0,
-    isProviderOpen: () => true,
     registerProviderCardRef: () => () => undefined,
     onProviderHandlePointerDown: () => undefined,
     editingProviderName: null,
@@ -103,15 +107,16 @@ function renderCardHtml(config: Config, status: Status): string {
     setEditingProviderName,
     beginRenameProvider: () => undefined,
     commitRenameProvider: async () => undefined,
-    saveProvider: async () => undefined,
     setProviderDisabled: async () => undefined,
     openProviderGroupManager: () => undefined,
+    openProviderBaseUrlModal: () => undefined,
     openKeyModal: async () => undefined,
     clearKey: async () => undefined,
     deleteProvider: async () => undefined,
-    setConfig,
-    toggleProviderOpen: () => undefined,
+    copyProviderFromConfigSource: async () => undefined,
     openUsageBaseModal: async () => undefined,
+    openUsageAuthModal: async () => undefined,
+    openProviderEmailModal: () => undefined,
     clearUsageBaseUrl: async () => undefined,
     setProviderQuotaHardCap: async () => undefined,
   })
@@ -124,24 +129,106 @@ function renderCardHtml(config: Config, status: Status): string {
 describe('provider usage controls rendering', () => {
   it('shows direct usage controls when provider is not grouped', () => {
     const html = renderCardHtml(buildConfig(null), buildStatus())
-    expect(html).toContain('Usage Base')
-    expect(html).toContain('daily hard cap')
-    expect(html).toContain('monthly hard cap')
-    expect(html).toContain('Usage base sets the usage endpoint.')
+    expect(html).toContain('Email')
+    expect(html).not.toContain('Usage Auth')
+    expect(html).toContain('Base URL')
+    expect(html).toContain('Usage URL')
+    expect(html).toContain('daily cap')
+    expect(html).toContain('monthly cap')
+    expect(html).not.toContain('Usage controls')
+    expect(html).not.toContain('Show')
+    expect(html).not.toContain('Hide')
+    expect(html).not.toContain('updated:')
+    expect(html).not.toContain('Usage URL sets the usage endpoint.')
+  })
+
+  it('keeps the email action visible when an account email exists', () => {
+    const html = renderCardHtml(buildConfig(null, 'https://example.com', 'user@example.com'), buildStatus())
+    expect(html).toContain('Email')
+    expect(html).not.toContain('email: user@example.com')
   })
 
   it('shows current group when provider has a group', () => {
     const html = renderCardHtml(buildConfig('alpha'), buildStatus())
-    expect(html).toContain('Usage controls are managed in Group Manager.')
+    expect(html).toContain('Email')
     expect(html).toContain('Open Group Manager')
-    expect(html).toContain('Current group: alpha')
+    expect(html).not.toContain('Current group: alpha')
+  })
+
+  it('disables grouped controls on borrowed providers', () => {
+    const config = buildConfig('alpha')
+    config.providers.p1 = {
+      ...config.providers.p1,
+      borrowed: true,
+      editable: false,
+    }
+    const html = renderCardHtml(config, buildStatus())
+    expect(html).toContain('Open Group Manager')
+    expect(html).toContain('disabled=""')
   })
 
   it('hides hard-cap checkboxes when budget windows are not detected yet', () => {
     const html = renderCardHtml(buildConfig(null), buildStatusWithoutDetectedWindows())
-    expect(html).toContain('Budget windows not detected yet. Hard cap options are hidden until usage windows appear.')
-    expect(html).not.toContain('daily hard cap')
-    expect(html).not.toContain('weekly hard cap')
-    expect(html).not.toContain('monthly hard cap')
+    expect(html).not.toContain('daily cap')
+    expect(html).not.toContain('weekly cap')
+    expect(html).not.toContain('monthly cap')
+  })
+
+  it('hides usage url for codex-for hosts', () => {
+    const html = renderCardHtml(buildConfig(null, 'https://api-vip.codex-for.vip/v1'), buildStatus())
+    expect(html).toContain('Email')
+    expect(html).toContain('Usage Auth')
+    expect(html).not.toContain('Usage URL')
+    expect(html).not.toContain('Usage URL sets the usage endpoint.')
+  })
+
+  it('keeps only usage url for packycode hosts', () => {
+    const html = renderCardHtml(buildConfig(null, 'https://codex.packycode.com/v1'), buildStatus())
+    expect(html).toContain('Email')
+    expect(html).toContain('Usage URL')
+    expect(html).not.toContain('Login')
+    expect(html).not.toContain('Logout')
+  })
+
+  it('does not show auth button even when usage auth exists', () => {
+    const html = renderCardHtml(buildConfig(null, 'https://codex.packycode.com/v1', null, true), buildStatus())
+    expect(html).not.toContain('Logout')
+    expect(html).not.toContain('Logged in')
+  })
+
+  it('does not show auth status pill on grouped cards', () => {
+    const html = renderCardHtml(buildConfig('alpha', 'https://codex.packycode.com/v1', null, true), buildStatus())
+    expect(html).not.toContain('Logged in')
+    expect(html).not.toContain('Logout')
+  })
+
+  it('shows copied state for borrowed providers already copied locally', () => {
+    const config = buildConfig(null)
+    config.providers.p1 = {
+      ...config.providers.p1,
+      borrowed: true,
+      editable: false,
+      source_node_id: 'node-b',
+      shared_provider_id: 'node-b:p1',
+      local_copy_state: 'copied',
+    }
+    const html = renderCardHtml(config, buildStatus())
+    expect(html).toContain('Copied')
+    expect(html).not.toContain('>Copy<')
+  })
+
+  it('shows linked state when an equivalent local provider already exists', () => {
+    const config = buildConfig(null)
+    config.providers.p1 = {
+      ...config.providers.p1,
+      borrowed: true,
+      editable: false,
+      source_node_id: 'node-b',
+      shared_provider_id: 'node-b:p1',
+      local_copy_state: 'linked',
+    }
+    const html = renderCardHtml(config, buildStatus())
+    expect(html).toContain('Linked')
+    expect(html).not.toContain('>Copy<')
   })
 })

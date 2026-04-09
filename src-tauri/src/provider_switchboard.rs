@@ -1,5 +1,6 @@
 use crate::app_state::AppState;
 use crate::constants::{GATEWAY_MODEL_PROVIDER_ID, GATEWAY_WINDOWS_HOST};
+use crate::orchestrator::config::AppConfig;
 use crate::orchestrator::store::unix_ms;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -195,6 +196,12 @@ fn app_auth_path(state: &tauri::State<'_, AppState>) -> PathBuf {
     app_auth_path_from_config_path(&state.config_path)
 }
 
+fn load_app_auth_if_signed_in(config_path: &Path) -> Option<serde_json::Value> {
+    let auth = read_json(&app_auth_path_from_config_path(config_path)).ok()?;
+    ensure_signed_in(&auth).ok()?;
+    Some(auth)
+}
+
 fn switchboard_state_path_from_config_path(config_path: &Path) -> PathBuf {
     app_codex_home_from_config_path(config_path).join("provider-switchboard-state.json")
 }
@@ -226,7 +233,36 @@ fn load_switchboard_state_from_config_path(config_path: &Path) -> Option<serde_j
     read_json(&switchboard_state_path_from_config_path(config_path)).ok()
 }
 
-fn ensure_cli_files_exist(cli_home: &Path) -> Result<(), String> {
+fn ensure_cli_auth_exists(
+    cli_home: &Path,
+    fallback_auth: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    let auth = cli_auth_path(cli_home);
+    if auth.exists() {
+        return Ok(());
+    }
+    let Some(app_auth) = fallback_auth else {
+        return Err(format!("Missing auth.json in: {}", cli_home.display()));
+    };
+    write_json(&auth, app_auth).map_err(|e| format!("restore auth.json failed: {e}"))
+}
+
+fn ensure_cli_files_exist(
+    cli_home: &Path,
+    fallback_auth: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    if !cli_home.exists() {
+        return Err(format!("Codex dir does not exist: {}", cli_home.display()));
+    }
+    let cfg = cli_cfg_path(cli_home);
+    if !cfg.exists() {
+        return Err(format!("Missing config.toml in: {}", cli_home.display()));
+    }
+    ensure_cli_auth_exists(cli_home, fallback_auth)?;
+    Ok(())
+}
+
+fn ensure_cli_files_exist_read_only(cli_home: &Path) -> Result<(), String> {
     if !cli_home.exists() {
         return Err(format!("Codex dir does not exist: {}", cli_home.display()));
     }
@@ -268,8 +304,9 @@ fn ensure_signed_in(app_auth_json: &serde_json::Value) -> Result<(), String> {
     Err("Codex is not signed in yet. Click Log in first.".to_string())
 }
 
-fn ensure_backup_exists(cli_home: &Path) -> Result<(), String> {
-    ensure_cli_files_exist(cli_home)?;
+fn ensure_backup_exists(config_path: &Path, cli_home: &Path) -> Result<(), String> {
+    let app_auth = load_app_auth_if_signed_in(config_path);
+    ensure_cli_files_exist(cli_home, app_auth.as_ref())?;
     if home_swap_state(cli_home)? == "swapped" {
         return Ok(());
     }
@@ -282,8 +319,9 @@ fn ensure_backup_exists(cli_home: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn restore_home_original(cli_home: &Path) -> Result<(), String> {
-    ensure_cli_files_exist(cli_home)?;
+fn restore_home_original(config_path: &Path, cli_home: &Path) -> Result<(), String> {
+    let app_auth = load_app_auth_if_signed_in(config_path);
+    ensure_cli_files_exist(cli_home, app_auth.as_ref())?;
     if home_swap_state(cli_home)? != "swapped" {
         return Ok(());
     }
@@ -325,7 +363,8 @@ fn normalize_cfg_for_switchboard_base(cfg: &str) -> String {
 }
 
 fn read_cfg_base_text(config_path: &Path, cli_home: &Path) -> Result<String, String> {
-    ensure_cli_files_exist(cli_home)?;
+    let app_auth = load_app_auth_if_signed_in(config_path);
+    ensure_cli_files_exist(cli_home, app_auth.as_ref())?;
     let state = home_swap_state(cli_home)?;
     if state == "original" {
         if let Some(base_txt) = load_switchboard_base_cfg(config_path, cli_home) {
@@ -365,10 +404,9 @@ fn switch_to_gateway_home_impl(state: &AppState, cli_home: &Path) -> Result<(), 
 
     let base_cfg = read_cfg_base_text(&state.config_path, cli_home)?;
     if let Err(e) = save_switchboard_base_cfg(&state.config_path, cli_home, &base_cfg) {
-        state.gateway.store.add_event(
+        state.gateway.store.events().emit(
             "codex",
-            "error",
-            "codex.provider_switchboard.base_save_failed",
+            crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_BASE_SAVE_FAILED,
             &format!("Provider switchboard base save failed: {e}"),
             json!({
               "cli_home": cli_home.to_string_lossy(),
@@ -377,10 +415,9 @@ fn switch_to_gateway_home_impl(state: &AppState, cli_home: &Path) -> Result<(), 
         );
     }
     if let Err(e) = save_switchboard_base_meta(&state.config_path, cli_home, &base_cfg) {
-        state.gateway.store.add_event(
+        state.gateway.store.events().emit(
             "codex",
-            "error",
-            "codex.provider_switchboard.base_meta_save_failed",
+            crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_BASE_META_SAVE_FAILED,
             &format!("Provider switchboard base meta save failed: {e}"),
             json!({
               "cli_home": cli_home.to_string_lossy(),
@@ -398,10 +435,14 @@ fn switch_to_gateway_home_impl(state: &AppState, cli_home: &Path) -> Result<(), 
         GATEWAY_WINDOWS_HOST
     };
     let gateway_base_url = format!("http://{gateway_host}:{listen_port}/v1");
-    let next_cfg =
-        build_direct_provider_cfg(&base_cfg, GATEWAY_MODEL_PROVIDER_ID, &gateway_base_url);
+    let next_cfg = build_direct_provider_cfg(
+        &base_cfg,
+        GATEWAY_MODEL_PROVIDER_ID,
+        &gateway_base_url,
+        None,
+    );
     let next_auth = auth_with_openai_key(gateway_token.trim());
-    write_swapped_files(cli_home, &next_auth, &next_cfg)
+    write_swapped_files(&state.config_path, cli_home, &next_auth, &next_cfg)
 }
 
 fn is_wsl_unc_home(cli_home: &Path) -> bool {
@@ -521,17 +562,31 @@ fn insert_provider_section_near_top(base_cfg: &str, provider_section: &str) -> S
     lines.join(eol) + eol
 }
 
-fn build_direct_provider_cfg(orig_cfg: &str, provider: &str, base_url: &str) -> String {
+fn build_direct_provider_cfg(
+    orig_cfg: &str,
+    provider: &str,
+    base_url: &str,
+    experimental_bearer_token: Option<&str>,
+) -> String {
     // Use the switchboard base shape to avoid accumulating whitespace while switching.
     let mut base = normalize_cfg_for_switchboard_base(orig_cfg);
     base = remove_model_provider_sections(&base, &[GATEWAY_MODEL_PROVIDER_ID, provider]);
     let eol = if base.contains("\r\n") { "\r\n" } else { "\n" };
     let provider_esc = escape_toml(provider);
     let base_url_esc = escape_toml(base_url);
+    let bearer_line = experimental_bearer_token
+        .map(|value| {
+            format!(
+                "experimental_bearer_token = \"{}\"{eol}",
+                escape_toml(value)
+            )
+        })
+        .unwrap_or_default();
     let provider_section = format!(
-        "[model_providers.\"{provider}\"]{eol}name = \"{provider}\"{eol}base_url = \"{base_url}\"{eol}wire_api = \"responses\"{eol}requires_openai_auth = true{eol}",
+        "[model_providers.\"{provider}\"]{eol}name = \"{provider}\"{eol}base_url = \"{base_url}\"{eol}wire_api = \"responses\"{eol}{bearer_line}requires_openai_auth = true{eol}",
         provider = provider_esc,
         base_url = base_url_esc,
+        bearer_line = bearer_line,
         eol = eol
     );
     let base_with_section = insert_provider_section_near_top(&base, &provider_section);
@@ -552,12 +607,17 @@ fn auth_with_openai_key(key: &str) -> serde_json::Value {
     json!({ "OPENAI_API_KEY": key })
 }
 
+fn auth_without_openai_key() -> serde_json::Value {
+    json!({})
+}
+
 fn write_swapped_files(
+    config_path: &Path,
     cli_home: &Path,
     next_auth: &serde_json::Value,
     next_cfg_text: &str,
 ) -> Result<(), String> {
-    ensure_backup_exists(cli_home)?;
+    ensure_backup_exists(config_path, cli_home)?;
     let auth_path = cli_auth_path(cli_home);
     let cfg_path = cli_cfg_path(cli_home);
     let cur_auth = read_bytes(&auth_path)?;
@@ -571,6 +631,12 @@ fn write_swapped_files(
         return Err(e);
     }
     Ok(())
+}
+
+fn provider_key_storage_uses_config(storage_mode: &str) -> bool {
+    storage_mode
+        .trim()
+        .eq_ignore_ascii_case("config_toml_experimental_bearer_token")
 }
 
 fn model_provider_id(cfg_txt: &str) -> Option<String> {
@@ -759,6 +825,7 @@ pub fn get_status(
 ) -> Result<serde_json::Value, String> {
     let homes = resolve_cli_homes(cli_homes)?;
     let app_cfg = state.gateway.cfg.read().clone();
+    let dirs = collect_status_dirs(&homes, &app_cfg)?;
     let provider_options = app_cfg
         .provider_order
         .iter()
@@ -766,15 +833,22 @@ pub fn get_status(
         .cloned()
         .collect::<Vec<_>>();
 
+    build_status_response(dirs, provider_options)
+}
+
+fn collect_status_dirs(
+    homes: &[PathBuf],
+    app_cfg: &AppConfig,
+) -> Result<Vec<serde_json::Value>, String> {
     let mut dirs = Vec::new();
-    for h in &homes {
-        ensure_cli_files_exist(h)?;
+    for h in homes {
+        ensure_cli_files_exist_read_only(h)?;
         let cfg_txt = read_text(&cli_cfg_path(h))?;
         let (mode, provider_raw) = home_mode(h)?;
         let provider = if mode == "provider" {
             provider_raw.and_then(|pid| {
                 model_provider_section_base_url(&cfg_txt, &pid)
-                    .and_then(|u| provider_name_by_base_url(&app_cfg, &u))
+                    .and_then(|u| provider_name_by_base_url(app_cfg, &u))
                     .or(Some(pid))
             })
         } else {
@@ -787,6 +861,13 @@ pub fn get_status(
         }));
     }
 
+    Ok(dirs)
+}
+
+fn build_status_response(
+    dirs: Vec<serde_json::Value>,
+    provider_options: Vec<String>,
+) -> Result<serde_json::Value, String> {
     let unique_modes = dirs
         .iter()
         .filter_map(|d| d.get("mode").and_then(|x| x.as_str()))
@@ -863,6 +944,8 @@ fn sync_active_provider_target_for_key_impl(
     if key.trim().is_empty() {
         return Err(format!("provider key is empty: {provider}"));
     }
+    let storage_mode = state.secrets.get_provider_key_storage_mode(provider);
+    let use_config_storage = provider_key_storage_uses_config(&storage_mode);
 
     for h in &homes {
         let (mode, mp) = home_mode(h)?;
@@ -870,9 +953,18 @@ fn sync_active_provider_target_for_key_impl(
             continue;
         }
         let orig_cfg = read_cfg_base_text(&state.config_path, h)?;
-        let next_cfg = build_direct_provider_cfg(&orig_cfg, provider, &base_url);
-        let next_auth = auth_with_openai_key(key.trim());
-        write_swapped_files(h, &next_auth, &next_cfg)?;
+        let next_cfg = build_direct_provider_cfg(
+            &orig_cfg,
+            provider,
+            &base_url,
+            use_config_storage.then_some(key.trim()),
+        );
+        let next_auth = if use_config_storage {
+            auth_without_openai_key()
+        } else {
+            auth_with_openai_key(key.trim())
+        };
+        write_swapped_files(&state.config_path, h, &next_auth, &next_cfg)?;
     }
 
     Ok(())
@@ -902,11 +994,6 @@ fn sync_gateway_target_for_rotated_token_impl(state: &AppState) -> Result<Vec<St
         .unwrap_or_default();
     let homes = resolve_cli_homes(homes)?;
 
-    let gateway_token = state.secrets.ensure_gateway_token()?;
-    if gateway_token.trim().is_empty() {
-        return Err("gateway token is empty".to_string());
-    }
-    let next_auth = auth_with_openai_key(gateway_token.trim());
     let mut failed_targets: Vec<String> = Vec::new();
 
     for h in &homes {
@@ -920,20 +1007,9 @@ fn sync_gateway_target_for_rotated_token_impl(state: &AppState) -> Result<Vec<St
         if mode != "gateway" {
             continue;
         }
-        let auth_path = cli_auth_path(h);
-        let current_gateway_token = read_json(&auth_path).ok().and_then(|v| {
-            v.get("OPENAI_API_KEY")
-                .and_then(|x| x.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-        });
-        if current_gateway_token.as_deref() == Some(gateway_token.trim()) {
-            continue;
-        }
-        if let Err(e) = write_json(&auth_path, &next_auth) {
+        if let Err(e) = switch_to_gateway_home_impl(state, h) {
             failed_targets.push(format!(
-                "{} (write auth.json failed: {e})",
+                "{} (rewrite gateway target failed: {e})",
                 h.to_string_lossy()
             ));
         }

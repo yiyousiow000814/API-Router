@@ -23,8 +23,17 @@ import type {
   UsagePricingSaveState,
   UsageScheduleSaveState,
 } from '../types/usage'
-import type { KeyModalState, UsageBaseModalState } from '../hooks/providerActions/types'
+import type {
+  KeyModalState,
+  ProviderBaseUrlModalState,
+  ProviderEmailModalState,
+  UsageAuthModalState,
+  UsageBaseModalState,
+} from '../hooks/providerActions/types'
 import { KeyModal } from './KeyModal'
+import { ProviderBaseUrlModal } from './ProviderBaseUrlModal'
+import { ProviderEmailModal } from './ProviderEmailModal'
+import { UsageAuthModal } from './UsageAuthModal'
 import { UsageBaseModal } from './UsageBaseModal'
 import { UsageHistoryModal } from './UsageHistoryModal'
 import { UsagePricingModal } from './UsagePricingModal'
@@ -34,6 +43,7 @@ import { GatewayTokenModal } from './GatewayTokenModal'
 import { ConfigModal } from './ConfigModal'
 import { RawConfigModal } from './RawConfigModal'
 import { CodexSwapModal } from './CodexSwapModal'
+import { ModalBackdrop } from './ModalBackdrop'
 
 type RotateGatewayTokenResult = {
   token: string
@@ -55,10 +65,25 @@ type ScheduleCurrencyMenuState = {
   width: number
 } | null
 
+type PendingTrackedRemoval = {
+  row: SpendHistoryRow
+} | null
+
 type Props = {
   keyModal: KeyModalState
   setKeyModal: Dispatch<SetStateAction<KeyModalState>>
   saveKey: () => Promise<void>
+  providerBaseUrlModal: ProviderBaseUrlModalState
+  setProviderBaseUrlModal: Dispatch<SetStateAction<ProviderBaseUrlModalState>>
+  saveProviderBaseUrl: () => Promise<void>
+  providerEmailModal: ProviderEmailModalState
+  setProviderEmailModal: Dispatch<SetStateAction<ProviderEmailModalState>>
+  saveProviderEmail: () => Promise<void>
+  clearProviderEmail: (provider: string) => Promise<void>
+  usageAuthModal: UsageAuthModalState
+  setUsageAuthModal: Dispatch<SetStateAction<UsageAuthModalState>>
+  saveUsageAuth: () => Promise<void>
+  clearUsageAuth: (provider: string) => Promise<void>
   usageBaseModal: UsageBaseModalState
   setUsageBaseModal: Dispatch<SetStateAction<UsageBaseModalState>>
   saveUsageBaseUrl: () => Promise<void>
@@ -67,14 +92,26 @@ type Props = {
   openRawConfigModal: (options?: { reopenGettingStartedOnFail?: boolean }) => Promise<void>
   configModalOpen: boolean
   config: Config | null
-  allProviderPanelsOpen: boolean
-  setAllProviderPanels: (open: boolean) => void
   newProviderName: string
   newProviderBaseUrl: string
+  newProviderKey: string
+  newProviderKeyStorage: 'auth_json' | 'config_toml_experimental_bearer_token'
   nextProviderPlaceholder: string
   setNewProviderName: Dispatch<SetStateAction<string>>
   setNewProviderBaseUrl: Dispatch<SetStateAction<string>>
+  setNewProviderKey: Dispatch<SetStateAction<string>>
+  setNewProviderKeyStorage: Dispatch<SetStateAction<'auth_json' | 'config_toml_experimental_bearer_token'>>
   addProvider: () => Promise<void>
+  followConfigSource: (nodeId: string) => Promise<void>
+  clearFollowedConfigSource: () => Promise<void>
+  requestLanPair: (nodeId: string) => Promise<string | null>
+  approveLanPair: (requestId: string) => Promise<string | null>
+  submitLanPairPin: (nodeId: string, requestId: string, pinCode: string) => Promise<void>
+  requestLanRemoteUpdateSameVersion: (nodeId: string) => Promise<void>
+  lanRemoteUpdatePendingByNode: Record<
+    string,
+    { stage: 'requesting' | 'refreshing'; detail: string; startedAtUnixMs: number }
+  >
   openProviderGroupManager: (provider?: string) => void
   setConfigModalOpen: Dispatch<SetStateAction<boolean>>
   rawConfigModalOpen: boolean
@@ -107,6 +144,7 @@ type Props = {
   setUsageHistoryModalOpen: Dispatch<SetStateAction<boolean>>
   usageHistoryLoading: boolean
   usageHistoryRows: SpendHistoryRow[]
+  setUsageHistoryRows: Dispatch<SetStateAction<SpendHistoryRow[]>>
   usageHistoryDrafts: Record<string, UsageHistoryDraft>
   usageHistoryEditCell: string | null
   setUsageHistoryDrafts: Dispatch<SetStateAction<Record<string, UsageHistoryDraft>>>
@@ -218,12 +256,24 @@ export function AppModals(props: Props) {
   const [draftCodexSwapDir2, setDraftCodexSwapDir2] = useState('')
   const [draftCodexSwapUseWindows, setDraftCodexSwapUseWindows] = useState(false)
   const [draftCodexSwapUseWsl, setDraftCodexSwapUseWsl] = useState(false)
+  const [pendingTrackedRemoval, setPendingTrackedRemoval] = useState<PendingTrackedRemoval>(null)
   const gatewayPort = normalizeGatewayPort(props.listenPort)
   const codexSwapModalWasOpenRef = useRef(false)
   const {
     keyModal,
     setKeyModal,
     saveKey,
+    providerBaseUrlModal,
+    setProviderBaseUrlModal,
+    saveProviderBaseUrl,
+    providerEmailModal,
+    setProviderEmailModal,
+    saveProviderEmail,
+    clearProviderEmail,
+    usageAuthModal,
+    setUsageAuthModal,
+    saveUsageAuth,
+    clearUsageAuth,
     usageBaseModal,
     setUsageBaseModal,
     saveUsageBaseUrl,
@@ -232,14 +282,23 @@ export function AppModals(props: Props) {
     openRawConfigModal,
     configModalOpen,
     config,
-    allProviderPanelsOpen,
-    setAllProviderPanels,
     newProviderName,
     newProviderBaseUrl,
+    newProviderKey,
+    newProviderKeyStorage,
     nextProviderPlaceholder,
     setNewProviderName,
     setNewProviderBaseUrl,
+    setNewProviderKey,
+    setNewProviderKeyStorage,
     addProvider,
+    followConfigSource,
+    clearFollowedConfigSource,
+    requestLanPair,
+    approveLanPair,
+    submitLanPairPin,
+    requestLanRemoteUpdateSameVersion,
+    lanRemoteUpdatePendingByNode,
     openProviderGroupManager,
     setConfigModalOpen,
     rawConfigModalOpen,
@@ -272,6 +331,7 @@ export function AppModals(props: Props) {
     setUsageHistoryModalOpen,
     usageHistoryLoading,
     usageHistoryRows,
+    setUsageHistoryRows,
     usageHistoryDrafts,
     usageHistoryEditCell,
     setUsageHistoryDrafts,
@@ -379,17 +439,44 @@ export function AppModals(props: Props) {
         open={keyModal.open}
         provider={keyModal.provider}
         value={keyModal.value}
+        storage={keyModal.storage}
         loading={keyModal.loading}
         loadFailed={keyModal.loadFailed}
         onChange={(value) => setKeyModal((m) => ({ ...m, value }))}
-        onCancel={() => setKeyModal({ open: false, provider: '', value: '', loading: false, loadFailed: false })}
+        onChangeStorage={(storage) => setKeyModal((m) => ({ ...m, storage }))}
+        onCancel={() =>
+          setKeyModal({ open: false, provider: '', value: '', storage: 'auth_json', loading: false, loadFailed: false })
+        }
         onSave={() => void saveKey()}
+      />
+
+      <ProviderBaseUrlModal
+        open={providerBaseUrlModal.open}
+        provider={providerBaseUrlModal.provider}
+        value={providerBaseUrlModal.value}
+        onChange={(value) => setProviderBaseUrlModal((modal) => ({ ...modal, value }))}
+        onCancel={() => setProviderBaseUrlModal({ open: false, provider: '', value: '' })}
+        onSave={() => void saveProviderBaseUrl()}
+      />
+
+      <ProviderEmailModal
+        open={providerEmailModal.open}
+        provider={providerEmailModal.provider}
+        value={providerEmailModal.value}
+        onChange={(value) => setProviderEmailModal((modal) => ({ ...modal, value }))}
+        onCancel={() => setProviderEmailModal({ open: false, provider: '', value: '' })}
+        onClear={() => {
+          void clearProviderEmail(providerEmailModal.provider)
+          setProviderEmailModal({ open: false, provider: '', value: '' })
+        }}
+        onSave={() => void saveProviderEmail()}
       />
 
       <UsageBaseModal
         open={usageBaseModal.open}
         provider={usageBaseModal.provider}
         value={usageBaseModal.value}
+        effectiveValue={usageBaseModal.effectiveValue}
         onChange={(value) =>
           setUsageBaseModal((m) => ({
             ...m,
@@ -402,10 +489,17 @@ export function AppModals(props: Props) {
           setUsageBaseModal({
             open: false,
             provider: '',
+            baseUrl: '',
+            showUrlInput: true,
             value: '',
             auto: false,
             explicitValue: '',
             effectiveValue: '',
+            token: '',
+            username: '',
+            password: '',
+            loading: false,
+            loadFailed: false,
           })
         }
         onClear={() =>
@@ -417,6 +511,45 @@ export function AppModals(props: Props) {
           }))
         }
         onSave={() => void saveUsageBaseUrl()}
+      />
+
+      <UsageAuthModal
+        open={usageAuthModal.open}
+        provider={usageAuthModal.provider}
+        baseUrl={usageAuthModal.baseUrl}
+        token={usageAuthModal.token}
+        username={usageAuthModal.username}
+        password={usageAuthModal.password}
+        loading={usageAuthModal.loading}
+        loadFailed={usageAuthModal.loadFailed}
+        onChangeUsername={(username) => setUsageAuthModal((m) => ({ ...m, username }))}
+        onChangePassword={(password) => setUsageAuthModal((m) => ({ ...m, password }))}
+        onCancel={() =>
+          setUsageAuthModal({
+            open: false,
+            provider: '',
+            baseUrl: '',
+            token: '',
+            username: '',
+            password: '',
+            loading: false,
+            loadFailed: false,
+          })
+        }
+        onClear={() => {
+          void clearUsageAuth(usageAuthModal.provider)
+          setUsageAuthModal({
+            open: false,
+            provider: '',
+            baseUrl: '',
+            token: '',
+            username: '',
+            password: '',
+            loading: false,
+            loadFailed: false,
+          })
+        }}
+        onSave={() => void saveUsageAuth()}
       />
 
       <InstructionModal
@@ -446,14 +579,23 @@ requires_openai_auth = true`}
       <ConfigModal
         open={configModalOpen}
         config={config}
-        allProviderPanelsOpen={allProviderPanelsOpen}
-        setAllProviderPanels={setAllProviderPanels}
         newProviderName={newProviderName}
         newProviderBaseUrl={newProviderBaseUrl}
+        newProviderKey={newProviderKey}
+        newProviderKeyStorage={newProviderKeyStorage}
         nextProviderPlaceholder={nextProviderPlaceholder}
         setNewProviderName={setNewProviderName}
         setNewProviderBaseUrl={setNewProviderBaseUrl}
+        setNewProviderKey={setNewProviderKey}
+        setNewProviderKeyStorage={setNewProviderKeyStorage}
         onAddProvider={() => void addProvider()}
+        onFollowSource={(nodeId) => void followConfigSource(nodeId)}
+        onClearFollowSource={() => void clearFollowedConfigSource()}
+        onRequestPair={requestLanPair}
+        onApprovePair={approveLanPair}
+        onSubmitPairPin={submitLanPairPin}
+        onSyncPeerVersion={(nodeId) => void requestLanRemoteUpdateSameVersion(nodeId)}
+        remoteUpdatePendingByNode={lanRemoteUpdatePendingByNode}
         onOpenGroupManager={() => openProviderGroupManager()}
         onClose={() => setConfigModalOpen(false)}
         providerListRef={providerListRef}
@@ -544,6 +686,9 @@ requires_openai_auth = true`}
             flashToast(String(e), 'error')
           }
         }}
+        onRemoveTrackedRow={async (row) => {
+          setPendingTrackedRemoval({ row })
+        }}
         usageHistoryTableSurfaceRef={usageHistoryTableSurfaceRef}
         usageHistoryTableWrapRef={usageHistoryTableWrapRef}
         usageHistoryScrollbarOverlayRef={usageHistoryScrollbarOverlayRef}
@@ -555,6 +700,86 @@ requires_openai_auth = true`}
         onUsageHistoryScrollbarPointerUp={onUsageHistoryScrollbarPointerUp}
         onUsageHistoryScrollbarLostPointerCapture={onUsageHistoryScrollbarLostPointerCapture}
       />
+      {pendingTrackedRemoval ? (
+        <ModalBackdrop className="aoModalBackdrop aoModalBackdropTop" onClose={() => setPendingTrackedRemoval(null)}>
+          <div className="aoModal aoTrackedRemovalConfirmModal" onClick={(e) => e.stopPropagation()}>
+            <div className="aoTrackedRemovalConfirmTitle">Remove tracked row?</div>
+            <div className="aoTrackedRemovalConfirmText">
+              {pendingTrackedRemoval.row.provider} {pendingTrackedRemoval.row.day_key}
+            </div>
+            <div className="aoTrackedRemovalConfirmSub">This removes all tracked entries merged into this daily row.</div>
+            <div className="aoTrackedRemovalConfirmSummary" aria-label="Tracked row summary">
+              <div className="aoTrackedRemovalConfirmSummaryRow">
+                <span className="aoTrackedRemovalConfirmSummaryItem">
+                  <span className="aoTrackedRemovalConfirmSummaryLabel">Req</span>
+                  <span className="aoTrackedRemovalConfirmSummaryValue">
+                    {(pendingTrackedRemoval.row.req_count ?? 0).toLocaleString()}
+                  </span>
+                </span>
+                <span className="aoTrackedRemovalConfirmSummaryItem">
+                  <span className="aoTrackedRemovalConfirmSummaryLabel">Tokens</span>
+                  <span className="aoTrackedRemovalConfirmSummaryValue">
+                    {(pendingTrackedRemoval.row.total_tokens ?? 0).toLocaleString()}
+                  </span>
+                </span>
+              </div>
+              <div className="aoTrackedRemovalConfirmSummaryRow">
+                <span className="aoTrackedRemovalConfirmSummaryItem">
+                  <span className="aoTrackedRemovalConfirmSummaryLabel">Tracked $</span>
+                  <span className="aoTrackedRemovalConfirmSummaryValue">
+                    {formatUsdMaybe(pendingTrackedRemoval.row.tracked_total_usd ?? null)}
+                  </span>
+                </span>
+                <span className="aoTrackedRemovalConfirmSummaryItem">
+                  <span className="aoTrackedRemovalConfirmSummaryLabel">Effective $</span>
+                  <span className="aoTrackedRemovalConfirmSummaryValue">
+                    {formatUsdMaybe(pendingTrackedRemoval.row.effective_total_usd ?? null)}
+                  </span>
+                </span>
+              </div>
+            </div>
+            <div className="aoTrackedRemovalConfirmActions">
+              <button className="aoBtn" onClick={() => setPendingTrackedRemoval(null)}>
+                Cancel
+              </button>
+              <button
+                className="aoBtn aoBtnDanger"
+                onClick={async () => {
+                  const { row } = pendingTrackedRemoval
+                  try {
+                    setUsageHistoryEditCell(null)
+                    const key = `${row.provider}|${row.day_key}`
+                    if (isDevPreview) {
+                      setUsageHistoryRows((prev) =>
+                        prev.filter((entry) => !(entry.provider === row.provider && entry.day_key === row.day_key)),
+                      )
+                      setUsageHistoryDrafts((prev) => {
+                        const next = { ...prev }
+                        delete next[key]
+                        return next
+                      })
+                      flashToast(`Removed tracked row: ${row.provider} ${row.day_key}`)
+                    } else {
+                      const removed = await invoke<number>('remove_tracked_spend_history_entries', {
+                        provider: row.provider,
+                        dayKey: row.day_key,
+                      })
+                      await refreshUsageHistory({ silent: true })
+                      await refreshUsageStatistics({ silent: true })
+                      flashToast(`Removed ${removed} tracked entry(s): ${row.provider} ${row.day_key}`)
+                    }
+                    setPendingTrackedRemoval(null)
+                  } catch (e) {
+                    flashToast(String(e), 'error')
+                  }
+                }}
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+        </ModalBackdrop>
+      ) : null}
 
       <UsagePricingModal
         open={usagePricingModalOpen}

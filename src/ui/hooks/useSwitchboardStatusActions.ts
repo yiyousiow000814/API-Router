@@ -1,9 +1,11 @@
-import { useRef, useState, type MutableRefObject } from 'react'
-import { invoke } from '@tauri-apps/api/core'
+import { startTransition, useRef, useState, type MutableRefObject } from 'react'
+import { invoke, recordUiTrace } from '../tauriCore'
 import type { CodexSwapStatus, Config, ProviderSwitchboardStatus, Status } from '../types'
 import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
 import { normalizePathForCompare } from '../utils/path'
 import { resolveCliHomes } from '../utils/switchboard'
+import { runSingleFlight } from '../utils/singleFlight'
+import { recordStartupStage } from '../startupTrace'
 
 type UseSwitchboardStatusActionsOptions = {
   isDevPreview: boolean
@@ -103,42 +105,42 @@ export function applyProviderSwitchStatusResult(
   }
 }
 
-type GatewayAccessStatus = { ok: boolean; authorized?: boolean; legacy_conflict?: boolean }
+export function shouldRefreshConfigForRevision(
+  previousRevision: string | null | undefined,
+  nextRevision: string | null | undefined,
+): boolean {
+  const prev = previousRevision?.trim() ?? ''
+  const next = nextRevision?.trim() ?? ''
+  return !!next && !!prev && prev !== next
+}
+
+function scheduleLowPriorityUiTask(task: () => void, delayMs = 200): void {
+  if (typeof window === 'undefined') {
+    task()
+    return
+  }
+  if (typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(() => task(), { timeout: delayMs })
+    return
+  }
+  window.setTimeout(task, delayMs)
+}
 
 export async function runGatewaySwitchPreflight(
   target: 'gateway' | 'official' | 'provider',
   homes: string[],
-  listenPort: number,
+  _listenPort: number,
   isWslHomePath: (home: string) => boolean,
-  invokeFn: typeof invoke,
-  confirmFn: (msg: string) => boolean,
+  _invokeFn: typeof invoke,
+  _confirmFn: (msg: string) => boolean,
   flashToast: (msg: string, kind?: 'info' | 'error') => void,
 ): Promise<boolean> {
   if (target !== 'gateway') {
     return true
   }
-  let access = await invokeFn<GatewayAccessStatus>('wsl_gateway_access_quick_status')
-  if (access.legacy_conflict) {
-    const shouldCleanup = confirmFn(
-      `A legacy WSL2 portproxy rule is using port ${listenPort} (this can also break Windows access to the gateway).\n\nClick OK to clean it now (requires admin), or Cancel to abort switching.`,
-    )
-    if (!shouldCleanup) return false
-    await invokeFn('wsl_gateway_revoke_access')
-    flashToast('Removed legacy WSL2 portproxy conflict')
-    access = await invokeFn<GatewayAccessStatus>('wsl_gateway_access_quick_status')
-  }
   const hasWslTarget = homes.some((home) => isWslHomePath(home))
-  if (hasWslTarget && access.authorized === false) {
-    const shouldAuthorize = confirmFn(
-      'WSL2 access to the local gateway requires Windows network authorization first.\n\nClick OK to authorize now (Admin), or Cancel to skip switching for now.',
-    )
-    if (!shouldAuthorize) return false
-    const authRes = await invokeFn<GatewayAccessStatus>('wsl_gateway_authorize_access')
-    if (authRes.authorized !== true) {
-      flashToast('WSL2 gateway authorization failed. Please retry as Administrator.', 'error')
-      return false
-    }
-    flashToast('WSL2 gateway access authorized')
+  if (hasWslTarget) {
+    flashToast('WSL2 gateway access is now native; no Windows authorization is required.', 'info')
   }
   return true
 }
@@ -171,7 +173,21 @@ export function useSwitchboardStatusActions({
   const [providerSwitchBusy, setProviderSwitchBusy] = useState<boolean>(false)
   const providerSwitchBusyRef = useRef<boolean>(false)
   const providerSwitchStatusRef = useRef<ProviderSwitchboardStatus | null>(providerSwitchStatus)
+  const configRevisionRef = useRef<string | null>(null)
+  const statusInFlightRef = useRef<Map<string, Promise<Status>>>(new Map())
+  const configInFlightRef = useRef<Map<string, Promise<Config>>>(new Map())
+  const startupStatusRefreshTracedRef = useRef(false)
+  const startupConfigRefreshTracedRef = useRef(false)
+  const startupSwitchboardRefreshTracedRef = useRef(false)
+  const startupGatewayTokenPreviewTracedRef = useRef(false)
   providerSwitchStatusRef.current = providerSwitchStatus
+
+  type RefreshApplyOptions = {
+    applyGuard?: () => boolean
+    interactive?: boolean
+    source?: string
+    detailLevel?: 'dashboard' | 'full'
+  }
 
   function tryEnterProviderSwitchBusy(): boolean {
     if (providerSwitchBusyRef.current) return false
@@ -190,7 +206,7 @@ export function useSwitchboardStatusActions({
     return s.startsWith('\\\\wsl.localhost\\') || s.startsWith('\\\\wsl$\\')
   }
 
-  async function refreshCodexSwapStatus(cliHomes?: string[]) {
+  async function refreshCodexSwapStatus(cliHomes?: string[], source = 'unknown') {
     if (isDevPreview) return
     try {
       const homes =
@@ -202,6 +218,10 @@ export function useSwitchboardStatusActions({
               codexSwapUseWindowsRef.current,
               codexSwapUseWslRef.current,
             )
+      recordUiTrace('swap_refresh_requested', {
+        source,
+        cli_home_count: homes.length,
+      })
       const res = await invoke<CodexSwapStatus>('codex_cli_swap_status', {
         cliHomes: homes,
       })
@@ -211,7 +231,34 @@ export function useSwitchboardStatusActions({
     }
   }
 
-  async function refreshProviderSwitchStatus(cliHomes?: string[]) {
+  async function refreshGatewayTokenPreview(options?: RefreshApplyOptions) {
+    if (isDevPreview) return
+    const shouldApply = options?.applyGuard ?? (() => true)
+    const interactive = options?.interactive ?? true
+    const source = options?.source?.trim() || 'unknown'
+    try {
+      recordUiTrace('gateway_token_preview_requested', {
+        source,
+        interactive,
+      })
+      const p = await invoke<string>('get_gateway_token_preview')
+      if (!shouldApply()) return
+      const apply = () => setGatewayTokenPreview(p)
+      if (interactive) apply()
+      else startTransition(apply)
+      if (!startupGatewayTokenPreviewTracedRef.current) {
+        startupGatewayTokenPreviewTracedRef.current = true
+        recordStartupStage('frontend_gateway_token_preview_resolved')
+      }
+    } catch {
+      // Keep the last token preview when background refresh fails transiently.
+    }
+  }
+
+  async function refreshProviderSwitchStatus(
+    cliHomes?: string[],
+    options?: RefreshApplyOptions,
+  ) {
     const homes =
       cliHomes && cliHomes.length
         ? cliHomes
@@ -231,10 +278,28 @@ export function useSwitchboardStatusActions({
       })
       return
     }
+    const shouldApply = options?.applyGuard ?? (() => true)
+    const interactive = options?.interactive ?? true
+    const shouldTraceStartup = !startupSwitchboardRefreshTracedRef.current
+    const startedAt =
+      shouldTraceStartup && typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : 0
+    if (shouldTraceStartup) {
+      startupSwitchboardRefreshTracedRef.current = true
+      recordStartupStage('frontend_switchboard_status_requested', homes.join(' | '))
+    }
     try {
       const res = await invoke<ProviderSwitchboardStatus>('provider_switchboard_status', {
         cliHomes: homes,
       })
+      if (shouldTraceStartup) {
+        recordStartupStage(
+          'frontend_switchboard_status_resolved',
+          `elapsed=${Math.round(performance.now() - startedAt)}ms dirs=${res.dirs?.length ?? 0}`,
+        )
+      }
+      if (!shouldApply()) return
       const allEnabledHomes = resolveCliHomes(
         codexSwapDir1Ref.current,
         codexSwapDir2Ref.current,
@@ -243,37 +308,104 @@ export function useSwitchboardStatusActions({
       )
       const isPartialRefresh =
         Boolean(cliHomes && cliHomes.length) && homes.length < allEnabledHomes.length
-      setProviderSwitchStatus(
-        applyProviderSwitchStatusResult(providerSwitchStatusRef.current, res, isPartialRefresh),
-      )
+      const apply = () =>
+        setProviderSwitchStatus(
+          applyProviderSwitchStatusResult(providerSwitchStatusRef.current, res, isPartialRefresh),
+        )
+      if (interactive) apply()
+      else startTransition(apply)
+      if (shouldTraceStartup) {
+        recordStartupStage('frontend_switchboard_status_applied')
+      }
     } catch (e) {
       flashToast(String(e), 'error')
     }
   }
 
-  async function refreshStatus(options?: { refreshSwapStatus?: boolean }) {
+  async function refreshStatus(
+    options?: {
+      refreshSwapStatus?: boolean
+      swapStatusSource?: string
+    } & RefreshApplyOptions,
+  ) {
     const shouldRefreshSwapStatus = options?.refreshSwapStatus ?? true
+    const source = options?.source?.trim() || 'unknown'
     if (isDevPreview) {
       setStatus(devStatus)
       if (shouldRefreshSwapStatus) {
-        void refreshCodexSwapStatus()
+        void refreshCodexSwapStatus(undefined, options?.swapStatusSource ?? `${source}:swap`)
       }
       return
     }
+    const shouldApply = options?.applyGuard ?? (() => true)
+    const interactive = options?.interactive ?? true
+    recordUiTrace('status_refresh_requested', {
+      source,
+      interactive,
+      refresh_swap_status: shouldRefreshSwapStatus,
+      detail_level: options?.detailLevel ?? 'full',
+    })
+    const shouldTraceStartup = !startupStatusRefreshTracedRef.current
+    const startedAt =
+      shouldTraceStartup && typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : 0
+    if (shouldTraceStartup) {
+      startupStatusRefreshTracedRef.current = true
+      recordStartupStage('frontend_status_refresh_requested')
+    }
     try {
-      const s = await invoke<Status>('get_status')
-      setStatus(s)
-      if (!overrideDirtyRef.current) setOverride(s.manual_override ?? '')
+      const detailLevel = options?.detailLevel ?? 'full'
+      const s = await runSingleFlight(
+        statusInFlightRef.current,
+        `status:${detailLevel}`,
+        () =>
+          invoke<Status>('get_status', {
+            detailLevel,
+          }),
+      )
+      if (shouldTraceStartup) {
+        recordStartupStage(
+          'frontend_status_refresh_resolved',
+          `elapsed=${Math.round(performance.now() - startedAt)}ms providers=${Object.keys(s.providers ?? {}).length} sessions=${s.client_sessions?.length ?? 0}`,
+        )
+      }
+      if (!shouldApply()) return
+      const previousConfigRevision = configRevisionRef.current
+      const nextConfigRevision = s.config_revision ?? null
+      configRevisionRef.current = nextConfigRevision
+      const apply = () => {
+        setStatus(s)
+        if (!overrideDirtyRef.current) setOverride(s.manual_override ?? '')
+      }
+      if (interactive) apply()
+      else startTransition(apply)
+      if (shouldTraceStartup) {
+        recordStartupStage('frontend_status_state_applied')
+      }
       if (shouldRefreshSwapStatus) {
-        void refreshCodexSwapStatus()
+        void refreshCodexSwapStatus(undefined, options?.swapStatusSource ?? `${source}:swap`)
+      }
+      if (shouldRefreshConfigForRevision(previousConfigRevision, nextConfigRevision)) {
+        scheduleLowPriorityUiTask(
+          () =>
+            void refreshConfig({
+              refreshProviderSwitchStatus: false,
+              interactive: false,
+            }),
+          120,
+        )
       }
     } catch (e) {
       console.error(e)
     }
   }
 
-  async function refreshConfig(options?: { refreshProviderSwitchStatus?: boolean }) {
+  async function refreshConfig(
+    options?: { refreshProviderSwitchStatus?: boolean; force?: boolean } & RefreshApplyOptions,
+  ) {
     const shouldRefreshProviderSwitchStatus = options?.refreshProviderSwitchStatus ?? true
+    const force = options?.force ?? false
     if (isDevPreview) {
       setConfig(devConfig)
       setBaselineBaseUrls(Object.fromEntries(Object.entries(devConfig.providers).map(([name, p]) => [name, p.base_url])))
@@ -283,20 +415,69 @@ export function useSwitchboardStatusActions({
       }
       return
     }
+    const shouldApply = options?.applyGuard ?? (() => true)
+    const interactive = options?.interactive ?? true
+    const shouldTraceStartup = !startupConfigRefreshTracedRef.current
+    const startedAt =
+      shouldTraceStartup && typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : 0
+    if (shouldTraceStartup) {
+      startupConfigRefreshTracedRef.current = true
+      recordStartupStage('frontend_config_refresh_requested')
+    }
     try {
-      const c = await invoke<Config>('get_config')
-      setConfig(c)
-      setBaselineBaseUrls(Object.fromEntries(Object.entries(c.providers).map(([name, p]) => [name, p.base_url])))
-      const p = await invoke<string>('get_gateway_token_preview')
-      setGatewayTokenPreview(p)
-      const homes = resolveCliHomes(
-        codexSwapDir1Ref.current,
-        codexSwapDir2Ref.current,
-        codexSwapUseWindowsRef.current,
-        codexSwapUseWslRef.current,
-      )
-      if (homes.length > 0 && shouldRefreshProviderSwitchStatus) {
-        void refreshProviderSwitchStatus(homes)
+      const loadConfig = () => invoke<Config>('get_config')
+      const c = force
+        ? await loadConfig()
+        : await runSingleFlight(configInFlightRef.current, 'config', loadConfig)
+      if (shouldTraceStartup) {
+        recordStartupStage(
+          'frontend_config_refresh_resolved',
+          `elapsed=${Math.round(performance.now() - startedAt)}ms providers=${Object.keys(c.providers ?? {}).length}`,
+        )
+      }
+      if (!shouldApply()) return
+      const apply = () => {
+        setConfig(c)
+        setBaselineBaseUrls(
+          Object.fromEntries(Object.entries(c.providers).map(([name, p]) => [name, p.base_url])),
+        )
+      }
+      if (interactive) apply()
+      else startTransition(apply)
+      if (shouldTraceStartup) {
+        recordStartupStage('frontend_config_state_applied')
+      }
+      const refreshGatewayPreview = () =>
+        void refreshGatewayTokenPreview({
+          applyGuard: shouldApply,
+          interactive: false,
+          source: 'config_refresh',
+        })
+      if (shouldTraceStartup) {
+        scheduleLowPriorityUiTask(refreshGatewayPreview, 220)
+      } else {
+        refreshGatewayPreview()
+      }
+      if (shouldRefreshProviderSwitchStatus) {
+        const homes = resolveCliHomes(
+          codexSwapDir1Ref.current,
+          codexSwapDir2Ref.current,
+          codexSwapUseWindowsRef.current,
+          codexSwapUseWslRef.current,
+        )
+        if (homes.length > 0) {
+          const schedule = () =>
+            void refreshProviderSwitchStatus(homes, {
+              interactive: false,
+            })
+          if (shouldTraceStartup) {
+            scheduleLowPriorityUiTask(schedule, 400)
+          } else {
+            schedule()
+          }
+        }
       }
     } catch (e) {
       console.error(e)
@@ -384,7 +565,7 @@ export function useSwitchboardStatusActions({
       flashToast(res.mode === 'swapped' ? 'Switched to official' : 'Switched to gateway')
       await refreshStatus({ refreshSwapStatus: false })
       await Promise.all([
-        refreshCodexSwapStatus(homes),
+        refreshCodexSwapStatus(homes, 'toggle_codex_swap'),
         refreshProviderSwitchStatus(homes),
         refreshConfig({ refreshProviderSwitchStatus: false }),
       ])
@@ -476,7 +657,7 @@ export function useSwitchboardStatusActions({
       flashToast(msg)
       // Avoid full-page flicker: trust set_target response as source of truth here,
       // and only refresh swap state in background for badge consistency.
-      void refreshCodexSwapStatus(homes)
+      void refreshCodexSwapStatus(homes, 'set_provider_switch_target')
     } catch (e) {
       flashToast(String(e), 'error')
     } finally {
@@ -489,6 +670,7 @@ export function useSwitchboardStatusActions({
     toggleCodexSwap,
     refreshCodexSwapStatus,
     refreshProviderSwitchStatus,
+    refreshGatewayTokenPreview,
     refreshStatus,
     refreshConfig,
     setProviderSwitchTarget,

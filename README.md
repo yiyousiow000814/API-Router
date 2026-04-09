@@ -85,6 +85,16 @@ After this, you switch providers inside the app.
 - **"localhost refused to connect"**  
   Make sure the app is running and the gateway port matches your config.
 
+For terminal-first debugging surfaces, HTTP status checks, MCP access, and persisted diagnostics,
+see [docs/debug-interfaces.md](docs/debug-interfaces.md).
+For a one-shot local evidence bundle, run `npm run debug:dump`.
+
+## Repo layout
+
+- `tools/`: developer tooling grouped by responsibility. See `tools/README.md`.
+- `tests/`: UI/E2E runners, support code, and baselines. See `tests/README.md`.
+- `src-tauri/src/diagnostics/`: runtime diagnostics helpers and notes for persisted evidence.
+
 ## Config & data locations
 
 - Config: `./user-data/config.toml`
@@ -125,6 +135,12 @@ npm run build:root-exe
 ```
 
 The EXE will be written to the repo root as `API Router.exe`.
+
+To build Windows installer bundles (`msi` / `nsis`) as well, run:
+
+```powershell
+npm run build:root-installers
+```
 
 ## Checks
 

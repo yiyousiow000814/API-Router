@@ -1,9 +1,18 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Config } from '../../types'
 import {
+  applyProviderUsageLoginLocalPatch,
   applyProviderQuotaHardCapLocalPatch,
+  buildUsageAuthModalDraft,
+  buildUsageBaseModalDraft,
+  invokeManualQuotaRefresh,
   setProviderQuotaHardCapFieldWithRefresh,
 } from './useProviderUsageActions'
+import { invoke } from '@tauri-apps/api/core'
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(),
+}))
 
 function buildConfig(): Config {
   return {
@@ -35,6 +44,103 @@ describe('applyProviderQuotaHardCapLocalPatch', () => {
       daily: true,
       weekly: false,
       monthly: true,
+    })
+  })
+})
+
+describe('applyProviderUsageLoginLocalPatch', () => {
+  it('toggles usage auth state locally for selected providers', () => {
+    const base = buildConfig()
+    const next = applyProviderUsageLoginLocalPatch(base, ['p1'], true)
+    expect(next?.providers.p1.has_usage_token).toBe(true)
+
+    const cleared = applyProviderUsageLoginLocalPatch(next, ['p1'], false)
+    expect(cleared?.providers.p1.has_usage_token).toBe(false)
+  })
+})
+
+describe('buildUsageBaseModalDraft', () => {
+  it('keeps inferred endpoint out of the editable field', () => {
+    expect(buildUsageBaseModalDraft('p1', 'https://codex-api.packycode.com/v1', '', 'https://codex.packycode.com')).toEqual({
+      open: true,
+      provider: 'p1',
+      baseUrl: 'https://codex-api.packycode.com/v1',
+      showUrlInput: true,
+      value: '',
+      auto: true,
+      explicitValue: '',
+      effectiveValue: 'https://codex.packycode.com',
+      token: '',
+      username: '',
+      password: '',
+      loading: false,
+      loadFailed: false,
+    })
+  })
+
+  it('preserves explicit value when present', () => {
+    expect(buildUsageBaseModalDraft('p1', 'https://codex-api.packycode.com/v1', 'https://manual.example.com', 'https://codex.packycode.com')).toEqual({
+      open: true,
+      provider: 'p1',
+      baseUrl: 'https://codex-api.packycode.com/v1',
+      showUrlInput: true,
+      value: 'https://manual.example.com',
+      auto: false,
+      explicitValue: 'https://manual.example.com',
+      effectiveValue: 'https://codex.packycode.com',
+      token: '',
+      username: '',
+      password: '',
+      loading: false,
+      loadFailed: false,
+    })
+  })
+
+  it('supports hidden usage url input when requested', () => {
+    expect(
+      buildUsageBaseModalDraft(
+        'p1',
+        'https://codex.packycode.com/v1',
+        'https://codex.packycode.com',
+        'https://codex.packycode.com',
+        undefined,
+        { showUrlInput: false },
+      ),
+    ).toEqual({
+      open: true,
+      provider: 'p1',
+      baseUrl: 'https://codex.packycode.com/v1',
+      showUrlInput: false,
+      value: 'https://codex.packycode.com',
+      auto: false,
+      explicitValue: 'https://codex.packycode.com',
+      effectiveValue: 'https://codex.packycode.com',
+      token: '',
+      username: '',
+      password: '',
+      loading: false,
+      loadFailed: false,
+    })
+  })
+})
+
+describe('buildUsageAuthModalDraft', () => {
+  it('normalizes loaded usage auth payload', () => {
+    expect(
+      buildUsageAuthModalDraft('codex-for.me', 'https://api-vip.codex-for.me/v1', {
+        token: ' jwt-token ',
+        username: ' alice ',
+        password: 'secret',
+      }),
+    ).toEqual({
+      open: true,
+      provider: 'codex-for.me',
+      baseUrl: 'https://api-vip.codex-for.me/v1',
+      token: 'jwt-token',
+      username: 'alice',
+      password: 'secret',
+      loading: false,
+      loadFailed: false,
     })
   })
 })
@@ -143,4 +249,15 @@ describe('setProviderQuotaHardCapFieldWithRefresh', () => {
     expect(flashToast).toHaveBeenCalledWith('Hard cap updated [TEST]: p1.monthly')
   })
 
+})
+
+describe('invokeManualQuotaRefresh', () => {
+  it('uses single-provider refresh command', async () => {
+    const invokeMock = vi.mocked(invoke)
+    invokeMock.mockResolvedValue(undefined)
+
+    await invokeManualQuotaRefresh('p1')
+
+    expect(invokeMock).toHaveBeenCalledWith('refresh_quota', { provider: 'p1' })
+  })
 })

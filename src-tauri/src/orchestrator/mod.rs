@@ -1,6 +1,8 @@
 pub mod config;
 pub mod gateway;
+pub mod gateway_bootstrap;
 pub mod openai;
+pub mod providers;
 pub mod quota;
 pub mod router;
 pub mod secrets;

@@ -1,42 +1,39 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PackageExpiryStrategy {
-    None,
-    Packycode,
-}
-
-fn detect_package_expiry_strategy(base_url: &str) -> PackageExpiryStrategy {
-    if is_packycode_base(base_url) {
-        PackageExpiryStrategy::Packycode
-    } else {
-        PackageExpiryStrategy::None
-    }
-}
-
 async fn fetch_package_expiry_for_strategy(
     strategy: PackageExpiryStrategy,
-    client: &reqwest::Client,
+    st: &GatewayState,
+    provider_name: &str,
     bases: &[String],
-    token: &str,
+    api_key: &str,
     preferred_base: Option<&str>,
     budget_root: Option<&Value>,
 ) -> Option<u64> {
     match strategy {
         PackageExpiryStrategy::None => None,
-        PackageExpiryStrategy::Packycode => {
-            fetch_packycode_package_expiry(client, bases, token, preferred_base, budget_root).await
+        PackageExpiryStrategy::BackendUsersInfo => {
+            fetch_backend_users_info_expiry(
+                st,
+                provider_name,
+                bases,
+                api_key,
+                preferred_base,
+                budget_root,
+            )
+            .await
         }
     }
 }
 
-async fn fetch_packycode_package_expiry(
-    client: &reqwest::Client,
+async fn fetch_backend_users_info_expiry(
+    st: &GatewayState,
+    provider_name: &str,
     bases: &[String],
-    token: &str,
+    api_key: &str,
     preferred_base: Option<&str>,
     budget_root: Option<&Value>,
 ) -> Option<u64> {
+    let fetched_budget_root = budget_root.is_some();
     if let Some(root) = budget_root {
-        if let Some(expiry) = extract_packycode_package_expiry_from_value(root) {
+        if let Some(expiry) = extract_backend_expiry_from_value(root) {
             return Some(expiry);
         }
     }
@@ -60,52 +57,72 @@ async fn fetch_packycode_package_expiry(
     }
 
     for base in ordered_bases {
-        if let Some(found) = fetch_packycode_expiry_from_user_info(client, &base, token).await {
-            return Some(found);
+        if !fetched_budget_root {
+            if let Some(found) =
+                fetch_backend_expiry_from_user_info(st, provider_name, &base, api_key).await
+            {
+                return Some(found);
+            }
         }
-        if let Some(found) = fetch_packycode_expiry_from_subscriptions(client, &base, token).await {
+        if let Some(found) =
+            fetch_backend_expiry_from_subscriptions(st, provider_name, &base, api_key).await
+        {
             return Some(found);
         }
     }
     None
 }
 
-async fn fetch_packycode_expiry_from_user_info(
-    client: &reqwest::Client,
+async fn fetch_backend_expiry_from_user_info(
+    st: &GatewayState,
+    provider_name: &str,
     base: &str,
-    token: &str,
+    api_key: &str,
 ) -> Option<u64> {
     const PACKAGE_EXPIRY_TIMEOUT_SECS: u64 = 8;
+    let client = build_usage_http_client(st, provider_name).ok()?;
     let url = format!("{base}/api/backend/users/info");
     let resp = client
         .get(url)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {api_key}"))
         .timeout(Duration::from_secs(PACKAGE_EXPIRY_TIMEOUT_SECS))
         .send()
         .await
         .ok()?;
+    if resp.status().as_u16() == 429 {
+        let backoff_ms =
+            parse_rate_limit_backoff_ms(resp.headers(), unix_ms(), USAGE_BASE_429_BACKOFF_MS);
+        note_usage_base_rate_limited(base, unix_ms(), backoff_ms);
+    }
     if !resp.status().is_success() {
         return None;
     }
     let payload = resp.json::<Value>().await.ok()?;
     let root = payload.get("data").unwrap_or(&payload);
-    extract_packycode_package_expiry_from_value(root)
+    extract_backend_expiry_from_value(root)
 }
 
-async fn fetch_packycode_expiry_from_subscriptions(
-    client: &reqwest::Client,
+async fn fetch_backend_expiry_from_subscriptions(
+    st: &GatewayState,
+    provider_name: &str,
     base: &str,
-    token: &str,
+    api_key: &str,
 ) -> Option<u64> {
     const PACKAGE_EXPIRY_TIMEOUT_SECS: u64 = 8;
+    let client = build_usage_http_client(st, provider_name).ok()?;
     let url = format!("{base}/api/backend/subscriptions?page=1&per_page=50");
     let resp = client
         .get(url)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {api_key}"))
         .timeout(Duration::from_secs(PACKAGE_EXPIRY_TIMEOUT_SECS))
         .send()
         .await
         .ok()?;
+    if resp.status().as_u16() == 429 {
+        let backoff_ms =
+            parse_rate_limit_backoff_ms(resp.headers(), unix_ms(), USAGE_BASE_429_BACKOFF_MS);
+        note_usage_base_rate_limited(base, unix_ms(), backoff_ms);
+    }
     if !resp.status().is_success() {
         return None;
     }
@@ -127,7 +144,7 @@ async fn fetch_packycode_expiry_from_subscriptions(
         if status != "active" {
             continue;
         }
-        let Some(end) = parse_packycode_unix_ms_any(row.get("current_period_end")) else {
+        let Some(end) = parse_backend_unix_ms_any(row.get("current_period_end")) else {
             continue;
         };
         best = Some(best.map_or(end, |prev| prev.max(end)));
@@ -135,28 +152,28 @@ async fn fetch_packycode_expiry_from_subscriptions(
     best
 }
 
-fn extract_packycode_package_expiry_from_value(root: &Value) -> Option<u64> {
-    parse_packycode_unix_ms_any(root.get("package_expires_at_unix_ms"))
-        .or_else(|| parse_packycode_unix_ms_any(root.get("plan_expires_at")))
-        .or_else(|| parse_packycode_unix_ms_any(root.get("plan_expire_at")))
-        .or_else(|| parse_packycode_unix_ms_any(root.get("expires_at")))
-        .or_else(|| parse_packycode_unix_ms_any(root.get("current_period_end")))
+fn extract_backend_expiry_from_value(root: &Value) -> Option<u64> {
+    parse_backend_unix_ms_any(root.get("package_expires_at_unix_ms"))
+        .or_else(|| parse_backend_unix_ms_any(root.get("plan_expires_at")))
+        .or_else(|| parse_backend_unix_ms_any(root.get("plan_expire_at")))
+        .or_else(|| parse_backend_unix_ms_any(root.get("expires_at")))
+        .or_else(|| parse_backend_unix_ms_any(root.get("current_period_end")))
 }
 
-fn parse_packycode_unix_ms_any(v: Option<&Value>) -> Option<u64> {
+fn parse_backend_unix_ms_any(v: Option<&Value>) -> Option<u64> {
     let value = v?;
     if let Some(ms) = value.as_u64() {
         if ms == 0 {
             return None;
         }
-        return Some(normalize_packycode_unix_ms(ms));
+        return Some(normalize_backend_unix_ms(ms));
     }
     if let Some(ms) = value.as_i64() {
         if ms <= 0 {
             return None;
         }
         let ms = ms as u64;
-        return Some(normalize_packycode_unix_ms(ms));
+        return Some(normalize_backend_unix_ms(ms));
     }
     let text = value.as_str()?.trim();
     if text.is_empty() {
@@ -167,7 +184,7 @@ fn parse_packycode_unix_ms_any(v: Option<&Value>) -> Option<u64> {
         if ms == 0 {
             return None;
         }
-        return Some(normalize_packycode_unix_ms(ms));
+        return Some(normalize_backend_unix_ms(ms));
     }
     let ts = chrono::DateTime::parse_from_rfc3339(text)
         .ok()?
@@ -178,7 +195,7 @@ fn parse_packycode_unix_ms_any(v: Option<&Value>) -> Option<u64> {
     Some(ts as u64)
 }
 
-fn normalize_packycode_unix_ms(raw: u64) -> u64 {
+fn normalize_backend_unix_ms(raw: u64) -> u64 {
     if raw < 1_000_000_000_000 {
         raw * 1000
     } else {
@@ -191,14 +208,14 @@ mod package_expiry_tests {
     use super::*;
 
     #[test]
-    fn parse_packycode_unix_ms_rejects_zero_number() {
+    fn parse_backend_unix_ms_rejects_zero_number() {
         let v = serde_json::json!(0);
-        assert_eq!(parse_packycode_unix_ms_any(Some(&v)), None);
+        assert_eq!(parse_backend_unix_ms_any(Some(&v)), None);
     }
 
     #[test]
-    fn parse_packycode_unix_ms_rejects_zero_digit_string() {
+    fn parse_backend_unix_ms_rejects_zero_digit_string() {
         let v = serde_json::json!("0");
-        assert_eq!(parse_packycode_unix_ms_any(Some(&v)), None);
+        assert_eq!(parse_backend_unix_ms_any(Some(&v)), None);
     }
 }

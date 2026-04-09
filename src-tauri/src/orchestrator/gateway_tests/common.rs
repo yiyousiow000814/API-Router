@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
-use std::sync::Mutex as StdMutex;
 use std::sync::MutexGuard as StdMutexGuard;
 
 use axum::body::Body;
@@ -14,9 +13,9 @@ use tower::ServiceExt;
 use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
 use crate::orchestrator::config::{AppConfig, ListenConfig, ProviderConfig, RoutingConfig};
 use crate::orchestrator::gateway::{
-    build_router, build_router_with_body_limit, decide_provider,
-    is_back_to_preferred_transition, open_store_dir, should_log_routing_path_event,
-    ClientSessionRuntime, GatewayState, LastUsedRoute,
+    build_router, build_router_with_body_limit, decide_provider, is_back_to_preferred_transition,
+    open_store_dir, should_log_routing_path_event, ClientSessionRuntime, GatewayState,
+    LastUsedRoute,
 };
 use crate::orchestrator::router::RouterState;
 use crate::orchestrator::secrets::SecretStore;
@@ -27,12 +26,10 @@ use axum::{Json, Router};
 use parking_lot::Mutex;
 use serde_json::json;
 
-static CODEX_ENV_LOCK: StdMutex<()> = StdMutex::new(());
-
-struct CodexSessionGuard<'a> {
-    _lock: StdMutexGuard<'a, ()>,
-    prev_env: Option<String>,
-}
+struct CodexSessionGuard<'a> { 
+    _lock: StdMutexGuard<'a, ()>, 
+    prev_env: Option<String>, 
+} 
 
 impl<'a> CodexSessionGuard<'a> {
     fn new(lock: StdMutexGuard<'a, ()>) -> Self {
@@ -54,14 +51,14 @@ impl Drop for CodexSessionGuard<'_> {
     }
 }
 
-fn setup_codex_session(
-    tmp: &tempfile::TempDir,
-    session_id: &str,
-    lines: &[serde_json::Value],
-) -> CodexSessionGuard<'static> {
-    let guard = CodexSessionGuard::new(CODEX_ENV_LOCK.lock().unwrap());
-    std::env::set_var("CODEX_HOME", tmp.path());
-    let sessions_dir = tmp
+fn setup_codex_session( 
+    tmp: &tempfile::TempDir, 
+    session_id: &str, 
+    lines: &[serde_json::Value], 
+) -> CodexSessionGuard<'static> { 
+    let guard = CodexSessionGuard::new(crate::codex_home_env::lock_env()); 
+    std::env::set_var("CODEX_HOME", tmp.path()); 
+    let sessions_dir = tmp 
         .path()
         .join("sessions")
         .join("2026")

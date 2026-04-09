@@ -1,13 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
 import { ModalBackdrop } from './ModalBackdrop'
 import { GATEWAY_WINDOWS_HOST, GATEWAY_WSL2_HOST } from '../constants'
 import { buildGatewayBaseUrl, normalizeGatewayPort } from '../utils/gatewayUrl'
-import {
-  persistWslGatewayAuthorizedToStorage,
-  readWslGatewayAuthorizedFromStorage,
-  subscribeWslGatewayAuthorized,
-} from '../utils/wslGatewayAuthSync'
 
 type Props = {
   open: boolean
@@ -20,26 +13,6 @@ type Props = {
   isDevPreview: boolean
 }
 
-type WslGatewayAccessStatus = {
-  ok: boolean
-  authorized: boolean
-  wsl_host?: string
-}
-
-type WslGatewayAccessMutation = {
-  ok: boolean
-  authorized: boolean
-  wsl_host?: string
-}
-
-function wslAccessSummary(authorized: boolean, wslHost: string, listenPort: number): string {
-  const baseUrl = buildGatewayBaseUrl(wslHost, listenPort)
-  if (authorized) {
-    return `Enabled: use WSL2 base_url ${baseUrl}.`
-  }
-  return `Disabled: WSL2 access to ${baseUrl} is blocked (expected after Revoke).`
-}
-
 export function InstructionModal({
   open,
   onClose,
@@ -47,82 +20,11 @@ export function InstructionModal({
   onOpenRawConfig,
   codeText,
   listenPort,
-  flashToast,
-  isDevPreview,
+  flashToast: _flashToast,
+  isDevPreview: _isDevPreview,
 }: Props) {
-  const [wslBusy, setWslBusy] = useState<boolean>(false)
-  const [wslAuthorized, setWslAuthorized] = useState<boolean>(() => readWslGatewayAuthorizedFromStorage())
-  const [wslHost, setWslHost] = useState<string>(GATEWAY_WSL2_HOST)
+  const wslHost = GATEWAY_WSL2_HOST
   const gatewayPort = normalizeGatewayPort(listenPort)
-
-  const refreshWslAccessStatus = useCallback(async () => {
-    if (isDevPreview) {
-      setWslAuthorized(readWslGatewayAuthorizedFromStorage())
-      return
-    }
-    try {
-      const res = await invoke<WslGatewayAccessStatus>('wsl_gateway_access_status')
-      const authorized = Boolean(res.authorized)
-      setWslAuthorized(authorized)
-      setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
-      persistWslGatewayAuthorizedToStorage(authorized)
-    } catch {
-      // keep UI responsive; status can be fetched after user action
-    }
-  }, [isDevPreview])
-
-  useEffect(() => {
-    if (!open) return
-    void refreshWslAccessStatus()
-  }, [open, refreshWslAccessStatus])
-
-  useEffect(() => {
-    return subscribeWslGatewayAuthorized(setWslAuthorized)
-  }, [])
-
-  async function authorizeWslAccess() {
-    if (isDevPreview) {
-      setWslAuthorized(true)
-      persistWslGatewayAuthorizedToStorage(true)
-      flashToast('WSL2 gateway access authorized [TEST]')
-      return
-    }
-    setWslBusy(true)
-    try {
-      const res = await invoke<WslGatewayAccessMutation>('wsl_gateway_authorize_access')
-      const authorized = Boolean(res.authorized)
-      setWslAuthorized(authorized)
-      setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
-      persistWslGatewayAuthorizedToStorage(authorized)
-      flashToast('WSL2 gateway access authorized')
-    } catch (e) {
-      flashToast(String(e), 'error')
-    } finally {
-      setWslBusy(false)
-    }
-  }
-
-  async function revokeWslAccess() {
-    if (isDevPreview) {
-      setWslAuthorized(false)
-      persistWslGatewayAuthorizedToStorage(false)
-      flashToast('WSL2 gateway access revoked [TEST]')
-      return
-    }
-    setWslBusy(true)
-    try {
-      const res = await invoke<WslGatewayAccessMutation>('wsl_gateway_revoke_access')
-      const authorized = Boolean(res.authorized)
-      setWslAuthorized(authorized)
-      setWslHost(res.wsl_host?.trim() || GATEWAY_WSL2_HOST)
-      persistWslGatewayAuthorizedToStorage(authorized)
-      flashToast('WSL2 gateway access revoked')
-    } catch (e) {
-      flashToast(String(e), 'error')
-    } finally {
-      setWslBusy(false)
-    }
-  }
 
   if (!open) return null
   return (
@@ -214,32 +116,16 @@ export function InstructionModal({
                   <pre className="aoInstructionCode aoGsCodeBlock">{codeText}</pre>
                 </section>
 
-                <section className="aoGsStepCard" role="note" aria-label="step 5 adjust switchboard">
+                <section className="aoGsStepCard" role="note" aria-label="step 5 wsl2 native base url">
                   <div className="aoGsStepHead">
                     <span className="aoGsStepNum">5</span>
-                    <span className="aoGsStepTitle">WSL2 gateway access</span>
-                    <span className="aoGsStepTag">Optional</span>
+                    <span className="aoGsStepTitle">WSL2 uses native gateway access</span>
+                    <span className="aoGsStepTag">Info</span>
                   </div>
                   <div className="aoGsAssist">
-                    App can apply/remove Windows networking rules for WSL2 access. You can authorize and revoke repeatedly.
+                    Use <code>base_url = "{buildGatewayBaseUrl(wslHost, gatewayPort)}"</code> in WSL2. No extra Windows
+                    authorization is required.
                   </div>
-                  <div className="aoGsActionRow">
-                    <button
-                      className="aoBtn aoBtnPrimary"
-                      onClick={() => void authorizeWslAccess()}
-                      disabled={wslBusy || wslAuthorized}
-                    >
-                      {wslAuthorized ? 'Authorized' : 'Authorize (Admin)'}
-                    </button>
-                    <button
-                      className={`aoBtn${wslAuthorized ? ' aoBtnDanger' : ''}`}
-                      onClick={() => void revokeWslAccess()}
-                      disabled={wslBusy || !wslAuthorized}
-                    >
-                      Revoke
-                    </button>
-                  </div>
-                  <div className="aoGsMuted">{wslAccessSummary(wslAuthorized, wslHost, gatewayPort)}</div>
                 </section>
 
                 <section className="aoGsStepCard" role="note" aria-label="step 6 auth auto managed">

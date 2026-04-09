@@ -5,6 +5,10 @@ type Props = {
   usageWindowHours: number
   setUsageWindowHours: (hours: number) => void
   usageStatisticsLoading: boolean
+  usageFilterNodes: string[]
+  setUsageFilterNodes: (nodes: string[]) => void
+  usageNodeFilterOptions: string[]
+  toggleUsageNodeFilter: (nodeName: string) => void
   usageFilterProviders: string[]
   setUsageFilterProviders: (providers: string[]) => void
   usageProviderFilterDisplayOptions: UsageProviderFilterDisplayOption[]
@@ -24,6 +28,10 @@ export function UsageStatsFiltersBar({
   usageWindowHours,
   setUsageWindowHours,
   usageStatisticsLoading,
+  usageFilterNodes,
+  setUsageFilterNodes,
+  usageNodeFilterOptions,
+  toggleUsageNodeFilter,
   usageFilterProviders,
   setUsageFilterProviders,
   usageProviderFilterDisplayOptions,
@@ -113,6 +121,30 @@ export function UsageStatsFiltersBar({
         </div>
       </div>
       <div className="aoUsageFilterCard">
+        <div className="aoUsageFilterSection aoUsageFilterSectionCompact">
+          <div className="aoUsageFilterSectionHead">
+            <span className="aoMiniLabel">Nodes</span>
+          </div>
+          <div className="aoUsageFilterChips">
+            <button
+              className={`aoUsageFilterChip${usageFilterNodes.length === 0 ? ' is-active' : ''}`}
+              disabled={usageStatisticsLoading}
+              onClick={() => setUsageFilterNodes([])}
+            >
+              All nodes
+            </button>
+            {usageNodeFilterOptions.map((nodeName) => (
+              <button
+                key={nodeName}
+                className={`aoUsageFilterChip${usageFilterNodes.includes(nodeName) ? ' is-active' : ''}`}
+                disabled={usageStatisticsLoading}
+                onClick={() => toggleUsageNodeFilter(nodeName)}
+              >
+                {nodeName}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="aoUsageFilterSection aoUsageFilterSectionCompact">
           <div className="aoUsageFilterSectionHead">
             <span className="aoMiniLabel">Providers</span>

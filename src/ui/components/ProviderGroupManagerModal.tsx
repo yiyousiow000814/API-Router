@@ -15,7 +15,18 @@ type Props = {
   onAssignGroup: (providers: string[], group: string | null) => Promise<void>
   onSetUsageBase: (provider: string, url: string) => Promise<void>
   onClearUsageBase: (provider: string) => Promise<void>
+  onClearUsageAuth: (provider: string) => Promise<void>
   onSetHardCap: (provider: string, field: QuotaHardCapField, enabled: boolean) => Promise<void>
+  onOpenProviderEmailModal: (provider: string, current: string | null | undefined) => void
+  onOpenUsageAuthModal: (provider: string) => Promise<void>
+}
+
+function isCodexForProviderBase(baseUrl: string | null | undefined): boolean {
+  return `${baseUrl ?? ''}`.trim().toLowerCase().includes('codex-for')
+}
+
+function hasProviderUsageLogin(provider: Config['providers'][string] | null | undefined): boolean {
+  return Boolean(provider?.has_usage_token || provider?.has_usage_login)
 }
 
 function orderedProviders(config: Config, ordered: string[], includeDisabled = false): string[] {
@@ -37,7 +48,10 @@ export function ProviderGroupManagerModal({
   onAssignGroup,
   onSetUsageBase,
   onClearUsageBase,
+  onClearUsageAuth,
   onSetHardCap,
+  onOpenProviderEmailModal,
+  onOpenUsageAuthModal,
 }: Props) {
   const openInitKeyRef = useRef<string | null>(null)
   const [assignMode, setAssignMode] = useState<'new' | 'add'>('new')
@@ -161,10 +175,11 @@ export function ProviderGroupManagerModal({
   }, [editingGroupName, groupNames])
 
   if (!open || !config) return null
+  const definitionsEditable = config.config_source?.mode !== 'follow'
 
   const selectedGroupName =
     assignMode === 'new' ? groupDraft.trim() : targetExistingGroup.trim()
-  const canApplyAssign = selectedProviders.length > 0 && selectedGroupName.length > 0
+  const canApplyAssign = definitionsEditable && selectedProviders.length > 0 && selectedGroupName.length > 0
 
   return (
     <ModalBackdrop onClose={onClose}>
@@ -184,13 +199,14 @@ export function ProviderGroupManagerModal({
                 <span className="aoGroupManagerAssignModeSlider" aria-hidden="true" />
                 <button
                   className={`aoGroupManagerAssignModeBtn${assignMode === 'new' ? ' is-active' : ''}`}
+                  disabled={!definitionsEditable}
                   onClick={() => setAssignMode('new')}
                 >
                   New Group
                 </button>
                 <button
                   className={`aoGroupManagerAssignModeBtn${assignMode === 'add' ? ' is-active' : ''}`}
-                  disabled={groupNames.length === 0}
+                  disabled={!definitionsEditable || groupNames.length === 0}
                   onClick={() => setAssignMode('add')}
                 >
                   Add to Group
@@ -202,14 +218,15 @@ export function ProviderGroupManagerModal({
                     className="aoInput"
                     placeholder="Group name"
                     value={groupDraft}
+                    disabled={!definitionsEditable}
                     onChange={(event) => setGroupDraft(event.target.value)}
                   />
                 ) : (
                   <select
                     className="aoSelect"
                     value={targetExistingGroup}
+                    disabled={!definitionsEditable || groupNames.length === 0}
                     onChange={(event) => setTargetExistingGroup(event.target.value)}
-                    disabled={groupNames.length === 0}
                   >
                     {groupNames.map((name) => (
                       <option key={`assign-group-option-${name}`} value={name}>
@@ -242,6 +259,7 @@ export function ProviderGroupManagerModal({
                       <input
                         type="checkbox"
                         checked={selected}
+                        disabled={!definitionsEditable}
                         onChange={(event) =>
                           setSelectedProviders((prev) => {
                             if (event.target.checked) return [...new Set([...prev, provider])]
@@ -299,29 +317,64 @@ export function ProviderGroupManagerModal({
                     <div key={`group-card-${name}`} className="aoGroupManagerGroupCard">
                       <div className="aoGroupManagerGroupHead">
                         <div className="aoProviderGroupTag">{name}</div>
-                        <button
-                          className="aoGroupManagerEditLink"
-                          onClick={() => setEditingGroupName((prev) => (prev === name ? null : name))}
-                        >
-                          {isEditingThisGroup ? 'Done' : 'Edit'}
-                        </button>
+                        <div className="aoGroupManagerMemberActions">
+                          <button
+                            className="aoGroupManagerEditLink"
+                            disabled={!definitionsEditable}
+                            onClick={() => setEditingGroupName((prev) => (prev === name ? null : name))}
+                          >
+                            {isEditingThisGroup ? 'Done' : 'Edit'}
+                          </button>
+                        </div>
                       </div>
 
                       <div className="aoGroupManagerProviderList">
                         {visibleMembers.map((provider) => {
+                          const providerConfig = config.providers?.[provider]
+                          const providerBaseUrl = providerConfig?.base_url ?? ''
+                          const supportsProviderLogin = isCodexForProviderBase(providerBaseUrl)
+                          const hasLogin = hasProviderUsageLogin(providerConfig)
                           return (
                             <div key={`group-member-row-${name}-${provider}`} className="aoGroupManagerMemberRow">
                               <span className="aoProviderName">{provider}</span>
-                              {isEditingThisGroup ? (
+                              <div className="aoGroupManagerMemberActions">
                                 <button
-                                  className="aoGroupManagerMemberRemove"
-                                  title={`Remove ${provider} from group`}
-                                  aria-label={`Remove ${provider} from group`}
-                                  onClick={() => void onAssignGroup([provider], null).catch(() => undefined)}
+                                  className="aoTinyBtn"
+                                  disabled={!definitionsEditable}
+                                  onClick={() =>
+                                    onOpenProviderEmailModal(
+                                      provider,
+                                      providerConfig?.account_email ?? undefined,
+                                    )
+                                  }
                                 >
-                                  ×
+                                  Email
                                 </button>
-                              ) : null}
+                                {supportsProviderLogin ? (
+                                  <button
+                                    className={`aoTinyBtn${hasLogin ? ' aoTinyBtnDangerSoft' : ''}`}
+                                    disabled={!definitionsEditable}
+                                    onClick={() =>
+                                      void (hasLogin
+                                        ? onClearUsageAuth(provider)
+                                        : onOpenUsageAuthModal(provider))
+                                    }
+                                  >
+                                    {hasLogin ? 'Logout' : 'Login'}
+                                  </button>
+                                ) : null}
+                                {isEditingThisGroup ? (
+                                  <button
+                                    className="aoGroupManagerMemberRemove"
+                                    title={`Remove ${provider} from group`}
+                                    aria-label={`Remove ${provider} from group`}
+                                    disabled={!definitionsEditable}
+                                    onClick={() => void onAssignGroup([provider], null).catch(() => undefined)}
+                                  >
+                                    ×
+                                  </button>
+                                ) : null}
+                              </div>
                             </div>
                           )
                         })}
@@ -333,15 +386,16 @@ export function ProviderGroupManagerModal({
                       <div className="aoGroupUsageBaseRow">
                         <input
                           className="aoInput aoGroupUsageBaseInput"
-                          placeholder="Usage base URL"
+                          placeholder="Usage URL"
                           value={usageBaseDraft}
+                          disabled={!definitionsEditable}
                           onChange={(event) =>
                             setGroupUsageBaseDrafts((prev) => ({ ...prev, [name]: event.target.value }))
                           }
                         />
                         <button
                           className="aoBtn"
-                          disabled={!groupActionTarget}
+                          disabled={!definitionsEditable || !groupActionTarget}
                           onClick={() => {
                             setGroupUsageBaseDrafts((prev) => ({ ...prev, [name]: '' }))
                             void onClearUsageBase(groupActionTarget)
@@ -351,7 +405,7 @@ export function ProviderGroupManagerModal({
                         </button>
                         <button
                           className="aoBtn aoBtnPrimary"
-                          disabled={!groupActionTarget}
+                          disabled={!definitionsEditable || !groupActionTarget}
                           onClick={() => void onSetUsageBase(groupActionTarget, usageBaseDraft)}
                         >
                           Save
@@ -365,7 +419,7 @@ export function ProviderGroupManagerModal({
                               <input
                                 type="checkbox"
                                 checked={Boolean(groupHardCap[period])}
-                                disabled={!groupActionTarget}
+                                disabled={!definitionsEditable || !groupActionTarget}
                                 ref={(input) => {
                                   if (!input) return
                                   input.indeterminate = groupHardCapMixed[period]
@@ -374,7 +428,7 @@ export function ProviderGroupManagerModal({
                                   void onSetHardCap(groupActionTarget, period, event.target.checked)
                                 }
                               />
-                              <span>{period} hard cap</span>
+                              <span>{period} cap</span>
                             </label>
                           ))}
                         </div>
@@ -391,7 +445,7 @@ export function ProviderGroupManagerModal({
                       <div className="aoGroupManagerGroupActions">
                         <button
                           className="aoBtn aoBtnDangerSoft"
-                          disabled={members.length === 0}
+                          disabled={!definitionsEditable || members.length === 0}
                           onClick={async () => {
                             try {
                               await onAssignGroup(members, null)

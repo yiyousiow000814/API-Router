@@ -43,6 +43,184 @@ async fn health_and_status_work_without_upstream() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("status body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("status json");
+    assert!(json.get("lan_sync").is_some());
+    assert!(json.get("windows_firewall").is_some());
+}
+
+#[tokio::test]
+async fn models_probe_does_not_update_last_ok_or_activity() {
+    use axum::routing::get;
+    use axum::{Json, Router as AxumRouter};
+    use tower::ServiceExt;
+
+    let app = AxumRouter::new().route(
+        "/v1/models",
+        get(|| async move {
+            Json(serde_json::json!({
+                "object": "list",
+                "data": [{ "id": "gpt-5", "object": "model" }]
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let mut cfg = AppConfig::default_config();
+    let provider = cfg
+        .providers
+        .get_mut("official")
+        .expect("official provider");
+    provider.base_url = format!("http://{}:{}/v1", addr.ip(), addr.port());
+
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/models")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("models response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    assert_eq!(state.last_activity_unix_ms.load(Ordering::Relaxed), 0);
+    let snapshot = state.router.snapshot(unix_ms());
+    let health = snapshot.get("official").expect("provider snapshot");
+    assert_eq!(health.last_ok_at_unix_ms, 0);
+    assert_eq!(health.status, "unknown");
+}
+
+#[tokio::test]
+async fn auth_verify_returns_while_history_read_is_blocked() {
+    use std::sync::{mpsc, Arc, Condvar, Mutex as StdMutex};
+    use std::time::Duration;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let cfg = AppConfig::default_config();
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let (entered_tx, entered_rx) = mpsc::channel::<()>();
+    let release = Arc::new((StdMutex::new(false), Condvar::new()));
+    let release_for_loader = release.clone();
+    crate::orchestrator::gateway::_set_test_web_codex_history_loader(Some(Arc::new(
+        move || {
+            let _ = entered_tx.send(());
+            let (lock, cvar) = &*release_for_loader;
+            let mut released = lock.lock().expect("release lock");
+            while !*released {
+                let (guard, _) = cvar
+                    .wait_timeout(released, Duration::from_secs(5))
+                    .expect("wait timeout");
+                released = guard;
+            }
+            Ok((json!({
+                    "id": "t-blocked",
+                    "turns": [],
+                }), json!({
+                    "hasMore": false,
+                    "beforeCursor": null,
+                    "limit": 1,
+                    "totalTurns": 0,
+                })))
+        },
+    )));
+
+    let app = build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let base = format!("http://{}:{}", addr.ip(), addr.port());
+    let client = reqwest::Client::new();
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let health = client
+        .get(format!("{base}/health"))
+        .send()
+        .await
+        .expect("health response");
+    assert_eq!(health.status(), StatusCode::OK);
+    let history_task = tokio::spawn({
+        let client = client.clone();
+        let url = format!("{base}/__test/block-history");
+        async move { client.get(url).send().await.expect("history response") }
+    });
+
+    tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(4)))
+        .await
+        .expect("entered join")
+        .expect("history handler entered");
+
+    let verify_resp = tokio::time::timeout(
+        Duration::from_millis(500),
+        client
+            .post(format!("{base}/codex/auth/verify"))
+            .header("content-type", "application/json")
+            .body("{}")
+            .send(),
+    )
+    .await
+    .expect("verify should not block behind history")
+    .expect("verify response");
+
+    assert_eq!(verify_resp.status(), StatusCode::OK);
+    let payload: serde_json::Value = verify_resp
+        .json()
+        .await
+        .expect("verify json");
+    assert_eq!(payload.get("ok").and_then(|v| v.as_bool()), Some(true));
+
+    {
+        let (lock, cvar) = &*release;
+        let mut released = lock.lock().expect("release lock");
+        *released = true;
+        cvar.notify_all();
+    }
+    let _ = history_task.await.expect("history join");
+    crate::orchestrator::gateway::_set_test_web_codex_history_loader(None);
 }
 
 #[test]
@@ -1050,7 +1228,7 @@ fn decide_provider_balanced_auto_retries_unhealthy_provider_even_with_fresh_assi
         "p1",
         &cfg,
         "boom",
-        now.saturating_sub(cfg.routing.cooldown_seconds * 1000 + 1),
+        now.saturating_sub(cfg.routing.effective_cooldown_seconds() * 1000 + 1),
     );
 
     let (picked, reason) = decide_provider(&state, &cfg, "p1", "session-main");
@@ -1990,10 +2168,14 @@ fn decide_provider_balanced_auto_prefers_higher_quota_for_heavy_session_when_loa
                     "total_tokens": 16_000
                 }
             }),
-            Some("-"),
+            crate::orchestrator::store::UsageRequestContext {
+                api_key_ref: Some("-"),
+                origin: crate::constants::USAGE_ORIGIN_WINDOWS,
+                session_id: Some("session-heavy-headroom"),
+                node_id: Some("node-test"),
+                node_name: Some("Desk Test"),
+            },
             None,
-            crate::constants::USAGE_ORIGIN_WINDOWS,
-            Some("session-heavy-headroom"),
         );
     }
     let usage_since = unix_ms().saturating_sub(2 * 60 * 60 * 1000);
@@ -2002,6 +2184,7 @@ fn decide_provider_balanced_auto_prefers_higher_quota_for_heavy_session_when_loa
         usage_since,
         Some(usage_since),
         None,
+        &[],
         &[],
         &[],
         &[],
@@ -2148,10 +2331,14 @@ fn decide_provider_balanced_auto_heavy_session_prefers_lower_per_request_cost() 
                     "total_tokens": 15_000
                 }
             }),
-            Some("-"),
+            crate::orchestrator::store::UsageRequestContext {
+                api_key_ref: Some("-"),
+                origin: crate::constants::USAGE_ORIGIN_WINDOWS,
+                session_id: Some("session-heavy-cost"),
+                node_id: Some("node-test"),
+                node_name: Some("Desk Test"),
+            },
             None,
-            crate::constants::USAGE_ORIGIN_WINDOWS,
-            Some("session-heavy-cost"),
         );
     }
 
@@ -2278,10 +2465,14 @@ fn decide_provider_balanced_auto_no_longer_hard_prioritizes_load_pressure() {
                     "total_tokens": 16_000
                 }
             }),
-            Some("-"),
+            crate::orchestrator::store::UsageRequestContext {
+                api_key_ref: Some("-"),
+                origin: crate::constants::USAGE_ORIGIN_WINDOWS,
+                session_id: Some("session-heavy-pressure"),
+                node_id: Some("node-test"),
+                node_name: Some("Desk Test"),
+            },
             None,
-            crate::constants::USAGE_ORIGIN_WINDOWS,
-            Some("session-heavy-pressure"),
         );
     }
 

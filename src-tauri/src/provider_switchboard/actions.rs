@@ -63,9 +63,20 @@ fn on_provider_renamed_impl(state: &AppState, old: &str, new: &str) -> Result<()
             continue;
         }
         let orig_cfg = read_cfg_base_text(&state.config_path, h)?;
-        let next_cfg = build_direct_provider_cfg(&orig_cfg, new, &base_url);
-        let next_auth = auth_with_openai_key(key.trim());
-        write_swapped_files(h, &next_auth, &next_cfg)?;
+        let storage_mode = state.secrets.get_provider_key_storage_mode(new);
+        let use_config_storage = provider_key_storage_uses_config(&storage_mode);
+        let next_cfg = build_direct_provider_cfg(
+            &orig_cfg,
+            new,
+            &base_url,
+            use_config_storage.then_some(key.trim()),
+        );
+        let next_auth = if use_config_storage {
+            auth_without_openai_key()
+        } else {
+            auth_with_openai_key(key.trim())
+        };
+        write_swapped_files(&state.config_path, h, &next_auth, &next_cfg)?;
     }
 
     Ok(())
@@ -138,7 +149,7 @@ pub fn set_target(
                 let auth = app_auth.as_ref().ok_or_else(|| {
                     "Missing app Codex auth.json. Try logging in first.".to_string()
                 })?;
-                write_swapped_files(h, auth, &next_cfg)
+                write_swapped_files(&state.config_path, h, auth, &next_cfg)
             })(),
             "provider" => (|| {
                 let name = direct_name
@@ -151,16 +162,27 @@ pub fn set_target(
                     .as_deref()
                     .ok_or_else(|| "provider key is missing".to_string())?;
                 let orig_cfg = read_cfg_base_text(&state.config_path, h)?;
-                let next_cfg = build_direct_provider_cfg(&orig_cfg, name, base_url);
-                let next_auth = auth_with_openai_key(key.trim());
-                write_swapped_files(h, &next_auth, &next_cfg)
+                let storage_mode = state.secrets.get_provider_key_storage_mode(name);
+                let use_config_storage = provider_key_storage_uses_config(&storage_mode);
+                let next_cfg = build_direct_provider_cfg(
+                    &orig_cfg,
+                    name,
+                    base_url,
+                    use_config_storage.then_some(key.trim()),
+                );
+                let next_auth = if use_config_storage {
+                    auth_without_openai_key()
+                } else {
+                    auth_with_openai_key(key.trim())
+                };
+                write_swapped_files(&state.config_path, h, &next_auth, &next_cfg)
             })(),
             _ => Err("target must be one of: gateway | official | provider".to_string()),
         };
         if let Err(e) = res {
             if target != "gateway" {
                 for p in applied.iter().rev() {
-                    let _ = restore_home_original(p);
+                    let _ = restore_home_original(&state.config_path, p);
                 }
             }
             return Err(e);
@@ -173,10 +195,9 @@ pub fn set_target(
     // took effect; we log an event so the user can troubleshoot, and future key-sync
     // may not work until state can be saved.
     if let Err(e) = save_switchboard_state(state, &homes, &target, provider_name.as_deref()) {
-        state.gateway.store.add_event(
+        state.gateway.store.events().emit(
             "codex",
-            "error",
-            "codex.provider_switchboard.state_save_failed",
+            crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_STATE_SAVE_FAILED,
             &format!("Provider switchboard state save failed: {e}"),
             json!({
               "target": target,
@@ -187,10 +208,9 @@ pub fn set_target(
         );
     }
 
-    state.gateway.store.add_event(
+    state.gateway.store.events().emit(
         "codex",
-        "info",
-        "codex.provider_switchboard.updated",
+        crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_UPDATED,
         "Provider switchboard target updated",
         json!({
           "target": target,
@@ -208,4 +228,3 @@ pub fn set_target(
             .collect(),
     )
 }
-

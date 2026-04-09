@@ -1,12 +1,13 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
+import { useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { SpendHistoryRow } from '../devMockData'
 import type { Config } from '../types'
 import type { UsageHistoryDraft, UsagePricingDraft, UsagePricingSaveState } from '../types/usage'
 import { formatDraftAmount, parsePositiveAmount } from '../utils/currency'
+import { runSingleFlight } from '../utils/singleFlight'
 import { resolvePricingAmountUsd as computePricingAmountUsd } from '../utils/usagePricing'
 import { historyDraftFromRow as buildHistoryDraftFromRow } from '../utils/usageSchedule'
-import { buildDevMockHistoryRows } from '../devMockData'
 
 type TimelinePeriod = {
   id: string
@@ -90,6 +91,7 @@ export function useUsagePricingHistoryActions(params: Params) {
     historyEffectiveDisplayValue,
     historyPerReqDisplayValue,
   } = params
+  const usageHistoryInFlightRef = useRef<Map<string, Promise<SpendHistoryRow[]>>>(new Map())
 
   function resolvePricingAmountUsd(draft: UsagePricingDraft, fallbackAmountUsd?: number | null): number | null {
     return computePricingAmountUsd(
@@ -309,11 +311,24 @@ export function useUsagePricingHistoryActions(params: Params) {
     if (!silent) setUsageHistoryLoading(true)
     try {
       let rows: SpendHistoryRow[] = []
-      if (devMockHistoryEnabled) rows = buildDevMockHistoryRows(120)
+      if (devMockHistoryEnabled) {
+        const module = await import('../devMockData')
+        rows = module.buildDevMockHistoryRows(120)
+      }
       else if (isDevPreview) rows = []
       else {
-        const res = await invoke<{ ok: boolean; rows: SpendHistoryRow[] }>('get_spend_history', { provider: null, days: 180, compactOnly: true })
-        rows = Array.isArray(res?.rows) ? res.rows : []
+        rows = await runSingleFlight(
+          usageHistoryInFlightRef.current,
+          'spend_history:all:180:compact',
+          async () => {
+            const res = await invoke<{ ok: boolean; rows: SpendHistoryRow[] }>('get_spend_history', {
+              provider: null,
+              days: 180,
+              compactOnly: true,
+            })
+            return Array.isArray(res?.rows) ? res.rows : []
+          },
+        )
       }
       setUsageHistoryRows(rows)
       usageHistoryLoadedRef.current = true
@@ -353,8 +368,6 @@ export function useUsagePricingHistoryActions(params: Params) {
     const effectiveNow = historyEffectiveDisplayValue(row)
     const perReqDraft = parsePositiveAmount(draft.perReqText)
     const perReqNow = historyPerReqDisplayValue(row)
-    const trackedBase = row.tracked_total_usd ?? 0
-    const scheduledBase = row.scheduled_total_usd ?? 0
     const closeEnough = (a: number, b: number) => Math.abs(a - b) < 0.0005
     const effectiveChanged = effectiveDraft != null && (effectiveNow == null || !closeEnough(effectiveDraft, effectiveNow))
     const perReqChanged = perReqDraft != null && (perReqNow == null || !closeEnough(perReqDraft, perReqNow))
@@ -365,13 +378,9 @@ export function useUsagePricingHistoryActions(params: Params) {
       totalUsedUsd = null
       usdPerReq = perReqDraft
     } else if (field === 'effective' && effectiveChanged) {
-      const minimum = trackedBase + scheduledBase
-      if (effectiveDraft < minimum - 0.0005) {
-        if (!silent) flashToast('Effective $ cannot be lower than tracked + scheduled', 'error')
-        return
-      }
-      const delta = effectiveDraft - minimum
-      totalUsedUsd = delta > 0.0005 ? delta : null
+      const trackedBase = row.tracked_total_usd ?? 0
+      const manualTotalUsd = effectiveDraft - trackedBase
+      totalUsedUsd = Math.abs(manualTotalUsd) > 0.0005 ? manualTotalUsd : null
       usdPerReq = null
     } else {
       if (!silent) flashToast('No history change to save')

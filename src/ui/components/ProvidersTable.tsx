@@ -1,5 +1,6 @@
 import { fmtAmount, fmtPct, fmtUsd, fmtWhen, pctOf } from '../utils/format'
-import type { Config, Status } from '../types'
+import type { Config, Status, UsageStatistics, UsageStatisticsOverview } from '../types'
+import { simulateQuotaForDisplay } from '../utils/quotaSimulation'
 
 const mono = 'ui-monospace, "Cascadia Mono", "Consolas", monospace'
 
@@ -13,6 +14,7 @@ type Props = {
   providers: string[]
   status: Status
   config?: Config | null
+  usageStatistics?: UsageStatistics | UsageStatisticsOverview | null
   refreshingProviders: Record<string, boolean>
   onRefreshQuota: (provider: string) => void
   onOpenLastErrorInEventLog: (payload: LastErrorJump) => void
@@ -22,6 +24,7 @@ export function ProvidersTable({
   providers,
   status,
   config = null,
+  usageStatistics = null,
   refreshingProviders,
   onRefreshQuota,
   onOpenLastErrorInEventLog,
@@ -29,6 +32,7 @@ export function ProvidersTable({
   const ONE_DAY_MS = 24 * 60 * 60 * 1000
   const fmtDateOnly = (unixMs: number): string => fmtWhen(unixMs).split(' ')[0] ?? '-'
   const isExpiryUrgent = (unixMs: number): boolean => Number.isFinite(unixMs) && unixMs > 0 && unixMs - Date.now() <= ONE_DAY_MS
+  const localNetworkOffline = status.local_network_online === false
 
   return (
     <table className="aoTable aoTableFixed">
@@ -52,34 +56,45 @@ export function ProvidersTable({
       <tbody>
         {providers.map((p) => {
           const h = status.providers[p]
-          const q = status.quota?.[p]
-          const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info'
+          const isOffline = localNetworkOffline
+          const q = simulateQuotaForDisplay(
+            p,
+            status.quota?.[p],
+            status.projected_ledgers?.[p] ?? status.ledgers?.[p],
+            usageStatistics,
+          )
+          const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info' | 'balance_info'
           const quotaHardCap = config?.providers?.[p]?.quota_hard_cap ?? { daily: true, weekly: true, monthly: true }
           const isClosed = h.status === 'closed'
           const cooldownActive = !isClosed && h.cooldown_until_unix_ms > Date.now()
+          const retryDue = !isClosed && h.status === 'unhealthy' && !cooldownActive
           const isActive = (status.active_provider_counts?.[p] ?? 0) > 0
           const healthLabel =
             isClosed
               ? 'closed'
-              : isActive
+              : isOffline
+                ? 'offline'
+                : isActive
                 ? 'effective'
+                : retryDue
+                  ? 'retry'
                 : h.status === 'healthy'
                   ? 'yes'
-                  : h.status === 'unhealthy'
+                  : h.status === 'unhealthy' || h.status === 'cooldown'
                     ? 'no'
-                    : h.status === 'cooldown'
-                      ? 'cooldown'
-                      : 'unknown'
+                    : 'unknown'
           const dotClass =
             isClosed
               ? 'aoDot aoDotBad'
-              : isActive
+              : isOffline
+                ? 'aoDot aoDotMuted'
+                : isActive
                 ? 'aoDot'
+                : retryDue
+                  ? 'aoDot aoDotMuted'
                 : h.status === 'healthy'
                   ? 'aoDot'
-                  : h.status === 'cooldown'
-                    ? 'aoDot'
-                  : h.status === 'unhealthy'
+                  : h.status === 'unhealthy' || h.status === 'cooldown'
                     ? 'aoDot aoDotBad'
                     : 'aoDot aoDotMuted'
 
@@ -123,15 +138,25 @@ export function ProvidersTable({
                   <div className="aoUsageText">
                     {(() => {
                       const usageLines: Array<{ key: string; content: string }> = []
-                      if (quotaHardCap.daily) {
+                      const hasDailySpent = q?.daily_spent_usd != null
+                      const hasDailyBudget = q?.daily_budget_usd != null
+                      if (quotaHardCap.daily && (hasDailySpent || hasDailyBudget)) {
+                        const dailyContent =
+                          hasDailySpent && hasDailyBudget
+                            ? `daily: $${fmtUsd(q?.daily_spent_usd)} / $${fmtUsd(q?.daily_budget_usd)}`
+                            : hasDailySpent
+                              ? `daily: $${fmtUsd(q?.daily_spent_usd)}`
+                              : `daily budget: $${fmtUsd(q?.daily_budget_usd)}`
                         usageLines.push({
                           key: 'daily',
-                          content: `daily: $${fmtUsd(q?.daily_spent_usd)} / $${fmtUsd(q?.daily_budget_usd)}`,
+                          content: dailyContent,
                         })
                       }
                       const hasWeeklySpent = q?.weekly_spent_usd != null
                       const hasWeeklyBudget = q?.weekly_budget_usd != null
-                      const hasMonthly = q?.monthly_spent_usd != null || q?.monthly_budget_usd != null
+                      const hasMonthlySpent = q?.monthly_spent_usd != null
+                      const hasMonthlyBudget = q?.monthly_budget_usd != null
+                      const hasMonthly = hasMonthlySpent || hasMonthlyBudget
 
                       // Prefer weekly only when upstream actually reports weekly (spent + budget).
                       // Some providers keep the weekly budget field but stop reporting weekly spent
@@ -144,9 +169,15 @@ export function ProvidersTable({
                           content: `weekly: $${fmtUsd(q?.weekly_spent_usd)} / $${fmtUsd(q?.weekly_budget_usd)}`,
                         })
                       } else if (quotaHardCap.monthly && hasMonthly) {
+                        const monthlyContent =
+                          hasMonthlySpent && hasMonthlyBudget
+                            ? `monthly: $${fmtUsd(q?.monthly_spent_usd)} / $${fmtUsd(q?.monthly_budget_usd)}`
+                            : hasMonthlySpent
+                              ? `used: $${fmtUsd(q?.monthly_spent_usd)}`
+                              : `monthly budget: $${fmtUsd(q?.monthly_budget_usd)}`
                         usageLines.push({
                           key: 'monthly',
-                          content: `monthly: $${fmtUsd(q?.monthly_spent_usd)} / $${fmtUsd(q?.monthly_budget_usd)}`,
+                          content: monthlyContent,
                         })
                       } else if (quotaHardCap.weekly && hasWeeklyBudget) {
                         usageLines.push({
@@ -208,7 +239,11 @@ export function ProvidersTable({
             const lastErrorAt = h.last_fail_at_unix_ms
             // Show each provider's own latest failure in-place. Event Log jump remains best-effort:
             // the Event Log page re-runs a provider+message+time search against its full loaded window.
-            const showLastError = lastErrorAt > 0 && lastErrorMessage.length > 0
+            const providerIsHealthy = h.status === 'healthy'
+            const showLastError =
+              lastErrorAt > 0 &&
+              lastErrorMessage.length > 0 &&
+              (!providerIsHealthy || lastErrorAt >= (h.last_ok_at_unix_ms ?? 0))
 
             return (
               <tr key={p}>
@@ -232,7 +267,7 @@ export function ProvidersTable({
                 </td>
                 <td className="aoCellCenter">
                   <div className="aoCellCenterInner">
-                    <span className={`aoPill ${isActive ? 'aoPulse' : ''}`.trim()}>
+                    <span className={`aoPill ${isActive && !isOffline ? 'aoPulse' : ''}`.trim()}>
                       <span className={dotClass} />
                       <span className="aoPillText">{healthLabel}</span>
                     </span>

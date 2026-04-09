@@ -1,6 +1,6 @@
 import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from 'react'
 import { useEffect, useRef } from 'react'
-import type { Config } from '../types'
+import type { Config, Status } from '../types'
 import type {
   ProviderScheduleDraft,
   UsagePricingDraft,
@@ -24,13 +24,36 @@ type ScheduleCurrencyMenuState = {
   width: number
 } | null
 
+type ActivePage =
+  | 'dashboard'
+  | 'usage_statistics'
+  | 'usage_requests'
+  | 'provider_switchboard'
+  | 'event_log'
+  | 'web_codex'
+
 type Params = {
-  activePage: 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log'
-  refreshUsageStatistics: (options?: { silent?: boolean }) => Promise<void>
-  usageWindowHours: number
-  usageFilterProviders: string[]
-  usageFilterModels: string[]
-  usageFilterOrigins: string[]
+  activePage: ActivePage
+  usageRefreshRevision: string
+  enqueueBackgroundRefresh: (
+    key: string,
+    owner: ActivePage | 'any',
+    run: (guard: () => boolean) => Promise<void> | void,
+  ) => void
+  refreshUsageOverview: (options?: {
+    silent?: boolean
+    applyGuard?: () => boolean
+    interactive?: boolean
+    source?: string
+  }) => Promise<void>
+  refreshUsageStatistics: (options?: {
+    silent?: boolean
+    applyGuard?: () => boolean
+    interactive?: boolean
+    source?: string
+  }) => Promise<void>
+  hasUsageOverview: boolean
+  hasUsageStatistics: boolean
   isDevPreview: boolean
   refreshFxRatesDaily: (force?: boolean) => Promise<void>
   usagePricingModalOpen: boolean
@@ -49,6 +72,7 @@ type Params = {
   resetUsageHistoryScrollbarState: () => void
   clearUsageHistoryScrollbarTimers: () => void
   usageHistoryLoadedRef: MutableRefObject<boolean>
+  usageHistoryQuotaRefreshToken: string
   refreshUsageHistory: (options?: { silent?: boolean; keepEditCell?: boolean }) => Promise<void>
   refreshUsageHistoryScrollbarUi: () => void
   usageHistoryRows: SpendHistoryRow[]
@@ -71,16 +95,130 @@ type Params = {
   autoSaveUsageScheduleRows: (rows: ProviderScheduleDraft[], signature: string) => Promise<void>
 }
 
-export function useAppUsageEffects(params: Params) {
-  const usageHistoryPrefetchStartedRef = useRef(false)
-  const previousActivePageRef = useRef<Params['activePage'] | null>(null)
+export function buildUsageHistoryQuotaRefreshToken(
+  quota: Status['quota'] | null | undefined,
+): string {
+  if (!quota) return ''
+  return Object.entries(quota)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([provider, snapshot]) => {
+      const updatedAt = snapshot?.updated_at_unix_ms ?? 0
+      const appliedAt = snapshot?.applied_at_unix_ms ?? 0
+      const spent = snapshot?.daily_spent_usd ?? null
+      return `${provider}:${updatedAt}:${appliedAt}:${spent ?? 'null'}`
+    })
+    .join('|')
+}
+
+export function shouldRefreshUsageHistoryFromQuotaToken(params: {
+  usageHistoryModalOpen: boolean
+  usageHistoryLoaded: boolean
+  usageHistoryQuotaRefreshToken: string
+}): boolean {
   const {
-    activePage,
-    refreshUsageStatistics,
+    usageHistoryModalOpen,
+    usageHistoryLoaded,
+    usageHistoryQuotaRefreshToken,
+  } = params
+  if (!usageHistoryModalOpen) return false
+  if (!usageHistoryLoaded) return false
+  return Boolean(usageHistoryQuotaRefreshToken)
+}
+
+function normalizeUsageRefreshRevisionValues(values: string[]): string {
+  return values
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b))
+    .join(',')
+}
+
+export function buildUsageRefreshRevision(params: {
+  usageWindowHours: number
+  usageFilterNodes: string[]
+  usageFilterProviders: string[]
+  usageFilterModels: string[]
+  usageFilterOrigins: string[]
+}): string {
+  const {
     usageWindowHours,
+    usageFilterNodes,
     usageFilterProviders,
     usageFilterModels,
     usageFilterOrigins,
+  } = params
+  return [
+    `hours:${usageWindowHours}`,
+    `nodes:${normalizeUsageRefreshRevisionValues(usageFilterNodes)}`,
+    `providers:${normalizeUsageRefreshRevisionValues(usageFilterProviders)}`,
+    `models:${normalizeUsageRefreshRevisionValues(usageFilterModels)}`,
+    `origins:${normalizeUsageRefreshRevisionValues(usageFilterOrigins)}`,
+  ].join('|')
+}
+
+export function usageStatisticsRefreshIntervalMs(
+  activePage: ActivePage,
+): number | null {
+  if (activePage === 'usage_statistics') return 15_000
+  if (activePage === 'dashboard') return 60_000
+  return null
+}
+
+export function usageRefreshMode(
+  activePage: ActivePage,
+): 'overview' | 'full' | null {
+  if (activePage === 'dashboard') return 'overview'
+  if (activePage === 'usage_statistics') return 'full'
+  return null
+}
+
+export function shouldRefreshUsageSilently(
+  previousActivePage: ActivePage | null,
+  activePage: ActivePage,
+  hasUsageData: boolean,
+): boolean {
+  return previousActivePage !== activePage && hasUsageData
+}
+
+function scheduleDeferredUiRefresh(run: () => void, delayMs: number): () => void {
+  if (typeof window === 'undefined') {
+    run()
+    return () => {}
+  }
+  let cancelled = false
+  let idleId: number | null = null
+  let timerId: number | null = null
+  const execute = () => {
+    if (cancelled) return
+    run()
+  }
+  if (typeof window.requestIdleCallback === 'function') {
+    idleId = window.requestIdleCallback(execute, { timeout: delayMs })
+  } else {
+    timerId = window.setTimeout(execute, delayMs)
+  }
+  return () => {
+    cancelled = true
+    if (idleId != null && typeof window.cancelIdleCallback === 'function') {
+      window.cancelIdleCallback(idleId)
+    }
+    if (timerId != null) {
+      window.clearTimeout(timerId)
+    }
+  }
+}
+
+export function useAppUsageEffects(params: Params) {
+  const previousActivePageRef = useRef<ActivePage | null>(null)
+  const refreshUsageStatisticsRef = useRef(params.refreshUsageStatistics)
+  const {
+    activePage,
+    usageRefreshRevision,
+    enqueueBackgroundRefresh,
+    refreshUsageOverview,
+    refreshUsageStatistics,
+    hasUsageOverview,
+    hasUsageStatistics,
     isDevPreview,
     refreshFxRatesDaily,
     usagePricingModalOpen,
@@ -99,6 +237,7 @@ export function useAppUsageEffects(params: Params) {
     resetUsageHistoryScrollbarState,
     clearUsageHistoryScrollbarTimers,
     usageHistoryLoadedRef,
+    usageHistoryQuotaRefreshToken,
     refreshUsageHistory,
     refreshUsageHistoryScrollbarUi,
     usageHistoryRows,
@@ -120,19 +259,74 @@ export function useAppUsageEffects(params: Params) {
     queueAutoSaveTimer,
     autoSaveUsageScheduleRows,
   } = params
+  const refreshUsageOverviewRef = useRef(params.refreshUsageOverview)
   const refreshUsageHistoryRef = useRef(refreshUsageHistory)
+
+  useEffect(() => {
+    refreshUsageOverviewRef.current = refreshUsageOverview
+  }, [refreshUsageOverview])
+
+  useEffect(() => {
+    refreshUsageStatisticsRef.current = refreshUsageStatistics
+  }, [refreshUsageStatistics])
 
   useEffect(() => {
     refreshUsageHistoryRef.current = refreshUsageHistory
   }, [refreshUsageHistory])
 
   useEffect(() => {
-    if (activePage !== 'usage_statistics') return
-    const enteringUsagePage = previousActivePageRef.current !== 'usage_statistics'
-    void refreshUsageStatistics({ silent: enteringUsagePage })
-    const t = window.setInterval(() => void refreshUsageStatistics({ silent: true }), 15_000)
-    return () => window.clearInterval(t)
-  }, [activePage, usageWindowHours, usageFilterProviders, usageFilterModels, usageFilterOrigins, refreshUsageStatistics])
+    const refreshMs = usageStatisticsRefreshIntervalMs(activePage)
+    if (refreshMs == null) return
+    const refreshMode = usageRefreshMode(activePage)
+    if (refreshMode == null) return
+    const hasUsageData = refreshMode === 'overview' ? hasUsageOverview : hasUsageStatistics
+    const silent = shouldRefreshUsageSilently(
+      previousActivePageRef.current,
+      activePage,
+      hasUsageData,
+    )
+    const isInitialDashboardBoot =
+      previousActivePageRef.current == null && activePage === 'dashboard'
+    const scheduleRefresh = (nextSilent: boolean, source: string) =>
+      enqueueBackgroundRefresh(`usage:${refreshMode}:${activePage}`, activePage, (guard) =>
+        refreshMode === 'overview'
+          ? refreshUsageOverviewRef.current({
+              silent: nextSilent,
+              applyGuard: guard,
+              interactive: false,
+              source,
+            })
+          : refreshUsageStatisticsRef.current({
+              silent: nextSilent,
+              applyGuard: guard,
+              interactive: false,
+              source,
+            }),
+      )
+    const initialDelayMs = isInitialDashboardBoot ? 350 : 140
+    const cancelInitialRefresh = scheduleDeferredUiRefresh(() => {
+      scheduleRefresh(
+        silent,
+        isInitialDashboardBoot
+          ? `usage_page_bootstrap:${activePage}`
+          : `usage_page_entry:${activePage}`,
+      )
+    }, initialDelayMs)
+    const t = window.setInterval(
+      () => scheduleRefresh(true, `usage_page_interval:${activePage}`),
+      refreshMs,
+    )
+    return () => {
+      window.clearInterval(t)
+      cancelInitialRefresh()
+    }
+  }, [
+    activePage,
+    usageRefreshRevision,
+    enqueueBackgroundRefresh,
+    hasUsageOverview,
+    hasUsageStatistics,
+  ])
 
   useEffect(() => {
     previousActivePageRef.current = activePage
@@ -213,19 +407,6 @@ export function useAppUsageEffects(params: Params) {
   }, [usagePricingModalOpen, usagePricingProviderNames, config])
 
   useEffect(() => {
-    if (usageHistoryPrefetchStartedRef.current) return
-    if (usageHistoryLoadedRef.current) return
-    usageHistoryPrefetchStartedRef.current = true
-    const timer = window.setTimeout(() => {
-      if (usageHistoryLoadedRef.current) return
-      void refreshUsageHistoryRef.current({ silent: true })
-    }, 400)
-    return () => {
-      window.clearTimeout(timer)
-    }
-  }, [usageHistoryLoadedRef])
-
-  useEffect(() => {
     if (!usageHistoryModalOpen) {
       clearAutoSaveTimer('history:edit')
       resetUsageHistoryScrollbarState()
@@ -235,6 +416,19 @@ export function useAppUsageEffects(params: Params) {
     const shouldSilentRefresh = usageHistoryLoadedRef.current
     void refreshUsageHistory({ silent: shouldSilentRefresh })
   }, [usageHistoryModalOpen, resetUsageHistoryScrollbarState, clearUsageHistoryScrollbarTimers])
+
+  useEffect(() => {
+    if (
+      !shouldRefreshUsageHistoryFromQuotaToken({
+        usageHistoryModalOpen,
+        usageHistoryLoaded: usageHistoryLoadedRef.current,
+        usageHistoryQuotaRefreshToken,
+      })
+    ) {
+      return
+    }
+    void refreshUsageHistoryRef.current({ silent: true })
+  }, [usageHistoryModalOpen, usageHistoryQuotaRefreshToken])
 
   useEffect(() => {
     if (!usageHistoryModalOpen || typeof window === 'undefined') return

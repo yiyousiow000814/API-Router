@@ -25,6 +25,8 @@ API Router [[]TEST[]].exe
 
 # Local research / temporary clones (never commit)
 packycode-cost/
+.tmp/
+artifacts/
 
 # MCP build artifacts
 mcp/target/
@@ -39,3 +41,4 @@ mcp/target/
 *.njsproj
 *.sln
 *.sw?
+*.orig

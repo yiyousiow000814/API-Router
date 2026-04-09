@@ -4,10 +4,11 @@ import type { UseProviderActionsParams } from './types'
 
 type ProviderKeyActions = Pick<
   UseProviderActionsParams,
-  'keyModal' | 'isDevPreview' | 'setKeyModal' | 'refreshStatus' | 'refreshConfig' | 'flashToast'
+  'config' | 'keyModal' | 'isDevPreview' | 'setKeyModal' | 'refreshStatus' | 'refreshConfig' | 'flashToast'
 >
 
 export function useProviderKeyActions({
+  config,
   keyModal,
   isDevPreview,
   setKeyModal,
@@ -25,11 +26,18 @@ export function useProviderKeyActions({
     }
     try {
       if (key) {
-        await invoke('set_provider_key', { provider, key })
+        await invoke('set_provider_key', { provider, key, storageMode: keyModal.storage })
       } else {
         await invoke('clear_provider_key', { provider })
       }
-      setKeyModal({ open: false, provider: '', value: '', loading: false, loadFailed: false })
+      setKeyModal({
+        open: false,
+        provider: '',
+        value: '',
+        storage: 'auth_json',
+        loading: false,
+        loadFailed: false,
+      })
       if (key) {
         flashToast(`Key set: ${provider}`)
         try {
@@ -77,7 +85,15 @@ export function useProviderKeyActions({
 
   const openKeyModal = useCallback(
     async (provider: string) => {
-      setKeyModal({ open: true, provider, value: '', loading: !isDevPreview, loadFailed: false })
+      const currentStorage = config?.providers?.[provider]?.key_storage ?? 'auth_json'
+      setKeyModal({
+        open: true,
+        provider,
+        value: '',
+        storage: currentStorage,
+        loading: !isDevPreview,
+        loadFailed: false,
+      })
       if (isDevPreview) return
       try {
         const existing = await invoke<string | null>('get_provider_key', { provider })
@@ -90,7 +106,7 @@ export function useProviderKeyActions({
         setKeyModal((m) => (m.open && m.provider === provider ? { ...m, loading: false, loadFailed: true } : m))
       }
     },
-    [flashToast, isDevPreview, setKeyModal],
+    [config?.providers, flashToast, isDevPreview, setKeyModal],
   )
 
   return {

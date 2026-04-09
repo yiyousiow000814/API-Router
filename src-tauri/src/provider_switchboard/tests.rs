@@ -2,6 +2,7 @@
 mod tests {
     use super::*;
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
+    use serde_json::json;
 
     #[test]
     fn switchboard_base_cfg_path_is_under_app_dir_even_with_absolute_home() {
@@ -60,6 +61,60 @@ mod tests {
     }
 
     #[test]
+    fn read_cfg_base_text_restores_missing_cli_auth_from_app_auth() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let app_auth = json!({
+            "tokens": {
+                "access_token": "token-1"
+            }
+        });
+        write_json(&app_auth_path_from_config_path(&config_path), &app_auth).expect("write app auth");
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(cli_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+
+        let out = read_cfg_base_text(&config_path, &cli_home).expect("read base");
+
+        assert!(out.contains("model = \"gpt-5.2\""));
+        let restored_auth = read_json(&cli_auth_path(&cli_home)).expect("restored cli auth");
+        assert_eq!(restored_auth, app_auth);
+    }
+
+    #[test]
+    fn collect_status_dirs_does_not_restore_missing_cli_auth() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+        let app_auth = json!({
+            "tokens": {
+                "access_token": "token-1"
+            }
+        });
+        write_json(&app_auth_path_from_config_path(&config_path), &app_auth).expect("write app auth");
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(cli_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+
+        let app_cfg = state.gateway.cfg.read().clone();
+        let err =
+            collect_status_dirs(std::slice::from_ref(&cli_home), &app_cfg).expect_err("status should stay read-only");
+
+        assert!(err.contains("Missing auth.json"));
+        assert!(
+            !cli_auth_path(&cli_home).exists(),
+            "status collection should not create auth.json"
+        );
+    }
+
+    #[test]
     fn switch_to_gateway_home_writes_gateway_even_if_base_save_fails() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_path = tmp.path().join("user-data").join("config.toml");
@@ -102,6 +157,40 @@ mod tests {
             state.secrets.get_gateway_token().as_deref()
         );
         assert!(swap_state_dir(&cli_home).exists());
+    }
+
+    #[test]
+    fn switch_to_gateway_home_restores_missing_cli_auth_before_backup() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+        let app_auth = json!({
+            "tokens": {
+                "access_token": "token-1"
+            }
+        });
+        write_json(&app_auth_path_from_config_path(&config_path), &app_auth).expect("write app auth");
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(cli_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+
+        switch_to_gateway_home_impl(&state, &cli_home).expect("switch gateway");
+
+        let backup_auth = read_json(&backup_auth_path(&cli_home)).expect("backup auth");
+        assert_eq!(backup_auth, app_auth);
+
+        let switched_auth = read_json(&cli_auth_path(&cli_home)).expect("switched auth");
+        assert_eq!(
+            switched_auth
+                .get("OPENAI_API_KEY")
+                .and_then(|v| v.as_str())
+                .map(str::trim),
+            state.secrets.get_gateway_token().as_deref()
+        );
     }
 
     #[test]
@@ -286,7 +375,7 @@ mod tests {
             provider = GATEWAY_MODEL_PROVIDER_ID
         );
 
-        let out = build_direct_provider_cfg(&cfg, "ppchat", "https://code.ppchat.vip/v1");
+        let out = build_direct_provider_cfg(&cfg, "ppchat", "https://code.ppchat.vip/v1", None);
 
         // No extra blank line between model_provider and the next setting.
         assert!(out.contains("model_provider = \"ppchat\"\nmodel = \"gpt-5.2\""));
@@ -309,9 +398,22 @@ mod tests {
             "wire_api = \"responses\"\n",
             "requires_openai_auth = true\n",
         );
-        let out = build_direct_provider_cfg(cfg, "ppchat", "https://code.ppchat.vip/v1");
+        let out = build_direct_provider_cfg(cfg, "ppchat", "https://code.ppchat.vip/v1", None);
         assert!(!out.contains("[model_providers.API_Router]"));
         assert!(!out.contains("[model_providers.api_router]"));
+    }
+
+    #[test]
+    fn build_direct_provider_cfg_can_embed_experimental_bearer_token() {
+        let cfg = "model = \"gpt-5.2\"\n";
+        let out = build_direct_provider_cfg(
+            cfg,
+            "ppchat",
+            "https://code.ppchat.vip/v1",
+            Some("sk-config"),
+        );
+        assert!(out.contains("experimental_bearer_token = \"sk-config\""));
+        assert!(out.contains("requires_openai_auth = true"));
     }
 
     #[test]
@@ -325,7 +427,7 @@ mod tests {
         // Initial gateway files (will be backed up by ensure_backup_exists).
         std::fs::write(cli_auth_path(&cli_home), r#"{"tokens":{"t":"x"}}"#).unwrap();
         std::fs::write(cli_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
-        ensure_backup_exists(&cli_home).expect("backup");
+        ensure_backup_exists(&config_path, &cli_home).expect("backup");
 
         // Simulate swapped state: CLI files reflect a direct provider target, and user edits the model.
         let swapped_cfg = concat!(
@@ -345,7 +447,7 @@ mod tests {
         let gateway_norm = normalize_cfg_for_switchboard_base("model = \"gpt-5.2\"\n");
         save_switchboard_base_meta(&config_path, &cli_home, &gateway_norm).expect("save meta");
 
-        restore_home_original(&cli_home).expect("restore");
+        restore_home_original(&config_path, &cli_home).expect("restore");
 
         // Gateway config is the original.
         let restored_cfg = std::fs::read_to_string(cli_cfg_path(&cli_home)).unwrap();
@@ -394,6 +496,7 @@ mod tests {
             "model = \"gpt-5.2\"\n",
             "provider_1",
             "https://example.com/v1",
+            None,
         );
         std::fs::write(cli_cfg_path(&cli_home), current_cfg).unwrap();
 
@@ -419,6 +522,68 @@ mod tests {
             auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()),
             Some("sk-new")
         );
+    }
+
+    #[test]
+    fn sync_active_provider_target_writes_config_token_when_requested() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+        {
+            let mut cfg = state.gateway.cfg.write();
+            cfg.providers.get_mut("provider_1").unwrap().base_url =
+                "https://example.com/v1".to_string();
+        }
+        state
+            .secrets
+            .set_provider_key_with_storage_mode(
+                "provider_1",
+                "sk-config",
+                Some("config_toml_experimental_bearer_token"),
+            )
+            .expect("set key");
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(cli_auth_path(&cli_home), r#"{"OPENAI_API_KEY":"sk-old"}"#).unwrap();
+        std::fs::write(cli_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+
+        let state_dir = swap_state_dir(&cli_home);
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(backup_auth_path(&cli_home), r#"{"tokens":{"t":"x"}}"#).unwrap();
+        std::fs::write(backup_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+
+        let current_cfg = build_direct_provider_cfg(
+            "model = \"gpt-5.2\"\n",
+            "provider_1",
+            "https://example.com/v1",
+            None,
+        );
+        std::fs::write(cli_cfg_path(&cli_home), current_cfg).unwrap();
+
+        let sw_path = switchboard_state_path_from_config_path(&state.config_path);
+        std::fs::create_dir_all(sw_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            sw_path,
+            serde_json::to_string_pretty(&json!({
+              "target": "provider",
+              "provider": "provider_1",
+              "cli_homes": [cli_home.to_string_lossy().to_string()]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        sync_active_provider_target_for_key_impl(&state, "provider_1").expect("sync");
+        let auth: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(cli_auth_path(&cli_home)).unwrap())
+                .unwrap();
+        assert_eq!(auth.get("OPENAI_API_KEY"), None);
+        let cfg_txt = std::fs::read_to_string(cli_cfg_path(&cli_home)).unwrap();
+        assert!(cfg_txt.contains("experimental_bearer_token = \"sk-config\""));
     }
 
     #[test]
@@ -468,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_gateway_target_for_rotated_token_does_not_rewrite_matching_auth_json() {
+    fn sync_gateway_target_for_rotated_token_rewrites_gateway_target_even_when_auth_matches() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_path = tmp.path().join("user-data").join("config.toml");
         let data_dir = tmp.path().join("data");
@@ -511,7 +676,13 @@ mod tests {
         let auth: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(cli_auth_path(&cli_home)).unwrap())
                 .unwrap();
-        assert_eq!(auth.get("extra").and_then(|v| v.as_str()), Some("keep"));
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()),
+            Some("ao_same_gateway_token")
+        );
+        let cfg = std::fs::read_to_string(cli_cfg_path(&cli_home)).expect("read cli cfg");
+        assert!(cfg.contains("model_provider = \"api_router\""));
+        assert!(cfg.contains("base_url = \"http://127.0.0.1:4000/v1\""));
     }
 
     #[test]
@@ -551,6 +722,7 @@ mod tests {
             "model = \"gpt-5.2\"\n",
             "provider_1",
             "https://example.com/v1",
+            None,
         );
         std::fs::write(cli_cfg_path(&cli_home), current_cfg).unwrap();
 
@@ -719,7 +891,12 @@ mod tests {
         std::fs::create_dir_all(&cli_home).unwrap();
         std::fs::write(
             cli_cfg_path(&cli_home),
-            build_direct_provider_cfg("model = \"gpt-5.2\"\n", "provider_1", "https://x.invalid"),
+            build_direct_provider_cfg(
+                "model = \"gpt-5.2\"\n",
+                "provider_1",
+                "https://x.invalid",
+                None,
+            ),
         )
         .unwrap();
 

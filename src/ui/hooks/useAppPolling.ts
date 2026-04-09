@@ -1,88 +1,260 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState, type MutableRefObject } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { computeActiveRefreshDelayMs, computeIdleRefreshDelayMs } from '../utils/usageRefresh'
+
+type TopPage =
+  | 'dashboard'
+  | 'usage_statistics'
+  | 'usage_requests'
+  | 'provider_switchboard'
+  | 'event_log'
+  | 'web_codex'
 
 type UseAppPollingOptions = {
+  activePage: TopPage
   isDevPreview: boolean
-  statusLastActivityUnixMs: number | undefined
+  configModalOpen: boolean
+  codexSwapModalOpen: boolean
   codexSwapDir1: string
   codexSwapDir2: string
   codexSwapUseWindows: boolean
   codexSwapUseWsl: boolean
-  refreshStatus: () => Promise<void>
-  refreshConfig: () => Promise<void>
-  refreshProviderSwitchStatus: () => Promise<void>
-  refreshQuotaAll: (options?: { silent?: boolean }) => Promise<unknown>
+  runPrimaryRefresh: (
+    key: string,
+    owner: TopPage | 'any',
+    run: (guard: () => boolean) => Promise<void> | void,
+  ) => Promise<void>
+  enqueueBackgroundRefresh: (
+    key: string,
+    owner: TopPage | 'any',
+    run: (guard: () => boolean) => Promise<void> | void,
+  ) => void
+  refreshStatus: (options?: {
+    refreshSwapStatus?: boolean
+    swapStatusSource?: string
+    applyGuard?: () => boolean
+    interactive?: boolean
+    source?: string
+    detailLevel?: 'dashboard' | 'full'
+  }) => Promise<void>
+  refreshConfig: (options?: {
+    refreshProviderSwitchStatus?: boolean
+    applyGuard?: () => boolean
+    interactive?: boolean
+  }) => Promise<void>
+  refreshProviderSwitchStatus: (
+    cliHomes?: string[],
+    options?: { applyGuard?: () => boolean; interactive?: boolean },
+  ) => Promise<void>
+  refreshGatewayTokenPreview: (options?: {
+    applyGuard?: () => boolean
+    interactive?: boolean
+    source?: string
+  }) => Promise<void>
   onDevPreviewBootstrap: () => void
   onDevPreviewTick: () => void
 }
 
+export function statusPollIntervalMs(activePage: TopPage, isDocumentVisible: boolean): number {
+  if (!isDocumentVisible) return 15_000
+  if (activePage === 'dashboard' || activePage === 'provider_switchboard') return 1_500
+  return 5_000
+}
+
+export function configPollIntervalMs(isDocumentVisible: boolean): number {
+  return isDocumentVisible ? 2_000 : 15_000
+}
+
+export function statusPollDetailLevel(activePage: TopPage): 'dashboard' | 'full' {
+  return activePage === 'dashboard' ? 'dashboard' : 'full'
+}
+
+export function shouldPollSwapStatusOnStatusRefresh(
+  activePage: TopPage,
+  codexSwapModalOpen: boolean,
+): boolean {
+  return codexSwapModalOpen || activePage === 'provider_switchboard'
+}
+
 export function useAppPolling({
+  activePage,
   isDevPreview,
-  statusLastActivityUnixMs,
+  configModalOpen,
+  codexSwapModalOpen,
   codexSwapDir1,
   codexSwapDir2,
   codexSwapUseWindows,
   codexSwapUseWsl,
+  runPrimaryRefresh,
+  enqueueBackgroundRefresh,
   refreshStatus,
   refreshConfig,
   refreshProviderSwitchStatus,
-  refreshQuotaAll,
+  refreshGatewayTokenPreview,
   onDevPreviewBootstrap,
   onDevPreviewTick,
 }: UseAppPollingOptions) {
+  const UI_WATCHDOG_SLOW_REFRESH_AFTER_MS = 2_000
+  const onDevPreviewBootstrapRef = useRef(onDevPreviewBootstrap)
+  const onDevPreviewTickRef = useRef(onDevPreviewTick)
+  const runPrimaryRefreshRef = useRef(runPrimaryRefresh)
+  const enqueueBackgroundRefreshRef = useRef(enqueueBackgroundRefresh)
+  const refreshGatewayTokenPreviewRef = useRef(refreshGatewayTokenPreview)
   const refreshStatusRef = useRef(refreshStatus)
   const refreshConfigRef = useRef(refreshConfig)
   const refreshProviderSwitchStatusRef = useRef(refreshProviderSwitchStatus)
-  const refreshQuotaAllRef = useRef(refreshQuotaAll)
-  const usageRefreshTimerRef = useRef<number | null>(null)
-  const idleUsageSchedulerRef = useRef<(() => void) | null>(null)
-  const usageActiveRef = useRef<boolean>(false)
-  const activeUsageTimerRef = useRef<number | null>(null)
   const providerSwitchRefreshTimerRef = useRef<number | null>(null)
   const providerSwitchDirWatcherPrimedRef = useRef<boolean>(false)
+  const activePageRef = useRef(activePage)
+  const documentVisibleRef = useRef(true)
+  const statusBootstrappedRef = useRef(false)
+  const previousVisibleRef = useRef<boolean>(
+    typeof document === 'undefined' || document.visibilityState !== 'hidden',
+  )
+  const statusRefreshInFlightCountRef = useRef(0)
+  const configRefreshInFlightCountRef = useRef(0)
+  const providerSwitchRefreshInFlightCountRef = useRef(0)
+  const [isDocumentVisible, setIsDocumentVisible] = useState<boolean>(
+    typeof document === 'undefined' || document.visibilityState !== 'hidden',
+  )
 
   useEffect(() => {
+    onDevPreviewBootstrapRef.current = onDevPreviewBootstrap
+    onDevPreviewTickRef.current = onDevPreviewTick
+    runPrimaryRefreshRef.current = runPrimaryRefresh
+    enqueueBackgroundRefreshRef.current = enqueueBackgroundRefresh
+    refreshGatewayTokenPreviewRef.current = refreshGatewayTokenPreview
     refreshStatusRef.current = refreshStatus
     refreshConfigRef.current = refreshConfig
     refreshProviderSwitchStatusRef.current = refreshProviderSwitchStatus
-    refreshQuotaAllRef.current = refreshQuotaAll
-  }, [refreshConfig, refreshProviderSwitchStatus, refreshQuotaAll, refreshStatus])
+  }, [
+    enqueueBackgroundRefresh,
+    onDevPreviewBootstrap,
+    onDevPreviewTick,
+    refreshConfig,
+    refreshGatewayTokenPreview,
+    refreshProviderSwitchStatus,
+    refreshStatus,
+    runPrimaryRefresh,
+  ])
+
+  useEffect(() => {
+    activePageRef.current = activePage
+    if (typeof window !== 'undefined') {
+      window.__API_ROUTER_ACTIVE_PAGE__ = activePage
+    }
+  }, [activePage])
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    const handleVisibilityChange = () => {
+      const visible = document.visibilityState !== 'hidden'
+      documentVisibleRef.current = visible
+      setIsDocumentVisible(visible)
+    }
+    handleVisibilityChange()
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [])
+
+  useEffect(() => {
+    documentVisibleRef.current = isDocumentVisible
+  }, [isDocumentVisible])
+
+  const reportSlowRefresh = (kind: 'status' | 'config' | 'provider_switch', elapsedMs: number) => {
+    if (isDevPreview || elapsedMs < UI_WATCHDOG_SLOW_REFRESH_AFTER_MS) {
+      return
+    }
+    void invoke('record_ui_slow_refresh', {
+      kind,
+      elapsedMs,
+      activePage: activePageRef.current,
+      visible: documentVisibleRef.current,
+    }).catch(() => {})
+  }
+
+  const runTrackedRefresh = async (
+    kind: 'status' | 'config' | 'provider_switch',
+    counterRef: MutableRefObject<number>,
+    refresh: () => Promise<void>,
+  ) => {
+    counterRef.current += 1
+    const startedAt =
+      typeof performance !== 'undefined' ? performance.now() : Date.now()
+    try {
+      await refresh()
+    } finally {
+      counterRef.current = Math.max(0, counterRef.current - 1)
+      const endedAt =
+        typeof performance !== 'undefined' ? performance.now() : Date.now()
+      reportSlowRefresh(kind, Math.round(endedAt - startedAt))
+    }
+  }
+
+  const scheduleStatusRefresh = (
+    source: 'status_poll_bootstrap' | 'status_poll_interval',
+    interactive: boolean,
+  ) => {
+    if (statusRefreshInFlightCountRef.current > 0) {
+      return
+    }
+    void runPrimaryRefreshRef.current('status:poll', 'any', (guard) =>
+      runTrackedRefresh('status', statusRefreshInFlightCountRef, () =>
+        refreshStatusRef.current({
+          source,
+          applyGuard: guard,
+          interactive,
+          detailLevel: statusPollDetailLevel(activePageRef.current),
+          refreshSwapStatus: shouldPollSwapStatusOnStatusRefresh(
+            activePageRef.current,
+            codexSwapModalOpen,
+          ),
+          swapStatusSource: `${source}:swap`,
+        }),
+      ),
+    )
+  }
+
+  useEffect(() => {
+    if (isDevPreview) return
+    const timer = window.setInterval(() => {
+      void invoke('record_ui_watchdog_heartbeat', {
+        activePage: activePageRef.current,
+        visible: documentVisibleRef.current,
+        statusInFlight: statusRefreshInFlightCountRef.current > 0,
+        configInFlight: configRefreshInFlightCountRef.current > 0,
+        providerSwitchInFlight: providerSwitchRefreshInFlightCountRef.current > 0,
+      }).catch(() => {})
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [isDevPreview])
 
   useEffect(() => {
     if (isDevPreview) {
-      onDevPreviewBootstrap()
-      const timer = window.setInterval(() => onDevPreviewTick(), 1800)
-      void refreshProviderSwitchStatusRef.current()
+      onDevPreviewBootstrapRef.current()
+      const timer = window.setInterval(() => onDevPreviewTickRef.current(), 1800)
+      enqueueBackgroundRefreshRef.current('provider-switch:dev-preview', 'any', (guard) =>
+        runTrackedRefresh('provider_switch', providerSwitchRefreshInFlightCountRef, () =>
+          refreshProviderSwitchStatusRef.current(undefined, {
+            applyGuard: guard,
+            interactive: false,
+          }),
+        ),
+      )
       return () => window.clearInterval(timer)
     }
-    void refreshStatusRef.current()
-    void refreshConfigRef.current()
-    const once = window.setTimeout(() => void refreshQuotaAllRef.current({ silent: true }), 850)
-    const scheduleUsageRefresh = () => {
-      if (usageActiveRef.current) return
-      if (usageRefreshTimerRef.current) {
-        window.clearTimeout(usageRefreshTimerRef.current)
-      }
-      const nowMs = Date.now()
-      const jitterMs = (Math.random() * 10 - 5) * 60 * 1000
-      const delayMs = computeIdleRefreshDelayMs(nowMs, jitterMs)
-      usageRefreshTimerRef.current = window.setTimeout(() => {
-        if (usageActiveRef.current) {
-          if (usageRefreshTimerRef.current) {
-            window.clearTimeout(usageRefreshTimerRef.current)
-            usageRefreshTimerRef.current = null
-          }
-          return
-        }
-        void refreshQuotaAllRef.current({ silent: true }).finally(() => {
-          if (!usageActiveRef.current) scheduleUsageRefresh()
-        })
-      }, delayMs)
+    const shouldRunImmediateStatusRefresh =
+      !statusBootstrappedRef.current || (!previousVisibleRef.current && isDocumentVisible)
+    statusBootstrappedRef.current = true
+    previousVisibleRef.current = isDocumentVisible
+    if (shouldRunImmediateStatusRefresh) {
+      scheduleStatusRefresh('status_poll_bootstrap', false)
     }
-    idleUsageSchedulerRef.current = scheduleUsageRefresh
-    scheduleUsageRefresh()
-    const t = setInterval(() => void refreshStatusRef.current(), 1500)
+    const t = setInterval(
+      () => scheduleStatusRefresh('status_poll_interval', false),
+      statusPollIntervalMs(activePage, isDocumentVisible),
+    )
     const codexRefresh = window.setInterval(() => {
       invoke('codex_account_refresh').catch((e) => {
         console.warn('Codex refresh failed', e)
@@ -91,60 +263,75 @@ export function useAppPolling({
     return () => {
       clearInterval(t)
       window.clearInterval(codexRefresh)
-      window.clearTimeout(once)
-      if (usageRefreshTimerRef.current) {
-        window.clearTimeout(usageRefreshTimerRef.current)
-      }
-      idleUsageSchedulerRef.current = null
     }
-  }, [isDevPreview, onDevPreviewBootstrap, onDevPreviewTick])
+  }, [activePage, codexSwapModalOpen, isDevPreview, isDocumentVisible])
+
+  useEffect(() => {
+    if (isDevPreview || !configModalOpen) return
+    void runPrimaryRefreshRef.current('config:modal-poll', 'any', (guard) =>
+      runTrackedRefresh('config', configRefreshInFlightCountRef, () =>
+        refreshConfigRef.current({
+          refreshProviderSwitchStatus: false,
+          applyGuard: guard,
+          interactive: false,
+        }),
+      ),
+    )
+    const timer = window.setInterval(
+      () =>
+        void runPrimaryRefreshRef.current('config:modal-poll', 'any', (guard) =>
+          runTrackedRefresh('config', configRefreshInFlightCountRef, () =>
+            refreshConfigRef.current({
+              refreshProviderSwitchStatus: false,
+              applyGuard: guard,
+              interactive: false,
+            }),
+          ),
+        ),
+      configPollIntervalMs(isDocumentVisible),
+    )
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [configModalOpen, isDevPreview, isDocumentVisible])
 
   useEffect(() => {
     if (isDevPreview) return
-    const lastActivity = statusLastActivityUnixMs ?? 0
-    const isActive = lastActivity > 0 && Date.now() - lastActivity <= 5 * 60 * 1000
-    usageActiveRef.current = isActive
-    if (isActive && usageRefreshTimerRef.current) {
-      window.clearTimeout(usageRefreshTimerRef.current)
-      usageRefreshTimerRef.current = null
-    }
-    const clearActiveTimer = () => {
-      if (activeUsageTimerRef.current) {
-        window.clearTimeout(activeUsageTimerRef.current)
-        activeUsageTimerRef.current = null
-      }
-    }
-    if (!isActive) {
-      clearActiveTimer()
-      if (!usageRefreshTimerRef.current && idleUsageSchedulerRef.current) idleUsageSchedulerRef.current()
-      return
-    }
-    if (!activeUsageTimerRef.current) {
-      const schedule = () => {
-        const jitterMs = (Math.random() * 2 - 1) * 60 * 1000
-        const delayMs = computeActiveRefreshDelayMs(jitterMs)
-        activeUsageTimerRef.current = window.setTimeout(() => {
-          if (!usageActiveRef.current) {
-            if (idleUsageSchedulerRef.current) idleUsageSchedulerRef.current()
-            return
-          }
-          void refreshQuotaAllRef.current({ silent: true }).finally(() => {
-            if (usageActiveRef.current) schedule()
-          })
-        }, delayMs)
-      }
-      schedule()
-    }
-  }, [isDevPreview, statusLastActivityUnixMs])
+    enqueueBackgroundRefreshRef.current('config:startup', 'any', (guard) =>
+      runTrackedRefresh('config', configRefreshInFlightCountRef, () =>
+        refreshConfigRef.current({
+          refreshProviderSwitchStatus: false,
+          applyGuard: guard,
+          interactive: false,
+        }),
+      ),
+    )
+    enqueueBackgroundRefreshRef.current('gateway-token-preview:startup', 'any', (guard) =>
+      refreshGatewayTokenPreviewRef.current({
+        applyGuard: guard,
+        interactive: false,
+        source: 'startup_prefetch',
+      }),
+    )
+  }, [isDevPreview])
 
   useEffect(() => {
+    if (isDevPreview) return
+    if (activePage !== 'provider_switchboard' && !codexSwapModalOpen) return
+    const timer = window.setTimeout(() => {
+      enqueueBackgroundRefreshRef.current('provider-switch:page', 'any', (guard) =>
+        runTrackedRefresh('provider_switch', providerSwitchRefreshInFlightCountRef, () =>
+          refreshProviderSwitchStatusRef.current(undefined, {
+            applyGuard: guard,
+            interactive: false,
+          }),
+        ),
+      )
+    }, 140)
     return () => {
-      if (activeUsageTimerRef.current) {
-        window.clearTimeout(activeUsageTimerRef.current)
-        activeUsageTimerRef.current = null
-      }
+      window.clearTimeout(timer)
     }
-  }, [])
+  }, [activePage, codexSwapModalOpen, isDevPreview])
 
   useEffect(() => {
     if (!providerSwitchDirWatcherPrimedRef.current) {
@@ -156,7 +343,14 @@ export function useAppPolling({
       providerSwitchRefreshTimerRef.current = null
     }
     providerSwitchRefreshTimerRef.current = window.setTimeout(() => {
-      void refreshProviderSwitchStatusRef.current()
+      enqueueBackgroundRefreshRef.current('provider-switch:dirs', 'any', (guard) =>
+        runTrackedRefresh('provider_switch', providerSwitchRefreshInFlightCountRef, () =>
+          refreshProviderSwitchStatusRef.current(undefined, {
+            applyGuard: guard,
+            interactive: false,
+          }),
+        ),
+      )
       providerSwitchRefreshTimerRef.current = null
     }, 220)
     return () => {
@@ -165,5 +359,5 @@ export function useAppPolling({
         providerSwitchRefreshTimerRef.current = null
       }
     }
-  }, [codexSwapUseWindows, codexSwapUseWsl, codexSwapDir1, codexSwapDir2])
+  }, [codexSwapDir1, codexSwapDir2, codexSwapUseWindows, codexSwapUseWsl])
 }

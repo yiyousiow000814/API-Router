@@ -234,7 +234,28 @@
 
 .aoUsageHistoryActions {
   display: inline-flex;
+  align-items: center;
   gap: 4px;
+}
+
+.aoUsageHistoryRemoveBtn {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(156, 28, 58, 0.8);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.aoUsageHistoryRemoveBtn:hover {
+  background: rgba(255, 94, 125, 0.08);
+  color: rgba(156, 28, 58, 1);
 }
 
 .aoModalWide.aoUsageHistoryModal {
