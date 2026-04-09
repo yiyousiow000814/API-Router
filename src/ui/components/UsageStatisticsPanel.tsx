@@ -424,6 +424,51 @@ export function resolveEffectiveSummaryRequestFilters(input: {
   }
 }
 
+export function hasImpossibleSummaryRequestFilters(input: {
+  nodes: string[] | null
+  providers: string[] | null
+  models: string[] | null
+  origins: string[] | null
+  sessions: string[] | null
+}): boolean {
+  return (
+    (input.nodes != null && input.nodes.length === 0) ||
+    (input.providers != null && input.providers.length === 0) ||
+    (input.models != null && input.models.length === 0) ||
+    (input.origins != null && input.origins.length === 0) ||
+    (input.sessions != null && input.sessions.length === 0)
+  )
+}
+
+export function resolveUsageRequestEmptyStateLabel(input: {
+  usageRequestLoading: boolean
+  hasImpossibleRequestFilters: boolean
+  defaultTodayOnly: boolean
+  usageRequestHasMore: boolean
+  totalRequestRowsForDisplay: number
+}): string {
+  if (input.hasImpossibleRequestFilters) return 'No request rows match current filters.'
+  if (input.usageRequestLoading) return 'Loading rows...'
+  if (input.defaultTodayOnly && input.usageRequestHasMore && input.totalRequestRowsForDisplay === 0) {
+    return "Loading today's rows..."
+  }
+  return 'No request rows match current filters.'
+}
+
+export function resolveUsageRequestFooterStatusLabel(input: {
+  usageRequestLoading: boolean
+  hasImpossibleRequestFilters: boolean
+  usageRequestHasMore: boolean
+  hasExplicitRequestFilters: boolean
+}): string {
+  if (input.hasImpossibleRequestFilters) return 'All loaded'
+  if (input.usageRequestLoading) return 'Loading more...'
+  if (input.usageRequestHasMore) {
+    return input.hasExplicitRequestFilters ? 'Scroll table to load more' : 'Older history available (today view)'
+  }
+  return 'All loaded'
+}
+
 function emitUsageRequestsCachePrimed(queryKey: string) {
   if (typeof window === 'undefined') return
   try {
@@ -1560,16 +1605,6 @@ export function UsageStatisticsPanel({
     usageRequestMultiFilters.origin !== null ||
     usageRequestMultiFilters.session !== null
   const hasStrictRequestQuery = hasExplicitRequestFilters
-  const hasImpossibleRequestFilters =
-    (requestFetchProviders !== null && requestFetchProviders.length === 0) ||
-    (requestFetchNodes !== null && requestFetchNodes.length === 0) ||
-    (requestFetchModels !== null && requestFetchModels.length === 0) ||
-    (requestFetchOrigins !== null && requestFetchOrigins.length === 0) ||
-    (usageRequestMultiFilters.node !== null && usageRequestMultiFilters.node.length === 0) ||
-    (usageRequestMultiFilters.provider !== null && usageRequestMultiFilters.provider.length === 0) ||
-    (usageRequestMultiFilters.model !== null && usageRequestMultiFilters.model.length === 0) ||
-    (usageRequestMultiFilters.origin !== null && usageRequestMultiFilters.origin.length === 0) ||
-    (usageRequestMultiFilters.session !== null && usageRequestMultiFilters.session.length === 0)
   const effectiveSummaryRequestFilters = useMemo(
     () =>
       resolveEffectiveSummaryRequestFilters({
@@ -1593,6 +1628,17 @@ export function UsageStatisticsPanel({
       usageRequestMultiFilters,
     ],
   )
+  const hasImpossibleRequestFilters =
+    (requestFetchProviders !== null && requestFetchProviders.length === 0) ||
+    (requestFetchNodes !== null && requestFetchNodes.length === 0) ||
+    (requestFetchModels !== null && requestFetchModels.length === 0) ||
+    (requestFetchOrigins !== null && requestFetchOrigins.length === 0) ||
+    (usageRequestMultiFilters.node !== null && usageRequestMultiFilters.node.length === 0) ||
+    (usageRequestMultiFilters.provider !== null && usageRequestMultiFilters.provider.length === 0) ||
+    (usageRequestMultiFilters.model !== null && usageRequestMultiFilters.model.length === 0) ||
+    (usageRequestMultiFilters.origin !== null && usageRequestMultiFilters.origin.length === 0) ||
+    (usageRequestMultiFilters.session !== null && usageRequestMultiFilters.session.length === 0) ||
+    hasImpossibleSummaryRequestFilters(effectiveSummaryRequestFilters)
   const [requestDefaultDay, setRequestDefaultDay] = useState<number>(() =>
     startOfDayUnixMs(Date.now()),
   )
@@ -1800,6 +1846,17 @@ export function UsageStatisticsPanel({
 
   const refreshUsageRequests = useCallback(
     async (limit: number) => {
+      if (hasImpossibleRequestFilters) {
+        usageRequestFetchSeqRef.current += 1
+        usageRequestRefreshPendingRef.current = false
+        setUsageRequestLoading(false)
+        setUsageRequestError('')
+        setUsageRequestUsingTestFallback(false)
+        setUsageRequestRows([])
+        setUsageRequestHasMore(false)
+        usageRequestResolvedQueryKeyRef.current = requestQueryKey
+        return
+      }
       if (usageRequestRefreshInFlightRef.current) {
         usageRequestRefreshPendingRef.current = true
         usageRequestRefreshPendingLimitRef.current = limit
@@ -1884,6 +1941,7 @@ export function UsageStatisticsPanel({
       requestFetchSessions,
       requestFetchToUnixMs,
       requestQueryKey,
+      hasImpossibleRequestFilters,
       usageRequestTestFallbackEnabled,
       usageRequestTestRows,
     ],
@@ -4552,11 +4610,13 @@ export function UsageStatisticsPanel({
                     {!tableRowsForDisplay.length ? (
                       <tr>
                         <td colSpan={9} className="aoHint">
-                          {usageRequestLoading
-                            ? 'Loading rows...'
-                            : defaultTodayOnly && usageRequestHasMore && totalRequestRowsForDisplay === 0
-                            ? "Loading today's rows..."
-                            : 'No request rows match current filters.'}
+                          {resolveUsageRequestEmptyStateLabel({
+                            usageRequestLoading,
+                            hasImpossibleRequestFilters,
+                            defaultTodayOnly,
+                            usageRequestHasMore,
+                            totalRequestRowsForDisplay,
+                          })}
                         </td>
                       </tr>
                     ) : (
@@ -4668,13 +4728,12 @@ export function UsageStatisticsPanel({
           />
           <div className="aoUsageRequestsFooter">
             <span className="aoHint">
-              {usageRequestLoading
-                ? 'Loading more...'
-                : usageRequestHasMore
-                  ? hasExplicitRequestFilters
-                    ? 'Scroll table to load more'
-                    : 'Older history available (today view)'
-                  : 'All loaded'}
+              {resolveUsageRequestFooterStatusLabel({
+                usageRequestLoading,
+                hasImpossibleRequestFilters,
+                usageRequestHasMore,
+                hasExplicitRequestFilters,
+              })}
             </span>
             <span className="aoHint">
               {tableRowsForDisplay.length.toLocaleString()} / {requestFooterTotalRows.toLocaleString()} rows

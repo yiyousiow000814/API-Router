@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildUsageRequestEntriesArgs,
+  hasImpossibleSummaryRequestFilters,
   intersectUsageRequestFilterValues,
+  resolveUsageRequestEmptyStateLabel,
+  resolveUsageRequestFooterStatusLabel,
   resolveEffectiveSummaryRequestFilters,
 } from './UsageStatisticsPanel'
 
@@ -88,5 +91,104 @@ describe('resolveEffectiveSummaryRequestFilters', () => {
       origins: null,
       sessions: null,
     })
+  })
+
+  it('keeps empty intersections so impossible summary filters can be detected', () => {
+    expect(
+      resolveEffectiveSummaryRequestFilters({
+        globalNodes: ['Local'],
+        globalProviders: ['official'],
+        globalModels: null,
+        globalOrigins: null,
+        globalSessions: null,
+        columnNodes: ['Peer A'],
+        columnProviders: ['openrouter'],
+        columnModels: null,
+        columnOrigins: null,
+        columnSessions: null,
+      }),
+    ).toEqual({
+      nodes: [],
+      providers: [],
+      models: null,
+      origins: null,
+      sessions: null,
+    })
+  })
+})
+
+describe('hasImpossibleSummaryRequestFilters', () => {
+  it('treats empty intersections as impossible', () => {
+    expect(
+      hasImpossibleSummaryRequestFilters({
+        nodes: [],
+        providers: null,
+        models: null,
+        origins: null,
+        sessions: null,
+      }),
+    ).toBe(true)
+  })
+
+  it('keeps non-empty filter sets valid', () => {
+    expect(
+      hasImpossibleSummaryRequestFilters({
+        nodes: ['Local'],
+        providers: ['official'],
+        models: null,
+        origins: null,
+        sessions: null,
+      }),
+    ).toBe(false)
+  })
+})
+
+describe('resolveUsageRequestEmptyStateLabel', () => {
+  it('prefers no-match message over loading when filters are impossible', () => {
+    expect(
+      resolveUsageRequestEmptyStateLabel({
+        usageRequestLoading: true,
+        hasImpossibleRequestFilters: true,
+        defaultTodayOnly: false,
+        usageRequestHasMore: true,
+        totalRequestRowsForDisplay: 0,
+      }),
+    ).toBe('No request rows match current filters.')
+  })
+
+  it('keeps loading message for normal in-flight fetches', () => {
+    expect(
+      resolveUsageRequestEmptyStateLabel({
+        usageRequestLoading: true,
+        hasImpossibleRequestFilters: false,
+        defaultTodayOnly: false,
+        usageRequestHasMore: true,
+        totalRequestRowsForDisplay: 0,
+      }),
+    ).toBe('Loading rows...')
+  })
+})
+
+describe('resolveUsageRequestFooterStatusLabel', () => {
+  it('prefers all-loaded when filters are impossible', () => {
+    expect(
+      resolveUsageRequestFooterStatusLabel({
+        usageRequestLoading: true,
+        hasImpossibleRequestFilters: true,
+        usageRequestHasMore: true,
+        hasExplicitRequestFilters: true,
+      }),
+    ).toBe('All loaded')
+  })
+
+  it('keeps loading-more for normal in-flight pagination', () => {
+    expect(
+      resolveUsageRequestFooterStatusLabel({
+        usageRequestLoading: true,
+        hasImpossibleRequestFilters: false,
+        usageRequestHasMore: true,
+        hasExplicitRequestFilters: true,
+      }),
+    ).toBe('Loading more...')
   })
 })
