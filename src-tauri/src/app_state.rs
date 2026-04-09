@@ -47,6 +47,7 @@ pub struct AppState {
     pub gateway: GatewayState,
     pub secrets: SecretStore,
     pub lan_sync: crate::lan_sync::LanSyncRuntime,
+    pub local_network: crate::platform::local_network::LocalNetworkState,
     pub ui_watchdog: UiWatchdogState,
 }
 
@@ -735,6 +736,7 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         gateway,
         secrets,
         lan_sync: crate::lan_sync::LanSyncRuntime::new(lan_node),
+        local_network: crate::platform::local_network::LocalNetworkState::new(),
         ui_watchdog: UiWatchdogState::default(),
     };
     app_state

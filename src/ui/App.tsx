@@ -110,6 +110,9 @@ type CopyProviderResult = {
 }
 
 type DevPreviewModule = typeof import('./devMockData')
+type LocalNetworkConnectivityPayload = {
+  online: boolean
+}
 
 function parseDevFlag(raw: string | null): boolean {
   const normalized = String(raw ?? '').trim().toLowerCase()
@@ -119,6 +122,7 @@ function parseDevFlag(raw: string | null): boolean {
 function createEmptyDevStatus(): Status {
   return {
     listen: { host: '127.0.0.1', port: 4000 },
+    local_network_online: true,
     preferred_provider: '',
     manual_override: null,
     providers: {},
@@ -258,6 +262,39 @@ export default function App() {
     nonce: number
   } | null>(null)
   const [providerSwitchStatus, setProviderSwitchStatus] = useState<ProviderSwitchboardStatus | null>(null)
+
+  useEffect(() => {
+    if (isDevPreview || typeof window === 'undefined') return
+    let disposed = false
+    let unlisten: null | (() => void) = null
+    void import('@tauri-apps/api/event')
+      .then(({ listen }) =>
+        listen<LocalNetworkConnectivityPayload>('local-network-connectivity-changed', (event) => {
+          setStatus((prev) => {
+            if (!prev) return prev
+            if (prev.local_network_online === event.payload.online) return prev
+            return {
+              ...prev,
+              local_network_online: event.payload.online,
+            }
+          })
+        }),
+      )
+      .then((cleanup) => {
+        if (disposed) {
+          cleanup()
+          return
+        }
+        unlisten = cleanup
+      })
+      .catch(() => {})
+    return () => {
+      disposed = true
+      if (unlisten) {
+        unlisten()
+      }
+    }
+  }, [isDevPreview])
   const [providerGroupManagerOpen, setProviderGroupManagerOpen] = useState<boolean>(false)
   const [providerGroupManagerFocusProvider, setProviderGroupManagerFocusProvider] = useState<string | null>(null)
   const [usageOverview, setUsageOverview] = useState<UsageStatisticsOverview | null>(null)
