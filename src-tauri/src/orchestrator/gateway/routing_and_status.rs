@@ -967,10 +967,9 @@ fn decide_provider_with_balanced_mode(
             let cleared_assignments = st.store.delete_all_session_route_assignments();
             if cleared_assignments > 0 {
                 if !reopened_providers.is_empty() {
-                    st.store.add_event(
+                    st.store.events().emit(
                         "gateway",
-                        "info",
-                        "routing.balanced_reassign_on_reopen",
+                        crate::orchestrator::store::EventCode::ROUTING_BALANCED_REASSIGN_ON_REOPEN,
                         "cleared balanced assignments after closed provider reopened",
                         json!({
                             "reopened_providers": reopened_providers,
@@ -979,10 +978,9 @@ fn decide_provider_with_balanced_mode(
                     );
                 }
                 if !recovered_unhealthy_providers.is_empty() {
-                    st.store.add_event(
+                    st.store.events().emit(
                         "gateway",
-                        "info",
-                        "routing.balanced_reassign_on_health_recovery",
+                        crate::orchestrator::store::EventCode::ROUTING_BALANCED_REASSIGN_ON_HEALTH_RECOVERY,
                         "cleared balanced assignments after unhealthy provider recovered",
                         json!({
                             "recovered_providers": recovered_unhealthy_providers,

@@ -161,18 +161,16 @@ pub(crate) fn set_provider_timeline(
         .store
         .sync_provider_pricing_configs(&state.secrets.list_provider_pricing());
     if let Err(err) = crate::lan_sync::record_provider_pricing_snapshot(&state, &provider) {
-        state.gateway.store.add_event(
+        state.gateway.store.events().emit(
             &provider,
-            "error",
-            "lan.edit_sync_record_failed",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
             &format!("failed to record provider timeline update for LAN sync: {err}"),
             serde_json::json!({ "provider": provider }),
         );
     }
-    state.gateway.store.add_event(
+    state.gateway.store.events().emit(
         &provider,
-        "info",
-        "config.provider_timeline_updated",
+        crate::orchestrator::store::EventCode::CONFIG_PROVIDER_TIMELINE_UPDATED,
         "provider pricing timeline updated",
         serde_json::json!({ "count": count }),
     );
@@ -236,18 +234,16 @@ pub(crate) fn set_provider_schedule(
         .store
         .sync_provider_pricing_configs(&state.secrets.list_provider_pricing());
     if let Err(err) = crate::lan_sync::record_provider_pricing_snapshot(&state, &provider) {
-        state.gateway.store.add_event(
+        state.gateway.store.events().emit(
             &provider,
-            "error",
-            "lan.edit_sync_record_failed",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
             &format!("failed to record provider schedule update for LAN sync: {err}"),
             serde_json::json!({ "provider": provider }),
         );
     }
-    state.gateway.store.add_event(
+    state.gateway.store.events().emit(
         &provider,
-        "info",
-        "config.provider_schedule_updated",
+        crate::orchestrator::store::EventCode::CONFIG_PROVIDER_SCHEDULE_UPDATED,
         "provider scheduled package periods updated",
         serde_json::json!({ "count": count }),
     );

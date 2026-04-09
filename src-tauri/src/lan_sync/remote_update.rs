@@ -715,7 +715,7 @@ fn synthesize_remote_update_log_tail_from_status(
         let mut line = String::new();
         if let Some(timestamp) = format_remote_update_debug_time(entry.unix_ms) {
             line.push_str(&timestamp);
-            line.push_str(" · ");
+            line.push_str(" \u{00B7} ");
         }
         if !entry.label.trim().is_empty() {
             let label = entry.label.trim();
@@ -987,10 +987,8 @@ fn record_remote_update_worker_exit(
         "Remote update worker exited early",
         "launcher",
     );
-    gateway.store.add_event(
+    gateway.store.events().lan().remote_update_failed(
         "gateway",
-        "error",
-        "lan.remote_update_failed",
         &format!(
             "Accepted remote update request to {}; local self-update worker exited early",
             display_target_ref(&current_status.target_ref)
@@ -1359,16 +1357,11 @@ fn emit_remote_update_progress_event_for_status(
                 .filter(|value| !value.is_empty())
         })
         .unwrap_or("");
-    let code = match status.state.trim() {
-        "running" => "lan.remote_update_progress",
-        "succeeded" => "lan.remote_update_succeeded",
-        "failed" => "lan.remote_update_failed",
+    let event_code = match status.state.trim() {
+        "running" => crate::orchestrator::store::EventCode::LAN_REMOTE_UPDATE_PROGRESS,
+        "succeeded" => crate::orchestrator::store::EventCode::LAN_REMOTE_UPDATE_SUCCEEDED,
+        "failed" => crate::orchestrator::store::EventCode::LAN_REMOTE_UPDATE_FAILED,
         _ => return,
-    };
-    let level = match status.state.trim() {
-        "failed" => "error",
-        "succeeded" => "info",
-        _ => "warning",
     };
     let display_target = display_target_ref(&status.target_ref);
     let message = if detail.is_empty() {
@@ -1376,23 +1369,44 @@ fn emit_remote_update_progress_event_for_status(
     } else {
         format!("Remote self-update to {display_target}: {label} ({detail})")
     };
-    gateway.store.add_event(
-        "gateway",
-        level,
-        code,
-        &message,
-        serde_json::json!({
-            "request_id": status.request_id,
-            "target_ref": status.target_ref,
-            "state": status.state,
-            "phase": phase,
-            "label": label,
-            "detail": if detail.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(detail.to_string()) },
-            "worker_pid": status.worker_pid,
-            "worker_exit_code": status.worker_exit_code,
-            "updated_at_unix_ms": status.updated_at_unix_ms,
-        }),
-    );
+    let fields = serde_json::json!({
+        "request_id": status.request_id,
+        "target_ref": status.target_ref,
+        "state": status.state,
+        "phase": phase,
+        "label": label,
+        "detail": if detail.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(detail.to_string()) },
+        "worker_pid": status.worker_pid,
+        "worker_exit_code": status.worker_exit_code,
+        "updated_at_unix_ms": status.updated_at_unix_ms,
+    });
+    match event_code {
+        crate::orchestrator::store::EventCode::LAN_REMOTE_UPDATE_PROGRESS => {
+            gateway
+                .store
+                .events()
+                .lan()
+                .remote_update_progress("gateway", &message, fields);
+        }
+        crate::orchestrator::store::EventCode::LAN_REMOTE_UPDATE_SUCCEEDED => {
+            gateway
+                .store
+                .events()
+                .lan()
+                .remote_update_succeeded("gateway", &message, fields);
+        }
+        crate::orchestrator::store::EventCode::LAN_REMOTE_UPDATE_FAILED => {
+            gateway
+                .store
+                .events()
+                .lan()
+                .remote_update_failed("gateway", &message, fields);
+        }
+        _ => gateway
+            .store
+            .events()
+            .emit("gateway", event_code, &message, fields),
+    }
 }
 
 fn emit_remote_update_progress_event(
@@ -1413,14 +1427,14 @@ fn emit_remote_update_progress_event(
 fn terminal_remote_update_event_already_recorded(
     gateway: &crate::orchestrator::gateway::GatewayState,
     request_id: &str,
-    code: &str,
+    event_code: crate::orchestrator::store::EventCode,
 ) -> bool {
     gateway
         .store
         .list_events_range(None, None, Some(200))
         .iter()
         .any(|event| {
-            event.get("code").and_then(|value| value.as_str()) == Some(code)
+            event.get("code").and_then(|value| value.as_str()) == Some(event_code.code())
                 && event
                     .get("fields")
                     .and_then(|value| value.get("request_id"))
@@ -1438,12 +1452,12 @@ pub(crate) fn reconcile_remote_update_terminal_event(
     let Some(request_id) = status.request_id.as_deref() else {
         return;
     };
-    let code = match status.state.trim() {
-        "succeeded" => "lan.remote_update_succeeded",
-        "failed" => "lan.remote_update_failed",
+    let event_code = match status.state.trim() {
+        "succeeded" => crate::orchestrator::store::EventCode::LAN_REMOTE_UPDATE_SUCCEEDED,
+        "failed" => crate::orchestrator::store::EventCode::LAN_REMOTE_UPDATE_FAILED,
         _ => return,
     };
-    if terminal_remote_update_event_already_recorded(gateway, request_id, code) {
+    if terminal_remote_update_event_already_recorded(gateway, request_id, event_code) {
         return;
     }
     let mut last_progress_key = None;
@@ -1528,10 +1542,8 @@ impl LanSyncRuntime {
             .await
             .map_err(|err| format!("remote update response decode failed: {err}"))?;
         let display_target_ref = display_target_ref(normalized_target_ref);
-        gateway.store.add_event(
+        gateway.store.events().lan().remote_update_requested(
             "gateway",
-            "info",
-            "lan.remote_update_requested",
             &format!(
                 "Requested {} to self-update to {display_target_ref}",
                 peer.node_name
@@ -1743,10 +1755,8 @@ pub(crate) async fn lan_sync_remote_update_http(
                 "Remote update worker spawned",
                 "http",
             );
-            gateway.store.add_event(
+            gateway.store.events().lan().remote_update_accepted(
                 "gateway",
-                "warning",
-                "lan.remote_update_accepted",
                 &format!(
                     "Accepted remote update request to {display_target_ref}; local self-update worker started"
                 ),
@@ -1784,10 +1794,8 @@ pub(crate) async fn lan_sync_remote_update_http(
                 "Remote update worker failed to start",
                 "http",
             );
-            gateway.store.add_event(
+            gateway.store.events().lan().remote_update_failed(
                 "gateway",
-                "warning",
-                "lan.remote_update_failed",
                 &format!(
                     "Accepted remote update request to {}; local self-update worker failed to start",
                     display_target_ref(normalized_target_ref)

@@ -519,18 +519,16 @@ pub(crate) fn set_spend_history_entry(
         if let Err(err) =
             crate::lan_sync::record_spend_manual_day(&state, &provider, &day_key, None, None)
         {
-            state.gateway.store.add_event(
+            state.gateway.store.events().emit(
                 &provider,
-                "error",
-                "lan.edit_sync_record_failed",
+                crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
                 &format!("failed to record spend manual clear for LAN sync: {err}"),
                 serde_json::json!({ "day_key": day_key }),
             );
         }
-        state.gateway.store.add_event(
+        state.gateway.store.events().emit(
             &provider,
-            "info",
-            "usage.spend_history_entry_cleared",
+            crate::orchestrator::store::EventCode::USAGE_SPEND_HISTORY_ENTRY_CLEARED,
             "spend history manual entry cleared",
             serde_json::json!({ "day_key": day_key }),
         );
@@ -555,18 +553,16 @@ pub(crate) fn set_spend_history_entry(
         total_used_usd,
         usd_per_req,
     ) {
-        state.gateway.store.add_event(
+        state.gateway.store.events().emit(
             &provider,
-            "error",
-            "lan.edit_sync_record_failed",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
             &format!("failed to record spend manual update for LAN sync: {err}"),
             serde_json::json!({ "day_key": day_key }),
         );
     }
-    state.gateway.store.add_event(
+    state.gateway.store.events().emit(
         &provider,
-        "info",
-        "usage.spend_history_entry_updated",
+        crate::orchestrator::store::EventCode::USAGE_SPEND_HISTORY_ENTRY_UPDATED,
         "spend history manual entry updated",
         serde_json::json!({
             "day_key": day_key,
@@ -597,19 +593,17 @@ fn remove_tracked_spend_history_entries_impl(
         provider,
         &day_key,
     ) {
-        state.gateway.store.add_event(
+        state.gateway.store.events().emit(
             provider,
-            "error",
-            "lan.edit_sync_record_failed",
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
             &format!("failed to record tracked spend day removal for LAN sync: {err}"),
             serde_json::json!({ "day_key": day_key }),
         );
     }
 
-    state.gateway.store.add_event(
+    state.gateway.store.events().emit(
         provider,
-        "warning",
-        "usage.tracked_spend_history_entries_removed",
+        crate::orchestrator::store::EventCode::USAGE_TRACKED_SPEND_HISTORY_ENTRIES_REMOVED,
         "tracked spend history entries removed",
         serde_json::json!({
             "day_key": day_key,

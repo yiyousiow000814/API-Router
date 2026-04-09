@@ -15,6 +15,42 @@ pub struct Store {
     events_db: Arc<Mutex<rusqlite::Connection>>,
 }
 
+#[derive(Clone, Copy)]
+pub struct EventReporter<'a> {
+    store: &'a Store,
+}
+
+#[derive(Clone, Copy)]
+pub struct AppEventReporter<'a> {
+    reporter: EventReporter<'a>,
+}
+
+#[derive(Clone, Copy)]
+pub struct CodexEventReporter<'a> {
+    reporter: EventReporter<'a>,
+}
+
+#[derive(Clone, Copy)]
+pub struct ConfigEventReporter<'a> {
+    reporter: EventReporter<'a>,
+}
+
+#[derive(Clone, Copy)]
+pub struct LanEventReporter<'a> {
+    reporter: EventReporter<'a>,
+}
+
+#[derive(Clone, Copy)]
+pub struct RoutingEventReporter<'a> {
+    reporter: EventReporter<'a>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EventCode {
+    level: &'static str,
+    code: &'static str,
+}
+
 const LEDGER_DEFAULT: &str = r#"{"since_last_quota_refresh_requests":0,"since_last_quota_refresh_input_tokens":0,"since_last_quota_refresh_output_tokens":0,"since_last_quota_refresh_total_tokens":0,"last_reset_unix_ms":0}"#;
 
 #[derive(Clone, Copy)]
@@ -117,6 +153,332 @@ pub struct SessionRouteAssignment {
     pub assigned_at_unix_ms: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EventDailyCountBucketKind {
+    ProviderCodePerMinute,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EventRawDedupScope {
+    ExactRow,
+    ProviderAndCode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EventDisplayBucketKind {
+    EditSyncAppliedPerMinuteAndSourceNode,
+    SharedUsageAppliedPerMinuteAndSourceNode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EventPolicy {
+    raw_dedup_window_ms: Option<u64>,
+    raw_dedup_scope: EventRawDedupScope,
+    daily_count_bucket: Option<EventDailyCountBucketKind>,
+    display_bucket: Option<EventDisplayBucketKind>,
+}
+
+impl Default for EventPolicy {
+    fn default() -> Self {
+        Self {
+            raw_dedup_window_ms: None,
+            raw_dedup_scope: EventRawDedupScope::ExactRow,
+            daily_count_bucket: None,
+            display_bucket: None,
+        }
+    }
+}
+
+macro_rules! define_event_codes {
+    ($( $(#[$meta:meta])* $name:ident => ($level:literal, $code:literal), )+) => {
+        impl EventCode {
+            $(
+                $(#[$meta])*
+                pub const $name: Self = Self { level: $level, code: $code };
+            )+
+
+            pub const fn level(self) -> &'static str {
+                self.level
+            }
+
+            pub const fn code(self) -> &'static str {
+                self.code
+            }
+        }
+    };
+}
+
+macro_rules! define_scoped_event_methods {
+    ($reporter:ident { $( $method:ident => $code:ident, )+ }) => {
+        impl<'a> $reporter<'a> {
+            $(
+                pub fn $method(self, provider: &str, message: &str, fields: Value) {
+                    self.reporter.emit(provider, EventCode::$code, message, fields);
+                }
+            )+
+        }
+    };
+}
+
+define_event_codes! {
+    APP_UI_FRAME_STALL => ("warning", "app.ui_frame_stall"),
+    APP_UI_FRONTEND_ERROR => ("warning", "app.ui_frontend_error"),
+    APP_UI_INVOKE_ERROR => ("warning", "app.ui_invoke_error"),
+    APP_UI_RECOVERED => ("info", "app.ui_recovered"),
+    APP_UI_UNRESPONSIVE => ("warning", "app.ui_unresponsive"),
+    CODEX_CLI_AUTH_CONFIG_SWAPPED => ("info", "codex.cli_auth_config_swapped"),
+    CODEX_PROVIDER_SWITCHBOARD_BASE_META_SAVE_FAILED => ("error", "codex.provider_switchboard.base_meta_save_failed"),
+    CODEX_PROVIDER_SWITCHBOARD_BASE_SAVE_FAILED => ("error", "codex.provider_switchboard.base_save_failed"),
+    CODEX_PROVIDER_SWITCHBOARD_GATEWAY_TOKEN_SYNC_FAILED => ("error", "codex.provider_switchboard.gateway_token_sync_failed"),
+    CODEX_PROVIDER_SWITCHBOARD_RENAME_SYNC_FAILED => ("error", "codex.provider_switchboard.rename_sync_failed"),
+    CODEX_PROVIDER_SWITCHBOARD_STATE_SAVE_FAILED => ("error", "codex.provider_switchboard.state_save_failed"),
+    CODEX_PROVIDER_SWITCHBOARD_SYNC_FAILED => ("error", "codex.provider_switchboard.sync_failed"),
+    CODEX_PROVIDER_SWITCHBOARD_UPDATED => ("info", "codex.provider_switchboard.updated"),
+    CONFIG_FOLLOWED_SOURCE_CLEARED => ("info", "config.followed_source_cleared"),
+    CONFIG_FOLLOWED_SOURCE_ROLLBACK_FAILED => ("error", "config.followed_source_rollback_failed"),
+    CONFIG_FOLLOWED_SOURCE_SNAPSHOT_MISSING => ("warning", "config.followed_source_snapshot_missing"),
+    CONFIG_FOLLOWED_SOURCE_UPDATED => ("info", "config.followed_source_updated"),
+    CONFIG_PREFERRED_PROVIDER_UPDATED => ("info", "config.preferred_provider_updated"),
+    CONFIG_PROVIDER_ACCOUNT_EMAIL_CLEARED => ("info", "config.provider_account_email_cleared"),
+    CONFIG_PROVIDER_ACCOUNT_EMAIL_UPDATED => ("info", "config.provider_account_email_updated"),
+    CONFIG_PROVIDER_COPIED_FROM_SOURCE => ("info", "config.provider_copied_from_source"),
+    CONFIG_PROVIDER_ACTIVATED => ("info", "config.provider_activated"),
+    CONFIG_PROVIDER_DEACTIVATED => ("info", "config.provider_deactivated"),
+    CONFIG_PROVIDER_DELETED => ("info", "config.provider_deleted"),
+    CONFIG_PROVIDER_DISABLED_AFTER_PACKAGE_EXPIRY => ("warning", "config.provider_disabled_after_package_expiry"),
+    CONFIG_PROVIDER_GAP_FILL_CLEARED => ("info", "config.provider_gap_fill_cleared"),
+    CONFIG_PROVIDER_GAP_FILL_UPDATED => ("info", "config.provider_gap_fill_updated"),
+    CONFIG_PROVIDER_GROUP_BULK_UPDATED => ("info", "config.provider_group_bulk_updated"),
+    CONFIG_PROVIDER_GROUP_UPDATED => ("info", "config.provider_group_updated"),
+    CONFIG_PROVIDER_KEY_CLEARED => ("info", "config.provider_key_cleared"),
+    CONFIG_PROVIDER_KEY_UPDATED => ("info", "config.provider_key_updated"),
+    CONFIG_PROVIDER_LINKED_FROM_SOURCE => ("info", "config.provider_linked_from_source"),
+    CONFIG_PROVIDER_ORDER_UPDATED => ("info", "config.provider_order_updated"),
+    CONFIG_PROVIDER_PRICING_CLEARED => ("info", "config.provider_pricing_cleared"),
+    CONFIG_PROVIDER_PRICING_UPDATED => ("info", "config.provider_pricing_updated"),
+    CONFIG_PROVIDER_QUOTA_HARD_CAP_UPDATED => ("info", "config.provider_quota_hard_cap_updated"),
+    CONFIG_PROVIDER_RENAMED => ("info", "config.provider_renamed"),
+    CONFIG_PROVIDER_SCHEDULE_UPDATED => ("info", "config.provider_schedule_updated"),
+    CONFIG_PROVIDER_TIMELINE_UPDATED => ("info", "config.provider_timeline_updated"),
+    CONFIG_PROVIDER_UPSERTED => ("info", "config.provider_upserted"),
+    CONFIG_ROUTE_MODE_UPDATED => ("info", "config.route_mode_updated"),
+    CONFIG_SESSION_PREFERRED_PROVIDER_CLEARED => ("info", "config.session_preferred_provider_cleared"),
+    CONFIG_SESSION_PREFERRED_PROVIDER_UPDATED => ("info", "config.session_preferred_provider_updated"),
+    CONFIG_USAGE_AUTH_CLEARED => ("info", "config.usage_auth_cleared"),
+    CONFIG_USAGE_AUTH_UPDATED => ("info", "config.usage_auth_updated"),
+    CONFIG_USAGE_BASE_URL_CLEARED => ("info", "config.usage_base_url_cleared"),
+    CONFIG_USAGE_BASE_URL_UPDATED => ("info", "config.usage_base_url_updated"),
+    CONFIG_USAGE_PROXY_POOL_UPDATED => ("info", "config.usage_proxy_pool_updated"),
+    CONFIG_USAGE_TOKEN_CLEARED => ("info", "config.usage_token_cleared"),
+    CONFIG_USAGE_TOKEN_UPDATED => ("info", "config.usage_token_updated"),
+    GATEWAY_LISTEN_PORT_REASSIGNED => ("warning", "gateway.listen_port_reassigned"),
+    GATEWAY_PREVIOUS_RESPONSE_ID_PRESENT => ("debug", "gateway.previous_response_id_present"),
+    GATEWAY_REQUEST_PARSE_ERROR => ("error", "gateway.request_parse_error"),
+    GATEWAY_RETRY_WITHOUT_PREV_ID => ("info", "gateway.retry_without_prev_id"),
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    GATEWAY_RUNTIME_LISTENER_FAILED => ("warning", "gateway.runtime_listener_failed"),
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    GATEWAY_RUNTIME_LISTENER_SKIPPED => ("info", "gateway.runtime_listener_skipped"),
+    GATEWAY_STREAM_FALLBACK_TO_NON_STREAM => ("warning", "gateway.stream_fallback_to_non_stream"),
+    GATEWAY_UPSTREAM_RETRY => ("warning", "gateway.upstream_retry"),
+    HEALTH_PROBE_FAILED => ("error", "health.probe_failed"),
+    HEALTH_PROBE_OK => ("info", "health.probe_ok"),
+    LAN_EDIT_SYNC_APPLIED => ("info", "lan.edit_sync_applied"),
+    LAN_EDIT_SYNC_ENTITY_DOMAIN_MISSING => ("warning", "lan.edit_sync_entity_domain_missing"),
+    LAN_EDIT_SYNC_HINT_IGNORED_UNKNOWN_PEER => ("debug", "lan.edit_sync_hint_ignored_unknown_peer"),
+    LAN_EDIT_SYNC_HTTP_RECOVERED => ("info", "lan.edit_sync_http_recovered"),
+    LAN_EDIT_SYNC_HTTP_FAILED => ("warning", "lan.edit_sync_http_failed"),
+    LAN_EDIT_SYNC_RECORD_FAILED => ("error", "lan.edit_sync_record_failed"),
+    LAN_LEGACY_USAGE_SOURCES_MIGRATED => ("info", "lan.legacy_usage_sources_migrated"),
+    LAN_PAIR_APPROVAL_READY => ("info", "lan.pair.approval_ready"),
+    LAN_PAIR_APPROVED => ("info", "lan.pair.approved"),
+    LAN_PAIR_PIN_ACCEPTED => ("info", "lan.pair.pin_accepted"),
+    LAN_PAIR_PIN_REJECTED_MISMATCH => ("warning", "lan.pair.pin_rejected_mismatch"),
+    LAN_PAIR_PIN_REJECTED_MISSING_APPROVAL => ("warning", "lan.pair.pin_rejected_missing_approval"),
+    LAN_PAIR_PIN_SUBMITTED => ("info", "lan.pair.pin_submitted"),
+    LAN_PAIR_REQUEST_RECEIVED => ("info", "lan.pair.request_received"),
+    LAN_PAIR_REQUEST_SENT => ("info", "lan.pair.request_sent"),
+    LAN_PAIR_TRUST_BUNDLE_APPLIED => ("info", "lan.pair.trust_bundle_applied"),
+    LAN_PAIR_TRUST_BUNDLE_DECRYPT_FAILED => ("warning", "lan.pair.trust_bundle_decrypt_failed"),
+    LAN_PAIR_TRUST_BUNDLE_IGNORED_MISSING_PIN => ("warning", "lan.pair.trust_bundle_ignored_missing_pin"),
+    LAN_PROVIDER_DEFINITIONS_SYNC_FAILED => ("warning", "lan.provider_definitions_sync_failed"),
+    LAN_PROVIDER_DEFINITIONS_SYNC_HTTP_RECOVERED => ("info", "lan.provider_definitions_sync_http_recovered"),
+    LAN_QUOTA_REFRESH_FORWARDED_FAILED => ("warning", "lan.quota_refresh_forwarded_failed"),
+    LAN_QUOTA_REFRESH_FORWARDED_STARTED => ("info", "lan.quota_refresh_forwarded_started"),
+    LAN_QUOTA_REFRESH_FORWARDED_SUCCEEDED => ("info", "lan.quota_refresh_forwarded_succeeded"),
+    LAN_REMOTE_UPDATE_ACCEPTED => ("warning", "lan.remote_update_accepted"),
+    LAN_REMOTE_UPDATE_FAILED => ("error", "lan.remote_update_failed"),
+    LAN_REMOTE_UPDATE_PROGRESS => ("warning", "lan.remote_update_progress"),
+    LAN_REMOTE_UPDATE_REQUESTED => ("info", "lan.remote_update_requested"),
+    LAN_REMOTE_UPDATE_SUCCEEDED => ("info", "lan.remote_update_succeeded"),
+    LAN_SHARED_RECOVERY_PROBE_FAILED => ("warning", "lan.shared_recovery_probe_failed"),
+    LAN_SHARED_RECOVERY_PROBE_OK => ("info", "lan.shared_recovery_probe_ok"),
+    LAN_SYNC_CONTRACT_MISMATCH => ("warning", "lan.sync_contract_mismatch"),
+    LAN_SYNC_CONTRACT_RECOVERED => ("info", "lan.sync_contract_recovered"),
+    LAN_USAGE_SYNC_HTTP_RECOVERED => ("info", "lan.usage_sync_http_recovered"),
+    LAN_USAGE_SYNC_HTTP_FAILED => ("warning", "lan.usage_sync_http_failed"),
+    ROUTING_BACK_TO_PREFERRED => ("info", "routing.back_to_preferred"),
+    ROUTING_BALANCED_REASSIGN_ON_HEALTH_RECOVERY => ("info", "routing.balanced_reassign_on_health_recovery"),
+    ROUTING_BALANCED_REASSIGN_ON_REOPEN => ("info", "routing.balanced_reassign_on_reopen"),
+    ROUTING_BALANCED_REASSIGN_ON_SESSION_TOPOLOGY_CHANGE => ("info", "routing.balanced_reassign_on_session_topology_change"),
+    ROUTING_CLOSED_AFTER_FAILURE_USAGE_REFRESH => ("warning", "routing.closed_after_failure_usage_refresh"),
+    ROUTING_MANUAL_OVERRIDE_CHANGED => ("info", "routing.manual_override_changed"),
+    ROUTING_MODEL_MISMATCH => ("warning", "routing.model_mismatch"),
+    ROUTING_ROUTE => ("info", "routing.route"),
+    ROUTING_STREAM => ("info", "routing.stream"),
+    ROUTING_USAGE_REFRESH_UNCONFIRMED_AFTER_FAILURE => ("warning", "routing.usage_refresh_unconfirmed_after_failure"),
+    STREAM_IDLE_TIMEOUT => ("error", "stream.idle_timeout"),
+    STREAM_READ_ERROR => ("error", "stream.read_error"),
+    TEST_PROFILE_BULK_EVENT => ("info", "test_profile.bulk_event"),
+    TEST_PROFILE_MOCK_SEEDED => ("info", "test_profile.mock_seeded"),
+    UPSTREAM_HTTP_ERROR => ("error", "upstream.http_error"),
+    UPSTREAM_REQUEST_ERROR => ("error", "upstream.request_error"),
+    USAGE_REFRESH_FAILED => ("error", "usage.refresh_failed"),
+    USAGE_REFRESH_FORWARDED => ("info", "usage.refresh_forwarded"),
+    USAGE_REFRESH_PARTIAL => ("error", "usage.refresh_partial"),
+    USAGE_REFRESH_RECOVERED => ("info", "usage.refresh_recovered"),
+    USAGE_REFRESH_SHARED_APPLIED => ("info", "usage.refresh_shared_applied"),
+    USAGE_REFRESH_SUCCEEDED => ("info", "usage.refresh_succeeded"),
+    USAGE_REFRESH_SUCCEEDED_SUMMARY => ("info", "usage.refresh_succeeded_summary"),
+    USAGE_SPEND_HISTORY_ENTRY_CLEARED => ("info", "usage.spend_history_entry_cleared"),
+    USAGE_SPEND_HISTORY_ENTRY_UPDATED => ("info", "usage.spend_history_entry_updated"),
+    USAGE_TRACKED_SPEND_HISTORY_ENTRIES_REMOVED => ("warning", "usage.tracked_spend_history_entries_removed"),
+}
+
+impl<'a> EventReporter<'a> {
+    pub fn app(self) -> AppEventReporter<'a> {
+        AppEventReporter { reporter: self }
+    }
+
+    pub fn codex(self) -> CodexEventReporter<'a> {
+        CodexEventReporter { reporter: self }
+    }
+
+    pub fn config(self) -> ConfigEventReporter<'a> {
+        ConfigEventReporter { reporter: self }
+    }
+
+    pub fn lan(self) -> LanEventReporter<'a> {
+        LanEventReporter { reporter: self }
+    }
+
+    pub fn routing(self) -> RoutingEventReporter<'a> {
+        RoutingEventReporter { reporter: self }
+    }
+
+    pub fn emit(self, provider: &str, event_code: EventCode, message: &str, fields: Value) {
+        self.emit_at_unix_ms(provider, event_code, message, fields, unix_ms());
+    }
+
+    pub fn emit_at_unix_ms(
+        self,
+        provider: &str,
+        event_code: EventCode,
+        message: &str,
+        fields: Value,
+        unix_ms: u64,
+    ) {
+        self.store.add_event_at_unix_ms(
+            provider,
+            event_code.level(),
+            event_code.code(),
+            message,
+            fields,
+            unix_ms,
+        );
+    }
+}
+
+define_scoped_event_methods!(CodexEventReporter {
+    cli_auth_config_swapped => CODEX_CLI_AUTH_CONFIG_SWAPPED,
+    provider_switchboard_gateway_token_sync_failed => CODEX_PROVIDER_SWITCHBOARD_GATEWAY_TOKEN_SYNC_FAILED,
+    provider_switchboard_rename_sync_failed => CODEX_PROVIDER_SWITCHBOARD_RENAME_SYNC_FAILED,
+    provider_switchboard_sync_failed => CODEX_PROVIDER_SWITCHBOARD_SYNC_FAILED,
+});
+
+define_scoped_event_methods!(ConfigEventReporter {
+    followed_source_cleared => CONFIG_FOLLOWED_SOURCE_CLEARED,
+    followed_source_rollback_failed => CONFIG_FOLLOWED_SOURCE_ROLLBACK_FAILED,
+    followed_source_snapshot_missing => CONFIG_FOLLOWED_SOURCE_SNAPSHOT_MISSING,
+    followed_source_updated => CONFIG_FOLLOWED_SOURCE_UPDATED,
+    preferred_provider_updated => CONFIG_PREFERRED_PROVIDER_UPDATED,
+    provider_account_email_cleared => CONFIG_PROVIDER_ACCOUNT_EMAIL_CLEARED,
+    provider_account_email_updated => CONFIG_PROVIDER_ACCOUNT_EMAIL_UPDATED,
+    provider_copied_from_source => CONFIG_PROVIDER_COPIED_FROM_SOURCE,
+    provider_activated => CONFIG_PROVIDER_ACTIVATED,
+    provider_deactivated => CONFIG_PROVIDER_DEACTIVATED,
+    provider_deleted => CONFIG_PROVIDER_DELETED,
+    provider_group_bulk_updated => CONFIG_PROVIDER_GROUP_BULK_UPDATED,
+    provider_group_updated => CONFIG_PROVIDER_GROUP_UPDATED,
+    provider_key_cleared => CONFIG_PROVIDER_KEY_CLEARED,
+    provider_key_updated => CONFIG_PROVIDER_KEY_UPDATED,
+    provider_linked_from_source => CONFIG_PROVIDER_LINKED_FROM_SOURCE,
+    provider_order_updated => CONFIG_PROVIDER_ORDER_UPDATED,
+    provider_renamed => CONFIG_PROVIDER_RENAMED,
+    provider_upserted => CONFIG_PROVIDER_UPSERTED,
+    route_mode_updated => CONFIG_ROUTE_MODE_UPDATED,
+    session_preferred_provider_cleared => CONFIG_SESSION_PREFERRED_PROVIDER_CLEARED,
+    session_preferred_provider_updated => CONFIG_SESSION_PREFERRED_PROVIDER_UPDATED,
+});
+
+define_scoped_event_methods!(LanEventReporter {
+    edit_sync_http_recovered => LAN_EDIT_SYNC_HTTP_RECOVERED,
+    edit_sync_record_failed => LAN_EDIT_SYNC_RECORD_FAILED,
+    provider_definitions_sync_http_recovered => LAN_PROVIDER_DEFINITIONS_SYNC_HTTP_RECOVERED,
+    remote_update_accepted => LAN_REMOTE_UPDATE_ACCEPTED,
+    remote_update_failed => LAN_REMOTE_UPDATE_FAILED,
+    remote_update_progress => LAN_REMOTE_UPDATE_PROGRESS,
+    remote_update_requested => LAN_REMOTE_UPDATE_REQUESTED,
+    remote_update_succeeded => LAN_REMOTE_UPDATE_SUCCEEDED,
+    usage_sync_http_recovered => LAN_USAGE_SYNC_HTTP_RECOVERED,
+});
+
+define_scoped_event_methods!(RoutingEventReporter {
+    manual_override_changed => ROUTING_MANUAL_OVERRIDE_CHANGED,
+});
+
+impl<'a> AppEventReporter<'a> {
+    pub fn ui_frame_stall_at(self, provider: &str, message: &str, fields: Value, unix_ms: u64) {
+        self.reporter.emit_at_unix_ms(
+            provider,
+            EventCode::APP_UI_FRAME_STALL,
+            message,
+            fields,
+            unix_ms,
+        );
+    }
+
+    pub fn ui_frontend_error_at(self, provider: &str, message: &str, fields: Value, unix_ms: u64) {
+        self.reporter.emit_at_unix_ms(
+            provider,
+            EventCode::APP_UI_FRONTEND_ERROR,
+            message,
+            fields,
+            unix_ms,
+        );
+    }
+
+    pub fn ui_invoke_error_at(self, provider: &str, message: &str, fields: Value, unix_ms: u64) {
+        self.reporter.emit_at_unix_ms(
+            provider,
+            EventCode::APP_UI_INVOKE_ERROR,
+            message,
+            fields,
+            unix_ms,
+        );
+    }
+
+    pub fn ui_recovered(self, provider: &str, message: &str, fields: Value) {
+        self.reporter
+            .emit(provider, EventCode::APP_UI_RECOVERED, message, fields);
+    }
+
+    pub fn ui_unresponsive(self, provider: &str, message: &str, fields: Value) {
+        self.reporter
+            .emit(provider, EventCode::APP_UI_UNRESPONSIVE, message, fields);
+    }
+}
+
 pub(crate) fn extract_response_model_option(response_obj: &Value) -> Option<String> {
     response_obj
         .get("model")
@@ -132,6 +494,10 @@ pub(crate) fn extract_response_model_option(response_obj: &Value) -> Option<Stri
 }
 
 impl Store {
+    pub fn events(&self) -> EventReporter<'_> {
+        EventReporter { store: self }
+    }
+
     const MAX_DB_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB, best-effort cap via compaction
     const EVENTS_SQLITE_SCHEMA_VERSION: &'static str = "1";
     const EVENTS_SQLITE_MIGRATED_FROM_SLED_KEY: &'static str = "migrated_from_sled_v1";
@@ -1112,14 +1478,97 @@ impl Store {
         Ok(())
     }
 
-    fn should_compress_daily_event_count(code: &str) -> bool {
-        matches!(
-            code.trim(),
+    fn event_policy(level: &str, code: &str) -> EventPolicy {
+        let level = level.trim();
+        let code = code.trim();
+
+        let (raw_dedup_window_ms, raw_dedup_scope) = if level.eq_ignore_ascii_case("warning") {
+            match code {
+                "lan.edit_sync_http_failed"
+                | "lan.usage_sync_http_failed"
+                | "lan.provider_definitions_sync_failed"
+                | "lan.shared_recovery_probe_failed" => {
+                    (Some(30_000), EventRawDedupScope::ExactRow)
+                }
+                "app.ui_frame_stall" => (Some(10_000), EventRawDedupScope::ProviderAndCode),
+                "app.ui_frontend_error" | "app.ui_invoke_error" => {
+                    (Some(60_000), EventRawDedupScope::ProviderAndCode)
+                }
+                _ => (None, EventRawDedupScope::ExactRow),
+            }
+        } else {
+            (None, EventRawDedupScope::ExactRow)
+        };
+
+        let daily_count_bucket = match code {
             "lan.shared_health_applied"
-                | "lan.usage_sync_applied"
-                | "lan.edit_sync_applied"
-                | "routing.balanced_reassign_on_session_topology_change"
-        )
+            | "lan.usage_sync_applied"
+            | "lan.edit_sync_applied"
+            | "routing.balanced_reassign_on_session_topology_change" => {
+                Some(EventDailyCountBucketKind::ProviderCodePerMinute)
+            }
+            _ => None,
+        };
+
+        let display_bucket = match code {
+            "lan.edit_sync_applied" => {
+                Some(EventDisplayBucketKind::EditSyncAppliedPerMinuteAndSourceNode)
+            }
+            "usage.refresh_shared_applied" => {
+                Some(EventDisplayBucketKind::SharedUsageAppliedPerMinuteAndSourceNode)
+            }
+            _ => None,
+        };
+
+        EventPolicy {
+            raw_dedup_window_ms,
+            raw_dedup_scope,
+            daily_count_bucket,
+            display_bucket,
+        }
+    }
+
+    fn has_recent_duplicate_event(
+        tx: &rusqlite::Transaction<'_>,
+        provider: &str,
+        level: &str,
+        code: &str,
+        message: &str,
+        fields_json: &str,
+        ts_i64: i64,
+    ) -> rusqlite::Result<bool> {
+        let policy = Self::event_policy(level, code);
+        let Some(window_ms) = policy.raw_dedup_window_ms else {
+            return Ok(false);
+        };
+        let cutoff = ts_i64.saturating_sub(i64::try_from(window_ms).unwrap_or(i64::MAX));
+        let row = match policy.raw_dedup_scope {
+            EventRawDedupScope::ExactRow => tx.query_row(
+                "SELECT 1
+                 FROM events
+                 WHERE provider = ?1
+                   AND level = ?2
+                   AND code = ?3
+                   AND message = ?4
+                   AND fields_json = ?5
+                   AND unix_ms >= ?6
+                 LIMIT 1",
+                params![provider, level, code, message, fields_json, cutoff],
+                |_| Ok(()),
+            ),
+            EventRawDedupScope::ProviderAndCode => tx.query_row(
+                "SELECT 1
+                 FROM events
+                 WHERE provider = ?1
+                   AND level = ?2
+                   AND code = ?3
+                   AND unix_ms >= ?4
+                 LIMIT 1",
+                params![provider, level, code, cutoff],
+                |_| Ok(()),
+            ),
+        };
+        row.optional().map(|row| row.is_some())
     }
 
     fn compressed_daily_event_bucket_key(
@@ -1127,17 +1576,229 @@ impl Store {
         code: &str,
         unix_ms_i64: i64,
     ) -> Option<String> {
-        if !Self::should_compress_daily_event_count(code) {
-            return None;
-        }
+        let bucket_kind = Self::event_policy("", code).daily_count_bucket?;
         let unix_ms = u64::try_from(unix_ms_i64).ok()?;
         let minute_bucket = unix_ms / 60_000;
-        Some(format!(
-            "{}|{}|{}",
-            provider.trim().to_ascii_lowercase(),
-            code.trim(),
-            minute_bucket
-        ))
+        match bucket_kind {
+            EventDailyCountBucketKind::ProviderCodePerMinute => Some(format!(
+                "{}|{}|{}",
+                provider.trim().to_ascii_lowercase(),
+                code.trim(),
+                minute_bucket
+            )),
+        }
+    }
+
+    fn display_event_compression_bucket(event: &Value) -> Option<String> {
+        let unix_ms = event.get("unix_ms")?.as_u64()?;
+        let code = event.get("code")?.as_str()?.trim();
+        let minute_bucket = unix_ms / 60_000;
+        let fields = event.get("fields").and_then(Value::as_object);
+        match Self::event_policy(
+            event
+                .get("level")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            code,
+        )
+        .display_bucket
+        {
+            Some(EventDisplayBucketKind::EditSyncAppliedPerMinuteAndSourceNode) => {
+                let source_node_id = fields
+                    .and_then(|map| map.get("source_node_id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase();
+                Some(format!("{code}|{minute_bucket}|{source_node_id}"))
+            }
+            Some(EventDisplayBucketKind::SharedUsageAppliedPerMinuteAndSourceNode) => {
+                let applied_from_node_id = fields
+                    .and_then(|map| map.get("applied_from_node_id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase();
+                Some(format!("{code}|{minute_bucket}|{applied_from_node_id}"))
+            }
+            None => None,
+        }
+    }
+
+    pub(crate) fn compress_events_for_display(events: Vec<Value>) -> Vec<Value> {
+        let mut passthrough = Vec::new();
+        let mut buckets: std::collections::HashMap<String, Vec<Value>> =
+            std::collections::HashMap::new();
+
+        for event in events {
+            if let Some(bucket) = Self::display_event_compression_bucket(&event) {
+                buckets.entry(bucket).or_default().push(event);
+            } else {
+                passthrough.push(event);
+            }
+        }
+
+        for mut bucket_events in buckets.into_values() {
+            if bucket_events.len() == 1 {
+                if let Some(event) = bucket_events.pop() {
+                    passthrough.push(event);
+                }
+                continue;
+            }
+            bucket_events
+                .sort_by_key(|event| event.get("unix_ms").and_then(Value::as_u64).unwrap_or(0));
+            let Some(latest) = bucket_events.last().cloned() else {
+                continue;
+            };
+            let code = latest
+                .get("code")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+
+            let compressed = match Self::event_policy(
+                latest
+                    .get("level")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                &code,
+            )
+            .display_bucket
+            {
+                Some(EventDisplayBucketKind::EditSyncAppliedPerMinuteAndSourceNode) => {
+                    let mut applied_total = 0_u64;
+                    let mut received_total = 0_u64;
+                    let mut source_node_name = String::new();
+                    for event in &bucket_events {
+                        let fields = event.get("fields").and_then(Value::as_object);
+                        applied_total = applied_total.saturating_add(
+                            fields
+                                .and_then(|map| map.get("applied_events"))
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0),
+                        );
+                        received_total = received_total.saturating_add(
+                            fields
+                                .and_then(|map| map.get("received_events"))
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0),
+                        );
+                        if source_node_name.is_empty() {
+                            source_node_name = fields
+                                .and_then(|map| map.get("source_node_name"))
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .trim()
+                                .to_string();
+                        }
+                    }
+                    let mut fields = latest.get("fields").cloned().unwrap_or(Value::Null);
+                    if let Some(map) = fields.as_object_mut() {
+                        map.insert(
+                            "applied_events".to_string(),
+                            serde_json::json!(applied_total),
+                        );
+                        map.insert(
+                            "received_events".to_string(),
+                            serde_json::json!(received_total),
+                        );
+                        map.insert(
+                            "batch_count".to_string(),
+                            serde_json::json!(bucket_events.len()),
+                        );
+                        map.insert("compressed".to_string(), serde_json::json!(true));
+                    }
+                    let source_suffix = if source_node_name.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" from {source_node_name}")
+                    };
+                    serde_json::json!({
+                        "unix_ms": latest.get("unix_ms").and_then(Value::as_u64).unwrap_or(0),
+                        "provider": latest.get("provider").and_then(Value::as_str).unwrap_or("gateway"),
+                        "level": latest.get("level").and_then(Value::as_str).unwrap_or("info"),
+                        "code": code,
+                        "message": format!(
+                            "Applied {applied_total} synced editable event(s) across {} batch(es){source_suffix}",
+                            bucket_events.len()
+                        ),
+                        "fields": fields,
+                    })
+                }
+                Some(EventDisplayBucketKind::SharedUsageAppliedPerMinuteAndSourceNode) => {
+                    let mut applied_from_node_name = String::new();
+                    let mut providers = std::collections::BTreeSet::new();
+                    for event in &bucket_events {
+                        if let Some(provider) = event.get("provider").and_then(Value::as_str) {
+                            let trimmed = provider.trim();
+                            if !trimmed.is_empty() {
+                                let _ = providers.insert(trimmed.to_string());
+                            }
+                        }
+                        let fields = event.get("fields").and_then(Value::as_object);
+                        if applied_from_node_name.is_empty() {
+                            applied_from_node_name = fields
+                                .and_then(|map| map.get("applied_from_node_name"))
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .trim()
+                                .to_string();
+                        }
+                    }
+                    let provider_count = providers.len();
+                    let mut fields = latest.get("fields").cloned().unwrap_or(Value::Null);
+                    if let Some(map) = fields.as_object_mut() {
+                        map.insert(
+                            "provider_count".to_string(),
+                            serde_json::json!(provider_count),
+                        );
+                        map.insert(
+                            "providers".to_string(),
+                            serde_json::json!(providers.clone()),
+                        );
+                        map.insert(
+                            "event_count".to_string(),
+                            serde_json::json!(bucket_events.len()),
+                        );
+                        map.insert("compressed".to_string(), serde_json::json!(true));
+                    }
+                    let provider_name = if provider_count == 1 {
+                        providers
+                            .into_iter()
+                            .next()
+                            .unwrap_or_else(|| "gateway".to_string())
+                    } else {
+                        "gateway".to_string()
+                    };
+                    let source_label = if applied_from_node_name.is_empty() {
+                        "remote peer".to_string()
+                    } else {
+                        applied_from_node_name
+                    };
+                    serde_json::json!({
+                        "unix_ms": latest.get("unix_ms").and_then(Value::as_u64).unwrap_or(0),
+                        "provider": provider_name,
+                        "level": latest.get("level").and_then(Value::as_str).unwrap_or("info"),
+                        "code": code,
+                        "message": format!(
+                            "Applied shared usage update from {source_label} to {} provider(s)",
+                            provider_count
+                        ),
+                        "fields": fields,
+                    })
+                }
+                None => latest,
+            };
+            passthrough.push(compressed);
+        }
+
+        passthrough.sort_by(|a, b| {
+            let a_ts = a.get("unix_ms").and_then(Value::as_u64).unwrap_or(0);
+            let b_ts = b.get("unix_ms").and_then(Value::as_u64).unwrap_or(0);
+            b_ts.cmp(&a_ts)
+        });
+        passthrough
     }
 
     fn rebuild_event_day_counts_index_if_needed(&self) -> anyhow::Result<()> {
@@ -1632,8 +2293,15 @@ impl Store {
         Ok(())
     }
 
-    pub fn add_event(&self, provider: &str, level: &str, code: &str, message: &str, fields: Value) {
-        let ts = unix_ms();
+    fn add_event_at_unix_ms(
+        &self,
+        provider: &str,
+        level: &str,
+        code: &str,
+        message: &str,
+        fields: Value,
+        ts: u64,
+    ) {
         let id = uuid::Uuid::new_v4().to_string();
         let fields = match fields {
             Value::Object(_) => fields,
@@ -1656,6 +2324,21 @@ impl Store {
         let Ok(tx) = conn.transaction() else {
             return;
         };
+        if matches!(
+            Self::has_recent_duplicate_event(
+                &tx,
+                provider,
+                level,
+                code,
+                message,
+                &fields_json,
+                ts_i64
+            ),
+            Ok(true)
+        ) {
+            let _ = tx.rollback();
+            return;
+        }
         let inserted = tx.execute(
             "INSERT OR REPLACE INTO events(id, unix_ms, provider, level, code, message, fields_json)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",

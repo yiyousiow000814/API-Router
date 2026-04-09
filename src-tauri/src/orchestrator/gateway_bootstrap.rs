@@ -254,10 +254,9 @@ fn persist_gateway_runtime_port(
         cfg.clone()
     };
     std::fs::write(&state.config_path, toml::to_string_pretty(&cfg_to_write)?)?;
-    state.gateway.store.add_event(
+    state.gateway.store.events().emit(
         "gateway",
-        "warning",
-        "gateway.listen_port_reassigned",
+        crate::orchestrator::store::EventCode::GATEWAY_LISTEN_PORT_REASSIGNED,
         &format!("Gateway listen port reassigned to {next_port} because the configured port was unavailable."),
         json!({ "listen_port": next_port }),
     );

@@ -282,17 +282,8 @@ impl UiWatchdogState {
                 "visible": page.visible,
             }),
         );
-        if snapshot.last_frame_stall_log_unix_ms > 0
-            && now_unix_ms.saturating_sub(snapshot.last_frame_stall_log_unix_ms)
-                < UI_WATCHDOG_FRAME_STALL_LOG_COOLDOWN_MS
-        {
-            return;
-        }
-        snapshot.last_frame_stall_log_unix_ms = now_unix_ms;
-        runtime.store.add_event(
+        runtime.store.events().app().ui_frame_stall_at(
             "gateway",
-            "warning",
-            "app.ui_frame_stall",
             &format!("ui frame stalled for {elapsed_ms}ms"),
             serde_json::json!({
                 "elapsed_ms": elapsed_ms,
@@ -300,7 +291,15 @@ impl UiWatchdogState {
                 "active_page": page.active_page.trim(),
                 "visible": page.visible,
             }),
+            now_unix_ms,
         );
+        if snapshot.last_frame_stall_log_unix_ms > 0
+            && now_unix_ms.saturating_sub(snapshot.last_frame_stall_log_unix_ms)
+                < UI_WATCHDOG_FRAME_STALL_LOG_COOLDOWN_MS
+        {
+            return;
+        }
+        snapshot.last_frame_stall_log_unix_ms = now_unix_ms;
         self.write_dump(
             runtime.diagnostics_dir,
             "frame-stall",
@@ -329,17 +328,8 @@ impl UiWatchdogState {
                 "visible": page.visible,
             }),
         );
-        if snapshot.last_frontend_error_log_unix_ms > 0
-            && now_unix_ms.saturating_sub(snapshot.last_frontend_error_log_unix_ms)
-                < UI_WATCHDOG_LONG_TASK_LOG_COOLDOWN_MS
-        {
-            return;
-        }
-        snapshot.last_frontend_error_log_unix_ms = now_unix_ms;
-        runtime.store.add_event(
+        runtime.store.events().app().ui_frontend_error_at(
             "gateway",
-            "warning",
-            "app.ui_frontend_error",
             &format!("frontend runtime {kind}: {}", message.trim()),
             serde_json::json!({
                 "kind": kind.trim(),
@@ -347,7 +337,15 @@ impl UiWatchdogState {
                 "active_page": page.active_page.trim(),
                 "visible": page.visible,
             }),
+            now_unix_ms,
         );
+        if snapshot.last_frontend_error_log_unix_ms > 0
+            && now_unix_ms.saturating_sub(snapshot.last_frontend_error_log_unix_ms)
+                < UI_WATCHDOG_LONG_TASK_LOG_COOLDOWN_MS
+        {
+            return;
+        }
+        snapshot.last_frontend_error_log_unix_ms = now_unix_ms;
         self.write_dump(
             runtime.diagnostics_dir,
             "frontend-error",
@@ -383,17 +381,8 @@ impl UiWatchdogState {
         );
 
         if !ok {
-            if snapshot.last_invoke_error_log_unix_ms > 0
-                && now_unix_ms.saturating_sub(snapshot.last_invoke_error_log_unix_ms)
-                    < UI_WATCHDOG_INVOKE_LOG_COOLDOWN_MS
-            {
-                return;
-            }
-            snapshot.last_invoke_error_log_unix_ms = now_unix_ms;
-            runtime.store.add_event(
+            runtime.store.events().app().ui_invoke_error_at(
                 "gateway",
-                "warning",
-                "app.ui_invoke_error",
                 &format!("ui invoke failed: {command}"),
                 serde_json::json!({
                     "command": command,
@@ -402,7 +391,15 @@ impl UiWatchdogState {
                     "active_page": page.active_page.trim(),
                     "visible": page.visible,
                 }),
+                now_unix_ms,
             );
+            if snapshot.last_invoke_error_log_unix_ms > 0
+                && now_unix_ms.saturating_sub(snapshot.last_invoke_error_log_unix_ms)
+                    < UI_WATCHDOG_INVOKE_LOG_COOLDOWN_MS
+            {
+                return;
+            }
+            snapshot.last_invoke_error_log_unix_ms = now_unix_ms;
             self.write_dump(
                 runtime.diagnostics_dir,
                 "invoke-error",
@@ -448,10 +445,8 @@ impl UiWatchdogState {
             }
             snapshot.unresponsive_logged = true;
             snapshot.unresponsive_since_unix_ms = last_heartbeat;
-            store.add_event(
+            store.events().app().ui_unresponsive(
                 "gateway",
-                "warning",
-                "app.ui_unresponsive",
                 "ui heartbeat stalled",
                 serde_json::json!({
                     "heartbeat_age_ms": heartbeat_age_ms,
@@ -471,10 +466,8 @@ impl UiWatchdogState {
         let stalled_for_ms = now_unix_ms.saturating_sub(snapshot.unresponsive_since_unix_ms);
         snapshot.unresponsive_logged = false;
         snapshot.unresponsive_since_unix_ms = 0;
-        store.add_event(
+        store.events().app().ui_recovered(
             "gateway",
-            "info",
-            "app.ui_recovered",
             "ui heartbeat recovered",
             serde_json::json!({
                 "stalled_for_ms": stalled_for_ms,
@@ -489,23 +482,29 @@ pub fn run_startup_gateway_token_sync(state: &AppState) {
     match crate::provider_switchboard::sync_gateway_target_for_current_token_on_startup(state) {
         Ok(failed_targets) => {
             if !failed_targets.is_empty() {
-                state.gateway.store.add_event(
-                    "gateway",
-                    "error",
-                    "codex.provider_switchboard.gateway_token_sync_failed",
-                    "Gateway token sync at startup failed for some targets.",
-                    serde_json::json!({ "failed_targets": failed_targets }),
-                );
+                state
+                    .gateway
+                    .store
+                    .events()
+                    .codex()
+                    .provider_switchboard_gateway_token_sync_failed(
+                        "gateway",
+                        "Gateway token sync at startup failed for some targets.",
+                        serde_json::json!({ "failed_targets": failed_targets }),
+                    );
             }
         }
         Err(e) => {
-            state.gateway.store.add_event(
-                "gateway",
-                "error",
-                "codex.provider_switchboard.gateway_token_sync_failed",
-                &format!("Gateway token sync at startup failed: {e}"),
-                serde_json::Value::Null,
-            );
+            state
+                .gateway
+                .store
+                .events()
+                .codex()
+                .provider_switchboard_gateway_token_sync_failed(
+                    "gateway",
+                    &format!("Gateway token sync at startup failed: {e}"),
+                    serde_json::Value::Null,
+                );
         }
     }
 }
@@ -602,18 +601,15 @@ pub fn disable_expired_package_providers(state: &AppState) -> Vec<String> {
             provider_name,
             serde_json::json!({ "disabled": true }),
         ) {
-            state.gateway.store.add_event(
+            state.gateway.store.events().lan().edit_sync_record_failed(
                 provider_name,
-                "error",
-                "lan.edit_sync_record_failed",
                 &format!("failed to record expired provider disable for LAN sync: {err}"),
                 serde_json::Value::Null,
             );
         }
-        state.gateway.store.add_event(
+        state.gateway.store.events().emit(
             provider_name,
-            "warning",
-            "config.provider_disabled_after_package_expiry",
+            crate::orchestrator::store::EventCode::CONFIG_PROVIDER_DISABLED_AFTER_PACKAGE_EXPIRY,
             "provider disabled automatically after package expiry",
             serde_json::json!({ "expired_at_unix_ms": now }),
         );
@@ -1141,8 +1137,9 @@ mod tests {
             active_page: "requests",
             visible: true,
         };
+        let base_unix_ms = 1_700_000_000_000_u64;
 
-        watchdog.record_frame_stall(runtime, 123, "startup", page, 10_000);
+        watchdog.record_frame_stall(runtime, 123, "startup", page, base_unix_ms + 10_000);
         watchdog.record_frame_stall(
             UiWatchdogRuntime {
                 store: &state.gateway.store,
@@ -1154,7 +1151,7 @@ mod tests {
                 active_page: "requests",
                 visible: true,
             },
-            15_000,
+            base_unix_ms + 15_000,
         );
         watchdog.record_frame_stall(
             UiWatchdogRuntime {
@@ -1167,7 +1164,7 @@ mod tests {
                 active_page: "requests",
                 visible: true,
             },
-            21_000,
+            base_unix_ms + 21_000,
         );
 
         let events = state.gateway.store.list_events_range(None, None, Some(10));
