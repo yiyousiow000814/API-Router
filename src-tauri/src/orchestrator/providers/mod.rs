@@ -678,6 +678,7 @@ fn matched_definition_for_base_url(base_url: &str) -> Option<&'static ProviderDe
         base_url: base_url.to_string(),
         group: None,
         disabled: false,
+        supports_websockets: false,
         usage_adapter: String::new(),
         usage_base_url: None,
         api_key: String::new(),

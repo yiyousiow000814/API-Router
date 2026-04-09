@@ -1374,21 +1374,27 @@ pub(crate) fn set_provider_supports_websockets(
         &provider,
         serde_json::json!({ "supports_websockets": enabled }),
     ) {
-        state.gateway.store.add_event(
-            &provider,
-            "error",
-            "lan.edit_sync_record_failed",
-            &format!("failed to record provider websocket update for LAN sync: {err}"),
-            serde_json::Value::Null,
-        );
+        state
+            .gateway
+            .store
+            .events()
+            .lan()
+            .edit_sync_record_failed(
+                &provider,
+                &format!("failed to record provider websocket update for LAN sync: {err}"),
+                serde_json::Value::Null,
+            );
     }
-    state.gateway.store.add_event(
-        &provider,
-        "info",
-        "config.provider_supports_websockets_updated",
-        "provider websocket support updated",
-        serde_json::json!({ "supports_websockets": enabled }),
-    );
+    state
+        .gateway
+        .store
+        .events()
+        .config()
+        .provider_supports_websockets_updated(
+            &provider,
+            "provider websocket support updated",
+            serde_json::json!({ "supports_websockets": enabled }),
+        );
     Ok(())
 }
 
