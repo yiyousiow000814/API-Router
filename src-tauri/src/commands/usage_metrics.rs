@@ -124,7 +124,12 @@ fn merge_usage_metrics_day_counts(
         return;
     };
     for (day_key, req_count) in req_by_day_from_req {
-        req_by_day.insert(day_key.clone(), *req_count);
+        req_by_day
+            .entry(day_key.clone())
+            .and_modify(|current| {
+                *current = (*current).max(*req_count);
+            })
+            .or_insert(*req_count);
     }
 }
 
@@ -1479,6 +1484,14 @@ mod usage_metrics_tests {
         let raw = BTreeMap::from([("2026-03-31".to_string(), 86_u64)]);
         merge_usage_metrics_day_counts(&mut cached, Some(&raw));
         assert_eq!(cached.get("2026-03-31"), Some(&86_u64));
+    }
+
+    #[test]
+    fn usage_metrics_keeps_full_day_request_counts_when_window_only_has_partial_day() {
+        let mut cached = BTreeMap::from([("2026-04-08".to_string(), 1_625_u64)]);
+        let raw_window = BTreeMap::from([("2026-04-08".to_string(), 365_u64)]);
+        merge_usage_metrics_day_counts(&mut cached, Some(&raw_window));
+        assert_eq!(cached.get("2026-04-08"), Some(&1_625_u64));
     }
 
     #[test]
