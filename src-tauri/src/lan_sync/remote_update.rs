@@ -715,7 +715,7 @@ fn synthesize_remote_update_log_tail_from_status(
         let mut line = String::new();
         if let Some(timestamp) = format_remote_update_debug_time(entry.unix_ms) {
             line.push_str(&timestamp);
-            line.push_str(" Â· ");
+            line.push_str(" \u{00B7} ");
         }
         if !entry.label.trim().is_empty() {
             let label = entry.label.trim();

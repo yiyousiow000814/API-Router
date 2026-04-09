@@ -164,7 +164,7 @@ fn normalize_preview_text(raw: &str) -> Option<String> {
     }
     let mut out = trimmed.to_string();
     if out.chars().count() > 120 {
-        out = out.chars().take(119).collect::<String>() + "â€¦";
+        out = out.chars().take(119).collect::<String>() + "\u{2026}";
     }
     Some(out)
 }
@@ -602,7 +602,7 @@ def normalize_preview_text(raw):
     text = " ".join(str(raw).split()).strip()
     if not text:
         return None
-    return text[:119] + "â€¦" if len(text) > 120 else text
+    return text[:119] + "\u2026" if len(text) > 120 else text
 
 def is_auxiliary_instruction_text(raw):
     text = str(raw).strip().lower()
