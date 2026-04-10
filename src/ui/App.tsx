@@ -81,7 +81,7 @@ import {
 } from './utils/devPreviewConfigSource'
 import { lanConfigSourceSyncSignature } from './utils/lanConfigSourceSync'
 import { ensureLanConfigSourceTrust, waitForLanConfigSourceTrust } from './utils/lanPairCompletion'
-import { getVisibleBudgetHardCapPeriods, isBudgetInfoQuota } from './utils/providerBudgetWindows'
+import { buildProviderCapsMenuData } from './utils/providerCapsMenu'
 
 const AppModals = lazy(async () => {
   const module = await import('./components/AppModals')
@@ -1569,6 +1569,7 @@ export default function App() {
     registerProviderCapsMenuRef,
     providerWsTooltip,
   } = useProviderPanelUi({
+    configModalOpen,
     setProviderPanelsOpen,
     setEditingProviderName,
     setProviderNameDrafts,
@@ -1598,20 +1599,10 @@ export default function App() {
     setProviderQuotaHardCap,
     editingProviderName,
   })
-  const providerCapsMenuData = useMemo(() => {
-    if (!providerCapsMenu) return null
-
-    const provider = config?.providers?.[providerCapsMenu.provider]
-    const quota = status?.quota?.[providerCapsMenu.provider]
-    if (!provider || !isBudgetInfoQuota(quota)) return null
-
-    return {
-      ...providerCapsMenu,
-      editable: provider.editable !== false,
-      quotaHardCap: provider.quota_hard_cap ?? { daily: true, weekly: true, monthly: true },
-      periods: getVisibleBudgetHardCapPeriods(quota),
-    }
-  }, [config, providerCapsMenu, status])
+  const providerCapsMenuData = useMemo(
+    () => buildProviderCapsMenuData(configModalOpen, config, status, providerCapsMenu),
+    [configModalOpen, config, providerCapsMenu, status],
+  )
   const clearUsageScheduleRowsAutoSave = () => clearAutoSaveTimer('schedule:rows')
   const shouldRenderAppModals =
     keyModal.open ||

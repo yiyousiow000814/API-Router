@@ -7,6 +7,7 @@ import type { ProviderCapsMenuState } from '../components/ProviderCapsMenuPortal
 import type { ProviderWsTooltipState } from '../components/ProviderWsTooltipPortal'
 
 type Params = {
+  configModalOpen: boolean
   setProviderPanelsOpen: Dispatch<SetStateAction<Record<string, boolean>>>
   setEditingProviderName: Dispatch<SetStateAction<string | null>>
   setProviderNameDrafts: Dispatch<SetStateAction<Record<string, string>>>
@@ -50,6 +51,7 @@ export function useProviderPanelUi(params: Params) {
   const providerWsTooltipAnchorRef = useRef<HTMLButtonElement | null>(null)
   const providerWsTooltipTextRef = useRef<string>('')
   const {
+    configModalOpen,
     setProviderPanelsOpen,
     setEditingProviderName,
     setProviderNameDrafts,
@@ -146,6 +148,11 @@ export function useProviderPanelUi(params: Params) {
     },
     [closeProviderCapsMenu, updateProviderCapsMenuPosition],
   )
+
+  useEffect(() => {
+    if (configModalOpen) return
+    closeProviderCapsMenu()
+  }, [closeProviderCapsMenu, configModalOpen])
 
   useEffect(() => {
     if (!providerCapsMenu) return
@@ -304,12 +311,14 @@ export function useProviderPanelUi(params: Params) {
     ],
   )
 
+  const registerProviderCapsMenuRef = useCallback((el: HTMLDivElement | null) => {
+    providerCapsMenuRef.current = el
+  }, [])
+
   return {
     renderProviderCard,
     providerCapsMenu,
-    registerProviderCapsMenuRef: (el: HTMLDivElement | null) => {
-      providerCapsMenuRef.current = el
-    },
+    registerProviderCapsMenuRef,
     providerWsTooltip,
   }
 }
