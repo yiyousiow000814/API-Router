@@ -47,6 +47,7 @@ fn on_provider_renamed_impl(state: &AppState, old: &str, new: &str) -> Result<()
         return Ok(());
     };
     let base_url = cfg.base_url.trim().to_string();
+    let supports_websockets = cfg.supports_websockets;
     if base_url.is_empty() {
         return Err(format!("provider base_url is empty: {new}"));
     }
@@ -69,6 +70,7 @@ fn on_provider_renamed_impl(state: &AppState, old: &str, new: &str) -> Result<()
             &orig_cfg,
             new,
             &base_url,
+            supports_websockets,
             use_config_storage.then_some(key.trim()),
         );
         let next_auth = if use_config_storage {
@@ -115,7 +117,8 @@ pub fn set_target(
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
 
-    let (direct_name, direct_base_url, direct_key) = if target == "provider" {
+    let (direct_name, direct_base_url, direct_supports_websockets, direct_key) =
+        if target == "provider" {
         let name = provider_name
             .clone()
             .ok_or_else(|| "provider is required for target=provider".to_string())?;
@@ -134,9 +137,9 @@ pub fn set_target(
         if key.trim().is_empty() {
             return Err(format!("provider key is empty: {name}"));
         }
-        (Some(name), Some(base_url), Some(key))
+        (Some(name), Some(base_url), Some(cfg.supports_websockets), Some(key))
     } else {
-        (None, None, None)
+        (None, None, None, None)
     };
 
     let mut applied: Vec<PathBuf> = Vec::new();
@@ -158,6 +161,8 @@ pub fn set_target(
                 let base_url = direct_base_url
                     .as_deref()
                     .ok_or_else(|| "provider base_url is missing".to_string())?;
+                let supports_websockets = direct_supports_websockets
+                    .ok_or_else(|| "provider websocket capability is missing".to_string())?;
                 let key = direct_key
                     .as_deref()
                     .ok_or_else(|| "provider key is missing".to_string())?;
@@ -168,6 +173,7 @@ pub fn set_target(
                     &orig_cfg,
                     name,
                     base_url,
+                    supports_websockets,
                     use_config_storage.then_some(key.trim()),
                 );
                 let next_auth = if use_config_storage {

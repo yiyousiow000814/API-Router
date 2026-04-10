@@ -1051,6 +1051,11 @@ impl Store {
             crate::constants::USAGE_ORIGIN_WSL2 => crate::constants::USAGE_ORIGIN_WSL2,
             _ => crate::constants::USAGE_ORIGIN_UNKNOWN,
         };
+        let transport = match context.transport.trim().to_ascii_lowercase().as_str() {
+            "ws" => "ws",
+            "sse" => "sse",
+            _ => "http",
+        };
         let ts = unix_ms();
         let id = uuid::Uuid::new_v4().to_string();
         let session_id = context
@@ -1072,10 +1077,10 @@ impl Store {
             let conn = self.events_db.lock();
             let _ = conn.execute(
                 "INSERT INTO usage_requests(
-                    id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, session_id, node_id, node_name,
+                    id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, transport, session_id, node_id, node_name,
                     input_tokens, output_tokens, total_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens
-                 ) VALUES(?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                 ) VALUES(?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     id,
                     ts_i64,
@@ -1083,6 +1088,7 @@ impl Store {
                     context.api_key_ref.unwrap_or("-"),
                     model,
                     origin,
+                    transport,
                     session_id,
                     node_id,
                     node_name,

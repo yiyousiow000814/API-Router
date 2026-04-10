@@ -127,6 +127,7 @@ describe('ConfigModal', () => {
       />,
     )
 
+    expect(html).toContain('Config')
     expect(html).toContain('provider1')
     expect(html).toContain('Base URL (e.g. https://api.openai.com/v1)')
     expect(html).toContain('placeholder="Key"')

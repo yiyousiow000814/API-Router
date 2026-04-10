@@ -1066,7 +1066,6 @@ export function ConfigModal({
         <div className="aoModalHeader">
           <div className="aoConfigHeaderMeta">
             <div className="aoModalTitle">Config</div>
-            <div className="aoModalSub aoConfigHeaderSub">keys are stored in ./user-data/secrets.json</div>
           </div>
           <div className="aoConfigHeaderSource" aria-label="Config source">
             {showConfigSourceChooser ? (
