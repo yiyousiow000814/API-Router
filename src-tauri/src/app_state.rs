@@ -55,7 +55,8 @@ pub struct AppState {
 #[derive(Clone)]
 pub struct UiWatchdogState {
     heartbeat: Arc<RwLock<UiWatchdogHeartbeatState>>,
-    diagnostics: Arc<Mutex<UiWatchdogDiagnosticsState>>,
+    traces: Arc<Mutex<VecDeque<serde_json::Value>>>,
+    diagnostics_meta: Arc<Mutex<UiWatchdogDiagnosticsMeta>>,
     dump_writer: Arc<UiWatchdogDumpWriter>,
 }
 
@@ -90,8 +91,7 @@ struct UiWatchdogHeartbeatState {
 }
 
 #[derive(Clone, Default)]
-struct UiWatchdogDiagnosticsState {
-    recent_traces: VecDeque<serde_json::Value>,
+struct UiWatchdogDiagnosticsMeta {
     unresponsive_logged: bool,
     unresponsive_since_unix_ms: u64,
     last_status_slow_log_unix_ms: u64,
@@ -109,33 +109,29 @@ impl UiWatchdogState {
     fn with_dump_writer(dump_writer: Arc<UiWatchdogDumpWriter>) -> Self {
         Self {
             heartbeat: Arc::new(RwLock::new(UiWatchdogHeartbeatState::default())),
-            diagnostics: Arc::new(Mutex::new(UiWatchdogDiagnosticsState::default())),
+            traces: Arc::new(Mutex::new(VecDeque::new())),
+            diagnostics_meta: Arc::new(Mutex::new(UiWatchdogDiagnosticsMeta::default())),
             dump_writer,
         }
     }
 
-    fn push_trace(
-        snapshot: &mut UiWatchdogDiagnosticsState,
-        kind: &str,
-        now_unix_ms: u64,
-        fields: serde_json::Value,
-    ) {
-        snapshot.recent_traces.push_back(serde_json::json!({
+    fn append_trace(&self, kind: &str, now_unix_ms: u64, fields: serde_json::Value) {
+        let mut traces = self.traces.lock();
+        traces.push_back(serde_json::json!({
             "unix_ms": now_unix_ms,
             "kind": kind,
             "fields": fields,
         }));
-        while snapshot.recent_traces.len() > UI_WATCHDOG_TRACE_CAPACITY {
-            snapshot.recent_traces.pop_front();
+        while traces.len() > UI_WATCHDOG_TRACE_CAPACITY {
+            traces.pop_front();
         }
         let cutoff = now_unix_ms.saturating_sub(UI_WATCHDOG_DUMP_WINDOW_MS);
-        while snapshot
-            .recent_traces
+        while traces
             .front()
             .and_then(|entry| entry.get("unix_ms").and_then(|value| value.as_u64()))
             .is_some_and(|unix_ms| unix_ms < cutoff)
         {
-            snapshot.recent_traces.pop_front();
+            traces.pop_front();
         }
     }
 
@@ -143,11 +139,16 @@ impl UiWatchdogState {
         self.heartbeat.read().clone()
     }
 
+    fn trace_snapshot(&self) -> Vec<serde_json::Value> {
+        self.traces.lock().iter().cloned().collect()
+    }
+
     fn build_dump_payload(
         trigger: &str,
         now_unix_ms: u64,
         heartbeat: &UiWatchdogHeartbeatState,
-        diagnostics: &UiWatchdogDiagnosticsState,
+        diagnostics: &UiWatchdogDiagnosticsMeta,
+        traces: &[serde_json::Value],
     ) -> serde_json::Value {
         let payload = serde_json::json!({
             "trigger": trigger,
@@ -163,7 +164,7 @@ impl UiWatchdogState {
                 "unresponsive_logged": diagnostics.unresponsive_logged,
                 "unresponsive_since_unix_ms": diagnostics.unresponsive_since_unix_ms,
             },
-            "recent_traces": diagnostics.recent_traces.iter().cloned().collect::<Vec<_>>(),
+            "recent_traces": traces,
         });
         payload
     }
@@ -199,25 +200,21 @@ impl UiWatchdogState {
             heartbeat.config_in_flight = config_in_flight;
             heartbeat.provider_switch_in_flight = provider_switch_in_flight;
         }
-        if let Some(mut diagnostics) = self.diagnostics.try_lock() {
-            Self::push_trace(
-                &mut diagnostics,
-                "heartbeat",
-                now_unix_ms,
-                serde_json::json!({
-                    "active_page": active_page_value,
-                    "visible": visible,
-                    "status_in_flight": status_in_flight,
-                    "config_in_flight": config_in_flight,
-                    "provider_switch_in_flight": provider_switch_in_flight,
-                }),
-            );
-        }
+        self.append_trace(
+            "heartbeat",
+            now_unix_ms,
+            serde_json::json!({
+                "active_page": active_page_value,
+                "visible": visible,
+                "status_in_flight": status_in_flight,
+                "config_in_flight": config_in_flight,
+                "provider_switch_in_flight": provider_switch_in_flight,
+            }),
+        );
     }
 
     pub fn record_trace(&self, kind: &str, fields: serde_json::Value, now_unix_ms: u64) {
-        let mut diagnostics = self.diagnostics.lock();
-        Self::push_trace(&mut diagnostics, kind.trim(), now_unix_ms, fields);
+        self.append_trace(kind.trim(), now_unix_ms, fields);
     }
 
     pub fn record_slow_refresh(
@@ -233,9 +230,7 @@ impl UiWatchdogState {
         }
         let kind_key = kind.trim().to_ascii_lowercase();
         let heartbeat = self.heartbeat_snapshot();
-        let mut diagnostics = self.diagnostics.lock();
-        Self::push_trace(
-            &mut diagnostics,
+        self.append_trace(
             "slow_refresh",
             now_unix_ms,
             serde_json::json!({
@@ -245,6 +240,7 @@ impl UiWatchdogState {
                 "visible": page.visible,
             }),
         );
+        let mut diagnostics = self.diagnostics_meta.lock();
         let last_logged_at = match kind_key.as_str() {
             "status" => &mut diagnostics.last_status_slow_log_unix_ms,
             "config" => &mut diagnostics.last_config_slow_log_unix_ms,
@@ -258,9 +254,16 @@ impl UiWatchdogState {
             return;
         }
         *last_logged_at = now_unix_ms;
-        let payload =
-            Self::build_dump_payload("slow-refresh", now_unix_ms, &heartbeat, &diagnostics);
+        let diagnostics_snapshot = diagnostics.clone();
         drop(diagnostics);
+        let traces = self.trace_snapshot();
+        let payload = Self::build_dump_payload(
+            "slow-refresh",
+            now_unix_ms,
+            &heartbeat,
+            &diagnostics_snapshot,
+            &traces,
+        );
         self.write_dump(
             runtime.diagnostics_dir,
             "slow-refresh",
@@ -277,9 +280,7 @@ impl UiWatchdogState {
         now_unix_ms: u64,
     ) {
         let heartbeat = self.heartbeat_snapshot();
-        let mut diagnostics = self.diagnostics.lock();
-        Self::push_trace(
-            &mut diagnostics,
+        self.append_trace(
             "long_task",
             now_unix_ms,
             serde_json::json!({
@@ -291,6 +292,7 @@ impl UiWatchdogState {
         if elapsed_ms < UI_WATCHDOG_LONG_TASK_AFTER_MS {
             return;
         }
+        let mut diagnostics = self.diagnostics_meta.lock();
         if diagnostics.last_long_task_log_unix_ms > 0
             && now_unix_ms.saturating_sub(diagnostics.last_long_task_log_unix_ms)
                 < UI_WATCHDOG_LONG_TASK_LOG_COOLDOWN_MS
@@ -298,8 +300,16 @@ impl UiWatchdogState {
             return;
         }
         diagnostics.last_long_task_log_unix_ms = now_unix_ms;
-        let payload = Self::build_dump_payload("long-task", now_unix_ms, &heartbeat, &diagnostics);
+        let diagnostics_snapshot = diagnostics.clone();
         drop(diagnostics);
+        let traces = self.trace_snapshot();
+        let payload = Self::build_dump_payload(
+            "long-task",
+            now_unix_ms,
+            &heartbeat,
+            &diagnostics_snapshot,
+            &traces,
+        );
         self.write_dump(runtime.diagnostics_dir, "long-task", now_unix_ms, &payload);
     }
 
@@ -312,10 +322,8 @@ impl UiWatchdogState {
         now_unix_ms: u64,
     ) {
         let heartbeat = self.heartbeat_snapshot();
-        let mut diagnostics = self.diagnostics.lock();
         let monitor_kind = monitor_kind.trim();
-        Self::push_trace(
-            &mut diagnostics,
+        self.append_trace(
             "frame_stall",
             now_unix_ms,
             serde_json::json!({
@@ -336,6 +344,7 @@ impl UiWatchdogState {
             }),
             now_unix_ms,
         );
+        let mut diagnostics = self.diagnostics_meta.lock();
         if diagnostics.last_frame_stall_log_unix_ms > 0
             && now_unix_ms.saturating_sub(diagnostics.last_frame_stall_log_unix_ms)
                 < UI_WATCHDOG_FRAME_STALL_LOG_COOLDOWN_MS
@@ -343,9 +352,16 @@ impl UiWatchdogState {
             return;
         }
         diagnostics.last_frame_stall_log_unix_ms = now_unix_ms;
-        let payload =
-            Self::build_dump_payload("frame-stall", now_unix_ms, &heartbeat, &diagnostics);
+        let diagnostics_snapshot = diagnostics.clone();
         drop(diagnostics);
+        let traces = self.trace_snapshot();
+        let payload = Self::build_dump_payload(
+            "frame-stall",
+            now_unix_ms,
+            &heartbeat,
+            &diagnostics_snapshot,
+            &traces,
+        );
         self.write_dump(
             runtime.diagnostics_dir,
             "frame-stall",
@@ -363,9 +379,7 @@ impl UiWatchdogState {
         now_unix_ms: u64,
     ) {
         let heartbeat = self.heartbeat_snapshot();
-        let mut diagnostics = self.diagnostics.lock();
-        Self::push_trace(
-            &mut diagnostics,
+        self.append_trace(
             "frontend_error",
             now_unix_ms,
             serde_json::json!({
@@ -386,6 +400,7 @@ impl UiWatchdogState {
             }),
             now_unix_ms,
         );
+        let mut diagnostics = self.diagnostics_meta.lock();
         if diagnostics.last_frontend_error_log_unix_ms > 0
             && now_unix_ms.saturating_sub(diagnostics.last_frontend_error_log_unix_ms)
                 < UI_WATCHDOG_LONG_TASK_LOG_COOLDOWN_MS
@@ -393,9 +408,16 @@ impl UiWatchdogState {
             return;
         }
         diagnostics.last_frontend_error_log_unix_ms = now_unix_ms;
-        let payload =
-            Self::build_dump_payload("frontend-error", now_unix_ms, &heartbeat, &diagnostics);
+        let diagnostics_snapshot = diagnostics.clone();
         drop(diagnostics);
+        let traces = self.trace_snapshot();
+        let payload = Self::build_dump_payload(
+            "frontend-error",
+            now_unix_ms,
+            &heartbeat,
+            &diagnostics_snapshot,
+            &traces,
+        );
         self.write_dump(
             runtime.diagnostics_dir,
             "frontend-error",
@@ -412,13 +434,11 @@ impl UiWatchdogState {
         now_unix_ms: u64,
     ) {
         let heartbeat = self.heartbeat_snapshot();
-        let mut diagnostics = self.diagnostics.lock();
         let command = invoke.command.trim();
         let elapsed_ms = invoke.elapsed_ms;
         let ok = invoke.ok;
         let error_message = invoke.error_message.unwrap_or("").trim();
-        Self::push_trace(
-            &mut diagnostics,
+        self.append_trace(
             "invoke",
             now_unix_ms,
             serde_json::json!({
@@ -432,6 +452,7 @@ impl UiWatchdogState {
         );
 
         if !ok {
+            let mut diagnostics = self.diagnostics_meta.lock();
             runtime.store.events().app().ui_invoke_error_at(
                 "gateway",
                 &format!("ui invoke failed: {command}"),
@@ -451,9 +472,16 @@ impl UiWatchdogState {
                 return;
             }
             diagnostics.last_invoke_error_log_unix_ms = now_unix_ms;
-            let payload =
-                Self::build_dump_payload("invoke-error", now_unix_ms, &heartbeat, &diagnostics);
+            let diagnostics_snapshot = diagnostics.clone();
             drop(diagnostics);
+            let traces = self.trace_snapshot();
+            let payload = Self::build_dump_payload(
+                "invoke-error",
+                now_unix_ms,
+                &heartbeat,
+                &diagnostics_snapshot,
+                &traces,
+            );
             self.write_dump(
                 runtime.diagnostics_dir,
                 "invoke-error",
@@ -466,6 +494,7 @@ impl UiWatchdogState {
         if elapsed_ms < UI_WATCHDOG_SLOW_REFRESH_AFTER_MS {
             return;
         }
+        let mut diagnostics = self.diagnostics_meta.lock();
         if diagnostics.last_invoke_slow_log_unix_ms > 0
             && now_unix_ms.saturating_sub(diagnostics.last_invoke_slow_log_unix_ms)
                 < UI_WATCHDOG_INVOKE_LOG_COOLDOWN_MS
@@ -473,9 +502,16 @@ impl UiWatchdogState {
             return;
         }
         diagnostics.last_invoke_slow_log_unix_ms = now_unix_ms;
-        let payload =
-            Self::build_dump_payload("slow-invoke", now_unix_ms, &heartbeat, &diagnostics);
+        let diagnostics_snapshot = diagnostics.clone();
         drop(diagnostics);
+        let traces = self.trace_snapshot();
+        let payload = Self::build_dump_payload(
+            "slow-invoke",
+            now_unix_ms,
+            &heartbeat,
+            &diagnostics_snapshot,
+            &traces,
+        );
         self.write_dump(
             runtime.diagnostics_dir,
             "slow-invoke",
@@ -496,7 +532,7 @@ impl UiWatchdogState {
             return;
         }
         let heartbeat_age_ms = now_unix_ms.saturating_sub(last_heartbeat);
-        let mut diagnostics = self.diagnostics.lock();
+        let mut diagnostics = self.diagnostics_meta.lock();
         if heartbeat_age_ms > UI_WATCHDOG_UNRESPONSIVE_AFTER_MS {
             if diagnostics.unresponsive_logged {
                 return;
@@ -515,9 +551,16 @@ impl UiWatchdogState {
                     "provider_switch_in_flight": heartbeat.provider_switch_in_flight,
                 }),
             );
-            let payload =
-                Self::build_dump_payload("heartbeat-stall", now_unix_ms, &heartbeat, &diagnostics);
+            let diagnostics_snapshot = diagnostics.clone();
             drop(diagnostics);
+            let traces = self.trace_snapshot();
+            let payload = Self::build_dump_payload(
+                "heartbeat-stall",
+                now_unix_ms,
+                &heartbeat,
+                &diagnostics_snapshot,
+                &traces,
+            );
             self.write_dump(diagnostics_dir, "heartbeat-stall", now_unix_ms, &payload);
             return;
         }
@@ -543,7 +586,8 @@ impl Default for UiWatchdogState {
     fn default() -> Self {
         Self {
             heartbeat: Arc::new(RwLock::new(UiWatchdogHeartbeatState::default())),
-            diagnostics: Arc::new(Mutex::new(UiWatchdogDiagnosticsState::default())),
+            traces: Arc::new(Mutex::new(VecDeque::new())),
+            diagnostics_meta: Arc::new(Mutex::new(UiWatchdogDiagnosticsMeta::default())),
             dump_writer: Arc::new(crate::diagnostics::write_pretty_json),
         }
     }
