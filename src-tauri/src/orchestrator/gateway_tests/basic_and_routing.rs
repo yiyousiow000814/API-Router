@@ -606,6 +606,151 @@ async fn responses_stream_via_websocket_records_ws_transport() {
 }
 
 #[tokio::test]
+async fn responses_stream_http_retry_does_not_repeat_failed_ws_attempt() {
+    use axum::response::IntoResponse;
+    use axum::response::sse::{Event, Sse};
+    use axum::routing::post;
+    use axum::Router as AxumRouter;
+    use std::convert::Infallible;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tower::ServiceExt;
+
+    let http_requests = Arc::new(AtomicUsize::new(0));
+    let http_requests_for_route = http_requests.clone();
+    let app = AxumRouter::new().route(
+        "/v1/responses",
+        post(move || {
+            let http_requests_for_route = http_requests_for_route.clone();
+            async move {
+                let call = http_requests_for_route.fetch_add(1, Ordering::Relaxed) + 1;
+                if call == 1 {
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        [("content-type", "application/json")],
+                        r#"{"error":{"message":"rate limited"}}"#.to_string(),
+                    )
+                        .into_response();
+                }
+
+                let stream = futures_util::stream::iter(vec![
+                    Ok::<Event, Infallible>(
+                        Event::default().data(
+                            serde_json::json!({
+                                "type": "response.created",
+                                "response": {
+                                    "id": "resp_http_stream_retry",
+                                    "model": "gpt-5.4"
+                                }
+                            })
+                            .to_string(),
+                        ),
+                    ),
+                    Ok::<Event, Infallible>(
+                        Event::default().data(
+                            serde_json::json!({
+                                "type": "response.completed",
+                                "response": {
+                                    "id": "resp_http_stream_retry",
+                                    "model": "gpt-5.4",
+                                    "status": "completed",
+                                    "output": [],
+                                    "usage": {
+                                        "input_tokens": 10,
+                                        "output_tokens": 2,
+                                        "total_tokens": 12
+                                    }
+                                }
+                            })
+                            .to_string(),
+                        ),
+                    ),
+                ]);
+                Sse::new(stream).into_response()
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let mut cfg = AppConfig::default_config();
+    let provider = cfg
+        .providers
+        .get_mut("official")
+        .expect("official provider");
+    provider.base_url = format!("http://{}:{}/v1", addr.ip(), addr.port());
+    provider.supports_websockets = true;
+
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .header("x-codex-session-id", "session-ws-once")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "gpt-5.4",
+                        "input": "hello",
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("responses request");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("responses body");
+    let body_text = String::from_utf8(body.to_vec()).expect("utf8 body");
+    assert!(body_text.contains("resp_http_stream_retry"));
+    assert_eq!(http_requests.load(Ordering::Relaxed), 2);
+
+    let events = state.store.list_events_range(None, None, Some(50));
+    let ws_fallback_count = events
+        .iter()
+        .filter(|event| {
+            event.get("code").and_then(|value| value.as_str())
+                == Some("gateway.websocket_fallback_to_http")
+        })
+        .count();
+    assert_eq!(ws_fallback_count, 1);
+
+    let stream_retry_count = events
+        .iter()
+        .filter(|event| {
+            event.get("code").and_then(|value| value.as_str())
+                == Some("gateway.upstream_retry")
+        })
+        .count();
+    assert_eq!(stream_retry_count, 1);
+}
+
+#[tokio::test]
 async fn auth_verify_returns_while_history_read_is_blocked() {
     use std::sync::{mpsc, Arc, Condvar, Mutex as StdMutex};
     use std::time::Duration;

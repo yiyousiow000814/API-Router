@@ -1246,9 +1246,11 @@ async fn responses(
                     .map(|m| m.insert("stream".to_string(), Value::Bool(true)));
                 let api_key = st.secrets.get_provider_key(&provider_name);
                 let allow_websocket_transport = p.supports_websockets && !use_prev_id;
+                let mut websocket_stream_attempted = false;
                 let mut should_fallback_to_non_stream = false;
                 for attempt in 1..=TRANSIENT_UPSTREAM_RETRY_ATTEMPTS {
-                    if allow_websocket_transport {
+                    if allow_websocket_transport && !websocket_stream_attempted {
+                        websocket_stream_attempted = true;
                         match st
                             .upstream
                             .post_sse_via_websocket(
