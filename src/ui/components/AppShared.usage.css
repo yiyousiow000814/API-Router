@@ -1072,8 +1072,7 @@
   margin-top: 0;
   position: relative;
   overflow-anchor: none;
-  overflow-x: visible;
-  overflow-y: auto;
+  overflow: auto;
   padding-top: 0;
   padding-right: 6px;
   /* Prevent the drag overlay shadow from being clipped by the modal body. */
@@ -1384,9 +1383,13 @@
 }
 
 .aoMenu.aoProviderCapsPanel {
-  top: 30px;
-  right: 0;
-  z-index: 8;
+  position: fixed;
+  left: 0;
+  right: auto;
+  top: 0;
+  transform: translateX(-100%);
+  z-index: 10150;
+  width: auto;
   min-width: 132px;
   display: grid;
   gap: 6px;

@@ -34,6 +34,7 @@ import {
 } from './utils/currency'
 import { AppMainContent, preloadAppMainContentModules } from './components/AppMainContent'
 import { AppTopNav } from './components/AppTopNav'
+import { ProviderCapsMenuPortal } from './components/ProviderCapsMenuPortal'
 import { ProviderWsTooltipPortal } from './components/ProviderWsTooltipPortal'
 import type { LastErrorJump } from './components/ProvidersTable'
 import { useConfigDrag } from './hooks/useConfigDrag'
@@ -80,6 +81,7 @@ import {
 } from './utils/devPreviewConfigSource'
 import { lanConfigSourceSyncSignature } from './utils/lanConfigSourceSync'
 import { ensureLanConfigSourceTrust, waitForLanConfigSourceTrust } from './utils/lanPairCompletion'
+import { getVisibleBudgetHardCapPeriods, isBudgetInfoQuota } from './utils/providerBudgetWindows'
 
 const AppModals = lazy(async () => {
   const module = await import('./components/AppModals')
@@ -1563,6 +1565,8 @@ export default function App() {
   })
   const {
     renderProviderCard,
+    providerCapsMenu,
+    registerProviderCapsMenuRef,
     providerWsTooltip,
   } = useProviderPanelUi({
     setProviderPanelsOpen,
@@ -1594,6 +1598,20 @@ export default function App() {
     setProviderQuotaHardCap,
     editingProviderName,
   })
+  const providerCapsMenuData = useMemo(() => {
+    if (!providerCapsMenu) return null
+
+    const provider = config?.providers?.[providerCapsMenu.provider]
+    const quota = status?.quota?.[providerCapsMenu.provider]
+    if (!provider || !isBudgetInfoQuota(quota)) return null
+
+    return {
+      ...providerCapsMenu,
+      editable: provider.editable !== false,
+      quotaHardCap: provider.quota_hard_cap ?? { daily: true, weekly: true, monthly: true },
+      periods: getVisibleBudgetHardCapPeriods(quota),
+    }
+  }, [config, providerCapsMenu, status])
   const clearUsageScheduleRowsAutoSave = () => clearAutoSaveTimer('schedule:rows')
   const shouldRenderAppModals =
     keyModal.open ||
@@ -1991,6 +2009,14 @@ export default function App() {
           />
         </Suspense>
       ) : null}
+      <ProviderCapsMenuPortal
+        menu={providerCapsMenuData}
+        periods={providerCapsMenuData?.periods ?? []}
+        quotaHardCap={providerCapsMenuData?.quotaHardCap ?? { daily: true, weekly: true, monthly: true }}
+        editable={providerCapsMenuData?.editable ?? false}
+        registerMenuRef={registerProviderCapsMenuRef}
+        setProviderQuotaHardCap={setProviderQuotaHardCap}
+      />
       <ProviderWsTooltipPortal tooltip={providerWsTooltip} />
       {providerGroupManagerOpen ? (
         <Suspense fallback={null}>

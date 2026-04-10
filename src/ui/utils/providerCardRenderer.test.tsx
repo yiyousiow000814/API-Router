@@ -86,7 +86,7 @@ function buildStatusWithoutDetectedWindows(): Status {
   return status
 }
 
-function renderCardHtml(config: Config, status: Status): string {
+function renderCardHtml(config: Config, status: Status, openProviderCapsMenu: string | null = null): string {
   const setProviderNameDrafts = (() => undefined) as React.Dispatch<
     React.SetStateAction<Record<string, string>>
   >
@@ -122,9 +122,8 @@ function renderCardHtml(config: Config, status: Status): string {
     setProviderQuotaHardCap: async () => undefined,
     showProviderWsTooltip: () => undefined,
     hideProviderWsTooltip: () => undefined,
-    openProviderCapsMenu: null,
-    setOpenProviderCapsMenu: () => null,
-    registerProviderCapsMenuRef: () => () => undefined,
+    openProviderCapsMenu,
+    toggleProviderCapsMenu: () => undefined,
   })
 
   const card = renderer('p1')
@@ -197,6 +196,13 @@ describe('provider usage controls rendering', () => {
     expect(html).toContain('Usage Auth')
     expect(html).not.toContain('Usage URL')
     expect(html).not.toContain('Usage URL sets the usage endpoint.')
+  })
+
+  it('keeps caps menu content out of the inline provider card markup', () => {
+    const html = renderCardHtml(buildConfig(null), buildStatus(), 'p1')
+    expect(html).toContain('Caps')
+    expect(html).not.toContain('Quota hard caps')
+    expect(html).not.toContain('daily cap')
   })
 
   it('keeps only usage url for packycode hosts', () => {

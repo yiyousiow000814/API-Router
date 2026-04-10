@@ -39,8 +39,7 @@ type CreateProviderCardRendererOptions = {
   showProviderWsTooltip: (text: string, anchor: HTMLButtonElement) => void
   hideProviderWsTooltip: () => void
   openProviderCapsMenu: string | null
-  setOpenProviderCapsMenu: React.Dispatch<React.SetStateAction<string | null>>
-  registerProviderCapsMenuRef: (name: string) => (el: HTMLDivElement | null) => void
+  toggleProviderCapsMenu: (provider: string, anchor: HTMLButtonElement) => void
 }
 
 export function createProviderCardRenderer(options: CreateProviderCardRendererOptions) {
@@ -258,36 +257,19 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                     </button>
                   ) : null}
                   {hasBudgetInfo ? (
-                    <div className="aoActionsMenuWrap aoProviderCapsMenuWrap" ref={options.registerProviderCapsMenuRef(name)}>
+                    <div className="aoActionsMenuWrap aoProviderCapsMenuWrap">
                       <button
                         type="button"
                         className="aoTinyBtn aoProviderCapsTrigger"
                         aria-haspopup="menu"
                         aria-expanded={capsMenuOpen}
-                        onClick={() => options.setOpenProviderCapsMenu((current) => (current === name ? null : name))}
+                        onClick={(event) => options.toggleProviderCapsMenu(name, event.currentTarget)}
                       >
                         Caps
                         <span className="aoProviderCapsSummary">
                           {hardCapPeriods.filter((period) => quotaHardCap[period]).length}/{hardCapPeriods.length}
                         </span>
                       </button>
-                      {capsMenuOpen ? (
-                        <div className="aoMenu aoProviderCapsPanel" role="menu" aria-label="Quota hard caps">
-                          {hardCapPeriods.map((period) => (
-                            <label key={period} className="aoProviderCapsItem">
-                              <input
-                                type="checkbox"
-                                checked={quotaHardCap[period]}
-                                disabled={!editable}
-                                onChange={(event) =>
-                                  void options.setProviderQuotaHardCap(name, period, event.target.checked)
-                                }
-                              />
-                              <span>{period} cap</span>
-                            </label>
-                          ))}
-                        </div>
-                      ) : null}
                     </div>
                   ) : null}
                 </div>
