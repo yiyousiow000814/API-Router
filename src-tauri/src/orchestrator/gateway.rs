@@ -458,6 +458,84 @@ fn log_upstream_retry_event(
     );
 }
 
+fn log_websocket_fallback_event(st: &GatewayState, provider_name: &str, detail: &str) {
+    st.store.events().emit(
+        provider_name,
+        crate::orchestrator::store::EventCode::GATEWAY_WEBSOCKET_FALLBACK_TO_HTTP,
+        detail,
+        json!({
+            "attempted_transport": "ws",
+            "fallback_transport": "http",
+        }),
+    );
+}
+
+async fn post_non_stream_with_http_retry(
+    st: &GatewayState,
+    provider_name: &str,
+    provider: &super::config::ProviderConfig,
+    payload: &Value,
+    api_key: Option<&str>,
+    client_auth: Option<&str>,
+    timeout: u64,
+) -> Result<(u16, Value), reqwest::Error> {
+    let mut http_result = None;
+    for attempt in 1..=TRANSIENT_UPSTREAM_RETRY_ATTEMPTS {
+        let result = st
+            .upstream
+            .post_json(
+                provider,
+                "/v1/responses",
+                payload,
+                api_key,
+                client_auth,
+                timeout,
+            )
+            .await;
+        let should_retry = match &result {
+            Ok((code, _)) => {
+                is_retryable_upstream_status(*code) && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
+            }
+            Err(e) => {
+                should_retry_upstream_request_error(e)
+                    && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
+            }
+        };
+        if should_retry {
+            let detail = match &result {
+                Ok((code, _)) => {
+                    format!("retrying upstream non-stream after http {code} from {provider_name}")
+                }
+                Err(e) => format!(
+                    "retrying upstream non-stream after request error from {provider_name}: {e}"
+                ),
+            };
+            let kind = if result.is_ok() {
+                "http_status"
+            } else {
+                "request_error"
+            };
+            log_upstream_retry_event(
+                st,
+                provider_name,
+                kind,
+                &detail,
+                attempt,
+                TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
+                false,
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(
+                TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
+            ))
+            .await;
+            continue;
+        }
+        http_result = Some(result);
+        break;
+    }
+    http_result.expect("non-stream attempt result")
+}
+
 #[cfg(test)]
 mod upstream_retry_tests {
     use super::{
@@ -1205,10 +1283,10 @@ async fn responses(
                                     crate::orchestrator::store::EventCode::ROUTING_STREAM,
                                     &format!("Streaming via {provider_name} ({reason})"),
                                     json!({
-                                    "provider": provider_name,
-                                    "reason": reason,
-                                    "transport": "sse",
-                                    "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
+                                        "provider": provider_name,
+                                        "reason": reason,
+                                        "transport": "sse",
+                                        "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
                                         "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
                                         "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
                                     }),
@@ -1425,122 +1503,37 @@ async fn responses(
                         actual_transport = "ws";
                         Ok((200, ws_result.response))
                     }
-                    Err(_) => {
-                        let mut http_result = None;
-                        for attempt in 1..=TRANSIENT_UPSTREAM_RETRY_ATTEMPTS {
-                            let result = st
-                                .upstream
-                                .post_json(
-                                    &p,
-                                    "/v1/responses",
-                                    &body_for_provider,
-                                    api_key.as_deref(),
-                                    client_auth,
-                                    timeout,
-                                )
-                                .await;
-                            let should_retry = match &result {
-                                Ok((code, _)) => {
-                                    is_retryable_upstream_status(*code)
-                                        && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
-                                }
-                                Err(e) => {
-                                    should_retry_upstream_request_error(e)
-                                        && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
-                                }
-                            };
-                            if should_retry {
-                                let detail = match &result {
-                                    Ok((code, _)) => format!(
-                                        "retrying upstream non-stream after http {code} from {provider_name}"
-                                    ),
-                                    Err(e) => format!(
-                                        "retrying upstream non-stream after request error from {provider_name}: {e}"
-                                    ),
-                                };
-                                let kind = if result.is_ok() {
-                                    "http_status"
-                                } else {
-                                    "request_error"
-                                };
-                                log_upstream_retry_event(
-                                    &st,
-                                    &provider_name,
-                                    kind,
-                                    &detail,
-                                    attempt,
-                                    TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
-                                    false,
-                                );
-                                tokio::time::sleep(std::time::Duration::from_millis(
-                                    TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
-                                ))
-                                .await;
-                                continue;
-                            }
-                            http_result = Some(result);
-                            break;
-                        }
-                        http_result.expect("non-stream attempt result")
-                    }
-                }
-            } else {
-                let mut http_result = None;
-                for attempt in 1..=TRANSIENT_UPSTREAM_RETRY_ATTEMPTS {
-                    let result = st
-                        .upstream
-                        .post_json(
+                    Err(ws_err) => {
+                        log_websocket_fallback_event(
+                            &st,
+                            &provider_name,
+                            &format!(
+                                "websocket upstream failed for {provider_name}; falling back to http: {ws_err}"
+                            ),
+                        );
+                        post_non_stream_with_http_retry(
+                            &st,
+                            &provider_name,
                             &p,
-                            "/v1/responses",
                             &body_for_provider,
                             api_key.as_deref(),
                             client_auth,
                             timeout,
                         )
-                        .await;
-                    let should_retry = match &result {
-                        Ok((code, _)) => {
-                            is_retryable_upstream_status(*code)
-                                && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
-                        }
-                        Err(e) => {
-                            should_retry_upstream_request_error(e)
-                                && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
-                        }
-                    };
-                    if should_retry {
-                        let detail = match &result {
-                            Ok((code, _)) => format!(
-                                "retrying upstream non-stream after http {code} from {provider_name}"
-                            ),
-                            Err(e) => format!(
-                                "retrying upstream non-stream after request error from {provider_name}: {e}"
-                            ),
-                        };
-                        let kind = if result.is_ok() {
-                            "http_status"
-                        } else {
-                            "request_error"
-                        };
-                        log_upstream_retry_event(
-                            &st,
-                            &provider_name,
-                            kind,
-                            &detail,
-                            attempt,
-                            TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
-                            false,
-                        );
-                        tokio::time::sleep(std::time::Duration::from_millis(
-                            TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
-                        ))
-                        .await;
-                        continue;
+                        .await
                     }
-                    http_result = Some(result);
-                    break;
                 }
-                http_result.expect("non-stream attempt result")
+            } else {
+                post_non_stream_with_http_retry(
+                    &st,
+                    &provider_name,
+                    &p,
+                    &body_for_provider,
+                    api_key.as_deref(),
+                    client_auth,
+                    timeout,
+                )
+                .await
             };
 
             match upstream_result {

@@ -6,6 +6,8 @@ use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
 use super::config::ProviderConfig;
 
+const WEBSOCKET_CONNECT_TIMEOUT_SECONDS: u64 = 10;
+
 pub struct WebSocketResponseResult {
     pub response: Value,
 }
@@ -72,7 +74,7 @@ fn build_realtime_response_create_event(payload: &Value) -> Value {
 fn websocket_message_text(message: WsMessage) -> Result<Option<String>, String> {
     match message {
         WsMessage::Text(text) => Ok(Some(text.to_string())),
-        WsMessage::Binary(bytes) => String::from_utf8(bytes.to_vec())
+        WsMessage::Binary(bytes) => String::from_utf8(bytes)
             .map(Some)
             .map_err(|e| e.to_string()),
         WsMessage::Ping(_) | WsMessage::Pong(_) => Ok(None),
@@ -187,7 +189,7 @@ impl UpstreamClient {
         apply_auth_headers(headers, api_key, client_auth);
 
         let (mut socket, _) = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_seconds),
+            std::time::Duration::from_secs(WEBSOCKET_CONNECT_TIMEOUT_SECONDS),
             tokio_tungstenite::connect_async(request),
         )
         .await

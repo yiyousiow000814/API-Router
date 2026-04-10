@@ -284,6 +284,7 @@ define_event_codes! {
     GATEWAY_RUNTIME_LISTENER_SKIPPED => ("info", "gateway.runtime_listener_skipped"),
     GATEWAY_STREAM_FALLBACK_TO_NON_STREAM => ("warning", "gateway.stream_fallback_to_non_stream"),
     GATEWAY_UPSTREAM_RETRY => ("warning", "gateway.upstream_retry"),
+    GATEWAY_WEBSOCKET_FALLBACK_TO_HTTP => ("warning", "gateway.websocket_fallback_to_http"),
     HEALTH_PROBE_FAILED => ("error", "health.probe_failed"),
     HEALTH_PROBE_OK => ("info", "health.probe_ok"),
     LAN_EDIT_SYNC_APPLIED => ("info", "lan.edit_sync_applied"),

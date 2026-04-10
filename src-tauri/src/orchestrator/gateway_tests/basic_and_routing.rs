@@ -117,6 +117,107 @@ async fn models_probe_does_not_update_last_ok_or_activity() {
 }
 
 #[tokio::test]
+async fn responses_fallback_from_ws_to_http_records_http_transport_and_event() {
+    use axum::routing::post;
+    use axum::{Json, Router as AxumRouter};
+    use tower::ServiceExt;
+
+    let app = AxumRouter::new().route(
+        "/v1/responses",
+        post(|| async move {
+            Json(serde_json::json!({
+                "id": "resp_http_fallback",
+                "model": "gpt-5.4",
+                "output": [],
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 2,
+                    "total_tokens": 12
+                }
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let mut cfg = AppConfig::default_config();
+    let provider = cfg
+        .providers
+        .get_mut("official")
+        .expect("official provider");
+    provider.base_url = format!("http://{}:{}/v1", addr.ip(), addr.port());
+    provider.supports_websockets = true;
+
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .header("x-codex-session-id", "session-ws-fallback")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "gpt-5.4",
+                        "input": "hello",
+                        "stream": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("responses request");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("responses body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("responses json");
+    assert_eq!(
+        json.get("id").and_then(|value| value.as_str()),
+        Some("resp_http_fallback")
+    );
+
+    let (rows, has_more) =
+        state
+            .store
+            .list_usage_requests_page(0, None, None, &[], &[], &[], &[], &[], &[], 20, 0);
+    assert!(!has_more);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get("transport").and_then(|value| value.as_str()),
+        Some("http")
+    );
+
+    let events = state.store.list_events_range(None, None, Some(20));
+    assert!(events.iter().any(|event| {
+        event.get("code").and_then(|value| value.as_str())
+            == Some("gateway.websocket_fallback_to_http")
+    }));
+}
+
+#[tokio::test]
 async fn auth_verify_returns_while_history_read_is_blocked() {
     use std::sync::{mpsc, Arc, Condvar, Mutex as StdMutex};
     use std::time::Duration;
