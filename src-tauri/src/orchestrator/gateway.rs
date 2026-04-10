@@ -1205,9 +1205,10 @@ async fn responses(
                                     crate::orchestrator::store::EventCode::ROUTING_STREAM,
                                     &format!("Streaming via {provider_name} ({reason})"),
                                     json!({
-                                        "provider": provider_name,
-                                        "reason": reason,
-                                        "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
+                                    "provider": provider_name,
+                                    "reason": reason,
+                                    "transport": "sse",
+                                    "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
                                         "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
                                         "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
                                     }),
@@ -1232,6 +1233,7 @@ async fn responses(
                                         "from_reason": prev.as_ref().map(|p| p.reason.clone()),
                                         "from_preferred": prev.as_ref().map(|p| p.preferred.clone()),
                                         "preferred": preferred,
+                                        "transport": "sse",
                                         "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
                                         "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
                                         "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
@@ -1406,63 +1408,142 @@ async fn responses(
                 .map(|m| m.insert("stream".to_string(), Value::Bool(false)));
 
             let api_key = st.secrets.get_provider_key(&provider_name);
-            let mut upstream_result = None;
-            for attempt in 1..=TRANSIENT_UPSTREAM_RETRY_ATTEMPTS {
-                let result = st
+            let mut actual_transport = "http";
+            let upstream_result = if p.supports_websockets {
+                match st
                     .upstream
-                    .post_json(
+                    .post_json_via_websocket(
                         &p,
-                        "/v1/responses",
                         &body_for_provider,
                         api_key.as_deref(),
                         client_auth,
                         timeout,
                     )
-                    .await;
-                let should_retry = match &result {
-                    Ok((code, _)) => {
-                        is_retryable_upstream_status(*code)
-                            && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
+                    .await
+                {
+                    Ok(ws_result) => {
+                        actual_transport = "ws";
+                        Ok((200, ws_result.response))
                     }
-                    Err(e) => {
-                        should_retry_upstream_request_error(e)
-                            && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
+                    Err(_) => {
+                        let mut http_result = None;
+                        for attempt in 1..=TRANSIENT_UPSTREAM_RETRY_ATTEMPTS {
+                            let result = st
+                                .upstream
+                                .post_json(
+                                    &p,
+                                    "/v1/responses",
+                                    &body_for_provider,
+                                    api_key.as_deref(),
+                                    client_auth,
+                                    timeout,
+                                )
+                                .await;
+                            let should_retry = match &result {
+                                Ok((code, _)) => {
+                                    is_retryable_upstream_status(*code)
+                                        && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
+                                }
+                                Err(e) => {
+                                    should_retry_upstream_request_error(e)
+                                        && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
+                                }
+                            };
+                            if should_retry {
+                                let detail = match &result {
+                                    Ok((code, _)) => format!(
+                                        "retrying upstream non-stream after http {code} from {provider_name}"
+                                    ),
+                                    Err(e) => format!(
+                                        "retrying upstream non-stream after request error from {provider_name}: {e}"
+                                    ),
+                                };
+                                let kind = if result.is_ok() {
+                                    "http_status"
+                                } else {
+                                    "request_error"
+                                };
+                                log_upstream_retry_event(
+                                    &st,
+                                    &provider_name,
+                                    kind,
+                                    &detail,
+                                    attempt,
+                                    TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
+                                    false,
+                                );
+                                tokio::time::sleep(std::time::Duration::from_millis(
+                                    TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
+                                ))
+                                .await;
+                                continue;
+                            }
+                            http_result = Some(result);
+                            break;
+                        }
+                        http_result.expect("non-stream attempt result")
                     }
-                };
-                if should_retry {
-                    let detail = match &result {
-                        Ok((code, _)) => format!(
-                            "retrying upstream non-stream after http {code} from {provider_name}"
-                        ),
-                        Err(e) => format!(
-                            "retrying upstream non-stream after request error from {provider_name}: {e}"
-                        ),
-                    };
-                    let kind = if result.is_ok() {
-                        "http_status"
-                    } else {
-                        "request_error"
-                    };
-                    log_upstream_retry_event(
-                        &st,
-                        &provider_name,
-                        kind,
-                        &detail,
-                        attempt,
-                        TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
-                        false,
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
-                    ))
-                    .await;
-                    continue;
                 }
-                upstream_result = Some(result);
-                break;
-            }
+            } else {
+                let mut http_result = None;
+                for attempt in 1..=TRANSIENT_UPSTREAM_RETRY_ATTEMPTS {
+                    let result = st
+                        .upstream
+                        .post_json(
+                            &p,
+                            "/v1/responses",
+                            &body_for_provider,
+                            api_key.as_deref(),
+                            client_auth,
+                            timeout,
+                        )
+                        .await;
+                    let should_retry = match &result {
+                        Ok((code, _)) => {
+                            is_retryable_upstream_status(*code)
+                                && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
+                        }
+                        Err(e) => {
+                            should_retry_upstream_request_error(e)
+                                && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
+                        }
+                    };
+                    if should_retry {
+                        let detail = match &result {
+                            Ok((code, _)) => format!(
+                                "retrying upstream non-stream after http {code} from {provider_name}"
+                            ),
+                            Err(e) => format!(
+                                "retrying upstream non-stream after request error from {provider_name}: {e}"
+                            ),
+                        };
+                        let kind = if result.is_ok() {
+                            "http_status"
+                        } else {
+                            "request_error"
+                        };
+                        log_upstream_retry_event(
+                            &st,
+                            &provider_name,
+                            kind,
+                            &detail,
+                            attempt,
+                            TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
+                            false,
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
+                        ))
+                        .await;
+                        continue;
+                    }
+                    http_result = Some(result);
+                    break;
+                }
+                http_result.expect("non-stream attempt result")
+            };
 
-            match upstream_result.expect("non-stream attempt result") {
+            match upstream_result {
                 Ok((code, upstream_json)) if (200..300).contains(&code) => {
                     let prev = st.last_used_by_session.read().get(&session_key).cloned();
                     st.last_used_by_session.write().insert(
@@ -1505,6 +1586,7 @@ async fn responses(
                         crate::orchestrator::store::UsageRequestContext {
                             api_key_ref: Some(&api_key_ref),
                             origin: request_origin,
+                            transport: actual_transport,
                             session_id: Some(session_key.as_str()),
                             node_id: local_node.as_ref().map(|value| value.node_id.as_str()),
                             node_name: local_node.as_ref().map(|value| value.node_name.as_str()),
@@ -1527,6 +1609,7 @@ async fn responses(
                             json!({
                                 "provider": provider_name,
                                 "reason": reason,
+                                "transport": actual_transport,
                                 "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
                                 "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
                                 "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
@@ -1552,6 +1635,7 @@ async fn responses(
                                 "from_reason": prev.as_ref().map(|p| p.reason.clone()),
                                 "from_preferred": prev.as_ref().map(|p| p.preferred.clone()),
                                 "preferred": preferred,
+                                "transport": actual_transport,
                                 "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
                                 "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
                                 "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),

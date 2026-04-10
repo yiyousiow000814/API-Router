@@ -2193,6 +2193,7 @@ fn decide_provider_balanced_auto_prefers_higher_quota_for_heavy_session_when_loa
             crate::orchestrator::store::UsageRequestContext {
                 api_key_ref: Some("-"),
                 origin: crate::constants::USAGE_ORIGIN_WINDOWS,
+                transport: "http",
                 session_id: Some("session-heavy-headroom"),
                 node_id: Some("node-test"),
                 node_name: Some("Desk Test"),
@@ -2206,6 +2207,7 @@ fn decide_provider_balanced_auto_prefers_higher_quota_for_heavy_session_when_loa
         usage_since,
         Some(usage_since),
         None,
+        &[],
         &[],
         &[],
         &[],
@@ -2357,6 +2359,7 @@ fn decide_provider_balanced_auto_heavy_session_prefers_lower_per_request_cost() 
             crate::orchestrator::store::UsageRequestContext {
                 api_key_ref: Some("-"),
                 origin: crate::constants::USAGE_ORIGIN_WINDOWS,
+                transport: "http",
                 session_id: Some("session-heavy-cost"),
                 node_id: Some("node-test"),
                 node_name: Some("Desk Test"),
@@ -2492,6 +2495,7 @@ fn decide_provider_balanced_auto_no_longer_hard_prioritizes_load_pressure() {
             crate::orchestrator::store::UsageRequestContext {
                 api_key_ref: Some("-"),
                 origin: crate::constants::USAGE_ORIGIN_WINDOWS,
+                transport: "http",
                 session_id: Some("session-heavy-pressure"),
                 node_id: Some("node-test"),
                 node_name: Some("Desk Test"),

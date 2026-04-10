@@ -321,6 +321,7 @@ fn passthrough_sse_and_persist(
                     crate::orchestrator::store::UsageRequestContext {
                         api_key_ref: Some(&api_key_ref2),
                         origin: &request_origin2,
+                        transport: "sse",
                         session_id: Some(session_key2.as_str()),
                         node_id: local_node.as_ref().map(|value| value.node_id.as_str()),
                         node_name: local_node.as_ref().map(|value| value.node_name.as_str()),

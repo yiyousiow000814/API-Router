@@ -5747,6 +5747,7 @@ mod tests {
                     api_key_ref: "sk-test".to_string(),
                     model: "gpt-5".to_string(),
                     origin: crate::constants::USAGE_ORIGIN_WINDOWS.to_string(),
+                    transport: "http".to_string(),
                     session_id: "session-1".to_string(),
                     node_id: "node-local".to_string(),
                     node_name: "Desk Local".to_string(),

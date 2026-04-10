@@ -3116,6 +3116,7 @@ mod tests {
                 api_key_ref: "-".to_string(),
                 model: "gpt-4.1".to_string(),
                 origin: "windows".to_string(),
+                transport: "http".to_string(),
                 session_id: "session-1".to_string(),
                 node_id: "node-a".to_string(),
                 node_name: "DESKTOP-A".to_string(),

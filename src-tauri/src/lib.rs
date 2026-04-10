@@ -345,6 +345,7 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
                     crate::orchestrator::store::UsageRequestContext {
                         api_key_ref: Some("test"),
                         origin,
+                        transport: "http",
                         session_id: Some(session_id.as_str()),
                         node_id: Some(local_node_id.as_str()),
                         node_name: Some(local_node_name.as_str()),

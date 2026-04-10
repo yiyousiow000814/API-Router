@@ -66,6 +66,7 @@ struct UsageTokenIncrements {
 pub struct UsageRequestContext<'a> {
     pub api_key_ref: Option<&'a str>,
     pub origin: &'a str,
+    pub transport: &'a str,
     pub session_id: Option<&'a str>,
     pub node_id: Option<&'a str>,
     pub node_name: Option<&'a str>,
@@ -95,6 +96,7 @@ pub struct UsageRequestSyncRow {
     pub api_key_ref: String,
     pub model: String,
     pub origin: String,
+    pub transport: String,
     pub session_id: String,
     pub node_id: String,
     pub node_name: String,
@@ -661,6 +663,7 @@ impl Store {
               api_key_ref TEXT NOT NULL,
               model TEXT NOT NULL,
               origin TEXT NOT NULL,
+              transport TEXT NOT NULL DEFAULT 'http',
               session_id TEXT NOT NULL,
               node_id TEXT NOT NULL DEFAULT '',
               node_name TEXT NOT NULL DEFAULT '',
@@ -978,6 +981,12 @@ impl Store {
         if !columns.contains("node_name") {
             conn.execute(
                 "ALTER TABLE usage_requests ADD COLUMN node_name TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        if !columns.contains("transport") {
+            conn.execute(
+                "ALTER TABLE usage_requests ADD COLUMN transport TEXT NOT NULL DEFAULT 'http'",
                 [],
             )?;
         }
@@ -2976,7 +2985,7 @@ impl Store {
         let mut out: Vec<Value> = Vec::with_capacity(limit.min(1024));
         let conn = self.events_db.lock();
         let Ok(mut stmt) = conn.prepare(
-            "SELECT id, provider, api_key_ref, model, origin, session_id, unix_ms, node_id, node_name,
+            "SELECT id, provider, api_key_ref, model, origin, transport, session_id, unix_ms, node_id, node_name,
                     input_tokens, output_tokens, total_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens
              FROM usage_requests
@@ -2992,15 +3001,16 @@ impl Store {
                 "api_key_ref": row.get::<_, String>(2)?,
                 "model": row.get::<_, String>(3)?,
                 "origin": row.get::<_, String>(4)?,
-                "session_id": row.get::<_, String>(5)?,
-                "unix_ms": u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
-                "node_id": row.get::<_, String>(7)?,
-                "node_name": row.get::<_, String>(8)?,
-                "input_tokens": u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
-                "output_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
-                "total_tokens": u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
-                "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
-                "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
+                "transport": row.get::<_, String>(5)?,
+                "session_id": row.get::<_, String>(6)?,
+                "unix_ms": u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                "node_id": row.get::<_, String>(8)?,
+                "node_name": row.get::<_, String>(9)?,
+                "input_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+                "output_tokens": u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+                "total_tokens": u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
+                "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
+                "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(14)?).unwrap_or(0),
             }))
         }) else {
             return out;
@@ -3030,6 +3040,7 @@ impl Store {
                 api_key_ref,
                 model,
                 origin,
+                transport,
                 session_id,
                 node_id,
                 node_name,
@@ -3062,14 +3073,15 @@ impl Store {
                     api_key_ref: row.get::<_, String>(4)?,
                     model: row.get::<_, String>(5)?,
                     origin: row.get::<_, String>(6)?,
-                    session_id: row.get::<_, String>(7)?,
-                    node_id: row.get::<_, String>(8)?,
-                    node_name: row.get::<_, String>(9)?,
-                    input_tokens: u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
-                    output_tokens: u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
-                    total_tokens: u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
-                    cache_creation_input_tokens: u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
-                    cache_read_input_tokens: u64::try_from(row.get::<_, i64>(14)?).unwrap_or(0),
+                    transport: row.get::<_, String>(7)?,
+                    session_id: row.get::<_, String>(8)?,
+                    node_id: row.get::<_, String>(9)?,
+                    node_name: row.get::<_, String>(10)?,
+                    input_tokens: u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+                    output_tokens: u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
+                    total_tokens: u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
+                    cache_creation_input_tokens: u64::try_from(row.get::<_, i64>(14)?).unwrap_or(0),
+                    cache_read_input_tokens: u64::try_from(row.get::<_, i64>(15)?).unwrap_or(0),
                 })
             },
         ) else {
@@ -3097,10 +3109,10 @@ impl Store {
         for row in rows {
             let Ok(changed) = tx.execute(
                 "INSERT OR IGNORE INTO usage_requests(
-                    id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, session_id,
+                    id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, transport, session_id,
                     node_id, node_name, input_tokens, output_tokens, total_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                 params![
                     row.id,
                     i64::try_from(row.unix_ms).unwrap_or(i64::MAX),
@@ -3109,6 +3121,7 @@ impl Store {
                     row.api_key_ref,
                     row.model,
                     row.origin,
+                    row.transport,
                     row.session_id,
                     row.node_id,
                     row.node_name,
@@ -3140,12 +3153,13 @@ impl Store {
         providers: &[String],
         models: &[String],
         origins: &[String],
+        transports: &[String],
         sessions: &[String],
         limit: usize,
         offset: usize,
     ) -> (Vec<Value>, bool) {
         let mut sql = String::from(
-            "SELECT id, provider, api_key_ref, model, origin, session_id, unix_ms, node_id, node_name,
+            "SELECT id, provider, api_key_ref, model, origin, transport, session_id, unix_ms, node_id, node_name,
                     input_tokens, output_tokens, total_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens
              FROM usage_requests
@@ -3203,6 +3217,15 @@ impl Store {
                 ));
             }
         }
+        if !transports.is_empty() {
+            let placeholders = vec!["?"; transports.len()].join(", ");
+            sql.push_str(&format!(" AND lower(transport) IN ({placeholders})"));
+            for transport in transports {
+                params.push(rusqlite::types::Value::Text(
+                    transport.trim().to_ascii_lowercase(),
+                ));
+            }
+        }
         if !sessions.is_empty() {
             let placeholders = vec!["?"; sessions.len()].join(", ");
             sql.push_str(&format!(" AND lower(session_id) IN ({placeholders})"));
@@ -3232,15 +3255,16 @@ impl Store {
                     "api_key_ref": row.get::<_, String>(2)?,
                     "model": row.get::<_, String>(3)?,
                     "origin": row.get::<_, String>(4)?,
-                    "session_id": row.get::<_, String>(5)?,
-                    "unix_ms": u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
-                    "node_id": row.get::<_, String>(7)?,
-                    "node_name": row.get::<_, String>(8)?,
-                    "input_tokens": u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
-                    "output_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
-                    "total_tokens": u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
-                    "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
-                    "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
+                    "transport": row.get::<_, String>(5)?,
+                    "session_id": row.get::<_, String>(6)?,
+                    "unix_ms": u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                    "node_id": row.get::<_, String>(8)?,
+                    "node_name": row.get::<_, String>(9)?,
+                    "input_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+                    "output_tokens": u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+                    "total_tokens": u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
+                    "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
+                    "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(14)?).unwrap_or(0),
                 }))
             }) else {
                 return (out, false);
@@ -3266,6 +3290,7 @@ impl Store {
         providers: &[String],
         models: &[String],
         origins: &[String],
+        transports: &[String],
         sessions: &[String],
     ) -> (u64, u64, u64, u64, u64, u64) {
         let mut sql = String::from(
@@ -3327,6 +3352,15 @@ impl Store {
             for origin in origins {
                 params.push(rusqlite::types::Value::Text(
                     origin.trim().to_ascii_lowercase(),
+                ));
+            }
+        }
+        if !transports.is_empty() {
+            let placeholders = vec!["?"; transports.len()].join(", ");
+            sql.push_str(&format!(" AND lower(transport) IN ({placeholders})"));
+            for transport in transports {
+                params.push(rusqlite::types::Value::Text(
+                    transport.trim().to_ascii_lowercase(),
                 ));
             }
         }
