@@ -452,7 +452,6 @@ impl UiWatchdogState {
         );
 
         if !ok {
-            let mut diagnostics = self.diagnostics_meta.lock();
             runtime.store.events().app().ui_invoke_error_at(
                 "gateway",
                 &format!("ui invoke failed: {command}"),
@@ -465,6 +464,7 @@ impl UiWatchdogState {
                 }),
                 now_unix_ms,
             );
+            let mut diagnostics = self.diagnostics_meta.lock();
             if diagnostics.last_invoke_error_log_unix_ms > 0
                 && now_unix_ms.saturating_sub(diagnostics.last_invoke_error_log_unix_ms)
                     < UI_WATCHDOG_INVOKE_LOG_COOLDOWN_MS
