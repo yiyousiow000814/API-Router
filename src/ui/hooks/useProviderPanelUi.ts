@@ -1,10 +1,13 @@
 import type { Dispatch, PointerEvent as ReactPointerEvent, SetStateAction } from 'react'
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { Config, Status } from '../types'
 import { createProviderCardRenderer } from '../utils/providerCardRenderer'
+import type { ProviderCapsMenuState } from '../components/ProviderCapsMenuPortal'
+import type { ProviderWsTooltipState } from '../components/ProviderWsTooltipPortal'
 
 type Params = {
+  configModalOpen: boolean
   setProviderPanelsOpen: Dispatch<SetStateAction<Record<string, boolean>>>
   setEditingProviderName: Dispatch<SetStateAction<string | null>>
   setProviderNameDrafts: Dispatch<SetStateAction<Record<string, string>>>
@@ -23,6 +26,7 @@ type Params = {
   setProviderDisabled: (name: string, disabled: boolean) => Promise<void>
   deleteProvider: (name: string) => Promise<void>
   openProviderBaseUrlModal: (provider: string, current: string) => void
+  setProviderSupportsWebsockets: (provider: string, enabled: boolean) => Promise<void>
   openKeyModal: (provider: string) => Promise<void>
   clearKey: (provider: string) => Promise<void>
   copyProviderFromConfigSource: (sourceNodeId: string, sharedProviderId: string) => Promise<void>
@@ -39,7 +43,15 @@ type Params = {
 }
 
 export function useProviderPanelUi(params: Params) {
+  const [providerCapsMenu, setProviderCapsMenu] = useState<ProviderCapsMenuState>(null)
+  const [providerWsTooltip, setProviderWsTooltip] = useState<ProviderWsTooltipState>(null)
+  const providerCapsMenuRef = useRef<HTMLDivElement | null>(null)
+  const providerCapsMenuAnchorRef = useRef<HTMLButtonElement | null>(null)
+  const providerCapsMenuProviderRef = useRef<string | null>(null)
+  const providerWsTooltipAnchorRef = useRef<HTMLButtonElement | null>(null)
+  const providerWsTooltipTextRef = useRef<string>('')
   const {
+    configModalOpen,
     setProviderPanelsOpen,
     setEditingProviderName,
     setProviderNameDrafts,
@@ -58,6 +70,7 @@ export function useProviderPanelUi(params: Params) {
     setProviderDisabled,
     deleteProvider,
     openProviderBaseUrlModal,
+    setProviderSupportsWebsockets,
     openKeyModal,
     clearKey,
     copyProviderFromConfigSource,
@@ -99,6 +112,137 @@ export function useProviderPanelUi(params: Params) {
     [providerNameDrafts, refreshConfig, refreshStatus, flashToast],
   )
 
+  const closeProviderCapsMenu = useCallback(() => {
+    providerCapsMenuAnchorRef.current = null
+    providerCapsMenuProviderRef.current = null
+    providerCapsMenuRef.current = null
+    setProviderCapsMenu(null)
+  }, [])
+
+  const updateProviderCapsMenuPosition = useCallback(() => {
+    const anchor = providerCapsMenuAnchorRef.current
+    const provider = providerCapsMenuProviderRef.current
+    if (!anchor || !provider) {
+      closeProviderCapsMenu()
+      return
+    }
+
+    const rect = anchor.getBoundingClientRect()
+    setProviderCapsMenu({
+      provider,
+      left: rect.right,
+      top: rect.bottom + 4,
+    })
+  }, [closeProviderCapsMenu])
+
+  const toggleProviderCapsMenu = useCallback(
+    (provider: string, anchor: HTMLButtonElement) => {
+      if (providerCapsMenuProviderRef.current === provider && providerCapsMenuAnchorRef.current === anchor) {
+        closeProviderCapsMenu()
+        return
+      }
+
+      providerCapsMenuAnchorRef.current = anchor
+      providerCapsMenuProviderRef.current = provider
+      updateProviderCapsMenuPosition()
+    },
+    [closeProviderCapsMenu, updateProviderCapsMenuPosition],
+  )
+
+  useEffect(() => {
+    if (configModalOpen) return
+    closeProviderCapsMenu()
+  }, [closeProviderCapsMenu, configModalOpen])
+
+  useEffect(() => {
+    if (!providerCapsMenu) return
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!(event.target instanceof Node)) return
+
+      const menu = providerCapsMenuRef.current
+      const anchor = providerCapsMenuAnchorRef.current
+      if (menu?.contains(event.target) || anchor?.contains(event.target)) {
+        return
+      }
+
+      closeProviderCapsMenu()
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeProviderCapsMenu()
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [closeProviderCapsMenu, providerCapsMenu])
+
+  useEffect(() => {
+    if (!providerCapsMenu) return
+
+    const handleViewportChange = () => {
+      updateProviderCapsMenuPosition()
+    }
+
+    window.addEventListener('scroll', handleViewportChange, true)
+    window.addEventListener('resize', handleViewportChange)
+    return () => {
+      window.removeEventListener('scroll', handleViewportChange, true)
+      window.removeEventListener('resize', handleViewportChange)
+    }
+  }, [providerCapsMenu, updateProviderCapsMenuPosition])
+
+  const updateProviderWsTooltipPosition = useCallback(() => {
+    const anchor = providerWsTooltipAnchorRef.current
+    const text = providerWsTooltipTextRef.current
+    if (!anchor || !text) {
+      setProviderWsTooltip(null)
+      return
+    }
+    const rect = anchor.getBoundingClientRect()
+    setProviderWsTooltip({
+      text,
+      left: rect.left + rect.width / 2,
+      top: rect.top - 8,
+    })
+  }, [])
+
+  const showProviderWsTooltip = useCallback(
+    (text: string, anchor: HTMLButtonElement) => {
+      providerWsTooltipAnchorRef.current = anchor
+      providerWsTooltipTextRef.current = text
+      updateProviderWsTooltipPosition()
+    },
+    [updateProviderWsTooltipPosition],
+  )
+
+  const hideProviderWsTooltip = useCallback(() => {
+    providerWsTooltipAnchorRef.current = null
+    providerWsTooltipTextRef.current = ''
+    setProviderWsTooltip(null)
+  }, [])
+
+  useEffect(() => {
+    if (!providerWsTooltipAnchorRef.current) return
+
+    const handleViewportChange = () => {
+      updateProviderWsTooltipPosition()
+    }
+
+    window.addEventListener('scroll', handleViewportChange, true)
+    window.addEventListener('resize', handleViewportChange)
+    return () => {
+      window.removeEventListener('scroll', handleViewportChange, true)
+      window.removeEventListener('resize', handleViewportChange)
+    }
+  }, [providerWsTooltip, updateProviderWsTooltipPosition])
+
   const renderProviderCard = useMemo(
     () =>
       createProviderCardRenderer({
@@ -113,6 +257,7 @@ export function useProviderPanelUi(params: Params) {
         setProviderDisabled,
         deleteProvider,
         openProviderBaseUrlModal,
+        setProviderSupportsWebsockets,
         openKeyModal,
         clearKey,
         copyProviderFromConfigSource,
@@ -121,6 +266,10 @@ export function useProviderPanelUi(params: Params) {
         openProviderEmailModal,
         clearUsageBaseUrl,
         setProviderQuotaHardCap,
+        showProviderWsTooltip,
+        hideProviderWsTooltip,
+        openProviderCapsMenu: providerCapsMenu?.provider ?? null,
+        toggleProviderCapsMenu,
         beginRenameProvider: beginRename,
         commitRenameProvider: commitRename,
         editingProviderName,
@@ -140,6 +289,7 @@ export function useProviderPanelUi(params: Params) {
       setProviderDisabled,
       deleteProvider,
       openProviderBaseUrlModal,
+      setProviderSupportsWebsockets,
       openKeyModal,
       clearKey,
       copyProviderFromConfigSource,
@@ -148,6 +298,10 @@ export function useProviderPanelUi(params: Params) {
       openProviderEmailModal,
       clearUsageBaseUrl,
       setProviderQuotaHardCap,
+      showProviderWsTooltip,
+      hideProviderWsTooltip,
+      providerCapsMenu,
+      toggleProviderCapsMenu,
       beginRename,
       commitRename,
       editingProviderName,
@@ -157,7 +311,14 @@ export function useProviderPanelUi(params: Params) {
     ],
   )
 
+  const registerProviderCapsMenuRef = useCallback((el: HTMLDivElement | null) => {
+    providerCapsMenuRef.current = el
+  }, [])
+
   return {
     renderProviderCard,
+    providerCapsMenu,
+    registerProviderCapsMenuRef,
+    providerWsTooltip,
   }
 }

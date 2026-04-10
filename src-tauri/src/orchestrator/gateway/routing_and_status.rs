@@ -1457,6 +1457,7 @@ mod routing_and_status_tests {
                 base_url: "https://aigateway.chat/v1".to_string(),
                 usage_adapter: String::new(),
                 usage_base_url: None,
+                supports_websockets: false,
                 group: None,
                 disabled: false,
                 api_key: String::new(),

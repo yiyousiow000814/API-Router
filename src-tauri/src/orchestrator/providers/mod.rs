@@ -678,6 +678,7 @@ fn matched_definition_for_base_url(base_url: &str) -> Option<&'static ProviderDe
         base_url: base_url.to_string(),
         group: None,
         disabled: false,
+        supports_websockets: false,
         usage_adapter: String::new(),
         usage_base_url: None,
         api_key: String::new(),
@@ -994,6 +995,7 @@ mod tests {
         let provider = ProviderConfig {
             display_name: "yunyi".to_string(),
             base_url: "https://yunyi.rdzhvip.com/codex".to_string(),
+            supports_websockets: false,
             group: None,
             disabled: false,
             usage_adapter: String::new(),
@@ -1023,6 +1025,7 @@ mod tests {
         let provider = ProviderConfig {
             display_name: "packy".to_string(),
             base_url: "https://codex-api.packycode.com/v1".to_string(),
+            supports_websockets: false,
             group: None,
             disabled: false,
             usage_adapter: String::new(),
@@ -1052,6 +1055,7 @@ mod tests {
         let provider = ProviderConfig {
             display_name: "aigateway-subdomain".to_string(),
             base_url: "https://edge.aigateway.chat/v1".to_string(),
+            supports_websockets: false,
             group: None,
             disabled: false,
             usage_adapter: String::new(),

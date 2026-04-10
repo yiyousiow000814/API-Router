@@ -326,6 +326,7 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
                   "base_url": p.base_url,
                   "group": p.group.clone(),
                   "disabled": p.disabled,
+                  "supports_websockets": p.supports_websockets,
                   "usage_adapter": p.usage_adapter.clone(),
                   "usage_base_url": p.usage_base_url.clone().map(|value| {
                     crate::orchestrator::quota::normalize_usage_base_url(&p.base_url, &value)
@@ -750,6 +751,7 @@ fn copy_provider_from_config_source_impl(
         base_url: payload.base_url.clone(),
         group: payload.group.clone(),
         disabled: payload.disabled,
+        supports_websockets: payload.supports_websockets,
         usage_adapter: payload.usage_adapter.clone(),
         usage_base_url: payload.usage_base_url.clone(),
         api_key: String::new(),
@@ -1317,6 +1319,9 @@ fn upsert_provider_impl(
                 group: normalized_group
                     .unwrap_or_else(|| existing.as_ref().and_then(|provider| provider.group.clone())),
                 disabled: existing.as_ref().is_some_and(|provider| provider.disabled),
+                supports_websockets: existing
+                    .as_ref()
+                    .is_some_and(|provider| provider.supports_websockets),
                 usage_adapter: existing
                     .as_ref()
                     .map(|provider| provider.usage_adapter.clone())
@@ -1351,6 +1356,76 @@ fn upsert_provider_impl(
         serde_json::Value::Null,
     );
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn set_provider_supports_websockets(
+    state: tauri::State<'_, app_state::AppState>,
+    provider: String,
+    enabled: bool,
+) -> Result<(), String> {
+    ensure_local_provider_definitions_editable(&state)?;
+    let changed = set_provider_supports_websockets_impl(&state, provider.clone(), enabled)?;
+    if !changed {
+        return Ok(());
+    }
+    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
+        &state,
+        &provider,
+        serde_json::json!({ "supports_websockets": enabled }),
+    ) {
+        state
+            .gateway
+            .store
+            .events()
+            .lan()
+            .edit_sync_record_failed(
+                &provider,
+                &format!("failed to record provider websocket update for LAN sync: {err}"),
+                serde_json::Value::Null,
+            );
+    }
+    state
+        .gateway
+        .store
+        .events()
+        .config()
+        .provider_supports_websockets_updated(
+            &provider,
+            "provider websocket support updated",
+            serde_json::json!({ "supports_websockets": enabled }),
+        );
+    Ok(())
+}
+
+fn set_provider_supports_websockets_impl(
+    state: &app_state::AppState,
+    provider: String,
+    enabled: bool,
+) -> Result<bool, String> {
+    let previous = {
+        let mut cfg = state.gateway.cfg.write();
+        let entry = cfg
+            .providers
+            .get_mut(&provider)
+            .ok_or_else(|| format!("unknown provider: {provider}"))?;
+        if entry.supports_websockets == enabled {
+            return Ok(false);
+        }
+        let previous = entry.supports_websockets;
+        entry.supports_websockets = enabled;
+        previous
+    };
+
+    if let Err(error) = persist_config_for_app_state(state) {
+        let mut cfg = state.gateway.cfg.write();
+        if let Some(entry) = cfg.providers.get_mut(&provider) {
+            entry.supports_websockets = previous;
+        }
+        return Err(error.to_string());
+    }
+
+    Ok(true)
 }
 
 #[tauri::command]
@@ -2014,8 +2089,8 @@ mod provider_management_tests {
         persist_followed_config_source_change,
         provider_definition_patch_payload, LocalCopyState, rename_observed_session_routes_provider_refs,
         set_followed_config_source_impl, set_manual_override_impl, set_provider_group_impl,
-        set_route_mode_impl, set_providers_group_impl, set_session_preferred_provider_impl,
-        upsert_provider_impl,
+        set_provider_supports_websockets_impl, set_route_mode_impl, set_providers_group_impl,
+        set_session_preferred_provider_impl, upsert_provider_impl,
     };
     use crate::app_state::AppState;
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
@@ -2835,6 +2910,52 @@ mod provider_management_tests {
         let provider = cfg.providers.get("provider_1").expect("provider_1");
         assert_eq!(provider.group.as_deref(), Some("existing"));
         assert_eq!(provider.base_url, "https://example.com/v2");
+    }
+
+    #[test]
+    fn set_provider_supports_websockets_updates_and_persists_flag() {
+        let (_tmp, state) = build_test_state();
+
+        let changed = set_provider_supports_websockets_impl(&state, "provider_1".to_string(), true)
+            .expect("enable websocket support");
+
+        assert!(changed);
+        assert!(
+            state
+                .gateway
+                .cfg
+                .read()
+                .providers
+                .get("provider_1")
+                .is_some_and(|provider| provider.supports_websockets)
+        );
+        let persisted = std::fs::read_to_string(&state.config_path).expect("read config");
+        assert!(persisted.contains("supports_websockets = true"));
+    }
+
+    #[test]
+    fn set_provider_supports_websockets_rolls_back_when_persist_fails() {
+        let (_tmp, mut state) = build_test_state();
+        let bad_path = state
+            .config_path
+            .parent()
+            .expect("config parent")
+            .join("persist-fail-dir");
+        std::fs::create_dir_all(&bad_path).expect("create bad path");
+        state.config_path = bad_path;
+
+        let result =
+            set_provider_supports_websockets_impl(&state, "provider_1".to_string(), true);
+        assert!(result.is_err());
+        assert!(
+            !state
+                .gateway
+                .cfg
+                .read()
+                .providers
+                .get("provider_1")
+                .is_some_and(|provider| provider.supports_websockets)
+        );
     }
 
     #[test]

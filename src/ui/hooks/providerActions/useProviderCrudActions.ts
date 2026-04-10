@@ -105,6 +105,44 @@ export function useProviderCrudActions({
     setProviderBaseUrlModal,
   ])
 
+  const setProviderSupportsWebsockets = useCallback(
+    async (provider: string, supportsWebsockets: boolean) => {
+      const normalizedProvider = provider.trim()
+      if (!normalizedProvider || !config?.providers?.[normalizedProvider]) return
+
+      if (isDevPreview) {
+        setConfig((prev) => {
+          if (!prev?.providers?.[normalizedProvider]) return prev
+          return {
+            ...prev,
+            providers: {
+              ...prev.providers,
+              [normalizedProvider]: {
+                ...prev.providers[normalizedProvider],
+                supports_websockets: supportsWebsockets || undefined,
+              },
+            },
+          }
+        })
+        flashToast(`[TEST] WebSocket ${supportsWebsockets ? 'enabled' : 'disabled'}: ${normalizedProvider}`)
+        return
+      }
+
+      try {
+        await invoke('set_provider_supports_websockets', {
+          provider: normalizedProvider,
+          enabled: supportsWebsockets,
+        })
+        flashToast(`WebSocket ${supportsWebsockets ? 'enabled' : 'disabled'}: ${normalizedProvider}`)
+        await refreshStatus()
+        await refreshConfig()
+      } catch (e) {
+        flashToast(String(e), 'error')
+      }
+    },
+    [config?.providers, flashToast, isDevPreview, refreshConfig, refreshStatus, setConfig],
+  )
+
   const setProviderGroup = useCallback(
     async (name: string, group: string | null) => {
       if (isDevPreview) {
@@ -280,6 +318,7 @@ export function useProviderCrudActions({
               display_name: name,
               base_url: baseUrl,
               group: null,
+              supports_websockets: undefined,
               usage_base_url: null,
               quota_hard_cap: {
                 daily: true,
@@ -343,6 +382,7 @@ export function useProviderCrudActions({
   return {
     saveProvider,
     saveProviderBaseUrl,
+    setProviderSupportsWebsockets,
     setProviderGroup,
     setProvidersGroup,
     setProviderDisabled,
