@@ -740,6 +740,16 @@ impl Store {
             );
             CREATE INDEX IF NOT EXISTS idx_spend_days_remote_provider_started_at
               ON spend_days_remote(provider, day_started_at_unix_ms ASC, source_node_id ASC);
+            CREATE TABLE IF NOT EXISTS tracked_spend_days_shared(
+              provider TEXT NOT NULL,
+              shared_provider_id TEXT NOT NULL,
+              day_key TEXT NOT NULL,
+              row_json TEXT NOT NULL,
+              updated_at_unix_ms INTEGER NOT NULL,
+              PRIMARY KEY(shared_provider_id, day_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tracked_spend_days_shared_provider_day
+              ON tracked_spend_days_shared(provider, day_key ASC);
             CREATE TABLE IF NOT EXISTS spend_manual_days(
               provider TEXT NOT NULL,
               day_key TEXT NOT NULL,
@@ -2745,6 +2755,10 @@ impl Store {
             );
             let _ = conn.execute(
                 "UPDATE spend_manual_days SET provider=?1 WHERE provider=?2",
+                params![new, old],
+            );
+            let _ = conn.execute(
+                "UPDATE tracked_spend_days_shared SET provider=?1 WHERE provider=?2",
                 params![new, old],
             );
         }

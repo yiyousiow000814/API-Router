@@ -1037,11 +1037,7 @@ pub(crate) fn get_usage_statistics(
                     if tracked <= 0.0 || !tracked.is_finite() {
                         continue;
                     }
-                    let started = day
-                        .get("started_at_unix_ms")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let Some(day_key) = local_day_key_from_unix_ms(started) else {
+                    let Some(day_key) = tracked_spend_day_key(&day) else {
                         continue;
                     };
                     let Some((day_start, day_end)) = local_day_range_from_key(&day_key) else {
@@ -1734,19 +1730,19 @@ mod usage_metrics_tests {
             .unwrap()
             .timestamp_millis() as u64;
 
-        store.put_remote_spend_day(
+        store.put_shared_tracked_spend_day(
             "aigateway2",
-            "node-remote",
-            "Remote Node",
-            started_at,
+            "shared-aigateway2",
+            "2026-04-07",
             &serde_json::json!({
                 "provider": "aigateway2",
-                "started_at_unix_ms": started_at,
+                "day_key": "2026-04-07",
                 "tracked_spend_usd": 22.0,
                 "updated_at_unix_ms": started_at,
                 "producer_node_id": "node-remote",
                 "producer_node_name": "Remote Node"
             }),
+            started_at,
         );
 
         let days = tracked_spend_days_with_remote_fallback(&store, "aigateway2");
@@ -1770,42 +1766,25 @@ mod usage_metrics_tests {
     fn tracked_spend_days_keep_remote_when_local_same_day_is_zero_placeholder() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();
-        let local_started_at = chrono::Local
-            .with_ymd_and_hms(2026, 4, 7, 8, 0, 0)
-            .single()
-            .unwrap()
-            .timestamp_millis() as u64;
         let remote_started_at = chrono::Local
             .with_ymd_and_hms(2026, 4, 7, 9, 0, 0)
             .single()
             .unwrap()
             .timestamp_millis() as u64;
 
-        store.put_spend_day(
+        store.put_shared_tracked_spend_day(
             "aigateway2",
-            local_started_at,
+            "shared-aigateway2",
+            "2026-04-07",
             &serde_json::json!({
                 "provider": "aigateway2",
-                "started_at_unix_ms": local_started_at,
-                "tracked_spend_usd": 0.0,
-                "updated_at_unix_ms": local_started_at,
-                "producer_node_id": "node-local",
-                "producer_node_name": "Local Node"
-            }),
-        );
-        store.put_remote_spend_day(
-            "aigateway2",
-            "node-remote",
-            "Remote Node",
-            remote_started_at,
-            &serde_json::json!({
-                "provider": "aigateway2",
-                "started_at_unix_ms": remote_started_at,
+                "day_key": "2026-04-07",
                 "tracked_spend_usd": 22.0,
                 "updated_at_unix_ms": remote_started_at,
                 "producer_node_id": "node-remote",
                 "producer_node_name": "Remote Node"
             }),
+            remote_started_at,
         );
 
         let days = tracked_spend_days_with_remote_fallback(&store, "aigateway2");
