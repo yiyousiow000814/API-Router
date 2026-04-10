@@ -1,5 +1,6 @@
 use reqwest::header::ACCEPT;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use serde_json::Map;
 use serde_json::Value;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
@@ -61,13 +62,28 @@ fn build_realtime_ws_url(payload: &Value, provider: &ProviderConfig) -> Result<S
 }
 
 fn build_realtime_response_create_event(payload: &Value) -> Value {
-    let mut response = payload.clone();
-    if let Some(obj) = response.as_object_mut() {
-        obj.remove("stream");
+    let mut response = Map::new();
+    if let Some(obj) = payload.as_object() {
+        for key in [
+            "input",
+            "instructions",
+            "tools",
+            "tool_choice",
+            "temperature",
+            "max_output_tokens",
+            "metadata",
+            "modalities",
+            "audio",
+            "reasoning",
+        ] {
+            if let Some(value) = obj.get(key) {
+                response.insert(key.to_string(), value.clone());
+            }
+        }
     }
     serde_json::json!({
         "type": "response.create",
-        "response": response
+        "response": Value::Object(response)
     })
 }
 
@@ -324,5 +340,27 @@ mod tests {
         );
 
         server.abort();
+    }
+
+    #[test]
+    fn build_realtime_response_create_event_omits_http_only_fields() {
+        let event = build_realtime_response_create_event(&json!({
+            "model": "gpt-5.4",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+            "instructions": "be concise",
+            "stream": false,
+            "previous_response_id": "resp_prev"
+        }));
+
+        let response = event
+            .get("response")
+            .and_then(Value::as_object)
+            .expect("response object");
+        assert_eq!(
+            response.get("instructions").and_then(Value::as_str),
+            Some("be concise")
+        );
+        assert!(response.get("stream").is_none());
+        assert!(response.get("previous_response_id").is_none());
     }
 }
