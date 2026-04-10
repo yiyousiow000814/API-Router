@@ -1065,8 +1065,10 @@ export function ConfigModal({
       <div className="aoModal aoModalWide aoConfigModalShell" onClick={(e) => e.stopPropagation()}>
         <div className="aoModalHeader">
           <div className="aoConfigHeaderMeta">
-            <div className="aoModalTitle">Config</div>
-            <div className="aoModalSub aoConfigHeaderSub">keys are stored in ./user-data/secrets.json</div>
+            <div className="aoModalTitle">API Router Config</div>
+            <div className="aoModalSub aoConfigHeaderSub">
+              provider settings are stored in ./user-data/config.toml; keys are stored in ./user-data/secrets.json
+            </div>
           </div>
           <div className="aoConfigHeaderSource" aria-label="Config source">
             {showConfigSourceChooser ? (
