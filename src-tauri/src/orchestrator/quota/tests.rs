@@ -560,6 +560,7 @@ mod tests {
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
+            supports_websockets: false,
             api_key: String::new(),
         };
         let bases_a = vec![
@@ -3057,6 +3058,7 @@ mod tests {
             base_url: "https://codex.packycode.com/v1".to_string(),
             usage_adapter: String::new(),
             usage_base_url: None,
+            supports_websockets: false,
             group: None,
             disabled: false,
             api_key: String::new(),
@@ -3101,6 +3103,7 @@ mod tests {
             base_url: "https://api-vip.codex-for.me/v1".to_string(),
             usage_adapter: String::new(),
             usage_base_url: None,
+            supports_websockets: false,
             group: None,
             disabled: false,
             api_key: String::new(),

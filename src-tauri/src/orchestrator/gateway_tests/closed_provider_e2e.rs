@@ -468,6 +468,7 @@ fn weekly_budget_can_be_excluded_from_hard_cap_close() {
                 base_url: "https://example.com/v1".to_string(),
                 usage_adapter: String::new(),
                 usage_base_url: None,
+                supports_websockets: false,
                 group: None,
                 disabled: false,
                 api_key: String::new(),

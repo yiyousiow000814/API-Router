@@ -34,6 +34,7 @@ import {
 } from './utils/currency'
 import { AppMainContent, preloadAppMainContentModules } from './components/AppMainContent'
 import { AppTopNav } from './components/AppTopNav'
+import { ProviderWsTooltipPortal } from './components/ProviderWsTooltipPortal'
 import type { LastErrorJump } from './components/ProvidersTable'
 import { useConfigDrag } from './hooks/useConfigDrag'
 import { useProviderActions } from './hooks/useProviderActions'
@@ -56,7 +57,6 @@ import { useMainContentCallbacks } from './hooks/useMainContentCallbacks'
 import { useTopNavIntentPrefetch } from './hooks/useTopNavIntentPrefetch'
 import type {
   KeyModalState,
-  ProviderAdvancedModalState,
   ProviderBaseUrlModalState,
   ProviderEmailModalState,
   UsageAuthModalState,
@@ -197,11 +197,6 @@ export default function App() {
     open: false,
     provider: '',
     value: '',
-  })
-  const [providerAdvancedModal, setProviderAdvancedModal] = useState<ProviderAdvancedModalState>({
-    open: false,
-    provider: '',
-    supportsWebsockets: false,
   })
   const [usageBaseModal, setUsageBaseModal] = useState<UsageBaseModalState>({
     open: false,
@@ -1142,10 +1137,10 @@ export default function App() {
     usageOriginFilterOptions,
   })
   const {
-    setProviderDisabled, deleteProvider, saveKey, clearKey, saveProviderBaseUrl, saveProviderAdvanced, refreshQuota,
+    setProviderDisabled, deleteProvider, saveKey, clearKey, saveProviderBaseUrl, setProviderSupportsWebsockets, refreshQuota,
     saveUsageBaseUrl, saveUsageAuth, clearUsageAuth, saveProviderEmail, clearProviderEmail,
     setUsageBaseUrl, clearUsageBaseUrl, setProviderQuotaHardCap,
-    openKeyModal, openProviderBaseUrlModal, openProviderAdvancedModal, openUsageBaseModal, openUsageAuthModal, openProviderEmailModal, addProvider,
+    openKeyModal, openProviderBaseUrlModal, openUsageBaseModal, openUsageAuthModal, openProviderEmailModal, addProvider,
     setProvidersGroup,
   } = useProviderActions({
     config,
@@ -1155,7 +1150,6 @@ export default function App() {
     setConfig,
     keyModal,
     providerBaseUrlModal,
-    providerAdvancedModal,
     providerEmailModal,
     usageBaseModal,
     usageAuthModal,
@@ -1165,7 +1159,6 @@ export default function App() {
     newProviderKeyStorage,
     setKeyModal,
     setProviderBaseUrlModal,
-    setProviderAdvancedModal,
     setProviderEmailModal,
     setUsageBaseModal,
     setUsageAuthModal,
@@ -1570,6 +1563,7 @@ export default function App() {
   })
   const {
     renderProviderCard,
+    providerWsTooltip,
   } = useProviderPanelUi({
     setProviderPanelsOpen,
     setEditingProviderName,
@@ -1591,7 +1585,7 @@ export default function App() {
     copyProviderFromConfigSource,
     openKeyModal,
     openProviderBaseUrlModal,
-    openProviderAdvancedModal,
+    setProviderSupportsWebsockets,
     clearKey,
     openUsageBaseModal,
     openUsageAuthModal,
@@ -1604,7 +1598,6 @@ export default function App() {
   const shouldRenderAppModals =
     keyModal.open ||
     providerBaseUrlModal.open ||
-    providerAdvancedModal.open ||
     usageBaseModal.open ||
     usageAuthModal.open ||
     providerEmailModal.open ||
@@ -1839,9 +1832,6 @@ export default function App() {
             providerBaseUrlModal={providerBaseUrlModal}
             setProviderBaseUrlModal={setProviderBaseUrlModal}
             saveProviderBaseUrl={saveProviderBaseUrl}
-            providerAdvancedModal={providerAdvancedModal}
-            setProviderAdvancedModal={setProviderAdvancedModal}
-            saveProviderAdvanced={saveProviderAdvanced}
             providerEmailModal={providerEmailModal}
             setProviderEmailModal={setProviderEmailModal}
             saveProviderEmail={saveProviderEmail}
@@ -2001,6 +1991,7 @@ export default function App() {
           />
         </Suspense>
       ) : null}
+      <ProviderWsTooltipPortal tooltip={providerWsTooltip} />
       {providerGroupManagerOpen ? (
         <Suspense fallback={null}>
           <ProviderGroupManagerModal

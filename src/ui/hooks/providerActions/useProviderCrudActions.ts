@@ -8,13 +8,11 @@ type ProviderCrudActions = Pick<
   | 'isDevPreview'
   | 'setConfig'
   | 'providerBaseUrlModal'
-  | 'providerAdvancedModal'
   | 'newProviderName'
   | 'newProviderBaseUrl'
   | 'newProviderKey'
   | 'newProviderKeyStorage'
   | 'setProviderBaseUrlModal'
-  | 'setProviderAdvancedModal'
   | 'setNewProviderName'
   | 'setNewProviderBaseUrl'
   | 'setNewProviderKey'
@@ -31,13 +29,11 @@ export function useProviderCrudActions({
   isDevPreview,
   setConfig,
   providerBaseUrlModal,
-  providerAdvancedModal,
   newProviderName,
   newProviderBaseUrl,
   newProviderKey,
   newProviderKeyStorage,
   setProviderBaseUrlModal,
-  setProviderAdvancedModal,
   setNewProviderName,
   setNewProviderBaseUrl,
   setNewProviderKey,
@@ -56,17 +52,6 @@ export function useProviderCrudActions({
       })
     },
     [setProviderBaseUrlModal],
-  )
-
-  const openProviderAdvancedModal = useCallback(
-    (provider: string, supportsWebsockets: boolean) => {
-      setProviderAdvancedModal({
-        open: true,
-        provider,
-        supportsWebsockets,
-      })
-    },
-    [setProviderAdvancedModal],
   )
 
   const saveProviderBaseUrl = useCallback(async () => {
@@ -120,53 +105,43 @@ export function useProviderCrudActions({
     setProviderBaseUrlModal,
   ])
 
-  const saveProviderAdvanced = useCallback(async () => {
-    const provider = providerAdvancedModal.provider.trim()
-    const supportsWebsockets = providerAdvancedModal.supportsWebsockets
-    if (!provider || !config?.providers?.[provider]) return
+  const setProviderSupportsWebsockets = useCallback(
+    async (provider: string, supportsWebsockets: boolean) => {
+      const normalizedProvider = provider.trim()
+      if (!normalizedProvider || !config?.providers?.[normalizedProvider]) return
 
-    if (isDevPreview) {
-      setConfig((prev) => {
-        if (!prev?.providers?.[provider]) return prev
-        return {
-          ...prev,
-          providers: {
-            ...prev.providers,
-            [provider]: {
-              ...prev.providers[provider],
-              supports_websockets: supportsWebsockets || undefined,
+      if (isDevPreview) {
+        setConfig((prev) => {
+          if (!prev?.providers?.[normalizedProvider]) return prev
+          return {
+            ...prev,
+            providers: {
+              ...prev.providers,
+              [normalizedProvider]: {
+                ...prev.providers[normalizedProvider],
+                supports_websockets: supportsWebsockets || undefined,
+              },
             },
-          },
-        }
-      })
-      setProviderAdvancedModal({ open: false, provider: '', supportsWebsockets: false })
-      flashToast(`[TEST] Advanced settings updated: ${provider}`)
-      return
-    }
+          }
+        })
+        flashToast(`[TEST] WebSocket ${supportsWebsockets ? 'enabled' : 'disabled'}: ${normalizedProvider}`)
+        return
+      }
 
-    try {
-      await invoke('set_provider_supports_websockets', {
-        provider,
-        enabled: supportsWebsockets,
-      })
-      setProviderAdvancedModal({ open: false, provider: '', supportsWebsockets: false })
-      flashToast(`Advanced settings updated: ${provider}`)
-      await refreshStatus()
-      await refreshConfig()
-    } catch (e) {
-      flashToast(String(e), 'error')
-    }
-  }, [
-    config?.providers,
-    flashToast,
-    isDevPreview,
-    providerAdvancedModal.provider,
-    providerAdvancedModal.supportsWebsockets,
-    refreshConfig,
-    refreshStatus,
-    setConfig,
-    setProviderAdvancedModal,
-  ])
+      try {
+        await invoke('set_provider_supports_websockets', {
+          provider: normalizedProvider,
+          enabled: supportsWebsockets,
+        })
+        flashToast(`WebSocket ${supportsWebsockets ? 'enabled' : 'disabled'}: ${normalizedProvider}`)
+        await refreshStatus()
+        await refreshConfig()
+      } catch (e) {
+        flashToast(String(e), 'error')
+      }
+    },
+    [config?.providers, flashToast, isDevPreview, refreshConfig, refreshStatus, setConfig],
+  )
 
   const setProviderGroup = useCallback(
     async (name: string, group: string | null) => {
@@ -407,13 +382,12 @@ export function useProviderCrudActions({
   return {
     saveProvider,
     saveProviderBaseUrl,
-    saveProviderAdvanced,
+    setProviderSupportsWebsockets,
     setProviderGroup,
     setProvidersGroup,
     setProviderDisabled,
     deleteProvider,
     openProviderBaseUrlModal,
-    openProviderAdvancedModal,
     addProvider,
   }
 }

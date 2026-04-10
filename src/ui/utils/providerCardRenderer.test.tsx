@@ -110,7 +110,7 @@ function renderCardHtml(config: Config, status: Status): string {
     setProviderDisabled: async () => undefined,
     openProviderGroupManager: () => undefined,
     openProviderBaseUrlModal: () => undefined,
-    openProviderAdvancedModal: () => undefined,
+    setProviderSupportsWebsockets: async () => undefined,
     openKeyModal: async () => undefined,
     clearKey: async () => undefined,
     deleteProvider: async () => undefined,
@@ -120,6 +120,11 @@ function renderCardHtml(config: Config, status: Status): string {
     openProviderEmailModal: () => undefined,
     clearUsageBaseUrl: async () => undefined,
     setProviderQuotaHardCap: async () => undefined,
+    showProviderWsTooltip: () => undefined,
+    hideProviderWsTooltip: () => undefined,
+    openProviderCapsMenu: null,
+    setOpenProviderCapsMenu: () => null,
+    registerProviderCapsMenuRef: () => () => undefined,
   })
 
   const card = renderer('p1')
@@ -134,8 +139,8 @@ describe('provider usage controls rendering', () => {
     expect(html).not.toContain('Usage Auth')
     expect(html).toContain('Base URL')
     expect(html).toContain('Usage URL')
-    expect(html).toContain('daily cap')
-    expect(html).toContain('monthly cap')
+    expect(html).toContain('Caps')
+    expect(html).toContain('2/2')
     expect(html).not.toContain('Usage controls')
     expect(html).not.toContain('Show')
     expect(html).not.toContain('Hide')
@@ -164,7 +169,7 @@ describe('provider usage controls rendering', () => {
     }
     const html = renderCardHtml(config, buildStatus())
     expect(html).toContain('WS')
-    expect(html).toContain('Advanced settings')
+    expect(html).toContain('Disable WebSocket')
   })
 
   it('disables grouped controls on borrowed providers', () => {

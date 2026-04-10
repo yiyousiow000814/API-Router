@@ -22,7 +22,7 @@ type CreateProviderCardRendererOptions = {
   setProviderDisabled: (name: string, disabled: boolean) => Promise<void>
   openProviderGroupManager: (provider: string) => void
   openProviderBaseUrlModal: (provider: string, current: string) => void
-  openProviderAdvancedModal: (provider: string, supportsWebsockets: boolean) => void
+  setProviderSupportsWebsockets: (provider: string, enabled: boolean) => Promise<void>
   openKeyModal: (provider: string) => Promise<void>
   clearKey: (provider: string) => Promise<void>
   deleteProvider: (provider: string) => Promise<void>
@@ -36,6 +36,11 @@ type CreateProviderCardRendererOptions = {
     field: 'daily' | 'weekly' | 'monthly',
     enabled: boolean,
   ) => Promise<void>
+  showProviderWsTooltip: (text: string, anchor: HTMLButtonElement) => void
+  hideProviderWsTooltip: () => void
+  openProviderCapsMenu: string | null
+  setOpenProviderCapsMenu: React.Dispatch<React.SetStateAction<string | null>>
+  registerProviderCapsMenuRef: (name: string) => (el: HTMLDivElement | null) => void
 }
 
 export function createProviderCardRenderer(options: CreateProviderCardRendererOptions) {
@@ -57,6 +62,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
     const canDeactivate = p.disabled || activeProviderCount > 1
     const editable = p.editable !== false
     const canCopyBorrowed = Boolean(p.borrowed && p.source_node_id && p.shared_provider_id)
+    const capsMenuOpen = options.openProviderCapsMenu === name
     const localCopyState = p.local_copy_state ?? null
     const copyButtonLabel = localCopyState === 'linked' ? 'Linked' : localCopyState === 'copied' ? 'Copied' : 'Copy'
     const copyButtonTitle =
@@ -128,7 +134,6 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   <>
                     {groupName ? <span className="aoProviderGroupTag">{groupName}</span> : null}
                     <span className="aoProviderName">{name}</span>
-                    {p.supports_websockets ? <span className="aoProviderCapabilityTag">WS</span> : null}
                     <button
                       className="aoIconGhost"
                       title="Rename"
@@ -146,24 +151,30 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
               </div>
               <div className="aoProviderHeadActions">
                 <button
-                  className="aoIconGhost"
-                  title="Advanced settings"
-                  aria-label="Advanced settings"
+                  className={`aoTinyBtn aoProviderWsBtn${p.supports_websockets ? ' is-active' : ''}`}
+                  aria-label={p.supports_websockets ? 'Disable WebSocket' : 'Enable WebSocket'}
+                  aria-pressed={Boolean(p.supports_websockets)}
                   disabled={!editable}
-                  onClick={() => options.openProviderAdvancedModal(name, Boolean(p.supports_websockets))}
+                  onMouseEnter={(event) =>
+                    options.showProviderWsTooltip(
+                      p.supports_websockets ? 'Disable WebSocket' : 'Enable WebSocket',
+                      event.currentTarget,
+                    )
+                  }
+                  onMouseLeave={() => options.hideProviderWsTooltip()}
+                  onFocus={(event) =>
+                    options.showProviderWsTooltip(
+                      p.supports_websockets ? 'Disable WebSocket' : 'Enable WebSocket',
+                      event.currentTarget,
+                    )
+                  }
+                  onBlur={() => options.hideProviderWsTooltip()}
+                  onClick={() => void options.setProviderSupportsWebsockets(name, !Boolean(p.supports_websockets))}
                 >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M4 7h16" />
-                    <path d="M4 12h16" />
-                    <path d="M4 17h16" />
-                    <circle cx="9" cy="7" r="2" fill="currentColor" stroke="none" />
-                    <circle cx="15" cy="12" r="2" fill="currentColor" stroke="none" />
-                    <circle cx="11" cy="17" r="2" fill="currentColor" stroke="none" />
-                  </svg>
+                  WS
                 </button>
                 <button
                   className="aoActionBtn aoProviderHeadBtn"
-                  title="Set base URL"
                   disabled={!editable}
                   onClick={() => options.openProviderBaseUrlModal(name, p.base_url)}
                 >
@@ -171,7 +182,6 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 </button>
                 <button
                   className="aoActionBtn aoProviderHeadBtn"
-                  title="Set key"
                   disabled={!editable}
                   onClick={() => void options.openKeyModal(name)}
                 >
@@ -188,13 +198,6 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 </button>
                 <button
                   className={`aoStatusSwitch aoProviderHeadSwitch ${p.disabled ? 'aoStatusSwitchOff' : 'aoStatusSwitchOn'}`}
-                  title={
-                    p.disabled
-                      ? 'Click to activate provider'
-                      : canDeactivate
-                        ? 'Click to deactivate provider'
-                        : 'At least one provider must stay active'
-                  }
                   aria-label={p.disabled ? 'Activate provider' : 'Deactivate provider'}
                   aria-pressed={!p.disabled}
                   aria-disabled={!editable || (!p.disabled && !canDeactivate)}
@@ -254,24 +257,40 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                       Usage URL
                     </button>
                   ) : null}
+                  {hasBudgetInfo ? (
+                    <div className="aoActionsMenuWrap aoProviderCapsMenuWrap" ref={options.registerProviderCapsMenuRef(name)}>
+                      <button
+                        type="button"
+                        className="aoTinyBtn aoProviderCapsTrigger"
+                        aria-haspopup="menu"
+                        aria-expanded={capsMenuOpen}
+                        onClick={() => options.setOpenProviderCapsMenu((current) => (current === name ? null : name))}
+                      >
+                        Caps
+                        <span className="aoProviderCapsSummary">
+                          {hardCapPeriods.filter((period) => quotaHardCap[period]).length}/{hardCapPeriods.length}
+                        </span>
+                      </button>
+                      {capsMenuOpen ? (
+                        <div className="aoMenu aoProviderCapsPanel" role="menu" aria-label="Quota hard caps">
+                          {hardCapPeriods.map((period) => (
+                            <label key={period} className="aoProviderCapsItem">
+                              <input
+                                type="checkbox"
+                                checked={quotaHardCap[period]}
+                                disabled={!editable}
+                                onChange={(event) =>
+                                  void options.setProviderQuotaHardCap(name, period, event.target.checked)
+                                }
+                              />
+                              <span>{period} cap</span>
+                            </label>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
-                {hasBudgetInfo ? (
-                  <div className="aoUsageHardCapInline">
-                    {hardCapPeriods.map((period) => (
-                      <label key={period} className="aoUsageHardCapItem">
-                        <input
-                          type="checkbox"
-                          checked={quotaHardCap[period]}
-                          disabled={!editable}
-                          onChange={(event) =>
-                            void options.setProviderQuotaHardCap(name, period, event.target.checked)
-                          }
-                        />
-                        <span>{period} cap</span>
-                      </label>
-                    ))}
-                  </div>
-                ) : null}
               </div>
             )}
           </div>

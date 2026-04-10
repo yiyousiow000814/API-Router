@@ -49,12 +49,6 @@ export type ProviderBaseUrlModalState = {
   value: string
 }
 
-export type ProviderAdvancedModalState = {
-  open: boolean
-  provider: string
-  supportsWebsockets: boolean
-}
-
 export type UseProviderActionsParams = {
   config: Config | null
   status: Status | null
@@ -66,7 +60,6 @@ export type UseProviderActionsParams = {
   usageAuthModal: UsageAuthModalState
   providerEmailModal: ProviderEmailModalState
   providerBaseUrlModal: ProviderBaseUrlModalState
-  providerAdvancedModal: ProviderAdvancedModalState
   newProviderName: string
   newProviderBaseUrl: string
   newProviderKey: string
@@ -76,7 +69,6 @@ export type UseProviderActionsParams = {
   setUsageAuthModal: Dispatch<SetStateAction<UsageAuthModalState>>
   setProviderEmailModal: Dispatch<SetStateAction<ProviderEmailModalState>>
   setProviderBaseUrlModal: Dispatch<SetStateAction<ProviderBaseUrlModalState>>
-  setProviderAdvancedModal: Dispatch<SetStateAction<ProviderAdvancedModalState>>
   setNewProviderName: Dispatch<SetStateAction<string>>
   setNewProviderBaseUrl: Dispatch<SetStateAction<string>>
   setNewProviderKey: Dispatch<SetStateAction<string>>
@@ -107,9 +99,9 @@ export type UseProviderActionsResult = {
   saveProviderEmail: () => Promise<void>
   clearProviderEmail: (provider: string) => Promise<void>
   saveProviderBaseUrl: () => Promise<void>
-  saveProviderAdvanced: () => Promise<void>
   setUsageBaseUrl: (provider: string, url: string) => Promise<void>
   clearUsageBaseUrl: (name: string) => Promise<void>
+  setProviderSupportsWebsockets: (provider: string, enabled: boolean) => Promise<void>
   setProviderQuotaHardCap: (
     provider: string,
     field: 'daily' | 'weekly' | 'monthly',
@@ -117,7 +109,6 @@ export type UseProviderActionsResult = {
   ) => Promise<void>
   openKeyModal: (provider: string) => Promise<void>
   openProviderBaseUrlModal: (provider: string, current: string) => void
-  openProviderAdvancedModal: (provider: string, supportsWebsockets: boolean) => void
   openUsageBaseModal: (
     provider: string,
     current: string | null | undefined,
