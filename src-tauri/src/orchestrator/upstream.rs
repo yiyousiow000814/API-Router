@@ -99,6 +99,26 @@ fn websocket_message_text(message: WsMessage) -> Result<Option<String>, String> 
     }
 }
 
+fn websocket_response_failure(response: &Value) -> Option<String> {
+    let status = response.get("status").and_then(Value::as_str)?.trim();
+    if status.eq_ignore_ascii_case("completed") {
+        return None;
+    }
+
+    let detail = response
+        .get("error")
+        .and_then(Value::as_object)
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty());
+
+    Some(match detail {
+        Some(message) => format!("websocket response ended with status {status}: {message}"),
+        None => format!("websocket response ended with status {status}"),
+    })
+}
+
 impl UpstreamClient {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
@@ -250,6 +270,9 @@ impl UpstreamClient {
                 "response.done" | "response.completed" => {
                     let response = value.get("response").cloned().unwrap_or(Value::Null);
                     let _ = futures_util::SinkExt::send(&mut socket, WsMessage::Close(None)).await;
+                    if let Some(error) = websocket_response_failure(&response) {
+                        return Err(error);
+                    }
                     return Ok(WebSocketResponseResult { response });
                 }
                 _ => {}
@@ -362,5 +385,30 @@ mod tests {
         );
         assert!(response.get("stream").is_none());
         assert!(response.get("previous_response_id").is_none());
+    }
+
+    #[test]
+    fn websocket_response_failure_detects_non_completed_status() {
+        assert_eq!(
+            websocket_response_failure(&json!({
+                "id": "resp_ws_failed",
+                "status": "failed",
+                "error": { "message": "upstream failed" }
+            })),
+            Some("websocket response ended with status failed: upstream failed".to_string())
+        );
+        assert_eq!(
+            websocket_response_failure(&json!({
+                "id": "resp_ws_ok",
+                "status": "completed"
+            })),
+            None
+        );
+        assert_eq!(
+            websocket_response_failure(&json!({
+                "id": "resp_ws_ok"
+            })),
+            None
+        );
     }
 }

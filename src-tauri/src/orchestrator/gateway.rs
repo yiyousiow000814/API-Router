@@ -1487,7 +1487,8 @@ async fn responses(
 
             let api_key = st.secrets.get_provider_key(&provider_name);
             let mut actual_transport = "http";
-            let upstream_result = if p.supports_websockets {
+            let allow_websocket_transport = p.supports_websockets && !use_prev_id;
+            let upstream_result = if allow_websocket_transport {
                 match st
                     .upstream
                     .post_json_via_websocket(
