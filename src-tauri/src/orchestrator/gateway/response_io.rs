@@ -157,6 +157,7 @@ struct SsePersistContext {
     session_key: String,
     requested_model: Option<String>,
     request_origin: String,
+    transport: &'static str,
 }
 
 fn passthrough_sse_and_persist(
@@ -321,7 +322,173 @@ fn passthrough_sse_and_persist(
                     crate::orchestrator::store::UsageRequestContext {
                         api_key_ref: Some(&api_key_ref2),
                         origin: &request_origin2,
-                        transport: "sse",
+                        transport: persist_ctx.transport,
+                        session_id: Some(session_key2.as_str()),
+                        node_id: local_node.as_ref().map(|value| value.node_id.as_str()),
+                        node_name: local_node.as_ref().map(|value| value.node_name.as_str()),
+                    },
+                    created_model_for_usage.as_deref(),
+                );
+        }
+    };
+
+    let body = Body::from_stream(stream);
+    let mut resp = Response::new(body);
+    *resp.status_mut() = StatusCode::OK;
+    let headers = resp.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("text/event-stream"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-cache"),
+    );
+    headers.insert(
+        header::CONNECTION,
+        header::HeaderValue::from_static("keep-alive"),
+    );
+    resp
+}
+
+fn passthrough_websocket_sse_and_persist(
+    upstream_stream: super::upstream::WebSocketSseStreamResult,
+    st: GatewayState,
+    provider_name: String,
+    idle_timeout_seconds: u64,
+    persist_ctx: SsePersistContext,
+) -> Response {
+    use futures_util::StreamExt;
+
+    let tap = std::sync::Arc::new(parking_lot::Mutex::new(SseTap::new()));
+    let st_err = st.clone();
+    let provider_err = provider_name.clone();
+    let mut bytes_stream = upstream_stream.stream;
+
+    let st2 = st.clone();
+    let provider2 = provider_name.clone();
+    let api_key_ref2 = persist_ctx.api_key_ref.clone();
+    let session_key2 = persist_ctx.session_key.clone();
+    let requested_model2 = persist_ctx.requested_model.clone();
+    let request_origin2 = persist_ctx.request_origin.clone();
+    let transport2 = persist_ctx.transport;
+    let tap3 = tap.clone();
+    let stream = async_stream::stream! {
+        let mut forwarded_bytes: u64 = 0;
+        let mut mismatch_logged = false;
+        let mut created_model_for_usage: Option<String> = None;
+        loop {
+            let item = match tokio::time::timeout(
+                std::time::Duration::from_secs(idle_timeout_seconds),
+                bytes_stream.next(),
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(_) => {
+                    let completed = tap.lock().is_completed();
+                    let note = if completed {
+                        "after completion"
+                    } else {
+                        "before completion; downstream output may be incomplete"
+                    };
+                    st_err.store.events().emit(
+                        &provider_err,
+                        crate::orchestrator::store::EventCode::STREAM_IDLE_TIMEOUT,
+                        &format!(
+                            "websocket stream idle timeout ({note}); completed={completed}; forwarded_bytes={forwarded_bytes}"
+                        ),
+                        json!({
+                            "completed": completed,
+                            "forwarded_bytes": forwarded_bytes,
+                            "transport": transport2,
+                        }),
+                    );
+                    break;
+                }
+            };
+
+            let Some(item) = item else {
+                break;
+            };
+
+            match item {
+                Ok(b) => {
+                    tap.lock().feed(&b);
+                    if let Some(model) = tap.lock().take_created_model() {
+                        created_model_for_usage = Some(model.clone());
+                        update_session_response_model(&st2, &session_key2, &model);
+                        if !mismatch_logged {
+                            let req = requested_model2.as_deref().map(str::trim).filter(|s| !s.is_empty());
+                            if req.is_some_and(|r| !r.eq_ignore_ascii_case(model.trim())) {
+                                maybe_record_model_mismatch(
+                                    &st2,
+                                    &provider2,
+                                    &session_key2,
+                                    requested_model2.as_deref(),
+                                    &model,
+                                    true,
+                                );
+                                mismatch_logged = true;
+                            }
+                        }
+                    }
+                    forwarded_bytes = forwarded_bytes.saturating_add(b.len() as u64);
+                    yield Ok::<Bytes, std::convert::Infallible>(b);
+                }
+                Err(e) => {
+                    let completed = tap.lock().is_completed();
+                    let note = if completed {
+                        "after completion"
+                    } else {
+                        "before completion; downstream output may be incomplete"
+                    };
+                    st_err.store.events().emit(
+                        &provider_err,
+                        crate::orchestrator::store::EventCode::STREAM_READ_ERROR,
+                        &format!(
+                            "websocket stream read error ({note}); completed={completed}; forwarded_bytes={forwarded_bytes}; error={e}"
+                        ),
+                        json!({
+                            "completed": completed,
+                            "forwarded_bytes": forwarded_bytes,
+                            "transport": transport2,
+                            "error": e,
+                        }),
+                    );
+                    break;
+                }
+            }
+        }
+        if let Some((_rid, resp_obj)) = tap3.lock().take_completed() {
+            if created_model_for_usage.is_none() {
+                if let Some(model) = extract_response_model_option(&resp_obj) {
+                    created_model_for_usage = Some(model.clone());
+                    update_session_response_model(&st2, &session_key2, &model);
+                    if !mismatch_logged {
+                        let req = requested_model2.as_deref().map(str::trim).filter(|s| !s.is_empty());
+                        if req.is_some_and(|r| !r.eq_ignore_ascii_case(model.trim())) {
+                            maybe_record_model_mismatch(
+                                &st2,
+                                &provider2,
+                                &session_key2,
+                                requested_model2.as_deref(),
+                                &model,
+                                true,
+                            );
+                        }
+                    }
+                }
+            }
+            let local_node = st2.secrets.get_lan_node_identity();
+            st2.store
+                .record_success_with_model(
+                    &provider2,
+                    &resp_obj,
+                    crate::orchestrator::store::UsageRequestContext {
+                        api_key_ref: Some(&api_key_ref2),
+                        origin: &request_origin2,
+                        transport: transport2,
                         session_id: Some(session_key2.as_str()),
                         node_id: local_node.as_ref().map(|value| value.node_id.as_str()),
                         node_name: local_node.as_ref().map(|value| value.node_name.as_str()),

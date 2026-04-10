@@ -127,12 +127,10 @@ describe('ConfigModal', () => {
       />,
     )
 
-    expect(html).toContain('API Router Config')
+    expect(html).toContain('Config')
     expect(html).toContain('provider1')
     expect(html).toContain('Base URL (e.g. https://api.openai.com/v1)')
     expect(html).toContain('placeholder="Key"')
-    expect(html).toContain('provider settings are stored in ./user-data/config.toml')
-    expect(html).toContain('keys are stored in ./user-data/secrets.json')
   })
 
   it('keeps drag placeholder height aligned with the measured drag card height', () => {

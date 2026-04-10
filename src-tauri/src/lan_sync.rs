@@ -143,7 +143,7 @@ fn heartbeat_step_elapsed_ms(started_at_unix_ms: u64) -> u64 {
 
 fn local_sync_contracts() -> BTreeMap<String, u32> {
     BTreeMap::from([
-        (SYNC_DOMAIN_USAGE_REQUESTS.to_string(), 1),
+        (SYNC_DOMAIN_USAGE_REQUESTS.to_string(), 2),
         (SYNC_DOMAIN_USAGE_HISTORY.to_string(), 3),
         (SYNC_DOMAIN_PROVIDER_DEFINITIONS.to_string(), 1),
         (SYNC_DOMAIN_SHARED_HEALTH.to_string(), 1),
@@ -254,6 +254,28 @@ fn lan_edit_entity_sync_domain(entity_type: &str) -> Option<&'static str> {
     LAN_EDIT_ENTITY_DOMAIN_REGISTRY
         .iter()
         .find_map(|(registered_type, domain)| (*registered_type == entity_type).then_some(*domain))
+}
+
+#[cfg(test)]
+fn usage_requests_contract_sample() -> Value {
+    serde_json::json!({
+        "id": "usage-1",
+        "unix_ms": 1_700_000_000_000u64,
+        "ingested_at_unix_ms": 1_700_000_000_001u64,
+        "provider": "gateway",
+        "api_key_ref": "-",
+        "model": "gpt-5.4",
+        "origin": "gateway",
+        "transport": "http",
+        "session_id": "session-1",
+        "node_id": "node-local",
+        "node_name": "Local",
+        "input_tokens": 10u64,
+        "output_tokens": 20u64,
+        "total_tokens": 30u64,
+        "cache_creation_input_tokens": 0u64,
+        "cache_read_input_tokens": 0u64
+    })
 }
 
 #[cfg(test)]
@@ -6845,6 +6867,22 @@ mod tests {
             Some(super::SYNC_DOMAIN_USAGE_HISTORY)
         );
         assert_eq!(mappings.len(), 6);
+    }
+
+    #[test]
+    fn usage_requests_contract_sample_matches_current_contract_version() {
+        assert_eq!(
+            super::sync_contract_version(
+                &super::local_sync_contracts(),
+                super::SYNC_DOMAIN_USAGE_REQUESTS
+            ),
+            2,
+            "usage_requests payload shape changed; update samples and bump contract if semantics changed"
+        );
+        let payload = super::usage_requests_contract_sample();
+        let row: crate::orchestrator::store::UsageRequestSyncRow = serde_json::from_value(payload)
+            .expect("usage_requests contract sample should deserialize");
+        assert_eq!(row.transport, "http");
     }
 
     #[test]

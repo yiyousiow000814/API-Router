@@ -678,11 +678,11 @@
 }
 
 .aoUsageReqColNode {
-  width: 104px;
+  width: 124px;
 }
 
 .aoUsageReqColProvider {
-  width: 104px;
+  width: 124px;
 }
 
 .aoUsageReqColModel {
@@ -706,11 +706,11 @@
 }
 
 .aoUsageReqColOrigin {
-  width: 72px;
+  width: 60px;
 }
 
 .aoUsageReqColTransport {
-  width: 68px;
+  width: 56px;
 }
 
 .aoUsageReqColSession {

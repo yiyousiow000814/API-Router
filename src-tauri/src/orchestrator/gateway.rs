@@ -1245,8 +1245,106 @@ async fn responses(
                     .as_object_mut()
                     .map(|m| m.insert("stream".to_string(), Value::Bool(true)));
                 let api_key = st.secrets.get_provider_key(&provider_name);
+                let allow_websocket_transport = p.supports_websockets && !use_prev_id;
                 let mut should_fallback_to_non_stream = false;
                 for attempt in 1..=TRANSIENT_UPSTREAM_RETRY_ATTEMPTS {
+                    if allow_websocket_transport {
+                        match st
+                            .upstream
+                            .post_sse_via_websocket(
+                                &p,
+                                &body_for_provider,
+                                api_key.as_deref(),
+                                client_auth,
+                                timeout,
+                            )
+                            .await
+                        {
+                            Ok(ws_stream) => {
+                                let prev =
+                                    st.last_used_by_session.read().get(&session_key).cloned();
+                                st.last_used_by_session.write().insert(
+                                    session_key.clone(),
+                                    LastUsedRoute {
+                                        provider: provider_name.clone(),
+                                        reason: reason.to_string(),
+                                        preferred: preferred.to_string(),
+                                        unix_ms: unix_ms(),
+                                    },
+                                );
+                                st.router.mark_success(&provider_name, unix_ms());
+                                if should_log_routing_path_event(
+                                    prev.as_ref(),
+                                    &provider_name,
+                                    reason,
+                                    preferred,
+                                    is_first_attempt,
+                                ) {
+                                    st.store.events().emit(
+                                        &provider_name,
+                                        crate::orchestrator::store::EventCode::ROUTING_STREAM,
+                                        &format!("Streaming via {provider_name} ({reason})"),
+                                        json!({
+                                            "provider": provider_name,
+                                            "reason": reason,
+                                            "transport": "ws",
+                                            "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
+                                            "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
+                                            "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
+                                        }),
+                                    );
+                                } else if is_back_to_preferred_transition(
+                                    prev.as_ref(),
+                                    &provider_name,
+                                    preferred,
+                                ) {
+                                    st.store.events().emit(
+                                        &provider_name,
+                                        crate::orchestrator::store::EventCode::ROUTING_BACK_TO_PREFERRED,
+                                        &format!(
+                                            "Back to preferred: {provider_name} (from {})",
+                                            prev.as_ref()
+                                                .map(|p| p.provider.as_str())
+                                                .unwrap_or("unknown")
+                                        ),
+                                        json!({
+                                            "provider": provider_name,
+                                            "from_provider": prev.as_ref().map(|p| p.provider.clone()),
+                                            "from_reason": prev.as_ref().map(|p| p.reason.clone()),
+                                            "from_preferred": prev.as_ref().map(|p| p.preferred.clone()),
+                                            "preferred": preferred,
+                                            "transport": "ws",
+                                            "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
+                                            "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
+                                            "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
+                                        }),
+                                    );
+                                }
+                                return passthrough_websocket_sse_and_persist(
+                                    ws_stream,
+                                    st.clone(),
+                                    provider_name,
+                                    timeout,
+                                    SsePersistContext {
+                                        api_key_ref: api_key_ref_from_raw(api_key.as_deref()),
+                                        session_key: session_key.clone(),
+                                        requested_model: requested_model.clone(),
+                                        request_origin: request_origin.to_string(),
+                                        transport: "ws",
+                                    },
+                                );
+                            }
+                            Err(ws_err) => {
+                                log_websocket_fallback_event(
+                                    &st,
+                                    &provider_name,
+                                    &format!(
+                                        "websocket upstream stream failed for {provider_name}; falling back to http: {ws_err}"
+                                    ),
+                                );
+                            }
+                        }
+                    }
                     match st
                         .upstream
                         .post_sse(
@@ -1328,6 +1426,7 @@ async fn responses(
                                     session_key: session_key.clone(),
                                     requested_model: requested_model.clone(),
                                     request_origin: request_origin.to_string(),
+                                    transport: "sse",
                                 },
                             );
                         }

@@ -2,6 +2,7 @@ use reqwest::header::ACCEPT;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::Map;
 use serde_json::Value;
+use std::pin::Pin;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
@@ -11,6 +12,10 @@ const WEBSOCKET_CONNECT_TIMEOUT_SECONDS: u64 = 10;
 
 pub struct WebSocketResponseResult {
     pub response: Value,
+}
+
+pub struct WebSocketSseStreamResult {
+    pub stream: Pin<Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, String>> + Send>>,
 }
 
 #[derive(Clone)]
@@ -278,6 +283,113 @@ impl UpstreamClient {
                 _ => {}
             }
         }
+    }
+
+    pub async fn post_sse_via_websocket(
+        &self,
+        provider: &ProviderConfig,
+        payload: &Value,
+        api_key: Option<&str>,
+        client_auth: Option<&str>,
+        timeout_seconds: u64,
+    ) -> Result<WebSocketSseStreamResult, String> {
+        let ws_url = build_realtime_ws_url(payload, provider)?;
+        let mut request = ws_url
+            .into_client_request()
+            .map_err(|e| format!("build websocket request failed: {e}"))?;
+        let headers = request.headers_mut();
+        headers.insert("OpenAI-Beta", HeaderValue::from_static("realtime=v1"));
+        apply_auth_headers(headers, api_key, client_auth);
+
+        let (mut socket, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(WEBSOCKET_CONNECT_TIMEOUT_SECONDS),
+            tokio_tungstenite::connect_async(request),
+        )
+        .await
+        .map_err(|_| "websocket connect timeout".to_string())?
+        .map_err(|e| format!("websocket connect failed: {e}"))?;
+
+        let event = build_realtime_response_create_event(payload);
+        futures_util::SinkExt::send(&mut socket, WsMessage::Text(event.to_string()))
+            .await
+            .map_err(|e| format!("websocket send failed: {e}"))?;
+
+        let stream = async_stream::stream! {
+            loop {
+                let next = tokio::time::timeout(
+                    std::time::Duration::from_secs(timeout_seconds),
+                    futures_util::StreamExt::next(&mut socket),
+                )
+                .await;
+                let next = match next {
+                    Ok(next) => next,
+                    Err(_) => {
+                        yield Err("websocket response timeout".to_string());
+                        break;
+                    }
+                };
+                let Some(message) = next else {
+                    yield Err("websocket ended before completion".to_string());
+                    break;
+                };
+                let message = match message {
+                    Ok(message) => message,
+                    Err(e) => {
+                        yield Err(format!("websocket read failed: {e}"));
+                        break;
+                    }
+                };
+                let text = match websocket_message_text(message) {
+                    Ok(Some(text)) => text,
+                    Ok(None) => continue,
+                    Err(e) => {
+                        yield Err(e);
+                        break;
+                    }
+                };
+                let value: Value = match serde_json::from_str(&text) {
+                    Ok(value) => value,
+                    Err(e) => {
+                        yield Err(format!("invalid websocket JSON: {e}"));
+                        break;
+                    }
+                };
+                match value
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                {
+                    "error" => {
+                        let detail = value
+                            .get("error")
+                            .and_then(Value::as_object)
+                            .and_then(|error| error.get("message"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("upstream websocket error");
+                        yield Err(detail.to_string());
+                        break;
+                    }
+                    "response.done" | "response.completed" => {
+                        let response = value.get("response").cloned().unwrap_or(Value::Null);
+                        if let Some(error) = websocket_response_failure(&response) {
+                            yield Err(error);
+                            break;
+                        }
+                        yield Ok(bytes::Bytes::from(format!("data: {text}\n\n")));
+                        yield Ok(bytes::Bytes::from_static(b"data: [DONE]\n\n"));
+                        let _ = futures_util::SinkExt::send(&mut socket, WsMessage::Close(None)).await;
+                        break;
+                    }
+                    _ => {
+                        yield Ok(bytes::Bytes::from(format!("data: {text}\n\n")));
+                    }
+                }
+            }
+        };
+
+        Ok(WebSocketSseStreamResult {
+            stream: Box::pin(stream),
+        })
     }
 }
 
