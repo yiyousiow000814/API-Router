@@ -568,7 +568,10 @@ impl SseTap {
                     }
                 }
             }
-            if v.get("type").and_then(|x| x.as_str()) == Some("response.completed") {
+            if matches!(
+                v.get("type").and_then(|x| x.as_str()),
+                Some("response.completed" | "response.done")
+            ) {
                 if let Some(resp) = v.get("response") {
                     if let Some(id) = resp.get("id").and_then(|x| x.as_str()) {
                         self.completed = Some((id.to_string(), resp.clone()));

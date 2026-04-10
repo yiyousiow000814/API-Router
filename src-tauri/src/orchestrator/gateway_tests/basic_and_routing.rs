@@ -497,7 +497,7 @@ async fn responses_stream_via_websocket_records_ws_transport() {
                 socket
                     .send(Message::Text(
                         serde_json::json!({
-                            "type": "response.completed",
+                            "type": "response.done",
                             "response": {
                                 "id": "resp_ws_stream",
                                 "model": "gpt-5.4",
@@ -513,7 +513,7 @@ async fn responses_stream_via_websocket_records_ws_transport() {
                         .to_string(),
                     ))
                     .await
-                    .expect("send response.completed");
+                    .expect("send response.done");
                 break;
             }
         })
@@ -585,7 +585,7 @@ async fn responses_stream_via_websocket_records_ws_transport() {
         .expect("responses body");
     let body_text = String::from_utf8(body.to_vec()).expect("utf8 body");
     assert!(body_text.contains("response.created"));
-    assert!(body_text.contains("response.completed"));
+    assert!(body_text.contains("response.done"));
 
     let (rows, has_more) =
         state
