@@ -15,89 +15,54 @@ fn tracked_spend_usd_value(day: &Value) -> Option<f64> {
         .filter(|value| value.is_finite() && *value > 0.0)
 }
 
-fn recompute_shared_tracked_spend_day_view(
+fn projection_provider_name(
     gateway: &crate::orchestrator::gateway::GatewayState,
     shared_provider_id: &str,
+    provider_name_hint: &str,
+) -> Result<String, String> {
+    super::resolve_provider_name_for_shared_provider_id(
+        gateway,
+        shared_provider_id,
+        provider_name_hint,
+    )
+    .or_else(|err| {
+        let fallback = provider_name_hint.trim();
+        if fallback.is_empty() {
+            Err(err)
+        } else {
+            Ok(fallback.to_string())
+        }
+    })
+}
+
+fn tracked_spend_projection_day_key(
+    row: &Value,
+    fallback_started_at_unix_ms: u64,
+) -> Result<String, String> {
+    tracked_spend_history_day_key_for_debug(row)
+        .or_else(|| {
+            crate::orchestrator::store::Store::local_day_key_from_unix_ms(
+                fallback_started_at_unix_ms,
+            )
+        })
+        .ok_or_else(|| "tracked spend day payload is missing a valid day".to_string())
+}
+
+fn rebuild_shared_projection_day_from_sources(
+    gateway: &crate::orchestrator::gateway::GatewayState,
     provider_name: &str,
+    shared_provider_id: &str,
     day_key: &str,
 ) -> Result<(), String> {
-    let events = gateway
+    let source_rows = gateway
         .store
-        .list_tracked_spend_history_events_for_shared_day(shared_provider_id, day_key);
-    let mut source_rows = std::collections::BTreeMap::<String, Value>::new();
-
-    for event in events {
-        match event.entity_type.as_str() {
-            super::LAN_EDIT_ENTITY_TRACKED_SPEND_DAY => {
-                let payload: super::TrackedSpendDaySyncPayload =
-                    serde_json::from_value(event.payload.clone()).map_err(|err| err.to_string())?;
-                let (_event_shared_provider_id, _day_scope, source_node_id) =
-                    super::parse_day_scoped_entity_id(&event.entity_id, &event.node_id)?;
-                if event.op == "delete" {
-                    source_rows.remove(source_node_id);
-                    continue;
-                }
-                let mut row = payload.row.clone();
-                let row_day_key = tracked_spend_history_day_key_for_debug(&row)
-                    .or_else(|| {
-                        crate::orchestrator::store::Store::local_day_key_from_unix_ms(
-                            payload.day_started_at_unix_ms,
-                        )
-                    })
-                    .ok_or_else(|| {
-                        format!(
-                            "tracked spend day missing day_key for provider={provider_name} source={source_node_id}"
-                        )
-                    })?;
-                if row_day_key != day_key {
-                    continue;
-                }
-                let (producer_node_id, producer_node_name) =
-                    super::tracked_spend_day_source_identity(
-                        &row,
-                        source_node_id,
-                        &event.node_name,
-                    )
-                    .ok_or_else(|| {
-                        "tracked spend day row is missing a source node id".to_string()
-                    })?;
-                if let Some(map) = row.as_object_mut() {
-                    map.insert(
-                        "producer_node_id".to_string(),
-                        Value::String(producer_node_id.clone()),
-                    );
-                    map.insert(
-                        "producer_node_name".to_string(),
-                        Value::String(producer_node_name.clone()),
-                    );
-                    map.insert(
-                        "applied_from_node_id".to_string(),
-                        Value::String(event.node_id.clone()),
-                    );
-                    map.insert(
-                        "applied_from_node_name".to_string(),
-                        Value::String(event.node_name.clone()),
-                    );
-                    map.insert(
-                        "applied_at_unix_ms".to_string(),
-                        serde_json::json!(event.created_at_unix_ms),
-                    );
-                }
-                source_rows.insert(source_node_id.to_string(), row);
-            }
-            super::LAN_EDIT_ENTITY_TRACKED_SPEND_DAY_HISTORY_DELETE => {
-                source_rows.clear();
-            }
-            _ => {}
-        }
-    }
-
+        .list_shared_tracked_spend_day_sources(shared_provider_id, day_key);
     let mut total_tracked_spend_usd = 0.0_f64;
     let mut updated_at_unix_ms = 0_u64;
     let mut latest_row: Option<&Value> = None;
     let mut source_nodes = Vec::new();
 
-    for row in source_rows.values() {
+    for (_source_node_id, _source_node_name, source_updated_at_unix_ms, row) in &source_rows {
         let Some(tracked_spend_usd) = tracked_spend_usd_value(row) else {
             continue;
         };
@@ -107,7 +72,7 @@ fn recompute_shared_tracked_spend_day_view(
             .and_then(Value::as_u64)
             .or_else(|| row.get("ended_at_unix_ms").and_then(Value::as_u64))
             .or_else(|| row.get("started_at_unix_ms").and_then(Value::as_u64))
-            .unwrap_or(0);
+            .unwrap_or(*source_updated_at_unix_ms);
         updated_at_unix_ms = updated_at_unix_ms.max(row_updated_at);
         let replace_latest = latest_row
             .map(|current| {
@@ -199,24 +164,80 @@ pub(super) fn refresh_shared_tracked_spend_projection_for_event(
         super::LAN_EDIT_ENTITY_TRACKED_SPEND_DAY => {
             let payload: super::TrackedSpendDaySyncPayload =
                 serde_json::from_value(event.payload.clone()).map_err(|err| err.to_string())?;
-            let (shared_provider_id, _day_scope, _source_node_id) =
+            let (shared_provider_id, _day_scope, source_node_id) =
                 super::parse_day_scoped_entity_id(&event.entity_id, &event.node_id)?;
-            let provider_name = super::resolve_provider_name_for_shared_provider_id(
+            let provider_name =
+                projection_provider_name(gateway, shared_provider_id, &payload.provider_name)?;
+            let day_key =
+                tracked_spend_projection_day_key(&payload.row, payload.day_started_at_unix_ms)?;
+            if event.op == "delete" {
+                gateway.store.remove_shared_tracked_spend_day_source(
+                    shared_provider_id,
+                    &day_key,
+                    source_node_id,
+                );
+                return rebuild_shared_projection_day_from_sources(
+                    gateway,
+                    &provider_name,
+                    shared_provider_id,
+                    &day_key,
+                );
+            }
+
+            let mut row = payload.row.clone();
+            let (producer_node_id, producer_node_name) =
+                super::tracked_spend_day_source_identity(&row, source_node_id, &event.node_name)
+                    .ok_or_else(|| {
+                        "tracked spend day row is missing a source node id".to_string()
+                    })?;
+            let applied_at_unix_ms = if event.created_at_unix_ms > 0 {
+                event.created_at_unix_ms
+            } else {
+                crate::orchestrator::store::unix_ms()
+            };
+            if let Some(map) = row.as_object_mut() {
+                map.insert(
+                    "producer_node_id".to_string(),
+                    Value::String(producer_node_id.clone()),
+                );
+                map.insert(
+                    "producer_node_name".to_string(),
+                    Value::String(producer_node_name.clone()),
+                );
+                map.insert(
+                    "applied_from_node_id".to_string(),
+                    Value::String(event.node_id.clone()),
+                );
+                map.insert(
+                    "applied_from_node_name".to_string(),
+                    Value::String(event.node_name.clone()),
+                );
+                map.insert(
+                    "applied_at_unix_ms".to_string(),
+                    serde_json::json!(applied_at_unix_ms),
+                );
+            }
+            let row_updated_at = row
+                .get("updated_at_unix_ms")
+                .and_then(Value::as_u64)
+                .or_else(|| row.get("ended_at_unix_ms").and_then(Value::as_u64))
+                .or_else(|| row.get("started_at_unix_ms").and_then(Value::as_u64))
+                .unwrap_or(applied_at_unix_ms);
+            gateway.store.put_shared_tracked_spend_day_source(
+                &crate::orchestrator::store::SharedTrackedSpendDaySourceRow {
+                    provider: provider_name.clone(),
+                    shared_provider_id: shared_provider_id.to_string(),
+                    day_key: day_key.clone(),
+                    source_node_id: source_node_id.to_string(),
+                    source_node_name: producer_node_name.clone(),
+                    row,
+                    updated_at_unix_ms: row_updated_at,
+                },
+            );
+            rebuild_shared_projection_day_from_sources(
                 gateway,
-                shared_provider_id,
-                &payload.provider_name,
-            )?;
-            let day_key = tracked_spend_history_day_key_for_debug(&payload.row)
-                .or_else(|| {
-                    crate::orchestrator::store::Store::local_day_key_from_unix_ms(
-                        payload.day_started_at_unix_ms,
-                    )
-                })
-                .ok_or_else(|| "tracked spend day payload is missing a valid day".to_string())?;
-            recompute_shared_tracked_spend_day_view(
-                gateway,
-                shared_provider_id,
                 &provider_name,
+                shared_provider_id,
                 &day_key,
             )
         }
@@ -225,15 +246,18 @@ pub(super) fn refresh_shared_tracked_spend_projection_for_event(
                 serde_json::from_value(event.payload.clone()).map_err(|err| err.to_string())?;
             let (shared_provider_id, day_key) =
                 super::parse_provider_day_entity_id(&event.entity_id)?;
-            let provider_name = super::resolve_provider_name_for_shared_provider_id(
+            let provider_name =
+                projection_provider_name(gateway, shared_provider_id, &payload.provider_name)?;
+            gateway
+                .store
+                .remove_shared_tracked_spend_day_sources(shared_provider_id, day_key);
+            gateway
+                .store
+                .remove_shared_tracked_spend_day(shared_provider_id, day_key);
+            rebuild_shared_projection_day_from_sources(
                 gateway,
-                shared_provider_id,
-                &payload.provider_name,
-            )?;
-            recompute_shared_tracked_spend_day_view(
-                gateway,
-                shared_provider_id,
                 &provider_name,
+                shared_provider_id,
                 day_key,
             )
         }
@@ -245,22 +269,24 @@ pub(crate) fn rebuild_shared_tracked_spend_views(
     state: &crate::app_state::AppState,
 ) -> Result<(), String> {
     state.gateway.store.clear_shared_tracked_spend_days();
-    for (shared_provider_id, provider_name, day_key) in state
+    state.gateway.store.clear_shared_tracked_spend_day_sources();
+    let mut failures = Vec::new();
+    for event in state
         .gateway
         .store
-        .list_tracked_spend_history_projection_targets()
+        .list_tracked_spend_history_projection_events()
     {
-        let resolved_provider_name = super::resolve_provider_name_for_shared_provider_id(
-            &state.gateway,
-            &shared_provider_id,
-            &provider_name,
-        )?;
-        recompute_shared_tracked_spend_day_view(
-            &state.gateway,
-            &shared_provider_id,
-            &resolved_provider_name,
-            &day_key,
-        )?;
+        if let Err(err) = refresh_shared_tracked_spend_projection_for_event(&state.gateway, &event)
+        {
+            failures.push(format!("{}:{}:{}", event.entity_type, event.entity_id, err));
+        }
+    }
+    if !failures.is_empty() {
+        super::append_lan_peer_diagnostics_log(&format!(
+            "shared tracked spend rebuild skipped {} invalid event(s): {}",
+            failures.len(),
+            failures.join(" | ")
+        ));
     }
     Ok(())
 }
@@ -268,20 +294,17 @@ pub(crate) fn rebuild_shared_tracked_spend_views(
 pub(crate) fn tracked_spend_history_day_key_for_debug(day: &Value) -> Option<String> {
     let started_at_unix_ms = day
         .get("started_at_unix_ms")
-        .and_then(|value| value.as_u64())
+        .and_then(Value::as_u64)
         .or_else(|| {
             day.get("ended_at_unix_ms")
-                .and_then(|value| value.as_u64())
+                .and_then(Value::as_u64)
                 .map(|value| value.saturating_sub(1))
         })
-        .or_else(|| {
-            day.get("updated_at_unix_ms")
-                .and_then(|value| value.as_u64())
-        })?;
-    let dt = chrono::Local
-        .timestamp_millis_opt(i64::try_from(started_at_unix_ms).ok()?)
+        .or_else(|| day.get("updated_at_unix_ms").and_then(Value::as_u64))?;
+    let local = chrono::Local
+        .timestamp_millis_opt(started_at_unix_ms as i64)
         .single()?;
-    Some(dt.format("%Y-%m-%d").to_string())
+    Some(local.format("%Y-%m-%d").to_string())
 }
 
 fn tracked_spend_history_debug_row(
