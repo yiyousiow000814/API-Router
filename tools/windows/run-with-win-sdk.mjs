@@ -4,6 +4,14 @@ import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
+import {
+  findEnvKey,
+  getEnvValue,
+  prependPathEntry,
+  resolveWindowsSdkBinDir,
+  resolveWindowsSdkTool,
+  setEnvValue,
+} from "./win-sdk-env.mjs";
 
 const args = process.argv.slice(2);
 if (!args.length) {
@@ -33,59 +41,6 @@ async function resolveLocalNodeBin(command) {
     if (await exists(candidate)) return candidate;
   }
   return command;
-}
-
-function findEnvKey(env, name) {
-  const lowered = String(name).toLowerCase();
-  return Object.keys(env).find((key) => key.toLowerCase() === lowered) || null;
-}
-
-function getEnvValue(env, name) {
-  const key = findEnvKey(env, name);
-  return key ? env[key] : undefined;
-}
-
-function setEnvValue(env, name, value) {
-  const existingKey = findEnvKey(env, name);
-  if (existingKey && existingKey !== name) {
-    delete env[existingKey];
-  }
-  env[name] = value;
-}
-
-function prependPathEntry(env, entry) {
-  if (!entry) return;
-  const pathKey = findEnvKey(env, "PATH") || "PATH";
-  const current = String(env[pathKey] || "");
-  const parts = current.split(";").filter(Boolean);
-  if (!parts.some((part) => part.toLowerCase() === String(entry).toLowerCase())) {
-    const next = [entry, ...parts].join(";");
-    setEnvValue(env, pathKey, next);
-    if (pathKey !== "PATH") {
-      env.PATH = next;
-    }
-  }
-}
-
-async function findRcDir() {
-  const pf86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
-  const kitsBin = join(pf86, "Windows Kits", "10", "bin");
-  const preferredVersion = "10.0.26100.0";
-  const preferred = join(kitsBin, preferredVersion, "x64", "rc.exe");
-  if (await exists(preferred)) return join(kitsBin, preferredVersion, "x64");
-
-  // Fallback: walk a short list of likely SDK versions.
-  const candidates = [
-    "10.0.26100.0",
-    "10.0.22621.0",
-    "10.0.22000.0",
-    "10.0.19041.0",
-  ];
-  for (const version of candidates) {
-    const rc = join(kitsBin, version, "x64", "rc.exe");
-    if (await exists(rc)) return join(kitsBin, version, "x64");
-  }
-  return null;
 }
 
 function parseCmdEnvDump(text) {
@@ -178,26 +133,6 @@ function loadVsDevCmdEnv(currentEnv) {
   return null;
 }
 
-async function findWinSdkTool(toolName) {
-  const pf86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
-  const kitsBin = join(pf86, "Windows Kits", "10", "bin");
-  const preferredVersion = "10.0.26100.0";
-  const preferred = join(kitsBin, preferredVersion, "x64", toolName);
-  if (await exists(preferred)) return preferred;
-
-  const candidates = [
-    "10.0.26100.0",
-    "10.0.22621.0",
-    "10.0.22000.0",
-    "10.0.19041.0",
-  ];
-  for (const version of candidates) {
-    const candidate = join(kitsBin, version, "x64", toolName);
-    if (await exists(candidate)) return candidate;
-  }
-  return null;
-}
-
 async function main() {
   const [command, ...commandArgs] = args;
   const env = { ...process.env };
@@ -213,10 +148,12 @@ async function main() {
     if (vsDevEnv) {
       mergeEnvCaseInsensitive(env, pickVsBuildEnv(vsDevEnv));
     }
-    const rcDir = await findRcDir();
-    prependPathEntry(env, rcDir);
-    const rcExe = await findWinSdkTool("rc.exe");
-    const mtExe = await findWinSdkTool("mt.exe");
+    const sdkProbe = await resolveWindowsSdkBinDir({ env });
+    prependPathEntry(env, sdkProbe.binDir);
+    const rcTool = await resolveWindowsSdkTool("rc.exe", { env });
+    const mtTool = await resolveWindowsSdkTool("mt.exe", { env });
+    const rcExe = rcTool.path;
+    const mtExe = mtTool.path;
     if (rcExe && !getEnvValue(env, "RC")) {
       setEnvValue(env, "RC", rcExe);
       setEnvValue(env, "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RC", rcExe);
@@ -224,6 +161,14 @@ async function main() {
     if (mtExe && !getEnvValue(env, "MT")) {
       setEnvValue(env, "MT", mtExe);
       setEnvValue(env, "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_MT", mtExe);
+    }
+    if (process.env.API_ROUTER_WIN_SDK_TRACE === "1") {
+      const checkedPaths = [...(sdkProbe.checkedPaths || []), ...(mtTool.checkedPaths || [])]
+        .filter(Boolean)
+        .join(", ");
+      console.error(
+        `[run-with-win-sdk] sdk bin=${sdkProbe.binDir || "<none>"} rc=${rcExe || "<none>"} mt=${mtExe || "<none>"} checked=${checkedPaths || "<none>"}`,
+      );
     }
   }
 
