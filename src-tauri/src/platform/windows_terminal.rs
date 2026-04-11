@@ -151,6 +151,7 @@ struct RolloutSessionMeta {
     cwd: String,
     model_provider: Option<String>,
     base_url: Option<String>,
+    agent_parent_session_id: Option<String>,
     is_agent: bool,
     is_review: bool,
 }
@@ -190,6 +191,32 @@ fn rollout_source_is_review(source: Option<&serde_json::Value>) -> bool {
 }
 
 #[cfg(windows)]
+fn rollout_source_parent_session_id(source: Option<&serde_json::Value>) -> Option<String> {
+    let source = source?;
+    let parent = match source {
+        serde_json::Value::Object(map) => map
+            .get("subagent")
+            .or_else(|| map.get("subAgent"))
+            .and_then(|subagent| match subagent {
+                serde_json::Value::Object(subagent_map) => subagent_map
+                    .get("thread_spawn")
+                    .or_else(|| subagent_map.get("threadSpawn"))
+                    .and_then(|thread_spawn| thread_spawn.as_object())
+                    .and_then(|thread_spawn| {
+                        thread_spawn
+                            .get("parent_thread_id")
+                            .or_else(|| thread_spawn.get("parentThreadId"))
+                            .and_then(|value| value.as_str())
+                    }),
+                _ => None,
+            }),
+        _ => None,
+    }?;
+    let parent = parent.trim();
+    (!parent.is_empty()).then(|| parent.to_string())
+}
+
+#[cfg(windows)]
 fn parse_rollout_session_meta(first_line: &str) -> Option<RolloutSessionMeta> {
     let meta: serde_json::Value = serde_json::from_str(first_line.trim()).ok()?;
     let payload = meta.get("payload")?;
@@ -211,6 +238,7 @@ fn parse_rollout_session_meta(first_line: &str) -> Option<RolloutSessionMeta> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     let source = payload.get("source");
+    let agent_parent_session_id = rollout_source_parent_session_id(source);
     let is_agent = rollout_source_is_agent(source);
     let is_review = rollout_source_is_review(source);
     Some(RolloutSessionMeta {
@@ -218,6 +246,7 @@ fn parse_rollout_session_meta(first_line: &str) -> Option<RolloutSessionMeta> {
         cwd,
         model_provider,
         base_url,
+        agent_parent_session_id,
         is_agent,
         is_review,
     })

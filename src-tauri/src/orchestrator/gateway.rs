@@ -101,6 +101,8 @@ pub struct ClientSessionRuntime {
     // Last model observed from upstream response payload/events.
     pub last_reported_model: Option<String>,
     pub last_reported_base_url: Option<String>,
+    // Canonical rollout path for this session. Sessions without rollout stay out of the UI.
+    pub rollout_path: Option<String>,
     // Parent main session id for agent sub-sessions when known.
     pub agent_parent_session_id: Option<String>,
     // Mark sessions spawned from Codex subagent flows.
@@ -995,6 +997,9 @@ async fn responses(
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: client_session
+                    .as_ref()
+                    .and_then(|session| session.rollout_path.clone()),
                 agent_parent_session_id: None,
                 is_agent: agent_request || client_session.as_ref().is_some_and(|s| s.is_agent),
                 is_review: false,
@@ -1018,6 +1023,14 @@ async fn responses(
             }
             if inferred.is_review {
                 entry.is_review = true;
+            }
+            if let Some(rollout_path) = inferred
+                .rollout_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+            {
+                entry.rollout_path = Some(rollout_path.to_string());
             }
         }
         if request_is_wsl && !is_review_session {
@@ -1071,6 +1084,7 @@ async fn responses(
                             ),
                             last_reported_model: None,
                             last_reported_base_url: None,
+                            rollout_path: None,
                             agent_parent_session_id: None,
                             is_agent: false,
                             is_review: false,

@@ -660,11 +660,19 @@ fn discover_sessions_using_router_uncached(
             })
         }
 
+        struct RolloutSessionIdentity {
+            base_url: Option<String>,
+            agent_parent_session_id: Option<String>,
+            is_agent: bool,
+            is_review: bool,
+            matched: bool,
+        }
+
         fn rollout_meta_for_session(
             codex_home_unc: &std::path::Path,
             session_id: &str,
             server_port: u16,
-        ) -> Option<(Option<String>, bool, bool, bool)> {
+        ) -> Option<RolloutSessionIdentity> {
             let rollout = latest_rollout_for_session(codex_home_unc, session_id)?;
             let file = std::fs::File::open(&rollout).ok()?;
             let mut r = std::io::BufReader::new(file);
@@ -674,7 +682,13 @@ fn discover_sessions_using_router_uncached(
             }
             let m = parse_rollout_session_meta(&first)?;
             let matched = rollout_base_url_matches_router(&m, server_port).unwrap_or(false);
-            Some((m.base_url.clone(), m.is_agent, m.is_review, matched))
+            Some(RolloutSessionIdentity {
+                base_url: m.base_url.clone(),
+                agent_parent_session_id: m.agent_parent_session_id.clone(),
+                is_agent: m.is_agent,
+                is_review: m.is_review,
+                matched,
+            })
         }
 
         let script = "ps -eo pid=,etimes=,args= | grep -E 'codex.js|@openai/codex|/codex( |$)' | grep -v grep";
@@ -793,19 +807,21 @@ fn discover_sessions_using_router_uncached(
             }
 
             let mut reported_base_url: Option<String> = None;
+            let mut rollout_parent_session_id: Option<String> = None;
             let mut is_agent = false;
             let mut is_review = false;
             let mut router_confirmed = false;
             let mut base_url_evidence_kind = BaseUrlEvidenceKind::None;
 
             if let Some(codex_home_unc) = codex_home_unc.as_deref() {
-                if let Some((base, agent, review, matched)) =
+                if let Some(rollout_identity) =
                     rollout_meta_for_session(codex_home_unc, &codex_session_id, server_port)
                 {
-                    reported_base_url = base;
-                    is_agent = agent;
-                    is_review = review;
-                    router_confirmed = matched;
+                    reported_base_url = rollout_identity.base_url;
+                    rollout_parent_session_id = rollout_identity.agent_parent_session_id;
+                    is_agent = rollout_identity.is_agent;
+                    is_review = rollout_identity.is_review;
+                    router_confirmed = rollout_identity.matched;
                 }
                 if !router_confirmed && base_url_evidence_kind == BaseUrlEvidenceKind::None {
                     if let Some(base) = env_base_url.as_deref() {
@@ -847,9 +863,11 @@ fn discover_sessions_using_router_uncached(
                 }
             }
             let agent_parent_session_id = if is_agent {
-                codex_home_unc
-                    .as_deref()
-                    .and_then(|home| infer_parent_session_id_from_tui_log(home, &codex_session_id))
+                rollout_parent_session_id.or_else(|| {
+                    codex_home_unc
+                        .as_deref()
+                        .and_then(|home| infer_parent_session_id_from_tui_log(home, &codex_session_id))
+                })
             } else {
                 None
             };
@@ -1039,9 +1057,14 @@ fn discover_sessions_using_router_uncached(
                 let is_agent = rollout_meta.as_ref().map(|m| m.is_agent).unwrap_or(false);
                 let is_review = rollout_meta.as_ref().map(|m| m.is_review).unwrap_or(false);
                 let agent_parent_session_id = if is_agent {
-                    codex_home.as_deref().and_then(|home| {
-                        infer_parent_session_id_from_tui_log(home, &codex_session_id)
-                    })
+                    rollout_meta
+                        .as_ref()
+                        .and_then(|m| m.agent_parent_session_id.clone())
+                        .or_else(|| {
+                            codex_home.as_deref().and_then(|home| {
+                                infer_parent_session_id_from_tui_log(home, &codex_session_id)
+                            })
+                        })
                 } else {
                     None
                 };

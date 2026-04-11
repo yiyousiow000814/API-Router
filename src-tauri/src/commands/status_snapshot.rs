@@ -241,6 +241,7 @@ pub(crate) fn get_status(
                             last_reported_model_provider: None,
                             last_reported_model: None,
                             last_reported_base_url: None,
+                            rollout_path: s.rollout_path.clone(),
                             agent_parent_session_id: None,
                             is_agent: s.is_agent,
                             is_review: s.is_review,
@@ -258,6 +259,14 @@ pub(crate) fn get_status(
                     merge_discovered_model_provider(entry, s.reported_model_provider.as_deref());
                     if let Some(bu) = s.reported_base_url.as_deref() {
                         entry.last_reported_base_url = Some(bu.to_string());
+                    }
+                    if let Some(rollout_path) = s
+                        .rollout_path
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|path| !path.is_empty())
+                    {
+                        entry.rollout_path = Some(rollout_path.to_string());
                     }
                     if let Some(parent_sid) = s.agent_parent_session_id.as_deref() {
                         entry.agent_parent_session_id = Some(parent_sid.to_string());
@@ -349,7 +358,7 @@ pub(crate) fn get_status(
             state.gateway.client_sessions.read().clone()
         };
         let last_used_by_session = state.gateway.last_used_by_session.read().clone();
-        let items = recent_client_sessions_with_main_parent_context(&map, 20);
+        let items = visible_client_session_items(&map, 20);
         let sessions = items
             .into_iter()
             .map(|(_codex_session_id, v)| {
@@ -999,6 +1008,7 @@ fn backfill_main_confirmation_from_verified_agent(
                     ),
                     last_reported_model: anchor.last_reported_model.clone(),
                     last_reported_base_url: anchor.last_reported_base_url.clone(),
+                    rollout_path: None,
                     agent_parent_session_id: None,
                     is_agent: false,
                     is_review: false,
@@ -1078,6 +1088,14 @@ fn session_last_seen_unix_ms(
     entry.last_request_unix_ms.max(entry.last_discovered_unix_ms)
 }
 
+fn session_has_rollout(entry: &crate::orchestrator::gateway::ClientSessionRuntime) -> bool {
+    entry
+        .rollout_path
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|path| !path.is_empty())
+}
+
 fn recent_client_sessions_with_main_parent_context(
     map: &std::collections::HashMap<String, crate::orchestrator::gateway::ClientSessionRuntime>,
     primary_limit: usize,
@@ -1118,6 +1136,18 @@ fn recent_client_sessions_with_main_parent_context(
     items
 }
 
+fn visible_client_session_items(
+    map: &std::collections::HashMap<String, crate::orchestrator::gateway::ClientSessionRuntime>,
+    primary_limit: usize,
+) -> Vec<(String, crate::orchestrator::gateway::ClientSessionRuntime)> {
+    let visible_sessions = map
+        .iter()
+        .filter(|(_sid, runtime)| session_has_rollout(runtime))
+        .map(|(sid, runtime)| (sid.clone(), runtime.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    recent_client_sessions_with_main_parent_context(&visible_sessions, primary_limit)
+}
+
 fn next_last_discovered_unix_ms(prev: u64, now: u64, discovery_is_fresh: bool) -> u64 {
     if discovery_is_fresh {
         return now;
@@ -1143,12 +1173,19 @@ fn should_keep_runtime_session(
     wsl_discovery_miss_count: u8,
     discovery_is_fresh: bool,
 ) -> bool {
+    const AGENT_MAX_STALE_MS: u64 = 15 * 60 * 1000;
     const WSL_MAX_DISCOVERY_MISSES: u8 = 3;
     const PIDLESS_WT_MAX_STALE_MS: u64 = 15 * 60 * 1000;
 
     let active = session_is_active(entry, now);
     if entry.is_review {
         return active;
+    }
+    if entry.is_agent {
+        let last_seen = entry.last_request_unix_ms.max(entry.last_discovered_unix_ms);
+        if last_seen == 0 || now.saturating_sub(last_seen) > AGENT_MAX_STALE_MS {
+            return false;
+        }
     }
     if entry.pid != 0 && !is_pid_alive(entry.pid) {
         return false;
@@ -1556,6 +1593,7 @@ mod tests {
             last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
             last_reported_model: None,
             last_reported_base_url: None,
+            rollout_path: None,
             agent_parent_session_id: None,
             is_agent: false,
             is_review: false,
@@ -1765,6 +1803,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            rollout_path: None,
             agent_parent_session_id: None,
             is_agent: false,
             is_review: false,
@@ -1785,6 +1824,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            rollout_path: None,
             agent_parent_session_id: None,
             is_agent: false,
             is_review: false,
@@ -1809,6 +1849,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            rollout_path: None,
             agent_parent_session_id: None,
             is_agent: true,
             is_review: false,
@@ -1891,6 +1932,7 @@ mod tests {
                     last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                     last_reported_model: None,
                     last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                    rollout_path: None,
                     agent_parent_session_id: None,
                     is_agent: false,
                     is_review: false,
@@ -2000,6 +2042,7 @@ mod tests {
                         last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                         last_reported_model: None,
                         last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                        rollout_path: None,
                         agent_parent_session_id: None,
                         is_agent: false,
                         is_review: false,
@@ -2017,6 +2060,7 @@ mod tests {
                         last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                         last_reported_model: None,
                         last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                        rollout_path: None,
                         agent_parent_session_id: None,
                         is_agent: false,
                         is_review: false,
@@ -2163,6 +2207,7 @@ mod tests {
                     last_reported_model_provider: None,
                     last_reported_model: None,
                     last_reported_base_url: None,
+                    rollout_path: None,
                     agent_parent_session_id: None,
                     is_agent: false,
                     is_review: false,
@@ -2180,6 +2225,7 @@ mod tests {
                     last_reported_model_provider: None,
                     last_reported_model: None,
                     last_reported_base_url: None,
+                    rollout_path: None,
                     agent_parent_session_id: Some("main-1".to_string()),
                     is_agent: true,
                     is_review: false,
@@ -2197,6 +2243,7 @@ mod tests {
                     last_reported_model_provider: None,
                     last_reported_model: None,
                     last_reported_base_url: None,
+                    rollout_path: None,
                     agent_parent_session_id: Some("main-1".to_string()),
                     is_agent: true,
                     is_review: true,
@@ -2257,6 +2304,7 @@ mod tests {
             last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
             last_reported_model: None,
             last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+            rollout_path: None,
             agent_parent_session_id: is_agent.then_some("main-a".to_string()),
             is_agent,
             is_review,
@@ -2454,6 +2502,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -2471,6 +2520,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: true,
                 is_review: true,
@@ -2502,6 +2552,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -2519,6 +2570,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: true,
                 is_review: true,
@@ -2550,6 +2602,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -2567,6 +2620,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: true,
                 is_review: true,
@@ -2598,6 +2652,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -2615,6 +2670,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: true,
                 is_review: false,
@@ -2646,6 +2702,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -2663,6 +2720,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: Some("main_from_parent".to_string()),
                 is_agent: true,
                 is_review: false,
@@ -2694,6 +2752,7 @@ mod tests {
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -2711,6 +2770,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: Some("main-confirmed".to_string()),
                 is_agent: true,
                 is_review: false,
@@ -2742,6 +2802,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: Some("gpt-5.4".to_string()),
                 last_reported_base_url: Some("http://172.26.144.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: Some("main-synth".to_string()),
                 is_agent: true,
                 is_review: false,
@@ -2777,6 +2838,7 @@ mod tests {
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -2794,6 +2856,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: true,
                 is_review: false,
@@ -2863,6 +2926,7 @@ mod tests {
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -2880,6 +2944,7 @@ mod tests {
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: Some("main-parent".to_string()),
                 is_agent: true,
                 is_review: false,
@@ -2899,6 +2964,7 @@ mod tests {
                     last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                     last_reported_model: None,
                     last_reported_base_url: None,
+                    rollout_path: None,
                     agent_parent_session_id: None,
                     is_agent: false,
                     is_review: false,
@@ -2908,6 +2974,166 @@ mod tests {
         }
 
         let items = super::recent_client_sessions_with_main_parent_context(&map, 20);
+        let ids: std::collections::HashSet<String> =
+            items.iter().map(|(sid, _runtime)| sid.clone()).collect();
+
+        assert!(ids.contains("agent-top"));
+        assert!(ids.contains("main-parent"));
+        assert_eq!(items.len(), 21);
+    }
+
+    #[test]
+    fn visible_client_sessions_skip_entries_without_rollout() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "main-no-rollout".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "main-no-rollout".to_string(),
+                pid: 0,
+                wt_session: Some("wt-main".to_string()),
+                last_request_unix_ms: 100,
+                last_discovered_unix_ms: 100,
+                last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                last_reported_model: None,
+                last_reported_base_url: None,
+                rollout_path: None,
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: true,
+            },
+        );
+        map.insert(
+            "agent-no-rollout".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "agent-no-rollout".to_string(),
+                pid: 0,
+                wt_session: Some("wt-agent".to_string()),
+                last_request_unix_ms: 200,
+                last_discovered_unix_ms: 200,
+                last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                last_reported_model: None,
+                last_reported_base_url: None,
+                rollout_path: None,
+                agent_parent_session_id: Some("main-with-rollout".to_string()),
+                is_agent: true,
+                is_review: false,
+                confirmed_router: true,
+            },
+        );
+        map.insert(
+            "main-with-rollout".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "main-with-rollout".to_string(),
+                pid: 0,
+                wt_session: Some("wt-main-2".to_string()),
+                last_request_unix_ms: 300,
+                last_discovered_unix_ms: 300,
+                last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                last_reported_model: None,
+                last_reported_base_url: None,
+                rollout_path: Some("C:\\repo\\.codex\\sessions\\rollout-main.jsonl".to_string()),
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: true,
+            },
+        );
+        map.insert(
+            "review-with-rollout".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "review-with-rollout".to_string(),
+                pid: 0,
+                wt_session: Some("wt-review".to_string()),
+                last_request_unix_ms: 400,
+                last_discovered_unix_ms: 400,
+                last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                last_reported_model: None,
+                last_reported_base_url: None,
+                rollout_path: Some(
+                    "C:\\repo\\.codex\\sessions\\rollout-review.jsonl".to_string(),
+                ),
+                agent_parent_session_id: Some("main-with-rollout".to_string()),
+                is_agent: true,
+                is_review: true,
+                confirmed_router: true,
+            },
+        );
+
+        let items = super::visible_client_session_items(&map, 20);
+        let ids: std::collections::HashSet<String> =
+            items.iter().map(|(sid, _runtime)| sid.clone()).collect();
+
+        assert!(ids.contains("main-with-rollout"));
+        assert!(ids.contains("review-with-rollout"));
+        assert!(!ids.contains("main-no-rollout"));
+        assert!(!ids.contains("agent-no-rollout"));
+    }
+
+    #[test]
+    fn visible_client_sessions_keep_rollout_parent_context_for_agent_rows() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "main-parent".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "main-parent".to_string(),
+                pid: 0,
+                wt_session: Some("wt-main".to_string()),
+                last_request_unix_ms: 10,
+                last_discovered_unix_ms: 10,
+                last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                last_reported_model: None,
+                last_reported_base_url: None,
+                rollout_path: Some("C:\\repo\\.codex\\sessions\\rollout-main.jsonl".to_string()),
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: true,
+            },
+        );
+        map.insert(
+            "agent-top".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "agent-top".to_string(),
+                pid: 0,
+                wt_session: Some("wt-agent".to_string()),
+                last_request_unix_ms: 500,
+                last_discovered_unix_ms: 500,
+                last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                last_reported_model: None,
+                last_reported_base_url: None,
+                rollout_path: Some("C:\\repo\\.codex\\sessions\\rollout-agent.jsonl".to_string()),
+                agent_parent_session_id: Some("main-parent".to_string()),
+                is_agent: true,
+                is_review: false,
+                confirmed_router: true,
+            },
+        );
+        for index in 0..20 {
+            let sid = format!("other-{index:02}");
+            map.insert(
+                sid.clone(),
+                ClientSessionRuntime {
+                    codex_session_id: sid,
+                    pid: 0,
+                    wt_session: None,
+                    last_request_unix_ms: 400_u64.saturating_sub(index as u64),
+                    last_discovered_unix_ms: 400_u64.saturating_sub(index as u64),
+                    last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                    last_reported_model: None,
+                    last_reported_base_url: None,
+                    rollout_path: Some(format!(
+                        "C:\\repo\\.codex\\sessions\\rollout-other-{index:02}.jsonl"
+                    )),
+                    agent_parent_session_id: None,
+                    is_agent: false,
+                    is_review: false,
+                    confirmed_router: true,
+                },
+            );
+        }
+
+        let items = super::visible_client_session_items(&map, 20);
         let ids: std::collections::HashSet<String> =
             items.iter().map(|(sid, _runtime)| sid.clone()).collect();
 
@@ -2950,6 +3176,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -2967,6 +3194,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: true,
                 is_review: false,
@@ -2998,6 +3226,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -3015,6 +3244,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: true,
                 is_review: true,
@@ -3046,6 +3276,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -3063,6 +3294,7 @@ mod tests {
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: true,
                 is_review: true,
@@ -3181,6 +3413,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            rollout_path: None,
             agent_parent_session_id: None,
             is_agent: false,
             is_review: false,
@@ -3203,6 +3436,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            rollout_path: None,
             agent_parent_session_id: None,
             is_agent: false,
             is_review: false,
@@ -3225,6 +3459,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            rollout_path: None,
             agent_parent_session_id: Some("main-thread".to_string()),
             is_agent: true,
             is_review: false,
@@ -3247,6 +3482,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            rollout_path: None,
             agent_parent_session_id: None,
             is_agent: false,
             is_review: false,
@@ -3269,6 +3505,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            rollout_path: None,
             agent_parent_session_id: None,
             is_agent: false,
             is_review: false,
@@ -3291,6 +3528,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            rollout_path: None,
             agent_parent_session_id: Some("main-1".to_string()),
             is_agent: true,
             is_review: true,
@@ -3313,6 +3551,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            rollout_path: None,
             agent_parent_session_id: Some("main-1".to_string()),
             is_agent: true,
             is_review: true,
@@ -3322,6 +3561,30 @@ mod tests {
         let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 0, true);
         assert!(!keep);
     }
+
+    #[test]
+    fn inactive_agent_with_live_process_identity_drops_after_stale_window() {
+        let now = 2_000_000_u64;
+        let entry = ClientSessionRuntime {
+            codex_session_id: "agent-shared-pid".to_string(),
+            pid: 9527,
+            wt_session: Some("wt-main".to_string()),
+            last_request_unix_ms: now.saturating_sub(20 * 60 * 1000),
+            last_discovered_unix_ms: now.saturating_sub(20 * 60 * 1000),
+            last_reported_model_provider: None,
+            last_reported_model: None,
+            last_reported_base_url: None,
+            rollout_path: None,
+            agent_parent_session_id: Some("main-1".to_string()),
+            is_agent: true,
+            is_review: false,
+            confirmed_router: true,
+        };
+
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 0, true);
+        assert!(!keep);
+    }
+
     #[test]
     fn pidless_wt_session_drops_when_stale_too_long_even_if_wt_alive() {
         let now = 2_000_000_u64;
@@ -3334,6 +3597,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            rollout_path: None,
             agent_parent_session_id: None,
             is_agent: false,
             is_review: false,
@@ -3356,6 +3620,7 @@ mod tests {
             last_reported_model_provider: None,
             last_reported_model: None,
             last_reported_base_url: None,
+            rollout_path: None,
             agent_parent_session_id: None,
             is_agent: false,
             is_review: false,
