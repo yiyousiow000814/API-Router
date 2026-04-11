@@ -54,7 +54,7 @@ type DiagnosticVersionRow = {
   feature: string
   version: number
   localVersion?: number
-  status: 'match' | 'mismatch' | 'local_only'
+  status: 'match' | 'mismatch' | 'local_only' | 'peer_only'
 }
 
 export function remoteUpdateDebugPollNodeIds(
@@ -163,8 +163,9 @@ export function diagnosticVersionRows(
 ): DiagnosticVersionRow[] {
   const statusOrder: Record<DiagnosticVersionRow['status'], number> = {
     mismatch: 0,
-    local_only: 1,
-    match: 2,
+    peer_only: 1,
+    local_only: 2,
+    match: 3,
   }
   const localMap = new Map(
     diagnosticVersionEntries(localSource)
@@ -186,7 +187,7 @@ export function diagnosticVersionRows(
         version: row.version,
         localVersion,
         status:
-          localVersion == null ? 'local_only' : localVersion === row.version ? 'match' : 'mismatch',
+          localVersion == null ? 'peer_only' : localVersion === row.version ? 'match' : 'mismatch',
       } as DiagnosticVersionRow
     })
     .sort((left, right) => {

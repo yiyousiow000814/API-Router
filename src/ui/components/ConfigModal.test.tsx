@@ -129,6 +129,40 @@ describe('ConfigModal', () => {
     ])
   })
 
+  it('marks peer-only version entries as peer_only', () => {
+    expect(
+      diagnosticVersionRows(
+        {
+          version_inventory: ['heartbeat_v1', 'usage_history_v4', 'shared_health_v1'],
+          sync_contracts: { usage_history: 4, shared_health: 1 },
+        },
+        {
+          version_inventory: ['heartbeat_v1', 'usage_history_v4'],
+          sync_contracts: { usage_history: 4 },
+        },
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        feature: 'shared_health',
+        localVersion: undefined,
+        version: 1,
+        status: 'peer_only',
+      }),
+      expect.objectContaining({
+        feature: 'heartbeat',
+        localVersion: 1,
+        version: 1,
+        status: 'match',
+      }),
+      expect.objectContaining({
+        feature: 'usage_history',
+        localVersion: 4,
+        version: 4,
+        status: 'match',
+      }),
+    ])
+  })
+
   it('sanitizes debug log tail noise and ansi fragments', () => {
     const { recent, older } = splitRemoteDebugLogTail(
       [
