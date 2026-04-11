@@ -7386,6 +7386,15 @@ mod tests {
     }
 
     #[test]
+    fn tracked_spend_history_day_key_for_debug_rejects_overflow_timestamp() {
+        let day = serde_json::json!({
+            "started_at_unix_ms": (i64::MAX as u64).saturating_add(1),
+            "tracked_spend_usd": 1.0
+        });
+        assert_eq!(super::tracked_spend_history_day_key_for_debug(&day), None);
+    }
+
+    #[test]
     fn rebuild_shared_tracked_spend_views_ignores_remote_cache_truth() {
         let (_tmp, state) = build_test_state();
         let shared_provider_id = state

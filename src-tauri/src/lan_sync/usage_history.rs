@@ -302,7 +302,7 @@ pub(crate) fn tracked_spend_history_day_key_for_debug(day: &Value) -> Option<Str
         })
         .or_else(|| day.get("updated_at_unix_ms").and_then(Value::as_u64))?;
     let local = chrono::Local
-        .timestamp_millis_opt(started_at_unix_ms as i64)
+        .timestamp_millis_opt(i64::try_from(started_at_unix_ms).ok()?)
         .single()?;
     Some(local.format("%Y-%m-%d").to_string())
 }
