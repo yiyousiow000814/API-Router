@@ -16,6 +16,7 @@ use std::sync::{Mutex, OnceLock};
 #[cfg(windows)]
 use std::time::{Duration, SystemTime};
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct InferredWtSession {
     pub wt_session: String,
@@ -33,6 +34,7 @@ pub struct InferredWtSession {
     pub is_review: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct SessionDiscoverySnapshot {
     pub items: Vec<InferredWtSession>,
@@ -558,91 +560,6 @@ fn infer_parent_session_id_from_tui_log(
         }
     }
     last_parent
-}
-
-pub(crate) fn infer_parent_session_id_for_agent_session(child_session_id: &str) -> Option<String> {
-    #[cfg(not(windows))]
-    {
-        let _ = child_session_id;
-        None
-    }
-
-    #[cfg(windows)]
-    {
-        fn now_unix_ms() -> u64 {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .ok()
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0)
-        }
-
-        #[derive(Clone)]
-        struct CacheEntry {
-            updated_at_unix_ms: u64,
-            parent_session_id: Option<String>,
-        }
-
-        static CACHE: OnceLock<Mutex<std::collections::HashMap<String, CacheEntry>>> =
-            OnceLock::new();
-        let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
-        const TTL_MS: u64 = 2_000;
-
-        let child = child_session_id.trim();
-        if uuid::Uuid::parse_str(child).is_err() {
-            return None;
-        }
-
-        let now = now_unix_ms();
-        if let Ok(guard) = cache.lock() {
-            if let Some(hit) = guard.get(child) {
-                if now.saturating_sub(hit.updated_at_unix_ms) < TTL_MS {
-                    return hit.parent_session_id.clone();
-                }
-            }
-        }
-
-        let mut homes: Vec<std::path::PathBuf> = Vec::new();
-        let mut push_home = |p: std::path::PathBuf| {
-            if !homes.iter().any(|v| v == &p) {
-                homes.push(p);
-            }
-        };
-        if let Ok(v) = std::env::var("CODEX_HOME") {
-            let v = v.trim();
-            if !v.is_empty() {
-                push_home(std::path::PathBuf::from(v));
-            }
-        }
-        if let Ok(user) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
-            let user = user.trim();
-            if !user.is_empty() {
-                push_home(std::path::PathBuf::from(user).join(".codex"));
-            }
-        }
-        if let Some(wsl_home) = crate::codex_cli_swap::default_wsl_cli_codex_home() {
-            push_home(wsl_home);
-        }
-
-        let parent = homes
-            .iter()
-            .find_map(|home| infer_parent_session_id_from_tui_log(home, child));
-
-        if let Ok(mut guard) = cache.lock() {
-            guard.insert(
-                child.to_string(),
-                CacheEntry {
-                    updated_at_unix_ms: now,
-                    parent_session_id: parent.clone(),
-                },
-            );
-            if guard.len() > 1024 {
-                guard.clear();
-            }
-        }
-        parent
-    }
 }
 
 pub fn infer_wt_session(peer: SocketAddr, server_port: u16) -> Option<InferredWtSession> {

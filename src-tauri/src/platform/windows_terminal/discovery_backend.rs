@@ -374,7 +374,7 @@ fn discover_sessions_using_router_uncached(
             .and_then(|(cfg, _mtime)| get_model_provider_id(cfg))
     }
 
-    fn latest_rollout_for_session(
+    pub(crate) fn latest_rollout_for_session(
         codex_home: &std::path::Path,
         session_id: &str,
     ) -> Option<std::path::PathBuf> {

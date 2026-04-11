@@ -8,6 +8,18 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+mod status_snapshot_support;
+
+#[allow(unused_imports)]
+pub(crate) use self::status_snapshot_support::{
+    merge_thread_index_session_hints, next_last_discovered_unix_ms,
+    recent_client_sessions_with_main_parent_context, retain_live_app_server_sessions,
+    session_has_rollout, session_is_active, session_last_seen_unix_ms, should_keep_runtime_session,
+    thread_item_bool_field, thread_item_is_live_presence, thread_item_parent_session_id,
+    thread_item_status_type, thread_item_string_field, thread_item_updated_unix_ms,
+    visible_client_session_items,
+};
+
 fn tracked_spend_day_key(day: &Value) -> Option<String> {
     day.get("day_key")
         .and_then(Value::as_str)

@@ -2,6 +2,7 @@ use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
 use crate::orchestrator::gateway::web_codex_session_runtime::workspace_thread_runtime_snapshot;
 use chrono::DateTime;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 mod source;
 
@@ -37,6 +38,12 @@ pub(super) struct ThreadListSnapshot {
     pub(super) items: Vec<Value>,
     pub(super) cache_hit: bool,
     pub(super) rebuild_ms: i64,
+}
+
+#[derive(Clone)]
+pub(crate) struct CachedThreadIndexSnapshot {
+    pub(crate) items: Vec<Value>,
+    pub(crate) fresh: bool,
 }
 
 fn current_unix_secs() -> i64 {
@@ -270,6 +277,66 @@ fn clear_bucket_refreshing(bucket: &mut WorkspaceThreadsBucket) {
     bucket.refresh_started_at_unix_secs = 0;
 }
 
+fn log_thread_index_rebuild_delta(
+    target: WorkspaceTarget,
+    previous_items: &[Value],
+    next_items: &[Value],
+    rebuild_ms: i64,
+) {
+    let previous_ids = previous_items
+        .iter()
+        .filter_map(|item| {
+            item.get("id")
+                .or_else(|| item.get("threadId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .collect::<HashSet<_>>();
+    let next_ids = next_items
+        .iter()
+        .filter_map(|item| {
+            item.get("id")
+                .or_else(|| item.get("threadId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .collect::<HashSet<_>>();
+    let mut added_ids = next_ids
+        .difference(&previous_ids)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut removed_ids = previous_ids
+        .difference(&next_ids)
+        .cloned()
+        .collect::<Vec<_>>();
+    added_ids.sort();
+    removed_ids.sort();
+    if added_ids.is_empty() && removed_ids.is_empty() {
+        return;
+    }
+    let _ =
+        crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(&json!({
+            "source": "thread.index",
+            "entry": {
+                "at": crate::orchestrator::store::unix_ms(),
+                "kind": "thread.index.rebuild.delta",
+                "workspace": match target {
+                    WorkspaceTarget::Windows => "windows",
+                    WorkspaceTarget::Wsl2 => "wsl2",
+                },
+                "rebuildMs": rebuild_ms,
+                "previousCount": previous_items.len(),
+                "nextCount": next_items.len(),
+                "addedIds": added_ids,
+                "removedIds": removed_ids,
+            }
+        }));
+}
+
 fn bucket_refresh_is_stuck(bucket: &WorkspaceThreadsBucket, now_unix_secs: i64) -> bool {
     bucket.refreshing
         && (bucket.refresh_started_at_unix_secs <= 0
@@ -438,11 +505,54 @@ pub(super) fn spawn_thread_index_prewarm() {
             }
         };
         if should_spawn {
-            tokio::spawn(async move {
-                refresh_workspace_thread_index(target).await;
-            });
+            spawn_thread_index_refresh(target);
         }
     }
+}
+
+pub(crate) fn cached_threads_snapshot_stale_while_revalidate() -> CachedThreadIndexSnapshot {
+    let now = current_unix_secs();
+    let mut refresh_targets = Vec::new();
+    {
+        let mut index = lock_threads_workspace_index();
+        for target in [WorkspaceTarget::Windows, WorkspaceTarget::Wsl2] {
+            let bucket = workspace_bucket_mut(&mut index, target);
+            if bucket_refresh_is_stuck(bucket, now) {
+                clear_bucket_refreshing(bucket);
+            }
+            let has_items = !bucket.items.is_empty();
+            let stale = now.saturating_sub(bucket.updated_at_unix_secs) >= THREADS_INDEX_STALE_SECS;
+            let has_missing_rollout = has_missing_session_rollout_path(&bucket.items);
+            if (!has_items || stale || has_missing_rollout) && !bucket.refreshing {
+                mark_bucket_refreshing(bucket);
+                refresh_targets.push(target);
+            }
+        }
+    }
+
+    for target in refresh_targets {
+        spawn_thread_index_refresh(target);
+    }
+
+    let index = lock_threads_workspace_index();
+    let windows = workspace_bucket_ref(&index, WorkspaceTarget::Windows);
+    let wsl2 = workspace_bucket_ref(&index, WorkspaceTarget::Wsl2);
+    let mut merged = merge_items_without_duplicates(windows.items.clone(), wsl2.items.clone());
+    sort_threads_by_updated_desc(&mut merged);
+    let fresh = [windows, wsl2].into_iter().all(|bucket| {
+        bucket.updated_at_unix_secs > 0
+            && now.saturating_sub(bucket.updated_at_unix_secs) < THREADS_INDEX_STALE_SECS
+    });
+    CachedThreadIndexSnapshot {
+        items: merged,
+        fresh,
+    }
+}
+
+fn spawn_thread_index_refresh(target: WorkspaceTarget) {
+    tauri::async_runtime::spawn(async move {
+        refresh_workspace_thread_index(target).await;
+    });
 }
 
 pub(super) async fn list_threads_snapshot(
@@ -508,10 +618,12 @@ async fn refresh_workspace_thread_index(target: WorkspaceTarget) {
     let bucket = workspace_bucket_mut(&mut index, target);
     match rebuilt_items {
         Ok(Ok(rebuilt_items)) => {
+            let previous_items = bucket.items.clone();
             let retained_live_items = retained_live_notification_items(&bucket.items);
             bucket.items = merge_items_without_duplicates(rebuilt_items, retained_live_items);
             sort_threads_by_updated_desc(&mut bucket.items);
             bucket.updated_at_unix_secs = current_unix_secs();
+            log_thread_index_rebuild_delta(target, &previous_items, &bucket.items, rebuild_ms);
         }
         Ok(Err(err)) => {
             log::warn!("failed to rebuild {:?} Codex thread index: {err}", target);
@@ -1119,6 +1231,16 @@ mod tests {
             "missing hinted rollout path should force rebuild and drop stale cached item: {:?}",
             snapshot.items
         );
+    }
+
+    #[test]
+    fn cached_threads_snapshot_stale_while_revalidate_does_not_require_tokio_runtime() {
+        super::clear_threads_workspace_index_for_test();
+
+        let snapshot = super::cached_threads_snapshot_stale_while_revalidate();
+
+        assert!(snapshot.items.is_empty());
+        assert!(!snapshot.fresh);
     }
 
     #[tokio::test]

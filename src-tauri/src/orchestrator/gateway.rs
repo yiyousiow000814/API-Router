@@ -711,7 +711,7 @@ mod web_codex_session_runtime;
 pub(crate) mod web_codex_storage;
 mod web_codex_thread_options;
 mod web_codex_thread_routes;
-mod web_codex_threads;
+pub(crate) mod web_codex_threads;
 mod web_codex_ws;
 include!("gateway/web_codex.rs");
 use self::web_codex_actions::{
