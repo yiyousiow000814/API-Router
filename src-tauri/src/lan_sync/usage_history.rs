@@ -3,6 +3,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use chrono::TimeZone;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 fn tracked_spend_usd_value(day: &Value) -> Option<f64> {
     day.get("tracked_spend_usd")
@@ -265,17 +266,49 @@ pub(super) fn refresh_shared_tracked_spend_projection_for_event(
     }
 }
 
+fn compact_projection_events(
+    events: Vec<crate::orchestrator::store::LanEditSyncEvent>,
+) -> Vec<crate::orchestrator::store::LanEditSyncEvent> {
+    let mut latest_source_events =
+        BTreeMap::<String, crate::orchestrator::store::LanEditSyncEvent>::new();
+    let mut latest_day_delete_events =
+        BTreeMap::<String, crate::orchestrator::store::LanEditSyncEvent>::new();
+
+    for event in events {
+        match event.entity_type.as_str() {
+            super::LAN_EDIT_ENTITY_TRACKED_SPEND_DAY => {
+                latest_source_events.insert(event.entity_id.clone(), event);
+            }
+            super::LAN_EDIT_ENTITY_TRACKED_SPEND_DAY_HISTORY_DELETE => {
+                latest_day_delete_events.insert(event.entity_id.clone(), event);
+            }
+            _ => {}
+        }
+    }
+
+    let mut compacted = latest_source_events
+        .into_values()
+        .chain(latest_day_delete_events.into_values())
+        .collect::<Vec<_>>();
+    compacted.sort_by(|left, right| {
+        (left.lamport_ts, left.event_id.as_str()).cmp(&(right.lamport_ts, right.event_id.as_str()))
+    });
+    compacted
+}
+
 pub(crate) fn rebuild_shared_tracked_spend_views(
     state: &crate::app_state::AppState,
 ) -> Result<(), String> {
     state.gateway.store.clear_shared_tracked_spend_days();
     state.gateway.store.clear_shared_tracked_spend_day_sources();
     let mut failures = Vec::new();
-    for event in state
-        .gateway
-        .store
-        .list_tracked_spend_history_projection_events()
-    {
+    let projection_events = compact_projection_events(
+        state
+            .gateway
+            .store
+            .list_tracked_spend_history_projection_events(),
+    );
+    for event in projection_events {
         if let Err(err) = refresh_shared_tracked_spend_projection_for_event(&state.gateway, &event)
         {
             failures.push(format!("{}:{}:{}", event.entity_type, event.entity_id, err));

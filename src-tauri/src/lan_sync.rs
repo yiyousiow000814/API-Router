@@ -7544,6 +7544,103 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_shared_tracked_spend_views_compacts_superseded_source_events() {
+        let (_tmp, state) = build_test_state();
+        let shared_provider_id = state
+            .secrets
+            .ensure_provider_shared_id("provider_1")
+            .expect("shared id");
+        let started_at_unix_ms = 1_711_929_600_000u64;
+        let day_key =
+            crate::orchestrator::store::Store::local_day_key_from_unix_ms(started_at_unix_ms)
+                .expect("day key");
+        let entity_id =
+            tracked_spend_day_entity_id(&shared_provider_id, started_at_unix_ms, "node-remote");
+
+        assert!(state
+            .gateway
+            .store
+            .insert_lan_edit_event(&LanEditSyncEvent {
+                event_id: "edit-replace-1".to_string(),
+                node_id: "node-remote".to_string(),
+                node_name: "Remote Node".to_string(),
+                created_at_unix_ms: 10,
+                lamport_ts: 10,
+                entity_type: "tracked_spend_day".to_string(),
+                entity_id: entity_id.clone(),
+                op: "replace".to_string(),
+                payload: serde_json::json!({
+                    "provider_name": "provider_1",
+                    "day_started_at_unix_ms": started_at_unix_ms,
+                    "row": {
+                        "provider": "provider_1",
+                        "started_at_unix_ms": started_at_unix_ms,
+                        "tracked_spend_usd": 3.0,
+                        "updated_at_unix_ms": 10u64,
+                        "producer_node_id": "node-remote",
+                        "producer_node_name": "Remote Node"
+                    }
+                }),
+            }));
+        assert!(state
+            .gateway
+            .store
+            .insert_lan_edit_event(&LanEditSyncEvent {
+                event_id: "edit-replace-2".to_string(),
+                node_id: "node-remote".to_string(),
+                node_name: "Remote Node".to_string(),
+                created_at_unix_ms: 11,
+                lamport_ts: 11,
+                entity_type: "tracked_spend_day".to_string(),
+                entity_id,
+                op: "replace".to_string(),
+                payload: serde_json::json!({
+                    "provider_name": "provider_1",
+                    "day_started_at_unix_ms": started_at_unix_ms,
+                    "row": {
+                        "provider": "provider_1",
+                        "started_at_unix_ms": started_at_unix_ms,
+                        "tracked_spend_usd": 9.5,
+                        "updated_at_unix_ms": 11u64,
+                        "producer_node_id": "node-remote",
+                        "producer_node_name": "Remote Node"
+                    }
+                }),
+            }));
+
+        super::rebuild_shared_tracked_spend_views(&state).expect("rebuild shared view");
+
+        let shared_rows = state
+            .gateway
+            .store
+            .list_shared_tracked_spend_days("provider_1");
+        assert_eq!(shared_rows.len(), 1);
+        assert_eq!(
+            shared_rows[0].get("day_key").and_then(Value::as_str),
+            Some(day_key.as_str())
+        );
+        assert_eq!(
+            shared_rows[0]
+                .get("tracked_spend_usd")
+                .and_then(Value::as_f64),
+            Some(9.5)
+        );
+        let sources = state
+            .gateway
+            .store
+            .list_shared_tracked_spend_day_sources(&shared_provider_id, &day_key);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].2, 11);
+        assert_eq!(
+            sources[0]
+                .3
+                .get("tracked_spend_usd")
+                .and_then(Value::as_f64),
+            Some(9.5)
+        );
+    }
+
+    #[test]
     fn rebuild_shared_tracked_spend_views_skips_broken_projection_events() {
         let (_tmp, state) = build_test_state();
         let shared_provider_id = state
