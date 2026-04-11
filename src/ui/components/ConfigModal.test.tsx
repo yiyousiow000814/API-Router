@@ -145,19 +145,52 @@ describe('ConfigModal', () => {
       expect.objectContaining({
         feature: 'shared_health',
         localVersion: undefined,
+        peerVersion: 1,
         version: 1,
         status: 'peer_only',
       }),
       expect.objectContaining({
         feature: 'heartbeat',
         localVersion: 1,
+        peerVersion: 1,
         version: 1,
         status: 'match',
       }),
       expect.objectContaining({
         feature: 'usage_history',
         localVersion: 4,
+        peerVersion: 4,
         version: 4,
+        status: 'match',
+      }),
+    ])
+  })
+
+  it('marks local-only version entries when the peer lacks a local feature', () => {
+    expect(
+      diagnosticVersionRows(
+        {
+          version_inventory: ['heartbeat_v1'],
+          sync_contracts: {},
+        },
+        {
+          version_inventory: ['heartbeat_v1', 'usage_history_v4'],
+          sync_contracts: { usage_history: 4 },
+        },
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        feature: 'usage_history',
+        localVersion: 4,
+        peerVersion: undefined,
+        version: 4,
+        status: 'local_only',
+      }),
+      expect.objectContaining({
+        feature: 'heartbeat',
+        localVersion: 1,
+        peerVersion: 1,
+        version: 1,
         status: 'match',
       }),
     ])

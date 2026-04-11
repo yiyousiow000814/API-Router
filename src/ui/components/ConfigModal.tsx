@@ -54,6 +54,7 @@ type DiagnosticVersionRow = {
   feature: string
   version: number
   localVersion?: number
+  peerVersion?: number
   status: 'match' | 'mismatch' | 'local_only' | 'peer_only'
 }
 
@@ -173,21 +174,56 @@ export function diagnosticVersionRows(
       .filter((row): row is { feature: string; version: number } => Boolean(row))
       .map((row) => [row.feature, row.version]),
   )
-  return diagnosticVersionEntries(source)
+  const peerRows = diagnosticVersionEntries(source)
     .map(parseDiagnosticVersionEntry)
     .filter((row): row is { feature: string; version: number } => Boolean(row))
-    .map((row) => {
-      const localVersion = localMap.get(row.feature)
+  if (!localSource) {
+    return peerRows
+      .map((row) => {
+        return {
+          kind:
+            source?.sync_contracts && Object.prototype.hasOwnProperty.call(source.sync_contracts, row.feature)
+              ? 'Contract'
+              : 'Capability',
+          feature: row.feature,
+          version: row.version,
+          peerVersion: row.version,
+          status: 'match',
+        } as DiagnosticVersionRow
+      })
+      .sort((left, right) => {
+        if (left.status !== right.status) {
+          return statusOrder[left.status] - statusOrder[right.status]
+        }
+        if (left.kind !== right.kind) return left.kind.localeCompare(right.kind)
+        return left.feature.localeCompare(right.feature)
+      })
+  }
+  const peerMap = new Map(peerRows.map((row) => [row.feature, row.version]))
+  const features = [...new Set([...localMap.keys(), ...peerMap.keys()])]
+  return features
+    .map((feature) => {
+      const localVersion = localMap.get(feature)
+      const peerVersion = peerMap.get(feature)
       return {
         kind:
-          source?.sync_contracts && Object.prototype.hasOwnProperty.call(source.sync_contracts, row.feature)
+          (source?.sync_contracts && Object.prototype.hasOwnProperty.call(source.sync_contracts, feature)) ||
+          (localSource?.sync_contracts &&
+            Object.prototype.hasOwnProperty.call(localSource.sync_contracts, feature))
             ? 'Contract'
             : 'Capability',
-        feature: row.feature,
-        version: row.version,
+        feature,
+        version: peerVersion ?? localVersion ?? 0,
         localVersion,
+        peerVersion,
         status:
-          localVersion == null ? 'peer_only' : localVersion === row.version ? 'match' : 'mismatch',
+          peerVersion == null
+            ? 'local_only'
+            : localVersion == null
+              ? 'peer_only'
+              : localVersion === peerVersion
+                ? 'match'
+                : 'mismatch',
       } as DiagnosticVersionRow
     })
     .sort((left, right) => {
@@ -207,8 +243,8 @@ function versionSummaryText(rows: DiagnosticVersionRow[]): string {
 
 function primaryVersionMismatchText(rows: DiagnosticVersionRow[]): string | null {
   const mismatch = rows.find((row) => row.status === 'mismatch')
-  if (!mismatch || mismatch.localVersion == null) return null
-  return `${mismatch.feature} v${mismatch.localVersion} vs v${mismatch.version}`
+  if (!mismatch || mismatch.localVersion == null || mismatch.peerVersion == null) return null
+  return `${mismatch.feature} v${mismatch.localVersion} vs v${mismatch.peerVersion}`
 }
 
 function remoteUpdateStateLabel(source: ConfigSource, localBuildSha?: string | null): string | null {
@@ -1682,7 +1718,9 @@ export function ConfigModal({
                                           <td style={{ padding: '4px 0' }}>
                                             {row.localVersion == null ? '-' : `v${row.localVersion}`}
                                           </td>
-                                          <td style={{ padding: '4px 0' }}>{`v${row.version}`}</td>
+                                          <td style={{ padding: '4px 0' }}>
+                                            {row.peerVersion == null ? '-' : `v${row.peerVersion}`}
+                                          </td>
                                           <td style={{ padding: '4px 0' }}>{row.status}</td>
                                         </tr>
                                       ))}
