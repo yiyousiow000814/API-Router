@@ -48,6 +48,15 @@ type PairDialogState =
 type ConfigSource = NonNullable<Config['config_source']>['sources'][number]
 type BuildIdentity = NonNullable<ConfigSource['build_identity']>
 type RemoteUpdateStatusSnapshot = NonNullable<ConfigSource['remote_update_status']>
+type VersionDisplaySource = Pick<ConfigSource, 'capabilities' | 'sync_contracts' | 'version_inventory'>
+type DiagnosticVersionRow = {
+  kind: 'Capability' | 'Contract'
+  feature: string
+  version: number
+  localVersion?: number
+  peerVersion?: number
+  status: 'match' | 'mismatch' | 'local_only' | 'peer_only'
+}
 
 export function remoteUpdateDebugPollNodeIds(
   onlinePeerNodeIds: string[],
@@ -121,6 +130,121 @@ export function syncPauseSummaryLabel(source: ConfigSource): string | null {
   const pausedCount = source.sync_blocked_domains?.length ?? 0
   if (pausedCount <= 1) return null
   return pausedCount === 2 ? '2 domains paused' : `${pausedCount} domains paused`
+}
+
+export function diagnosticVersionEntries(source: VersionDisplaySource | null | undefined): string[] {
+  const inventory = (source?.version_inventory ?? [])
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+  if (inventory.length > 0) {
+    return [...new Set(inventory)].sort((left, right) => left.localeCompare(right))
+  }
+  const capabilities = (source?.capabilities ?? [])
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+  const contracts = Object.entries(source?.sync_contracts ?? {})
+    .filter(([, version]) => Number.isFinite(version))
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([domain, version]) => `${domain}_v${version}`)
+  return [...new Set([...capabilities, ...contracts])]
+}
+
+function parseDiagnosticVersionEntry(value: string): { feature: string; version: number } | null {
+  const match = value.trim().match(/^(.*)_v(\d+)$/)
+  if (!match) return null
+  return {
+    feature: match[1],
+    version: Number(match[2]),
+  }
+}
+
+export function diagnosticVersionRows(
+  source: VersionDisplaySource | null | undefined,
+  localSource?: VersionDisplaySource | null,
+): DiagnosticVersionRow[] {
+  const statusOrder: Record<DiagnosticVersionRow['status'], number> = {
+    mismatch: 0,
+    peer_only: 1,
+    local_only: 2,
+    match: 3,
+  }
+  const localMap = new Map(
+    diagnosticVersionEntries(localSource)
+      .map(parseDiagnosticVersionEntry)
+      .filter((row): row is { feature: string; version: number } => Boolean(row))
+      .map((row) => [row.feature, row.version]),
+  )
+  const peerRows = diagnosticVersionEntries(source)
+    .map(parseDiagnosticVersionEntry)
+    .filter((row): row is { feature: string; version: number } => Boolean(row))
+  if (!localSource) {
+    return peerRows
+      .map((row) => {
+        return {
+          kind:
+            source?.sync_contracts && Object.prototype.hasOwnProperty.call(source.sync_contracts, row.feature)
+              ? 'Contract'
+              : 'Capability',
+          feature: row.feature,
+          version: row.version,
+          peerVersion: row.version,
+          status: 'match',
+        } as DiagnosticVersionRow
+      })
+      .sort((left, right) => {
+        if (left.status !== right.status) {
+          return statusOrder[left.status] - statusOrder[right.status]
+        }
+        if (left.kind !== right.kind) return left.kind.localeCompare(right.kind)
+        return left.feature.localeCompare(right.feature)
+      })
+  }
+  const peerMap = new Map(peerRows.map((row) => [row.feature, row.version]))
+  const features = [...new Set([...localMap.keys(), ...peerMap.keys()])]
+  return features
+    .map((feature) => {
+      const localVersion = localMap.get(feature)
+      const peerVersion = peerMap.get(feature)
+      return {
+        kind:
+          (source?.sync_contracts && Object.prototype.hasOwnProperty.call(source.sync_contracts, feature)) ||
+          (localSource?.sync_contracts &&
+            Object.prototype.hasOwnProperty.call(localSource.sync_contracts, feature))
+            ? 'Contract'
+            : 'Capability',
+        feature,
+        version: peerVersion ?? localVersion ?? 0,
+        localVersion,
+        peerVersion,
+        status:
+          peerVersion == null
+            ? 'local_only'
+            : localVersion == null
+              ? 'peer_only'
+              : localVersion === peerVersion
+                ? 'match'
+                : 'mismatch',
+      } as DiagnosticVersionRow
+    })
+    .sort((left, right) => {
+      if (left.status !== right.status) {
+        return statusOrder[left.status] - statusOrder[right.status]
+      }
+      if (left.kind !== right.kind) return left.kind.localeCompare(right.kind)
+      return left.feature.localeCompare(right.feature)
+    })
+}
+
+function versionSummaryText(rows: DiagnosticVersionRow[]): string {
+  const mismatchCount = rows.filter((row) => row.status === 'mismatch').length
+  if (mismatchCount === 0) return `${rows.length} items`
+  return `${rows.length} items, ${mismatchCount} mismatches`
+}
+
+function primaryVersionMismatchText(rows: DiagnosticVersionRow[]): string | null {
+  const mismatch = rows.find((row) => row.status === 'mismatch')
+  if (!mismatch || mismatch.localVersion == null || mismatch.peerVersion == null) return null
+  return `${mismatch.feature} v${mismatch.localVersion} vs v${mismatch.peerVersion}`
 }
 
 function remoteUpdateStateLabel(source: ConfigSource, localBuildSha?: string | null): string | null {
@@ -1376,6 +1500,8 @@ export function ConfigModal({
                       localSource && shouldShowDiagnosticsRemoteUpdateStatus(localSource, localBuildSha)
                         ? remoteUpdateStateLabel(localSource, localBuildSha)
                         : null
+                    const localVersionRows = diagnosticVersionRows(localSource)
+                    const localVersionSummary = versionSummaryText(localVersionRows)
                     const localRemoteUpdateDetail = localSource
                       ? remoteUpdateDetailText(localSource, localBuildSha)
                       : ''
@@ -1407,6 +1533,34 @@ export function ConfigModal({
                           {formatCommitDate(localSource?.build_identity?.build_git_commit_unix_ms ?? null)}
                         </div>
                       </div>
+                      {localVersionRows.length > 0 ? (
+                        <div className="aoConfigDiagSection">
+                          <div className="aoConfigDiagSectionLabel">Versions</div>
+                          <details>
+                            <summary className="aoConfigDiagRemoteUpdateDetail">{localVersionSummary}</summary>
+                            <div className="aoConfigDiagRemoteUpdateBlock" style={{ marginTop: 8 }}>
+                              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                                <thead>
+                                  <tr>
+                                    <th style={{ textAlign: 'left', paddingBottom: 6 }}>Type</th>
+                                    <th style={{ textAlign: 'left', paddingBottom: 6 }}>Feature</th>
+                                    <th style={{ textAlign: 'left', paddingBottom: 6 }}>Version</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {localVersionRows.map((row) => (
+                                    <tr key={`${row.kind}-${row.feature}`}>
+                                      <td style={{ padding: '4px 0' }}>{row.kind}</td>
+                                      <td style={{ padding: '4px 0' }}>{row.feature}</td>
+                                      <td style={{ padding: '4px 0' }}>{`v${row.version}`}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </details>
+                        </div>
+                      ) : null}
                       {localRemoteUpdateStatusLabel ? (
                         <div className="aoConfigDiagSection">
                           <div className="aoConfigDiagSectionLabel">Update</div>
@@ -1443,6 +1597,9 @@ export function ConfigModal({
                     const peerCommitLabel = formatCommitDate(
                       effectiveSource.build_identity?.build_git_commit_unix_ms ?? null,
                     )
+                    const peerVersionRows = diagnosticVersionRows(effectiveSource, localSource)
+                    const peerVersionSummary = versionSummaryText(peerVersionRows)
+                    const peerVersionMismatch = primaryVersionMismatchText(peerVersionRows)
                     const remoteUpdateStatusLabel = remoteUpdateDisplay.label
                     const remoteUpdateDetail = remoteUpdateDisplay.detail
                     const remoteUpdateTime = remoteUpdateDisplay.time
@@ -1527,6 +1684,52 @@ export function ConfigModal({
                                 : 'Does not match current machine build'}
                             </div>
                           </div>
+                          {peerVersionRows.length > 0 ? (
+                            <div className="aoConfigDiagSection">
+                              <div className="aoConfigDiagSectionLabel">Versions</div>
+                              <details>
+                                <summary className="aoConfigDiagRemoteUpdateDetail">
+                                  {peerVersionSummary}
+                                  {peerVersionMismatch ? ` · ${peerVersionMismatch}` : ''}
+                                </summary>
+                                <div className="aoConfigDiagRemoteUpdateBlock" style={{ marginTop: 8 }}>
+                                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                                    <thead>
+                                      <tr>
+                                        <th style={{ textAlign: 'left', paddingBottom: 6 }}>Type</th>
+                                        <th style={{ textAlign: 'left', paddingBottom: 6 }}>Feature</th>
+                                        <th style={{ textAlign: 'left', paddingBottom: 6 }}>Local</th>
+                                        <th style={{ textAlign: 'left', paddingBottom: 6 }}>Peer</th>
+                                        <th style={{ textAlign: 'left', paddingBottom: 6 }}>Status</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {peerVersionRows.map((row) => (
+                                        <tr
+                                          key={`${row.kind}-${row.feature}`}
+                                          style={
+                                            row.status === 'mismatch'
+                                              ? { background: 'rgba(188, 76, 44, 0.08)' }
+                                              : undefined
+                                          }
+                                        >
+                                          <td style={{ padding: '4px 0' }}>{row.kind}</td>
+                                          <td style={{ padding: '4px 0' }}>{row.feature}</td>
+                                          <td style={{ padding: '4px 0' }}>
+                                            {row.localVersion == null ? '-' : `v${row.localVersion}`}
+                                          </td>
+                                          <td style={{ padding: '4px 0' }}>
+                                            {row.peerVersion == null ? '-' : `v${row.peerVersion}`}
+                                          </td>
+                                          <td style={{ padding: '4px 0' }}>{row.status}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </details>
+                            </div>
+                          ) : null}
                           {remoteUpdateStatusLabel ? (
                             <div className="aoConfigDiagSection">
                               <div className="aoConfigDiagSectionLabel">Update</div>

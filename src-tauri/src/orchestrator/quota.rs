@@ -1564,6 +1564,13 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
         let day = annotate_local_tracked_spend_day(day);
         st.store
             .put_spend_day(provider_name, open_day_started_at_unix_ms, &day);
+        let _ = crate::lan_sync::record_tracked_spend_day_from_gateway(
+            st,
+            &st.secrets,
+            provider_name,
+            open_day_started_at_unix_ms,
+            &day,
+        );
     } else {
         let epsilon = 1e-7_f64;
         let crossed_local_day =
@@ -1584,6 +1591,13 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
                 annotate_local_tracked_spend_day_in_place(&mut prev_day);
                 st.store
                     .put_spend_day(provider_name, open_day_started_at_unix_ms, &prev_day);
+                let _ = crate::lan_sync::record_tracked_spend_day_from_gateway(
+                    st,
+                    &st.secrets,
+                    provider_name,
+                    open_day_started_at_unix_ms,
+                    &prev_day,
+                );
             }
 
             open_day_started_at_unix_ms = now;
@@ -1611,6 +1625,13 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
             let day = annotate_local_tracked_spend_day(day);
             st.store
                 .put_spend_day(provider_name, open_day_started_at_unix_ms, &day);
+            let _ = crate::lan_sync::record_tracked_spend_day_from_gateway(
+                st,
+                &st.secrets,
+                provider_name,
+                open_day_started_at_unix_ms,
+                &day,
+            );
             last_seen_daily_spent = current_daily_spent;
         } else {
             let delta = (current_daily_spent - last_seen_daily_spent).max(0.0);
@@ -1635,6 +1656,13 @@ fn track_budget_spend(st: &GatewayState, provider_name: &str, snap: &QuotaSnapsh
             annotate_local_tracked_spend_day_in_place(&mut day);
             st.store
                 .put_spend_day(provider_name, open_day_started_at_unix_ms, &day);
+            let _ = crate::lan_sync::record_tracked_spend_day_from_gateway(
+                st,
+                &st.secrets,
+                provider_name,
+                open_day_started_at_unix_ms,
+                &day,
+            );
             last_seen_daily_spent = current_daily_spent;
         }
     }

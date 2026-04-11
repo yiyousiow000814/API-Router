@@ -854,6 +854,7 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         .gateway
         .store
         .sync_provider_pricing_configs(&app_state.secrets.list_provider_pricing());
+    let _ = crate::lan_sync::rebuild_shared_tracked_spend_views(&app_state);
     let _ = crate::lan_sync::ensure_local_edit_seed_state(&app_state);
 
     Ok(app_state)
