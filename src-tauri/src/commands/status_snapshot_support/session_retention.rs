@@ -150,6 +150,12 @@ fn evaluate_runtime_session_retention(
                 drop_reason: None,
             };
         }
+        if !discovery_is_fresh {
+            return SessionRetentionDecision {
+                keep: true,
+                drop_reason: None,
+            };
+        }
         let last_seen = session_last_seen_unix_ms(entry);
         let keep =
             last_seen != 0 && now.saturating_sub(last_seen) <= PIDLESS_DESKTOP_LIVE_MAX_STALE_MS;

@@ -3292,7 +3292,7 @@ mod tests {
     }
 
     #[test]
-    fn thread_index_not_loaded_item_refreshes_discovery_timestamp() {
+    fn thread_index_first_seen_not_loaded_item_uses_current_discovery_timestamp() {
         let mut map = HashMap::new();
         let now = 2_000_000_u64;
 
@@ -3317,6 +3317,96 @@ mod tests {
             entry.rollout_path.as_deref(),
             Some("C:\\Users\\yiyou\\.codex\\sessions\\rollout-session-index-only.jsonl")
         );
+    }
+
+    #[test]
+    fn recent_live_windows_session_outranks_old_not_loaded_sessions() {
+        let now = 1_800_000_000_000_u64;
+        let mut map = HashMap::new();
+
+        for index in 0..25 {
+            merge_thread_index_session_hints(
+                &mut map,
+                now,
+                &[serde_json::json!({
+                    "id": format!("old-not-loaded-{index:02}"),
+                    "workspace": "windows",
+                    "path": format!("C:\\Users\\yiyou\\.codex\\sessions\\old-not-loaded-{index:02}.jsonl"),
+                    "status": { "type": "notLoaded" },
+                    "updatedAt": 1_742_000_000
+                })],
+                true,
+            );
+        }
+
+        map.insert(
+            "live-win-session".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "live-win-session".to_string(),
+                pid: 0,
+                wt_session: None,
+                last_request_unix_ms: now,
+                last_discovered_unix_ms: now,
+                last_reported_model_provider: Some("api_router".to_string()),
+                last_reported_model: Some("gpt-5.4".to_string()),
+                last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: Some(
+                    "C:\\Users\\yiyou\\.codex\\sessions\\live-win-session.jsonl".to_string(),
+                ),
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: true,
+            },
+        );
+
+        let items = super::visible_client_session_items(&map, 20);
+        let ids: std::collections::HashSet<String> =
+            items.iter().map(|(sid, _runtime)| sid.clone()).collect();
+
+        assert!(
+            ids.contains("live-win-session"),
+            "recent live windows session should stay in the visible set instead of being displaced by old notLoaded snapshot rows",
+        );
+    }
+
+    #[test]
+    fn old_unverified_not_loaded_session_keeps_snapshot_timestamp() {
+        let now = 1_800_000_000_000_u64;
+        let mut map = HashMap::from([(
+            "old-unverified".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "old-unverified".to_string(),
+                pid: 0,
+                wt_session: None,
+                last_request_unix_ms: 0,
+                last_discovered_unix_ms: 1_741_000_000_000,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                rollout_path: Some("C:\\Users\\yiyou\\.codex\\sessions\\old-unverified.jsonl".to_string()),
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: false,
+            },
+        )]);
+
+        merge_thread_index_session_hints(
+            &mut map,
+            now,
+            &[serde_json::json!({
+                "id": "old-unverified",
+                "workspace": "windows",
+                "path": "C:\\Users\\yiyou\\.codex\\sessions\\old-unverified.jsonl",
+                "status": { "type": "notLoaded" },
+                "updatedAt": 1_742_000_000
+            })],
+            true,
+        );
+
+        let entry = map.get("old-unverified").expect("old unverified session");
+        assert_eq!(entry.last_discovered_unix_ms, 1_742_000_000_000);
     }
 
     #[test]
@@ -3345,6 +3435,43 @@ mod tests {
         assert!(
             map.contains_key("session-index-gap"),
             "thread-index session should remain visible after a short app-server gap",
+        );
+    }
+
+    #[test]
+    fn stale_snapshot_absence_does_not_drop_pidless_windows_session() {
+        let now = 2_000_000_u64;
+        let mut map = HashMap::from([(
+            "desktop-stale-snapshot".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "desktop-stale-snapshot".to_string(),
+                pid: 0,
+                wt_session: None,
+                last_request_unix_ms: now.saturating_sub(20 * 60 * 1000),
+                last_discovered_unix_ms: now.saturating_sub(20 * 60 * 1000),
+                last_reported_model_provider: Some("api_router".to_string()),
+                last_reported_model: Some("gpt-5.4".to_string()),
+                last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: Some(
+                    "C:\\Users\\yiyou\\.codex\\sessions\\desktop-stale-snapshot.jsonl"
+                        .to_string(),
+                ),
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: true,
+            },
+        )]);
+
+        let removed = retain_live_app_server_sessions(&mut map, now, &[], false);
+
+        assert!(
+            removed.is_empty(),
+            "stale app-server cache should not be treated as proof that a pidless desktop session ended",
+        );
+        assert!(
+            map.contains_key("desktop-stale-snapshot"),
+            "pidless desktop session should remain visible until a fresh snapshot confirms it disappeared",
         );
     }
 

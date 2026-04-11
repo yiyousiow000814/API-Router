@@ -143,13 +143,26 @@ pub(crate) fn merge_thread_index_session_hints(
             entry.is_agent = true;
         }
         if should_refresh_discovery {
+            let should_promote_not_loaded_to_now = !live_presence
+                && (entry.confirmed_router
+                    || entry.last_request_unix_ms > 0
+                    || entry.last_discovered_unix_ms == 0);
             let observed_unix_ms = if live_presence {
                 updated_unix_ms.max(now)
-            } else {
+            } else if should_promote_not_loaded_to_now {
                 now
+            } else if updated_unix_ms > 0 {
+                updated_unix_ms
+            } else {
+                entry.last_discovered_unix_ms
             };
-            entry.last_discovered_unix_ms =
-                next_last_discovered_unix_ms(entry.last_discovered_unix_ms, observed_unix_ms, true);
+            if observed_unix_ms > 0 {
+                entry.last_discovered_unix_ms = next_last_discovered_unix_ms(
+                    entry.last_discovered_unix_ms,
+                    observed_unix_ms,
+                    true,
+                );
+            }
         }
     }
 }
