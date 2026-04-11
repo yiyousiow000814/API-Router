@@ -31,6 +31,8 @@ mod local_state;
 mod remote_update;
 #[path = "lan_sync/usage_history.rs"]
 mod usage_history;
+#[path = "lan_sync/versioning.rs"]
+mod versioning;
 mod build_info {
     include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
 }
@@ -62,6 +64,11 @@ pub(crate) use usage_history::{
 use usage_history::{
     refresh_shared_tracked_spend_projection_for_event, tracked_spend_history_day_key_for_debug,
 };
+use versioning::{
+    lan_heartbeat_capabilities, local_sync_contracts, local_version_inventory,
+    merge_version_inventory, SYNC_DOMAIN_PROVIDER_DEFINITIONS, SYNC_DOMAIN_SHARED_HEALTH,
+    SYNC_DOMAIN_USAGE_HISTORY, SYNC_DOMAIN_USAGE_REQUESTS,
+};
 
 pub const LAN_DISCOVERY_PORT: u16 = 38455;
 pub const LAN_HEARTBEAT_INTERVAL_MS: u64 = 2_000;
@@ -87,22 +94,7 @@ const LAN_PAIR_APPROVAL_TTL_MS: u64 = 5 * 60 * 1000;
 const LAN_REMOTE_UPDATE_ACCEPTED_STARTUP_GRACE_MS: u64 = 15_000;
 const LAN_SYNC_AUTH_NODE_ID_HEADER: &str = "x-api-router-lan-node-id";
 const LAN_SYNC_AUTH_SECRET_HEADER: &str = "x-api-router-lan-secret";
-const LAN_HEARTBEAT_CAPABILITIES: [&str; 8] = [
-    "heartbeat_v1",
-    "status_v1",
-    "usage_sync_v1",
-    "edit_sync_v1",
-    "provider_definitions_v1",
-    "config_source_v1",
-    "quota_refresh_v1",
-    "sync_contract_v2",
-];
-const LAN_REMOTE_UPDATE_CAPABILITY: &str = "remote_update_v1";
-const SYNC_DOMAIN_USAGE_REQUESTS: &str = "usage_requests";
-const SYNC_DOMAIN_USAGE_HISTORY: &str = "usage_history";
-const SYNC_DOMAIN_PROVIDER_DEFINITIONS: &str = "provider_definitions";
-const SYNC_DOMAIN_SHARED_HEALTH: &str = "shared_health";
-const LAN_DEBUG_CAPABILITY: &str = "lan_debug_v1";
+pub(crate) const LAN_REMOTE_UPDATE_CAPABILITY: &str = "remote_update_v1";
 const LAN_EDIT_ENTITY_PROVIDER_DEFINITION: &str = "provider_definition";
 const LAN_EDIT_ENTITY_PROVIDER_PRICING: &str = "provider_pricing";
 const LAN_EDIT_ENTITY_QUOTA_SNAPSHOT: &str = "quota_snapshot";
@@ -146,25 +138,6 @@ fn optional_u64_log_value(value: Option<u64>) -> String {
 
 fn heartbeat_step_elapsed_ms(started_at_unix_ms: u64) -> u64 {
     unix_ms().saturating_sub(started_at_unix_ms)
-}
-
-fn local_sync_contracts() -> BTreeMap<String, u32> {
-    BTreeMap::from([
-        (SYNC_DOMAIN_USAGE_REQUESTS.to_string(), 2),
-        (SYNC_DOMAIN_USAGE_HISTORY.to_string(), 3),
-        (SYNC_DOMAIN_PROVIDER_DEFINITIONS.to_string(), 1),
-        (SYNC_DOMAIN_SHARED_HEALTH.to_string(), 1),
-    ])
-}
-
-fn lan_heartbeat_capabilities() -> Vec<String> {
-    let mut values = LAN_HEARTBEAT_CAPABILITIES
-        .iter()
-        .map(|value| value.to_string())
-        .collect::<Vec<_>>();
-    values.push(LAN_REMOTE_UPDATE_CAPABILITY.to_string());
-    values.push(LAN_DEBUG_CAPABILITY.to_string());
-    values
 }
 
 pub(crate) fn current_build_identity() -> LanBuildIdentitySnapshot {
@@ -396,6 +369,7 @@ pub struct LanLocalNodeSnapshot {
     pub node_name: String,
     pub listen_addr: Option<String>,
     pub capabilities: Vec<String>,
+    pub version_inventory: Vec<String>,
     pub build_identity: LanBuildIdentitySnapshot,
     pub version_sync: LanLocalVersionSyncSnapshot,
     pub remote_update_status: Option<LanRemoteUpdateStatusSnapshot>,
@@ -411,6 +385,7 @@ pub struct LanPeerSnapshot {
     pub listen_addr: String,
     pub last_heartbeat_unix_ms: u64,
     pub capabilities: Vec<String>,
+    pub version_inventory: Vec<String>,
     pub build_identity: LanBuildIdentitySnapshot,
     pub provider_fingerprints: Vec<String>,
     pub provider_definitions_revision: String,
@@ -480,6 +455,7 @@ struct LanPeerRuntime {
     listen_addr: String,
     last_heartbeat_unix_ms: u64,
     capabilities: Vec<String>,
+    version_inventory: Vec<String>,
     build_identity: LanBuildIdentitySnapshot,
     remote_update_readiness: Option<LanRemoteUpdateReadinessSnapshot>,
     remote_update_status: Option<LanRemoteUpdateStatusSnapshot>,
@@ -496,6 +472,7 @@ fn lan_peer_snapshot_from_runtime(peer: &LanPeerRuntime) -> LanPeerSnapshot {
         listen_addr: peer.listen_addr.clone(),
         last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
         capabilities: peer.capabilities.clone(),
+        version_inventory: peer.version_inventory.clone(),
         build_identity: peer.build_identity.clone(),
         provider_fingerprints: peer.provider_fingerprints.clone(),
         provider_definitions_revision: peer.provider_definitions_revision.clone(),
@@ -979,6 +956,7 @@ impl LanSyncRuntime {
                 node_name: self.local_node.node_name.clone(),
                 listen_addr: detect_local_listen_addr(listen_port),
                 capabilities: lan_heartbeat_capabilities(),
+                version_inventory: local_version_inventory(),
                 build_identity: local_build_identity,
                 version_sync: local_version_sync,
                 remote_update_status: load_lan_remote_update_status(),
@@ -1007,6 +985,7 @@ impl LanSyncRuntime {
                 listen_addr: "192.168.1.10:4000".to_string(),
                 last_heartbeat_unix_ms: unix_ms(),
                 capabilities: lan_heartbeat_capabilities(),
+                version_inventory: local_version_inventory(),
                 build_identity: current_build_identity(),
                 remote_update_readiness: Some(current_local_remote_update_readiness()),
                 remote_update_status: load_lan_remote_update_status(),
@@ -1048,6 +1027,8 @@ impl LanSyncRuntime {
         let capabilities_changed = previous
             .as_ref()
             .is_some_and(|peer| peer.capabilities != packet.capabilities);
+        let version_inventory =
+            merge_version_inventory(&packet.capabilities, &packet.sync_contracts);
         self.peers.write().insert(
             packet.node_id.clone(),
             LanPeerRuntime {
@@ -1056,6 +1037,7 @@ impl LanSyncRuntime {
                 listen_addr: listen_addr.clone(),
                 last_heartbeat_unix_ms: received_at_unix_ms,
                 capabilities: packet.capabilities,
+                version_inventory,
                 build_identity: packet.build_identity,
                 remote_update_readiness: packet.remote_update_readiness,
                 remote_update_status: packet.remote_update_status,
@@ -5002,6 +4984,7 @@ mod tests {
             listen_addr: "192.168.1.10:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::local_version_inventory(),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -6560,6 +6543,7 @@ mod tests {
             listen_addr: "192.168.1.10:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::local_version_inventory(),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -6596,6 +6580,15 @@ mod tests {
             listen_addr: "192.168.1.10:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::merge_version_inventory(
+                &super::lan_heartbeat_capabilities(),
+                &std::collections::BTreeMap::from([
+                    (super::SYNC_DOMAIN_USAGE_REQUESTS.to_string(), 1),
+                    (super::SYNC_DOMAIN_USAGE_HISTORY.to_string(), 1),
+                    (super::SYNC_DOMAIN_PROVIDER_DEFINITIONS.to_string(), 1),
+                    (super::SYNC_DOMAIN_SHARED_HEALTH.to_string(), 1),
+                ]),
+            ),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -6622,7 +6615,7 @@ mod tests {
         )
         .expect("mismatch reason");
         assert!(reason.contains("usage_history"));
-        assert!(reason.contains("local=v3"));
+        assert!(reason.contains("local=v4"));
         assert!(reason.contains("peer=v1"));
         assert!(peer_supports_http_sync(&incompatible_peer, "edit_sync_v1"));
     }
@@ -6635,6 +6628,15 @@ mod tests {
             listen_addr: "192.168.1.10:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::merge_version_inventory(
+                &super::lan_heartbeat_capabilities(),
+                &std::collections::BTreeMap::from([
+                    (super::SYNC_DOMAIN_USAGE_REQUESTS.to_string(), 1),
+                    (super::SYNC_DOMAIN_USAGE_HISTORY.to_string(), 1),
+                    (super::SYNC_DOMAIN_PROVIDER_DEFINITIONS.to_string(), 1),
+                    (super::SYNC_DOMAIN_SHARED_HEALTH.to_string(), 1),
+                ]),
+            ),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -6661,7 +6663,7 @@ mod tests {
             .find(|item| item.domain == super::SYNC_DOMAIN_USAGE_HISTORY)
             .expect("usage_history diagnostics");
         assert_eq!(blocked.status, "blocked");
-        assert_eq!(blocked.local_contract_version, 3);
+        assert_eq!(blocked.local_contract_version, 4);
         assert_eq!(blocked.peer_contract_version, 1);
         assert!(blocked
             .blocked_reason
@@ -6737,7 +6739,7 @@ mod tests {
                 &super::local_sync_contracts(),
                 super::SYNC_DOMAIN_USAGE_HISTORY
             ),
-            3,
+            4,
             "usage_history payload shape changed; update samples and bump contract if semantics changed"
         );
         let samples = super::usage_history_contract_samples();
@@ -6756,6 +6758,27 @@ mod tests {
     }
 
     #[test]
+    fn local_version_inventory_exposes_capabilities_and_contracts() {
+        let inventory = super::local_version_inventory();
+        assert!(inventory.contains(&"heartbeat_v1".to_string()));
+        assert!(inventory.contains(&"remote_update_v1".to_string()));
+        assert!(inventory.contains(&"usage_requests_v2".to_string()));
+        assert!(inventory.contains(&"usage_history_v4".to_string()));
+    }
+
+    #[test]
+    fn version_registry_includes_bump_rules_for_every_entry() {
+        let rules = super::versioning::version_bump_rules();
+        assert!(!rules.is_empty());
+        assert!(rules.iter().any(|(name, version, rule)| {
+            name == super::SYNC_DOMAIN_USAGE_HISTORY && *version == 4 && rule.contains("truth")
+        }));
+        assert!(rules
+            .iter()
+            .all(|(_name, _version, rule)| !rule.trim().is_empty()));
+    }
+
+    #[test]
     fn apply_edit_sync_batch_skips_events_for_blocked_entity_domain() {
         let (_tmp, state) = build_test_state();
         let runtime = super::LanSyncRuntime::new(super::LanNodeIdentity {
@@ -6768,6 +6791,15 @@ mod tests {
             listen_addr: "192.168.1.10:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::merge_version_inventory(
+                &super::lan_heartbeat_capabilities(),
+                &std::collections::BTreeMap::from([
+                    (super::SYNC_DOMAIN_USAGE_REQUESTS.to_string(), 1),
+                    (super::SYNC_DOMAIN_USAGE_HISTORY.to_string(), 2),
+                    (super::SYNC_DOMAIN_PROVIDER_DEFINITIONS.to_string(), 0),
+                    (super::SYNC_DOMAIN_SHARED_HEALTH.to_string(), 1),
+                ]),
+            ),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -6909,6 +6941,7 @@ mod tests {
                 listen_addr: "192.168.1.10:4000".to_string(),
                 last_heartbeat_unix_ms: 100_000,
                 capabilities: vec!["heartbeat_v1".to_string()],
+                version_inventory: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -6926,6 +6959,7 @@ mod tests {
                 listen_addr: "192.168.1.11:4000".to_string(),
                 last_heartbeat_unix_ms: 100_000_u64.saturating_sub(LAN_PEER_STALE_AFTER_MS + 1),
                 capabilities: vec!["heartbeat_v1".to_string()],
+                version_inventory: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -6956,6 +6990,7 @@ mod tests {
                 listen_addr: "192.168.1.12:4000".to_string(),
                 last_heartbeat_unix_ms: now.saturating_sub(LAN_PEER_STALE_AFTER_MS + 1),
                 capabilities: super::lan_heartbeat_capabilities(),
+                version_inventory: super::local_version_inventory(),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -6992,6 +7027,7 @@ mod tests {
                 listen_addr: "192.168.1.12:4000".to_string(),
                 last_heartbeat_unix_ms: now.saturating_sub(super::LAN_PEER_STALE_AFTER_MS + 1),
                 capabilities: super::lan_heartbeat_capabilities(),
+                version_inventory: super::local_version_inventory(),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7009,6 +7045,7 @@ mod tests {
                 listen_addr: "192.168.1.13:4000".to_string(),
                 last_heartbeat_unix_ms: now,
                 capabilities: super::lan_heartbeat_capabilities(),
+                version_inventory: super::local_version_inventory(),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7133,6 +7170,7 @@ mod tests {
             listen_addr: "192.168.1.50:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::local_version_inventory(),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -7183,6 +7221,7 @@ mod tests {
             listen_addr: "192.168.1.50:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::local_version_inventory(),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -7777,6 +7816,7 @@ mod tests {
                 listen_addr: "192.168.1.10:4000".to_string(),
                 last_heartbeat_unix_ms: now,
                 capabilities: super::lan_heartbeat_capabilities(),
+                version_inventory: super::local_version_inventory(),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7811,6 +7851,7 @@ mod tests {
                 listen_addr: "192.168.1.10:4000".to_string(),
                 last_heartbeat_unix_ms: now,
                 capabilities: vec!["heartbeat_v1".to_string()],
+                version_inventory: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7858,6 +7899,7 @@ mod tests {
                 listen_addr: "192.168.1.50:4000".to_string(),
                 last_heartbeat_unix_ms: now,
                 capabilities: super::lan_heartbeat_capabilities(),
+                version_inventory: super::local_version_inventory(),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7875,6 +7917,7 @@ mod tests {
                 listen_addr: "192.168.1.51:4000".to_string(),
                 last_heartbeat_unix_ms: now.saturating_sub(super::LAN_PEER_STALE_AFTER_MS + 1),
                 capabilities: super::lan_heartbeat_capabilities(),
+                version_inventory: super::local_version_inventory(),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -8298,6 +8341,7 @@ mod tests {
                 listen_addr: "192.168.1.21:4000".to_string(),
                 last_heartbeat_unix_ms: crate::orchestrator::store::unix_ms(),
                 capabilities: vec!["heartbeat_v1".to_string()],
+                version_inventory: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,

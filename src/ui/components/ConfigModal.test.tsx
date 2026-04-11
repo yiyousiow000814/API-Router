@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 import {
   compactUpdateStatusLabel,
   remoteUpdateMenuActionLabel,
+  diagnosticVersionEntries,
+  diagnosticVersionRows,
   diagnosticsRemoteUpdateDisplay,
   ConfigModal,
   diagnosticsWhyText,
@@ -76,6 +78,54 @@ describe('ConfigModal', () => {
     expect(remoteUpdateDebugPollNodeIds(['node-a', 'node-b'], [])).toEqual(['node-a', 'node-b'])
     expect(remoteUpdateDebugPollNodeIds(['node-a', 'node-a', ''], [' ', 'node-b', 'node-b'])).toEqual([
       'node-b',
+    ])
+  })
+
+  it('combines capability and contract versions into one diagnostics list', () => {
+    expect(
+      diagnosticVersionEntries({
+        capabilities: ['heartbeat_v1', 'status_v1', 'remote_update_v1'],
+        sync_contracts: {
+          usage_history: 4,
+          usage_requests: 2,
+          shared_health: 1,
+        },
+      }),
+    ).toEqual([
+      'heartbeat_v1',
+      'status_v1',
+      'remote_update_v1',
+      'shared_health_v1',
+      'usage_history_v4',
+      'usage_requests_v2',
+    ])
+  })
+
+  it('marks peer contract mismatches in diagnostic version rows', () => {
+    expect(
+      diagnosticVersionRows(
+        {
+          version_inventory: ['heartbeat_v1', 'usage_history_v1'],
+          sync_contracts: { usage_history: 1 },
+        },
+        {
+          version_inventory: ['heartbeat_v1', 'usage_history_v4'],
+          sync_contracts: { usage_history: 4 },
+        },
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        feature: 'usage_history',
+        localVersion: 4,
+        version: 1,
+        status: 'mismatch',
+      }),
+      expect.objectContaining({
+        feature: 'heartbeat',
+        localVersion: 1,
+        version: 1,
+        status: 'match',
+      }),
     ])
   })
 
