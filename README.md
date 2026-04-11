@@ -25,7 +25,7 @@ inside the app without editing your Codex config again.
 ```powershell
 npm install
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools\build\build-root-exe.ps1
-```	
+```
 
 The built app is written to the repo root as `API Router.exe`.
 
@@ -71,13 +71,14 @@ After this, you switch providers inside the app.
 
 ## Platform support
 
-- Windows only
+- Windows desktop app
+- WSL2 is supported as a companion environment for Codex and session integration
 
 ## Not supported
 
 - Chat Completions API (this app focuses on Responses).
 - Reusing official OAuth credentials for upstream providers.
-- Non-Windows platforms.
+- Non-Windows native installs.
 
 ## Troubleshooting
 
