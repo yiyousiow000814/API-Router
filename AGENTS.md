@@ -42,7 +42,7 @@
 - **Auth JSON encoding**: `.codex/auth.json` must be UTF-8 without BOM; BOM causes JSON parse errors like "expected value at line 1 column 1".
 
 ## Engineering Constraints
-- **Cross-platform**: Keep the gateway and tooling compatible with Windows + Linux (WSL2) at minimum.
+- **Windows runtime + WSL2 compatibility**: Keep `API Router.exe` as a Windows-native runtime, while preserving compatibility for Windows-hosted WSL2 workflows and tooling integration. Do not describe the app as Linux-native unless that support is actually implemented.
 - **Evidence requirement**: Back conclusions with reproducible commands or steps (state A → change → state B).
 - **Test-first fix flow**: When adding tests or fixing bugs, always follow this sequence: (1) create a reproducible test, (2) verify it fails on current code, (3) implement the fix, (4) verify the test passes.
 - **EXE build workflow**: For local Windows EXE output, prefer `npm run build:root-exe:checked`. Use `npm run build:root-exe` only when UI check is intentionally skipped.
