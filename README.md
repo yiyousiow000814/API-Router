@@ -18,8 +18,6 @@ inside the app without editing your Codex config again.
 
 ## Quick start
 
-You have two choices:
-
 1) Download the latest Windows build from GitHub Releases and run it.
 
 2) Clone this repo and build the EXE locally:
