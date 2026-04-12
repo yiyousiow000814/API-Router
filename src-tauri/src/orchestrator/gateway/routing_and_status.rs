@@ -144,6 +144,17 @@ fn fallback_with_quota(
     .then_some(picked)
 }
 
+fn fallback_decision(
+    fallback: Option<String>,
+    preferred: &str,
+    fallback_reason: &'static str,
+) -> (String, &'static str) {
+    match fallback {
+        Some(provider) => (provider, fallback_reason),
+        None => (preferred.to_string(), "no_routable_provider"),
+    }
+}
+
 fn balanced_session_provider_score(session_key: &str, provider: &str) -> u64 {
     // Stable FNV-1a hash; deterministic across process restarts.
     let mut hash: u64 = 0xcbf29ce484222325;
@@ -1012,16 +1023,17 @@ fn decide_provider_with_balanced_mode(
         ) {
             return (manual, "manual_override");
         }
-        return match fallback_with_quota(
-            st,
-            cfg,
+        return fallback_decision(
+            fallback_with_quota(
+                st,
+                cfg,
+                preferred,
+                &quota_snapshots,
+                clear_usage_confirmation_requirement,
+            ),
             preferred,
-            &quota_snapshots,
-            clear_usage_confirmation_requirement,
-        ) {
-            Some(provider) => (provider, "manual_override_unhealthy"),
-            None => (preferred.to_string(), "no_routable_provider"),
-        };
+            "manual_override_unhealthy",
+        );
     }
 
     let session_has_explicit_preferred = cfg
@@ -1077,16 +1089,17 @@ fn decide_provider_with_balanced_mode(
                     return (p, "preferred_stabilizing");
                 }
             }
-            return match fallback_with_quota(
-                st,
-                cfg,
+            return fallback_decision(
+                fallback_with_quota(
+                    st,
+                    cfg,
+                    preferred,
+                    &quota_snapshots,
+                    clear_usage_confirmation_requirement,
+                ),
                 preferred,
-                &quota_snapshots,
-                clear_usage_confirmation_requirement,
-            ) {
-                Some(provider) => (provider, "preferred_stabilizing"),
-                None => (preferred.to_string(), "no_routable_provider"),
-            };
+                "preferred_stabilizing",
+            );
         }
     }
 
@@ -1099,16 +1112,17 @@ fn decide_provider_with_balanced_mode(
     ) {
         return (preferred.to_string(), "preferred_healthy");
     }
-    match fallback_with_quota(
-        st,
-        cfg,
+    fallback_decision(
+        fallback_with_quota(
+            st,
+            cfg,
+            preferred,
+            &quota_snapshots,
+            clear_usage_confirmation_requirement,
+        ),
         preferred,
-        &quota_snapshots,
-        clear_usage_confirmation_requirement,
-    ) {
-        Some(provider) => (provider, "preferred_unhealthy"),
-        None => (preferred.to_string(), "no_routable_provider"),
-    }
+        "preferred_unhealthy",
+    )
 }
 
 pub(crate) fn decide_provider(
