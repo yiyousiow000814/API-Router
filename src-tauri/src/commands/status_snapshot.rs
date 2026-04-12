@@ -3194,7 +3194,7 @@ mod tests {
     }
 
     #[test]
-    fn recent_wsl_agent_session_keeps_when_wt_alive() {
+    fn idle_wsl_agent_drops_even_when_wt_alive() {
         let now = 100_000_u64;
         let entry = ClientSessionRuntime {
             codex_session_id: "wsl-agent".to_string(),
@@ -3213,7 +3213,10 @@ mod tests {
         };
 
         let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, false, 1, true);
-        assert!(keep);
+        assert!(
+            !keep,
+            "idle agent rows must disappear even if the shared WT session is still alive",
+        );
     }
 
     #[test]
@@ -3352,6 +3355,34 @@ mod tests {
 
         let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, false, 0, true);
         assert!(!keep);
+    }
+
+    #[test]
+    fn idle_pidless_agent_with_inherited_wt_session_drops_immediately() {
+        let now = 2_000_000_u64;
+        let entry = ClientSessionRuntime {
+            codex_session_id: "agent-inherited-wt".to_string(),
+            pid: 0,
+            wt_session: Some("pid:41832".to_string()),
+            last_request_unix_ms: now.saturating_sub(61_000),
+            last_discovered_unix_ms: now,
+            last_reported_model_provider: Some("api_router".to_string()),
+            last_reported_model: Some("gpt-5.4-mini".to_string()),
+            last_reported_base_url: None,
+            rollout_path: Some(
+                "C:\\Users\\yiyou\\.codex\\sessions\\agent-inherited-wt.jsonl".to_string(),
+            ),
+            agent_parent_session_id: Some("main-1".to_string()),
+            is_agent: true,
+            is_review: false,
+            confirmed_router: true,
+        };
+
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, true, 0, true);
+        assert!(
+            !keep,
+            "idle agents must disappear even if the parent terminal is still alive and discovery just refreshed",
+        );
     }
 
     #[test]
@@ -3792,7 +3823,7 @@ mod tests {
             codex_session_id: "agent-missing".to_string(),
             pid: 0,
             wt_session: None,
-            last_request_unix_ms: now.saturating_sub(30_000),
+            last_request_unix_ms: now.saturating_sub(61_000),
             last_discovered_unix_ms: now.saturating_sub(30_000),
             last_reported_model_provider: Some("api_router".to_string()),
             last_reported_model: Some("gpt-5.4-mini".to_string()),

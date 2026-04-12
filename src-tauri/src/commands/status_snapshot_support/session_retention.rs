@@ -104,7 +104,6 @@ fn evaluate_runtime_session_retention(
     _wsl_discovery_miss_count: u8,
     discovery_is_fresh: bool,
 ) -> SessionRetentionDecision {
-    const AGENT_MAX_STALE_MS: u64 = 15 * 60 * 1000;
     const PIDLESS_DESKTOP_LIVE_MAX_STALE_MS: u64 = 60 * 1000;
 
     let active = session_is_active(entry, now);
@@ -121,21 +120,9 @@ fn evaluate_runtime_session_retention(
         };
     }
     if entry.is_agent {
-        let wt = entry.wt_session.as_deref().unwrap_or_default().trim();
-        if entry.pid == 0 && wt.is_empty() && discovery_is_fresh && !present_in_app_server_snapshot
-        {
-            return SessionRetentionDecision {
-                keep: false,
-                drop_reason: Some("agent_absent_from_live_sources"),
-            };
-        }
-        let last_seen = entry
-            .last_request_unix_ms
-            .max(entry.last_discovered_unix_ms);
-        let keep = last_seen != 0 && now.saturating_sub(last_seen) <= AGENT_MAX_STALE_MS;
         return SessionRetentionDecision {
-            keep,
-            drop_reason: (!keep).then_some("agent_idle_timeout"),
+            keep: active,
+            drop_reason: (!active).then_some("agent_idle_hidden"),
         };
     }
     if entry.pid == 0 {
