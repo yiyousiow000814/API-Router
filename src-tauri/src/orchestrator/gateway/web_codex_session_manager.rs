@@ -11,9 +11,134 @@ use super::web_codex_session_runtime::{
     WorkspaceThreadRuntimeUpdate,
 };
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 const MANAGED_TERMINAL_DISCOVERY_TIMEOUT_MS: u64 = 4_000;
 const MANAGED_TERMINAL_DISCOVERY_POLL_MS: u64 = 100;
+
+fn runtime_trace_cache() -> &'static Mutex<HashMap<String, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn workspace_target_label(workspace_target: Option<WorkspaceTarget>) -> &'static str {
+    match workspace_target {
+        Some(WorkspaceTarget::Windows) => "windows",
+        Some(WorkspaceTarget::Wsl2) => "wsl2",
+        None => "unspecified",
+    }
+}
+
+fn trace_runtime_payload_summary(
+    cache_key: String,
+    summary: serde_json::Value,
+) -> Result<(), String> {
+    let summary_text = serde_json::to_string(&summary).map_err(|err| err.to_string())?;
+    let cache = runtime_trace_cache();
+    let mut guard = match cache.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    if guard.get(&cache_key).map(String::as_str) == Some(summary_text.as_str()) {
+        return Ok(());
+    }
+    guard.insert(cache_key, summary_text);
+    crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(&summary)
+}
+
+fn trace_loaded_thread_ids_snapshot(
+    workspace_target: Option<WorkspaceTarget>,
+    home_override: Option<&str>,
+    loaded_ids: &[String],
+) {
+    let _ = trace_runtime_payload_summary(
+        format!(
+            "loaded-thread-ids:{}:{}",
+            workspace_target_label(workspace_target),
+            home_override.unwrap_or_default()
+        ),
+        json!({
+            "source": "codex.session_manager",
+            "entry": {
+                "at": crate::orchestrator::store::unix_ms(),
+                "kind": "codex.session_manager.loaded_thread_ids",
+                "workspace": workspace_target_label(workspace_target),
+                "homeOverride": home_override,
+                "count": loaded_ids.len(),
+                "threadIds": loaded_ids,
+            }
+        }),
+    );
+}
+
+fn trace_read_thread_runtime_summary(
+    workspace_target: Option<WorkspaceTarget>,
+    home_override: Option<&str>,
+    requested_thread_id: &str,
+    include_turns: bool,
+    value: &Value,
+) {
+    let Some(thread) = runtime_thread_payload(value) else {
+        return;
+    };
+    let Some(thread_obj) = thread.as_object() else {
+        return;
+    };
+    let base_url = ["base_url", "baseUrl", "model_provider_base_url"]
+        .into_iter()
+        .find_map(|key| thread_obj.get(key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let summary = json!({
+        "source": "codex.session_manager",
+        "entry": {
+            "at": crate::orchestrator::store::unix_ms(),
+            "kind": "codex.session_manager.thread_read",
+            "workspace": workspace_target_label(workspace_target),
+            "homeOverride": home_override,
+            "requestedThreadId": requested_thread_id,
+            "threadId": thread_obj.get("id").and_then(Value::as_str),
+            "includeTurns": include_turns,
+            "statusType": thread_obj
+                .get("status")
+                .and_then(Value::as_object)
+                .and_then(|status| status.get("type"))
+                .and_then(Value::as_str),
+            "hasBaseUrl": base_url.is_some(),
+            "baseUrl": base_url,
+            "path": thread_obj.get("path").and_then(Value::as_str),
+            "cwd": thread_obj.get("cwd").and_then(Value::as_str),
+            "turnCount": thread_obj.get("turns").and_then(Value::as_array).map(Vec::len),
+        }
+    });
+    let thread_id = thread_obj
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(requested_thread_id);
+    let _ = trace_runtime_payload_summary(
+        format!(
+            "thread-read:{}:{}:{}:{}",
+            workspace_target_label(workspace_target),
+            home_override.unwrap_or_default(),
+            include_turns,
+            thread_id
+        ),
+        summary,
+    );
+}
+
+#[cfg(test)]
+fn clear_runtime_trace_cache_for_test() {
+    let cache = runtime_trace_cache();
+    let mut guard = match cache.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    guard.clear();
+}
 
 #[derive(Clone, Debug)]
 pub(super) struct CodexSessionManager {
@@ -414,12 +539,19 @@ impl CodexSessionManager {
             )
             .await?;
         record_runtime_thread_state(self.workspace_target, self.home_override(), &value);
+        trace_read_thread_runtime_summary(
+            self.workspace_target,
+            self.home_override(),
+            thread_id,
+            include_turns,
+            &value,
+        );
         Ok(value)
     }
 
     pub(super) async fn loaded_thread_ids(&self) -> Result<Vec<String>, String> {
         let value = self.request("thread/loaded/list", json!({})).await?;
-        Ok(value
+        let loaded_ids = value
             .get("data")
             .and_then(Value::as_array)
             .or_else(|| value.as_array())
@@ -428,7 +560,9 @@ impl CodexSessionManager {
             .into_iter()
             .filter_map(|entry| entry.as_str().map(str::trim).map(str::to_string))
             .filter(|id| !id.is_empty())
-            .collect())
+            .collect::<Vec<_>>();
+        trace_loaded_thread_ids_snapshot(self.workspace_target, self.home_override(), &loaded_ids);
+        Ok(loaded_ids)
     }
 
     pub(super) async fn loaded_threads(&self, max_items: usize) -> Result<Vec<Value>, String> {
@@ -904,6 +1038,9 @@ pub(super) fn merge_runtime_thread_overlay(thread: &mut Value, runtime_value: &V
         ("status", "status"),
         ("model", "model"),
         ("modelProvider", "modelProvider"),
+        ("base_url", "base_url"),
+        ("base_url", "baseUrl"),
+        ("base_url", "model_provider_base_url"),
         ("title", "title"),
         ("name", "name"),
     ] {
@@ -1080,6 +1217,10 @@ mod tests {
         isolate_web_codex_home("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", "wsl")
     }
 
+    fn isolate_user_data_dir() -> TestWebCodexHomeGuard {
+        isolate_web_codex_home("API_ROUTER_USER_DATA_DIR", "user-data")
+    }
+
     fn isolate_web_codex_home(key: &'static str, scope: &str) -> TestWebCodexHomeGuard {
         let previous = std::env::var(key).ok();
         let unique = format!(
@@ -1097,6 +1238,16 @@ mod tests {
             previous,
             path,
         }
+    }
+
+    fn read_live_trace_lines() -> Vec<String> {
+        let path = crate::orchestrator::gateway::web_codex_storage::codex_live_trace_file_path()
+            .expect("live trace file path");
+        std::fs::read_to_string(path)
+            .expect("read live trace")
+            .lines()
+            .map(str::to_string)
+            .collect()
     }
 
     #[test]
@@ -1306,6 +1457,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn loaded_thread_ids_emits_trace_summary() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        let _home = isolate_windows_web_codex_home();
+        let _user_data = isolate_user_data_dir();
+        clear_runtime_trace_cache_for_test();
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
+            move |_home, method, _params| {
+                assert_eq!(method, "thread/loaded/list");
+                Ok(json!({ "data": ["thread-a", "thread-b"] }))
+            },
+        )))
+        .await;
+
+        let manager = CodexSessionManager::new(parse_workspace_target("windows"));
+        let loaded = manager
+            .loaded_thread_ids()
+            .await
+            .expect("loaded thread list should succeed");
+
+        assert_eq!(loaded, vec!["thread-a".to_string(), "thread-b".to_string()]);
+        let lines = read_live_trace_lines();
+        assert!(lines.iter().any(|line| {
+            line.contains("\"kind\":\"codex.session_manager.loaded_thread_ids\"")
+                && line.contains("\"workspace\":\"windows\"")
+                && line.contains("\"threadIds\":[\"thread-a\",\"thread-b\"]")
+        }));
+
+        crate::codex_app_server::_set_test_request_handler(None).await;
+    }
+
+    #[test]
+    fn overlay_runtime_thread_item_copies_runtime_base_url() {
+        let mut item = json!({
+            "id": "thread-1",
+            "workspace": "windows",
+            "status": { "type": "notLoaded" }
+        });
+
+        overlay_runtime_thread_item(
+            &mut item,
+            &json!({
+                "thread": {
+                    "id": "thread-1",
+                    "status": { "type": "running" },
+                    "base_url": "http://127.0.0.1:4000/v1"
+                }
+            }),
+        );
+
+        assert_eq!(
+            item.get("base_url").and_then(Value::as_str),
+            Some("http://127.0.0.1:4000/v1")
+        );
+    }
+
+    #[tokio::test]
     async fn read_thread_history_page_from_runtime_uses_empty_history_fallback_for_new_thread() {
         let _guard = crate::codex_app_server::lock_test_globals();
         crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
@@ -1344,6 +1551,55 @@ mod tests {
             Some("C:\\temp\\rollout.jsonl")
         );
         assert_eq!(page.page["incomplete"].as_bool(), Some(true));
+
+        crate::codex_app_server::_set_test_request_handler(None).await;
+    }
+
+    #[tokio::test]
+    async fn read_thread_emits_trace_summary_with_base_url() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        let _home = isolate_windows_web_codex_home();
+        let _user_data = isolate_user_data_dir();
+        clear_runtime_trace_cache_for_test();
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
+            move |_home, method, params| {
+                assert_eq!(method, "thread/read");
+                assert_eq!(
+                    params.get("threadId").and_then(Value::as_str),
+                    Some("thread-1")
+                );
+                Ok(json!({
+                    "thread": {
+                        "id": "thread-1",
+                        "status": { "type": "idle" },
+                        "base_url": "http://127.0.0.1:4000/v1",
+                        "path": "C:\\repo\\.codex\\sessions\\rollout-thread-1.jsonl"
+                    }
+                }))
+            },
+        )))
+        .await;
+
+        let manager = CodexSessionManager::new(parse_workspace_target("windows"));
+        let value = manager
+            .read_thread("thread-1", false)
+            .await
+            .expect("thread/read should succeed");
+
+        assert_eq!(
+            runtime_thread_payload(&value)
+                .and_then(|thread| thread.get("base_url"))
+                .and_then(Value::as_str),
+            Some("http://127.0.0.1:4000/v1")
+        );
+        let lines = read_live_trace_lines();
+        assert!(lines.iter().any(|line| {
+            line.contains("\"kind\":\"codex.session_manager.thread_read\"")
+                && line.contains("\"threadId\":\"thread-1\"")
+                && line.contains("\"statusType\":\"idle\"")
+                && line.contains("\"hasBaseUrl\":true")
+                && line.contains("\"baseUrl\":\"http://127.0.0.1:4000/v1\"")
+        }));
 
         crate::codex_app_server::_set_test_request_handler(None).await;
     }
