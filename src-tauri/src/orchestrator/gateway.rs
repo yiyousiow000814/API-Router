@@ -1139,6 +1139,13 @@ async fn responses(
             .map(|s| s.as_str())
             .unwrap_or(cfg.routing.preferred_provider.as_str());
         let (provider_name, reason) = decide_provider(&st, &cfg, preferred, &session_key);
+        if reason == "no_routable_provider" {
+            last_err = format!(
+                "no routable providers available; preferred={preferred}; tried={}",
+                tried.join(",")
+            );
+            break;
+        }
         if tried.contains(&provider_name) {
             break;
         }
