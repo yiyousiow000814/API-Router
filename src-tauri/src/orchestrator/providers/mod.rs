@@ -11,7 +11,7 @@ use super::quota::UsageKind;
 pub(crate) use generic::derive_origin;
 pub(crate) use mapping::{
     map_canonical_usage, CanonicalUsageContext, CanonicalUsageMapping, NumericFieldSpec,
-    NumericTransform, StringFieldSpec, UnixMsFieldSpec,
+    NumericTransform, StringFieldSpec, UnixMsAggregate, UnixMsFieldSpec, UnixMsRule,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,6 +233,24 @@ struct StringFieldSpecFile {
 struct UnixMsFieldSpecFile {
     #[serde(default)]
     aliases: Vec<String>,
+    #[serde(default)]
+    rules: Vec<UnixMsRuleFile>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct UnixMsRuleFile {
+    #[serde(default)]
+    pointer: Option<String>,
+    #[serde(default)]
+    item_pointer: Option<String>,
+    #[serde(default)]
+    aggregate: Option<String>,
+    #[serde(default)]
+    filter_pointer: Option<String>,
+    #[serde(default)]
+    filter_eq: Option<String>,
+    #[serde(default)]
+    filter_in: Vec<String>,
 }
 
 const DEFAULT_DIRECT_USAGE_MAPPING: CanonicalUsageMapping = CanonicalUsageMapping {
@@ -285,6 +303,7 @@ const DEFAULT_DIRECT_USAGE_MAPPING: CanonicalUsageMapping = CanonicalUsageMappin
             "/expires_at",
             "/subscription/expires_at",
         ],
+        rules: &[],
     }),
     requires_any: &[
         "/quota/daily_quota",
@@ -647,7 +666,63 @@ fn build_string_field_spec(raw: StringFieldSpecFile) -> Result<StringFieldSpec, 
 fn build_unix_ms_field_spec(raw: UnixMsFieldSpecFile) -> Result<UnixMsFieldSpec, String> {
     Ok(UnixMsFieldSpec {
         aliases: leak_aliases(raw.aliases)?,
+        rules: leak_unix_ms_rules(
+            raw.rules
+                .into_iter()
+                .map(build_unix_ms_rule)
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
     })
+}
+
+fn build_unix_ms_rule(raw: UnixMsRuleFile) -> Result<UnixMsRule, String> {
+    let pointer = raw
+        .pointer
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "unix ms rule pointer cannot be empty".to_string())?;
+    if let Some(item_pointer) = raw
+        .item_pointer
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        let aggregate = match raw
+            .aggregate
+            .unwrap_or_else(|| "first".to_string())
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "first" => UnixMsAggregate::First,
+            "max" => UnixMsAggregate::Max,
+            other => return Err(format!("unknown unix ms aggregate: {other}")),
+        };
+        let filter_pointer = raw
+            .filter_pointer
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let filter_eq = raw
+            .filter_eq
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let filter_in = raw
+            .filter_in
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        return Ok(UnixMsRule::Array {
+            pointer: Box::leak(pointer.into_boxed_str()),
+            item_pointer: Box::leak(item_pointer.into_boxed_str()),
+            aggregate,
+            filter_pointer: filter_pointer
+                .map(|value| Box::leak(value.into_boxed_str()) as &'static str),
+            filter_eq: filter_eq.map(|value| Box::leak(value.into_boxed_str()) as &'static str),
+            filter_in: leak_aliases(filter_in)?,
+        });
+    }
+
+    Ok(UnixMsRule::Pointer(Box::leak(pointer.into_boxed_str())))
 }
 
 fn leak_aliases(values: Vec<String>) -> Result<&'static [&'static str], String> {
@@ -664,6 +739,13 @@ fn leak_aliases(values: Vec<String>) -> Result<&'static [&'static str], String> 
         .map(|value| Box::leak(value.into_boxed_str()) as &'static str)
         .collect::<Vec<_>>();
     Ok(Box::leak(leaked.into_boxed_slice()))
+}
+
+fn leak_unix_ms_rules(values: Vec<UnixMsRule>) -> &'static [UnixMsRule] {
+    if values.is_empty() {
+        return &[];
+    }
+    Box::leak(values.into_boxed_slice())
 }
 
 fn matched_provider_definition(provider: &ProviderConfig) -> Option<&'static ProviderDefinition> {
