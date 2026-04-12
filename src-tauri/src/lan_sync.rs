@@ -6859,12 +6859,12 @@ mod tests {
 
     #[test]
     fn build_remote_update_worker_command_points_at_repo_script() {
-        let (program, args, script) =
+        let (program, _args, script) =
             super::build_remote_update_worker_command("main").expect("worker command");
         #[cfg(target_os = "windows")]
         {
             assert_eq!(program, "powershell.exe");
-            assert!(args.iter().any(|value| value == "-File"));
+            assert!(_args.iter().any(|value| value == "-File"));
             assert!(
                 script.ends_with("src-tauri\\src\\lan_sync\\remote_update\\lan-remote-update.ps1")
             );
