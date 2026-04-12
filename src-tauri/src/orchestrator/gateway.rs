@@ -359,11 +359,7 @@ async fn refresh_usage_once_after_first_failure(
     let refresh_ok = snap.updated_at_unix_ms > 0 && snap.last_error.trim().is_empty();
     if !refresh_ok {
         let err = snap.last_error.trim();
-        let is_config_gap = err == "missing credentials for quota refresh"
-            || err == "missing usage token"
-            || err == "missing provider key"
-            || err == "missing quota base"
-            || err == "usage endpoint not found (set Usage base URL)";
+        let is_config_gap = is_usage_refresh_config_gap_for_routing(err);
         if is_config_gap {
             // If this provider does not support usage refresh in current config,
             // fall back to normal retry behavior instead of blocking indefinitely.
@@ -398,6 +394,18 @@ async fn refresh_usage_once_after_first_failure(
             Value::Null,
         );
     }
+}
+
+fn is_usage_refresh_config_gap_for_routing(err: &str) -> bool {
+    matches!(
+        err.trim(),
+        "missing credentials for quota refresh"
+            | "missing usage auth"
+            | "missing usage token"
+            | "missing provider key"
+            | "missing quota base"
+            | "usage endpoint not found (set Usage base URL)"
+    )
 }
 
 const TRANSIENT_UPSTREAM_RETRY_ATTEMPTS: usize = 2;
@@ -538,8 +546,8 @@ async fn post_non_stream_with_http_retry(
 #[cfg(test)]
 mod upstream_retry_tests {
     use super::{
-        is_retryable_upstream_status, should_fallback_stream_response_to_non_stream,
-        upstream_error_code_from_body,
+        is_retryable_upstream_status, is_usage_refresh_config_gap_for_routing,
+        should_fallback_stream_response_to_non_stream, upstream_error_code_from_body,
     };
 
     #[test]
@@ -557,6 +565,13 @@ mod upstream_retry_tests {
             Some("token_invalidated")
         );
         assert!(should_fallback_stream_response_to_non_stream(401, body));
+    }
+
+    #[test]
+    fn usage_refresh_config_gap_treats_missing_usage_auth_as_config_gap() {
+        assert!(is_usage_refresh_config_gap_for_routing(
+            "missing usage auth"
+        ));
     }
 }
 
