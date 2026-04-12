@@ -116,7 +116,7 @@ fn parse_codex_session_id_from_cmdline(cmd: &str) -> Option<String> {
 }
 
 #[cfg(windows)]
-fn looks_like_router_base(v: &str, port: u16) -> bool {
+pub(crate) fn looks_like_router_base(v: &str, port: u16) -> bool {
     let normalized = if v.contains("://") {
         v.to_string()
     } else {

@@ -151,6 +151,65 @@ impl<'a> NotificationScopes<'a> {
         )
     }
 
+    fn parent_thread_id(&self) -> Option<String> {
+        self.first_non_empty_str(
+            &[self.params, self.thread, self.item, self.payload],
+            &[
+                "parentThreadId",
+                "parent_thread_id",
+                "agentParentSessionId",
+                "agent_parent_session_id",
+            ],
+        )
+        .or_else(|| {
+            self.params
+                .and_then(|params| params.get("source"))
+                .and_then(Value::as_object)
+                .and_then(|source| source.get("subagent").or_else(|| source.get("subAgent")))
+                .and_then(Value::as_object)
+                .and_then(|subagent| {
+                    subagent
+                        .get("thread_spawn")
+                        .or_else(|| subagent.get("threadSpawn"))
+                })
+                .and_then(Value::as_object)
+                .and_then(|spawn| {
+                    spawn
+                        .get("parent_thread_id")
+                        .or_else(|| spawn.get("parentThreadId"))
+                })
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+    }
+
+    fn agent_role(&self) -> Option<String> {
+        self.first_non_empty_str(
+            &[self.thread, self.item, self.payload, self.params],
+            &["agentRole", "agent_role"],
+        )
+        .or_else(|| {
+            self.params
+                .and_then(|params| params.get("source"))
+                .and_then(Value::as_object)
+                .and_then(|source| source.get("subagent").or_else(|| source.get("subAgent")))
+                .and_then(Value::as_object)
+                .and_then(|subagent| {
+                    subagent
+                        .get("thread_spawn")
+                        .or_else(|| subagent.get("threadSpawn"))
+                })
+                .and_then(Value::as_object)
+                .and_then(|spawn| spawn.get("agent_role").or_else(|| spawn.get("agentRole")))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+    }
+
     fn status(&self) -> Option<String> {
         self.first_non_empty_str(&[self.params], &["status"])
             .or_else(|| {
@@ -410,24 +469,7 @@ fn notification_is_subagent(notification: &Value) -> bool {
                     .or_else(|| map.get("subAgent"))
                     .and_then(Value::as_object)
                     .is_some();
-                let has_agent_role = map
-                    .get("agent_role")
-                    .or_else(|| map.get("agentRole"))
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .map(|value| !value.is_empty())
-                    .unwrap_or(false);
-                let has_agent_nickname = map
-                    .get("agent_nickname")
-                    .or_else(|| map.get("agentNickname"))
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .map(|value| !value.is_empty())
-                    .unwrap_or(false);
-                has_subagent
-                    || has_agent_role
-                    || has_agent_nickname
-                    || map.values().any(|child| scan(child, depth + 1))
+                has_subagent || map.values().any(|child| scan(child, depth + 1))
             }
             Value::Array(items) => items.iter().take(40).any(|child| scan(child, depth + 1)),
             _ => false,
@@ -446,6 +488,10 @@ pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notifi
     let Some(thread_id) = scopes.thread_id() else {
         return;
     };
+    let is_subagent = notification_is_subagent(notification);
+    if scopes.agent_role().is_some() && !is_subagent {
+        return;
+    }
     let cwd = scopes.cwd();
     if cwd
         .as_deref()
@@ -463,9 +509,22 @@ pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notifi
         "source": "live-notification",
         "updatedAt": scopes.timestamp_secs().unwrap_or_else(current_unix_secs),
     });
-    if notification_is_subagent(notification) {
+    if is_subagent {
         if let Some(obj) = item.as_object_mut() {
             obj.insert("isSubagent".to_string(), Value::Bool(true));
+        }
+    }
+    if let Some(parent_thread_id) = scopes.parent_thread_id() {
+        if let Some(obj) = item.as_object_mut() {
+            obj.insert(
+                "agent_parent_session_id".to_string(),
+                Value::String(parent_thread_id),
+            );
+        }
+    }
+    if let Some(agent_role) = scopes.agent_role() {
+        if let Some(obj) = item.as_object_mut() {
+            obj.insert("agentRole".to_string(), Value::String(agent_role));
         }
     }
     if let Some(path) = scopes.rollout_path() {
@@ -1000,9 +1059,10 @@ mod tests {
             }),
         );
 
-        let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Windows), false).await;
+        let index = lock_threads_workspace_index();
+        let bucket = workspace_bucket_ref(&index, WorkspaceTarget::Windows);
         assert!(
-            snapshot
+            bucket
                 .items
                 .iter()
                 .all(|item| { item.get("id").and_then(Value::as_str) != Some("thread-test") }),
@@ -1011,7 +1071,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_notification_hint_ignores_subagent_threads() {
+    async fn live_notification_hint_keeps_subagent_threads() {
         let _test_guard = codex_app_server::lock_test_globals();
         invalidate_thread_list_cache_all();
 
@@ -1025,7 +1085,8 @@ mod tests {
                     "source": {
                         "subagent": {
                             "thread_spawn": {
-                                "parent_thread_id": "parent-thread"
+                                "parent_thread_id": "parent-thread",
+                                "agent_role": "explorer"
                             }
                         }
                     },
@@ -1043,12 +1104,19 @@ mod tests {
         );
 
         let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Windows), false).await;
-        assert!(
-            snapshot
-                .items
-                .iter()
-                .all(|item| item.get("id").and_then(Value::as_str) != Some("thread-subagent")),
-            "subagent live notifications should not surface in sidebar"
+        let item = snapshot
+            .items
+            .iter()
+            .find(|item| item.get("id").and_then(Value::as_str) == Some("thread-subagent"))
+            .expect("subagent live notification thread item");
+        assert_eq!(item.get("isSubagent").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            item.get("agent_parent_session_id").and_then(Value::as_str),
+            Some("parent-thread")
+        );
+        assert_eq!(
+            item.get("agentRole").and_then(Value::as_str),
+            Some("explorer")
         );
     }
 
@@ -1077,7 +1145,8 @@ mod tests {
             }),
         );
 
-        let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Windows), false).await;
+        let index = lock_threads_workspace_index();
+        let snapshot = workspace_bucket_ref(&index, WorkspaceTarget::Windows);
         assert!(
             snapshot
                 .items

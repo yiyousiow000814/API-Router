@@ -1,4 +1,5 @@
 use crate::orchestrator::gateway::ClientSessionRuntime;
+use serde_json::json;
 
 pub(crate) fn thread_item_string_field(item: &serde_json::Value, key: &str) -> Option<String> {
     item.get(key)
@@ -56,6 +57,15 @@ pub(crate) fn thread_item_status_type(item: &serde_json::Value) -> Option<String
         .map(str::to_string)
 }
 
+pub(crate) fn thread_item_base_url(item: &serde_json::Value) -> Option<String> {
+    for key in ["base_url", "baseUrl", "model_provider_base_url"] {
+        if let Some(value) = thread_item_string_field(item, key) {
+            return Some(value);
+        }
+    }
+    None
+}
+
 pub(crate) fn thread_item_updated_unix_ms(item: &serde_json::Value) -> u64 {
     let raw = item
         .get("updatedAt")
@@ -86,6 +96,41 @@ pub(crate) fn next_last_discovered_unix_ms(prev: u64, now: u64, discovery_is_fre
     prev
 }
 
+struct NotLoadedRefreshTrace<'a> {
+    session_id: &'a str,
+    entry: &'a ClientSessionRuntime,
+    updated_unix_ms: u64,
+    now: u64,
+    live_presence: bool,
+    should_promote_not_loaded_to_now: bool,
+    previous_last_discovered_unix_ms: u64,
+    rollout_path: Option<&'a str>,
+}
+
+fn trace_not_loaded_session_promotion(trace: NotLoadedRefreshTrace<'_>) {
+    let _ =
+        crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(&json!({
+            "source": "status.thread_index_merge",
+            "entry": {
+                "at": crate::orchestrator::store::unix_ms(),
+                "kind": "status.thread_index_merge.not_loaded_refresh",
+                "sessionId": trace.session_id,
+                "livePresence": trace.live_presence,
+                "shouldPromoteNotLoadedToNow": trace.should_promote_not_loaded_to_now,
+                "updatedUnixMs": trace.updated_unix_ms,
+                "nowUnixMs": trace.now,
+                "previousLastDiscoveredUnixMs": trace.previous_last_discovered_unix_ms,
+                "nextLastDiscoveredUnixMs": trace.entry.last_discovered_unix_ms,
+                "lastRequestUnixMs": trace.entry.last_request_unix_ms,
+                "confirmedRouter": trace.entry.confirmed_router,
+                "isAgent": trace.entry.is_agent,
+                "isReview": trace.entry.is_review,
+                "parentSessionId": trace.entry.agent_parent_session_id,
+                "rolloutPath": trace.rollout_path,
+            }
+        }));
+}
+
 pub(crate) fn merge_thread_index_session_hints(
     map: &mut std::collections::HashMap<String, ClientSessionRuntime>,
     now: u64,
@@ -97,7 +142,12 @@ pub(crate) fn merge_thread_index_session_hints(
             continue;
         };
         let rollout_path = thread_item_string_field(item, "path");
-        if rollout_path.is_none() && !map.contains_key(&session_id) {
+        let entry_already_exists = map.contains_key(&session_id);
+        if rollout_path.is_none() && !entry_already_exists {
+            continue;
+        }
+        let live_presence = snapshot_is_fresh && thread_item_is_live_presence(item);
+        if !entry_already_exists && !live_presence {
             continue;
         }
         let entry = map
@@ -118,7 +168,6 @@ pub(crate) fn merge_thread_index_session_hints(
                 confirmed_router: false,
             });
         let updated_unix_ms = thread_item_updated_unix_ms(item);
-        let live_presence = snapshot_is_fresh && thread_item_is_live_presence(item);
         let should_refresh_discovery = snapshot_is_fresh;
         if let Some(rollout_path) = rollout_path.as_deref() {
             entry.rollout_path = Some(rollout_path.to_string());
@@ -128,6 +177,9 @@ pub(crate) fn merge_thread_index_session_hints(
         }
         if let Some(model) = thread_item_string_field(item, "model") {
             entry.last_reported_model = Some(model);
+        }
+        if let Some(base_url) = thread_item_base_url(item) {
+            entry.last_reported_base_url = Some(base_url);
         }
         if let Some(parent_sid) = thread_item_parent_session_id(item) {
             entry.agent_parent_session_id = Some(parent_sid);
@@ -143,10 +195,9 @@ pub(crate) fn merge_thread_index_session_hints(
             entry.is_agent = true;
         }
         if should_refresh_discovery {
-            let should_promote_not_loaded_to_now = !live_presence
-                && (entry.confirmed_router
-                    || entry.last_request_unix_ms > 0
-                    || entry.last_discovered_unix_ms == 0);
+            let previous_last_discovered_unix_ms = entry.last_discovered_unix_ms;
+            let should_promote_not_loaded_to_now =
+                !live_presence && (entry.confirmed_router || entry.last_request_unix_ms > 0);
             let observed_unix_ms = if live_presence {
                 updated_unix_ms.max(now)
             } else if should_promote_not_loaded_to_now {
@@ -162,7 +213,111 @@ pub(crate) fn merge_thread_index_session_hints(
                     observed_unix_ms,
                     true,
                 );
+                if !live_presence {
+                    trace_not_loaded_session_promotion(NotLoadedRefreshTrace {
+                        session_id: &session_id,
+                        entry,
+                        updated_unix_ms,
+                        now,
+                        live_presence,
+                        should_promote_not_loaded_to_now,
+                        previous_last_discovered_unix_ms,
+                        rollout_path: rollout_path.as_deref(),
+                    });
+                }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn merge_thread_index_session_hints_preserves_subagent_parent_context_for_live_thread() {
+        let mut map = HashMap::new();
+
+        merge_thread_index_session_hints(
+            &mut map,
+            2_000_000,
+            &[serde_json::json!({
+                "id": "agent-thread",
+                "path": "C:\\Users\\yiyou\\.codex\\sessions\\2026\\04\\12\\rollout-agent-thread.jsonl",
+                "status": { "type": "running" },
+                "updatedAt": 1742269999,
+                "isSubagent": true,
+                "agent_parent_session_id": "main-thread",
+                "agentRole": "explorer"
+            })],
+            true,
+        );
+
+        let entry = map.get("agent-thread").expect("agent thread entry");
+        assert!(
+            entry.is_agent,
+            "subagent thread should remain marked as agent"
+        );
+        assert!(
+            !entry.is_review,
+            "explorer agent should not be promoted to review"
+        );
+        assert_eq!(
+            entry.agent_parent_session_id.as_deref(),
+            Some("main-thread"),
+            "parent session context should survive thread-index merge"
+        );
+        assert_eq!(
+            entry.rollout_path.as_deref(),
+            Some("C:\\Users\\yiyou\\.codex\\sessions\\2026\\04\\12\\rollout-agent-thread.jsonl")
+        );
+    }
+
+    #[test]
+    fn merge_thread_index_does_not_create_runtime_entry_for_first_seen_not_loaded_main() {
+        let mut map = HashMap::new();
+
+        merge_thread_index_session_hints(
+            &mut map,
+            2_000_000,
+            &[serde_json::json!({
+                "id": "old-main-thread",
+                "path": "C:\\Users\\yiyou\\.codex\\sessions\\2026\\03\\14\\rollout-old-main-thread.jsonl",
+                "status": { "type": "notLoaded" },
+                "updatedAt": 1_742_269_999,
+            })],
+            true,
+        );
+
+        assert!(
+            !map.contains_key("old-main-thread"),
+            "historical notLoaded main thread should not be promoted into the runtime session map"
+        );
+    }
+
+    #[test]
+    fn merge_thread_index_does_not_create_runtime_entry_for_first_seen_not_loaded_subagent() {
+        let mut map = HashMap::new();
+
+        merge_thread_index_session_hints(
+            &mut map,
+            2_000_000,
+            &[serde_json::json!({
+                "id": "old-agent-thread",
+                "path": "C:\\Users\\yiyou\\.codex\\sessions\\2026\\03\\14\\rollout-old-agent-thread.jsonl",
+                "status": { "type": "notLoaded" },
+                "updatedAt": 1_742_269_999,
+                "isSubagent": true,
+                "agent_parent_session_id": "main-thread",
+                "agentRole": "explorer"
+            })],
+            true,
+        );
+
+        assert!(
+            !map.contains_key("old-agent-thread"),
+            "historical notLoaded subagent should not be promoted into the runtime session map"
+        );
     }
 }

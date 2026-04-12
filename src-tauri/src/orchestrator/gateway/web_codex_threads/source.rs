@@ -46,7 +46,6 @@ fn history_preview_map_cache() -> &'static Mutex<HashMap<PathBuf, HistoryPreview
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ThreadFilterReason {
-    Subagent,
     TemporaryWorkspace,
     AuxiliaryPromptOnly,
     SyntheticProbe,
@@ -55,7 +54,6 @@ enum ThreadFilterReason {
 impl ThreadFilterReason {
     fn as_str(self) -> &'static str {
         match self {
-            Self::Subagent => "subagent",
             Self::TemporaryWorkspace => "temporary-workspace",
             Self::AuxiliaryPromptOnly => "auxiliary-prompt-only",
             Self::SyntheticProbe => "synthetic-probe",
@@ -233,8 +231,19 @@ struct SessionFileScan {
     cwd: String,
     created_at: i64,
     is_subagent: bool,
+    agent_parent_session_id: Option<String>,
+    agent_role: Option<String>,
     preview: Option<String>,
     filter_reason: Option<ThreadFilterReason>,
+}
+
+struct ParsedSessionMeta {
+    id: String,
+    cwd: String,
+    created_at: i64,
+    is_subagent: bool,
+    agent_parent_session_id: Option<String>,
+    agent_role: Option<String>,
 }
 
 fn session_file_fingerprint(path: &Path) -> Option<(u64, u128)> {
@@ -250,12 +259,9 @@ fn session_file_fingerprint(path: &Path) -> Option<(u64, u128)> {
 fn classify_thread_filter_reason(
     preview: Option<&str>,
     cwd: &str,
-    is_subagent: bool,
+    _is_subagent: bool,
     auxiliary_prompt_only: bool,
 ) -> Option<ThreadFilterReason> {
-    if is_subagent {
-        return Some(ThreadFilterReason::Subagent);
-    }
     if is_filtered_test_thread_cwd(cwd) {
         return Some(ThreadFilterReason::TemporaryWorkspace);
     }
@@ -309,7 +315,7 @@ fn scan_session_file_uncached(path: &Path) -> Option<SessionFileScan> {
     let mut fallback_event_preview: Option<String> = None;
     let mut first_user_preview: Option<String> = None;
     let mut first_non_aux_user_preview: Option<String> = None;
-    let mut meta: Option<(String, String, i64, bool)> = None;
+    let mut meta: Option<ParsedSessionMeta> = None;
     let mut saw_aux_user_prompt = false;
     let mut saw_non_aux_user_prompt = false;
     for line in reader.lines().take(320).map_while(Result::ok) {
@@ -357,12 +363,33 @@ fn scan_session_file_uncached(path: &Path) -> Option<SessionFileScan> {
                     .map(str::trim)
                     .map(|v| !v.is_empty())
                     .unwrap_or(false);
-                meta = Some((
+                let agent_parent_session_id = payload
+                    .get("source")
+                    .and_then(|x| x.get("subagent").or_else(|| x.get("subAgent")))
+                    .and_then(|x| x.get("thread_spawn").or_else(|| x.get("threadSpawn")))
+                    .and_then(|x| {
+                        x.get("parent_thread_id")
+                            .or_else(|| x.get("parentThreadId"))
+                    })
+                    .and_then(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string);
+                let agent_role = payload
+                    .get("agent_role")
+                    .or_else(|| payload.get("agentRole"))
+                    .and_then(|x| x.as_str())
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string);
+                meta = Some(ParsedSessionMeta {
                     id,
                     cwd,
                     created_at,
-                    has_subagent_source || has_agent_role || has_agent_nickname,
-                ));
+                    is_subagent: has_subagent_source || has_agent_role || has_agent_nickname,
+                    agent_parent_session_id,
+                    agent_role,
+                });
             }
             continue;
         }
@@ -418,7 +445,14 @@ fn scan_session_file_uncached(path: &Path) -> Option<SessionFileScan> {
             }
         }
     }
-    let (id, cwd, created_at, is_subagent) = meta?;
+    let ParsedSessionMeta {
+        id,
+        cwd,
+        created_at,
+        is_subagent,
+        agent_parent_session_id,
+        agent_role,
+    } = meta?;
     let preview = first_non_aux_user_preview
         .or(first_user_preview)
         .or(fallback_event_preview);
@@ -433,6 +467,8 @@ fn scan_session_file_uncached(path: &Path) -> Option<SessionFileScan> {
         cwd,
         created_at,
         is_subagent,
+        agent_parent_session_id,
+        agent_role,
         preview,
         filter_reason,
     })
@@ -676,8 +712,6 @@ def should_replace_existing_thread(existing, candidate):
     return int(existing.get("updatedAt", 0)) < int(candidate.get("updatedAt", 0))
 
 def classify_filter_reason(preview, cwd, is_subagent, auxiliary_prompt_only):
-    if is_subagent:
-        return "subagent"
     if is_filtered_test_thread_cwd(cwd):
         return "temporary-workspace"
     if auxiliary_prompt_only:
@@ -736,6 +770,14 @@ for p in sessions_dir.rglob("*.jsonl"):
                     created_raw = payload.get("created_at") or payload.get("createdAt")
                     source = payload.get("source")
                     source_subagent = source.get("subagent") if isinstance(source, dict) else None
+                    thread_spawn = None
+                    if isinstance(source_subagent, dict):
+                        thread_spawn = source_subagent.get("thread_spawn") or source_subagent.get("threadSpawn")
+                    parent_thread_id = None
+                    if isinstance(thread_spawn, dict):
+                        raw_parent = thread_spawn.get("parent_thread_id") or thread_spawn.get("parentThreadId")
+                        if isinstance(raw_parent, str) and raw_parent.strip():
+                            parent_thread_id = raw_parent.strip()
                     agent_role = payload.get("agent_role")
                     agent_nickname = payload.get("agent_nickname")
                     has_agent_role = isinstance(agent_role, str) and bool(agent_role.strip())
@@ -791,6 +833,8 @@ for p in sessions_dir.rglob("*.jsonl"):
         "path": to_windows_path(p),
         "source": "wsl-session-index",
         "isSubagent": is_subagent,
+        "agent_parent_session_id": parent_thread_id,
+        "agentRole": agent_role.strip() if isinstance(agent_role, str) and agent_role.strip() else None,
         "isAuxiliary": filter_reason == "auxiliary-prompt-only",
         "filterReason": filter_reason,
         "status": {{"type": "notLoaded"}},
@@ -865,6 +909,8 @@ where
             cwd,
             created_at,
             is_subagent,
+            agent_parent_session_id,
+            agent_role,
             preview: scanned_preview,
             filter_reason,
         } = scan;
@@ -885,6 +931,8 @@ where
             "source": source,
             "isAuxiliary": matches!(filter_reason, Some(ThreadFilterReason::AuxiliaryPromptOnly)),
             "isSubagent": is_subagent,
+            "agent_parent_session_id": agent_parent_session_id,
+            "agentRole": agent_role,
             "filterReason": filter_reason.map(ThreadFilterReason::as_str),
             "status": { "type": "notLoaded" },
             "createdAt": if created_at > 0 { created_at } else { updated_at },
@@ -1637,6 +1685,37 @@ mod tests {
         let scan = scan_session_file(&session_path).expect("scan session");
         assert_eq!(scan.preview.as_deref(), Some("çœŸæ­£çš„ç”¨æˆ·é—®é¢˜"));
         assert_eq!(scan.filter_reason, None);
+    }
+
+    #[test]
+    fn scan_session_file_keeps_subagent_threads_visible() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let session_path = temp.path().join("rollout-subagent.jsonl");
+        std::fs::write(
+            &session_path,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"agent-thread\",\"cwd\":\"C:\\\\Users\\\\yiyou\\\\API-Router\",\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"main-thread\",\"depth\":1}}},\"agent_nickname\":\"Confucius\",\"agent_role\":\"explorer\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"inspect the current branch name\"}]}}\n"
+            ),
+        )
+        .expect("write session");
+
+        let scan = scan_session_file(&session_path).expect("scan session");
+        assert!(scan.is_subagent, "subagent metadata should be preserved");
+        assert_eq!(
+            scan.agent_parent_session_id.as_deref(),
+            Some("main-thread"),
+            "subagent parent thread id should be preserved from session meta"
+        );
+        assert_eq!(scan.agent_role.as_deref(), Some("explorer"));
+        assert_eq!(
+            scan.preview.as_deref(),
+            Some("inspect the current branch name")
+        );
+        assert_eq!(
+            scan.filter_reason, None,
+            "subagent sessions should stay eligible for the sidebar and Sessions panel"
+        );
     }
 
     #[test]

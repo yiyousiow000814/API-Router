@@ -95,4 +95,91 @@ describe('SessionsTable', () => {
     expect(html).toContain('AGENT')
     expect(html).toContain('agent-1')
   })
+
+  it('keeps unverified agent families visible in the main table', () => {
+    const html = renderToStaticMarkup(
+      <SessionsTable
+        sessions={[
+          {
+            id: 'main-1',
+            codex_session_id: 'main-1',
+            last_seen_unix_ms: 1,
+            active: false,
+            preferred_provider: null,
+            current_provider: null,
+            verified: false,
+            is_agent: false,
+            is_review: false,
+          },
+          {
+            id: 'agent-1',
+            codex_session_id: 'agent-1',
+            agent_parent_session_id: 'main-1',
+            reported_model_provider: 'api_router',
+            reported_model: 'gpt-5.4',
+            last_seen_unix_ms: 2,
+            active: false,
+            preferred_provider: null,
+            current_provider: null,
+            verified: false,
+            is_agent: true,
+            is_review: false,
+          },
+        ]}
+        providers={['provider_1']}
+        globalPreferred="provider_1"
+        routeMode="balanced_auto"
+        updating={{}}
+        onSetPreferred={vi.fn()}
+      />,
+    )
+
+    expect(html).toContain('main-1')
+    expect(html).toContain('agent-1')
+    expect(html).toContain('AGENT')
+    expect(html).not.toContain('Unverified (no request yet):')
+  })
+
+  it('inherits WSL origin styling for child agent rows under a WSL main session', () => {
+    const html = renderToStaticMarkup(
+      <SessionsTable
+        sessions={[
+          {
+            id: 'main-wsl',
+            codex_session_id: 'main-wsl',
+            wt_session: 'wsl:ubuntu',
+            reported_base_url: 'http://172.29.240.1:4141',
+            last_seen_unix_ms: 1,
+            active: true,
+            preferred_provider: null,
+            current_provider: 'codex-for.me',
+            verified: true,
+            is_agent: false,
+            is_review: false,
+          },
+          {
+            id: 'agent-child',
+            codex_session_id: 'agent-child',
+            agent_parent_session_id: 'main-wsl',
+            reported_model_provider: 'api_router',
+            last_seen_unix_ms: 2,
+            active: false,
+            preferred_provider: null,
+            current_provider: null,
+            verified: true,
+            is_agent: true,
+            is_review: false,
+          },
+        ]}
+        providers={['codex-for.me']}
+        globalPreferred="codex-for.me"
+        routeMode="balanced_auto"
+        updating={{}}
+        onSetPreferred={vi.fn()}
+      />,
+    )
+
+    expect(html).toContain('aoSessionsIdWsl2 aoSessionsIdChild')
+    expect(html).not.toContain('aoSessionsIdWindows aoSessionsIdChild')
+  })
 })

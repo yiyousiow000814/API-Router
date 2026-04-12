@@ -1,4 +1,53 @@
 use sha2::Digest;
+use std::sync::{Mutex, OnceLock};
+
+fn status_client_sessions_trace_cache() -> &'static Mutex<Option<String>> {
+    static CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn summarize_client_sessions_for_trace(sessions: &[serde_json::Value]) -> serde_json::Value {
+    serde_json::json!({
+        "count": sessions.len(),
+        "sessions": sessions.iter().take(40).map(|session| serde_json::json!({
+            "id": session.get("id").and_then(serde_json::Value::as_str),
+            "parent": session.get("agent_parent_session_id").and_then(serde_json::Value::as_str),
+            "active": session.get("active").and_then(serde_json::Value::as_bool),
+            "verified": session.get("verified").and_then(serde_json::Value::as_bool),
+            "is_agent": session.get("is_agent").and_then(serde_json::Value::as_bool),
+            "is_review": session.get("is_review").and_then(serde_json::Value::as_bool),
+            "current_provider": session.get("current_provider").and_then(serde_json::Value::as_str),
+            "reported_model_provider": session.get("reported_model_provider").and_then(serde_json::Value::as_str),
+            "last_seen_unix_ms": session.get("last_seen_unix_ms").and_then(serde_json::Value::as_u64),
+        })).collect::<Vec<_>>()
+    })
+}
+
+fn trace_client_sessions_snapshot(sessions: &[serde_json::Value]) {
+    let summary = summarize_client_sessions_for_trace(sessions);
+    let Ok(summary_text) = serde_json::to_string(&summary) else {
+        return;
+    };
+    let cache = status_client_sessions_trace_cache();
+    let mut guard = match cache.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    if guard.as_deref() == Some(summary_text.as_str()) {
+        return;
+    }
+    *guard = Some(summary_text);
+    let _ = crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(
+        &serde_json::json!({
+            "source": "status.client_sessions",
+            "entry": {
+                "at": unix_ms(),
+                "kind": "status.client_sessions.snapshot",
+                "summary": summary,
+            }
+        }),
+    );
+}
 
 fn app_startup_diag_path() -> Option<std::path::PathBuf> {
     let user_data_dir = std::env::var("API_ROUTER_USER_DATA_DIR").ok()?;
@@ -206,6 +255,11 @@ pub(crate) fn get_status(
             &thread_index_snapshot.items,
             thread_index_snapshot.fresh,
         );
+        confirm_router_from_live_thread_base_url(
+            &mut map,
+            &thread_index_snapshot.items,
+            cfg.listen.port,
+        );
         backfill_main_confirmation_from_verified_agent(&mut map, now);
         let removed_main_sessions = retain_live_app_server_sessions(
             &mut map,
@@ -266,6 +320,7 @@ pub(crate) fn get_status(
                 })
             })
             .collect::<Vec<_>>();
+        trace_client_sessions_snapshot(&sessions);
         sessions
     };
     phase_timings_ms.insert(
@@ -452,15 +507,29 @@ pub(crate) fn record_ui_trace(
     visible: bool,
     fields: serde_json::Value,
 ) {
+    let kind_trimmed = kind.trim().to_string();
+    let payload = serde_json::json!({
+        "active_page": active_page,
+        "visible": visible,
+        "fields": fields,
+    });
     state.ui_watchdog.record_trace(
-        &kind,
-        serde_json::json!({
-            "active_page": active_page,
-            "visible": visible,
-            "fields": fields,
-        }),
+        &kind_trimmed,
+        payload.clone(),
         unix_ms(),
     );
+    if kind_trimmed.starts_with("sessions.") {
+        let _ = crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(
+            &serde_json::json!({
+                "source": "ui.trace",
+                "entry": {
+                    "at": unix_ms(),
+                    "kind": kind_trimmed,
+                    "payload": payload,
+                }
+            }),
+        );
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -650,6 +719,51 @@ fn merge_discovered_model_provider(
         return;
     }
     entry.last_reported_model_provider = Some(mp.to_string());
+}
+
+fn confirm_router_from_live_thread_base_url(
+    map: &mut std::collections::HashMap<String, crate::orchestrator::gateway::ClientSessionRuntime>,
+    thread_items: &[serde_json::Value],
+    router_port: u16,
+) {
+    let live_router_thread_ids: Vec<(String, String)> = thread_items
+        .iter()
+        .filter(|item| {
+            crate::commands::status_snapshot_support::thread_item_is_live_presence(item)
+        })
+        .filter_map(|item| {
+            let session_id =
+                crate::commands::status_snapshot_support::thread_item_string_field(item, "id")?;
+            let base_url =
+                crate::commands::status_snapshot_support::thread_item_base_url(item)?;
+            crate::platform::windows_terminal::looks_like_router_base(&base_url, router_port)
+                .then_some((session_id, base_url))
+        })
+        .collect::<Vec<_>>();
+
+    for (session_id, base_url) in live_router_thread_ids {
+        let entry = map.entry(session_id.clone()).or_insert_with(|| {
+            crate::orchestrator::gateway::ClientSessionRuntime {
+                codex_session_id: session_id.clone(),
+                pid: 0,
+                wt_session: None,
+                last_request_unix_ms: 0,
+                last_discovered_unix_ms: 0,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                rollout_path: None,
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: false,
+            }
+        });
+        entry.last_reported_base_url = Some(base_url);
+        entry.confirmed_router = true;
+        entry.last_reported_model_provider =
+            Some(crate::constants::GATEWAY_MODEL_PROVIDER_ID.to_string());
+    }
 }
 
 fn displayed_session_route(
@@ -2571,7 +2685,7 @@ mod tests {
             );
         }
 
-        let items = super::recent_client_sessions_with_main_parent_context(&map, 20);
+        let items = super::recent_client_sessions_with_main_parent_context(&map, &map, 20);
         let ids: std::collections::HashSet<String> =
             items.iter().map(|(sid, _runtime)| sid.clone()).collect();
 
@@ -2738,6 +2852,57 @@ mod tests {
         assert!(ids.contains("agent-top"));
         assert!(ids.contains("main-parent"));
         assert_eq!(items.len(), 21);
+    }
+
+    #[test]
+    fn visible_client_sessions_include_parent_without_rollout_for_visible_agent_rows() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "main-parent".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "main-parent".to_string(),
+                pid: 0,
+                wt_session: Some("wt-main".to_string()),
+                last_request_unix_ms: 450,
+                last_discovered_unix_ms: 450,
+                last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                last_reported_model: None,
+                last_reported_base_url: None,
+                rollout_path: None,
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: true,
+            },
+        );
+        map.insert(
+            "agent-top".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "agent-top".to_string(),
+                pid: 0,
+                wt_session: Some("wt-agent".to_string()),
+                last_request_unix_ms: 500,
+                last_discovered_unix_ms: 500,
+                last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                last_reported_model: None,
+                last_reported_base_url: None,
+                rollout_path: Some("C:\\repo\\.codex\\sessions\\rollout-agent.jsonl".to_string()),
+                agent_parent_session_id: Some("main-parent".to_string()),
+                is_agent: true,
+                is_review: false,
+                confirmed_router: true,
+            },
+        );
+
+        let items = super::visible_client_session_items(&map, 20);
+        let ids: std::collections::HashSet<String> =
+            items.iter().map(|(sid, _runtime)| sid.clone()).collect();
+
+        assert!(ids.contains("agent-top"));
+        assert!(
+            ids.contains("main-parent"),
+            "visible agent rows should pull their parent main session into the Sessions panel"
+        );
     }
 
     #[test]
@@ -3292,7 +3457,7 @@ mod tests {
     }
 
     #[test]
-    fn thread_index_first_seen_not_loaded_item_uses_current_discovery_timestamp() {
+    fn thread_index_first_seen_not_loaded_item_does_not_create_runtime_session() {
         let mut map = HashMap::new();
         let now = 2_000_000_u64;
 
@@ -3309,13 +3474,42 @@ mod tests {
             true,
         );
 
+        assert!(
+            !map.contains_key("session-index-only"),
+            "first-seen historical notLoaded main thread should not enter the runtime session map"
+        );
+    }
+
+    #[test]
+    fn thread_index_runtime_base_url_is_recorded_and_confirms_live_router_session() {
+        let mut map = HashMap::new();
+        let now = 2_000_000_u64;
+        let items = vec![serde_json::json!({
+            "id": "live-configured-thread",
+            "workspace": "windows",
+            "path": "C:\\Users\\yiyou\\.codex\\sessions\\rollout-live-configured-thread.jsonl",
+            "status": { "type": "running" },
+            "updatedAt": 1742269999,
+            "base_url": "http://127.0.0.1:4000/v1"
+        })];
+
+        merge_thread_index_session_hints(&mut map, now, &items, true);
+        super::confirm_router_from_live_thread_base_url(&mut map, &items, 4000);
+
         let entry = map
-            .get("session-index-only")
-            .expect("session-index metadata session");
-        assert_eq!(entry.last_discovered_unix_ms, now);
+            .get("live-configured-thread")
+            .expect("live configured thread");
         assert_eq!(
-            entry.rollout_path.as_deref(),
-            Some("C:\\Users\\yiyou\\.codex\\sessions\\rollout-session-index-only.jsonl")
+            entry.last_reported_base_url.as_deref(),
+            Some("http://127.0.0.1:4000/v1")
+        );
+        assert!(
+            entry.confirmed_router,
+            "live runtime thread pointing at the router should be treated as configured to API Router"
+        );
+        assert_eq!(
+            entry.last_reported_model_provider.as_deref(),
+            Some(crate::constants::GATEWAY_MODEL_PROVIDER_ID)
         );
     }
 
@@ -3427,14 +3621,14 @@ mod tests {
             true,
         );
 
+        assert!(
+            map.is_empty(),
+            "pure thread-index notLoaded main thread should not become a runtime session before retention runs",
+        );
         let removed = retain_live_app_server_sessions(&mut map, now + 5_000, &[], true);
         assert!(
             removed.is_empty(),
-            "one transient fresh snapshot miss should not immediately hide an unverified thread-index session",
-        );
-        assert!(
-            map.contains_key("session-index-gap"),
-            "thread-index session should remain visible after a short app-server gap",
+            "no runtime session should be synthesized for a historical notLoaded thread-index row",
         );
     }
 
@@ -3589,6 +3783,32 @@ mod tests {
 
         let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, true, 0, true);
         assert!(keep, "main session should stay visible while app server still reports the thread");
+    }
+
+    #[test]
+    fn pidless_agent_drops_when_absent_from_fresh_live_sources() {
+        let now = 2_000_000_u64;
+        let entry = ClientSessionRuntime {
+            codex_session_id: "agent-missing".to_string(),
+            pid: 0,
+            wt_session: None,
+            last_request_unix_ms: now.saturating_sub(30_000),
+            last_discovered_unix_ms: now.saturating_sub(30_000),
+            last_reported_model_provider: Some("api_router".to_string()),
+            last_reported_model: Some("gpt-5.4-mini".to_string()),
+            last_reported_base_url: None,
+            rollout_path: Some("C:\\Users\\yiyou\\.codex\\sessions\\agent-missing.jsonl".to_string()),
+            agent_parent_session_id: Some("main-thread".to_string()),
+            is_agent: true,
+            is_review: false,
+            confirmed_router: true,
+        };
+
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, false, 0, true);
+        assert!(
+            !keep,
+            "fresh snapshots should drop pidless agents once they no longer have app-server or terminal live evidence",
+        );
     }
 
     #[test]

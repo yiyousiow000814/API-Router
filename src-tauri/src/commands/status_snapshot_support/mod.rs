@@ -11,7 +11,7 @@ pub(crate) use self::session_visibility::{
     visible_client_session_items,
 };
 pub(crate) use self::thread_index_merge::{
-    merge_thread_index_session_hints, next_last_discovered_unix_ms, thread_item_bool_field,
-    thread_item_is_live_presence, thread_item_parent_session_id, thread_item_status_type,
-    thread_item_string_field, thread_item_updated_unix_ms,
+    merge_thread_index_session_hints, next_last_discovered_unix_ms, thread_item_base_url,
+    thread_item_bool_field, thread_item_is_live_presence, thread_item_parent_session_id,
+    thread_item_status_type, thread_item_string_field, thread_item_updated_unix_ms,
 };
