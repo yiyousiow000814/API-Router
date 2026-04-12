@@ -874,7 +874,8 @@ fn explicit_usage_endpoint_url_from_definition(
         ExplicitEndpointMode::ExplicitUsageBaseUrlIfDirectPath => provider
             .usage_base_url
             .as_deref()
-            .and_then(explicit_usage_base_url_if_direct_path),
+            .and_then(explicit_usage_base_url_if_direct_path)
+            .or_else(|| definition.explicit_endpoint_url.clone()),
     }
 }
 
@@ -910,6 +911,7 @@ fn candidate_quota_bases_from_definition(
     definition: &ProviderDefinition,
 ) -> Vec<String> {
     let mut out = Vec::new();
+    let mut saw_explicit_candidate = false;
     let mut push_unique = |value: String| {
         if value.is_empty() {
             return;
@@ -931,6 +933,7 @@ fn candidate_quota_bases_from_definition(
                 {
                     let normalized = normalize_usage_base_url(&provider.base_url, base)
                         .unwrap_or_else(|| base.to_string());
+                    saw_explicit_candidate = true;
                     push_unique(normalized);
                 }
             }
@@ -942,8 +945,10 @@ fn candidate_quota_bases_from_definition(
         }
     }
 
-    for base in &definition.fixed_candidate_bases {
-        push_unique(base.to_string());
+    if !saw_explicit_candidate {
+        for base in &definition.fixed_candidate_bases {
+            push_unique(base.to_string());
+        }
     }
 
     out
@@ -999,7 +1004,7 @@ mod tests {
             group: None,
             disabled: false,
             usage_adapter: String::new(),
-            usage_base_url: Some("https://yunyi.rdzhvip.com/user/api/v1/me".to_string()),
+            usage_base_url: None,
             api_key: String::new(),
         };
 

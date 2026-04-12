@@ -363,7 +363,6 @@ async fn refresh_usage_once_after_first_failure(
             || err == "missing usage token"
             || err == "missing provider key"
             || err == "missing quota base"
-            || err == "missing base_url"
             || err == "usage endpoint not found (set Usage base URL)";
         if is_config_gap {
             // If this provider does not support usage refresh in current config,

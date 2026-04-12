@@ -678,7 +678,7 @@ mod tests {
             disabled: false,
             supports_websockets: false,
             usage_adapter: String::new(),
-            usage_base_url: Some("https://yunyi.rdzhvip.com/user/api/v1/me".to_string()),
+            usage_base_url: None,
             api_key: String::new(),
         };
         assert_eq!(
@@ -686,8 +686,17 @@ mod tests {
             Some("https://yunyi.rdzhvip.com/user/api/v1/me")
         );
 
+        provider.usage_base_url = Some("https://yunyi.rdzhvip.com/user/api/v1/me".to_string());
+        assert_eq!(
+            explicit_usage_endpoint_url(&provider).as_deref(),
+            Some("https://yunyi.rdzhvip.com/user/api/v1/me")
+        );
+
         provider.usage_base_url = Some("https://yunyi.rdzhvip.com/user/api/v1".to_string());
-        assert_eq!(explicit_usage_endpoint_url(&provider), None);
+        assert_eq!(
+            explicit_usage_endpoint_url(&provider).as_deref(),
+            Some("https://yunyi.rdzhvip.com/user/api/v1/me")
+        );
     }
 
     #[test]
