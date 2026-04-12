@@ -24,6 +24,26 @@ pub(crate) struct StringFieldSpec {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UnixMsFieldSpec {
     pub aliases: &'static [&'static str],
+    pub rules: &'static [UnixMsRule],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnixMsAggregate {
+    First,
+    Max,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum UnixMsRule {
+    Pointer(&'static str),
+    Array {
+        pointer: &'static str,
+        item_pointer: &'static str,
+        aggregate: UnixMsAggregate,
+        filter_pointer: Option<&'static str>,
+        filter_eq: Option<&'static str>,
+        filter_in: &'static [&'static str],
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -150,6 +170,64 @@ fn extract_unix_ms(root: &Value, spec: Option<UnixMsFieldSpec>) -> Option<u64> {
     spec.aliases
         .iter()
         .find_map(|pointer| parse_unix_ms_from_value(value_at_pointer(root, pointer)))
+        .or_else(|| {
+            spec.rules
+                .iter()
+                .find_map(|rule| extract_unix_ms_from_rule(root, rule))
+        })
+}
+
+fn extract_unix_ms_from_rule(root: &Value, rule: &UnixMsRule) -> Option<u64> {
+    match rule {
+        UnixMsRule::Pointer(pointer) => parse_unix_ms_from_value(value_at_pointer(root, pointer)),
+        UnixMsRule::Array {
+            pointer,
+            item_pointer,
+            aggregate,
+            filter_pointer,
+            filter_eq,
+            filter_in,
+        } => {
+            let items = value_at_pointer(root, pointer)?.as_array()?;
+            let mut values = items
+                .iter()
+                .filter(|item| {
+                    unix_ms_rule_matches_filter(item, *filter_pointer, *filter_eq, filter_in)
+                })
+                .filter_map(|item| parse_unix_ms_from_value(value_at_pointer(item, item_pointer)));
+            match aggregate {
+                UnixMsAggregate::First => values.next(),
+                UnixMsAggregate::Max => values.max(),
+            }
+        }
+    }
+}
+
+fn unix_ms_rule_matches_filter(
+    item: &Value,
+    filter_pointer: Option<&str>,
+    filter_eq: Option<&str>,
+    filter_in: &[&str],
+) -> bool {
+    let Some(filter_pointer) = filter_pointer else {
+        return true;
+    };
+    let Some(value) = value_at_pointer(item, filter_pointer)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    if let Some(expected) = filter_eq {
+        return value.eq_ignore_ascii_case(expected);
+    }
+    if !filter_in.is_empty() {
+        return filter_in
+            .iter()
+            .any(|candidate| value.eq_ignore_ascii_case(candidate));
+    }
+    true
 }
 
 fn value_at_pointer<'a>(root: &'a Value, pointer: &str) -> Option<&'a Value> {
