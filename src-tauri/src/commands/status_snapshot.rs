@@ -1175,7 +1175,7 @@ fn should_keep_runtime_session(
             if discovery_is_fresh && !is_wt_session_alive(wt) {
                 return false;
             }
-        } else if !active {
+        } else if discovery_is_fresh && !active {
             return false;
         }
     }
@@ -3364,6 +3364,50 @@ mod tests {
 
         let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| false, 0, false);
         assert!(keep);
+    }
+
+    #[test]
+    fn pidless_session_without_wt_keeps_when_discovery_is_stale() {
+        let now = 2_000_000_u64;
+        let entry = ClientSessionRuntime {
+            codex_session_id: "pidless-no-wt-stale".to_string(),
+            pid: 0,
+            wt_session: None,
+            last_request_unix_ms: now.saturating_sub(90_000),
+            last_discovered_unix_ms: now.saturating_sub(5_000),
+            last_reported_model_provider: None,
+            last_reported_model: None,
+            last_reported_base_url: None,
+            agent_parent_session_id: None,
+            is_agent: false,
+            is_review: false,
+            confirmed_router: true,
+        };
+
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 0, false);
+        assert!(keep);
+    }
+
+    #[test]
+    fn pidless_session_without_wt_drops_when_discovery_is_fresh_and_inactive() {
+        let now = 2_000_000_u64;
+        let entry = ClientSessionRuntime {
+            codex_session_id: "pidless-no-wt-fresh".to_string(),
+            pid: 0,
+            wt_session: None,
+            last_request_unix_ms: now.saturating_sub(90_000),
+            last_discovered_unix_ms: now.saturating_sub(5_000),
+            last_reported_model_provider: None,
+            last_reported_model: None,
+            last_reported_base_url: None,
+            agent_parent_session_id: None,
+            is_agent: false,
+            is_review: false,
+            confirmed_router: true,
+        };
+
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, 0, true);
+        assert!(!keep);
     }
 
     #[test]
