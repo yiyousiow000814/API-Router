@@ -745,13 +745,12 @@ use self::web_codex_ws::{
 const SESSION_HISTORY_FLUSH_RETRY_DELAY_MS: u64 = 120;
 
 #[cfg(test)]
-pub(crate) fn _set_test_web_codex_history_loader(
-    loader: Option<
-        std::sync::Arc<
-            dyn Fn() -> Result<(serde_json::Value, serde_json::Value), String> + Send + Sync,
-        >,
-    >,
-) {
+type TestWebCodexHistoryLoader = std::sync::Arc<
+    dyn Fn() -> Result<(serde_json::Value, serde_json::Value), String> + Send + Sync,
+>;
+
+#[cfg(test)]
+pub(crate) fn _set_test_web_codex_history_loader(loader: Option<TestWebCodexHistoryLoader>) {
     web_codex_history::_set_test_history_loader(loader.map(|loader| {
         std::sync::Arc::new(
             move |_thread_id, _workspace, _rollout_path, _before, _limit| {

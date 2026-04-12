@@ -1386,8 +1386,10 @@ mod routing_and_status_tests {
 
     #[test]
     fn provider_daily_budget_pressure_is_soft_signal_even_without_hard_daily_cap() {
-        let mut hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig::default();
-        hard_cap.daily = false;
+        let hard_cap = crate::orchestrator::secrets::ProviderQuotaHardCapConfig {
+            daily: false,
+            ..Default::default()
+        };
         let pressure = provider_daily_budget_pressure_for_balancing(
             &json!({
                 "p1": {

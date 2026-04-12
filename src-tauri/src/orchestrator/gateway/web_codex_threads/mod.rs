@@ -755,6 +755,7 @@ async fn ensure_workspace_index_fresh(target: WorkspaceTarget, force: bool) {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::{
         find_rollout_path_in_items, has_missing_session_rollout_path,
