@@ -58,16 +58,14 @@ fn rebuild_shared_projection_day_from_sources(
     let source_rows = gateway
         .store
         .list_shared_tracked_spend_day_sources(shared_provider_id, day_key);
-    let mut total_tracked_spend_usd = 0.0_f64;
     let mut updated_at_unix_ms = 0_u64;
     let mut latest_row: Option<&Value> = None;
     let mut source_nodes = Vec::new();
 
     for (_source_node_id, _source_node_name, source_updated_at_unix_ms, row) in &source_rows {
-        let Some(tracked_spend_usd) = tracked_spend_usd_value(row) else {
+        if tracked_spend_usd_value(row).is_none() {
             continue;
-        };
-        total_tracked_spend_usd += tracked_spend_usd;
+        }
         let row_updated_at = row
             .get("updated_at_unix_ms")
             .and_then(Value::as_u64)
@@ -112,6 +110,8 @@ fn rebuild_shared_projection_day_from_sources(
             }));
         }
     }
+
+    let total_tracked_spend_usd = latest_row.and_then(tracked_spend_usd_value).unwrap_or(0.0);
 
     if total_tracked_spend_usd <= 0.0 || !total_tracked_spend_usd.is_finite() {
         gateway

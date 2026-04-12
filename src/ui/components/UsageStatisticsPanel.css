@@ -682,19 +682,19 @@
 }
 
 .aoUsageReqColProvider {
-  width: 124px;
+  width: 112px;
 }
 
 .aoUsageReqColModel {
-  width: 114px;
+  width: 144px;
 }
 
 .aoUsageReqColInput {
-  width: 80px;
+  width: 88px;
 }
 
 .aoUsageReqColOutput {
-  width: 80px;
+  width: 88px;
 }
 
 .aoUsageReqColCacheCreate {
@@ -702,7 +702,7 @@
 }
 
 .aoUsageReqColCacheRead {
-  width: 96px;
+  width: 104px;
 }
 
 .aoUsageReqColOrigin {
@@ -714,7 +714,7 @@
 }
 
 .aoUsageReqColSession {
-  width: 260px;
+  width: 256px;
 }
 
 .aoUsageRequestsMono {

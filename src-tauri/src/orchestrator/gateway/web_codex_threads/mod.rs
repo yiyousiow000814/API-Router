@@ -2,6 +2,7 @@ use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
 use crate::orchestrator::gateway::web_codex_session_runtime::workspace_thread_runtime_snapshot;
 use chrono::DateTime;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 mod source;
 
@@ -37,6 +38,12 @@ pub(super) struct ThreadListSnapshot {
     pub(super) items: Vec<Value>,
     pub(super) cache_hit: bool,
     pub(super) rebuild_ms: i64,
+}
+
+#[derive(Clone)]
+pub(crate) struct CachedThreadIndexSnapshot {
+    pub(crate) items: Vec<Value>,
+    pub(crate) fresh: bool,
 }
 
 fn current_unix_secs() -> i64 {
@@ -142,6 +149,65 @@ impl<'a> NotificationScopes<'a> {
             &[self.params, self.thread, self.item, self.payload],
             &["cwd"],
         )
+    }
+
+    fn parent_thread_id(&self) -> Option<String> {
+        self.first_non_empty_str(
+            &[self.params, self.thread, self.item, self.payload],
+            &[
+                "parentThreadId",
+                "parent_thread_id",
+                "agentParentSessionId",
+                "agent_parent_session_id",
+            ],
+        )
+        .or_else(|| {
+            self.params
+                .and_then(|params| params.get("source"))
+                .and_then(Value::as_object)
+                .and_then(|source| source.get("subagent").or_else(|| source.get("subAgent")))
+                .and_then(Value::as_object)
+                .and_then(|subagent| {
+                    subagent
+                        .get("thread_spawn")
+                        .or_else(|| subagent.get("threadSpawn"))
+                })
+                .and_then(Value::as_object)
+                .and_then(|spawn| {
+                    spawn
+                        .get("parent_thread_id")
+                        .or_else(|| spawn.get("parentThreadId"))
+                })
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+    }
+
+    fn agent_role(&self) -> Option<String> {
+        self.first_non_empty_str(
+            &[self.thread, self.item, self.payload, self.params],
+            &["agentRole", "agent_role"],
+        )
+        .or_else(|| {
+            self.params
+                .and_then(|params| params.get("source"))
+                .and_then(Value::as_object)
+                .and_then(|source| source.get("subagent").or_else(|| source.get("subAgent")))
+                .and_then(Value::as_object)
+                .and_then(|subagent| {
+                    subagent
+                        .get("thread_spawn")
+                        .or_else(|| subagent.get("threadSpawn"))
+                })
+                .and_then(Value::as_object)
+                .and_then(|spawn| spawn.get("agent_role").or_else(|| spawn.get("agentRole")))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
     }
 
     fn status(&self) -> Option<String> {
@@ -270,6 +336,66 @@ fn clear_bucket_refreshing(bucket: &mut WorkspaceThreadsBucket) {
     bucket.refresh_started_at_unix_secs = 0;
 }
 
+fn log_thread_index_rebuild_delta(
+    target: WorkspaceTarget,
+    previous_items: &[Value],
+    next_items: &[Value],
+    rebuild_ms: i64,
+) {
+    let previous_ids = previous_items
+        .iter()
+        .filter_map(|item| {
+            item.get("id")
+                .or_else(|| item.get("threadId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .collect::<HashSet<_>>();
+    let next_ids = next_items
+        .iter()
+        .filter_map(|item| {
+            item.get("id")
+                .or_else(|| item.get("threadId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .collect::<HashSet<_>>();
+    let mut added_ids = next_ids
+        .difference(&previous_ids)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut removed_ids = previous_ids
+        .difference(&next_ids)
+        .cloned()
+        .collect::<Vec<_>>();
+    added_ids.sort();
+    removed_ids.sort();
+    if added_ids.is_empty() && removed_ids.is_empty() {
+        return;
+    }
+    let _ =
+        crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(&json!({
+            "source": "thread.index",
+            "entry": {
+                "at": crate::orchestrator::store::unix_ms(),
+                "kind": "thread.index.rebuild.delta",
+                "workspace": match target {
+                    WorkspaceTarget::Windows => "windows",
+                    WorkspaceTarget::Wsl2 => "wsl2",
+                },
+                "rebuildMs": rebuild_ms,
+                "previousCount": previous_items.len(),
+                "nextCount": next_items.len(),
+                "addedIds": added_ids,
+                "removedIds": removed_ids,
+            }
+        }));
+}
+
 fn bucket_refresh_is_stuck(bucket: &WorkspaceThreadsBucket, now_unix_secs: i64) -> bool {
     bucket.refreshing
         && (bucket.refresh_started_at_unix_secs <= 0
@@ -343,24 +469,7 @@ fn notification_is_subagent(notification: &Value) -> bool {
                     .or_else(|| map.get("subAgent"))
                     .and_then(Value::as_object)
                     .is_some();
-                let has_agent_role = map
-                    .get("agent_role")
-                    .or_else(|| map.get("agentRole"))
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .map(|value| !value.is_empty())
-                    .unwrap_or(false);
-                let has_agent_nickname = map
-                    .get("agent_nickname")
-                    .or_else(|| map.get("agentNickname"))
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .map(|value| !value.is_empty())
-                    .unwrap_or(false);
-                has_subagent
-                    || has_agent_role
-                    || has_agent_nickname
-                    || map.values().any(|child| scan(child, depth + 1))
+                has_subagent || map.values().any(|child| scan(child, depth + 1))
             }
             Value::Array(items) => items.iter().take(40).any(|child| scan(child, depth + 1)),
             _ => false,
@@ -379,6 +488,10 @@ pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notifi
     let Some(thread_id) = scopes.thread_id() else {
         return;
     };
+    let is_subagent = notification_is_subagent(notification);
+    if scopes.agent_role().is_some() && !is_subagent {
+        return;
+    }
     let cwd = scopes.cwd();
     if cwd
         .as_deref()
@@ -396,9 +509,22 @@ pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notifi
         "source": "live-notification",
         "updatedAt": scopes.timestamp_secs().unwrap_or_else(current_unix_secs),
     });
-    if notification_is_subagent(notification) {
+    if is_subagent {
         if let Some(obj) = item.as_object_mut() {
             obj.insert("isSubagent".to_string(), Value::Bool(true));
+        }
+    }
+    if let Some(parent_thread_id) = scopes.parent_thread_id() {
+        if let Some(obj) = item.as_object_mut() {
+            obj.insert(
+                "agent_parent_session_id".to_string(),
+                Value::String(parent_thread_id),
+            );
+        }
+    }
+    if let Some(agent_role) = scopes.agent_role() {
+        if let Some(obj) = item.as_object_mut() {
+            obj.insert("agentRole".to_string(), Value::String(agent_role));
         }
     }
     if let Some(path) = scopes.rollout_path() {
@@ -438,11 +564,54 @@ pub(super) fn spawn_thread_index_prewarm() {
             }
         };
         if should_spawn {
-            tokio::spawn(async move {
-                refresh_workspace_thread_index(target).await;
-            });
+            spawn_thread_index_refresh(target);
         }
     }
+}
+
+pub(crate) fn cached_threads_snapshot_stale_while_revalidate() -> CachedThreadIndexSnapshot {
+    let now = current_unix_secs();
+    let mut refresh_targets = Vec::new();
+    {
+        let mut index = lock_threads_workspace_index();
+        for target in [WorkspaceTarget::Windows, WorkspaceTarget::Wsl2] {
+            let bucket = workspace_bucket_mut(&mut index, target);
+            if bucket_refresh_is_stuck(bucket, now) {
+                clear_bucket_refreshing(bucket);
+            }
+            let has_items = !bucket.items.is_empty();
+            let stale = now.saturating_sub(bucket.updated_at_unix_secs) >= THREADS_INDEX_STALE_SECS;
+            let has_missing_rollout = has_missing_session_rollout_path(&bucket.items);
+            if (!has_items || stale || has_missing_rollout) && !bucket.refreshing {
+                mark_bucket_refreshing(bucket);
+                refresh_targets.push(target);
+            }
+        }
+    }
+
+    for target in refresh_targets {
+        spawn_thread_index_refresh(target);
+    }
+
+    let index = lock_threads_workspace_index();
+    let windows = workspace_bucket_ref(&index, WorkspaceTarget::Windows);
+    let wsl2 = workspace_bucket_ref(&index, WorkspaceTarget::Wsl2);
+    let mut merged = merge_items_without_duplicates(windows.items.clone(), wsl2.items.clone());
+    sort_threads_by_updated_desc(&mut merged);
+    let fresh = [windows, wsl2].into_iter().all(|bucket| {
+        bucket.updated_at_unix_secs > 0
+            && now.saturating_sub(bucket.updated_at_unix_secs) < THREADS_INDEX_STALE_SECS
+    });
+    CachedThreadIndexSnapshot {
+        items: merged,
+        fresh,
+    }
+}
+
+fn spawn_thread_index_refresh(target: WorkspaceTarget) {
+    tauri::async_runtime::spawn(async move {
+        refresh_workspace_thread_index(target).await;
+    });
 }
 
 pub(super) async fn list_threads_snapshot(
@@ -508,10 +677,12 @@ async fn refresh_workspace_thread_index(target: WorkspaceTarget) {
     let bucket = workspace_bucket_mut(&mut index, target);
     match rebuilt_items {
         Ok(Ok(rebuilt_items)) => {
+            let previous_items = bucket.items.clone();
             let retained_live_items = retained_live_notification_items(&bucket.items);
             bucket.items = merge_items_without_duplicates(rebuilt_items, retained_live_items);
             sort_threads_by_updated_desc(&mut bucket.items);
             bucket.updated_at_unix_secs = current_unix_secs();
+            log_thread_index_rebuild_delta(target, &previous_items, &bucket.items, rebuild_ms);
         }
         Ok(Err(err)) => {
             log::warn!("failed to rebuild {:?} Codex thread index: {err}", target);
@@ -579,11 +750,7 @@ async fn ensure_workspace_index_fresh(target: WorkspaceTarget, force: bool) {
     match action {
         Action::None => {}
         Action::SyncRefresh => refresh_workspace_thread_index(target).await,
-        Action::AsyncRefresh => {
-            tokio::spawn(async move {
-                refresh_workspace_thread_index(target).await;
-            });
-        }
+        Action::AsyncRefresh => spawn_thread_index_refresh(target),
     }
 }
 
@@ -892,9 +1059,10 @@ mod tests {
             }),
         );
 
-        let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Windows), false).await;
+        let index = lock_threads_workspace_index();
+        let bucket = workspace_bucket_ref(&index, WorkspaceTarget::Windows);
         assert!(
-            snapshot
+            bucket
                 .items
                 .iter()
                 .all(|item| { item.get("id").and_then(Value::as_str) != Some("thread-test") }),
@@ -903,7 +1071,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_notification_hint_ignores_subagent_threads() {
+    async fn live_notification_hint_keeps_subagent_threads() {
         let _test_guard = codex_app_server::lock_test_globals();
         invalidate_thread_list_cache_all();
 
@@ -917,7 +1085,8 @@ mod tests {
                     "source": {
                         "subagent": {
                             "thread_spawn": {
-                                "parent_thread_id": "parent-thread"
+                                "parent_thread_id": "parent-thread",
+                                "agent_role": "explorer"
                             }
                         }
                     },
@@ -935,12 +1104,19 @@ mod tests {
         );
 
         let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Windows), false).await;
-        assert!(
-            snapshot
-                .items
-                .iter()
-                .all(|item| item.get("id").and_then(Value::as_str) != Some("thread-subagent")),
-            "subagent live notifications should not surface in sidebar"
+        let item = snapshot
+            .items
+            .iter()
+            .find(|item| item.get("id").and_then(Value::as_str) == Some("thread-subagent"))
+            .expect("subagent live notification thread item");
+        assert_eq!(item.get("isSubagent").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            item.get("agent_parent_session_id").and_then(Value::as_str),
+            Some("parent-thread")
+        );
+        assert_eq!(
+            item.get("agentRole").and_then(Value::as_str),
+            Some("explorer")
         );
     }
 
@@ -969,7 +1145,8 @@ mod tests {
             }),
         );
 
-        let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Windows), false).await;
+        let index = lock_threads_workspace_index();
+        let snapshot = workspace_bucket_ref(&index, WorkspaceTarget::Windows);
         assert!(
             snapshot
                 .items
@@ -1119,6 +1296,16 @@ mod tests {
             "missing hinted rollout path should force rebuild and drop stale cached item: {:?}",
             snapshot.items
         );
+    }
+
+    #[test]
+    fn cached_threads_snapshot_stale_while_revalidate_does_not_require_tokio_runtime() {
+        super::clear_threads_workspace_index_for_test();
+
+        let snapshot = super::cached_threads_snapshot_stale_while_revalidate();
+
+        assert!(snapshot.items.is_empty());
+        assert!(!snapshot.fresh);
     }
 
     #[tokio::test]

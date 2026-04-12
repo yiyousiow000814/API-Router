@@ -2134,6 +2134,7 @@ mod provider_management_tests {
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,

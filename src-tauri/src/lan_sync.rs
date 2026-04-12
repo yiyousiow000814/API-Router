@@ -7680,6 +7680,85 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_shared_tracked_spend_views_does_not_sum_duplicate_day_sources() {
+        let (_tmp, state) = build_test_state();
+        let shared_provider_id = state
+            .secrets
+            .ensure_provider_shared_id("provider_1")
+            .expect("shared id");
+        let started_at_unix_ms = 1_711_929_600_000u64;
+        let day_key =
+            crate::orchestrator::store::Store::local_day_key_from_unix_ms(started_at_unix_ms)
+                .expect("day key");
+
+        for (node_id, node_name, updated_at, event_id) in [
+            ("node-remote-a", "Remote A", 10u64, "edit-remote-a"),
+            ("node-remote-b", "Remote B", 11u64, "edit-remote-b"),
+        ] {
+            assert!(state
+                .gateway
+                .store
+                .insert_lan_edit_event(&LanEditSyncEvent {
+                    event_id: event_id.to_string(),
+                    node_id: node_id.to_string(),
+                    node_name: node_name.to_string(),
+                    created_at_unix_ms: updated_at,
+                    lamport_ts: updated_at,
+                    entity_type: "tracked_spend_day".to_string(),
+                    entity_id: tracked_spend_day_entity_id(
+                        &shared_provider_id,
+                        started_at_unix_ms,
+                        node_id,
+                    ),
+                    op: "replace".to_string(),
+                    payload: serde_json::json!({
+                        "provider_name": "provider_1",
+                        "day_started_at_unix_ms": started_at_unix_ms,
+                        "row": {
+                            "provider": "provider_1",
+                            "started_at_unix_ms": started_at_unix_ms,
+                            "tracked_spend_usd": 17.47,
+                            "updated_at_unix_ms": updated_at,
+                            "producer_node_id": node_id,
+                            "producer_node_name": node_name
+                        }
+                    }),
+                }));
+        }
+
+        super::rebuild_shared_tracked_spend_views(&state).expect("rebuild shared view");
+
+        let shared_rows = state
+            .gateway
+            .store
+            .list_shared_tracked_spend_days("provider_1");
+        assert_eq!(shared_rows.len(), 1);
+        assert_eq!(
+            shared_rows[0].get("day_key").and_then(Value::as_str),
+            Some(day_key.as_str())
+        );
+        assert_eq!(
+            shared_rows[0]
+                .get("tracked_spend_usd")
+                .and_then(Value::as_f64),
+            Some(17.47)
+        );
+        assert_eq!(
+            shared_rows[0]
+                .get("producer_node_id")
+                .and_then(Value::as_str),
+            Some("node-remote-b")
+        );
+        assert_eq!(
+            shared_rows[0]
+                .get("tracked_source_nodes")
+                .and_then(Value::as_array)
+                .map(|items| items.len()),
+            Some(2)
+        );
+    }
+
+    #[test]
     fn rebuild_shared_tracked_spend_views_skips_broken_projection_events() {
         let (_tmp, state) = build_test_state();
         let shared_provider_id = state
