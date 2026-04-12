@@ -691,11 +691,7 @@ async fn ensure_workspace_index_fresh(target: WorkspaceTarget, force: bool) {
     match action {
         Action::None => {}
         Action::SyncRefresh => refresh_workspace_thread_index(target).await,
-        Action::AsyncRefresh => {
-            tokio::spawn(async move {
-                refresh_workspace_thread_index(target).await;
-            });
-        }
+        Action::AsyncRefresh => spawn_thread_index_refresh(target),
     }
 }
 

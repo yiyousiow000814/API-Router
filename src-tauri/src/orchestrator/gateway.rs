@@ -999,7 +999,10 @@ async fn responses(
                 last_reported_base_url: None,
                 rollout_path: client_session
                     .as_ref()
-                    .and_then(|session| session.rollout_path.clone()),
+                    .and_then(|session| session.rollout_path.as_deref())
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_string),
                 agent_parent_session_id: None,
                 is_agent: agent_request || client_session.as_ref().is_some_and(|s| s.is_agent),
                 is_review: false,
@@ -1023,14 +1026,6 @@ async fn responses(
             }
             if inferred.is_review {
                 entry.is_review = true;
-            }
-            if let Some(rollout_path) = inferred
-                .rollout_path
-                .as_deref()
-                .map(str::trim)
-                .filter(|path| !path.is_empty())
-            {
-                entry.rollout_path = Some(rollout_path.to_string());
             }
         }
         if request_is_wsl && !is_review_session {
