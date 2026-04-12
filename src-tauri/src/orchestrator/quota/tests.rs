@@ -537,7 +537,7 @@ mod tests {
         let snap = fetch_budget_info_any(
             &st,
             "p1",
-            &[base.clone()],
+            std::slice::from_ref(&base),
             Some("test-token"),
             "usage token",
             crate::orchestrator::providers::default_budget_info_mapping(),

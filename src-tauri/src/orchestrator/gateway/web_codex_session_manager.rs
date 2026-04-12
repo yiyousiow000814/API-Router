@@ -1177,6 +1177,7 @@ fn runtime_include_turns_error_allows_empty_history(detail: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use crate::orchestrator::gateway::web_codex_home::parse_workspace_target;

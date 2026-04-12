@@ -42,28 +42,19 @@ static BRIDGES: OnceLock<Mutex<HashMap<String, std::sync::Arc<Mutex<BridgeRuntim
     OnceLock::new();
 
 #[cfg(test)]
-static TEST_RPC_HANDLER: OnceLock<
-    Mutex<
-        Option<
-            std::sync::Arc<
-                dyn Fn(Option<&str>, &str, Value) -> Result<Value, String> + Send + Sync,
-            >,
-        >,
-    >,
-> = OnceLock::new();
+type TestRpcHandler =
+    std::sync::Arc<dyn Fn(Option<&str>, &str, Value) -> Result<Value, String> + Send + Sync>;
 
 #[cfg(test)]
-static TEST_REPLAY_HANDLER: OnceLock<
-    Mutex<
-        Option<
-            std::sync::Arc<
-                dyn Fn(Option<&str>, u64, usize) -> (Vec<Value>, Option<u64>, Option<u64>, bool)
-                    + Send
-                    + Sync,
-            >,
-        >,
-    >,
-> = OnceLock::new();
+static TEST_RPC_HANDLER: OnceLock<Mutex<Option<TestRpcHandler>>> = OnceLock::new();
+
+#[cfg(test)]
+type TestReplayHandler = std::sync::Arc<
+    dyn Fn(Option<&str>, u64, usize) -> (Vec<Value>, Option<u64>, Option<u64>, bool) + Send + Sync,
+>;
+
+#[cfg(test)]
+static TEST_REPLAY_HANDLER: OnceLock<Mutex<Option<TestReplayHandler>>> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg(any(test, target_os = "windows"))]
@@ -851,26 +842,14 @@ fn build_launch_command(target: &BridgeTarget, port: u16) -> Command {
 }
 
 #[cfg(test)]
-pub async fn _set_test_rpc_handler(
-    handler: Option<
-        std::sync::Arc<dyn Fn(Option<&str>, &str, Value) -> Result<Value, String> + Send + Sync>,
-    >,
-) {
+pub async fn _set_test_rpc_handler(handler: Option<TestRpcHandler>) {
     let lock = TEST_RPC_HANDLER.get_or_init(|| Mutex::new(None));
     let mut guard = lock.lock().await;
     *guard = handler;
 }
 
 #[cfg(test)]
-pub async fn _set_test_replay_handler(
-    handler: Option<
-        std::sync::Arc<
-            dyn Fn(Option<&str>, u64, usize) -> (Vec<Value>, Option<u64>, Option<u64>, bool)
-                + Send
-                + Sync,
-        >,
-    >,
-) {
+pub async fn _set_test_replay_handler(handler: Option<TestReplayHandler>) {
     let lock = TEST_REPLAY_HANDLER.get_or_init(|| Mutex::new(None));
     let mut guard = lock.lock().await;
     *guard = handler;
@@ -884,9 +863,7 @@ async fn maybe_handle_test_rpc(
 ) -> Option<Result<Value, String>> {
     let lock = TEST_RPC_HANDLER.get_or_init(|| Mutex::new(None));
     let guard = lock.lock().await;
-    let Some(handler) = guard.as_ref() else {
-        return None;
-    };
+    let handler = guard.as_ref()?;
     Some(handler(codex_home, method, params.clone()))
 }
 
@@ -898,9 +875,7 @@ async fn maybe_handle_test_replay(
 ) -> Option<(Vec<Value>, Option<u64>, Option<u64>, bool)> {
     let lock = TEST_REPLAY_HANDLER.get_or_init(|| Mutex::new(None));
     let guard = lock.lock().await;
-    let Some(handler) = guard.as_ref() else {
-        return None;
-    };
+    let handler = guard.as_ref()?;
     Some(handler(codex_home, since_event_id, max))
 }
 

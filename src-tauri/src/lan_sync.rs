@@ -79,6 +79,7 @@ pub const LAN_PEER_STALE_AFTER_MS: u64 = 20_000;
 pub const LAN_PEER_HTTP_GRACE_AFTER_MS: u64 = 30_000;
 const LAN_HEARTBEAT_SENDER_DELAY_LOG_THRESHOLD_MS: u64 = LAN_HEARTBEAT_INTERVAL_MS * 2;
 const LAN_HEARTBEAT_PREP_SLOW_LOG_THRESHOLD_MS: u64 = 250;
+const _: () = assert!(LAN_PEER_STALE_AFTER_MS >= LAN_HEARTBEAT_INTERVAL_MS * 10);
 const LAN_SHARED_HEALTH_LOOP_INTERVAL_MS: u64 = 900;
 const LAN_USAGE_SYNC_LOOP_INTERVAL_MS: u64 = 1_000;
 const LAN_USAGE_SYNC_BATCH_LIMIT: usize = 2_048;
@@ -7959,7 +7960,6 @@ mod tests {
     fn peer_stale_timeout_tolerates_transient_windows_heartbeat_gaps() {
         // Regression guard: LAN diagnostics showed the same peer being pruned after 7-10s
         // heartbeat gaps, then immediately rediscovered from the same listen address.
-        assert!(super::LAN_PEER_STALE_AFTER_MS >= super::LAN_HEARTBEAT_INTERVAL_MS * 10);
         assert!(!peer_is_stale(10_000, 20_000));
     }
 
@@ -8195,11 +8195,10 @@ mod tests {
         assert_eq!(provider_pricing.amount_usd, 0.035);
         assert_eq!(provider_pricing.periods.len(), 1);
         assert!(
-            state
+            !state
                 .secrets
                 .list_provider_pricing()
-                .get("provider_1")
-                .is_none(),
+                .contains_key("provider_1"),
             "remote pricing must not overwrite local provider pricing state"
         );
 

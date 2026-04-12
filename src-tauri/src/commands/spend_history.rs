@@ -968,7 +968,7 @@ mod spend_history_tests {
     fn tracked_spend_same_day_prefers_latest_snapshot() {
         let first_updated_at_unix_ms = local_unix_ms(2026, 4, 3, 0, 1, 3);
         let second_updated_at_unix_ms = local_unix_ms(2026, 4, 3, 15, 38, 3);
-        let days = vec![
+        let days = [
             serde_json::json!({
                 "provider": "codex-for.me",
                 "started_at_unix_ms": local_unix_ms(2026, 4, 2, 3, 58, 3),
@@ -999,7 +999,7 @@ mod spend_history_tests {
 
     #[test]
     fn tracked_source_nodes_are_unique_per_source_node() {
-        let days = vec![
+        let days = [
             serde_json::json!({
                 "producer_node_id": "node-local",
                 "producer_node_name": "Local Node",

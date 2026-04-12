@@ -1271,6 +1271,7 @@ fn filter_auxiliary_threads(items: &mut Vec<Value>) {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::{
         build_threads_from_session_dir, clear_history_preview_map_cache_for_test,
@@ -1671,19 +1672,35 @@ mod tests {
     fn scan_session_file_skips_auxiliary_review_prompts_for_preview() {
         let temp = tempfile::tempdir().expect("temp dir");
         let session_path = temp.path().join("rollout.jsonl");
+        let actual_user_prompt = "actual user issue";
+        let actual_user_item = json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": actual_user_prompt
+                }]
+            }
+        });
         std::fs::write(
             &session_path,
-            concat!(
-                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-1\",\"cwd\":\"/repo\"}}\n",
-                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<user_action> <context>User initiated a review task.\"}]}}\n",
-                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Use the shell to run rg -n command failed\"}]}}\n",
-                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"çœŸæ­£çš„ç”¨æˆ·é—®é¢˜\"}]}}\n"
-            ),
+            [
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-1\",\"cwd\":\"/repo\"}}\n"
+                    .to_string(),
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<user_action> <context>User initiated a review task.\"}]}}\n"
+                    .to_string(),
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Use the shell to run rg -n command failed\"}]}}\n"
+                    .to_string(),
+                format!("{actual_user_item}\n"),
+            ]
+            .join(""),
         )
         .expect("write session");
 
         let scan = scan_session_file(&session_path).expect("scan session");
-        assert_eq!(scan.preview.as_deref(), Some("çœŸæ­£çš„ç”¨æˆ·é—®é¢˜"));
+        assert_eq!(scan.preview.as_deref(), Some(actual_user_prompt));
         assert_eq!(scan.filter_reason, None);
     }
 
