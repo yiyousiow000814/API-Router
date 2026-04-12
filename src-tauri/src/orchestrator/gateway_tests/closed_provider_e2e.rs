@@ -458,6 +458,199 @@ async fn e2e_first_failure_refreshes_usage_once_and_closes_provider_before_retry
     );
 }
 
+#[tokio::test]
+async fn e2e_stops_retrying_preferred_when_refresh_leaves_no_routable_provider() {
+    let p1_hits = Arc::new(AtomicUsize::new(0));
+    let usage_hits = Arc::new(AtomicUsize::new(0));
+
+    let p1_app = Router::new().route(
+        "/v1/responses",
+        post({
+            let p1_hits = p1_hits.clone();
+            move |_body: axum::extract::Json<serde_json::Value>| {
+                p1_hits.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": "p1 upstream failed"})),
+                    )
+                }
+            }
+        }),
+    );
+    let p1_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let p1_addr = p1_listener.local_addr().unwrap();
+    let p1_base = format!("http://{}:{}/v1", p1_addr.ip(), p1_addr.port());
+    tokio::spawn(async move {
+        let _ = axum::serve(p1_listener, p1_app).await;
+    });
+
+    let usage_app = Router::new().route(
+        "/api/backend/users/info",
+        axum::routing::get({
+            let usage_hits = usage_hits.clone();
+            move || {
+                usage_hits.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    Json(json!({
+                        "daily_spent_usd": 120.0,
+                        "daily_budget_usd": 120.0,
+                        "weekly_spent_usd": 120.0,
+                        "weekly_budget_usd": 360.0,
+                        "monthly_spent_usd": 120.0,
+                        "monthly_budget_usd": 600.0
+                    }))
+                }
+            }
+        }),
+    );
+    let usage_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let usage_addr = usage_listener.local_addr().unwrap();
+    let usage_base = format!("http://{}:{}", usage_addr.ip(), usage_addr.port());
+    tokio::spawn(async move {
+        let _ = axum::serve(usage_listener, usage_app).await;
+    });
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
+            auto_return_to_preferred: true,
+            preferred_stable_seconds: 30,
+            failure_threshold: 5,
+            cooldown_seconds: 120,
+            request_timeout_seconds: 5,
+        },
+        providers: std::collections::BTreeMap::from([
+            (
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url: p1_base,
+                    group: None,
+                    disabled: false,
+                    supports_websockets: false,
+                    usage_adapter: "budget_info".to_string(),
+                    usage_base_url: Some(usage_base),
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "p2".to_string(),
+                ProviderConfig {
+                    display_name: "P2".to_string(),
+                    base_url: "https://p2.example.com/v1".to_string(),
+                    group: None,
+                    disabled: false,
+                    supports_websockets: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            ),
+        ]),
+        provider_order: vec!["p1".to_string(), "p2".to_string()],
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    store
+        .put_quota_snapshot(
+            "p1",
+            &json!({
+                "kind": "budget_info",
+                "daily_spent_usd": 1.0,
+                "daily_budget_usd": 120.0,
+                "weekly_spent_usd": 1.0,
+                "weekly_budget_usd": 360.0,
+                "monthly_spent_usd": 1.0,
+                "monthly_budget_usd": 600.0,
+                "updated_at_unix_ms": unix_ms()
+            }),
+        )
+        .expect("seed stale quota");
+    store
+        .put_quota_snapshot(
+            "p2",
+            &json!({
+                "kind": "budget_info",
+                "daily_spent_usd": 120.0,
+                "daily_budget_usd": 120.0,
+                "weekly_spent_usd": 50.0,
+                "weekly_budget_usd": 360.0,
+                "monthly_spent_usd": 50.0,
+                "monthly_budget_usd": 600.0,
+                "updated_at_unix_ms": unix_ms()
+            }),
+        )
+        .expect("seed closed fallback quota");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+    secrets
+        .set_usage_token("p1", "usage-token-p1")
+        .expect("set usage token");
+    let router_state = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg.clone())),
+        router: router_state,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let app = build_router(state);
+    let body = json!({
+        "model": "gpt-test",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "hello"}]
+        }],
+        "stream": false
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("session_id", "sid-no-routable-after-refresh")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_text = String::from_utf8_lossy(&bytes).to_string();
+    assert!(
+        body_text.contains("no routable providers available"),
+        "body={body_text}"
+    );
+    assert_eq!(
+        p1_hits.load(Ordering::Relaxed),
+        2,
+        "p1 should stop after its transient retry and must not be retried again after refresh closes it"
+    );
+    assert_eq!(
+        usage_hits.load(Ordering::Relaxed),
+        1,
+        "usage refresh should still run exactly once"
+    );
+}
+
 #[test]
 fn weekly_budget_can_be_excluded_from_hard_cap_close() {
     let mut cfg = AppConfig::default_config();

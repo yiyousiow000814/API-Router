@@ -25,6 +25,7 @@ use super::openai::{
     extract_text_from_responses, input_to_items_preserve_tools, input_to_messages,
     messages_to_responses_input, messages_to_simple_input_list, sse_events_for_text,
 };
+use super::quota::is_quota_refresh_config_gap;
 use super::router::{provider_iteration_order, select_fallback_provider, RouterState};
 use super::secrets::SecretStore;
 use super::store::{extract_response_model_option, unix_ms, Store};
@@ -361,12 +362,7 @@ async fn refresh_usage_once_after_first_failure(
     let refresh_ok = snap.updated_at_unix_ms > 0 && snap.last_error.trim().is_empty();
     if !refresh_ok {
         let err = snap.last_error.trim();
-        let is_config_gap = err == "missing credentials for quota refresh"
-            || err == "missing usage token"
-            || err == "missing provider key"
-            || err == "missing quota base"
-            || err == "missing base_url"
-            || err == "usage endpoint not found (set Usage base URL)";
+        let is_config_gap = is_quota_refresh_config_gap(err);
         if is_config_gap {
             // If this provider does not support usage refresh in current config,
             // fall back to normal retry behavior instead of blocking indefinitely.
@@ -544,6 +540,7 @@ mod upstream_retry_tests {
         is_retryable_upstream_status, should_fallback_stream_response_to_non_stream,
         upstream_error_code_from_body,
     };
+    use crate::orchestrator::quota::is_quota_refresh_config_gap;
 
     #[test]
     fn retryable_upstream_status_matches_transient_codes() {
@@ -560,6 +557,11 @@ mod upstream_retry_tests {
             Some("token_invalidated")
         );
         assert!(should_fallback_stream_response_to_non_stream(401, body));
+    }
+
+    #[test]
+    fn usage_refresh_config_gap_treats_missing_usage_auth_as_config_gap() {
+        assert!(is_quota_refresh_config_gap("missing usage auth"));
     }
 }
 
@@ -1148,6 +1150,13 @@ async fn responses(
             .map(|s| s.as_str())
             .unwrap_or(cfg.routing.preferred_provider.as_str());
         let (provider_name, reason) = decide_provider(&st, &cfg, preferred, &session_key);
+        if reason == "no_routable_provider" {
+            last_err = format!(
+                "no routable providers available; preferred={preferred}; tried={}",
+                tried.join(",")
+            );
+            break;
+        }
         if tried.contains(&provider_name) {
             break;
         }

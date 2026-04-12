@@ -64,7 +64,26 @@ aliases = [
 transform = "none"
 
 [usage.summary_mapping.expires_at_unix_ms]
-aliases = ["/data/card_expire_date", "/data/expire_date", "/card_expire_date", "/expire_date"]
+aliases = []
+
+[[usage.summary_mapping.expires_at_unix_ms.rules]]
+pointer = "/data/plan_cards"
+item_pointer = "/expiration_time"
+aggregate = "max"
+filter_pointer = "/state"
+filter_in = ["active", "pending"]
+
+[[usage.summary_mapping.expires_at_unix_ms.rules]]
+pointer = "/data/card_expire_date"
+
+[[usage.summary_mapping.expires_at_unix_ms.rules]]
+pointer = "/data/expire_date"
+
+[[usage.summary_mapping.expires_at_unix_ms.rules]]
+pointer = "/card_expire_date"
+
+[[usage.summary_mapping.expires_at_unix_ms.rules]]
+pointer = "/expire_date"
 
 [package_expiry]
 strategy = "none"

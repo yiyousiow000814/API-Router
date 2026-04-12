@@ -124,8 +124,8 @@ fn fallback_with_quota(
     preferred: &str,
     quota_snapshots: &Value,
     clear_usage_confirmation_requirement: bool,
-) -> String {
-    select_fallback_provider(cfg, preferred, |name| {
+) -> Option<String> {
+    let picked = select_fallback_provider(cfg, preferred, |name| {
         provider_is_routable_for_selection(
             st,
             cfg,
@@ -133,7 +133,26 @@ fn fallback_with_quota(
             name,
             clear_usage_confirmation_requirement,
         )
-    })
+    });
+    provider_is_routable_for_selection(
+        st,
+        cfg,
+        quota_snapshots,
+        &picked,
+        clear_usage_confirmation_requirement,
+    )
+    .then_some(picked)
+}
+
+fn fallback_decision(
+    fallback: Option<String>,
+    preferred: &str,
+    fallback_reason: &'static str,
+) -> (String, &'static str) {
+    match fallback {
+        Some(provider) => (provider, fallback_reason),
+        None => (preferred.to_string(), "no_routable_provider"),
+    }
 }
 
 fn balanced_session_provider_score(session_key: &str, provider: &str) -> u64 {
@@ -1004,7 +1023,7 @@ fn decide_provider_with_balanced_mode(
         ) {
             return (manual, "manual_override");
         }
-        return (
+        return fallback_decision(
             fallback_with_quota(
                 st,
                 cfg,
@@ -1012,6 +1031,7 @@ fn decide_provider_with_balanced_mode(
                 &quota_snapshots,
                 clear_usage_confirmation_requirement,
             ),
+            preferred,
             "manual_override_unhealthy",
         );
     }
@@ -1069,7 +1089,7 @@ fn decide_provider_with_balanced_mode(
                     return (p, "preferred_stabilizing");
                 }
             }
-            return (
+            return fallback_decision(
                 fallback_with_quota(
                     st,
                     cfg,
@@ -1077,6 +1097,7 @@ fn decide_provider_with_balanced_mode(
                     &quota_snapshots,
                     clear_usage_confirmation_requirement,
                 ),
+                preferred,
                 "preferred_stabilizing",
             );
         }
@@ -1091,7 +1112,7 @@ fn decide_provider_with_balanced_mode(
     ) {
         return (preferred.to_string(), "preferred_healthy");
     }
-    (
+    fallback_decision(
         fallback_with_quota(
             st,
             cfg,
@@ -1099,6 +1120,7 @@ fn decide_provider_with_balanced_mode(
             &quota_snapshots,
             clear_usage_confirmation_requirement,
         ),
+        preferred,
         "preferred_unhealthy",
     )
 }

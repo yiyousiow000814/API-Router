@@ -1368,7 +1368,7 @@ pub(crate) fn clear_usage_refresh_gate_for_provider(st: &GatewayState, provider_
     }
 }
 
-fn is_quota_refresh_config_gap(err: &str) -> bool {
+pub(crate) fn is_quota_refresh_config_gap(err: &str) -> bool {
     matches!(
         err.trim(),
         "missing credentials for quota refresh"
@@ -1376,7 +1376,6 @@ fn is_quota_refresh_config_gap(err: &str) -> bool {
             | "missing usage token"
             | "missing provider key"
             | "missing quota base"
-            | "missing base_url"
             | "usage endpoint not found (set Usage base URL)"
     )
 }
@@ -1747,7 +1746,7 @@ pub async fn refresh_quota_for_provider(st: &GatewayState, provider_name: &str) 
     let bases_raw = profile.candidate_bases.clone();
     let Some(shared_base) = bases_raw.first().cloned() else {
         let mut out = QuotaSnapshot::empty(UsageKind::None);
-        out.last_error = "missing base_url".to_string();
+        out.last_error = "usage endpoint not found (set Usage base URL)".to_string();
         return out;
     };
     let bases =
@@ -1808,7 +1807,7 @@ async fn refresh_quota_for_provider_cached(
     let bases_raw = profile.candidate_bases.clone();
     let Some(shared_base) = bases_raw.first().cloned() else {
         let mut out = QuotaSnapshot::empty(UsageKind::None);
-        out.last_error = "missing base_url".to_string();
+        out.last_error = "usage endpoint not found (set Usage base URL)".to_string();
         return out;
     };
     let bases =
