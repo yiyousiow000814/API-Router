@@ -236,6 +236,7 @@ mod tests {
         import_rollout_file_into_codex_home, import_rollout_from_known_path, resume_import_order,
         WorkspaceTarget,
     };
+    #[cfg(target_os = "windows")]
     use crate::orchestrator::gateway::web_codex_home::{lock_wsl_identity_cache, WslIdentityCache};
     use std::path::Path;
 

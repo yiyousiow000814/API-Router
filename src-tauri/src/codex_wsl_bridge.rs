@@ -9,13 +9,13 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 #[cfg(target_os = "windows")]
 use std::process::Stdio;
-#[cfg(any(test, target_os = "windows"))]
+#[cfg(target_os = "windows")]
 use std::sync::OnceLock;
 #[cfg(target_os = "windows")]
 use std::time::Duration;
 #[cfg(target_os = "windows")]
 use tokio::process::Command;
-#[cfg(any(test, target_os = "windows"))]
+#[cfg(target_os = "windows")]
 use tokio::sync::Mutex;
 
 #[cfg(target_os = "windows")]
