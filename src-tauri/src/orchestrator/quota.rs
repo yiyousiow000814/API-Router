@@ -1368,7 +1368,7 @@ pub(crate) fn clear_usage_refresh_gate_for_provider(st: &GatewayState, provider_
     }
 }
 
-fn is_quota_refresh_config_gap(err: &str) -> bool {
+pub(crate) fn is_quota_refresh_config_gap(err: &str) -> bool {
     matches!(
         err.trim(),
         "missing credentials for quota refresh"

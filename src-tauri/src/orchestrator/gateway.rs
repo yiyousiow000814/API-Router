@@ -25,6 +25,7 @@ use super::openai::{
     extract_text_from_responses, input_to_items_preserve_tools, input_to_messages,
     messages_to_responses_input, messages_to_simple_input_list, sse_events_for_text,
 };
+use super::quota::is_quota_refresh_config_gap;
 use super::router::{provider_iteration_order, select_fallback_provider, RouterState};
 use super::secrets::SecretStore;
 use super::store::{extract_response_model_option, unix_ms, Store};
@@ -361,7 +362,7 @@ async fn refresh_usage_once_after_first_failure(
     let refresh_ok = snap.updated_at_unix_ms > 0 && snap.last_error.trim().is_empty();
     if !refresh_ok {
         let err = snap.last_error.trim();
-        let is_config_gap = is_usage_refresh_config_gap_for_routing(err);
+        let is_config_gap = is_quota_refresh_config_gap(err);
         if is_config_gap {
             // If this provider does not support usage refresh in current config,
             // fall back to normal retry behavior instead of blocking indefinitely.
@@ -396,18 +397,6 @@ async fn refresh_usage_once_after_first_failure(
             Value::Null,
         );
     }
-}
-
-fn is_usage_refresh_config_gap_for_routing(err: &str) -> bool {
-    matches!(
-        err.trim(),
-        "missing credentials for quota refresh"
-            | "missing usage auth"
-            | "missing usage token"
-            | "missing provider key"
-            | "missing quota base"
-            | "usage endpoint not found (set Usage base URL)"
-    )
 }
 
 const TRANSIENT_UPSTREAM_RETRY_ATTEMPTS: usize = 2;
@@ -548,9 +537,10 @@ async fn post_non_stream_with_http_retry(
 #[cfg(test)]
 mod upstream_retry_tests {
     use super::{
-        is_retryable_upstream_status, is_usage_refresh_config_gap_for_routing,
-        should_fallback_stream_response_to_non_stream, upstream_error_code_from_body,
+        is_retryable_upstream_status, should_fallback_stream_response_to_non_stream,
+        upstream_error_code_from_body,
     };
+    use crate::orchestrator::quota::is_quota_refresh_config_gap;
 
     #[test]
     fn retryable_upstream_status_matches_transient_codes() {
@@ -571,9 +561,7 @@ mod upstream_retry_tests {
 
     #[test]
     fn usage_refresh_config_gap_treats_missing_usage_auth_as_config_gap() {
-        assert!(is_usage_refresh_config_gap_for_routing(
-            "missing usage auth"
-        ));
+        assert!(is_quota_refresh_config_gap("missing usage auth"));
     }
 }
 
