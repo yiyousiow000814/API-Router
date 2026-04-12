@@ -345,6 +345,7 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
                     crate::orchestrator::store::UsageRequestContext {
                         api_key_ref: Some("test"),
                         origin,
+                        transport: "http",
                         session_id: Some(session_id.as_str()),
                         node_id: Some(local_node_id.as_str()),
                         node_name: Some(local_node_name.as_str()),
@@ -793,6 +794,7 @@ pub fn run() {
             commands::set_session_preferred_provider,
             commands::clear_session_preferred_provider,
             commands::upsert_provider,
+            commands::set_provider_supports_websockets,
             commands::set_provider_disabled,
             commands::set_provider_group,
             commands::set_providers_group,

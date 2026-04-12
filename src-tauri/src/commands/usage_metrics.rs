@@ -31,6 +31,34 @@ fn normalize_usage_origin_filter(origins: Option<Vec<String>>) -> BTreeSet<Strin
         .collect()
 }
 
+fn normalize_usage_transport(transport: Option<&str>) -> String {
+    match transport
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "ws" => "ws",
+        "sse" => "sse",
+        _ => "http",
+    }
+    .to_string()
+}
+
+fn normalize_usage_transport_filter(transports: Option<Vec<String>>) -> BTreeSet<String> {
+    transports
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|raw| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            Some(normalize_usage_transport(Some(trimmed)))
+        })
+        .collect()
+}
+
 fn usage_metrics_configured_provider_names(
     cfg: &crate::orchestrator::config::AppConfig,
 ) -> Vec<String> {
@@ -229,6 +257,7 @@ pub(crate) fn get_usage_request_entries(
     providers: Option<Vec<String>>,
     models: Option<Vec<String>>,
     origins: Option<Vec<String>>,
+    transports: Option<Vec<String>>,
     sessions: Option<Vec<String>>,
     limit: Option<u64>,
     offset: Option<u64>,
@@ -247,6 +276,7 @@ pub(crate) fn get_usage_request_entries(
         .collect();
     let node_filter: BTreeSet<String> = normalize_usage_node_filter(nodes);
     let origin_filter = normalize_usage_origin_filter(origins);
+    let transport_filter = normalize_usage_transport_filter(transports);
     let session_filter: BTreeSet<String> = sessions
         .unwrap_or_default()
         .into_iter()
@@ -257,6 +287,7 @@ pub(crate) fn get_usage_request_entries(
     let has_provider_filter = !provider_filter.is_empty();
     let has_model_filter = !model_filter.is_empty();
     let has_origin_filter = !origin_filter.is_empty();
+    let has_transport_filter = !transport_filter.is_empty();
 
     let page_limit = limit.unwrap_or(200).clamp(1, 1000) as usize;
     let page_offset = offset.unwrap_or(0) as usize;
@@ -293,6 +324,11 @@ pub(crate) fn get_usage_request_entries(
     } else {
         Vec::new()
     };
+    let transport_filter_list: Vec<String> = if has_transport_filter {
+        transport_filter.iter().cloned().collect()
+    } else {
+        Vec::new()
+    };
     let session_filter_list: Vec<String> = if !session_filter.is_empty() {
         session_filter.iter().cloned().collect()
     } else {
@@ -306,6 +342,7 @@ pub(crate) fn get_usage_request_entries(
         &provider_filter_list,
         &model_filter_list,
         &origin_filter_list,
+        &transport_filter_list,
         &session_filter_list,
         page_limit,
         page_offset,
@@ -330,6 +367,7 @@ pub(crate) fn get_usage_request_summary(
     providers: Option<Vec<String>>,
     models: Option<Vec<String>>,
     origins: Option<Vec<String>>,
+    transports: Option<Vec<String>>,
     sessions: Option<Vec<String>>,
 ) -> serde_json::Value {
     let now = unix_ms();
@@ -346,6 +384,7 @@ pub(crate) fn get_usage_request_summary(
         .collect();
     let node_filter = normalize_usage_node_filter(nodes);
     let origin_filter = normalize_usage_origin_filter(origins);
+    let transport_filter = normalize_usage_transport_filter(transports);
     let session_filter: BTreeSet<String> = sessions
         .unwrap_or_default()
         .into_iter()
@@ -356,6 +395,7 @@ pub(crate) fn get_usage_request_summary(
     let provider_filter_list: Vec<String> = provider_filter.iter().cloned().collect();
     let model_filter_list: Vec<String> = model_filter.iter().cloned().collect();
     let origin_filter_list: Vec<String> = origin_filter.iter().cloned().collect();
+    let transport_filter_list: Vec<String> = transport_filter.iter().cloned().collect();
     let session_filter_list: Vec<String> = session_filter.iter().cloned().collect();
 
     let (requests, input_tokens, output_tokens, total_tokens, cache_creation_input_tokens, cache_read_input_tokens) =
@@ -367,6 +407,7 @@ pub(crate) fn get_usage_request_summary(
             &provider_filter_list,
             &model_filter_list,
             &origin_filter_list,
+            &transport_filter_list,
             &session_filter_list,
         );
 
@@ -996,11 +1037,7 @@ pub(crate) fn get_usage_statistics(
                     if tracked <= 0.0 || !tracked.is_finite() {
                         continue;
                     }
-                    let started = day
-                        .get("started_at_unix_ms")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let Some(day_key) = local_day_key_from_unix_ms(started) else {
+                    let Some(day_key) = tracked_spend_day_key(&day) else {
                         continue;
                     };
                     let Some((day_start, day_end)) = local_day_range_from_key(&day_key) else {
@@ -1543,6 +1580,7 @@ mod usage_metrics_tests {
                     base_url: "https://official.example/v1".to_string(),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     usage_adapter: String::new(),
                     usage_base_url: None,
                     api_key: String::new(),
@@ -1555,6 +1593,7 @@ mod usage_metrics_tests {
                     base_url: "https://packycode.example/v1".to_string(),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     usage_adapter: String::new(),
                     usage_base_url: None,
                     api_key: String::new(),
@@ -1567,6 +1606,7 @@ mod usage_metrics_tests {
                     base_url: "https://aigateway.example/v1".to_string(),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     usage_adapter: String::new(),
                     usage_base_url: None,
                     api_key: String::new(),
@@ -1643,6 +1683,7 @@ mod usage_metrics_tests {
                 api_key_ref: "-".to_string(),
                 model: "gpt-5.2-codex".to_string(),
                 origin: "windows".to_string(),
+                transport: "http".to_string(),
                 session_id: "older".to_string(),
                 node_id: "node-a".to_string(),
                 node_name: "Desk A".to_string(),
@@ -1660,6 +1701,7 @@ mod usage_metrics_tests {
                 api_key_ref: "-".to_string(),
                 model: "gpt-5.2-codex".to_string(),
                 origin: "windows".to_string(),
+                transport: "http".to_string(),
                 session_id: "newer".to_string(),
                 node_id: "node-a".to_string(),
                 node_name: "Desk A".to_string(),
@@ -1688,19 +1730,19 @@ mod usage_metrics_tests {
             .unwrap()
             .timestamp_millis() as u64;
 
-        store.put_remote_spend_day(
+        store.put_shared_tracked_spend_day(
             "aigateway2",
-            "node-remote",
-            "Remote Node",
-            started_at,
+            "shared-aigateway2",
+            "2026-04-07",
             &serde_json::json!({
                 "provider": "aigateway2",
-                "started_at_unix_ms": started_at,
+                "day_key": "2026-04-07",
                 "tracked_spend_usd": 22.0,
                 "updated_at_unix_ms": started_at,
                 "producer_node_id": "node-remote",
                 "producer_node_name": "Remote Node"
             }),
+            started_at,
         );
 
         let days = tracked_spend_days_with_remote_fallback(&store, "aigateway2");
@@ -1724,42 +1766,25 @@ mod usage_metrics_tests {
     fn tracked_spend_days_keep_remote_when_local_same_day_is_zero_placeholder() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();
-        let local_started_at = chrono::Local
-            .with_ymd_and_hms(2026, 4, 7, 8, 0, 0)
-            .single()
-            .unwrap()
-            .timestamp_millis() as u64;
         let remote_started_at = chrono::Local
             .with_ymd_and_hms(2026, 4, 7, 9, 0, 0)
             .single()
             .unwrap()
             .timestamp_millis() as u64;
 
-        store.put_spend_day(
+        store.put_shared_tracked_spend_day(
             "aigateway2",
-            local_started_at,
+            "shared-aigateway2",
+            "2026-04-07",
             &serde_json::json!({
                 "provider": "aigateway2",
-                "started_at_unix_ms": local_started_at,
-                "tracked_spend_usd": 0.0,
-                "updated_at_unix_ms": local_started_at,
-                "producer_node_id": "node-local",
-                "producer_node_name": "Local Node"
-            }),
-        );
-        store.put_remote_spend_day(
-            "aigateway2",
-            "node-remote",
-            "Remote Node",
-            remote_started_at,
-            &serde_json::json!({
-                "provider": "aigateway2",
-                "started_at_unix_ms": remote_started_at,
+                "day_key": "2026-04-07",
                 "tracked_spend_usd": 22.0,
                 "updated_at_unix_ms": remote_started_at,
                 "producer_node_id": "node-remote",
                 "producer_node_name": "Remote Node"
             }),
+            remote_started_at,
         );
 
         let days = tracked_spend_days_with_remote_fallback(&store, "aigateway2");

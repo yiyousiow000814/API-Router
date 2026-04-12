@@ -363,6 +363,7 @@ pub(super) async fn codex_models(State(st): State<GatewayState>, headers: Header
 #[cfg(test)]
 mod tests {
     use super::{extract_model_and_effort_from_toml, resolve_codex_file_path_with_wsl_distro};
+    #[cfg(target_os = "windows")]
     use std::path::PathBuf;
 
     #[test]

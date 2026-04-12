@@ -45,6 +45,21 @@ fn list_json_rows_from_conn(
     Vec::new()
 }
 
+fn parse_lan_edit_event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::LanEditSyncEvent> {
+    let payload_json = row.get::<_, String>(8)?;
+    Ok(super::LanEditSyncEvent {
+        event_id: row.get::<_, String>(0)?,
+        node_id: row.get::<_, String>(1)?,
+        node_name: row.get::<_, String>(2)?,
+        created_at_unix_ms: u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
+        lamport_ts: u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+        entity_type: row.get::<_, String>(5)?,
+        entity_id: row.get::<_, String>(6)?,
+        op: row.get::<_, String>(7)?,
+        payload: serde_json::from_str(&payload_json).unwrap_or(Value::Null),
+    })
+}
+
 impl Store {
     pub fn list_usage_request_stats_rows_window(
         &self,
@@ -424,6 +439,175 @@ impl Store {
                 }
             }
             parsed
+        })
+    }
+
+    pub fn put_shared_tracked_spend_day(
+        &self,
+        provider: &str,
+        shared_provider_id: &str,
+        day_key: &str,
+        row: &Value,
+        updated_at_unix_ms: u64,
+    ) {
+        let conn = self.events_db.lock();
+        let _ = conn.execute(
+            "INSERT INTO tracked_spend_days_shared(
+                provider, shared_provider_id, day_key, row_json, updated_at_unix_ms
+             ) VALUES(?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(shared_provider_id, day_key) DO UPDATE SET
+                provider = excluded.provider,
+                row_json = excluded.row_json,
+                updated_at_unix_ms = excluded.updated_at_unix_ms",
+            params![
+                provider,
+                shared_provider_id,
+                day_key,
+                serde_json::to_string(row).unwrap_or_else(|_| "{}".to_string()),
+                i64::try_from(updated_at_unix_ms).unwrap_or(i64::MAX),
+            ],
+        );
+    }
+
+    pub fn remove_shared_tracked_spend_day(&self, shared_provider_id: &str, day_key: &str) {
+        let conn = self.events_db.lock();
+        let _ = conn.execute(
+            "DELETE FROM tracked_spend_days_shared
+             WHERE shared_provider_id = ?1 AND day_key = ?2",
+            params![shared_provider_id, day_key],
+        );
+    }
+
+    pub fn clear_shared_tracked_spend_days(&self) {
+        let conn = self.events_db.lock();
+        let _ = conn.execute("DELETE FROM tracked_spend_days_shared", []);
+    }
+
+    pub fn put_shared_tracked_spend_day_source(
+        &self,
+        source: &super::SharedTrackedSpendDaySourceRow,
+    ) {
+        let conn = self.events_db.lock();
+        let _ = conn.execute(
+            "INSERT INTO tracked_spend_days_shared_sources(
+                provider, shared_provider_id, day_key, source_node_id, source_node_name, row_json, updated_at_unix_ms
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(shared_provider_id, day_key, source_node_id) DO UPDATE SET
+                provider = excluded.provider,
+                source_node_name = excluded.source_node_name,
+                row_json = excluded.row_json,
+                updated_at_unix_ms = excluded.updated_at_unix_ms",
+            params![
+                source.provider,
+                source.shared_provider_id,
+                source.day_key,
+                source.source_node_id,
+                source.source_node_name,
+                serde_json::to_string(&source.row).unwrap_or_else(|_| "{}".to_string()),
+                i64::try_from(source.updated_at_unix_ms).unwrap_or(i64::MAX),
+            ],
+        );
+    }
+
+    pub fn remove_shared_tracked_spend_day_source(
+        &self,
+        shared_provider_id: &str,
+        day_key: &str,
+        source_node_id: &str,
+    ) {
+        let conn = self.events_db.lock();
+        let _ = conn.execute(
+            "DELETE FROM tracked_spend_days_shared_sources
+             WHERE shared_provider_id = ?1 AND day_key = ?2 AND source_node_id = ?3",
+            params![shared_provider_id, day_key, source_node_id],
+        );
+    }
+
+    pub fn remove_shared_tracked_spend_day_sources(&self, shared_provider_id: &str, day_key: &str) {
+        let conn = self.events_db.lock();
+        let _ = conn.execute(
+            "DELETE FROM tracked_spend_days_shared_sources
+             WHERE shared_provider_id = ?1 AND day_key = ?2",
+            params![shared_provider_id, day_key],
+        );
+    }
+
+    pub fn clear_shared_tracked_spend_day_sources(&self) {
+        let conn = self.events_db.lock();
+        let _ = conn.execute("DELETE FROM tracked_spend_days_shared_sources", []);
+    }
+
+    pub fn list_shared_tracked_spend_day_sources(
+        &self,
+        shared_provider_id: &str,
+        day_key: &str,
+    ) -> Vec<(String, String, u64, Value)> {
+        self.with_events_read_conn(|conn| {
+            let mut out = Vec::new();
+            let Ok(mut stmt) = conn.prepare(
+                "SELECT source_node_id, source_node_name, updated_at_unix_ms, row_json
+                 FROM tracked_spend_days_shared_sources
+                 WHERE shared_provider_id = ?1 AND day_key = ?2
+                 ORDER BY source_node_id ASC",
+            ) else {
+                return out;
+            };
+            let Ok(rows) = stmt.query_map(params![shared_provider_id, day_key], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                    row.get::<_, String>(3)?,
+                ))
+            }) else {
+                return out;
+            };
+            for (source_node_id, source_node_name, updated_at_unix_ms, row_json) in rows.flatten() {
+                let Ok(value) = serde_json::from_str::<Value>(&row_json) else {
+                    continue;
+                };
+                out.push((source_node_id, source_node_name, updated_at_unix_ms, value));
+            }
+            out
+        })
+    }
+
+    pub fn list_shared_tracked_spend_days(&self, provider: &str) -> Vec<Value> {
+        self.with_events_read_conn(|conn| {
+            list_json_rows_from_conn(
+                conn,
+                "SELECT row_json
+                 FROM tracked_spend_days_shared
+                 WHERE provider = ?1
+                 ORDER BY day_key ASC",
+                provider,
+            )
+        })
+    }
+
+    pub fn list_tracked_spend_history_projection_events(&self) -> Vec<super::LanEditSyncEvent> {
+        self.with_events_read_conn(|conn| {
+            let Ok(mut stmt) = conn.prepare(
+                "SELECT
+                    event_id,
+                    node_id,
+                    node_name,
+                    created_at_unix_ms,
+                    lamport_ts,
+                    entity_type,
+                    entity_id,
+                    op,
+                    payload_json
+                 FROM lan_edit_events
+                 WHERE entity_type IN ('tracked_spend_day', 'tracked_spend_day_history_delete')
+                 ORDER BY lamport_ts ASC, event_id ASC",
+            ) else {
+                return Vec::new();
+            };
+            let Ok(rows) = stmt.query_map([], parse_lan_edit_event_row) else {
+                return Vec::new();
+            };
+            rows.flatten().collect()
         })
     }
 
@@ -1051,6 +1235,11 @@ impl Store {
             crate::constants::USAGE_ORIGIN_WSL2 => crate::constants::USAGE_ORIGIN_WSL2,
             _ => crate::constants::USAGE_ORIGIN_UNKNOWN,
         };
+        let transport = match context.transport.trim().to_ascii_lowercase().as_str() {
+            "ws" => "ws",
+            "sse" => "sse",
+            _ => "http",
+        };
         let ts = unix_ms();
         let id = uuid::Uuid::new_v4().to_string();
         let session_id = context
@@ -1072,10 +1261,10 @@ impl Store {
             let conn = self.events_db.lock();
             let _ = conn.execute(
                 "INSERT INTO usage_requests(
-                    id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, session_id, node_id, node_name,
+                    id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, transport, session_id, node_id, node_name,
                     input_tokens, output_tokens, total_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens
-                 ) VALUES(?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                 ) VALUES(?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     id,
                     ts_i64,
@@ -1083,6 +1272,7 @@ impl Store {
                     context.api_key_ref.unwrap_or("-"),
                     model,
                     origin,
+                    transport,
                     session_id,
                     node_id,
                     node_name,

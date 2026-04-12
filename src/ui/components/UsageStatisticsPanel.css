@@ -311,6 +311,17 @@
   white-space: nowrap;
 }
 
+.aoUsageReqCellCenter {
+  text-align: center;
+}
+
+.aoUsageReqCellCenterInner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
 .aoUsageRequestTableSummary {
   position: relative;
   z-index: 1;
@@ -351,6 +362,12 @@
   align-items: center;
 }
 
+.aoUsageReqHeadCell.is-center {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
 .aoUsageReqHeadBtn {
   max-width: 100%;
   display: inline-flex;
@@ -364,6 +381,15 @@
   font-weight: 700;
   cursor: pointer;
   padding: 0;
+}
+
+.aoUsageReqHeadBtn.is-center {
+  justify-content: center;
+  width: 100%;
+}
+
+.aoUsageReqHeadColCenter {
+  text-align: center;
 }
 
 .aoUsageReqHeadBtn.is-filtered {
@@ -652,23 +678,23 @@
 }
 
 .aoUsageReqColNode {
-  width: 104px;
+  width: 124px;
 }
 
 .aoUsageReqColProvider {
-  width: 104px;
+  width: 112px;
 }
 
 .aoUsageReqColModel {
-  width: 114px;
+  width: 144px;
 }
 
 .aoUsageReqColInput {
-  width: 80px;
+  width: 88px;
 }
 
 .aoUsageReqColOutput {
-  width: 80px;
+  width: 88px;
 }
 
 .aoUsageReqColCacheCreate {
@@ -676,15 +702,19 @@
 }
 
 .aoUsageReqColCacheRead {
-  width: 96px;
+  width: 104px;
 }
 
 .aoUsageReqColOrigin {
-  width: 72px;
+  width: 60px;
+}
+
+.aoUsageReqColTransport {
+  width: 56px;
 }
 
 .aoUsageReqColSession {
-  width: 260px;
+  width: 256px;
 }
 
 .aoUsageRequestsMono {
@@ -715,6 +745,24 @@
   border: 1px solid rgba(83, 92, 110, 0.28);
   background: rgba(83, 92, 110, 0.12);
   color: rgba(62, 70, 84, 0.92);
+}
+
+.aoUsageReqTransportBadgeHttp {
+  border: 1px solid rgba(83, 92, 110, 0.28);
+  background: rgba(83, 92, 110, 0.12);
+  color: rgba(62, 70, 84, 0.92);
+}
+
+.aoUsageReqTransportBadgeSse {
+  border: 1px solid rgba(16, 120, 88, 0.28);
+  background: rgba(16, 120, 88, 0.12);
+  color: rgba(16, 120, 88, 0.94);
+}
+
+.aoUsageReqTransportBadgeWs {
+  border: 1px solid rgba(111, 54, 183, 0.28);
+  background: rgba(111, 54, 183, 0.12);
+  color: rgba(111, 54, 183, 0.96);
 }
 
 .aoUsageReqSessionWindows {

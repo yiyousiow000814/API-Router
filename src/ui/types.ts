@@ -114,6 +114,7 @@ export type Status = {
       node_name: string
       listen_addr?: string | null
       capabilities: string[]
+      version_inventory?: string[]
       build_identity?: {
         app_version: string
         build_git_sha: string
@@ -157,6 +158,7 @@ export type Status = {
       listen_addr: string
       last_heartbeat_unix_ms: number
       capabilities: string[]
+      version_inventory?: string[]
       build_identity?: {
         app_version: string
         build_git_sha: string
@@ -318,6 +320,7 @@ export type Config = {
       display_name: string
       base_url: string
       group?: string | null
+      supports_websockets?: boolean
       usage_adapter?: string
       usage_base_url?: string | null
       quota_hard_cap?: {
@@ -360,12 +363,15 @@ export type Config = {
       follow_allowed: boolean
       follow_blocked_reason?: string | null
       using_count: number
+      capabilities?: string[]
+      version_inventory?: string[]
       build_identity?: {
         app_version: string
         build_git_sha: string
         build_git_short_sha: string
         build_git_commit_unix_ms?: number | null
       } | null
+      sync_contracts?: Record<string, number>
       build_matches_local?: boolean
       remote_update_status?: {
         state: 'accepted' | 'running' | 'failed' | 'succeeded' | string

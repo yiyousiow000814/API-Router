@@ -439,6 +439,7 @@ fn switch_to_gateway_home_impl(state: &AppState, cli_home: &Path) -> Result<(), 
         &base_cfg,
         GATEWAY_MODEL_PROVIDER_ID,
         &gateway_base_url,
+        false,
         None,
     );
     let next_auth = auth_with_openai_key(gateway_token.trim());
@@ -566,6 +567,7 @@ fn build_direct_provider_cfg(
     orig_cfg: &str,
     provider: &str,
     base_url: &str,
+    supports_websockets: bool,
     experimental_bearer_token: Option<&str>,
 ) -> String {
     // Use the switchboard base shape to avoid accumulating whitespace while switching.
@@ -582,10 +584,16 @@ fn build_direct_provider_cfg(
             )
         })
         .unwrap_or_default();
+    let supports_websockets_line = if supports_websockets {
+        format!("supports_websockets = true{eol}")
+    } else {
+        String::new()
+    };
     let provider_section = format!(
-        "[model_providers.\"{provider}\"]{eol}name = \"{provider}\"{eol}base_url = \"{base_url}\"{eol}wire_api = \"responses\"{eol}{bearer_line}requires_openai_auth = true{eol}",
+        "[model_providers.\"{provider}\"]{eol}name = \"{provider}\"{eol}base_url = \"{base_url}\"{eol}wire_api = \"responses\"{eol}{supports_websockets_line}{bearer_line}requires_openai_auth = true{eol}",
         provider = provider_esc,
         base_url = base_url_esc,
+        supports_websockets_line = supports_websockets_line,
         bearer_line = bearer_line,
         eol = eol
     );
@@ -957,6 +965,7 @@ fn sync_active_provider_target_for_key_impl(
             &orig_cfg,
             provider,
             &base_url,
+            cfg.supports_websockets,
             use_config_storage.then_some(key.trim()),
         );
         let next_auth = if use_config_storage {

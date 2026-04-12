@@ -1,6 +1,6 @@
 .aoTinyBtn:hover {
-  border-color: rgba(var(--ao-accent-rgb), 0.55);
-  background: rgba(var(--ao-accent-rgb), 0.06);
+  border-color: rgba(13, 18, 32, 0.24);
+  background: rgba(13, 18, 32, 0.04);
 }
 
 .aoTinyBtn.aoUsageWindowBtnActive {

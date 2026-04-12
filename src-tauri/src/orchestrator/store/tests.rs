@@ -704,9 +704,9 @@ mod tests {
         }
 
         let (page1, has_more1) =
-            store.list_usage_requests_page(0, None, None, &[], &[], &[], &[], &[], 1, 0);
+            store.list_usage_requests_page(0, None, None, &[], &[], &[], &[], &[], &[], 1, 0);
         let (page2, has_more2) =
-            store.list_usage_requests_page(0, None, None, &[], &[], &[], &[], &[], 1, 1);
+            store.list_usage_requests_page(0, None, None, &[], &[], &[], &[], &[], &[], 1, 1);
         assert_eq!(page1.len(), 1);
         assert_eq!(page2.len(), 1);
         assert!(has_more1);
@@ -985,6 +985,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
             50,
             0,
         );
@@ -992,6 +993,40 @@ mod tests {
         assert_eq!(rows.len(), 1);
         let unix_ms = rows[0].get("unix_ms").and_then(|v| v.as_u64()).unwrap_or(0);
         assert!(unix_ms >= day1_start && unix_ms < day1_end);
+    }
+
+    #[test]
+    fn list_usage_requests_page_includes_actual_transport() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let ts = 1_710_000_000_000u64;
+        assert_eq!(
+            store.upsert_usage_request_sync_rows(&[UsageRequestSyncRow {
+                id: "row-ws".to_string(),
+                unix_ms: ts,
+                ingested_at_unix_ms: ts,
+                provider: "official".to_string(),
+                api_key_ref: "-".to_string(),
+                model: "gpt-5.2-codex".to_string(),
+                origin: "windows".to_string(),
+                transport: "ws".to_string(),
+                session_id: "session-ws".to_string(),
+                node_id: "node-a".to_string(),
+                node_name: "Desk A".to_string(),
+                input_tokens: 10,
+                output_tokens: 2,
+                total_tokens: 12,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+            }]),
+            1
+        );
+
+        let (rows, has_more) =
+            store.list_usage_requests_page(0, None, None, &[], &[], &[], &[], &[], &[], 20, 0);
+        assert!(!has_more);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("transport").and_then(|value| value.as_str()), Some("ws"));
     }
 
     #[test]
@@ -1033,6 +1068,7 @@ mod tests {
                 0,
                 Some(day_start),
                 Some(day_end),
+                &[],
                 &[],
                 &[],
                 &[],
@@ -1134,7 +1170,7 @@ mod tests {
 
         let since = (newer - 3_600_000) as u64;
         let (rows, has_more) =
-            store.list_usage_requests_page(since, None, None, &[], &[], &[], &[], &[], 50, 0);
+            store.list_usage_requests_page(since, None, None, &[], &[], &[], &[], &[], &[], 50, 0);
         assert!(!has_more);
         assert_eq!(rows.len(), 1);
         assert_eq!(
@@ -1146,7 +1182,7 @@ mod tests {
         );
 
         let (requests, input, output, total, cache_create, cache_read) = store
-            .summarize_usage_requests(since, None, None, &[], &[], &[], &[], &[]);
+            .summarize_usage_requests(since, None, None, &[], &[], &[], &[], &[], &[]);
         assert_eq!(requests, 1);
         assert_eq!(input, 20);
         assert_eq!(output, 2);
@@ -1204,6 +1240,7 @@ mod tests {
                 api_key_ref: "-".to_string(),
                 model: "gpt-5.2-codex".to_string(),
                 origin: if i % 2 == 0 { "windows" } else { "wsl2" }.to_string(),
+                transport: "http".to_string(),
                 session_id: format!("session-{i:03}"),
                 node_id: if i % 2 == 0 { "node-a" } else { "node-b" }.to_string(),
                 node_name: if i % 2 == 0 { "Desk A" } else { "Desk B" }.to_string(),
@@ -1270,6 +1307,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
             50,
             0,
         );
@@ -1285,6 +1323,7 @@ mod tests {
                 None,
                 None,
                 &["Desk B".to_string()],
+                &[],
                 &[],
                 &[],
                 &[],

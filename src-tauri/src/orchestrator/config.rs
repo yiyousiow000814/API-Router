@@ -50,6 +50,8 @@ pub struct ProviderConfig {
     pub group: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disabled: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub supports_websockets: bool,
     /// Optional usage/quota source type for this provider.
     ///
     /// Empty disables usage fetching; otherwise the orchestrator may use it as a hint.
@@ -99,6 +101,7 @@ impl AppConfig {
                 base_url: "https://api.openai.com".to_string(),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: "".to_string(),
@@ -113,6 +116,7 @@ impl AppConfig {
                     base_url: String::new(),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     usage_adapter: String::new(),
                     usage_base_url: None,
                     api_key: String::new(),

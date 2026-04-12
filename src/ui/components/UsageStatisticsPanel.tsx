@@ -32,6 +32,7 @@ type UsageRequestEntry = {
   api_key_ref: string
   model: string
   origin: string
+  transport?: string
   session_id: string
   unix_ms: number
   node_id?: string
@@ -130,8 +131,9 @@ type UsageRequestColumnFilterKey =
   | 'output'
   | 'cacheRead'
   | 'origin'
+  | 'transport'
   | 'session'
-type UsageRequestMultiFilterKey = 'node' | 'provider' | 'model' | 'origin' | 'session'
+type UsageRequestMultiFilterKey = 'node' | 'provider' | 'model' | 'origin' | 'transport' | 'session'
 const USAGE_REQUEST_COLUMN_FILTERS: Array<{
   key: UsageRequestColumnFilterKey
   label: string
@@ -142,6 +144,7 @@ const USAGE_REQUEST_COLUMN_FILTERS: Array<{
   { key: 'provider', label: 'Provider', filterable: true },
   { key: 'model', label: 'Model', filterable: true },
   { key: 'origin', label: 'Origin', filterable: true },
+  { key: 'transport', label: 'Tx', filterable: true },
   { key: 'session', label: 'Session', filterable: true },
   { key: 'input', label: 'Input', filterable: false },
   { key: 'output', label: 'Output', filterable: false },
@@ -277,6 +280,7 @@ export function buildUsageRequestsQueryKey(input: {
   providers: string[] | null
   models: string[] | null
   origins: string[] | null
+  transports?: string[] | null
   sessions: string[] | null
   syntheticRevision?: string | null
 }): string {
@@ -288,6 +292,7 @@ export function buildUsageRequestsQueryKey(input: {
     providers: string[]
     models: string[]
     origins: string[]
+    transports: string[]
     sessions: string[]
     synthetic_revision?: string
   } = {
@@ -298,6 +303,7 @@ export function buildUsageRequestsQueryKey(input: {
     providers: input.providers ?? [],
     models: input.models ?? [],
     origins: input.origins ?? [],
+    transports: input.transports ?? [],
     sessions: input.sessions ?? [],
   }
   if (input.syntheticRevision != null && input.syntheticRevision.trim().length > 0) {
@@ -313,6 +319,7 @@ export const USAGE_REQUESTS_CANONICAL_QUERY_KEY = buildUsageRequestsQueryKey({
   providers: null,
   models: null,
   origins: null,
+  transports: null,
   sessions: null,
 })
 const USAGE_REQUESTS_CACHE_PRIMED_EVENT = 'ao:usage-requests-cache-primed'
@@ -353,6 +360,7 @@ export function buildUsageRequestEntriesArgs(input: {
   providers: string[] | null
   models: string[] | null
   origins: string[] | null
+  transports?: string[] | null
   sessions: string[] | null
   limit: number
   offset: number
@@ -365,6 +373,7 @@ export function buildUsageRequestEntriesArgs(input: {
     providers: input.providers,
     models: input.models,
     origins: input.origins,
+    transports: input.transports,
     sessions: input.sessions,
     limit: input.limit,
     offset: input.offset,
@@ -389,6 +398,7 @@ function buildUsageRequestSummaryArgs(input: {
   providers: string[] | null
   models: string[] | null
   origins: string[] | null
+  transports?: string[] | null
   sessions: string[] | null
 }) {
   return {
@@ -399,6 +409,7 @@ function buildUsageRequestSummaryArgs(input: {
     providers: input.providers,
     models: input.models,
     origins: input.origins,
+    transports: input.transports,
     sessions: input.sessions,
   }
 }
@@ -408,11 +419,13 @@ export function resolveEffectiveSummaryRequestFilters(input: {
   globalProviders: string[] | null
   globalModels: string[] | null
   globalOrigins: string[] | null
+  globalTransports?: string[] | null
   globalSessions: string[] | null
   columnNodes: string[] | null
   columnProviders: string[] | null
   columnModels: string[] | null
   columnOrigins: string[] | null
+  columnTransports?: string[] | null
   columnSessions: string[] | null
 }) {
   return {
@@ -420,6 +433,7 @@ export function resolveEffectiveSummaryRequestFilters(input: {
     providers: intersectUsageRequestFilterValues(input.globalProviders, input.columnProviders),
     models: intersectUsageRequestFilterValues(input.globalModels, input.columnModels),
     origins: intersectUsageRequestFilterValues(input.globalOrigins, input.columnOrigins),
+    transports: intersectUsageRequestFilterValues(input.globalTransports ?? null, input.columnTransports ?? null),
     sessions: intersectUsageRequestFilterValues(input.globalSessions, input.columnSessions),
   }
 }
@@ -429,6 +443,7 @@ export function hasImpossibleSummaryRequestFilters(input: {
   providers: string[] | null
   models: string[] | null
   origins: string[] | null
+  transports?: string[] | null
   sessions: string[] | null
 }): boolean {
   return (
@@ -436,6 +451,7 @@ export function hasImpossibleSummaryRequestFilters(input: {
     (input.providers != null && input.providers.length === 0) ||
     (input.models != null && input.models.length === 0) ||
     (input.origins != null && input.origins.length === 0) ||
+    (input.transports != null && input.transports.length === 0) ||
     (input.sessions != null && input.sessions.length === 0)
   )
 }
@@ -1399,6 +1415,7 @@ export function UsageStatisticsPanel({
     provider: null,
     model: null,
     origin: null,
+    transport: null,
     session: null,
   })
   const [usageRequestFilterSearch, setUsageRequestFilterSearch] = useState<Record<UsageRequestMultiFilterKey, string>>({
@@ -1406,6 +1423,7 @@ export function UsageStatisticsPanel({
     provider: '',
     model: '',
     origin: '',
+    transport: '',
     session: '',
   })
   const [activeUsageRequestFilterMenu, setActiveUsageRequestFilterMenu] = useState<{
@@ -1575,6 +1593,7 @@ export function UsageStatisticsPanel({
         providers: requestFetchProviders,
         models: requestFetchModels,
         origins: requestFetchOrigins,
+        transports: usageRequestMultiFilters.transport,
         sessions: requestFetchSessions,
         syntheticRevision: usageRequestTestFallbackEnabled ? USAGE_REQUEST_TEST_DATA_REVISION : null,
       }),
@@ -1587,6 +1606,7 @@ export function UsageStatisticsPanel({
       requestFetchProviders,
       requestFetchSessions,
       requestFetchToUnixMs,
+      usageRequestMultiFilters.transport,
       usageRequestTestFallbackEnabled,
     ],
   )
@@ -1603,6 +1623,7 @@ export function UsageStatisticsPanel({
     usageRequestMultiFilters.provider !== null ||
     usageRequestMultiFilters.model !== null ||
     usageRequestMultiFilters.origin !== null ||
+    usageRequestMultiFilters.transport !== null ||
     usageRequestMultiFilters.session !== null
   const hasStrictRequestQuery = hasExplicitRequestFilters
   const effectiveSummaryRequestFilters = useMemo(
@@ -1612,11 +1633,13 @@ export function UsageStatisticsPanel({
         globalProviders: requestFetchProviders,
         globalModels: requestFetchModels,
         globalOrigins: requestFetchOrigins,
+        globalTransports: null,
         globalSessions: requestFetchSessions,
         columnNodes: usageRequestMultiFilters.node,
         columnProviders: usageRequestMultiFilters.provider,
         columnModels: usageRequestMultiFilters.model,
         columnOrigins: usageRequestMultiFilters.origin,
+        columnTransports: usageRequestMultiFilters.transport,
         columnSessions: usageRequestMultiFilters.session,
       }),
     [
@@ -1637,6 +1660,7 @@ export function UsageStatisticsPanel({
     (usageRequestMultiFilters.provider !== null && usageRequestMultiFilters.provider.length === 0) ||
     (usageRequestMultiFilters.model !== null && usageRequestMultiFilters.model.length === 0) ||
     (usageRequestMultiFilters.origin !== null && usageRequestMultiFilters.origin.length === 0) ||
+    (usageRequestMultiFilters.transport !== null && usageRequestMultiFilters.transport.length === 0) ||
     (usageRequestMultiFilters.session !== null && usageRequestMultiFilters.session.length === 0) ||
     hasImpossibleSummaryRequestFilters(effectiveSummaryRequestFilters)
   const [requestDefaultDay, setRequestDefaultDay] = useState<number>(() =>
@@ -1878,6 +1902,7 @@ export function UsageStatisticsPanel({
             providers: requestFetchProviders,
             models: requestFetchModels,
             origins: requestFetchOrigins,
+            transports: usageRequestMultiFilters.transport,
             sessions: requestFetchSessions,
             limit,
             offset: 0,
@@ -1985,6 +2010,7 @@ export function UsageStatisticsPanel({
           providers: effectiveSummaryRequestFilters.providers,
           models: effectiveSummaryRequestFilters.models,
           origins: effectiveSummaryRequestFilters.origins,
+          transports: effectiveSummaryRequestFilters.transports,
           sessions: effectiveSummaryRequestFilters.sessions,
         }),
       )
@@ -2021,6 +2047,7 @@ export function UsageStatisticsPanel({
             providers: requestFetchProviders,
             models: requestFetchModels,
             origins: requestFetchOrigins,
+            transports: usageRequestMultiFilters.transport,
             sessions: requestFetchSessions,
             limit,
             offset: 0,
@@ -2121,6 +2148,7 @@ export function UsageStatisticsPanel({
           providers: null,
           models: null,
           origins: null,
+          transports: null,
           sessions: null,
           limit,
           offset: 0,
@@ -2194,6 +2222,7 @@ export function UsageStatisticsPanel({
                 providers: null,
                 models: null,
                 origins: [origin],
+                transports: null,
                 sessions: null,
                 limit: USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_PER_ORIGIN,
                 offset: 0,
@@ -2225,6 +2254,7 @@ export function UsageStatisticsPanel({
               providers: null,
               models: null,
               origins: null,
+              transports: null,
               sessions: null,
               limit: USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_FALLBACK,
               offset: 0,
@@ -2327,6 +2357,7 @@ export function UsageStatisticsPanel({
                 providers: [provider],
                 models: null,
                 origins: null,
+                transports: null,
                 sessions: null,
                 limit: USAGE_REQUEST_GRAPH_SOURCE_LIMIT,
                 offset: 0,
@@ -2720,6 +2751,7 @@ export function UsageStatisticsPanel({
           providers: requestFetchProviders,
           models: requestFetchModels,
           origins: requestFetchOrigins,
+          transports: usageRequestMultiFilters.transport,
           sessions: requestFetchSessions,
           limit: USAGE_REQUEST_PAGE_SIZE,
           offset: usageRequestRows.length,
@@ -3347,12 +3379,14 @@ export function UsageStatisticsPanel({
     const providers = new Set<string>()
     const models = new Set<string>()
     const origins = new Set<string>()
+    const transports = new Set<string>()
     const sessions = new Set<string>()
     for (const row of timeScopedUsageRequestRows) {
       nodes.add(row.node_name || 'Local')
       providers.add(row.provider)
       models.add(row.model)
       origins.add(row.origin)
+      transports.add(normalizeUsageTransport(row.transport))
       sessions.add(row.session_id)
     }
     return {
@@ -3360,6 +3394,7 @@ export function UsageStatisticsPanel({
       provider: [...providers].sort((a, b) => a.localeCompare(b)),
       model: [...models].sort((a, b) => a.localeCompare(b)),
       origin: [...origins].sort((a, b) => a.localeCompare(b)),
+      transport: [...transports].sort((a, b) => a.localeCompare(b)),
       session: [...sessions].sort((a, b) => a.localeCompare(b)),
     }
   }, [timeScopedUsageRequestRows])
@@ -3386,6 +3421,10 @@ export function UsageStatisticsPanel({
         prev.model == null ? null : prev.model.filter((item) => usageRequestFilterOptions.model.includes(item)),
       origin:
         prev.origin == null ? null : prev.origin.filter((item) => usageRequestFilterOptions.origin.includes(item)),
+      transport:
+        prev.transport == null
+          ? null
+          : prev.transport.filter((item) => usageRequestFilterOptions.transport.includes(item)),
       session:
         prev.session == null
           ? null
@@ -3415,6 +3454,8 @@ export function UsageStatisticsPanel({
       usageRequestMultiFilters.model == null ? null : new Set(usageRequestMultiFilters.model)
     const originFilterSet =
       usageRequestMultiFilters.origin == null ? null : new Set(usageRequestMultiFilters.origin)
+    const transportFilterSet =
+      usageRequestMultiFilters.transport == null ? null : new Set(usageRequestMultiFilters.transport)
     const sessionFilterSet =
       usageRequestMultiFilters.session == null ? null : new Set(usageRequestMultiFilters.session)
     return rowsForRequestRender.filter((row) => {
@@ -3429,6 +3470,7 @@ export function UsageStatisticsPanel({
       if (providerFilterSet && !providerFilterSet.has(row.provider)) return false
       if (modelFilterSet && !modelFilterSet.has(row.model)) return false
       if (originFilterSet && !originFilterSet.has(row.origin)) return false
+      if (transportFilterSet && !transportFilterSet.has(normalizeUsageTransport(row.transport))) return false
       if (sessionFilterSet && !sessionFilterSet.has(row.session_id)) return false
       return true
     })
@@ -4136,6 +4178,7 @@ export function UsageStatisticsPanel({
                   <col className="aoUsageReqColProvider" />
                   <col className="aoUsageReqColModel" />
                   <col className="aoUsageReqColOrigin" />
+                  <col className="aoUsageReqColTransport" />
                   <col className="aoUsageReqColSession" />
                   <col className="aoUsageReqColInput" />
                   <col className="aoUsageReqColOutput" />
@@ -4202,6 +4245,13 @@ export function UsageStatisticsPanel({
                                         )
                                       : 0,
                                   )
+                                : column.key === 'transport'
+                                  ? filteredSelectionCount(
+                                      usageRequestMultiFilters.transport == null
+                                        ? usageRequestFilterOptions.transport.length
+                                        : usageRequestMultiFilters.transport.length,
+                                      usageRequestFilterOptions.transport.length,
+                                    )
                                 : column.key === 'session'
                                   ? filteredSelectionCount(
                                       usageRequestMultiFilters.session == null
@@ -4212,13 +4262,17 @@ export function UsageStatisticsPanel({
                                   : 0
                       const hasFilter =
                         filterCount > 0
+                      const centerColumn = column.key === 'origin' || column.key === 'transport'
                       return (
-                        <th key={`usage-requests-head-${column.key}`}>
-                          <div className="aoUsageReqHeadCell">
+                        <th
+                          key={`usage-requests-head-${column.key}`}
+                          className={centerColumn ? 'aoUsageReqHeadColCenter' : undefined}
+                        >
+                          <div className={`aoUsageReqHeadCell${centerColumn ? ' is-center' : ''}`}>
                             {column.filterable ? (
                               <button
                                 type="button"
-                                className={`aoUsageReqHeadBtn${hasFilter ? ' is-filtered' : ''}${isOpen ? ' is-open' : ''}`}
+                                className={`aoUsageReqHeadBtn${hasFilter ? ' is-filtered' : ''}${isOpen ? ' is-open' : ''}${centerColumn ? ' is-center' : ''}`}
                                 onPointerDown={(event) => {
                                   event.stopPropagation()
                                   if (event.button !== 0) return
@@ -4382,7 +4436,9 @@ export function UsageStatisticsPanel({
                             ? usageRequestFilterSearch.model
                             : activeUsageRequestFilterMenu.key === 'origin'
                               ? usageRequestFilterSearch.origin
-                              : usageRequestFilterSearch.session
+                              : activeUsageRequestFilterMenu.key === 'transport'
+                                ? usageRequestFilterSearch.transport
+                                : usageRequestFilterSearch.session
                       }
                       onChange={(event) =>
                         setUsageRequestFilterSearch((prev) => ({
@@ -4476,16 +4532,20 @@ export function UsageStatisticsPanel({
                             ? usageRequestFilterOptions.node
                             : activeUsageRequestFilterMenu.key === 'model'
                               ? usageRequestFilterOptions.model
-                              : activeUsageRequestFilterMenu.key === 'origin'
-                                ? usageRequestFilterOptions.origin
+                            : activeUsageRequestFilterMenu.key === 'origin'
+                              ? usageRequestFilterOptions.origin
+                              : activeUsageRequestFilterMenu.key === 'transport'
+                                ? usageRequestFilterOptions.transport
                                 : usageRequestFilterOptions.session
                         const searchNeedle = (
                           activeUsageRequestFilterMenu.key === 'node'
                             ? usageRequestFilterSearch.node
                             : activeUsageRequestFilterMenu.key === 'model'
                               ? usageRequestFilterSearch.model
-                              : activeUsageRequestFilterMenu.key === 'origin'
-                                ? usageRequestFilterSearch.origin
+                            : activeUsageRequestFilterMenu.key === 'origin'
+                              ? usageRequestFilterSearch.origin
+                              : activeUsageRequestFilterMenu.key === 'transport'
+                                ? usageRequestFilterSearch.transport
                                 : usageRequestFilterSearch.session
                         ).toLowerCase()
                         const visibleOptions = options
@@ -4601,6 +4661,7 @@ export function UsageStatisticsPanel({
                     <col className="aoUsageReqColProvider" />
                     <col className="aoUsageReqColModel" />
                     <col className="aoUsageReqColOrigin" />
+                    <col className="aoUsageReqColTransport" />
                     <col className="aoUsageReqColSession" />
                     <col className="aoUsageReqColInput" />
                     <col className="aoUsageReqColOutput" />
@@ -4609,7 +4670,7 @@ export function UsageStatisticsPanel({
                   <tbody>
                     {!tableRowsForDisplay.length ? (
                       <tr>
-                        <td colSpan={9} className="aoHint">
+                        <td colSpan={10} className="aoHint">
                           {resolveUsageRequestEmptyStateLabel({
                             usageRequestLoading,
                             hasImpossibleRequestFilters,
@@ -4623,7 +4684,7 @@ export function UsageStatisticsPanel({
                       <>
                         {usageRequestTopSpacerPx > 0 ? (
                           <tr aria-hidden="true">
-                            <td colSpan={9} style={{ padding: 0, borderBottom: 0, background: 'transparent', height: usageRequestTopSpacerPx }} />
+                            <td colSpan={10} style={{ padding: 0, borderBottom: 0, background: 'transparent', height: usageRequestTopSpacerPx }} />
                           </tr>
                         ) : null}
                         {visibleUsageRequestRows.map((row) => (
@@ -4632,17 +4693,33 @@ export function UsageStatisticsPanel({
                           <td className="aoUsageRequestsMono">{row.node_name || 'Local'}</td>
                           <td className="aoUsageRequestsMono">{resolveRequestProviderName(row.provider)}</td>
                           <td className="aoUsageRequestsMono">{row.model}</td>
-                          <td>
-                            {(() => {
-                              const normalizedOrigin = normalizeUsageOrigin(row.origin)
-                              if (normalizedOrigin === 'wsl2') {
-                                return <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeWsl">WSL2</span>
-                              }
-                              if (normalizedOrigin === 'windows') {
-                                return <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeWindows">WIN</span>
-                              }
-                              return <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeUnknown">UNK</span>
-                            })()}
+                          <td className="aoUsageReqCellCenter">
+                            <div className="aoUsageReqCellCenterInner">
+                              {(() => {
+                                const normalizedOrigin = normalizeUsageOrigin(row.origin)
+                                if (normalizedOrigin === 'wsl2') {
+                                  return <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeWsl">WSL2</span>
+                                }
+                                if (normalizedOrigin === 'windows') {
+                                  return <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeWindows">WIN</span>
+                                }
+                                return <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeUnknown">UNK</span>
+                              })()}
+                            </div>
+                          </td>
+                          <td className="aoUsageReqCellCenter">
+                            <div className="aoUsageReqCellCenterInner">
+                              {(() => {
+                                const transport = normalizeUsageTransport(row.transport)
+                                if (transport === 'ws') {
+                                  return <span className="aoUsageReqOriginBadge aoUsageReqTransportBadgeWs">WS</span>
+                                }
+                                if (transport === 'sse') {
+                                  return <span className="aoUsageReqOriginBadge aoUsageReqTransportBadgeSse">SSE</span>
+                                }
+                                return <span className="aoUsageReqOriginBadge aoUsageReqTransportBadgeHttp">HTTP</span>
+                              })()}
+                            </div>
                           </td>
                           <td
                             className={`aoUsageRequestsMono ${
@@ -4662,7 +4739,7 @@ export function UsageStatisticsPanel({
                         ))}
                         {usageRequestBottomSpacerPx > 0 ? (
                           <tr aria-hidden="true">
-                            <td colSpan={9} style={{ padding: 0, borderBottom: 0, background: 'transparent', height: usageRequestBottomSpacerPx }} />
+                            <td colSpan={10} style={{ padding: 0, borderBottom: 0, background: 'transparent', height: usageRequestBottomSpacerPx }} />
                           </tr>
                         ) : null}
                       </>
@@ -4691,6 +4768,7 @@ export function UsageStatisticsPanel({
                   <col className="aoUsageReqColProvider" />
                   <col className="aoUsageReqColModel" />
                   <col className="aoUsageReqColOrigin" />
+                  <col className="aoUsageReqColTransport" />
                   <col className="aoUsageReqColSession" />
                   <col className="aoUsageReqColInput" />
                   <col className="aoUsageReqColOutput" />
@@ -4708,6 +4786,7 @@ export function UsageStatisticsPanel({
                     </td>
                     <td>Total {formatRequestSummaryValue(requestTableSummary?.total)}</td>
                     <td>Requests {formatRequestSummaryValue(requestTableSummary?.requests)}</td>
+                    <td />
                     <td />
                     <td />
                     <td />
@@ -4882,4 +4961,12 @@ export function UsageStatisticsPanel({
       ) : null}
     </div>
   )
+}
+const normalizeUsageTransport = (value: string | null | undefined): 'http' | 'sse' | 'ws' => {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+  if (normalized === 'ws') return 'ws'
+  if (normalized === 'sse') return 'sse'
+  return 'http'
 }

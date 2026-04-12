@@ -143,6 +143,7 @@ fn current_unix_secs() -> i64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod web_codex_tests {
     use super::MAX_TERMINAL_OUTPUT_BYTES;
     use super::{

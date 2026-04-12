@@ -13,7 +13,6 @@ use axum::response::IntoResponse;
 use base64::Engine;
 use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce};
-use chrono::TimeZone;
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
@@ -30,6 +29,10 @@ use crate::orchestrator::store::unix_ms;
 mod local_state;
 #[path = "lan_sync/remote_update.rs"]
 mod remote_update;
+#[path = "lan_sync/usage_history.rs"]
+mod usage_history;
+#[path = "lan_sync/versioning.rs"]
+mod versioning;
 mod build_info {
     include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
 }
@@ -55,6 +58,17 @@ pub(crate) use remote_update::{
     LanRemoteUpdateDebugResponsePacket,
 };
 pub use remote_update::{LanRemoteUpdateReadinessSnapshot, LanRemoteUpdateStatusSnapshot};
+pub(crate) use usage_history::{
+    lan_sync_tracked_spend_history_debug_http, rebuild_shared_tracked_spend_views,
+};
+use usage_history::{
+    refresh_shared_tracked_spend_projection_for_event, tracked_spend_history_day_key_for_debug,
+};
+use versioning::{
+    lan_heartbeat_capabilities, local_sync_contracts, local_version_inventory,
+    merge_version_inventory, SYNC_DOMAIN_PROVIDER_DEFINITIONS, SYNC_DOMAIN_SHARED_HEALTH,
+    SYNC_DOMAIN_USAGE_HISTORY, SYNC_DOMAIN_USAGE_REQUESTS,
+};
 
 pub const LAN_DISCOVERY_PORT: u16 = 38455;
 pub const LAN_HEARTBEAT_INTERVAL_MS: u64 = 2_000;
@@ -65,6 +79,7 @@ pub const LAN_PEER_STALE_AFTER_MS: u64 = 20_000;
 pub const LAN_PEER_HTTP_GRACE_AFTER_MS: u64 = 30_000;
 const LAN_HEARTBEAT_SENDER_DELAY_LOG_THRESHOLD_MS: u64 = LAN_HEARTBEAT_INTERVAL_MS * 2;
 const LAN_HEARTBEAT_PREP_SLOW_LOG_THRESHOLD_MS: u64 = 250;
+const _: () = assert!(LAN_PEER_STALE_AFTER_MS >= LAN_HEARTBEAT_INTERVAL_MS * 10);
 const LAN_SHARED_HEALTH_LOOP_INTERVAL_MS: u64 = 900;
 const LAN_USAGE_SYNC_LOOP_INTERVAL_MS: u64 = 1_000;
 const LAN_USAGE_SYNC_BATCH_LIMIT: usize = 2_048;
@@ -80,22 +95,7 @@ const LAN_PAIR_APPROVAL_TTL_MS: u64 = 5 * 60 * 1000;
 const LAN_REMOTE_UPDATE_ACCEPTED_STARTUP_GRACE_MS: u64 = 15_000;
 const LAN_SYNC_AUTH_NODE_ID_HEADER: &str = "x-api-router-lan-node-id";
 const LAN_SYNC_AUTH_SECRET_HEADER: &str = "x-api-router-lan-secret";
-const LAN_HEARTBEAT_CAPABILITIES: [&str; 8] = [
-    "heartbeat_v1",
-    "status_v1",
-    "usage_sync_v1",
-    "edit_sync_v1",
-    "provider_definitions_v1",
-    "config_source_v1",
-    "quota_refresh_v1",
-    "sync_contract_v2",
-];
-const LAN_REMOTE_UPDATE_CAPABILITY: &str = "remote_update_v1";
-const SYNC_DOMAIN_USAGE_REQUESTS: &str = "usage_requests";
-const SYNC_DOMAIN_USAGE_HISTORY: &str = "usage_history";
-const SYNC_DOMAIN_PROVIDER_DEFINITIONS: &str = "provider_definitions";
-const SYNC_DOMAIN_SHARED_HEALTH: &str = "shared_health";
-const LAN_DEBUG_CAPABILITY: &str = "lan_debug_v1";
+pub(crate) const LAN_REMOTE_UPDATE_CAPABILITY: &str = "remote_update_v1";
 const LAN_EDIT_ENTITY_PROVIDER_DEFINITION: &str = "provider_definition";
 const LAN_EDIT_ENTITY_PROVIDER_PRICING: &str = "provider_pricing";
 const LAN_EDIT_ENTITY_QUOTA_SNAPSHOT: &str = "quota_snapshot";
@@ -139,25 +139,6 @@ fn optional_u64_log_value(value: Option<u64>) -> String {
 
 fn heartbeat_step_elapsed_ms(started_at_unix_ms: u64) -> u64 {
     unix_ms().saturating_sub(started_at_unix_ms)
-}
-
-fn local_sync_contracts() -> BTreeMap<String, u32> {
-    BTreeMap::from([
-        (SYNC_DOMAIN_USAGE_REQUESTS.to_string(), 1),
-        (SYNC_DOMAIN_USAGE_HISTORY.to_string(), 3),
-        (SYNC_DOMAIN_PROVIDER_DEFINITIONS.to_string(), 1),
-        (SYNC_DOMAIN_SHARED_HEALTH.to_string(), 1),
-    ])
-}
-
-fn lan_heartbeat_capabilities() -> Vec<String> {
-    let mut values = LAN_HEARTBEAT_CAPABILITIES
-        .iter()
-        .map(|value| value.to_string())
-        .collect::<Vec<_>>();
-    values.push(LAN_REMOTE_UPDATE_CAPABILITY.to_string());
-    values.push(LAN_DEBUG_CAPABILITY.to_string());
-    values
 }
 
 pub(crate) fn current_build_identity() -> LanBuildIdentitySnapshot {
@@ -254,6 +235,28 @@ fn lan_edit_entity_sync_domain(entity_type: &str) -> Option<&'static str> {
     LAN_EDIT_ENTITY_DOMAIN_REGISTRY
         .iter()
         .find_map(|(registered_type, domain)| (*registered_type == entity_type).then_some(*domain))
+}
+
+#[cfg(test)]
+fn usage_requests_contract_sample() -> Value {
+    serde_json::json!({
+        "id": "usage-1",
+        "unix_ms": 1_700_000_000_000u64,
+        "ingested_at_unix_ms": 1_700_000_000_001u64,
+        "provider": "gateway",
+        "api_key_ref": "-",
+        "model": "gpt-5.4",
+        "origin": "gateway",
+        "transport": "http",
+        "session_id": "session-1",
+        "node_id": "node-local",
+        "node_name": "Local",
+        "input_tokens": 10u64,
+        "output_tokens": 20u64,
+        "total_tokens": 30u64,
+        "cache_creation_input_tokens": 0u64,
+        "cache_read_input_tokens": 0u64
+    })
 }
 
 #[cfg(test)]
@@ -367,6 +370,7 @@ pub struct LanLocalNodeSnapshot {
     pub node_name: String,
     pub listen_addr: Option<String>,
     pub capabilities: Vec<String>,
+    pub version_inventory: Vec<String>,
     pub build_identity: LanBuildIdentitySnapshot,
     pub version_sync: LanLocalVersionSyncSnapshot,
     pub remote_update_status: Option<LanRemoteUpdateStatusSnapshot>,
@@ -382,6 +386,7 @@ pub struct LanPeerSnapshot {
     pub listen_addr: String,
     pub last_heartbeat_unix_ms: u64,
     pub capabilities: Vec<String>,
+    pub version_inventory: Vec<String>,
     pub build_identity: LanBuildIdentitySnapshot,
     pub provider_fingerprints: Vec<String>,
     pub provider_definitions_revision: String,
@@ -451,6 +456,7 @@ struct LanPeerRuntime {
     listen_addr: String,
     last_heartbeat_unix_ms: u64,
     capabilities: Vec<String>,
+    version_inventory: Vec<String>,
     build_identity: LanBuildIdentitySnapshot,
     remote_update_readiness: Option<LanRemoteUpdateReadinessSnapshot>,
     remote_update_status: Option<LanRemoteUpdateStatusSnapshot>,
@@ -467,6 +473,7 @@ fn lan_peer_snapshot_from_runtime(peer: &LanPeerRuntime) -> LanPeerSnapshot {
         listen_addr: peer.listen_addr.clone(),
         last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
         capabilities: peer.capabilities.clone(),
+        version_inventory: peer.version_inventory.clone(),
         build_identity: peer.build_identity.clone(),
         provider_fingerprints: peer.provider_fingerprints.clone(),
         provider_definitions_revision: peer.provider_definitions_revision.clone(),
@@ -950,6 +957,7 @@ impl LanSyncRuntime {
                 node_name: self.local_node.node_name.clone(),
                 listen_addr: detect_local_listen_addr(listen_port),
                 capabilities: lan_heartbeat_capabilities(),
+                version_inventory: local_version_inventory(),
                 build_identity: local_build_identity,
                 version_sync: local_version_sync,
                 remote_update_status: load_lan_remote_update_status(),
@@ -978,6 +986,7 @@ impl LanSyncRuntime {
                 listen_addr: "192.168.1.10:4000".to_string(),
                 last_heartbeat_unix_ms: unix_ms(),
                 capabilities: lan_heartbeat_capabilities(),
+                version_inventory: local_version_inventory(),
                 build_identity: current_build_identity(),
                 remote_update_readiness: Some(current_local_remote_update_readiness()),
                 remote_update_status: load_lan_remote_update_status(),
@@ -1019,6 +1028,8 @@ impl LanSyncRuntime {
         let capabilities_changed = previous
             .as_ref()
             .is_some_and(|peer| peer.capabilities != packet.capabilities);
+        let version_inventory =
+            merge_version_inventory(&packet.capabilities, &packet.sync_contracts);
         self.peers.write().insert(
             packet.node_id.clone(),
             LanPeerRuntime {
@@ -1027,6 +1038,7 @@ impl LanSyncRuntime {
                 listen_addr: listen_addr.clone(),
                 last_heartbeat_unix_ms: received_at_unix_ms,
                 capabilities: packet.capabilities,
+                version_inventory,
                 build_identity: packet.build_identity,
                 remote_update_readiness: packet.remote_update_readiness,
                 remote_update_status: packet.remote_update_status,
@@ -1541,217 +1553,6 @@ pub(crate) async fn lan_sync_provider_definitions_http(
     .into_response()
 }
 
-fn tracked_spend_history_day_key_for_debug(day: &Value) -> Option<String> {
-    let started_at_unix_ms = day
-        .get("started_at_unix_ms")
-        .and_then(|value| value.as_u64())
-        .or_else(|| {
-            day.get("ended_at_unix_ms")
-                .and_then(|value| value.as_u64())
-                .map(|value| value.saturating_sub(1))
-        })
-        .or_else(|| {
-            day.get("updated_at_unix_ms")
-                .and_then(|value| value.as_u64())
-        })?;
-    let dt = chrono::Local
-        .timestamp_millis_opt(i64::try_from(started_at_unix_ms).ok()?)
-        .single()?;
-    Some(dt.format("%Y-%m-%d").to_string())
-}
-
-fn tracked_spend_history_debug_row(
-    day: &Value,
-    local_node_id: &str,
-) -> Option<LanTrackedSpendHistoryDiagnosticRow> {
-    let day_key = tracked_spend_history_day_key_for_debug(day)?;
-    let producer_node_id = day
-        .get("producer_node_id")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(local_node_id)
-        .to_string();
-    let producer_node_name = day
-        .get("producer_node_name")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(producer_node_id.as_str())
-        .to_string();
-    Some(LanTrackedSpendHistoryDiagnosticRow {
-        producer_node_id,
-        producer_node_name,
-        day_key,
-        day_started_at_unix_ms: day.get("started_at_unix_ms").and_then(Value::as_u64),
-        started_at_unix_ms: day.get("started_at_unix_ms").and_then(Value::as_u64),
-        ended_at_unix_ms: day.get("ended_at_unix_ms").and_then(Value::as_u64),
-        updated_at_unix_ms: day.get("updated_at_unix_ms").and_then(Value::as_u64),
-        tracked_spend_usd: day.get("tracked_spend_usd").and_then(|value| {
-            value
-                .as_f64()
-                .or_else(|| value.as_i64().map(|value| value as f64))
-                .or_else(|| value.as_u64().map(|value| value as f64))
-        }),
-        last_seen_daily_spent_usd: day.get("last_seen_daily_spent_usd").and_then(|value| {
-            value
-                .as_f64()
-                .or_else(|| value.as_i64().map(|value| value as f64))
-                .or_else(|| value.as_u64().map(|value| value as f64))
-        }),
-        api_key_ref: day
-            .get("api_key_ref")
-            .and_then(Value::as_str)
-            .map(ToString::to_string),
-        row: day.clone(),
-    })
-}
-
-fn tracked_spend_debug_event_matches_day(
-    event: &crate::orchestrator::store::LanEditSyncEvent,
-    shared_provider_id: &str,
-    day_key: &str,
-) -> bool {
-    match event.entity_type.as_str() {
-        LAN_EDIT_ENTITY_TRACKED_SPEND_DAY => {
-            let Ok((event_shared_provider_id, day_scope, _source_node_id)) =
-                parse_day_scoped_entity_id(&event.entity_id, &event.node_id)
-            else {
-                return false;
-            };
-            if event_shared_provider_id != shared_provider_id {
-                return false;
-            }
-            if day_scope == day_key {
-                return true;
-            }
-            day_scope
-                .parse::<u64>()
-                .ok()
-                .and_then(|started_at_unix_ms| {
-                    let dt = chrono::Local
-                        .timestamp_millis_opt(i64::try_from(started_at_unix_ms).ok()?)
-                        .single()?;
-                    Some(dt.format("%Y-%m-%d").to_string())
-                })
-                .as_deref()
-                == Some(day_key)
-        }
-        LAN_EDIT_ENTITY_TRACKED_SPEND_DAY_HISTORY_DELETE => {
-            let Ok((event_shared_provider_id, event_day_key)) =
-                parse_provider_day_entity_id(&event.entity_id)
-            else {
-                return false;
-            };
-            event_shared_provider_id == shared_provider_id && event_day_key == day_key
-        }
-        _ => false,
-    }
-}
-
-pub(crate) async fn lan_sync_tracked_spend_history_debug_http(
-    State(gateway): State<crate::orchestrator::gateway::GatewayState>,
-    headers: HeaderMap,
-    Json(packet): Json<LanTrackedSpendHistoryDebugRequestPacket>,
-) -> impl IntoResponse {
-    if let Err(err) = authorize_lan_sync_http_request(&gateway, &headers, &packet.node_id) {
-        return err.into_response();
-    }
-    let provider = packet.provider.trim();
-    let day_key = packet.day_key.trim();
-    if provider.is_empty() || day_key.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "ok": false,
-                "error": "provider and day_key are required",
-            })),
-        )
-            .into_response();
-    }
-    let shared_provider_id = match shared_provider_id_for_provider(&gateway.secrets, provider) {
-        Ok(value) => value,
-        Err(err) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "ok": false,
-                    "error": err,
-                })),
-            )
-                .into_response();
-        }
-    };
-    let local_node = gateway.secrets.get_lan_node_identity();
-    let local_node_id = local_node
-        .as_ref()
-        .map(|value| value.node_id.as_str())
-        .unwrap_or_default();
-    let local_rows = gateway
-        .store
-        .list_local_spend_days(provider)
-        .into_iter()
-        .filter_map(|day| tracked_spend_history_debug_row(&day, local_node_id))
-        .filter(|row| row.day_key == day_key)
-        .collect::<Vec<_>>();
-    let remote_rows = gateway
-        .store
-        .list_spend_days(provider)
-        .into_iter()
-        .filter_map(|day| tracked_spend_history_debug_row(&day, local_node_id))
-        .filter(|row| row.day_key == day_key && row.producer_node_id != local_node_id)
-        .collect::<Vec<_>>();
-    let limit = packet.limit.clamp(1, LAN_DEBUG_BATCH_LIMIT);
-    let (all_edit_events, _) = gateway.store.list_lan_edit_events_batch(0, None, 4096);
-    let recent_edit_events = all_edit_events
-        .into_iter()
-        .filter(|event| tracked_spend_debug_event_matches_day(event, &shared_provider_id, day_key))
-        .collect::<Vec<_>>();
-    let recent_edit_events = if recent_edit_events.len() > limit {
-        recent_edit_events[recent_edit_events.len().saturating_sub(limit)..].to_vec()
-    } else {
-        recent_edit_events
-    };
-    let recent_remove_events = gateway
-        .store
-        .list_events_range(None, None, Some(512))
-        .into_iter()
-        .filter(|event| {
-            event.get("provider").and_then(Value::as_str) == Some(provider)
-                && event.get("code").and_then(Value::as_str)
-                    == Some("usage.tracked_spend_history_entries_removed")
-                && event
-                    .get("fields")
-                    .and_then(Value::as_object)
-                    .and_then(|fields| fields.get("day_key"))
-                    .and_then(Value::as_str)
-                    == Some(day_key)
-        })
-        .take(limit)
-        .collect::<Vec<_>>();
-    Json(LanTrackedSpendHistoryDebugResponsePacket {
-        ok: true,
-        version: 1,
-        node_id: local_node
-            .as_ref()
-            .map(|value| value.node_id.clone())
-            .unwrap_or_default(),
-        node_name: local_node
-            .as_ref()
-            .map(|value| value.node_name.clone())
-            .unwrap_or_default(),
-        local_node_id: local_node_id.to_string(),
-        shared_provider_id,
-        provider: provider.to_string(),
-        day_key: day_key.to_string(),
-        local_rows,
-        remote_rows,
-        recent_edit_events,
-        recent_remove_events,
-    })
-    .into_response()
-}
-
 fn lan_cipher(secret: &str) -> ChaCha20Poly1305 {
     let digest = Sha256::digest(secret.trim().as_bytes());
     ChaCha20Poly1305::new(&digest)
@@ -2008,6 +1809,8 @@ pub struct ProviderDefinitionSnapshotPayload {
     #[serde(default)]
     pub disabled: bool,
     #[serde(default)]
+    pub supports_websockets: bool,
+    #[serde(default)]
     pub usage_adapter: String,
     #[serde(default)]
     pub usage_base_url: Option<String>,
@@ -2108,6 +1911,7 @@ fn provider_definition_snapshot_payload(
         base_url: provider_cfg.base_url.clone(),
         group: provider_cfg.group.clone(),
         disabled: provider_cfg.disabled,
+        supports_websockets: provider_cfg.supports_websockets,
         usage_adapter: provider_cfg.usage_adapter.clone(),
         usage_base_url: provider_cfg.usage_base_url.clone(),
         key: gateway.secrets.get_provider_key(provider),
@@ -2155,6 +1959,9 @@ fn merge_provider_definition_snapshot_payload(
     }
     if let Some(disabled) = payload_bool_field(payload, "disabled") {
         next.disabled = disabled;
+    }
+    if let Some(supports_websockets) = payload_bool_field(payload, "supports_websockets") {
+        next.supports_websockets = supports_websockets;
     }
     if let Some(Some(value)) = payload_string_field(payload, "usage_adapter") {
         next.usage_adapter = value;
@@ -2417,7 +2224,7 @@ pub fn ensure_local_edit_seed_state(state: &crate::app_state::AppState) -> Resul
             )?;
         }
 
-        for row in state.gateway.store.list_spend_days(&provider) {
+        for row in state.gateway.store.list_local_spend_days(&provider) {
             let Some(day_started_at_unix_ms) =
                 row.get("started_at_unix_ms").and_then(Value::as_u64)
             else {
@@ -2665,6 +2472,39 @@ pub fn record_tracked_spend_history_day_removal_from_gateway(
     Ok(())
 }
 
+pub fn record_tracked_spend_day_from_gateway(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    secrets: &SecretStore,
+    provider: &str,
+    day_started_at_unix_ms: u64,
+    row: &Value,
+) -> Result<(), String> {
+    let Some(local_node) = local_node_identity_for_edit_recording() else {
+        return Ok(());
+    };
+    let shared_provider_id = shared_provider_id_for_provider(secrets, provider)?;
+    let (source_node_id, _source_node_name) =
+        tracked_spend_day_source_identity(row, &local_node.node_id, &local_node.node_name)
+            .ok_or_else(|| "tracked spend day row is missing a source node id".to_string())?;
+    let entity_id =
+        tracked_spend_day_entity_id(&shared_provider_id, day_started_at_unix_ms, &source_node_id);
+    let payload = serde_json::to_value(TrackedSpendDaySyncPayload {
+        provider_name: provider.to_string(),
+        day_started_at_unix_ms,
+        row: normalize_tracked_spend_day_seed_row(row),
+    })
+    .map_err(|err| err.to_string())?;
+    let _ = record_edit_event(
+        gateway,
+        &local_node,
+        LAN_EDIT_ENTITY_TRACKED_SPEND_DAY,
+        &entity_id,
+        "replace",
+        payload,
+    )?;
+    Ok(())
+}
+
 fn record_edit_event(
     gateway: &crate::orchestrator::gateway::GatewayState,
     local_node: &LanNodeIdentity,
@@ -2688,6 +2528,7 @@ fn record_edit_event(
     };
     if gateway.store.insert_lan_edit_event(&event) {
         note_entity_version(gateway, &event);
+        let _ = refresh_shared_tracked_spend_projection_for_event(gateway, &event);
         if should_request_immediate_edit_sync(entity_type) {
             request_immediate_edit_sync_from_live_peers(gateway);
         }
@@ -3074,6 +2915,7 @@ fn apply_tracked_spend_day_event(
 ) -> Result<(), String> {
     let payload: TrackedSpendDaySyncPayload =
         serde_json::from_value(payload.clone()).map_err(|err| err.to_string())?;
+    let event_projection = event.clone();
     let (shared_provider_id, _day_scope, source_node_id) =
         parse_day_scoped_entity_id(entity_id, &event.node_id)?;
     let provider_name = resolve_provider_name_for_shared_provider_id(
@@ -3096,6 +2938,7 @@ fn apply_tracked_spend_day_event(
                 payload.day_started_at_unix_ms,
             );
         }
+        refresh_shared_tracked_spend_projection_for_event(gateway, &event_projection)?;
         return Ok(());
     }
     let mut row = payload.row.clone();
@@ -3131,6 +2974,7 @@ fn apply_tracked_spend_day_event(
         payload.day_started_at_unix_ms,
         &row,
     );
+    refresh_shared_tracked_spend_projection_for_event(gateway, &event_projection)?;
     Ok(())
 }
 
@@ -3141,6 +2985,17 @@ fn apply_tracked_spend_history_day_delete_event(
 ) -> Result<(), String> {
     let payload: TrackedSpendHistoryDayDeleteSyncPayload =
         serde_json::from_value(payload.clone()).map_err(|err| err.to_string())?;
+    let projection_event = crate::orchestrator::store::LanEditSyncEvent {
+        event_id: String::new(),
+        node_id: String::new(),
+        node_name: String::new(),
+        created_at_unix_ms: 0,
+        lamport_ts: 0,
+        entity_type: LAN_EDIT_ENTITY_TRACKED_SPEND_DAY_HISTORY_DELETE.to_string(),
+        entity_id: entity_id.to_string(),
+        op: "delete".to_string(),
+        payload: serde_json::to_value(payload.clone()).map_err(|err| err.to_string())?,
+    };
     let (shared_provider_id, day_key) = parse_provider_day_entity_id(entity_id)?;
     let provider_name = resolve_provider_name_for_shared_provider_id(
         gateway,
@@ -3154,6 +3009,7 @@ fn apply_tracked_spend_history_day_delete_event(
         ));
     }
     let _ = remove_tracked_spend_history_day_from_gateway(gateway, &provider_name, day_key)?;
+    refresh_shared_tracked_spend_projection_for_event(gateway, &projection_event)?;
     Ok(())
 }
 
@@ -5012,6 +4868,7 @@ fn local_provider_definition_sync_items_from_config(
                     base_url: provider_cfg.base_url.clone(),
                     group: provider_cfg.group.clone(),
                     disabled: provider_cfg.disabled,
+                    supports_websockets: provider_cfg.supports_websockets,
                     usage_adapter: provider_cfg.usage_adapter.clone(),
                     usage_base_url: provider_cfg.usage_base_url.clone(),
                     key: secrets.get_provider_key(&provider_name),
@@ -5128,6 +4985,7 @@ mod tests {
             listen_addr: "192.168.1.10:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::local_version_inventory(),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -5740,6 +5598,7 @@ mod tests {
                     api_key_ref: "sk-test".to_string(),
                     model: "gpt-5".to_string(),
                     origin: crate::constants::USAGE_ORIGIN_WINDOWS.to_string(),
+                    transport: "http".to_string(),
                     session_id: "session-1".to_string(),
                     node_id: "node-local".to_string(),
                     node_name: "Desk Local".to_string(),
@@ -6034,6 +5893,7 @@ mod tests {
                     usage_base_url: Some("https://quota.example".to_string()),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     api_key: String::new(),
                 },
             )]),
@@ -6684,6 +6544,7 @@ mod tests {
             listen_addr: "192.168.1.10:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::local_version_inventory(),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -6720,6 +6581,15 @@ mod tests {
             listen_addr: "192.168.1.10:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::merge_version_inventory(
+                &super::lan_heartbeat_capabilities(),
+                &std::collections::BTreeMap::from([
+                    (super::SYNC_DOMAIN_USAGE_REQUESTS.to_string(), 1),
+                    (super::SYNC_DOMAIN_USAGE_HISTORY.to_string(), 1),
+                    (super::SYNC_DOMAIN_PROVIDER_DEFINITIONS.to_string(), 1),
+                    (super::SYNC_DOMAIN_SHARED_HEALTH.to_string(), 1),
+                ]),
+            ),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -6746,7 +6616,7 @@ mod tests {
         )
         .expect("mismatch reason");
         assert!(reason.contains("usage_history"));
-        assert!(reason.contains("local=v3"));
+        assert!(reason.contains("local=v4"));
         assert!(reason.contains("peer=v1"));
         assert!(peer_supports_http_sync(&incompatible_peer, "edit_sync_v1"));
     }
@@ -6759,6 +6629,15 @@ mod tests {
             listen_addr: "192.168.1.10:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::merge_version_inventory(
+                &super::lan_heartbeat_capabilities(),
+                &std::collections::BTreeMap::from([
+                    (super::SYNC_DOMAIN_USAGE_REQUESTS.to_string(), 1),
+                    (super::SYNC_DOMAIN_USAGE_HISTORY.to_string(), 1),
+                    (super::SYNC_DOMAIN_PROVIDER_DEFINITIONS.to_string(), 1),
+                    (super::SYNC_DOMAIN_SHARED_HEALTH.to_string(), 1),
+                ]),
+            ),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -6785,7 +6664,7 @@ mod tests {
             .find(|item| item.domain == super::SYNC_DOMAIN_USAGE_HISTORY)
             .expect("usage_history diagnostics");
         assert_eq!(blocked.status, "blocked");
-        assert_eq!(blocked.local_contract_version, 3);
+        assert_eq!(blocked.local_contract_version, 4);
         assert_eq!(blocked.peer_contract_version, 1);
         assert!(blocked
             .blocked_reason
@@ -6839,13 +6718,29 @@ mod tests {
     }
 
     #[test]
+    fn usage_requests_contract_sample_matches_current_contract_version() {
+        assert_eq!(
+            super::sync_contract_version(
+                &super::local_sync_contracts(),
+                super::SYNC_DOMAIN_USAGE_REQUESTS
+            ),
+            2,
+            "usage_requests payload shape changed; update samples and bump contract if semantics changed"
+        );
+        let payload = super::usage_requests_contract_sample();
+        let row: crate::orchestrator::store::UsageRequestSyncRow = serde_json::from_value(payload)
+            .expect("usage_requests contract sample should deserialize");
+        assert_eq!(row.transport, "http");
+    }
+
+    #[test]
     fn usage_history_contract_samples_match_current_contract_version() {
         assert_eq!(
             super::sync_contract_version(
                 &super::local_sync_contracts(),
                 super::SYNC_DOMAIN_USAGE_HISTORY
             ),
-            3,
+            4,
             "usage_history payload shape changed; update samples and bump contract if semantics changed"
         );
         let samples = super::usage_history_contract_samples();
@@ -6864,6 +6759,27 @@ mod tests {
     }
 
     #[test]
+    fn local_version_inventory_exposes_capabilities_and_contracts() {
+        let inventory = super::local_version_inventory();
+        assert!(inventory.contains(&"heartbeat_v1".to_string()));
+        assert!(inventory.contains(&"remote_update_v1".to_string()));
+        assert!(inventory.contains(&"usage_requests_v2".to_string()));
+        assert!(inventory.contains(&"usage_history_v4".to_string()));
+    }
+
+    #[test]
+    fn version_registry_includes_bump_rules_for_every_entry() {
+        let rules = super::versioning::version_bump_rules();
+        assert!(!rules.is_empty());
+        assert!(rules.iter().any(|(name, version, rule)| {
+            name == super::SYNC_DOMAIN_USAGE_HISTORY && *version == 4 && rule.contains("truth")
+        }));
+        assert!(rules
+            .iter()
+            .all(|(_name, _version, rule)| !rule.trim().is_empty()));
+    }
+
+    #[test]
     fn apply_edit_sync_batch_skips_events_for_blocked_entity_domain() {
         let (_tmp, state) = build_test_state();
         let runtime = super::LanSyncRuntime::new(super::LanNodeIdentity {
@@ -6876,6 +6792,15 @@ mod tests {
             listen_addr: "192.168.1.10:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::merge_version_inventory(
+                &super::lan_heartbeat_capabilities(),
+                &std::collections::BTreeMap::from([
+                    (super::SYNC_DOMAIN_USAGE_REQUESTS.to_string(), 1),
+                    (super::SYNC_DOMAIN_USAGE_HISTORY.to_string(), 2),
+                    (super::SYNC_DOMAIN_PROVIDER_DEFINITIONS.to_string(), 0),
+                    (super::SYNC_DOMAIN_SHARED_HEALTH.to_string(), 1),
+                ]),
+            ),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -6934,12 +6859,12 @@ mod tests {
 
     #[test]
     fn build_remote_update_worker_command_points_at_repo_script() {
-        let (program, args, script) =
+        let (program, _args, script) =
             super::build_remote_update_worker_command("main").expect("worker command");
         #[cfg(target_os = "windows")]
         {
             assert_eq!(program, "powershell.exe");
-            assert!(args.iter().any(|value| value == "-File"));
+            assert!(_args.iter().any(|value| value == "-File"));
             assert!(
                 script.ends_with("src-tauri\\src\\lan_sync\\remote_update\\lan-remote-update.ps1")
             );
@@ -7017,6 +6942,7 @@ mod tests {
                 listen_addr: "192.168.1.10:4000".to_string(),
                 last_heartbeat_unix_ms: 100_000,
                 capabilities: vec!["heartbeat_v1".to_string()],
+                version_inventory: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7034,6 +6960,7 @@ mod tests {
                 listen_addr: "192.168.1.11:4000".to_string(),
                 last_heartbeat_unix_ms: 100_000_u64.saturating_sub(LAN_PEER_STALE_AFTER_MS + 1),
                 capabilities: vec!["heartbeat_v1".to_string()],
+                version_inventory: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7064,6 +6991,7 @@ mod tests {
                 listen_addr: "192.168.1.12:4000".to_string(),
                 last_heartbeat_unix_ms: now.saturating_sub(LAN_PEER_STALE_AFTER_MS + 1),
                 capabilities: super::lan_heartbeat_capabilities(),
+                version_inventory: super::local_version_inventory(),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7100,6 +7028,7 @@ mod tests {
                 listen_addr: "192.168.1.12:4000".to_string(),
                 last_heartbeat_unix_ms: now.saturating_sub(super::LAN_PEER_STALE_AFTER_MS + 1),
                 capabilities: super::lan_heartbeat_capabilities(),
+                version_inventory: super::local_version_inventory(),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7117,6 +7046,7 @@ mod tests {
                 listen_addr: "192.168.1.13:4000".to_string(),
                 last_heartbeat_unix_ms: now,
                 capabilities: super::lan_heartbeat_capabilities(),
+                version_inventory: super::local_version_inventory(),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7241,6 +7171,7 @@ mod tests {
             listen_addr: "192.168.1.50:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::local_version_inventory(),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -7291,6 +7222,7 @@ mod tests {
             listen_addr: "192.168.1.50:4000".to_string(),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::local_version_inventory(),
             build_identity: super::current_build_identity(),
             remote_update_readiness: None,
             remote_update_status: None,
@@ -7456,21 +7388,13 @@ mod tests {
             .iter()
             .filter(|event| event.entity_type == "tracked_spend_day")
             .collect::<Vec<_>>();
-        assert_eq!(tracked_spend_events.len(), 2);
+        assert_eq!(tracked_spend_events.len(), 1);
         assert!(tracked_spend_events.iter().any(|event| {
             event.entity_id
                 == tracked_spend_day_entity_id(
                     &shared_provider_id,
                     1_711_929_600_000u64,
                     &state.lan_sync.local_node_id(),
-                )
-        }));
-        assert!(tracked_spend_events.iter().any(|event| {
-            event.entity_id
-                == tracked_spend_day_entity_id(
-                    &shared_provider_id,
-                    1_711_933_200_000u64,
-                    "node-remote",
                 )
         }));
     }
@@ -7498,6 +7422,428 @@ mod tests {
         assert_eq!(
             normalized.get("producer_node_id").and_then(Value::as_str),
             Some("node-remote")
+        );
+    }
+
+    #[test]
+    fn tracked_spend_history_day_key_for_debug_rejects_overflow_timestamp() {
+        let day = serde_json::json!({
+            "started_at_unix_ms": (i64::MAX as u64).saturating_add(1),
+            "tracked_spend_usd": 1.0
+        });
+        assert_eq!(super::tracked_spend_history_day_key_for_debug(&day), None);
+    }
+
+    #[test]
+    fn rebuild_shared_tracked_spend_views_ignores_remote_cache_truth() {
+        let (_tmp, state) = build_test_state();
+        let shared_provider_id = state
+            .secrets
+            .ensure_provider_shared_id("provider_1")
+            .expect("shared id");
+        let local_started_at_unix_ms = 1_711_929_600_000u64;
+        let remote_started_at_unix_ms = 1_711_933_200_000u64;
+        let local_day_key =
+            crate::orchestrator::store::Store::local_day_key_from_unix_ms(local_started_at_unix_ms)
+                .expect("local day key");
+
+        state.gateway.store.put_spend_day(
+            "provider_1",
+            local_started_at_unix_ms,
+            &serde_json::json!({
+                "provider": "provider_1",
+                "started_at_unix_ms": local_started_at_unix_ms,
+                "tracked_spend_usd": 8.5,
+                "updated_at_unix_ms": 7000u64,
+                "producer_node_id": state.lan_sync.local_node_id(),
+                "producer_node_name": state.lan_sync.local_node_name(),
+            }),
+        );
+        state.gateway.store.put_remote_spend_day(
+            "provider_1",
+            "node-remote",
+            "Remote Node",
+            remote_started_at_unix_ms,
+            &serde_json::json!({
+                "provider": "provider_1",
+                "started_at_unix_ms": remote_started_at_unix_ms,
+                "tracked_spend_usd": 12.25,
+                "updated_at_unix_ms": 7100u64,
+                "producer_node_id": "node-remote",
+                "producer_node_name": "Remote Node",
+            }),
+        );
+
+        super::ensure_local_edit_seed_state(&state).expect("seed local edit state");
+        super::rebuild_shared_tracked_spend_views(&state).expect("rebuild shared view");
+
+        let shared_rows = state
+            .gateway
+            .store
+            .list_shared_tracked_spend_days("provider_1");
+        assert_eq!(shared_rows.len(), 1);
+        assert_eq!(
+            shared_rows[0].get("day_key").and_then(Value::as_str),
+            Some(local_day_key.as_str())
+        );
+        assert_eq!(
+            shared_rows[0]
+                .get("tracked_spend_usd")
+                .and_then(Value::as_f64),
+            Some(8.5)
+        );
+
+        let tracked_spend_events = state
+            .gateway
+            .store
+            .list_lan_edit_events_batch(0, None, 50)
+            .0
+            .into_iter()
+            .filter(|event| event.entity_type == "tracked_spend_day")
+            .collect::<Vec<_>>();
+        assert_eq!(tracked_spend_events.len(), 1);
+        assert_eq!(
+            tracked_spend_events[0].entity_id,
+            tracked_spend_day_entity_id(
+                &shared_provider_id,
+                local_started_at_unix_ms,
+                &state.lan_sync.local_node_id(),
+            )
+        );
+    }
+
+    #[test]
+    fn rebuild_shared_tracked_spend_views_respects_day_delete_after_disconnect() {
+        let (_tmp, state) = build_test_state();
+        let shared_provider_id = state
+            .secrets
+            .ensure_provider_shared_id("provider_1")
+            .expect("shared id");
+        let started_at_unix_ms = 1_711_929_600_000u64;
+        let day_key =
+            crate::orchestrator::store::Store::local_day_key_from_unix_ms(started_at_unix_ms)
+                .expect("day key");
+
+        state
+            .gateway
+            .store
+            .insert_lan_edit_event(&LanEditSyncEvent {
+                event_id: "edit-replace-before-disconnect".to_string(),
+                node_id: "node-remote".to_string(),
+                node_name: "Remote Node".to_string(),
+                created_at_unix_ms: 10,
+                lamport_ts: 10,
+                entity_type: "tracked_spend_day".to_string(),
+                entity_id: tracked_spend_day_entity_id(
+                    &shared_provider_id,
+                    started_at_unix_ms,
+                    "node-remote",
+                ),
+                op: "replace".to_string(),
+                payload: serde_json::json!({
+                    "provider_name": "provider_1",
+                    "day_started_at_unix_ms": started_at_unix_ms,
+                    "row": {
+                        "provider": "provider_1",
+                        "started_at_unix_ms": started_at_unix_ms,
+                        "tracked_spend_usd": 17.47,
+                        "updated_at_unix_ms": started_at_unix_ms,
+                        "producer_node_id": "node-remote",
+                        "producer_node_name": "Remote Node"
+                    }
+                }),
+            });
+        state
+            .gateway
+            .store
+            .insert_lan_edit_event(&LanEditSyncEvent {
+                event_id: "edit-day-delete-after-reconnect".to_string(),
+                node_id: state.lan_sync.local_node_id(),
+                node_name: state.lan_sync.local_node_name(),
+                created_at_unix_ms: 11,
+                lamport_ts: 11,
+                entity_type: "tracked_spend_day_history_delete".to_string(),
+                entity_id: format!("{shared_provider_id}|{day_key}"),
+                op: "delete".to_string(),
+                payload: serde_json::json!({
+                    "provider_name": "provider_1",
+                    "day_key": day_key,
+                }),
+            });
+
+        super::rebuild_shared_tracked_spend_views(&state).expect("rebuild shared view");
+
+        assert!(
+            state
+                .gateway
+                .store
+                .list_shared_tracked_spend_days("provider_1")
+                .is_empty(),
+            "day delete event should win after reconnect rebuild"
+        );
+    }
+
+    #[test]
+    fn rebuild_shared_tracked_spend_views_compacts_superseded_source_events() {
+        let (_tmp, state) = build_test_state();
+        let shared_provider_id = state
+            .secrets
+            .ensure_provider_shared_id("provider_1")
+            .expect("shared id");
+        let started_at_unix_ms = 1_711_929_600_000u64;
+        let day_key =
+            crate::orchestrator::store::Store::local_day_key_from_unix_ms(started_at_unix_ms)
+                .expect("day key");
+        let entity_id =
+            tracked_spend_day_entity_id(&shared_provider_id, started_at_unix_ms, "node-remote");
+
+        assert!(state
+            .gateway
+            .store
+            .insert_lan_edit_event(&LanEditSyncEvent {
+                event_id: "edit-replace-1".to_string(),
+                node_id: "node-remote".to_string(),
+                node_name: "Remote Node".to_string(),
+                created_at_unix_ms: 10,
+                lamport_ts: 10,
+                entity_type: "tracked_spend_day".to_string(),
+                entity_id: entity_id.clone(),
+                op: "replace".to_string(),
+                payload: serde_json::json!({
+                    "provider_name": "provider_1",
+                    "day_started_at_unix_ms": started_at_unix_ms,
+                    "row": {
+                        "provider": "provider_1",
+                        "started_at_unix_ms": started_at_unix_ms,
+                        "tracked_spend_usd": 3.0,
+                        "updated_at_unix_ms": 10u64,
+                        "producer_node_id": "node-remote",
+                        "producer_node_name": "Remote Node"
+                    }
+                }),
+            }));
+        assert!(state
+            .gateway
+            .store
+            .insert_lan_edit_event(&LanEditSyncEvent {
+                event_id: "edit-replace-2".to_string(),
+                node_id: "node-remote".to_string(),
+                node_name: "Remote Node".to_string(),
+                created_at_unix_ms: 11,
+                lamport_ts: 11,
+                entity_type: "tracked_spend_day".to_string(),
+                entity_id,
+                op: "replace".to_string(),
+                payload: serde_json::json!({
+                    "provider_name": "provider_1",
+                    "day_started_at_unix_ms": started_at_unix_ms,
+                    "row": {
+                        "provider": "provider_1",
+                        "started_at_unix_ms": started_at_unix_ms,
+                        "tracked_spend_usd": 9.5,
+                        "updated_at_unix_ms": 11u64,
+                        "producer_node_id": "node-remote",
+                        "producer_node_name": "Remote Node"
+                    }
+                }),
+            }));
+
+        super::rebuild_shared_tracked_spend_views(&state).expect("rebuild shared view");
+
+        let shared_rows = state
+            .gateway
+            .store
+            .list_shared_tracked_spend_days("provider_1");
+        assert_eq!(shared_rows.len(), 1);
+        assert_eq!(
+            shared_rows[0].get("day_key").and_then(Value::as_str),
+            Some(day_key.as_str())
+        );
+        assert_eq!(
+            shared_rows[0]
+                .get("tracked_spend_usd")
+                .and_then(Value::as_f64),
+            Some(9.5)
+        );
+        let sources = state
+            .gateway
+            .store
+            .list_shared_tracked_spend_day_sources(&shared_provider_id, &day_key);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].2, 11);
+        assert_eq!(
+            sources[0]
+                .3
+                .get("tracked_spend_usd")
+                .and_then(Value::as_f64),
+            Some(9.5)
+        );
+    }
+
+    #[test]
+    fn rebuild_shared_tracked_spend_views_does_not_sum_duplicate_day_sources() {
+        let (_tmp, state) = build_test_state();
+        let shared_provider_id = state
+            .secrets
+            .ensure_provider_shared_id("provider_1")
+            .expect("shared id");
+        let started_at_unix_ms = 1_711_929_600_000u64;
+        let day_key =
+            crate::orchestrator::store::Store::local_day_key_from_unix_ms(started_at_unix_ms)
+                .expect("day key");
+
+        for (node_id, node_name, updated_at, event_id) in [
+            ("node-remote-a", "Remote A", 10u64, "edit-remote-a"),
+            ("node-remote-b", "Remote B", 11u64, "edit-remote-b"),
+        ] {
+            assert!(state
+                .gateway
+                .store
+                .insert_lan_edit_event(&LanEditSyncEvent {
+                    event_id: event_id.to_string(),
+                    node_id: node_id.to_string(),
+                    node_name: node_name.to_string(),
+                    created_at_unix_ms: updated_at,
+                    lamport_ts: updated_at,
+                    entity_type: "tracked_spend_day".to_string(),
+                    entity_id: tracked_spend_day_entity_id(
+                        &shared_provider_id,
+                        started_at_unix_ms,
+                        node_id,
+                    ),
+                    op: "replace".to_string(),
+                    payload: serde_json::json!({
+                        "provider_name": "provider_1",
+                        "day_started_at_unix_ms": started_at_unix_ms,
+                        "row": {
+                            "provider": "provider_1",
+                            "started_at_unix_ms": started_at_unix_ms,
+                            "tracked_spend_usd": 17.47,
+                            "updated_at_unix_ms": updated_at,
+                            "producer_node_id": node_id,
+                            "producer_node_name": node_name
+                        }
+                    }),
+                }));
+        }
+
+        super::rebuild_shared_tracked_spend_views(&state).expect("rebuild shared view");
+
+        let shared_rows = state
+            .gateway
+            .store
+            .list_shared_tracked_spend_days("provider_1");
+        assert_eq!(shared_rows.len(), 1);
+        assert_eq!(
+            shared_rows[0].get("day_key").and_then(Value::as_str),
+            Some(day_key.as_str())
+        );
+        assert_eq!(
+            shared_rows[0]
+                .get("tracked_spend_usd")
+                .and_then(Value::as_f64),
+            Some(17.47)
+        );
+        assert_eq!(
+            shared_rows[0]
+                .get("producer_node_id")
+                .and_then(Value::as_str),
+            Some("node-remote-b")
+        );
+        assert_eq!(
+            shared_rows[0]
+                .get("tracked_source_nodes")
+                .and_then(Value::as_array)
+                .map(|items| items.len()),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn rebuild_shared_tracked_spend_views_skips_broken_projection_events() {
+        let (_tmp, state) = build_test_state();
+        let shared_provider_id = state
+            .secrets
+            .ensure_provider_shared_id("provider_1")
+            .expect("shared id");
+        let started_at_unix_ms = 1_711_929_600_000u64;
+        let day_key =
+            crate::orchestrator::store::Store::local_day_key_from_unix_ms(started_at_unix_ms)
+                .expect("day key");
+
+        assert!(state
+            .gateway
+            .store
+            .insert_lan_edit_event(&LanEditSyncEvent {
+                event_id: "edit-broken-provider".to_string(),
+                node_id: "node-ghost".to_string(),
+                node_name: "Ghost Node".to_string(),
+                created_at_unix_ms: 9,
+                lamport_ts: 9,
+                entity_type: "tracked_spend_day".to_string(),
+                entity_id: tracked_spend_day_entity_id(
+                    "sp_missing",
+                    started_at_unix_ms,
+                    "node-ghost",
+                ),
+                op: "replace".to_string(),
+                payload: serde_json::json!({
+                    "provider_name": "ghost_provider",
+                    "day_started_at_unix_ms": started_at_unix_ms,
+                    "row": {
+                        "provider": "ghost_provider",
+                        "started_at_unix_ms": started_at_unix_ms,
+                        "tracked_spend_usd": 4.2,
+                        "updated_at_unix_ms": 9u64
+                    }
+                }),
+            }));
+        assert!(state
+            .gateway
+            .store
+            .insert_lan_edit_event(&LanEditSyncEvent {
+                event_id: "edit-valid-provider".to_string(),
+                node_id: "node-remote".to_string(),
+                node_name: "Remote Node".to_string(),
+                created_at_unix_ms: 10,
+                lamport_ts: 10,
+                entity_type: "tracked_spend_day".to_string(),
+                entity_id: tracked_spend_day_entity_id(
+                    &shared_provider_id,
+                    started_at_unix_ms,
+                    "node-remote",
+                ),
+                op: "replace".to_string(),
+                payload: serde_json::json!({
+                    "provider_name": "provider_1",
+                    "day_started_at_unix_ms": started_at_unix_ms,
+                    "row": {
+                        "provider": "provider_1",
+                        "started_at_unix_ms": started_at_unix_ms,
+                        "tracked_spend_usd": 17.47,
+                        "updated_at_unix_ms": 10u64,
+                        "producer_node_id": "node-remote",
+                        "producer_node_name": "Remote Node"
+                    }
+                }),
+            }));
+
+        super::rebuild_shared_tracked_spend_views(&state).expect("rebuild shared view");
+
+        let shared_rows = state
+            .gateway
+            .store
+            .list_shared_tracked_spend_days("provider_1");
+        assert_eq!(shared_rows.len(), 1);
+        assert_eq!(
+            shared_rows[0].get("day_key").and_then(Value::as_str),
+            Some(day_key.as_str())
+        );
+        assert_eq!(
+            shared_rows[0]
+                .get("tracked_spend_usd")
+                .and_then(Value::as_f64),
+            Some(17.47)
         );
     }
 
@@ -7550,6 +7896,7 @@ mod tests {
                 listen_addr: "192.168.1.10:4000".to_string(),
                 last_heartbeat_unix_ms: now,
                 capabilities: super::lan_heartbeat_capabilities(),
+                version_inventory: super::local_version_inventory(),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7584,6 +7931,7 @@ mod tests {
                 listen_addr: "192.168.1.10:4000".to_string(),
                 last_heartbeat_unix_ms: now,
                 capabilities: vec!["heartbeat_v1".to_string()],
+                version_inventory: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7612,7 +7960,6 @@ mod tests {
     fn peer_stale_timeout_tolerates_transient_windows_heartbeat_gaps() {
         // Regression guard: LAN diagnostics showed the same peer being pruned after 7-10s
         // heartbeat gaps, then immediately rediscovered from the same listen address.
-        assert!(super::LAN_PEER_STALE_AFTER_MS >= super::LAN_HEARTBEAT_INTERVAL_MS * 10);
         assert!(!peer_is_stale(10_000, 20_000));
     }
 
@@ -7631,6 +7978,7 @@ mod tests {
                 listen_addr: "192.168.1.50:4000".to_string(),
                 last_heartbeat_unix_ms: now,
                 capabilities: super::lan_heartbeat_capabilities(),
+                version_inventory: super::local_version_inventory(),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7648,6 +7996,7 @@ mod tests {
                 listen_addr: "192.168.1.51:4000".to_string(),
                 last_heartbeat_unix_ms: now.saturating_sub(super::LAN_PEER_STALE_AFTER_MS + 1),
                 capabilities: super::lan_heartbeat_capabilities(),
+                version_inventory: super::local_version_inventory(),
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,
@@ -7846,11 +8195,10 @@ mod tests {
         assert_eq!(provider_pricing.amount_usd, 0.035);
         assert_eq!(provider_pricing.periods.len(), 1);
         assert!(
-            state
+            !state
                 .secrets
                 .list_provider_pricing()
-                .get("provider_1")
-                .is_none(),
+                .contains_key("provider_1"),
             "remote pricing must not overwrite local provider pricing state"
         );
 
@@ -8071,6 +8419,7 @@ mod tests {
                 listen_addr: "192.168.1.21:4000".to_string(),
                 last_heartbeat_unix_ms: crate::orchestrator::store::unix_ms(),
                 capabilities: vec!["heartbeat_v1".to_string()],
+                version_inventory: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
                 remote_update_readiness: None,
                 remote_update_status: None,

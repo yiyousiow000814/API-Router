@@ -32,6 +32,15 @@ fn git_output(repo_root: &Path, args: &[&str]) -> Option<String> {
 }
 
 #[cfg(windows)]
+#[derive(Clone)]
+struct WindowsSdkToolchain {
+    bin_dir: PathBuf,
+    rc_path: PathBuf,
+    mt_path: Option<PathBuf>,
+    checked_rc_paths: Vec<PathBuf>,
+}
+
+#[cfg(windows)]
 fn prepend_env_path(name: &str, value: &str) {
     let current = env::var_os(name).unwrap_or_default();
     let current_text = current.to_string_lossy();
@@ -50,7 +59,32 @@ fn prepend_env_path(name: &str, value: &str) {
 }
 
 #[cfg(windows)]
-fn find_windows_sdk_bin_dir() -> Option<PathBuf> {
+fn preferred_windows_sdk_versions() -> [&'static str; 4] {
+    [
+        "10.0.26100.0",
+        "10.0.22621.0",
+        "10.0.22000.0",
+        "10.0.19041.0",
+    ]
+}
+
+#[cfg(windows)]
+fn discover_windows_sdk_bin_dirs(kits_bin: &Path) -> Vec<PathBuf> {
+    let mut discovered = fs::read_dir(kits_bin)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(|entry| entry.ok()))
+        .map(|entry| entry.path().join("x64"))
+        .filter(|dir| dir.join("rc.exe").is_file())
+        .collect::<Vec<_>>();
+    discovered.sort();
+    discovered.reverse();
+    discovered
+}
+
+#[cfg(windows)]
+fn resolve_windows_sdk_toolchain() -> Result<WindowsSdkToolchain, String> {
+    let mut checked_rc_paths = Vec::new();
     if let (Ok(sdk_dir), Ok(sdk_version)) =
         (env::var("WindowsSdkDir"), env::var("WindowsSDKVersion"))
     {
@@ -59,8 +93,15 @@ fn find_windows_sdk_bin_dir() -> Option<PathBuf> {
             .join("bin")
             .join(normalized_version)
             .join("x64");
+        checked_rc_paths.push(candidate.join("rc.exe"));
         if candidate.join("rc.exe").is_file() {
-            return Some(candidate);
+            let mt_path = candidate.join("mt.exe");
+            return Ok(WindowsSdkToolchain {
+                rc_path: candidate.join("rc.exe"),
+                mt_path: mt_path.is_file().then_some(mt_path),
+                bin_dir: candidate,
+                checked_rc_paths,
+            });
         }
     }
     let pf86 = env::var("ProgramFiles(x86)")
@@ -71,49 +112,94 @@ fn find_windows_sdk_bin_dir() -> Option<PathBuf> {
         .join("Windows Kits")
         .join("10")
         .join("bin");
-    let preferred_versions = [
-        "10.0.26100.0",
-        "10.0.22621.0",
-        "10.0.22000.0",
-        "10.0.19041.0",
-    ];
-    for version in preferred_versions {
+    for version in preferred_windows_sdk_versions() {
         let dir = kits_bin.join(version).join("x64");
+        checked_rc_paths.push(dir.join("rc.exe"));
         if dir.join("rc.exe").is_file() {
-            return Some(dir);
+            let mt_path = dir.join("mt.exe");
+            return Ok(WindowsSdkToolchain {
+                rc_path: dir.join("rc.exe"),
+                mt_path: mt_path.is_file().then_some(mt_path),
+                bin_dir: dir,
+                checked_rc_paths,
+            });
         }
     }
-    let mut discovered = fs::read_dir(&kits_bin)
-        .ok()?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path().join("x64"))
-        .filter(|dir| dir.join("rc.exe").is_file())
-        .collect::<Vec<_>>();
-    discovered.sort();
-    discovered.pop()
+    for dir in discover_windows_sdk_bin_dirs(&kits_bin) {
+        let rc_path = dir.join("rc.exe");
+        if checked_rc_paths.iter().all(|path| path != &rc_path) {
+            checked_rc_paths.push(rc_path.clone());
+        }
+        if rc_path.is_file() {
+            let mt_path = dir.join("mt.exe");
+            return Ok(WindowsSdkToolchain {
+                rc_path,
+                mt_path: mt_path.is_file().then_some(mt_path),
+                bin_dir: dir,
+                checked_rc_paths,
+            });
+        }
+    }
+
+    let mut parts = Vec::new();
+    parts.push(format!(
+        "WindowsSdkDir={}",
+        env::var("WindowsSdkDir").unwrap_or_else(|_| "<unset>".to_string())
+    ));
+    parts.push(format!(
+        "WindowsSDKVersion={}",
+        env::var("WindowsSDKVersion").unwrap_or_else(|_| "<unset>".to_string())
+    ));
+    parts.push(format!("kits_bin={}", kits_bin.display()));
+    parts.push(format!(
+        "checked_rc_paths={}",
+        checked_rc_paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    Err(parts.join("; "))
 }
 
 #[cfg(windows)]
 fn configure_windows_resource_toolchain() {
-    let Some(bin_dir) = find_windows_sdk_bin_dir() else {
-        println!("cargo:warning=Windows SDK rc.exe not found under Windows Kits");
-        return;
-    };
-    if let Some(path) = bin_dir.to_str() {
+    let toolchain = resolve_windows_sdk_toolchain().unwrap_or_else(|report| {
+        panic!("Windows resource toolchain probe failed before tauri-build. {report}")
+    });
+    if env::var("API_ROUTER_WIN_SDK_TRACE").as_deref() == Ok("1") {
+        println!(
+            "cargo:warning=windows resource toolchain bin={} rc={} mt={} checked={}",
+            toolchain.bin_dir.display(),
+            toolchain.rc_path.display(),
+            toolchain
+                .mt_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<missing>".to_string()),
+            toolchain
+                .checked_rc_paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if let Some(path) = toolchain.bin_dir.to_str() {
         prepend_env_path("PATH", path);
     }
-    let rc = bin_dir.join("rc.exe");
-    let mt = bin_dir.join("mt.exe");
-    if rc.is_file() {
-        env::set_var("RC", &rc);
-    }
-    if mt.is_file() {
-        env::set_var("MT", &mt);
+    env::set_var("RC", &toolchain.rc_path);
+    env::set_var("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RC", &toolchain.rc_path);
+    if let Some(mt_path) = &toolchain.mt_path {
+        env::set_var("MT", mt_path);
+        env::set_var("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_MT", mt_path);
     }
 }
 
 fn main() {
     let repo_root = repo_root();
+    #[cfg(windows)]
+    println!("cargo:rerun-if-env-changed=API_ROUTER_WIN_SDK_TRACE");
     for path in git_layout::git_watch_paths(&repo_root) {
         println!("cargo:rerun-if-changed={}", path.display());
     }
