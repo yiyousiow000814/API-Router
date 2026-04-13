@@ -565,22 +565,6 @@ impl CodexSessionManager {
         Ok(loaded_ids)
     }
 
-    pub(super) async fn loaded_threads(&self, max_items: usize) -> Result<Vec<Value>, String> {
-        let loaded_ids = self.loaded_thread_ids().await?;
-        let mut threads = Vec::new();
-        for thread_id in loaded_ids.into_iter().take(max_items) {
-            let response = match self.read_thread(&thread_id, false).await {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-            if runtime_thread_payload(&response).is_none() {
-                continue;
-            }
-            threads.push(response);
-        }
-        Ok(threads)
-    }
-
     pub(super) async fn pending_events_snapshot(&self) -> PendingEventsSnapshot {
         let approvals = self
             .try_request_with_fallback(&["bridge/approvals/list", "approvals/list"], Value::Null)

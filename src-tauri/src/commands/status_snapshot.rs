@@ -248,7 +248,15 @@ pub(crate) fn get_status(
     let client_sessions = {
         let thread_index_snapshot =
             crate::orchestrator::gateway::web_codex_threads::cached_threads_snapshot_stale_while_revalidate();
+        let gateway_token = state.secrets.get_gateway_token().unwrap_or_default();
+        let expected_gateway_token = (!gateway_token.is_empty()).then_some(gateway_token.as_str());
+        let terminal_discovery =
+            crate::platform::windows_terminal::discover_sessions_using_router_snapshot(
+                cfg.listen.port,
+                expected_gateway_token,
+            );
         let mut map = state.gateway.client_sessions.read().clone();
+        merge_discovered_terminal_sessions(&mut map, now, &terminal_discovery);
         merge_thread_index_session_hints(
             &mut map,
             now,
@@ -264,6 +272,8 @@ pub(crate) fn get_status(
         let removed_main_sessions = retain_live_app_server_sessions(
             &mut map,
             now,
+            &terminal_discovery.items,
+            terminal_discovery.fresh,
             &thread_index_snapshot.items,
             thread_index_snapshot.fresh,
         );
@@ -719,6 +729,89 @@ fn merge_discovered_model_provider(
         return;
     }
     entry.last_reported_model_provider = Some(mp.to_string());
+}
+
+fn merge_discovered_terminal_sessions(
+    map: &mut std::collections::HashMap<String, crate::orchestrator::gateway::ClientSessionRuntime>,
+    now: u64,
+    discovery: &crate::platform::windows_terminal::SessionDiscoverySnapshot,
+) {
+    for discovered in &discovery.items {
+        let Some(session_id) = discovered
+            .codex_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+
+        let entry = map.entry(session_id.to_string()).or_insert_with(|| {
+            crate::orchestrator::gateway::ClientSessionRuntime {
+                codex_session_id: session_id.to_string(),
+                pid: discovered.pid,
+                wt_session: Some(discovered.wt_session.clone()),
+                last_request_unix_ms: 0,
+                last_discovered_unix_ms: 0,
+                last_reported_model_provider: None,
+                last_reported_model: None,
+                last_reported_base_url: None,
+                rollout_path: discovered.rollout_path.clone(),
+                agent_parent_session_id: discovered.agent_parent_session_id.clone(),
+                is_agent: discovered.is_agent,
+                is_review: discovered.is_review,
+                confirmed_router: discovered.router_confirmed,
+            }
+        });
+
+        if discovered.pid != 0 {
+            entry.pid = discovered.pid;
+        }
+        entry.wt_session = crate::platform::windows_terminal::merge_wt_session_marker(
+            entry.wt_session.as_deref(),
+            &discovered.wt_session,
+        );
+        if discovery.fresh {
+            entry.last_discovered_unix_ms = now;
+        }
+        if let Some(rollout_path) = discovered
+            .rollout_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        {
+            entry.rollout_path = Some(rollout_path.to_string());
+        }
+        if let Some(parent_sid) = discovered
+            .agent_parent_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|sid| !sid.is_empty())
+        {
+            entry.agent_parent_session_id = Some(parent_sid.to_string());
+        }
+        if let Some(base_url) = discovered
+            .reported_base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|base| !base.is_empty())
+        {
+            entry.last_reported_base_url = Some(base_url.to_string());
+        }
+        if discovered.is_agent {
+            entry.is_agent = true;
+        }
+        if discovered.is_review {
+            entry.is_review = true;
+            entry.is_agent = true;
+        }
+        merge_discovered_model_provider(entry, discovered.reported_model_provider.as_deref());
+        if discovered.router_confirmed {
+            entry.confirmed_router = true;
+            entry.last_reported_model_provider =
+                Some(crate::constants::GATEWAY_MODEL_PROVIDER_ID.to_string());
+        }
+    }
 }
 
 fn confirm_router_from_live_thread_base_url(
@@ -3148,6 +3241,116 @@ mod tests {
     }
 
     #[test]
+    fn discovered_wsl_terminal_identity_backfills_existing_gateway_session() {
+        let now = 123_456_u64;
+        let mut map = std::collections::HashMap::from([(
+            "019d8635-798a-7392-bfa6-b63a0a0358a2".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "019d8635-798a-7392-bfa6-b63a0a0358a2".to_string(),
+                pid: 0,
+                wt_session: None,
+                last_request_unix_ms: now.saturating_sub(1_000),
+                last_discovered_unix_ms: 0,
+                last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                last_reported_model: None,
+                last_reported_base_url: Some("http://172.26.144.1:4000/v1".to_string()),
+                rollout_path: None,
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: true,
+            },
+        )]);
+
+        let discovery = crate::platform::windows_terminal::SessionDiscoverySnapshot {
+            fresh: true,
+            items: vec![crate::platform::windows_terminal::InferredWtSession {
+                wt_session: "wsl:bb64caa2-94fc-4951-ac56-771dd8e2ce6d".to_string(),
+                pid: 0,
+                linux_pid: Some(5301),
+                wsl_distro: Some("Ubuntu".to_string()),
+                cwd: Some("/home/yiyou/Automated-Supertrend-Trading".to_string()),
+                rollout_path: Some(
+                    "\\\\wsl.localhost\\Ubuntu\\home\\yiyou\\.codex\\sessions\\2026\\04\\13\\rollout-2026-04-13T17-39-04-019d8635-798a-7392-bfa6-b63a0a0358a2.jsonl".to_string(),
+                ),
+                codex_session_id: Some("019d8635-798a-7392-bfa6-b63a0a0358a2".to_string()),
+                reported_model_provider: None,
+                reported_base_url: Some("http://172.26.144.1:4000/v1".to_string()),
+                agent_parent_session_id: None,
+                router_confirmed: true,
+                is_agent: false,
+                is_review: false,
+            }],
+        };
+
+        super::merge_discovered_terminal_sessions(&mut map, now, &discovery);
+
+        let entry = map
+            .get("019d8635-798a-7392-bfa6-b63a0a0358a2")
+            .expect("merged session");
+        assert_eq!(
+            entry.wt_session.as_deref(),
+            Some("wsl:bb64caa2-94fc-4951-ac56-771dd8e2ce6d")
+        );
+        assert_eq!(entry.last_discovered_unix_ms, now);
+        assert_eq!(
+            entry.rollout_path.as_deref(),
+            Some(
+                "\\\\wsl.localhost\\Ubuntu\\home\\yiyou\\.codex\\sessions\\2026\\04\\13\\rollout-2026-04-13T17-39-04-019d8635-798a-7392-bfa6-b63a0a0358a2.jsonl"
+            )
+        );
+        assert!(entry.confirmed_router);
+    }
+
+    #[test]
+    fn discovered_wsl_terminal_identity_preserves_existing_wsl_marker_when_snapshot_stale() {
+        let now = 123_456_u64;
+        let mut map = std::collections::HashMap::from([(
+            "session-wsl".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "session-wsl".to_string(),
+                pid: 0,
+                wt_session: Some("wsl:existing-tab".to_string()),
+                last_request_unix_ms: now.saturating_sub(1_000),
+                last_discovered_unix_ms: now.saturating_sub(9_000),
+                last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                last_reported_model: None,
+                last_reported_base_url: None,
+                rollout_path: None,
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: true,
+            },
+        )]);
+
+        let discovery = crate::platform::windows_terminal::SessionDiscoverySnapshot {
+            fresh: false,
+            items: vec![crate::platform::windows_terminal::InferredWtSession {
+                wt_session: "existing-tab".to_string(),
+                pid: 0,
+                linux_pid: Some(1),
+                wsl_distro: Some("Ubuntu".to_string()),
+                cwd: None,
+                rollout_path: None,
+                codex_session_id: Some("session-wsl".to_string()),
+                reported_model_provider: None,
+                reported_base_url: None,
+                agent_parent_session_id: None,
+                router_confirmed: true,
+                is_agent: false,
+                is_review: false,
+            }],
+        };
+
+        super::merge_discovered_terminal_sessions(&mut map, now, &discovery);
+
+        let entry = map.get("session-wsl").expect("merged session");
+        assert_eq!(entry.wt_session.as_deref(), Some("wsl:existing-tab"));
+        assert_eq!(entry.last_discovered_unix_ms, now.saturating_sub(9_000));
+    }
+
+    #[test]
     fn stale_wsl_session_keeps_when_wt_session_is_alive() {
         let now = 100_000_u64;
         let entry = ClientSessionRuntime {
@@ -3166,7 +3369,8 @@ mod tests {
             confirmed_router: true,
         };
 
-        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, false, 3, true);
+        let keep =
+            should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, false, 3, true);
         assert!(keep);
     }
 
@@ -3189,7 +3393,8 @@ mod tests {
             confirmed_router: true,
         };
 
-        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, false, 1, true);
+        let keep =
+            should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, false, 1, true);
         assert!(keep);
     }
 
@@ -3261,7 +3466,8 @@ mod tests {
             confirmed_router: true,
         };
 
-        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, false, 0, true);
+        let keep =
+            should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, false, 0, true);
         assert!(keep);
     }
 
@@ -3404,7 +3610,8 @@ mod tests {
             confirmed_router: true,
         };
 
-        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, false, 0, true);
+        let keep =
+            should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, false, 0, true);
         assert!(keep);
     }
 
@@ -3656,7 +3863,7 @@ mod tests {
             map.is_empty(),
             "pure thread-index notLoaded main thread should not become a runtime session before retention runs",
         );
-        let removed = retain_live_app_server_sessions(&mut map, now + 5_000, &[], true);
+        let removed = retain_live_app_server_sessions(&mut map, now + 5_000, &[], true, &[], true);
         assert!(
             removed.is_empty(),
             "no runtime session should be synthesized for a historical notLoaded thread-index row",
@@ -3688,7 +3895,7 @@ mod tests {
             },
         )]);
 
-        let removed = retain_live_app_server_sessions(&mut map, now, &[], false);
+        let removed = retain_live_app_server_sessions(&mut map, now, &[], false, &[], false);
 
         assert!(
             removed.is_empty(),
@@ -3727,6 +3934,8 @@ mod tests {
         let removed = retain_live_app_server_sessions(
             &mut map,
             now,
+            &[],
+            false,
             &[serde_json::json!({
                 "id": "partial-fresh-thread",
                 "workspace": "windows",
@@ -3746,8 +3955,151 @@ mod tests {
     }
 
     #[test]
-    fn thread_index_not_loaded_item_keeps_requested_session_visible() {
+    fn fresh_wsl_snapshot_drops_pidless_session_without_recent_gateway_heartbeat() {
         let now = 2_000_000_u64;
+        let entry = ClientSessionRuntime {
+            codex_session_id: "wsl-missing".to_string(),
+            pid: 0,
+            wt_session: None,
+            last_request_unix_ms: now.saturating_sub(61_000),
+            last_discovered_unix_ms: now.saturating_sub(2_000),
+            last_reported_model_provider: Some("api_router".to_string()),
+            last_reported_model: Some("gpt-5.4".to_string()),
+            last_reported_base_url: Some("http://172.26.144.1:4000/v1".to_string()),
+            rollout_path: Some(
+                "\\\\wsl.localhost\\Ubuntu\\home\\yiyou\\.codex\\sessions\\wsl-missing.jsonl"
+                    .to_string(),
+            ),
+            agent_parent_session_id: None,
+            is_agent: false,
+            is_review: false,
+            confirmed_router: true,
+        };
+
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, false, 0, true);
+        assert!(
+            !keep,
+            "fresh WSL snapshots should hide pidless sessions once the real gateway heartbeat stops",
+        );
+    }
+
+    #[test]
+    fn fresh_wsl_snapshot_keeps_pidless_session_with_recent_gateway_heartbeat() {
+        let now = 2_000_000_u64;
+        let entry = ClientSessionRuntime {
+            codex_session_id: "wsl-live".to_string(),
+            pid: 0,
+            wt_session: None,
+            last_request_unix_ms: now.saturating_sub(20_000),
+            last_discovered_unix_ms: now.saturating_sub(60_000),
+            last_reported_model_provider: Some("api_router".to_string()),
+            last_reported_model: Some("gpt-5.4".to_string()),
+            last_reported_base_url: Some("http://172.26.144.1:4000/v1".to_string()),
+            rollout_path: Some(
+                "\\\\wsl.localhost\\Ubuntu\\home\\yiyou\\.codex\\sessions\\wsl-live.jsonl"
+                    .to_string(),
+            ),
+            agent_parent_session_id: None,
+            is_agent: false,
+            is_review: false,
+            confirmed_router: true,
+        };
+
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, false, 0, true);
+        assert!(
+            keep,
+            "recent WSL gateway requests should act as the canonical live heartbeat when app-server loaded snapshots are empty",
+        );
+    }
+
+    #[test]
+    fn fresh_terminal_snapshot_drops_wsl_session_when_wt_is_absent() {
+        let now = 2_000_000_u64;
+        let mut map = HashMap::from([(
+            "wsl-ended".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "wsl-ended".to_string(),
+                pid: 0,
+                wt_session: Some("wsl:ended-tab".to_string()),
+                last_request_unix_ms: now.saturating_sub(5_000),
+                last_discovered_unix_ms: now.saturating_sub(5_000),
+                last_reported_model_provider: Some("api_router".to_string()),
+                last_reported_model: Some("gpt-5.4".to_string()),
+                last_reported_base_url: Some("http://172.26.144.1:4000/v1".to_string()),
+                rollout_path: Some(
+                    "\\\\wsl.localhost\\Ubuntu\\home\\yiyou\\.codex\\sessions\\wsl-ended.jsonl"
+                        .to_string(),
+                ),
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: true,
+            },
+        )]);
+
+        let removed = retain_live_app_server_sessions(&mut map, now, &[], true, &[], true);
+
+        assert_eq!(removed, vec!["wsl-ended".to_string()]);
+        assert!(
+            !map.contains_key("wsl-ended"),
+            "fresh terminal discovery should hide WSL sessions as soon as their WT_SESSION disappears",
+        );
+    }
+
+    #[test]
+    fn fresh_terminal_snapshot_keeps_wsl_session_when_wt_is_still_present() {
+        let now = 2_000_000_u64;
+        let mut map = HashMap::from([(
+            "wsl-live-terminal".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "wsl-live-terminal".to_string(),
+                pid: 0,
+                wt_session: Some("wsl:live-tab".to_string()),
+                last_request_unix_ms: now.saturating_sub(90_000),
+                last_discovered_unix_ms: now.saturating_sub(90_000),
+                last_reported_model_provider: Some("api_router".to_string()),
+                last_reported_model: Some("gpt-5.4".to_string()),
+                last_reported_base_url: Some("http://172.26.144.1:4000/v1".to_string()),
+                rollout_path: Some(
+                    "\\\\wsl.localhost\\Ubuntu\\home\\yiyou\\.codex\\sessions\\wsl-live-terminal.jsonl"
+                        .to_string(),
+                ),
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: true,
+            },
+        )]);
+
+        let terminal_items = vec![crate::platform::windows_terminal::InferredWtSession {
+            wt_session: "wsl:live-tab".to_string(),
+            pid: 0,
+            linux_pid: Some(4242),
+            wsl_distro: Some("Ubuntu".to_string()),
+            cwd: None,
+            rollout_path: None,
+            codex_session_id: Some("wsl-live-terminal".to_string()),
+            reported_model_provider: None,
+            reported_base_url: None,
+            agent_parent_session_id: None,
+            is_agent: false,
+            is_review: false,
+            router_confirmed: false,
+        }];
+
+        let removed =
+            retain_live_app_server_sessions(&mut map, now, &terminal_items, true, &[], true);
+
+        assert!(removed.is_empty());
+        assert!(
+            map.contains_key("wsl-live-terminal"),
+            "fresh terminal discovery should keep the WSL session while the same WT_SESSION is still present",
+        );
+    }
+
+    #[test]
+    fn thread_index_not_loaded_item_no_longer_refreshes_runtime_session_to_now() {
+        let now = 1_800_000_000_000_u64;
         let mut map = HashMap::from([(
             "session-index-requested".to_string(),
             ClientSessionRuntime {
@@ -3755,7 +4107,7 @@ mod tests {
                 pid: 0,
                 wt_session: None,
                 last_request_unix_ms: now.saturating_sub(5 * 60 * 1000),
-                last_discovered_unix_ms: 0,
+                last_discovered_unix_ms: now.saturating_sub(1_000),
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
@@ -3778,7 +4130,7 @@ mod tests {
                 "workspace": "wsl2",
                 "path": "\\\\wsl.localhost\\Ubuntu\\home\\yiyou\\.codex\\sessions\\2026\\01\\28\\rollout-2026-01-28T17-44-26-session-index-requested.jsonl",
                 "status": { "type": "notLoaded" },
-                "updatedAt": 1742269999
+                "updatedAt": (now.saturating_sub(5 * 60 * 1000)) / 1000
             })],
             true,
         );
@@ -3786,10 +4138,14 @@ mod tests {
         let entry = map
             .get("session-index-requested")
             .expect("requested session");
-        assert_eq!(entry.last_discovered_unix_ms, now);
+        assert_eq!(
+            entry.last_discovered_unix_ms,
+            now.saturating_sub(5 * 60 * 1000),
+            "notLoaded rows should preserve the thread's own updatedAt instead of refreshing discovery to now",
+        );
         assert!(
-            should_keep_runtime_session(entry, now, |_pid| true, |_wt| true, false, 0, true),
-            "fresh app-server snapshot should keep requested pidless session visible even when notLoaded",
+            !should_keep_runtime_session(entry, now, |_pid| true, |_wt| true, false, 0, true),
+            "stale pidless runtime sessions should disappear once only historical notLoaded evidence remains",
         );
     }
 
