@@ -595,27 +595,9 @@ impl RouterState {
 
     pub fn snapshot(&self, now_ms: u64) -> HashMap<String, ProviderHealthSnapshot> {
         let health = self.health.read();
-        let store = self.store.clone();
         health
             .iter()
-            .map(|(k, v)| {
-                let mut snapshot = Self::snapshot_from_health(v, now_ms);
-                if let Some(store) = store.as_ref() {
-                    snapshot.last_error_event_id = store
-                        .find_recent_error_event_for_provider(
-                            k,
-                            snapshot.last_fail_at_unix_ms,
-                            &snapshot.last_error,
-                        )
-                        .and_then(|event| {
-                            event
-                                .get("id")
-                                .and_then(|value| value.as_str())
-                                .map(str::to_string)
-                        });
-                }
-                (k.clone(), snapshot)
-            })
+            .map(|(k, v)| (k.clone(), Self::snapshot_from_health(v, now_ms)))
             .collect()
     }
 
@@ -729,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_resolves_last_error_event_id_from_store() {
+    fn snapshot_keeps_last_error_event_id_empty() {
         let mut cfg = AppConfig::default_config();
         cfg.routing.failure_threshold = 1;
         let provider = "official";
@@ -753,10 +735,7 @@ mod tests {
         let snapshot = router.snapshot(unix_ms);
         let health = snapshot.get(provider).expect("provider health snapshot");
 
-        assert_eq!(
-            health.last_error_event_id.as_deref(),
-            Some("evt-official-shared-1")
-        );
+        assert_eq!(health.last_error_event_id, None);
     }
 
     #[test]

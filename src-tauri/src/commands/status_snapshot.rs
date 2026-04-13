@@ -132,9 +132,22 @@ pub(crate) fn get_status(
     let now = unix_ms();
     let phase_started_at = std::time::Instant::now();
     state.gateway.router.sync_with_config(&cfg, now);
-    let providers = state.gateway.router.snapshot(now);
+    let mut providers = state.gateway.router.snapshot(now);
     phase_timings_ms.insert(
         "router_snapshot".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
+    let phase_started_at = std::time::Instant::now();
+    let visible_event_log_entries = load_event_log_entries_for_display(
+        &state.gateway.store,
+        state.config_path.as_path(),
+        None,
+        None,
+        EVENT_LOG_QUERY_MAX_LIMIT,
+    );
+    attach_visible_last_error_event_ids(&mut providers, &visible_event_log_entries);
+    phase_timings_ms.insert(
+        "visible_last_error_events".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
     let manual_override = state.gateway.router.manual_override.read().clone();
@@ -155,7 +168,6 @@ pub(crate) fn get_status(
     let phase_started_at = std::time::Instant::now();
     let metrics = state.gateway.store.get_metrics();
     let quota = state.gateway.store.list_quota_snapshots();
-    let mut providers = providers;
     for (provider_name, snapshot) in providers.iter_mut() {
         let hard_cap = state.secrets.get_provider_quota_hard_cap(provider_name);
         if !crate::orchestrator::gateway::provider_has_remaining_quota_with_hard_cap(
@@ -1254,6 +1266,82 @@ fn append_backup_events(
     }
 }
 
+fn load_event_log_entries_for_display(
+    store: &crate::orchestrator::store::Store,
+    config_path: &std::path::Path,
+    from: Option<u64>,
+    to: Option<u64>,
+    cap: usize,
+) -> Vec<Value> {
+    let mut events = store.list_events_range(from, to, Some(cap));
+    events.retain(event_shape_is_valid);
+    let mut dedup = std::collections::HashSet::<String>::new();
+    for event in &events {
+        if let Some(key) = event_query_key(event) {
+            let _ = dedup.insert(key);
+        }
+    }
+    let backup_root = backup_data_root_from_config_path(config_path);
+    append_backup_events(&mut events, &mut dedup, &backup_root, from, to, cap);
+    let mut events = crate::orchestrator::store::Store::compress_events_for_display(events);
+    events.truncate(cap);
+    events
+}
+
+fn attach_visible_last_error_event_ids(
+    providers: &mut std::collections::HashMap<
+        String,
+        crate::orchestrator::router::ProviderHealthSnapshot,
+    >,
+    visible_events: &[Value],
+) {
+    for (provider_name, snapshot) in providers.iter_mut() {
+        snapshot.last_error_event_id = None;
+        let last_error = snapshot.last_error.trim();
+        if last_error.is_empty() || snapshot.last_fail_at_unix_ms == 0 {
+            continue;
+        }
+
+        let provider = provider_name.trim();
+        let mut best_match: Option<(u64, &str)> = None;
+        for event in visible_events {
+            let Some(event_id) = event.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            if !event
+                .get("level")
+                .and_then(Value::as_str)
+                .is_some_and(|level| level == "error")
+            {
+                continue;
+            }
+            if !event
+                .get("provider")
+                .and_then(Value::as_str)
+                .is_some_and(|event_provider| event_provider.trim() == provider)
+            {
+                continue;
+            }
+            if !event
+                .get("message")
+                .and_then(Value::as_str)
+                .is_some_and(|message| message.trim() == last_error)
+            {
+                continue;
+            }
+            let Some(event_unix_ms) = event.get("unix_ms").and_then(Value::as_u64) else {
+                continue;
+            };
+            let distance = event_unix_ms.abs_diff(snapshot.last_fail_at_unix_ms);
+            match best_match {
+                Some((best_distance, _)) if best_distance <= distance => {}
+                _ => best_match = Some((distance, event_id)),
+            }
+        }
+        snapshot.last_error_event_id = best_match.map(|(_, event_id)| event_id.to_string());
+    }
+}
+
 fn backup_data_root_from_config_path(config_path: &std::path::Path) -> std::path::PathBuf {
     config_path
         .parent()
@@ -1403,21 +1491,13 @@ pub(crate) fn get_event_log_entries(
         _ => (from_unix_ms, to_unix_ms),
     };
     let cap = normalize_event_query_limit(limit);
-    let mut events = state.gateway.store.list_events_range(from, to, Some(cap));
-    events.retain(event_shape_is_valid);
-    let mut dedup = std::collections::HashSet::<String>::new();
-    for e in &events {
-        if let Some(key) = event_query_key(e) {
-            let _ = dedup.insert(key);
-        }
-    }
-    let backup_root = state
-        .config_path
-        .as_path();
-    let backup_root = backup_data_root_from_config_path(backup_root);
-    append_backup_events(&mut events, &mut dedup, &backup_root, from, to, cap);
-    events = crate::orchestrator::store::Store::compress_events_for_display(events);
-    events.truncate(cap);
+    let events = load_event_log_entries_for_display(
+        &state.gateway.store,
+        state.config_path.as_path(),
+        from,
+        to,
+        cap,
+    );
     serde_json::Value::Array(events)
 }
 
@@ -1465,23 +1545,25 @@ pub(crate) fn get_event_log_daily_stats(
 mod tests {
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
     use crate::commands::{
+        attach_visible_last_error_event_ids,
         backfill_main_confirmation_from_verified_agent,
         clear_removed_main_session_routes_and_assignments,
         append_backup_event_daily_stats, day_start_unix_ms_from_day_key, event_query_key,
         config_revision,
+        load_event_log_entries_for_display,
         main_session_ids_excluding_agents_and_reviews,
         merge_thread_index_session_hints,
         rebalance_balanced_assignments_on_main_session_change,
         retain_live_app_server_sessions,
         displayed_session_route, merge_discovered_model_provider, next_last_discovered_unix_ms,
-        normalize_event_query_limit,
+        normalize_event_query_limit, EVENT_LOG_QUERY_MAX_LIMIT,
         should_keep_runtime_session,
     };
     use crate::orchestrator::config::{AppConfig, ListenConfig, ProviderConfig, RoutingConfig};
     use crate::orchestrator::gateway::{decide_provider, open_store_dir, GatewayState, LastUsedRoute};
-    use crate::orchestrator::router::RouterState;
+    use crate::orchestrator::router::{ProviderHealthSnapshot, RouterState};
     use crate::orchestrator::secrets::SecretStore;
-    use crate::orchestrator::store::{unix_ms, UsageRequestSyncRow};
+    use crate::orchestrator::store::{unix_ms, StoredEventRow, UsageRequestSyncRow};
     use crate::orchestrator::upstream::UpstreamClient;
     use crate::orchestrator::gateway::ClientSessionRuntime;
     use chrono::TimeZone;
@@ -1512,6 +1594,115 @@ mod tests {
         assert_eq!(
             entry.last_reported_model_provider.as_deref(),
             Some(GATEWAY_MODEL_PROVIDER_ID)
+        );
+    }
+
+    #[test]
+    fn visible_last_error_ids_attach_only_from_default_event_log_window() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let config_path = tmp.path().join("config.toml");
+        let provider = "codex-for.me";
+        let old_error_ts = 1_775_100_000_000_u64;
+        assert!(store.insert_event_row(StoredEventRow {
+            id: "evt-old-codex-error".to_string(),
+            provider: provider.to_string(),
+            level: "error".to_string(),
+            code: "gateway.request_failed".to_string(),
+            message: "request error: boom".to_string(),
+            fields: Value::Null,
+            unix_ms: old_error_ts,
+        }));
+        for idx in 0..EVENT_LOG_QUERY_MAX_LIMIT {
+            assert!(store.insert_event_row(StoredEventRow {
+                id: format!("evt-newer-{idx}"),
+                provider: "gateway".to_string(),
+                level: "info".to_string(),
+                code: "heartbeat".to_string(),
+                message: format!("newer event {idx}"),
+                fields: Value::Null,
+                unix_ms: old_error_ts + 1_000 + idx as u64,
+            }));
+        }
+
+        let visible = load_event_log_entries_for_display(
+            &store,
+            &config_path,
+            None,
+            None,
+            EVENT_LOG_QUERY_MAX_LIMIT,
+        );
+        assert_eq!(visible.len(), EVENT_LOG_QUERY_MAX_LIMIT);
+        assert!(!visible
+            .iter()
+            .any(|event| event.get("id").and_then(Value::as_str) == Some("evt-old-codex-error")));
+
+        let mut providers = HashMap::from([(
+            provider.to_string(),
+            ProviderHealthSnapshot {
+                status: "unhealthy".to_string(),
+                consecutive_failures: 1,
+                cooldown_until_unix_ms: 0,
+                last_error: "request error: boom".to_string(),
+                last_ok_at_unix_ms: 0,
+                last_fail_at_unix_ms: old_error_ts,
+                last_error_event_id: None,
+            },
+        )]);
+
+        attach_visible_last_error_event_ids(&mut providers, &visible);
+
+        assert_eq!(
+            providers
+                .get(provider)
+                .and_then(|snapshot| snapshot.last_error_event_id.as_deref()),
+            None
+        );
+    }
+
+    #[test]
+    fn visible_last_error_ids_attach_visible_exact_error() {
+        let provider = "codex-for.me";
+        let mut providers = HashMap::from([(
+            provider.to_string(),
+            ProviderHealthSnapshot {
+                status: "unhealthy".to_string(),
+                consecutive_failures: 1,
+                cooldown_until_unix_ms: 0,
+                last_error: "request error: boom".to_string(),
+                last_ok_at_unix_ms: 0,
+                last_fail_at_unix_ms: 2_000,
+                last_error_event_id: None,
+            },
+        )]);
+        let visible = vec![
+            serde_json::json!({
+                "id": "evt-wrong-message",
+                "unix_ms": 1_999,
+                "provider": provider,
+                "level": "error",
+                "code": "gateway.request_failed",
+                "message": "different",
+                "fields": null,
+            }),
+            serde_json::json!({
+                "id": "evt-visible-error",
+                "unix_ms": 2_001,
+                "provider": provider,
+                "level": "error",
+                "code": "gateway.request_failed",
+                "message": "request error: boom",
+                "fields": null,
+            }),
+        ];
+
+        attach_visible_last_error_event_ids(&mut providers, &visible);
+
+        assert_eq!(
+            providers
+                .get(provider)
+                .and_then(|snapshot| snapshot.last_error_event_id.as_deref()),
+            Some("evt-visible-error")
         );
     }
 
