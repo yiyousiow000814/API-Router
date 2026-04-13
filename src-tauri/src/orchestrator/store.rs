@@ -3020,6 +3020,36 @@ impl Store {
         out
     }
 
+    pub fn get_event_by_id(&self, id: &str) -> Option<Value> {
+        let trimmed_id = id.trim();
+        if trimmed_id.is_empty() {
+            return None;
+        }
+        let conn = self.events_db.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, unix_ms, provider, level, code, message, fields_json
+                 FROM events
+                 WHERE id = ?1
+                 LIMIT 1",
+            )
+            .ok()?;
+        let (id, unix_ms, provider, level, code, message, fields_json) = stmt
+            .query_row([trimmed_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
+            .ok()?;
+        Self::event_from_sql_row(id, unix_ms, provider, level, code, message, fields_json)
+    }
+
     pub fn find_recent_error_event_for_provider(
         &self,
         provider: &str,

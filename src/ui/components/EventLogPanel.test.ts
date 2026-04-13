@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveFocusedEvent } from './EventLogPanel'
+import { resolveFocusedEvent, shouldFallbackToFocusWindow } from './EventLogPanel'
 import type { EventLogEntry, EventLogFocusRequest } from './EventLogPanel'
 
 function buildEvent(partial: Partial<EventLogEntry>): EventLogEntry {
@@ -62,5 +62,19 @@ describe('resolveFocusedEvent', () => {
     const focused = resolveFocusedEvent([exact], buildFocus({ eventId: null }))
 
     expect(focused).toBeNull()
+  })
+})
+
+describe('shouldFallbackToFocusWindow', () => {
+  it('falls back when exact lookup returns null', () => {
+    expect(shouldFallbackToFocusWindow(null)).toBe(true)
+  })
+
+  it('falls back when the returned event has no usable timestamp', () => {
+    expect(shouldFallbackToFocusWindow(buildEvent({ unix_ms: Number.NaN }))).toBe(true)
+  })
+
+  it('keeps exact lookup results when the returned event is valid', () => {
+    expect(shouldFallbackToFocusWindow(buildEvent({ id: 'evt-exact' }))).toBe(false)
   })
 })

@@ -26,6 +26,23 @@ export function findLastErrorEventId(
   return closest?.id ?? null
 }
 
+function resolveLastErrorEventId(
+  health: Status['providers'][string],
+  events: Status['recent_events'],
+  provider: string,
+): string | null {
+  const directEventId = health.last_error_event_id?.trim() ?? ''
+  if (directEventId) return directEventId
+  if (!health.last_error || !Number.isFinite(health.last_fail_at_unix_ms) || health.last_fail_at_unix_ms <= 0) {
+    return null
+  }
+  return findLastErrorEventId(events, {
+    provider,
+    unixMs: health.last_fail_at_unix_ms,
+    message: health.last_error,
+  })
+}
+
 type Props = {
   providers: string[]
   status: Status
@@ -72,14 +89,7 @@ export function ProvidersTable({
       <tbody>
         {providers.map((p) => {
           const h = status.providers[p]
-          const lastErrorEventId =
-            h.last_error && Number.isFinite(h.last_fail_at_unix_ms) && h.last_fail_at_unix_ms > 0
-              ? findLastErrorEventId(status.recent_events, {
-                  provider: p,
-                  unixMs: h.last_fail_at_unix_ms,
-                  message: h.last_error,
-                })
-              : null
+          const lastErrorEventId = resolveLastErrorEventId(h, status.recent_events, p)
           const isOffline = localNetworkOffline
           const q = simulateQuotaForDisplay(
             p,
@@ -262,9 +272,10 @@ export function ProvidersTable({
             const lastErrorMessage = h.last_error?.trim() ?? ''
             const lastErrorAt = h.last_fail_at_unix_ms
             // Show each provider's own latest failure in-place. Event Log jump remains best-effort:
-            // the Event Log page re-runs a provider+message+time search against its full loaded window.
+            // only surface dashboard last-error state when Event Log can locate a backing event.
             const providerIsHealthy = h.status === 'healthy'
             const showLastError =
+              !!lastErrorEventId &&
               lastErrorAt > 0 &&
               lastErrorMessage.length > 0 &&
               (!providerIsHealthy || lastErrorAt >= (h.last_ok_at_unix_ms ?? 0))

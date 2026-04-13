@@ -15,6 +15,7 @@ pub struct ProviderHealthSnapshot {
     pub last_error: String,
     pub last_ok_at_unix_ms: u64,
     pub last_fail_at_unix_ms: u64,
+    pub last_error_event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -355,6 +356,7 @@ impl RouterState {
             last_error: v.last_error.clone(),
             last_ok_at_unix_ms: v.last_ok_at_unix_ms,
             last_fail_at_unix_ms: v.last_fail_at_unix_ms,
+            last_error_event_id: None,
         }
     }
 
@@ -688,6 +690,7 @@ mod tests {
         assert_eq!(health.cooldown_until_unix_ms, 0);
         assert_eq!(health.last_error, "boom");
         assert_eq!(health.last_ok_at_unix_ms, 2_000);
+        assert_eq!(health.last_error_event_id, None);
     }
 
     #[test]
@@ -704,6 +707,35 @@ mod tests {
 
         assert_eq!(health.last_error.len(), 900);
         assert_eq!(health.last_error, long_error);
+        assert_eq!(health.last_error_event_id, None);
+    }
+
+    #[test]
+    fn snapshot_keeps_last_error_event_id_empty() {
+        let mut cfg = AppConfig::default_config();
+        cfg.routing.failure_threshold = 1;
+        let provider = "official";
+        let unix_ms = 1_717_171_709_000;
+        let (_tmp, store) = build_test_store();
+        let router = RouterState::new_with_store(&cfg, 0, Some(store.clone()));
+
+        assert!(
+            store.insert_event_row(crate::orchestrator::store::StoredEventRow {
+                id: "evt-official-shared-1".to_string(),
+                provider: provider.to_string(),
+                level: "error".to_string(),
+                code: "gateway.request_failed".to_string(),
+                message: "boom".to_string(),
+                fields: serde_json::Value::Null,
+                unix_ms,
+            })
+        );
+
+        router.mark_failure(provider, &cfg, "boom", unix_ms);
+        let snapshot = router.snapshot(unix_ms);
+        let health = snapshot.get(provider).expect("provider health snapshot");
+
+        assert_eq!(health.last_error_event_id, None);
     }
 
     #[test]
