@@ -16,6 +16,11 @@ pub(crate) fn set_test_user_data_dir_override(value: Option<&Path>) -> Option<Pa
     TEST_USER_DATA_DIR_OVERRIDE.with(|cell| {
         let previous = cell.borrow().clone();
         *cell.borrow_mut() = value.map(|path| path.to_path_buf());
+        if let Some(path) = value {
+            std::env::set_var("API_ROUTER_USER_DATA_DIR", path);
+        } else {
+            std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        }
         previous
     })
 }
@@ -60,6 +65,8 @@ pub(crate) fn ensure_parent_dir(path: &Path) -> std::io::Result<()> {
     }
     Ok(())
 }
+
+pub(crate) mod codex_web_transport;
 
 pub(crate) fn write_pretty_json(path: &Path, payload: &Value) -> std::io::Result<()> {
     ensure_parent_dir(path)?;

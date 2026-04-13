@@ -764,6 +764,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::record_app_startup_stage,
+            commands::record_web_transport_event,
             commands::record_ui_watchdog_heartbeat,
             commands::record_ui_trace,
             commands::record_ui_diagnostics_batch,

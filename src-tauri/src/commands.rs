@@ -47,6 +47,7 @@ fn tracked_spend_days_with_remote_fallback(
     store.list_shared_tracked_spend_days(provider)
 }
 
+include!("commands/codex_web_transport.rs");
 include!("commands/status_snapshot.rs");
 include!("commands/usage_metrics.rs");
 include!("commands/provider_timeline.rs");
