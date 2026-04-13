@@ -6,6 +6,30 @@ fn status_client_sessions_trace_cache() -> &'static Mutex<Option<String>> {
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
+#[derive(Clone)]
+struct VisibleLastErrorEventsCache {
+    config_path: String,
+    captured_at_unix_ms: u64,
+    events: Vec<serde_json::Value>,
+}
+
+const DASHBOARD_VISIBLE_LAST_ERROR_CACHE_TTL_MS: u64 = 5_000;
+
+fn visible_last_error_events_cache() -> &'static Mutex<Option<VisibleLastErrorEventsCache>> {
+    static CACHE: OnceLock<Mutex<Option<VisibleLastErrorEventsCache>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+fn clear_visible_last_error_events_cache() {
+    let cache = visible_last_error_events_cache();
+    let mut guard = match cache.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    *guard = None;
+}
+
 fn summarize_client_sessions_for_trace(sessions: &[serde_json::Value]) -> serde_json::Value {
     serde_json::json!({
         "count": sessions.len(),
@@ -91,6 +115,47 @@ fn elapsed_ms_since(started_at: std::time::Instant) -> u64 {
     started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
+fn load_visible_last_error_events_with_cache(
+    store: &crate::orchestrator::store::Store,
+    config_path: &std::path::Path,
+    dashboard_detail: bool,
+) -> Vec<serde_json::Value> {
+    let config_key = config_path.to_string_lossy().into_owned();
+    let now = unix_ms();
+    let cache = visible_last_error_events_cache();
+    if dashboard_detail {
+        let guard = match cache.lock() {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        };
+        if let Some(entry) = guard.as_ref() {
+            let is_same_config = entry.config_path == config_key;
+            let is_fresh = now.saturating_sub(entry.captured_at_unix_ms) <= DASHBOARD_VISIBLE_LAST_ERROR_CACHE_TTL_MS;
+            if is_same_config && is_fresh {
+                return entry.events.clone();
+            }
+        }
+    }
+
+    let events = load_event_log_entries_for_display(
+        store,
+        config_path,
+        None,
+        None,
+        EVENT_LOG_DASHBOARD_VISIBLE_LIMIT,
+    );
+    let mut guard = match cache.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    *guard = Some(VisibleLastErrorEventsCache {
+        config_path: config_key,
+        captured_at_unix_ms: now,
+        events: events.clone(),
+    });
+    events
+}
+
 fn write_dashboard_status_slow_diag(
     diagnostics_dir: &std::path::Path,
     detail_level: &str,
@@ -138,12 +203,10 @@ pub(crate) fn get_status(
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
     let phase_started_at = std::time::Instant::now();
-    let visible_event_log_entries = load_event_log_entries_for_display(
+    let visible_event_log_entries = load_visible_last_error_events_with_cache(
         &state.gateway.store,
         state.config_path.as_path(),
-        None,
-        None,
-        EVENT_LOG_DASHBOARD_VISIBLE_LIMIT,
+        dashboard_detail,
     );
     attach_visible_last_error_event_ids(&mut providers, &visible_event_log_entries);
     phase_timings_ms.insert(
@@ -1548,9 +1611,11 @@ mod tests {
     use crate::commands::{
         attach_visible_last_error_event_ids,
         backfill_main_confirmation_from_verified_agent,
+        clear_visible_last_error_events_cache,
         clear_removed_main_session_routes_and_assignments,
         append_backup_event_daily_stats, day_start_unix_ms_from_day_key, event_query_key,
         config_revision,
+        load_visible_last_error_events_with_cache,
         load_event_log_entries_for_display,
         main_session_ids_excluding_agents_and_reviews,
         merge_thread_index_session_hints,
@@ -1709,6 +1774,7 @@ mod tests {
 
     #[test]
     fn visible_last_error_ids_attach_when_error_is_on_first_dashboard_page() {
+        clear_visible_last_error_events_cache();
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = open_store_dir(tmp.path().join("data")).expect("store");
         let config_path = tmp.path().join("config.toml");
@@ -1767,6 +1833,52 @@ mod tests {
                 .get(provider)
                 .and_then(|snapshot| snapshot.last_error_event_id.as_deref()),
             Some("evt-visible-codex-error")
+        );
+    }
+
+    #[test]
+    fn dashboard_visible_last_error_events_use_short_lived_cache() {
+        clear_visible_last_error_events_cache();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let config_path = tmp.path().join("config.toml");
+        let base_ts = 1_775_100_000_000_u64;
+        assert!(store.insert_event_row(StoredEventRow {
+            id: "evt-initial".to_string(),
+            provider: "demo".to_string(),
+            level: "error".to_string(),
+            code: "gateway.request_failed".to_string(),
+            message: "initial".to_string(),
+            fields: Value::Null,
+            unix_ms: base_ts,
+        }));
+
+        let initial = load_visible_last_error_events_with_cache(&store, &config_path, false);
+        assert_eq!(
+            initial.first().and_then(|event| event.get("id")).and_then(Value::as_str),
+            Some("evt-initial")
+        );
+
+        assert!(store.insert_event_row(StoredEventRow {
+            id: "evt-newer".to_string(),
+            provider: "demo".to_string(),
+            level: "error".to_string(),
+            code: "gateway.request_failed".to_string(),
+            message: "newer".to_string(),
+            fields: Value::Null,
+            unix_ms: base_ts + 1_000,
+        }));
+
+        let cached = load_visible_last_error_events_with_cache(&store, &config_path, true);
+        assert_eq!(
+            cached.first().and_then(|event| event.get("id")).and_then(Value::as_str),
+            Some("evt-initial")
+        );
+
+        let refreshed = load_visible_last_error_events_with_cache(&store, &config_path, false);
+        assert_eq!(
+            refreshed.first().and_then(|event| event.get("id")).and_then(Value::as_str),
+            Some("evt-newer")
         );
     }
 

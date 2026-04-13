@@ -121,6 +121,10 @@ function eventLogEntryIdentity(entry: EventLogEntry): string {
   return `${entry.unix_ms}|${entry.provider}|${entry.level}|${entry.code}|${entry.message}|${stableFieldsIdentity(entry.fields ?? null)}`
 }
 
+export function shouldFallbackToFocusWindow(row: EventLogEntry | null): boolean {
+  return !row || !Number.isFinite(Number(row.unix_ms))
+}
+
 export function resolveFocusedEvent(
   sourceEvents: EventLogEntry[],
   focusRequest: EventLogFocusRequest,
@@ -326,7 +330,10 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
     try {
       const row = await invoke<EventLogEntry | null>('get_event_log_entry_by_id', { eventId })
       if (focusHydrateSeqRef.current !== reqId) return
-      if (!row || !Number.isFinite(Number(row.unix_ms))) return
+      if (!row || shouldFallbackToFocusWindow(row)) {
+        void fetchFocusWindowEntries(focus)
+        return
+      }
       mergeSourceEvents([row])
       mergeKnownYears([row])
     } catch {
