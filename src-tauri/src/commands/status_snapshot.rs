@@ -143,7 +143,7 @@ pub(crate) fn get_status(
         state.config_path.as_path(),
         None,
         None,
-        EVENT_LOG_QUERY_MAX_LIMIT,
+        EVENT_LOG_DASHBOARD_VISIBLE_LIMIT,
     );
     attach_visible_last_error_event_ids(&mut providers, &visible_event_log_entries);
     phase_timings_ms.insert(
@@ -1182,6 +1182,7 @@ fn event_shape_is_valid(e: &Value) -> bool {
 
 const EVENT_LOG_QUERY_DEFAULT_LIMIT: usize = 2000;
 const EVENT_LOG_QUERY_MAX_LIMIT: usize = 5000;
+const EVENT_LOG_DASHBOARD_VISIBLE_LIMIT: usize = 200;
 
 fn normalize_event_query_limit(limit: Option<usize>) -> usize {
     limit
@@ -1556,7 +1557,7 @@ mod tests {
         rebalance_balanced_assignments_on_main_session_change,
         retain_live_app_server_sessions,
         displayed_session_route, merge_discovered_model_provider, next_last_discovered_unix_ms,
-        normalize_event_query_limit, EVENT_LOG_QUERY_MAX_LIMIT,
+        normalize_event_query_limit, EVENT_LOG_DASHBOARD_VISIBLE_LIMIT,
         should_keep_runtime_session,
     };
     use crate::orchestrator::config::{AppConfig, ListenConfig, ProviderConfig, RoutingConfig};
@@ -1598,7 +1599,7 @@ mod tests {
     }
 
     #[test]
-    fn visible_last_error_ids_attach_only_from_default_event_log_window() {
+    fn visible_last_error_ids_ignore_errors_after_first_dashboard_page() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = open_store_dir(tmp.path().join("data")).expect("store");
         let config_path = tmp.path().join("config.toml");
@@ -1613,7 +1614,7 @@ mod tests {
             fields: Value::Null,
             unix_ms: old_error_ts,
         }));
-        for idx in 0..EVENT_LOG_QUERY_MAX_LIMIT {
+        for idx in 0..EVENT_LOG_DASHBOARD_VISIBLE_LIMIT {
             assert!(store.insert_event_row(StoredEventRow {
                 id: format!("evt-newer-{idx}"),
                 provider: "gateway".to_string(),
@@ -1630,9 +1631,9 @@ mod tests {
             &config_path,
             None,
             None,
-            EVENT_LOG_QUERY_MAX_LIMIT,
+            EVENT_LOG_DASHBOARD_VISIBLE_LIMIT,
         );
-        assert_eq!(visible.len(), EVENT_LOG_QUERY_MAX_LIMIT);
+        assert_eq!(visible.len(), EVENT_LOG_DASHBOARD_VISIBLE_LIMIT);
         assert!(!visible
             .iter()
             .any(|event| event.get("id").and_then(Value::as_str) == Some("evt-old-codex-error")));
@@ -1703,6 +1704,69 @@ mod tests {
                 .get(provider)
                 .and_then(|snapshot| snapshot.last_error_event_id.as_deref()),
             Some("evt-visible-error")
+        );
+    }
+
+    #[test]
+    fn visible_last_error_ids_attach_when_error_is_on_first_dashboard_page() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let config_path = tmp.path().join("config.toml");
+        let provider = "codex-for.me";
+        let target_ts = 1_775_100_000_000_u64;
+        assert!(store.insert_event_row(StoredEventRow {
+            id: "evt-visible-codex-error".to_string(),
+            provider: provider.to_string(),
+            level: "error".to_string(),
+            code: "gateway.request_failed".to_string(),
+            message: "request error: boom".to_string(),
+            fields: Value::Null,
+            unix_ms: target_ts,
+        }));
+        for idx in 0..(EVENT_LOG_DASHBOARD_VISIBLE_LIMIT - 1) {
+            assert!(store.insert_event_row(StoredEventRow {
+                id: format!("evt-newer-{idx}"),
+                provider: "gateway".to_string(),
+                level: "info".to_string(),
+                code: "heartbeat".to_string(),
+                message: format!("newer event {idx}"),
+                fields: Value::Null,
+                unix_ms: target_ts + 1_000 + idx as u64,
+            }));
+        }
+
+        let visible = load_event_log_entries_for_display(
+            &store,
+            &config_path,
+            None,
+            None,
+            EVENT_LOG_DASHBOARD_VISIBLE_LIMIT,
+        );
+        assert_eq!(visible.len(), EVENT_LOG_DASHBOARD_VISIBLE_LIMIT);
+        assert!(visible
+            .iter()
+            .any(|event| event.get("id").and_then(Value::as_str) == Some("evt-visible-codex-error")));
+
+        let mut providers = HashMap::from([(
+            provider.to_string(),
+            ProviderHealthSnapshot {
+                status: "unhealthy".to_string(),
+                consecutive_failures: 1,
+                cooldown_until_unix_ms: 0,
+                last_error: "request error: boom".to_string(),
+                last_ok_at_unix_ms: 0,
+                last_fail_at_unix_ms: target_ts,
+                last_error_event_id: None,
+            },
+        )]);
+
+        attach_visible_last_error_event_ids(&mut providers, &visible);
+
+        assert_eq!(
+            providers
+                .get(provider)
+                .and_then(|snapshot| snapshot.last_error_event_id.as_deref()),
+            Some("evt-visible-codex-error")
         );
     }
 

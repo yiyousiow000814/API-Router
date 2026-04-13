@@ -121,20 +121,6 @@ function eventLogEntryIdentity(entry: EventLogEntry): string {
   return `${entry.unix_ms}|${entry.provider}|${entry.level}|${entry.code}|${entry.message}|${stableFieldsIdentity(entry.fields ?? null)}`
 }
 
-export function expandVisibleCountForFocusedEvent(
-  currentVisibleCount: number,
-  filteredEvents: EventLogEntry[],
-  focusedEvent: EventLogEntry | null,
-): number {
-  if (!focusedEvent) return currentVisibleCount
-  const focusedKey = eventLogEntryIdentity(focusedEvent)
-  const focusedIndex = filteredEvents.findIndex((event) => eventLogEntryIdentity(event) === focusedKey)
-  if (focusedIndex < 0) return currentVisibleCount
-  const requiredVisibleCount = focusedIndex + 1
-  if (requiredVisibleCount <= currentVisibleCount) return currentVisibleCount
-  return Math.ceil(requiredVisibleCount / EVENT_LOG_TABLE_PAGE_SIZE) * EVENT_LOG_TABLE_PAGE_SIZE
-}
-
 export function resolveFocusedEvent(
   sourceEvents: EventLogEntry[],
   focusRequest: EventLogFocusRequest,
@@ -656,11 +642,6 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
     handledFocusNonceRef.current = focusRequest.nonce
     onFocusRequestHandled(focusRequest.nonce)
   }, [fetchFocusEventById, fetchFocusWindowEntries, focusRequest, hasTauriInvoke, onFocusRequestHandled, sourceEvents])
-  useEffect(() => {
-    setTableVisibleCount((currentVisibleCount) =>
-      expandVisibleCountForFocusedEvent(currentVisibleCount, filteredEvents, focusedEvent),
-    )
-  }, [filteredEvents, focusedEvent])
 
   return (
     <div className="aoEventLogLayout">
