@@ -108,7 +108,7 @@ const LAN_VERSION_RULES: &[LanVersionRule] = &[
     },
     LanVersionRule {
         name: SYNC_DOMAIN_SHARED_HEALTH,
-        version: 1,
+        version: 2,
         kind: LanVersionKind::SyncContract,
         bump_rule: "Bump when shared health payloads or selection semantics change.",
     },
