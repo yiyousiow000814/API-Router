@@ -33,6 +33,7 @@ import {
   parsePositiveAmount,
 } from './utils/currency'
 import { AppMainContent, preloadAppMainContentModules } from './components/AppMainContent'
+import { MonitoringPanel } from './components/MonitoringPanel'
 import { AppTopNav } from './components/AppTopNav'
 import { ProviderCapsMenuPortal } from './components/ProviderCapsMenuPortal'
 import { ProviderWsTooltipPortal } from './components/ProviderWsTooltipPortal'
@@ -100,6 +101,7 @@ type TopPage =
   | 'provider_switchboard'
   | 'event_log'
   | 'web_codex'
+  | 'monitor'
 const RAW_DRAFT_WINDOWS_KEY = '__draft_windows__'
 const RAW_DRAFT_WSL_KEY = '__draft_wsl2__'
 const RAW_DRAFT_STORAGE_KEY = 'ao.rawConfigDraft.shared.v1'
@@ -1834,6 +1836,9 @@ export default function App() {
               switchboardProps={switchboardProps}
             />
           </div>
+          {activePage === 'monitor' && (
+            <MonitoringPanel status={status!} gatewayTokenPreview={gatewayTokenPreview} />
+          )}
         </div>
       </div>
       {shouldRenderAppModals ? (

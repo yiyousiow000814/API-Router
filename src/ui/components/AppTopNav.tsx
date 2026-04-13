@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { MoreDropdown } from './MoreDropdown'
 
 type TopPage =
   | 'dashboard'
@@ -7,6 +8,7 @@ type TopPage =
   | 'provider_switchboard'
   | 'event_log'
   | 'web_codex'
+  | 'monitor'
 
 type AppTopNavProps = {
   activePage: TopPage
@@ -53,6 +55,7 @@ export const AppTopNav = memo(function AppTopNav({
       provider_switchboard: switchboardBtnRef.current,
       event_log: eventsBtnRef.current,
       web_codex: webCodexBtnRef.current,
+      monitor: null,
     }
     for (const [page, btn] of Object.entries(refs)) {
       if (!btn) continue
@@ -229,9 +232,11 @@ export const AppTopNav = memo(function AppTopNav({
           <span>Events</span>
         </button>
       </div>
-      <button className="aoTinyBtn" aria-label="Getting Started" onClick={onOpenGettingStarted}>
-        Getting Started
-      </button>
+      <MoreDropdown
+        onSelectMonitor={() => activateAndSwitch('monitor')}
+        onSelectWebCodex={() => activateAndSwitch('web_codex')}
+        onSelectGettingStarted={onOpenGettingStarted}
+      />
     </div>
   )
 })

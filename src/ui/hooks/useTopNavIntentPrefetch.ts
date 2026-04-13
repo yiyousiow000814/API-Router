@@ -24,6 +24,7 @@ type TopPage =
   | 'provider_switchboard'
   | 'event_log'
   | 'web_codex'
+  | 'monitor'
 
 type Params = {
   activePage: TopPage

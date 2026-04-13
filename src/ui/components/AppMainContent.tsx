@@ -49,7 +49,7 @@ export function preloadAppMainContentModules(): Promise<unknown> {
 }
 
 type Props = {
-  activePage: 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log' | 'web_codex'
+  activePage: 'dashboard' | 'usage_statistics' | 'usage_requests' | 'provider_switchboard' | 'event_log' | 'web_codex' | 'monitor'
   status: any
   config: any
   providers: any[]
