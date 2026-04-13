@@ -42,23 +42,25 @@ describe('resolveFocusedEvent', () => {
     expect(focused?.id).toBe('evt-exact')
   })
 
-  it('falls back to provider and message search when event id is unavailable', () => {
-    const older = buildEvent({
-      id: 'evt-older',
-      unix_ms: 1_717_171_700_000,
-      message: 'http 503 from peer (attempt 1)',
-    })
+  it('returns null when the exact event id is unavailable', () => {
     const exact = buildEvent({
       id: 'evt-exact',
       unix_ms: 1_717_171_709_000,
-      message: 'http 503 from peer (attempt 2)',
     })
 
-    const focused = resolveFocusedEvent(
-      [older, exact],
-      buildFocus({ eventId: null, message: 'http 503 from peer (attempt 2)' }),
-    )
+    const focused = resolveFocusedEvent([exact], buildFocus({ eventId: 'evt-not-loaded' }))
 
-    expect(focused?.id).toBe('evt-exact')
+    expect(focused).toBeNull()
+  })
+
+  it('returns null when no event id is provided', () => {
+    const exact = buildEvent({
+      id: 'evt-exact',
+      unix_ms: 1_717_171_709_000,
+    })
+
+    const focused = resolveFocusedEvent([exact], buildFocus({ eventId: null }))
+
+    expect(focused).toBeNull()
   })
 })

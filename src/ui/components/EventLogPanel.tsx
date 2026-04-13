@@ -126,24 +126,8 @@ export function resolveFocusedEvent(
   focusRequest: EventLogFocusRequest,
 ): EventLogEntry | null {
   const eventIdNeedle = focusRequest.eventId?.trim() ?? ''
-  if (eventIdNeedle) {
-    const exact = sourceEvents.find((event) => event.id?.trim() === eventIdNeedle)
-    if (exact) return exact
-  }
-  const providerNeedle = focusRequest.provider.trim().toLowerCase()
-  const messageNeedle = focusRequest.message.trim().toLowerCase()
-  const messageProbe = messageNeedle.slice(0, 120)
-  const providerErrors = sourceEvents.filter((e) => e.provider.toLowerCase() === providerNeedle && e.level === 'error')
-  if (!providerErrors.length) return null
-  const matchingMessage = providerErrors.filter((e) => {
-    const msg = e.message.toLowerCase()
-    if (!messageProbe) return true
-    return msg.includes(messageProbe) || messageProbe.includes(msg.slice(0, Math.min(120, msg.length)))
-  })
-  const candidates = matchingMessage.length ? matchingMessage : providerErrors
-  return [...candidates].sort(
-    (a, b) => Math.abs(a.unix_ms - focusRequest.unixMs) - Math.abs(b.unix_ms - focusRequest.unixMs),
-  )[0] ?? null
+  if (!eventIdNeedle) return null
+  return sourceEvents.find((event) => event.id?.trim() === eventIdNeedle) ?? null
 }
 
 function parseDateInputToDayStart(dateText: string): number | null {
@@ -623,14 +607,6 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
   useEffect(() => {
     if (!focusRequest) return
     if (handledFocusNonceRef.current === focusRequest.nonce) return
-    const exactEventId = focusRequest.eventId?.trim() ?? ''
-    if (exactEventId && !sourceEvents.some((event) => event.id?.trim() === exactEventId)) {
-      if (hasTauriInvoke && focusHydrateNonceRef.current !== focusRequest.nonce) {
-        focusHydrateNonceRef.current = focusRequest.nonce
-        void fetchFocusWindowEntries(focusRequest)
-      }
-      return
-    }
     const target = resolveFocusedEvent(sourceEvents, focusRequest)
     if (!target) {
       if (hasTauriInvoke && focusHydrateNonceRef.current !== focusRequest.nonce) {

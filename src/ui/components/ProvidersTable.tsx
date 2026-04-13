@@ -72,6 +72,14 @@ export function ProvidersTable({
       <tbody>
         {providers.map((p) => {
           const h = status.providers[p]
+          const lastErrorEventId =
+            h.last_error && Number.isFinite(h.last_fail_at_unix_ms) && h.last_fail_at_unix_ms > 0
+              ? findLastErrorEventId(status.recent_events, {
+                  provider: p,
+                  unixMs: h.last_fail_at_unix_ms,
+                  message: h.last_error,
+                })
+              : null
           const isOffline = localNetworkOffline
           const q = simulateQuotaForDisplay(
             p,
@@ -296,24 +304,22 @@ export function ProvidersTable({
                   {showLastError ? (
                     <span className="aoLastErrorCell">
                       <span className="aoLastErrorTime">{fmtWhen(lastErrorAt)}</span>
-                      <button
-                        className="aoLastErrorViewBtn"
-                        onClick={() =>
-                          onOpenLastErrorInEventLog({
-                            provider: p,
-                            unixMs: lastErrorAt,
-                            message: h.last_error,
-                            eventId: findLastErrorEventId(status.recent_events, {
+                      {lastErrorEventId ? (
+                        <button
+                          className="aoLastErrorViewBtn"
+                          onClick={() =>
+                            onOpenLastErrorInEventLog({
                               provider: p,
                               unixMs: lastErrorAt,
                               message: h.last_error,
-                            }),
-                          })
-                        }
-                        title="Open in Event Log"
-                      >
-                        View
-                      </button>
+                              eventId: lastErrorEventId,
+                            })
+                          }
+                          title="Open in Event Log"
+                        >
+                          View
+                        </button>
+                      ) : null}
                     </span>
                   ) : (
                     '-'

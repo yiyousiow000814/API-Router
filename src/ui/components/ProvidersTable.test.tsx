@@ -84,6 +84,32 @@ describe('ProvidersTable', () => {
     expect(html).toContain('aoLastErrorViewBtn')
   })
 
+  it('hides Last Error jump button when preview event id is unavailable', () => {
+    const status = buildStatus()
+    status.recent_events = [
+      {
+        provider: 'packycode',
+        level: 'error',
+        unix_ms: 1234,
+        code: 'gateway.request_failed',
+        message: 'request error: boom',
+        fields: null,
+      },
+    ]
+
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['packycode']}
+        status={status}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
+
+    expect(html).not.toContain('aoLastErrorViewBtn')
+  })
+
   it('shows package expiry when budget response includes subscription end', () => {
     const html = renderToStaticMarkup(
       <ProvidersTable
