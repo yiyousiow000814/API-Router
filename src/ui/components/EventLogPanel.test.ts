@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveFocusedEvent } from './EventLogPanel'
+import { expandVisibleCountForFocusedEvent, resolveFocusedEvent } from './EventLogPanel'
 import type { EventLogEntry, EventLogFocusRequest } from './EventLogPanel'
 
 function buildEvent(partial: Partial<EventLogEntry>): EventLogEntry {
@@ -62,5 +62,47 @@ describe('resolveFocusedEvent', () => {
     const focused = resolveFocusedEvent([exact], buildFocus({ eventId: null }))
 
     expect(focused).toBeNull()
+  })
+})
+
+describe('expandVisibleCountForFocusedEvent', () => {
+  it('keeps the current count when the focused event is already rendered', () => {
+    const rows = Array.from({ length: 250 }, (_, index) =>
+      buildEvent({
+        id: `evt-${index}`,
+        unix_ms: 1_717_171_709_000 - index,
+      }),
+    )
+
+    const nextCount = expandVisibleCountForFocusedEvent(200, rows, rows[50] ?? null)
+
+    expect(nextCount).toBe(200)
+  })
+
+  it('expands to the next page that includes the focused event', () => {
+    const rows = Array.from({ length: 450 }, (_, index) =>
+      buildEvent({
+        id: `evt-${index}`,
+        unix_ms: 1_717_171_709_000 - index,
+      }),
+    )
+
+    const nextCount = expandVisibleCountForFocusedEvent(200, rows, rows[425] ?? null)
+
+    expect(nextCount).toBe(600)
+  })
+
+  it('keeps the current count when the focused event is absent from the filtered rows', () => {
+    const rows = Array.from({ length: 100 }, (_, index) =>
+      buildEvent({
+        id: `evt-${index}`,
+        unix_ms: 1_717_171_709_000 - index,
+      }),
+    )
+    const missing = buildEvent({ id: 'evt-missing', unix_ms: 1_700_000_000_000 })
+
+    const nextCount = expandVisibleCountForFocusedEvent(200, rows, missing)
+
+    expect(nextCount).toBe(200)
   })
 })
