@@ -2,6 +2,13 @@ import { createPortal } from 'react-dom'
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type { TopPage } from './AppTopNav'
 
+export function resolveMoreDropdownMenuPosition(buttonRect: Pick<DOMRect, 'bottom' | 'right'>, viewportWidth: number) {
+  return {
+    top: buttonRect.bottom + 4,
+    right: viewportWidth - buttonRect.right,
+  }
+}
+
 const MoreIcon = () => (
   <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
     <path d="M12 5v14M5 12l7 7 7-7" />
@@ -47,11 +54,17 @@ export const MoreDropdown = memo(function MoreDropdown({
       }
     }
     updateRect()
-    const ro = new ResizeObserver(updateRect)
-    if (buttonRef.current) {
-      ro.observe(buttonRef.current)
+    const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateRect)
+    if (resizeObserver && buttonRef.current) {
+      resizeObserver.observe(buttonRef.current)
     }
-    return () => ro.disconnect()
+    window.addEventListener('resize', updateRect)
+    window.addEventListener('scroll', updateRect, true)
+    return () => {
+      resizeObserver?.disconnect()
+      window.removeEventListener('resize', updateRect)
+      window.removeEventListener('scroll', updateRect, true)
+    }
   }, [open])
 
   const handleMonitorSelect = useCallback(() => {
@@ -64,9 +77,14 @@ export const MoreDropdown = memo(function MoreDropdown({
     onSelectWebCodex()
   }, [close, onSelectWebCodex])
 
+  const menuPosition = buttonRect
+    ? resolveMoreDropdownMenuPosition(buttonRect, document.documentElement.clientWidth)
+    : null
+
   return (
     <div className="aoMoreDropdown" style={{ position: 'relative', display: 'inline-block' }}>
       <button
+        type="button"
         ref={buttonRef}
         className={`aoTopNavBtn${activePage === 'monitor' || activePage === 'web_codex' ? ' is-active' : ''}`}
         onClick={toggle}
@@ -76,18 +94,19 @@ export const MoreDropdown = memo(function MoreDropdown({
         <MoreIcon />
         <span>More</span>
       </button>
-      {open && buttonRect && createPortal(
+      {open && menuPosition && createPortal(
         <>
           <div className="aoMoreDropdownOverlay" onClick={close} />
           <div
             className="aoMoreDropdownMenu"
             role="menu"
             style={{
-              top: buttonRect.bottom + 4,
-              right: document.documentElement.clientWidth - buttonRect.right,
+              top: menuPosition.top,
+              right: menuPosition.right,
             }}
           >
             <button
+              type="button"
               className={`aoMoreDropdownItem${activePage === 'monitor' ? ' is-active' : ''}`}
               role="menuitem"
               onClick={handleMonitorSelect}
@@ -96,6 +115,7 @@ export const MoreDropdown = memo(function MoreDropdown({
               <span>Monitor</span>
             </button>
             <button
+              type="button"
               className={`aoMoreDropdownItem${activePage === 'web_codex' ? ' is-active' : ''}`}
               role="menuitem"
               onClick={handleWebCodexSelect}

@@ -1797,7 +1797,7 @@ export default function App() {
             ref={mainAreaRef}
           >
             {activePage === 'monitor' ? (
-              <MonitoringPanel status={status!} gatewayTokenPreview={gatewayTokenPreview} />
+              <MonitoringPanel status={status} gatewayTokenPreview={gatewayTokenPreview} />
             ) : (
               <AppMainContent
                 activePage={activePage}

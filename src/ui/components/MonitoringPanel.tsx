@@ -216,7 +216,7 @@ interface PeerDiagEntry {
 }
 
 interface PeerDiagsSectionProps {
-  status: Status
+  status: Status | null
 }
 
 function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
@@ -227,7 +227,7 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
   const fetchPeerDiags = useCallback(async () => {
     setRefreshing(true)
     try {
-      const knownPeers = status.lan_sync?.peers ?? []
+      const knownPeers = status?.lan_sync?.peers ?? []
       if (knownPeers.length === 0) {
         setPeers([])
         return
@@ -276,13 +276,13 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
     } finally {
       setRefreshing(false)
     }
-  }, [status.lan_sync?.peers])
+  }, [status?.lan_sync?.peers])
 
   useEffect(() => {
     void fetchPeerDiags()
   }, [fetchPeerDiags])
 
-  const knownPeers = status.lan_sync?.peers ?? []
+  const knownPeers = status?.lan_sync?.peers ?? []
 
   return (
     <div className="aoCard" style={{ padding: '12px 14px' }}>
@@ -309,7 +309,9 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
           </button>
         </div>
       </div>
-      {knownPeers.length === 0 ? (
+      {!status ? (
+        <p className="aoHint">Waiting for live gateway status.</p>
+      ) : knownPeers.length === 0 ? (
         <p className="aoHint">No LAN peers discovered yet.</p>
       ) : (
         <div style={{ display: 'grid', gap: 6 }}>
@@ -377,7 +379,7 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
 // ---------------------------------------------------------------------------
 
 interface MonitoringPanelProps {
-  status: Status
+  status: Status | null
   gatewayTokenPreview: string
 }
 

@@ -2,10 +2,15 @@
 @import './AppShared.usage.css';
 @import './AppShared.tables.css';
 
+:root {
+  --z-more-dropdown-overlay: 10130;
+  --z-more-dropdown-menu: 10131;
+}
+
 .aoMoreDropdownOverlay {
   position: fixed;
   inset: 0;
-  z-index: 10130;
+  z-index: var(--z-more-dropdown-overlay);
 }
 .aoMoreDropdownMenu {
   position: fixed;
@@ -13,7 +18,7 @@
   border: 1px solid var(--border, #e0e0e0);
   border-radius: 6px;
   box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-  z-index: 10131;
+  z-index: var(--z-more-dropdown-menu);
   min-width: 160px;
   padding: 4px 0;
 }
