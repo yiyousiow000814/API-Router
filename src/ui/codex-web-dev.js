@@ -65,6 +65,7 @@ import { createDebugToolsModule } from "./modules/codex-web/debugTools.js";
 import { createThreadLiveModule } from "./modules/codex-web/threadLive.js";
 import { createBootstrapModule } from "./modules/codex-web/bootstrapApp.js";
 import { createCodexWebComposition } from "./modules/codex-web/composition.js";
+import { invoke } from "@tauri-apps/api/core";
 import { installMobileViewportSync } from "./modules/codex-web/mobileViewport.js";
 import {
   ACTIVE_MAIN_TAB_KEY,
@@ -483,6 +484,11 @@ const composition = createCodexWebComposition({
   createDebugToolsModule,
   createThreadLiveModule,
   createBootstrapModule,
+  recordWebTransportEvent: async (eventType, detail) => {
+    try {
+      await invoke("record_web_transport_event", { eventType, detail });
+    } catch {}
+  },
   installMobileViewportSync: () => installMobileViewportSync({
     windowRef: window,
     documentRef: document,

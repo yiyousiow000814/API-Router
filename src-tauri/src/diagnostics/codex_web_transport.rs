@@ -211,7 +211,10 @@ mod tests {
             record_web_transport_event("ws_error_observed", Some("ECONNRESET".to_string()));
             let snap = current_web_transport_snapshot();
             assert_eq!(snap.ws_error_observed.count, 1);
-            assert_eq!(snap.ws_error_observed.latest_detail.as_deref(), Some("ECONNRESET"));
+            assert_eq!(
+                snap.ws_error_observed.latest_detail.as_deref(),
+                Some("ECONNRESET")
+            );
         });
     }
 
@@ -228,7 +231,10 @@ mod tests {
     #[test]
     fn record_http_fallback_stores_route() {
         with_test_dir(|| {
-            record_web_transport_event("http_fallback_engaged", Some("/v1/threads/123".to_string()));
+            record_web_transport_event(
+                "http_fallback_engaged",
+                Some("/v1/threads/123".to_string()),
+            );
             let snap = current_web_transport_snapshot();
             assert_eq!(snap.http_fallback_engaged.count, 1);
             assert_eq!(
@@ -273,11 +279,17 @@ mod tests {
             let loaded = current_web_transport_snapshot();
             assert_eq!(loaded.ws_open_observed.count, 5);
             assert_eq!(loaded.ws_error_observed.count, 3);
-            assert_eq!(loaded.ws_error_observed.latest_detail.as_deref(), Some("timeout"));
+            assert_eq!(
+                loaded.ws_error_observed.latest_detail.as_deref(),
+                Some("timeout")
+            );
             assert_eq!(loaded.ws_close_observed.count, 2);
             assert_eq!(loaded.ws_close_observed.latest_close_code, Some(1000));
             assert_eq!(loaded.http_fallback_engaged.count, 1);
-            assert_eq!(loaded.http_fallback_engaged.latest_route.as_deref(), Some("/v1/models"));
+            assert_eq!(
+                loaded.http_fallback_engaged.latest_route.as_deref(),
+                Some("/v1/models")
+            );
         });
     }
 

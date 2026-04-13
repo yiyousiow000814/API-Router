@@ -385,39 +385,25 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
   const [watchdog, setWatchdog] = useState<WatchdogSummary | null>(null)
   const [wtSnapshot, setWtSnapshot] = useState<WebTransportDomainSnapshot | null>(null)
 
-  // ---- Watchdog: poll every 10s ------------------------------------------------
+  // Poll local diagnostics (watchdog + webtransport) every 5s
   useEffect(() => {
     let cancelled = false
     let timer: ReturnType<typeof setInterval> | null = null
 
     const load = async () => {
       try {
-        const result = await invoke<WatchdogSummary>('get_watchdog_summary')
-        if (!cancelled) setWatchdog(result)
+        const result = await invoke<Record<string, unknown>>('get_local_diagnostics', {
+          domains: ['watchdog', 'webtransport'],
+        })
+        if (cancelled) return
+        if (result.watchdog) {
+          setWatchdog(result.watchdog as WatchdogSummary)
+        }
+        if (result.webtransport) {
+          setWtSnapshot(result.webtransport as WebTransportDomainSnapshot)
+        }
       } catch {
         // silently ignore — panel stays at last known state or null
-      }
-    }
-
-    void load()
-    timer = setInterval(() => { void load() }, 10_000)
-    return () => {
-      cancelled = true
-      if (timer) clearInterval(timer)
-    }
-  }, [])
-
-  // ---- WebTransport: poll every 5s --------------------------------------------
-  useEffect(() => {
-    let cancelled = false
-    let timer: ReturnType<typeof setInterval> | null = null
-
-    const load = async () => {
-      try {
-        const result = await invoke<WebTransportDomainSnapshot>('get_web_transport_snapshot')
-        if (!cancelled) setWtSnapshot(result)
-      } catch {
-        // silently ignore
       }
     }
 

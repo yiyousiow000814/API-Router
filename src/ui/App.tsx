@@ -1796,49 +1796,50 @@ export default function App() {
             }`}
             ref={mainAreaRef}
           >
-            <AppMainContent
-              activePage={activePage}
-              status={status}
-              config={config}
-              providers={providers}
-              gatewayTokenPreview={gatewayTokenPreview}
-              onCopyToken={onCopyToken}
-              onShowGatewayRotate={onShowGatewayRotate}
-              onCodexLoginLogout={onCodexLoginLogout}
-              onCodexRefresh={onCodexRefresh}
-              codexRefreshing={codexRefreshing}
-              onCodexSwapAuthConfig={onCodexSwapAuthConfig}
-              onOpenCodexSwapOptions={onOpenCodexSwapOptions}
-              codexSwapTarget={codexSwapTarget}
-              codexSwapUseWindows={codexSwapUseWindows}
-              codexSwapUseWsl={codexSwapUseWsl}
-              onChangeCodexSwapTarget={setCodexSwapTarget}
-              codexSwapBadgeText={codexSwapBadge.badgeText}
-              codexSwapBadgeTitle={codexSwapBadge.badgeTitle}
-              routeMode={routeMode}
-              onRouteModeChange={setRouteMode}
-              override={override}
-              onOverrideChange={onOverrideChange}
-              onPreferredChange={(next) => void setPreferred(next)}
-              onOpenConfigModal={() => setConfigModalOpen(true)}
-              refreshingProviders={refreshingProviders}
-              onRefreshQuota={(name) => void refreshQuota(name)}
-              clientSessions={clientSessions ?? []}
-              updatingSessionPref={updatingSessionPref}
-              onSetSessionPreferred={(sessionId, provider) => void setSessionPreferred(sessionId, provider)}
-              onOpenLastErrorInEventLog={handleOpenLastErrorInEventLog}
-              eventLogSeedEvents={eventLogSeedEvents}
-              eventLogSeedDailyStats={[]}
-              eventLogFocusRequest={eventLogFocusRequest}
-              onEventLogFocusRequestHandled={handleEventLogFocusRequestHandled}
-              usageOverview={usageOverview}
-              usageProps={usageProps}
-              switchboardProps={switchboardProps}
-            />
+            {activePage === 'monitor' ? (
+              <MonitoringPanel status={status!} gatewayTokenPreview={gatewayTokenPreview} />
+            ) : (
+              <AppMainContent
+                activePage={activePage}
+                status={status}
+                config={config}
+                providers={providers}
+                gatewayTokenPreview={gatewayTokenPreview}
+                onCopyToken={onCopyToken}
+                onShowGatewayRotate={onShowGatewayRotate}
+                onCodexLoginLogout={onCodexLoginLogout}
+                onCodexRefresh={onCodexRefresh}
+                codexRefreshing={codexRefreshing}
+                onCodexSwapAuthConfig={onCodexSwapAuthConfig}
+                onOpenCodexSwapOptions={onOpenCodexSwapOptions}
+                codexSwapTarget={codexSwapTarget}
+                codexSwapUseWindows={codexSwapUseWindows}
+                codexSwapUseWsl={codexSwapUseWsl}
+                onChangeCodexSwapTarget={setCodexSwapTarget}
+                codexSwapBadgeText={codexSwapBadge.badgeText}
+                codexSwapBadgeTitle={codexSwapBadge.badgeTitle}
+                routeMode={routeMode}
+                onRouteModeChange={setRouteMode}
+                override={override}
+                onOverrideChange={onOverrideChange}
+                onPreferredChange={(next) => void setPreferred(next)}
+                onOpenConfigModal={() => setConfigModalOpen(true)}
+                refreshingProviders={refreshingProviders}
+                onRefreshQuota={(name) => void refreshQuota(name)}
+                clientSessions={clientSessions ?? []}
+                updatingSessionPref={updatingSessionPref}
+                onSetSessionPreferred={(sessionId, provider) => void setSessionPreferred(sessionId, provider)}
+                onOpenLastErrorInEventLog={handleOpenLastErrorInEventLog}
+                eventLogSeedEvents={eventLogSeedEvents}
+                eventLogSeedDailyStats={[]}
+                eventLogFocusRequest={eventLogFocusRequest}
+                onEventLogFocusRequestHandled={handleEventLogFocusRequestHandled}
+                usageOverview={usageOverview}
+                usageProps={usageProps}
+                switchboardProps={switchboardProps}
+              />
+            )}
           </div>
-          {activePage === 'monitor' && (
-            <MonitoringPanel status={status!} gatewayTokenPreview={gatewayTokenPreview} />
-          )}
         </div>
       </div>
       {shouldRenderAppModals ? (

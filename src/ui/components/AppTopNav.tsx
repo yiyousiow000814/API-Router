@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { MoreDropdown } from './MoreDropdown'
 
-type TopPage =
+export type TopPage =
   | 'dashboard'
   | 'usage_statistics'
   | 'usage_requests'
@@ -43,7 +43,6 @@ export const AppTopNav = memo(function AppTopNav({
   const dashboardBtnRef = useRef<HTMLButtonElement | null>(null)
   const switchboardBtnRef = useRef<HTMLButtonElement | null>(null)
   const eventsBtnRef = useRef<HTMLButtonElement | null>(null)
-  const webCodexBtnRef = useRef<HTMLButtonElement | null>(null)
   const pointerActivatedPageRef = useRef<TopPage | null>(null)
   const [visualActivePage, setVisualActivePage] = useState<TopPage>(activePage)
 
@@ -54,7 +53,7 @@ export const AppTopNav = memo(function AppTopNav({
       usage_statistics: usageBtnRef.current,
       provider_switchboard: switchboardBtnRef.current,
       event_log: eventsBtnRef.current,
-      web_codex: webCodexBtnRef.current,
+      web_codex: null,
       monitor: null,
     }
     for (const [page, btn] of Object.entries(refs)) {
@@ -195,24 +194,6 @@ export const AppTopNav = memo(function AppTopNav({
           <span>Provider Switchboard</span>
         </button>
         <button
-          ref={webCodexBtnRef}
-          className={`aoTopNavBtn${visualActivePage === 'web_codex' ? ' is-active' : ''}`}
-          role="tab"
-          aria-selected={visualActivePage === 'web_codex'}
-          onPointerDown={(event) => {
-            if (event.button !== 0) return
-            activateFromPointer('web_codex')
-          }}
-          onClick={() => activateFromClick('web_codex')}
-        >
-          <svg className="aoTopNavIcon" viewBox="0 0 24 24" aria-hidden="true">
-            <circle cx="12" cy="12" r="9" />
-            <path d="M9.1 9.4 11.7 12l-2.6 2.6" />
-            <path d="M13.2 14.6h3.1" />
-          </svg>
-          <span>Web Codex</span>
-        </button>
-        <button
           ref={eventsBtnRef}
           className={`aoTopNavBtn${visualActivePage === 'event_log' ? ' is-active' : ''}`}
           role="tab"
@@ -233,10 +214,13 @@ export const AppTopNav = memo(function AppTopNav({
         </button>
       </div>
       <MoreDropdown
+        activePage={activePage}
         onSelectMonitor={() => activateAndSwitch('monitor')}
         onSelectWebCodex={() => activateAndSwitch('web_codex')}
-        onSelectGettingStarted={onOpenGettingStarted}
       />
+      <button className="aoTinyBtn" style={{ height: '30px' }} aria-label="Getting Started" onClick={onOpenGettingStarted}>
+        Getting Started
+      </button>
     </div>
   )
 })

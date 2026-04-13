@@ -32,13 +32,12 @@ pub async fn lan_sync_diagnostics_http(
         return err.into_response();
     }
     let domains = get_local_diagnostics(&packet.domains);
-    let node = gateway
-        .secrets
-        .get_lan_node_identity()
-        .unwrap_or_else(|| crate::lan_sync::LanNodeIdentity {
+    let node = gateway.secrets.get_lan_node_identity().unwrap_or_else(|| {
+        crate::lan_sync::LanNodeIdentity {
             node_id: String::new(),
             node_name: String::new(),
-        });
+        }
+    });
     Json(LanDiagnosticsResponsePacket {
         version: 1,
         node_id: node.node_id,
@@ -89,7 +88,10 @@ pub fn watchdog_summary() -> serde_json::Value {
     for entry in entries.filter_map(|e| e.ok()) {
         let file_name = entry.file_name();
         let file_name_str = file_name.to_string_lossy();
-        if let Some(prefix) = WATCHDOG_DUMP_PREFIXES.iter().find(|p| file_name_str.starts_with(*p)) {
+        if let Some(prefix) = WATCHDOG_DUMP_PREFIXES
+            .iter()
+            .find(|p| file_name_str.starts_with(*p))
+        {
             // Extract timestamp from filename: prefix{timestamp}-trigger.json
             // e.g. "ui-freeze-1700000000000-heartbeat-stall.json"
             let after_prefix = &file_name_str[(*prefix).len()..];
@@ -112,7 +114,10 @@ pub fn watchdog_summary() -> serde_json::Value {
     }
 
     watchdog_files.sort_by_key(|(ts, _, _)| *ts);
-    let last = watchdog_files.last().map(|(_, t, _)| t.clone()).unwrap_or_default();
+    let last = watchdog_files
+        .last()
+        .map(|(_, t, _)| t.clone())
+        .unwrap_or_default();
     let incident_count = watchdog_files.len() as u32;
 
     serde_json::json!({
@@ -133,9 +138,18 @@ mod tests {
         let result = watchdog_summary();
         std::env::remove_var("API_ROUTER_USER_DATA_DIR");
 
-        assert!(result.get("healthy").and_then(|v| v.as_bool()).unwrap_or(false));
+        assert!(result
+            .get("healthy")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false));
         assert!(result.get("last_incident_kind").unwrap().is_null());
-        assert_eq!(result.get("incident_count").and_then(|v| v.as_u64()).unwrap_or(1), 0);
+        assert_eq!(
+            result
+                .get("incident_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1),
+            0
+        );
     }
 
     #[test]
@@ -151,9 +165,18 @@ mod tests {
         let result = watchdog_summary();
         std::env::remove_var("API_ROUTER_USER_DATA_DIR");
 
-        assert!(result.get("healthy").and_then(|v| v.as_bool()).unwrap_or(false));
+        assert!(result
+            .get("healthy")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false));
         assert!(result.get("last_incident_kind").unwrap().is_null());
-        assert_eq!(result.get("incident_count").and_then(|v| v.as_u64()).unwrap_or(1), 0);
+        assert_eq!(
+            result
+                .get("incident_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1),
+            0
+        );
     }
 
     #[test]
@@ -182,16 +205,20 @@ mod tests {
         let result = watchdog_summary();
         std::env::remove_var("API_ROUTER_USER_DATA_DIR");
 
-        assert!(!result.get("healthy").and_then(|v| v.as_bool()).unwrap_or(true));
+        assert!(!result
+            .get("healthy")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true));
         // Last one is "status" (from slow-refresh-1700000002000-status.json)
         assert_eq!(
-            result
-                .get("last_incident_kind")
-                .and_then(|v| v.as_str()),
+            result.get("last_incident_kind").and_then(|v| v.as_str()),
             Some("status")
         );
         assert_eq!(
-            result.get("incident_count").and_then(|v| v.as_u64()).unwrap_or(0),
+            result
+                .get("incident_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
             3
         );
     }

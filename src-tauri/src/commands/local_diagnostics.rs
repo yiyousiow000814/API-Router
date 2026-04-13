@@ -41,7 +41,7 @@ pub async fn get_local_diagnostics(
 }
 
 /// Domain filter logic extracted for unit testing.
-/// Returns true if the given domain should be included based on the requested domains list.
+#[cfg(test)]
 fn domain_is_requested(domain: &str, domains: &[String]) -> bool {
     domains.is_empty() || domains.contains(&domain.to_string()) || domains.contains(&"all".to_string())
 }
