@@ -48,6 +48,7 @@ fn tracked_spend_days_with_remote_fallback(
 }
 
 include!("commands/codex_web_transport.rs");
+include!("commands/diagnostics_fetch.rs");
 include!("commands/status_snapshot.rs");
 include!("commands/usage_metrics.rs");
 include!("commands/provider_timeline.rs");

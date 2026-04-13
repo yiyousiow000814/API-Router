@@ -29,6 +29,8 @@ use crate::orchestrator::store::unix_ms;
 mod local_state;
 #[path = "lan_sync/remote_update.rs"]
 mod remote_update;
+#[path = "lan_sync/lan_fetch.rs"]
+mod lan_fetch;
 #[path = "lan_sync/shared_health.rs"]
 mod shared_health;
 #[path = "lan_sync/usage_history.rs"]
@@ -58,6 +60,9 @@ pub(crate) use remote_update::{
     load_lan_remote_update_status_public, normalized_local_build_target_ref,
     peer_remote_update_blocked_reason, reconcile_remote_update_terminal_event,
     LanRemoteUpdateDebugResponsePacket,
+};
+pub(crate) use lan_fetch::{
+    lan_sync_diagnostics_http, LanDiagnosticsRequestPacket, LanDiagnosticsResponsePacket,
 };
 pub use remote_update::{LanRemoteUpdateReadinessSnapshot, LanRemoteUpdateStatusSnapshot};
 pub(crate) use shared_health::LanSharedHealthPacket;

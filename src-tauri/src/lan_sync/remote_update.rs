@@ -1660,6 +1660,63 @@ impl LanSyncRuntime {
             self.note_http_sync_probe(&peer, "/lan-sync/debug/remote-update", "ok", "HTTP sync ok");
         Ok(packet)
     }
+
+    pub async fn fetch_peer_diagnostics(
+        &self,
+        gateway: &crate::orchestrator::gateway::GatewayState,
+        node_id: &str,
+        domains: Vec<String>,
+    ) -> Result<LanDiagnosticsResponsePacket, String> {
+        let normalized_node_id = node_id.trim();
+        if normalized_node_id.is_empty() {
+            return Err("node_id is required".to_string());
+        }
+        let peer = self
+            .live_peer_by_node_id(normalized_node_id)
+            .or_else(|| {
+                self.recent_peer_by_node_id(normalized_node_id, LAN_PEER_HTTP_GRACE_AFTER_MS)
+            })
+            .ok_or_else(|| format!("peer is not reachable on LAN: {normalized_node_id}"))?;
+        let base_url = peer_http_base_url(&peer)
+            .ok_or_else(|| format!("peer has no valid LAN address: {normalized_node_id}"))?;
+        let trust_secret = current_lan_trust_secret(gateway)?;
+        let response = lan_sync_http_client()
+            .post(format!("{base_url}/lan-sync/diagnostics"))
+            .header(
+                LAN_SYNC_AUTH_NODE_ID_HEADER,
+                self.local_node.node_id.clone(),
+            )
+            .header(LAN_SYNC_AUTH_SECRET_HEADER, trust_secret)
+            .json(&LanDiagnosticsRequestPacket {
+                version: 1,
+                node_id: self.local_node.node_id.clone(),
+                domains,
+            })
+            .send()
+            .await
+            .map_err(|err| {
+                let detail = format_lan_sync_reqwest_error(&err);
+                self.note_http_sync_probe(&peer, "/lan-sync/diagnostics", "request_error", &detail);
+                format!("LAN diagnostics request failed: {detail}")
+            })?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            let detail = format!("LAN diagnostics http {status}: {body}");
+            self.note_http_sync_probe(&peer, "/lan-sync/diagnostics", "http_error", &detail);
+            return Err(detail);
+        }
+        let packet = response
+            .json::<LanDiagnosticsResponsePacket>()
+            .await
+            .map_err(|err| {
+                let detail = format_lan_sync_reqwest_error(&err);
+                self.note_http_sync_probe(&peer, "/lan-sync/diagnostics", "decode_error", &detail);
+                format!("LAN diagnostics response decode failed: {detail}")
+            })?;
+        let _ = self.note_http_sync_probe(&peer, "/lan-sync/diagnostics", "ok", "HTTP sync ok");
+        Ok(packet)
+    }
 }
 
 pub(crate) async fn lan_sync_remote_update_http(
