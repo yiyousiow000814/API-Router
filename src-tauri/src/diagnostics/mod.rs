@@ -68,6 +68,21 @@ pub(crate) fn ensure_parent_dir(path: &Path) -> std::io::Result<()> {
 
 pub(crate) mod codex_web_transport;
 
+/// Prefixes used to identify watchdog dump files written by `UiWatchdog::write_dump`.
+/// The `write_dump` function creates filenames as `ui-freeze-{timestamp}-{trigger}.json`,
+/// so only `"ui-freeze-"` matches the actual files. The additional prefixes are included
+/// for compatibility with any files written by other code paths.
+pub(crate) const WATCHDOG_DUMP_PREFIXES: &[&str] = &[
+    "ui-freeze-",
+    "slow-refresh-",
+    "long-task-",
+    "frame-stall-",
+    "frontend-error-",
+    "heartbeat-stall-",
+    "invoke-error-",
+    "slow-invoke-",
+];
+
 pub(crate) fn write_pretty_json(path: &Path, payload: &Value) -> std::io::Result<()> {
     ensure_parent_dir(path)?;
     std::fs::write(path, serde_json::to_vec_pretty(payload).unwrap_or_default())

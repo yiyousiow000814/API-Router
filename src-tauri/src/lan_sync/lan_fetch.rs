@@ -4,6 +4,7 @@ use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 
 use crate::diagnostics::current_diagnostics_dir;
+use crate::diagnostics::WATCHDOG_DUMP_PREFIXES;
 use crate::lan_sync::authorize_lan_sync_http_request;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -85,22 +86,10 @@ pub fn watchdog_summary() -> serde_json::Value {
     };
 
     let mut watchdog_files: Vec<(u64, String, String)> = Vec::new();
-    // Watchdog dump files start with these prefixes
-    let prefixes = [
-        "ui-freeze-",
-        "slow-refresh-",
-        "long-task-",
-        "frame-stall-",
-        "frontend-error-",
-        "heartbeat-stall-",
-        "invoke-error-",
-        "slow-invoke-",
-    ];
-
     for entry in entries.filter_map(|e| e.ok()) {
         let file_name = entry.file_name();
         let file_name_str = file_name.to_string_lossy();
-        if let Some(prefix) = prefixes.iter().find(|p| file_name_str.starts_with(*p)) {
+        if let Some(prefix) = WATCHDOG_DUMP_PREFIXES.iter().find(|p| file_name_str.starts_with(*p)) {
             // Extract timestamp from filename: prefix{timestamp}-trigger.json
             // e.g. "ui-freeze-1700000000000-heartbeat-stall.json"
             let after_prefix = &file_name_str[(*prefix).len()..];
