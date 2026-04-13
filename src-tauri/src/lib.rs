@@ -774,6 +774,7 @@ pub fn run() {
             commands::record_ui_frontend_error,
             commands::record_ui_invoke_result,
             commands::open_external_url,
+            commands::get_local_diagnostics,
             commands::get_event_log_entries,
             commands::get_event_log_entry_by_id,
             commands::get_event_log_years,

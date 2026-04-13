@@ -62,7 +62,8 @@ pub(crate) use remote_update::{
     LanRemoteUpdateDebugResponsePacket,
 };
 pub(crate) use lan_fetch::{
-    lan_sync_diagnostics_http, LanDiagnosticsRequestPacket, LanDiagnosticsResponsePacket,
+    lan_sync_diagnostics_http, watchdog_summary, LanDiagnosticsRequestPacket,
+    LanDiagnosticsResponsePacket,
 };
 pub use remote_update::{LanRemoteUpdateReadinessSnapshot, LanRemoteUpdateStatusSnapshot};
 pub(crate) use shared_health::LanSharedHealthPacket;
