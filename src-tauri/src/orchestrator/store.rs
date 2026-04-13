@@ -3063,7 +3063,6 @@ impl Store {
             .ok()?;
         let message = message.trim();
         let mut exact: Option<(u64, Value)> = None;
-        let mut fallback: Option<(u64, Value)> = None;
         for (id, row_unix_ms, row_provider, level, code, row_message, fields_json) in rows.flatten()
         {
             let Some(event) = Self::event_from_sql_row(
@@ -3085,14 +3084,9 @@ impl Store {
                     Some((best_distance, _)) if best_distance <= distance => {}
                     _ => exact = Some((distance, event)),
                 }
-                continue;
-            }
-            match fallback {
-                Some((best_distance, _)) if best_distance <= distance => {}
-                _ => fallback = Some((distance, event)),
             }
         }
-        exact.or(fallback).map(|(_, event)| event)
+        exact.map(|(_, event)| event)
     }
 
     pub fn insert_event_row(&self, row: StoredEventRow) -> bool {

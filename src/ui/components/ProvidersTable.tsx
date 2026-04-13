@@ -20,9 +20,9 @@ export function findLastErrorEventId(
   const candidates = (events ?? []).filter((event) => event.provider.trim().toLowerCase() === providerNeedle && event.level === 'error')
   if (!candidates.length) return null
   const exactMessage = candidates.filter((event) => event.message.trim() === messageNeedle)
-  const pool = exactMessage.length ? exactMessage : candidates
+  if (!exactMessage.length) return null
   const targetUnixMs = Number(target.unixMs) || 0
-  const closest = [...pool].sort((a, b) => Math.abs(a.unix_ms - targetUnixMs) - Math.abs(b.unix_ms - targetUnixMs))[0]
+  const closest = [...exactMessage].sort((a, b) => Math.abs(a.unix_ms - targetUnixMs) - Math.abs(b.unix_ms - targetUnixMs))[0]
   return closest?.id ?? null
 }
 

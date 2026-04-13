@@ -110,6 +110,29 @@ describe('ProvidersTable', () => {
     expect(html).not.toContain('aoLastErrorViewBtn')
   })
 
+  it('does not resolve a nearby event id when the message does not match exactly', () => {
+    const status = buildStatus()
+    status.recent_events = [
+      {
+        id: 'evt-packycode-nearby',
+        provider: 'packycode',
+        level: 'error',
+        unix_ms: 1235,
+        code: 'gateway.request_failed',
+        message: 'request error: different boom',
+        fields: null,
+      },
+    ]
+
+    expect(
+      findLastErrorEventId(status.recent_events, {
+        provider: 'packycode',
+        unixMs: 1234,
+        message: 'request error: boom',
+      }),
+    ).toBeNull()
+  })
+
   it('shows package expiry when budget response includes subscription end', () => {
     const html = renderToStaticMarkup(
       <ProvidersTable
