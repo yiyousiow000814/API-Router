@@ -202,6 +202,16 @@ impl Default for EventPolicy {
     }
 }
 
+pub struct StoredEventRow {
+    pub id: String,
+    pub provider: String,
+    pub level: String,
+    pub code: String,
+    pub message: String,
+    pub fields: Value,
+    pub unix_ms: u64,
+}
+
 macro_rules! define_event_codes {
     ($( $(#[$meta:meta])* $name:ident => ($level:literal, $code:literal), )+) => {
         impl EventCode {
@@ -1995,6 +2005,7 @@ impl Store {
     }
 
     fn event_from_sql_row(
+        id: String,
         unix_ms: i64,
         provider: String,
         level: String,
@@ -2010,6 +2021,7 @@ impl Store {
             None => Value::Null,
         };
         Some(serde_json::json!({
+            "id": id,
             "provider": provider,
             "level": level,
             "unix_ms": unix_ms,
@@ -2850,7 +2862,7 @@ impl Store {
         let mut out: Vec<Value> = Vec::with_capacity(error_cap.min(128));
         let conn = self.events_db.lock();
         let Ok(mut stmt) = conn.prepare(
-            "SELECT unix_ms, provider, level, code, message, fields_json
+            "SELECT id, unix_ms, provider, level, code, message, fields_json
              FROM events
              WHERE level = 'error'
              ORDER BY unix_ms DESC
@@ -2860,19 +2872,20 @@ impl Store {
         };
         let Ok(rows) = stmt.query_map([error_cap as i64], |row| {
             Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
             ))
         }) else {
             return out;
         };
-        for (unix_ms, provider, level, code, message, fields_json) in rows.flatten() {
+        for (id, unix_ms, provider, level, code, message, fields_json) in rows.flatten() {
             if let Some(v) =
-                Self::event_from_sql_row(unix_ms, provider, level, code, message, fields_json)
+                Self::event_from_sql_row(id, unix_ms, provider, level, code, message, fields_json)
             {
                 out.push(v);
             }
@@ -2975,7 +2988,7 @@ impl Store {
         let mut out: Vec<Value> = Vec::with_capacity(cap.min(1024));
         let conn = self.events_db.lock();
         let Ok(mut stmt) = conn.prepare(
-            "SELECT unix_ms, provider, level, code, message, fields_json
+            "SELECT id, unix_ms, provider, level, code, message, fields_json
              FROM events
              WHERE (?1 IS NULL OR unix_ms >= ?1)
                AND (?2 IS NULL OR unix_ms <= ?2)
@@ -2986,24 +2999,148 @@ impl Store {
         };
         let Ok(rows) = stmt.query_map(params![from_i64, to_i64, cap as i64], |row| {
             Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
             ))
         }) else {
             return out;
         };
-        for (unix_ms, provider, level, code, message, fields_json) in rows.flatten() {
+        for (id, unix_ms, provider, level, code, message, fields_json) in rows.flatten() {
             if let Some(v) =
-                Self::event_from_sql_row(unix_ms, provider, level, code, message, fields_json)
+                Self::event_from_sql_row(id, unix_ms, provider, level, code, message, fields_json)
             {
                 out.push(v);
             }
         }
         out
+    }
+
+    pub fn find_recent_error_event_for_provider(
+        &self,
+        provider: &str,
+        unix_ms: u64,
+        message: &str,
+    ) -> Option<Value> {
+        let Ok(unix_ms_i64) = i64::try_from(unix_ms) else {
+            return None;
+        };
+        let provider = provider.trim();
+        if provider.is_empty() {
+            return None;
+        }
+        let conn = self.events_db.lock();
+        let window_start = unix_ms_i64.saturating_sub(5 * 60 * 1000);
+        let window_end = unix_ms_i64.saturating_add(5 * 60 * 1000);
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, unix_ms, provider, level, code, message, fields_json
+                 FROM events
+                 WHERE provider = ?1
+                   AND level = 'error'
+                   AND unix_ms >= ?2
+                   AND unix_ms <= ?3
+                 ORDER BY unix_ms DESC
+                 LIMIT 32",
+            )
+            .ok()?;
+        let rows = stmt
+            .query_map(params![provider, window_start, window_end], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
+            .ok()?;
+        let message = message.trim();
+        let mut exact: Option<(u64, Value)> = None;
+        for (id, row_unix_ms, row_provider, level, code, row_message, fields_json) in rows.flatten()
+        {
+            let Some(event) = Self::event_from_sql_row(
+                id,
+                row_unix_ms,
+                row_provider,
+                level,
+                code,
+                row_message.clone(),
+                fields_json,
+            ) else {
+                continue;
+            };
+            let Ok(distance) = u64::try_from((row_unix_ms - unix_ms_i64).abs()) else {
+                continue;
+            };
+            if row_message.trim() == message {
+                match exact {
+                    Some((best_distance, _)) if best_distance <= distance => {}
+                    _ => exact = Some((distance, event)),
+                }
+            }
+        }
+        exact.map(|(_, event)| event)
+    }
+
+    pub fn insert_event_row(&self, row: StoredEventRow) -> bool {
+        let id = row.id.trim();
+        if id.is_empty() {
+            return false;
+        }
+        let fields = match row.fields {
+            Value::Object(obj) => Value::Object(obj),
+            Value::Null => Value::Null,
+            other => serde_json::json!({ "value": other }),
+        };
+        let fields_json = serde_json::to_string(&fields).unwrap_or_else(|_| "null".to_string());
+        let Ok(ts_i64) = i64::try_from(row.unix_ms) else {
+            return false;
+        };
+        let Some(day_key) = Self::local_day_key_from_unix_ms(row.unix_ms) else {
+            return false;
+        };
+        let Some(day_start_unix_ms) =
+            Self::day_start_unix_ms_from_day_key(&day_key).and_then(|x| i64::try_from(x).ok())
+        else {
+            return false;
+        };
+        let mut conn = self.events_db.lock();
+        let Ok(tx) = conn.transaction() else {
+            return false;
+        };
+        let inserted = tx.execute(
+            "INSERT OR IGNORE INTO events(id, unix_ms, provider, level, code, message, fields_json)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id,
+                ts_i64,
+                row.provider,
+                row.level,
+                row.code,
+                row.message,
+                fields_json
+            ],
+        );
+        let Ok(inserted) = inserted else {
+            let _ = tx.rollback();
+            return false;
+        };
+        if inserted == 0 {
+            let _ = tx.rollback();
+            return false;
+        }
+        if Self::upsert_event_day_counts(&tx, &day_key, day_start_unix_ms, &row.level).is_err() {
+            let _ = tx.rollback();
+            return false;
+        }
+        tx.commit().is_ok()
     }
 
     pub fn backfill_usage_request_node_identity(&self, node_id: &str, node_name: &str) -> usize {

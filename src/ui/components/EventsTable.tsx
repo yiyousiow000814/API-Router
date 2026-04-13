@@ -44,6 +44,7 @@ function stableFieldsIdentity(fields: Record<string, unknown> | null): string {
 }
 
 function eventIdentity(event: Status['recent_events'][number]): string {
+  if (typeof event.id === 'string' && event.id.trim()) return `id:${event.id}`
   return `${event.unix_ms}|${event.provider}|${event.level}|${event.code}|${event.message}|${stableFieldsIdentity(event.fields)}`
 }
 

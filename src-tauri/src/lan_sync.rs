@@ -29,6 +29,8 @@ use crate::orchestrator::store::unix_ms;
 mod local_state;
 #[path = "lan_sync/remote_update.rs"]
 mod remote_update;
+#[path = "lan_sync/shared_health.rs"]
+mod shared_health;
 #[path = "lan_sync/usage_history.rs"]
 mod usage_history;
 #[path = "lan_sync/versioning.rs"]
@@ -58,6 +60,8 @@ pub(crate) use remote_update::{
     LanRemoteUpdateDebugResponsePacket,
 };
 pub use remote_update::{LanRemoteUpdateReadinessSnapshot, LanRemoteUpdateStatusSnapshot};
+pub(crate) use shared_health::LanSharedHealthPacket;
+use shared_health::{apply_shared_health_packet, run_shared_health_loop};
 pub(crate) use usage_history::{
     lan_sync_tracked_spend_history_debug_http, rebuild_shared_tracked_spend_views,
 };
@@ -543,22 +547,6 @@ struct LanHeartbeatPacket {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct LanSharedHealthPacket {
-    version: u8,
-    node_id: String,
-    node_name: String,
-    sent_at_unix_ms: u64,
-    shared_provider_fingerprint: String,
-    status: String,
-    consecutive_failures: u32,
-    cooldown_until_unix_ms: u64,
-    last_error: String,
-    last_ok_at_unix_ms: u64,
-    last_fail_at_unix_ms: u64,
-    shared_probe_required: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct LanUsageSyncRequestPacket {
     version: u8,
     node_id: String,
@@ -719,7 +707,7 @@ struct LanPairTrustBundlePacket {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum LanSyncPacket {
     Heartbeat(Box<LanHeartbeatPacket>),
-    SharedHealth(LanSharedHealthPacket),
+    SharedHealth(Box<LanSharedHealthPacket>),
     QuotaRefreshRequest(LanQuotaRefreshRequestPacket),
     EditSyncHint(LanEditSyncHintPacket),
 }
@@ -1728,18 +1716,6 @@ fn send_packet_to_addr(
         ));
     }
     send_wire_bytes(addr, &bytes)
-}
-
-fn broadcast_shared_health_packet(
-    gateway: &crate::orchestrator::gateway::GatewayState,
-    packet: &LanSharedHealthPacket,
-) {
-    let target = SocketAddr::from((Ipv4Addr::BROADCAST, LAN_DISCOVERY_PORT));
-    let _ = send_packet_to_addr(
-        gateway,
-        target,
-        &LanSyncPacket::SharedHealth(packet.clone()),
-    );
 }
 
 fn send_heartbeat_packet(
@@ -3136,7 +3112,7 @@ fn run_listener(
                                     runtime.note_peer_heartbeat(*packet, source)
                                 }
                                 LanSyncPacket::SharedHealth(packet) => {
-                                    apply_shared_health_packet(&runtime, &gateway, packet);
+                                    apply_shared_health_packet(&runtime, &gateway, *packet);
                                 }
                                 LanSyncPacket::QuotaRefreshRequest(packet) => {
                                     handle_quota_refresh_request(&runtime, &gateway, packet);
@@ -3294,58 +3270,6 @@ fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::Ga
         }
         std::thread::sleep(Duration::from_millis(LAN_HEARTBEAT_INTERVAL_MS));
     }
-}
-
-fn apply_shared_health_packet(
-    runtime: &LanSyncRuntime,
-    gateway: &crate::orchestrator::gateway::GatewayState,
-    packet: LanSharedHealthPacket,
-) {
-    if packet.node_id.trim().is_empty() || packet.node_id == runtime.local_node.node_id {
-        return;
-    }
-    if let Some(mut peer) = runtime.live_peer_by_node_id(&packet.node_id) {
-        peer.trusted = gateway
-            .secrets
-            .trusted_lan_node_ids()
-            .contains(&peer.node_id);
-        if sync_contract_mismatch_detail(&peer, SYNC_DOMAIN_SHARED_HEALTH).is_some() {
-            return;
-        }
-    }
-    let cfg = gateway.cfg.read().clone();
-    let shared = crate::orchestrator::router::SharedHealthSyncSnapshot {
-        status: packet.status,
-        consecutive_failures: packet.consecutive_failures,
-        cooldown_until_unix_ms: packet.cooldown_until_unix_ms,
-        last_error: packet.last_error,
-        last_ok_at_unix_ms: packet.last_ok_at_unix_ms,
-        last_fail_at_unix_ms: packet.last_fail_at_unix_ms,
-        shared_probe_required: packet.shared_probe_required,
-        updated_at_unix_ms: packet.sent_at_unix_ms,
-        source_node_id: packet.node_id.clone(),
-        source_is_local: false,
-    };
-    let mut applied = Vec::new();
-    for provider_name in cfg.providers.keys() {
-        let Some(fingerprint) = crate::orchestrator::quota::shared_provider_fingerprint(
-            &cfg,
-            &gateway.secrets,
-            provider_name,
-        ) else {
-            continue;
-        };
-        if fingerprint != packet.shared_provider_fingerprint {
-            continue;
-        }
-        if gateway
-            .router
-            .apply_shared_sync_snapshot(provider_name, &shared, false)
-        {
-            applied.push(provider_name.clone());
-        }
-    }
-    let _ = applied;
 }
 
 fn handle_pair_request(
@@ -4612,195 +4536,6 @@ fn run_edit_sync_loop(
     }
 }
 
-fn run_shared_health_loop(
-    runtime: LanSyncRuntime,
-    gateway: crate::orchestrator::gateway::GatewayState,
-) {
-    let mut last_broadcasted: HashMap<String, String> = HashMap::new();
-    let mut last_probe_attempt_unix_ms: HashMap<String, u64> = HashMap::new();
-
-    loop {
-        let now = unix_ms();
-        let cfg = gateway.cfg.read().clone();
-        let mut by_fingerprint: HashMap<
-            String,
-            (
-                String,
-                crate::orchestrator::router::SharedHealthSyncSnapshot,
-            ),
-        > = HashMap::new();
-
-        for provider_name in cfg.providers.keys() {
-            let Some(fingerprint) = crate::orchestrator::quota::shared_provider_fingerprint(
-                &cfg,
-                &gateway.secrets,
-                provider_name,
-            ) else {
-                continue;
-            };
-            let Some(shared) = gateway.router.shared_sync_snapshot(provider_name, now) else {
-                continue;
-            };
-            if !shared.source_is_local {
-                continue;
-            }
-            let replace = by_fingerprint
-                .get(&fingerprint)
-                .map(|(current_provider_name, current)| {
-                    shared.updated_at_unix_ms > current.updated_at_unix_ms
-                        || (shared.updated_at_unix_ms == current.updated_at_unix_ms
-                            && provider_name < current_provider_name)
-                })
-                .unwrap_or(true);
-            if replace {
-                by_fingerprint.insert(fingerprint, (provider_name.clone(), shared));
-            }
-        }
-
-        for (fingerprint, (_provider_name, shared)) in by_fingerprint.iter() {
-            for sibling_provider in cfg.providers.keys() {
-                let Some(sibling_fingerprint) =
-                    crate::orchestrator::quota::shared_provider_fingerprint(
-                        &cfg,
-                        &gateway.secrets,
-                        sibling_provider,
-                    )
-                else {
-                    continue;
-                };
-                if &sibling_fingerprint != fingerprint {
-                    continue;
-                }
-                let _ = gateway
-                    .router
-                    .apply_shared_sync_snapshot(sibling_provider, shared, true);
-            }
-
-            let signature = format!(
-                "{}|{}|{}|{}|{}|{}",
-                shared.updated_at_unix_ms,
-                shared.status,
-                shared.cooldown_until_unix_ms,
-                shared.consecutive_failures,
-                shared.last_ok_at_unix_ms,
-                shared.last_fail_at_unix_ms
-            );
-            if last_broadcasted.get(fingerprint) == Some(&signature) {
-                continue;
-            }
-            last_broadcasted.insert(fingerprint.clone(), signature);
-            broadcast_shared_health_packet(
-                &gateway,
-                &LanSharedHealthPacket {
-                    version: 1,
-                    node_id: runtime.local_node.node_id.clone(),
-                    node_name: runtime.local_node.node_name.clone(),
-                    sent_at_unix_ms: shared.updated_at_unix_ms,
-                    shared_provider_fingerprint: fingerprint.clone(),
-                    status: shared.status.clone(),
-                    consecutive_failures: shared.consecutive_failures,
-                    cooldown_until_unix_ms: shared.cooldown_until_unix_ms,
-                    last_error: shared.last_error.clone(),
-                    last_ok_at_unix_ms: shared.last_ok_at_unix_ms,
-                    last_fail_at_unix_ms: shared.last_fail_at_unix_ms,
-                    shared_probe_required: shared.shared_probe_required,
-                },
-            );
-        }
-
-        for provider_name in cfg.providers.keys() {
-            let Some(fingerprint) = crate::orchestrator::quota::shared_provider_fingerprint(
-                &cfg,
-                &gateway.secrets,
-                provider_name,
-            ) else {
-                continue;
-            };
-            let Some(shared) = gateway.router.shared_sync_snapshot(provider_name, now) else {
-                continue;
-            };
-            if !shared.shared_probe_required
-                || shared.cooldown_until_unix_ms == 0
-                || now < shared.cooldown_until_unix_ms
-            {
-                continue;
-            }
-            if last_probe_attempt_unix_ms
-                .get(&fingerprint)
-                .is_some_and(|value| {
-                    now.saturating_sub(*value) < LAN_SHARED_HEALTH_LOOP_INTERVAL_MS
-                })
-            {
-                continue;
-            }
-            let trusted_node_ids = gateway.secrets.trusted_lan_node_ids();
-            let Some(owner) = runtime.quota_owner_for_fingerprint(&fingerprint, &trusted_node_ids)
-            else {
-                continue;
-            };
-            if !owner.local_is_owner {
-                continue;
-            }
-            last_probe_attempt_unix_ms.insert(fingerprint.clone(), now);
-            run_single_owner_recovery_probe(&gateway, &cfg, provider_name);
-        }
-
-        std::thread::sleep(Duration::from_millis(LAN_SHARED_HEALTH_LOOP_INTERVAL_MS));
-    }
-}
-
-fn run_single_owner_recovery_probe(
-    gateway: &crate::orchestrator::gateway::GatewayState,
-    cfg: &AppConfig,
-    provider_name: &str,
-) {
-    let Some(provider) = cfg.providers.get(provider_name).cloned() else {
-        return;
-    };
-    let api_key = gateway.secrets.get_provider_key(provider_name);
-    let now = unix_ms();
-    let result = tauri::async_runtime::block_on(gateway.upstream.get_json(
-        &provider,
-        "/v1/models",
-        api_key.as_deref(),
-        None,
-        cfg.routing.request_timeout_seconds,
-    ));
-    match result {
-        Ok((status, _payload)) if (200..300).contains(&status) => {
-            let _ = gateway.router.mark_success(provider_name, now);
-            gateway.store.events().emit(
-                provider_name,
-                crate::orchestrator::store::EventCode::LAN_SHARED_RECOVERY_PROBE_OK,
-                "shared cooldown recovery probe succeeded",
-                serde_json::json!({ "owner_node": "local" }),
-            );
-        }
-        Ok((status, _payload)) => {
-            let err = format!("shared recovery probe failed: http {status}");
-            let _ = gateway.router.mark_failure(provider_name, cfg, &err, now);
-            gateway.store.events().emit(
-                provider_name,
-                crate::orchestrator::store::EventCode::LAN_SHARED_RECOVERY_PROBE_FAILED,
-                &err,
-                serde_json::json!({ "owner_node": "local", "http_status": status }),
-            );
-        }
-        Err(err) => {
-            let detail = format!("shared recovery probe failed: {err}");
-            let _ = gateway
-                .router
-                .mark_failure(provider_name, cfg, &detail, now);
-            gateway.store.events().emit(
-                provider_name,
-                crate::orchestrator::store::EventCode::LAN_SHARED_RECOVERY_PROBE_FAILED,
-                &detail,
-                serde_json::json!({ "owner_node": "local" }),
-            );
-        }
-    }
-}
-
 pub(crate) fn detect_local_listen_ip() -> Option<IpAddr> {
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
     socket.connect((Ipv4Addr::new(8, 8, 8, 8), 80)).ok()?;
@@ -5928,7 +5663,7 @@ mod tests {
 
         let protected = serialize_wire_packet(
             &state_a.gateway,
-            &LanSyncPacket::SharedHealth(super::LanSharedHealthPacket {
+            &LanSyncPacket::SharedHealth(Box::new(super::LanSharedHealthPacket {
                 version: 1,
                 node_id: state_a.lan_sync.local_node_id(),
                 node_name: state_a.lan_sync.local_node_name(),
@@ -5941,7 +5676,8 @@ mod tests {
                 last_ok_at_unix_ms: 0,
                 last_fail_at_unix_ms: 1,
                 shared_probe_required: true,
-            }),
+                last_error_event: None,
+            })),
         )
         .expect("serialize protected");
 
@@ -5950,6 +5686,132 @@ mod tests {
 
         assert!(matches!(packet_a, Some(LanSyncPacket::SharedHealth(_))));
         assert!(packet_b.is_none());
+    }
+
+    #[test]
+    fn apply_shared_health_packet_records_remote_error_event_for_matching_provider() {
+        let (_tmp, state) = build_test_state();
+        let local_node = super::LanNodeIdentity {
+            node_id: "node-local".to_string(),
+            node_name: "Local".to_string(),
+        };
+        let runtime = super::LanSyncRuntime::new(local_node);
+        let provider_name = "p1".to_string();
+        let cfg = crate::orchestrator::config::AppConfig {
+            listen: crate::orchestrator::config::ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 4000,
+            },
+            routing: crate::orchestrator::config::RoutingConfig {
+                preferred_provider: provider_name.clone(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 30,
+                failure_threshold: 1,
+                cooldown_seconds: 60,
+                request_timeout_seconds: 5,
+            },
+            providers: std::collections::BTreeMap::from([(
+                provider_name.clone(),
+                crate::orchestrator::config::ProviderConfig {
+                    display_name: "Provider 1".to_string(),
+                    base_url: "https://example.com/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some("https://example.com".to_string()),
+                    group: None,
+                    disabled: false,
+                    supports_websockets: false,
+                    api_key: String::new(),
+                },
+            )]),
+            provider_order: vec![provider_name.clone()],
+        };
+        *state.gateway.cfg.write() = cfg.clone();
+        state
+            .gateway
+            .router
+            .sync_with_config(&cfg, 1_717_171_700_000);
+        state
+            .secrets
+            .set_provider_key(&provider_name, "sk-demo-shared")
+            .expect("set shared provider key");
+        state
+            .secrets
+            .ensure_provider_shared_id(&provider_name)
+            .expect("ensure shared provider id");
+        let fingerprint = crate::orchestrator::quota::shared_provider_fingerprint(
+            &cfg,
+            &state.secrets,
+            &provider_name,
+        )
+        .expect("shared fingerprint");
+
+        let packet = super::LanSharedHealthPacket {
+            version: 1,
+            node_id: "node-remote".to_string(),
+            node_name: "Peer Desk".to_string(),
+            sent_at_unix_ms: 1_717_171_710_000,
+            shared_provider_fingerprint: fingerprint,
+            status: "unhealthy".to_string(),
+            consecutive_failures: 2,
+            cooldown_until_unix_ms: 0,
+            last_error: "http 503 from peer".to_string(),
+            last_ok_at_unix_ms: 1_717_171_700_000,
+            last_fail_at_unix_ms: 1_717_171_709_000,
+            shared_probe_required: false,
+            last_error_event: Some(super::shared_health::LanSharedErrorEventPacket {
+                event_id: "evt-remote-http-503".to_string(),
+                unix_ms: 1_717_171_709_000,
+                level: "error".to_string(),
+                code: "gateway.request_failed".to_string(),
+                message: "http 503 from peer".to_string(),
+                fields: serde_json::json!({
+                    "origin": "shared",
+                    "source_node_id": "node-remote",
+                    "source_node_name": "Peer Desk",
+                }),
+            }),
+        };
+
+        super::shared_health::apply_shared_health_packet(&runtime, &state.gateway, packet);
+
+        let events = state.gateway.store.list_events_range(None, None, Some(20));
+        let expected_event_id = format!("shared:node-remote:evt-remote-http-503:{provider_name}");
+        let remote = events
+            .iter()
+            .find(|event| {
+                event.get("id").and_then(|value| value.as_str()) == Some(expected_event_id.as_str())
+            })
+            .expect("remote event inserted");
+        assert_eq!(
+            remote.get("provider").and_then(|value| value.as_str()),
+            Some(provider_name.as_str())
+        );
+        assert_eq!(
+            remote.get("level").and_then(|value| value.as_str()),
+            Some("error")
+        );
+        assert_eq!(
+            remote.get("message").and_then(|value| value.as_str()),
+            Some("http 503 from peer")
+        );
+        let fields = remote
+            .get("fields")
+            .and_then(|value| value.as_object())
+            .expect("fields object");
+        assert_eq!(
+            fields
+                .get("shared_event_id")
+                .and_then(|value| value.as_str()),
+            Some("evt-remote-http-503")
+        );
+        assert_eq!(
+            fields
+                .get("source_node_name")
+                .and_then(|value| value.as_str()),
+            Some("Peer Desk")
+        );
     }
 
     #[test]

@@ -15,6 +15,7 @@ export type EventLogFocusRequest = {
   provider: string
   unixMs: number
   message: string
+  eventId: string | null
   nonce: number
 }
 
@@ -116,7 +117,17 @@ function stableFieldsIdentity(fields: Record<string, unknown> | null): string {
 }
 
 function eventLogEntryIdentity(entry: EventLogEntry): string {
+  if (typeof entry.id === 'string' && entry.id.trim()) return `id:${entry.id}`
   return `${entry.unix_ms}|${entry.provider}|${entry.level}|${entry.code}|${entry.message}|${stableFieldsIdentity(entry.fields ?? null)}`
+}
+
+export function resolveFocusedEvent(
+  sourceEvents: EventLogEntry[],
+  focusRequest: EventLogFocusRequest,
+): EventLogEntry | null {
+  const eventIdNeedle = focusRequest.eventId?.trim() ?? ''
+  if (!eventIdNeedle) return null
+  return sourceEvents.find((event) => event.id?.trim() === eventIdNeedle) ?? null
 }
 
 function parseDateInputToDayStart(dateText: string): number | null {
@@ -596,32 +607,14 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
   useEffect(() => {
     if (!focusRequest) return
     if (handledFocusNonceRef.current === focusRequest.nonce) return
-    const providerNeedle = focusRequest.provider.trim().toLowerCase()
-    const messageNeedle = focusRequest.message.trim().toLowerCase()
-    const messageProbe = messageNeedle.slice(0, 120)
-    const providerErrors = sourceEvents.filter((e) => e.provider.toLowerCase() === providerNeedle && e.level === 'error')
-    if (!providerErrors.length) {
+    const target = resolveFocusedEvent(sourceEvents, focusRequest)
+    if (!target) {
       if (hasTauriInvoke && focusHydrateNonceRef.current !== focusRequest.nonce) {
         focusHydrateNonceRef.current = focusRequest.nonce
         void fetchFocusWindowEntries(focusRequest)
       }
       return
     }
-    const matchingMessage = providerErrors.filter((e) => {
-      const msg = e.message.toLowerCase()
-      if (!messageProbe) return true
-      return msg.includes(messageProbe) || messageProbe.includes(msg.slice(0, Math.min(120, msg.length)))
-    })
-    if (!matchingMessage.length && hasTauriInvoke && focusHydrateNonceRef.current !== focusRequest.nonce) {
-      focusHydrateNonceRef.current = focusRequest.nonce
-      void fetchFocusWindowEntries(focusRequest)
-      return
-    }
-    const candidates = matchingMessage.length ? matchingMessage : providerErrors
-    const target = [...candidates].sort(
-      (a, b) => Math.abs(a.unix_ms - focusRequest.unixMs) - Math.abs(b.unix_ms - focusRequest.unixMs),
-    )[0]
-    if (!target) return
     setFocusedEvent(target)
     setFocusNonce(focusRequest.nonce)
     handledFocusNonceRef.current = focusRequest.nonce

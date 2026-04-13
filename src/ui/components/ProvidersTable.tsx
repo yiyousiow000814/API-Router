@@ -8,6 +8,22 @@ export type LastErrorJump = {
   provider: string
   unixMs: number
   message: string
+  eventId?: string | null
+}
+
+export function findLastErrorEventId(
+  events: Status['recent_events'],
+  target: { provider: string; unixMs: number; message: string },
+): string | null {
+  const providerNeedle = target.provider.trim().toLowerCase()
+  const messageNeedle = target.message.trim()
+  const candidates = (events ?? []).filter((event) => event.provider.trim().toLowerCase() === providerNeedle && event.level === 'error')
+  if (!candidates.length) return null
+  const exactMessage = candidates.filter((event) => event.message.trim() === messageNeedle)
+  if (!exactMessage.length) return null
+  const targetUnixMs = Number(target.unixMs) || 0
+  const closest = [...exactMessage].sort((a, b) => Math.abs(a.unix_ms - targetUnixMs) - Math.abs(b.unix_ms - targetUnixMs))[0]
+  return closest?.id ?? null
 }
 
 type Props = {
@@ -56,6 +72,14 @@ export function ProvidersTable({
       <tbody>
         {providers.map((p) => {
           const h = status.providers[p]
+          const lastErrorEventId =
+            h.last_error && Number.isFinite(h.last_fail_at_unix_ms) && h.last_fail_at_unix_ms > 0
+              ? findLastErrorEventId(status.recent_events, {
+                  provider: p,
+                  unixMs: h.last_fail_at_unix_ms,
+                  message: h.last_error,
+                })
+              : null
           const isOffline = localNetworkOffline
           const q = simulateQuotaForDisplay(
             p,
@@ -280,19 +304,22 @@ export function ProvidersTable({
                   {showLastError ? (
                     <span className="aoLastErrorCell">
                       <span className="aoLastErrorTime">{fmtWhen(lastErrorAt)}</span>
-                      <button
-                        className="aoLastErrorViewBtn"
-                        onClick={() =>
-                          onOpenLastErrorInEventLog({
-                            provider: p,
-                            unixMs: lastErrorAt,
-                            message: h.last_error,
-                          })
-                        }
-                        title="Open in Event Log"
-                      >
-                        View
-                      </button>
+                      {lastErrorEventId ? (
+                        <button
+                          className="aoLastErrorViewBtn"
+                          onClick={() =>
+                            onOpenLastErrorInEventLog({
+                              provider: p,
+                              unixMs: lastErrorAt,
+                              message: h.last_error,
+                              eventId: lastErrorEventId,
+                            })
+                          }
+                          title="Open in Event Log"
+                        >
+                          View
+                        </button>
+                      ) : null}
                     </span>
                   ) : (
                     '-'
