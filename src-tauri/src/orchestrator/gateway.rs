@@ -116,6 +116,57 @@ pub struct ClientSessionRuntime {
     pub confirmed_router: bool,
 }
 
+fn trace_client_session_request_update(
+    session_key: &str,
+    peer: SocketAddr,
+    request_is_wsl: bool,
+    request_base_url: Option<&str>,
+    client_session: Option<&windows_terminal::InferredWtSession>,
+    previous_entry: Option<&ClientSessionRuntime>,
+    next_entry: &ClientSessionRuntime,
+) {
+    let _ =
+        crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(&json!({
+            "source": "gateway.session_request",
+            "entry": {
+                "at": unix_ms(),
+                "kind": "gateway.session_request.update",
+                "sessionId": session_key,
+                "peer": peer.to_string(),
+                "requestIsWsl": request_is_wsl,
+                "requestBaseUrl": request_base_url,
+                "inferredClientSession": client_session.map(|session| json!({
+                    "wtSession": session.wt_session,
+                    "pid": session.pid,
+                    "linuxPid": session.linux_pid,
+                    "wslDistro": session.wsl_distro,
+                    "cwd": session.cwd,
+                    "rolloutPath": session.rollout_path,
+                    "codexSessionId": session.codex_session_id,
+                    "routerConfirmed": session.router_confirmed,
+                    "isAgent": session.is_agent,
+                    "isReview": session.is_review,
+                })),
+                "previous": previous_entry.map(|entry| json!({
+                    "pid": entry.pid,
+                    "wtSession": entry.wt_session,
+                    "lastRequestUnixMs": entry.last_request_unix_ms,
+                    "lastDiscoveredUnixMs": entry.last_discovered_unix_ms,
+                    "rolloutPath": entry.rollout_path,
+                    "confirmedRouter": entry.confirmed_router,
+                })),
+                "next": {
+                    "pid": next_entry.pid,
+                    "wtSession": next_entry.wt_session,
+                    "lastRequestUnixMs": next_entry.last_request_unix_ms,
+                    "lastDiscoveredUnixMs": next_entry.last_discovered_unix_ms,
+                    "rolloutPath": next_entry.rollout_path,
+                    "confirmedRouter": next_entry.confirmed_router,
+                }
+            }
+        }));
+}
+
 fn update_session_response_model(st: &GatewayState, session_key: &str, response_model: &str) {
     let model = response_model.trim();
     if model.is_empty() {
@@ -977,6 +1028,7 @@ async fn responses(
         let now_unix_ms = unix_ms();
         let is_review_session = review_request;
         let mut map = st.client_sessions.write();
+        let previous_entry = map.get(&session_key).cloned();
         let entry = map
             .entry(session_key.clone())
             .or_insert_with(|| ClientSessionRuntime {
@@ -1062,6 +1114,17 @@ async fn responses(
         entry.last_reported_model_provider = Some(GATEWAY_MODEL_PROVIDER_ID.to_string());
         entry.last_request_unix_ms = now_unix_ms;
         entry.confirmed_router = true;
+        if request_is_wsl {
+            trace_client_session_request_update(
+                &session_key,
+                peer,
+                request_is_wsl,
+                request_base_url.as_deref(),
+                client_session.as_ref(),
+                previous_entry.as_ref(),
+                entry,
+            );
+        }
 
         if let Some(parent_sid) = agent_parent_session_id.as_deref() {
             if parent_sid != session_key {

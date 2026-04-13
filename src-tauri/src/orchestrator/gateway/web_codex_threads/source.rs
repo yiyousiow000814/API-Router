@@ -83,15 +83,23 @@ pub(super) async fn rebuild_workspace_thread_items(
 
 async fn overlay_loaded_thread_runtime(target: WorkspaceTarget, items: &mut Vec<Value>) {
     let manager = CodexSessionManager::new(Some(target));
-    let loaded_threads = match manager
-        .loaded_threads(LOADED_THREAD_OVERLAY_MAX_ITEMS)
-        .await
-    {
-        Ok(threads) => threads,
+    let loaded_ids = match manager.loaded_thread_ids().await {
+        Ok(ids) => ids,
         Err(_) => return,
     };
-    if loaded_threads.is_empty() {
+    if loaded_ids.is_empty() {
         return;
+    }
+    let mut loaded_threads = Vec::new();
+    for thread_id in loaded_ids.iter().take(LOADED_THREAD_OVERLAY_MAX_ITEMS) {
+        let response = match manager.read_thread(thread_id, false).await {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if runtime_thread_payload(&response).is_none() {
+            continue;
+        }
+        loaded_threads.push(response);
     }
 
     let mut index_by_id = HashMap::new();
@@ -151,6 +159,24 @@ async fn overlay_loaded_thread_runtime(target: WorkspaceTarget, items: &mut Vec<
                 items.push(synthesized);
             }
         }
+    }
+
+    let loaded_id_set = loaded_ids
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
+    for thread_id in loaded_id_set {
+        if index_by_id.contains_key(&thread_id) {
+            continue;
+        }
+        items.push(json!({
+            "id": thread_id,
+            "workspace": match target {
+                WorkspaceTarget::Windows => "windows",
+                WorkspaceTarget::Wsl2 => "wsl2",
+            },
+            "source": "app-server-loaded-thread",
+            "status": { "type": "idle" }
+        }));
     }
 }
 

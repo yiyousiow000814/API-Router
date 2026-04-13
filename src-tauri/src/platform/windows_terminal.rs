@@ -777,6 +777,7 @@ pub fn is_pid_alive(pid: u32) -> bool {
     }
 }
 
+#[allow(dead_code)]
 pub fn is_wt_session_alive(wt_session: &str) -> bool {
     #[cfg(windows)]
     {

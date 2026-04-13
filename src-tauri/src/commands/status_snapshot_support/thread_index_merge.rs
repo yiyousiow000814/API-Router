@@ -196,12 +196,8 @@ pub(crate) fn merge_thread_index_session_hints(
         }
         if should_refresh_discovery {
             let previous_last_discovered_unix_ms = entry.last_discovered_unix_ms;
-            let should_promote_not_loaded_to_now =
-                !live_presence && (entry.confirmed_router || entry.last_request_unix_ms > 0);
             let observed_unix_ms = if live_presence {
                 updated_unix_ms.max(now)
-            } else if should_promote_not_loaded_to_now {
-                now
             } else if updated_unix_ms > 0 {
                 updated_unix_ms
             } else {
@@ -220,7 +216,7 @@ pub(crate) fn merge_thread_index_session_hints(
                         updated_unix_ms,
                         now,
                         live_presence,
-                        should_promote_not_loaded_to_now,
+                        should_promote_not_loaded_to_now: false,
                         previous_last_discovered_unix_ms,
                         rollout_path: rollout_path.as_deref(),
                     });
