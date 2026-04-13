@@ -25,6 +25,7 @@ use super::openai::{
     extract_text_from_responses, input_to_items_preserve_tools, input_to_messages,
     messages_to_responses_input, messages_to_simple_input_list, sse_events_for_text,
 };
+use super::quota::is_quota_refresh_config_gap;
 use super::router::{provider_iteration_order, select_fallback_provider, RouterState};
 use super::secrets::SecretStore;
 use super::store::{extract_response_model_option, unix_ms, Store};
@@ -101,6 +102,8 @@ pub struct ClientSessionRuntime {
     // Last model observed from upstream response payload/events.
     pub last_reported_model: Option<String>,
     pub last_reported_base_url: Option<String>,
+    // Canonical rollout path for this session. Sessions without rollout stay out of the UI.
+    pub rollout_path: Option<String>,
     // Parent main session id for agent sub-sessions when known.
     pub agent_parent_session_id: Option<String>,
     // Mark sessions spawned from Codex subagent flows.
@@ -111,6 +114,57 @@ pub struct ClientSessionRuntime {
     // the user edits Codex config files while Codex is running (the process keeps the old config
     // in memory, but we may no longer be able to prove it from disk).
     pub confirmed_router: bool,
+}
+
+fn trace_client_session_request_update(
+    session_key: &str,
+    peer: SocketAddr,
+    request_is_wsl: bool,
+    request_base_url: Option<&str>,
+    client_session: Option<&windows_terminal::InferredWtSession>,
+    previous_entry: Option<&ClientSessionRuntime>,
+    next_entry: &ClientSessionRuntime,
+) {
+    let _ =
+        crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(&json!({
+            "source": "gateway.session_request",
+            "entry": {
+                "at": unix_ms(),
+                "kind": "gateway.session_request.update",
+                "sessionId": session_key,
+                "peer": peer.to_string(),
+                "requestIsWsl": request_is_wsl,
+                "requestBaseUrl": request_base_url,
+                "inferredClientSession": client_session.map(|session| json!({
+                    "wtSession": session.wt_session,
+                    "pid": session.pid,
+                    "linuxPid": session.linux_pid,
+                    "wslDistro": session.wsl_distro,
+                    "cwd": session.cwd,
+                    "rolloutPath": session.rollout_path,
+                    "codexSessionId": session.codex_session_id,
+                    "routerConfirmed": session.router_confirmed,
+                    "isAgent": session.is_agent,
+                    "isReview": session.is_review,
+                })),
+                "previous": previous_entry.map(|entry| json!({
+                    "pid": entry.pid,
+                    "wtSession": entry.wt_session,
+                    "lastRequestUnixMs": entry.last_request_unix_ms,
+                    "lastDiscoveredUnixMs": entry.last_discovered_unix_ms,
+                    "rolloutPath": entry.rollout_path,
+                    "confirmedRouter": entry.confirmed_router,
+                })),
+                "next": {
+                    "pid": next_entry.pid,
+                    "wtSession": next_entry.wt_session,
+                    "lastRequestUnixMs": next_entry.last_request_unix_ms,
+                    "lastDiscoveredUnixMs": next_entry.last_discovered_unix_ms,
+                    "rolloutPath": next_entry.rollout_path,
+                    "confirmedRouter": next_entry.confirmed_router,
+                }
+            }
+        }));
 }
 
 fn update_session_response_model(st: &GatewayState, session_key: &str, response_model: &str) {
@@ -359,12 +413,7 @@ async fn refresh_usage_once_after_first_failure(
     let refresh_ok = snap.updated_at_unix_ms > 0 && snap.last_error.trim().is_empty();
     if !refresh_ok {
         let err = snap.last_error.trim();
-        let is_config_gap = err == "missing credentials for quota refresh"
-            || err == "missing usage token"
-            || err == "missing provider key"
-            || err == "missing quota base"
-            || err == "missing base_url"
-            || err == "usage endpoint not found (set Usage base URL)";
+        let is_config_gap = is_quota_refresh_config_gap(err);
         if is_config_gap {
             // If this provider does not support usage refresh in current config,
             // fall back to normal retry behavior instead of blocking indefinitely.
@@ -458,12 +507,91 @@ fn log_upstream_retry_event(
     );
 }
 
+fn log_websocket_fallback_event(st: &GatewayState, provider_name: &str, detail: &str) {
+    st.store.events().emit(
+        provider_name,
+        crate::orchestrator::store::EventCode::GATEWAY_WEBSOCKET_FALLBACK_TO_HTTP,
+        detail,
+        json!({
+            "attempted_transport": "ws",
+            "fallback_transport": "http",
+        }),
+    );
+}
+
+async fn post_non_stream_with_http_retry(
+    st: &GatewayState,
+    provider_name: &str,
+    provider: &super::config::ProviderConfig,
+    payload: &Value,
+    api_key: Option<&str>,
+    client_auth: Option<&str>,
+    timeout: u64,
+) -> Result<(u16, Value), reqwest::Error> {
+    let mut http_result = None;
+    for attempt in 1..=TRANSIENT_UPSTREAM_RETRY_ATTEMPTS {
+        let result = st
+            .upstream
+            .post_json(
+                provider,
+                "/v1/responses",
+                payload,
+                api_key,
+                client_auth,
+                timeout,
+            )
+            .await;
+        let should_retry = match &result {
+            Ok((code, _)) => {
+                is_retryable_upstream_status(*code) && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
+            }
+            Err(e) => {
+                should_retry_upstream_request_error(e)
+                    && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
+            }
+        };
+        if should_retry {
+            let detail = match &result {
+                Ok((code, _)) => {
+                    format!("retrying upstream non-stream after http {code} from {provider_name}")
+                }
+                Err(e) => format!(
+                    "retrying upstream non-stream after request error from {provider_name}: {e}"
+                ),
+            };
+            let kind = if result.is_ok() {
+                "http_status"
+            } else {
+                "request_error"
+            };
+            log_upstream_retry_event(
+                st,
+                provider_name,
+                kind,
+                &detail,
+                attempt,
+                TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
+                false,
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(
+                TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
+            ))
+            .await;
+            continue;
+        }
+        http_result = Some(result);
+        break;
+    }
+    http_result.expect("non-stream attempt result")
+}
+
 #[cfg(test)]
 mod upstream_retry_tests {
     use super::{
         is_retryable_upstream_status, should_fallback_stream_response_to_non_stream,
         upstream_error_code_from_body,
     };
+    use crate::orchestrator::quota::is_quota_refresh_config_gap;
 
     #[test]
     fn retryable_upstream_status_matches_transient_codes() {
@@ -480,6 +608,11 @@ mod upstream_retry_tests {
             Some("token_invalidated")
         );
         assert!(should_fallback_stream_response_to_non_stream(401, body));
+    }
+
+    #[test]
+    fn usage_refresh_config_gap_treats_missing_usage_auth_as_config_gap() {
+        assert!(is_quota_refresh_config_gap("missing usage auth"));
     }
 }
 
@@ -631,7 +764,7 @@ mod web_codex_session_runtime;
 pub(crate) mod web_codex_storage;
 mod web_codex_thread_options;
 mod web_codex_thread_routes;
-mod web_codex_threads;
+pub(crate) mod web_codex_threads;
 mod web_codex_ws;
 include!("gateway/web_codex.rs");
 use self::web_codex_actions::{
@@ -663,13 +796,12 @@ use self::web_codex_ws::{
 const SESSION_HISTORY_FLUSH_RETRY_DELAY_MS: u64 = 120;
 
 #[cfg(test)]
-pub(crate) fn _set_test_web_codex_history_loader(
-    loader: Option<
-        std::sync::Arc<
-            dyn Fn() -> Result<(serde_json::Value, serde_json::Value), String> + Send + Sync,
-        >,
-    >,
-) {
+type TestWebCodexHistoryLoader = std::sync::Arc<
+    dyn Fn() -> Result<(serde_json::Value, serde_json::Value), String> + Send + Sync,
+>;
+
+#[cfg(test)]
+pub(crate) fn _set_test_web_codex_history_loader(loader: Option<TestWebCodexHistoryLoader>) {
     web_codex_history::_set_test_history_loader(loader.map(|loader| {
         std::sync::Arc::new(
             move |_thread_id, _workspace, _rollout_path, _before, _limit| {
@@ -896,6 +1028,7 @@ async fn responses(
         let now_unix_ms = unix_ms();
         let is_review_session = review_request;
         let mut map = st.client_sessions.write();
+        let previous_entry = map.get(&session_key).cloned();
         let entry = map
             .entry(session_key.clone())
             .or_insert_with(|| ClientSessionRuntime {
@@ -917,6 +1050,12 @@ async fn responses(
                 last_reported_model_provider: None,
                 last_reported_model: None,
                 last_reported_base_url: None,
+                rollout_path: client_session
+                    .as_ref()
+                    .and_then(|session| session.rollout_path.as_deref())
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_string),
                 agent_parent_session_id: None,
                 is_agent: agent_request || client_session.as_ref().is_some_and(|s| s.is_agent),
                 is_review: false,
@@ -975,6 +1114,17 @@ async fn responses(
         entry.last_reported_model_provider = Some(GATEWAY_MODEL_PROVIDER_ID.to_string());
         entry.last_request_unix_ms = now_unix_ms;
         entry.confirmed_router = true;
+        if request_is_wsl {
+            trace_client_session_request_update(
+                &session_key,
+                peer,
+                request_is_wsl,
+                request_base_url.as_deref(),
+                client_session.as_ref(),
+                previous_entry.as_ref(),
+                entry,
+            );
+        }
 
         if let Some(parent_sid) = agent_parent_session_id.as_deref() {
             if parent_sid != session_key {
@@ -993,6 +1143,7 @@ async fn responses(
                             ),
                             last_reported_model: None,
                             last_reported_base_url: None,
+                            rollout_path: None,
                             agent_parent_session_id: None,
                             is_agent: false,
                             is_review: false,
@@ -1062,6 +1213,13 @@ async fn responses(
             .map(|s| s.as_str())
             .unwrap_or(cfg.routing.preferred_provider.as_str());
         let (provider_name, reason) = decide_provider(&st, &cfg, preferred, &session_key);
+        if reason == "no_routable_provider" {
+            last_err = format!(
+                "no routable providers available; preferred={preferred}; tried={}",
+                tried.join(",")
+            );
+            break;
+        }
         if tried.contains(&provider_name) {
             break;
         }
@@ -1167,8 +1325,108 @@ async fn responses(
                     .as_object_mut()
                     .map(|m| m.insert("stream".to_string(), Value::Bool(true)));
                 let api_key = st.secrets.get_provider_key(&provider_name);
+                let allow_websocket_transport = p.supports_websockets && !use_prev_id;
+                let mut websocket_stream_attempted = false;
                 let mut should_fallback_to_non_stream = false;
                 for attempt in 1..=TRANSIENT_UPSTREAM_RETRY_ATTEMPTS {
+                    if allow_websocket_transport && !websocket_stream_attempted {
+                        websocket_stream_attempted = true;
+                        match st
+                            .upstream
+                            .post_sse_via_websocket(
+                                &p,
+                                &body_for_provider,
+                                api_key.as_deref(),
+                                client_auth,
+                                timeout,
+                            )
+                            .await
+                        {
+                            Ok(ws_stream) => {
+                                let prev =
+                                    st.last_used_by_session.read().get(&session_key).cloned();
+                                st.last_used_by_session.write().insert(
+                                    session_key.clone(),
+                                    LastUsedRoute {
+                                        provider: provider_name.clone(),
+                                        reason: reason.to_string(),
+                                        preferred: preferred.to_string(),
+                                        unix_ms: unix_ms(),
+                                    },
+                                );
+                                st.router.mark_success(&provider_name, unix_ms());
+                                if should_log_routing_path_event(
+                                    prev.as_ref(),
+                                    &provider_name,
+                                    reason,
+                                    preferred,
+                                    is_first_attempt,
+                                ) {
+                                    st.store.events().emit(
+                                        &provider_name,
+                                        crate::orchestrator::store::EventCode::ROUTING_STREAM,
+                                        &format!("Streaming via {provider_name} ({reason})"),
+                                        json!({
+                                            "provider": provider_name,
+                                            "reason": reason,
+                                            "transport": "ws",
+                                            "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
+                                            "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
+                                            "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
+                                        }),
+                                    );
+                                } else if is_back_to_preferred_transition(
+                                    prev.as_ref(),
+                                    &provider_name,
+                                    preferred,
+                                ) {
+                                    st.store.events().emit(
+                                        &provider_name,
+                                        crate::orchestrator::store::EventCode::ROUTING_BACK_TO_PREFERRED,
+                                        &format!(
+                                            "Back to preferred: {provider_name} (from {})",
+                                            prev.as_ref()
+                                                .map(|p| p.provider.as_str())
+                                                .unwrap_or("unknown")
+                                        ),
+                                        json!({
+                                            "provider": provider_name,
+                                            "from_provider": prev.as_ref().map(|p| p.provider.clone()),
+                                            "from_reason": prev.as_ref().map(|p| p.reason.clone()),
+                                            "from_preferred": prev.as_ref().map(|p| p.preferred.clone()),
+                                            "preferred": preferred,
+                                            "transport": "ws",
+                                            "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
+                                            "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
+                                            "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
+                                        }),
+                                    );
+                                }
+                                return passthrough_websocket_sse_and_persist(
+                                    ws_stream,
+                                    st.clone(),
+                                    provider_name,
+                                    timeout,
+                                    SsePersistContext {
+                                        api_key_ref: api_key_ref_from_raw(api_key.as_deref()),
+                                        session_key: session_key.clone(),
+                                        requested_model: requested_model.clone(),
+                                        request_origin: request_origin.to_string(),
+                                        transport: "ws",
+                                    },
+                                );
+                            }
+                            Err(ws_err) => {
+                                log_websocket_fallback_event(
+                                    &st,
+                                    &provider_name,
+                                    &format!(
+                                        "websocket upstream stream failed for {provider_name}; falling back to http: {ws_err}"
+                                    ),
+                                );
+                            }
+                        }
+                    }
                     match st
                         .upstream
                         .post_sse(
@@ -1207,6 +1465,7 @@ async fn responses(
                                     json!({
                                         "provider": provider_name,
                                         "reason": reason,
+                                        "transport": "sse",
                                         "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
                                         "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
                                         "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
@@ -1232,6 +1491,7 @@ async fn responses(
                                         "from_reason": prev.as_ref().map(|p| p.reason.clone()),
                                         "from_preferred": prev.as_ref().map(|p| p.preferred.clone()),
                                         "preferred": preferred,
+                                        "transport": "sse",
                                         "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
                                         "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
                                         "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
@@ -1248,6 +1508,7 @@ async fn responses(
                                     session_key: session_key.clone(),
                                     requested_model: requested_model.clone(),
                                     request_origin: request_origin.to_string(),
+                                    transport: "sse",
                                 },
                             );
                         }
@@ -1406,63 +1667,58 @@ async fn responses(
                 .map(|m| m.insert("stream".to_string(), Value::Bool(false)));
 
             let api_key = st.secrets.get_provider_key(&provider_name);
-            let mut upstream_result = None;
-            for attempt in 1..=TRANSIENT_UPSTREAM_RETRY_ATTEMPTS {
-                let result = st
+            let mut actual_transport = "http";
+            let allow_websocket_transport = p.supports_websockets && !use_prev_id;
+            let upstream_result = if allow_websocket_transport {
+                match st
                     .upstream
-                    .post_json(
+                    .post_json_via_websocket(
                         &p,
-                        "/v1/responses",
                         &body_for_provider,
                         api_key.as_deref(),
                         client_auth,
                         timeout,
                     )
-                    .await;
-                let should_retry = match &result {
-                    Ok((code, _)) => {
-                        is_retryable_upstream_status(*code)
-                            && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
+                    .await
+                {
+                    Ok(ws_result) => {
+                        actual_transport = "ws";
+                        Ok((200, ws_result.response))
                     }
-                    Err(e) => {
-                        should_retry_upstream_request_error(e)
-                            && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
+                    Err(ws_err) => {
+                        log_websocket_fallback_event(
+                            &st,
+                            &provider_name,
+                            &format!(
+                                "websocket upstream failed for {provider_name}; falling back to http: {ws_err}"
+                            ),
+                        );
+                        post_non_stream_with_http_retry(
+                            &st,
+                            &provider_name,
+                            &p,
+                            &body_for_provider,
+                            api_key.as_deref(),
+                            client_auth,
+                            timeout,
+                        )
+                        .await
                     }
-                };
-                if should_retry {
-                    let detail = match &result {
-                        Ok((code, _)) => format!(
-                            "retrying upstream non-stream after http {code} from {provider_name}"
-                        ),
-                        Err(e) => format!(
-                            "retrying upstream non-stream after request error from {provider_name}: {e}"
-                        ),
-                    };
-                    let kind = if result.is_ok() {
-                        "http_status"
-                    } else {
-                        "request_error"
-                    };
-                    log_upstream_retry_event(
-                        &st,
-                        &provider_name,
-                        kind,
-                        &detail,
-                        attempt,
-                        TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
-                        false,
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
-                    ))
-                    .await;
-                    continue;
                 }
-                upstream_result = Some(result);
-                break;
-            }
+            } else {
+                post_non_stream_with_http_retry(
+                    &st,
+                    &provider_name,
+                    &p,
+                    &body_for_provider,
+                    api_key.as_deref(),
+                    client_auth,
+                    timeout,
+                )
+                .await
+            };
 
-            match upstream_result.expect("non-stream attempt result") {
+            match upstream_result {
                 Ok((code, upstream_json)) if (200..300).contains(&code) => {
                     let prev = st.last_used_by_session.read().get(&session_key).cloned();
                     st.last_used_by_session.write().insert(
@@ -1505,6 +1761,7 @@ async fn responses(
                         crate::orchestrator::store::UsageRequestContext {
                             api_key_ref: Some(&api_key_ref),
                             origin: request_origin,
+                            transport: actual_transport,
                             session_id: Some(session_key.as_str()),
                             node_id: local_node.as_ref().map(|value| value.node_id.as_str()),
                             node_name: local_node.as_ref().map(|value| value.node_name.as_str()),
@@ -1527,6 +1784,7 @@ async fn responses(
                             json!({
                                 "provider": provider_name,
                                 "reason": reason,
+                                "transport": actual_transport,
                                 "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
                                 "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
                                 "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),
@@ -1552,6 +1810,7 @@ async fn responses(
                                 "from_reason": prev.as_ref().map(|p| p.reason.clone()),
                                 "from_preferred": prev.as_ref().map(|p| p.preferred.clone()),
                                 "preferred": preferred,
+                                "transport": actual_transport,
                                 "wt_session": routing_session_fields.get("wt_session").cloned().unwrap_or(Value::Null),
                                 "pid": routing_session_fields.get("pid").cloned().unwrap_or(Value::Null),
                                 "codex_session_id": routing_session_fields.get("codex_session_id").cloned().unwrap_or(Value::Null),

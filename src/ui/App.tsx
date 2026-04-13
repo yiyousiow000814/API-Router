@@ -34,6 +34,8 @@ import {
 } from './utils/currency'
 import { AppMainContent, preloadAppMainContentModules } from './components/AppMainContent'
 import { AppTopNav } from './components/AppTopNav'
+import { ProviderCapsMenuPortal } from './components/ProviderCapsMenuPortal'
+import { ProviderWsTooltipPortal } from './components/ProviderWsTooltipPortal'
 import type { LastErrorJump } from './components/ProvidersTable'
 import { useConfigDrag } from './hooks/useConfigDrag'
 import { useProviderActions } from './hooks/useProviderActions'
@@ -79,6 +81,7 @@ import {
 } from './utils/devPreviewConfigSource'
 import { lanConfigSourceSyncSignature } from './utils/lanConfigSourceSync'
 import { ensureLanConfigSourceTrust, waitForLanConfigSourceTrust } from './utils/lanPairCompletion'
+import { buildProviderCapsMenuData } from './utils/providerCapsMenu'
 
 const AppModals = lazy(async () => {
   const module = await import('./components/AppModals')
@@ -259,6 +262,7 @@ export default function App() {
     provider: string
     unixMs: number
     message: string
+    eventId: string | null
     nonce: number
   } | null>(null)
   const [providerSwitchStatus, setProviderSwitchStatus] = useState<ProviderSwitchboardStatus | null>(null)
@@ -424,6 +428,7 @@ export default function App() {
       provider: payload.provider,
       unixMs: payload.unixMs,
       message: payload.message,
+      eventId: payload.eventId ?? null,
       nonce,
     })
     switchPage('event_log')
@@ -438,8 +443,8 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return
     const w = window as Window & {
-      __ui_check__?: {
-        jumpToEventLogError?: ((payload?: { provider: string; unixMs: number; message: string }) => boolean) | undefined
+        __ui_check__?: {
+          jumpToEventLogError?: ((payload?: { provider: string; unixMs: number; message: string; eventId?: string | null }) => boolean) | undefined
         primeRequestsPrefetchCache?: ((payload: {
           rows: Array<{
             id: string
@@ -480,6 +485,7 @@ export default function App() {
         payload
           ? {
               provider: payload.provider,
+              id: payload.eventId ?? undefined,
               unix_ms: payload.unixMs,
               message: payload.message,
             }
@@ -489,6 +495,7 @@ export default function App() {
         provider: candidate.provider,
         unixMs: candidate.unix_ms,
         message: candidate.message,
+        eventId: candidate.id ?? null,
       })
       return true
     }
@@ -1136,7 +1143,7 @@ export default function App() {
     usageOriginFilterOptions,
   })
   const {
-    setProviderDisabled, deleteProvider, saveKey, clearKey, saveProviderBaseUrl, refreshQuota,
+    setProviderDisabled, deleteProvider, saveKey, clearKey, saveProviderBaseUrl, setProviderSupportsWebsockets, refreshQuota,
     saveUsageBaseUrl, saveUsageAuth, clearUsageAuth, saveProviderEmail, clearProviderEmail,
     setUsageBaseUrl, clearUsageBaseUrl, setProviderQuotaHardCap,
     openKeyModal, openProviderBaseUrlModal, openUsageBaseModal, openUsageAuthModal, openProviderEmailModal, addProvider,
@@ -1562,7 +1569,11 @@ export default function App() {
   })
   const {
     renderProviderCard,
+    providerCapsMenu,
+    registerProviderCapsMenuRef,
+    providerWsTooltip,
   } = useProviderPanelUi({
+    configModalOpen,
     setProviderPanelsOpen,
     setEditingProviderName,
     setProviderNameDrafts,
@@ -1583,6 +1594,7 @@ export default function App() {
     copyProviderFromConfigSource,
     openKeyModal,
     openProviderBaseUrlModal,
+    setProviderSupportsWebsockets,
     clearKey,
     openUsageBaseModal,
     openUsageAuthModal,
@@ -1591,6 +1603,10 @@ export default function App() {
     setProviderQuotaHardCap,
     editingProviderName,
   })
+  const providerCapsMenuData = useMemo(
+    () => buildProviderCapsMenuData(configModalOpen, config, status, providerCapsMenu),
+    [configModalOpen, config, providerCapsMenu, status],
+  )
   const clearUsageScheduleRowsAutoSave = () => clearAutoSaveTimer('schedule:rows')
   const shouldRenderAppModals =
     keyModal.open ||
@@ -1988,6 +2004,15 @@ export default function App() {
           />
         </Suspense>
       ) : null}
+      <ProviderCapsMenuPortal
+        menu={providerCapsMenuData}
+        periods={providerCapsMenuData?.periods ?? []}
+        quotaHardCap={providerCapsMenuData?.quotaHardCap ?? { daily: true, weekly: true, monthly: true }}
+        editable={providerCapsMenuData?.editable ?? false}
+        registerMenuRef={registerProviderCapsMenuRef}
+        setProviderQuotaHardCap={setProviderQuotaHardCap}
+      />
+      <ProviderWsTooltipPortal tooltip={providerWsTooltip} />
       {providerGroupManagerOpen ? (
         <Suspense fallback={null}>
           <ProviderGroupManagerModal

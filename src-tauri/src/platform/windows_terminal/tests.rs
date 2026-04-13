@@ -32,6 +32,7 @@ mod tests {
         let m = parse_rollout_session_meta(&line).expect("parse");
         assert!(m.is_agent);
         assert!(!m.is_review);
+        assert_eq!(m.agent_parent_session_id.as_deref(), Some("p"));
     }
 
     #[test]

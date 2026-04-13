@@ -182,7 +182,7 @@ fn remote_update_shell_window_log_path() -> Option<std::path::PathBuf> {
     crate::diagnostics::diagnostics_file_path("lan-remote-update-shell.log")
 }
 
-#[cfg(any(test, target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn append_remote_update_shell_window_log(message: &str) {
     let Some(path) = remote_update_shell_window_log_path() else {
         return;

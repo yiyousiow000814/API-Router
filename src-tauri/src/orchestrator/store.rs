@@ -66,6 +66,7 @@ struct UsageTokenIncrements {
 pub struct UsageRequestContext<'a> {
     pub api_key_ref: Option<&'a str>,
     pub origin: &'a str,
+    pub transport: &'a str,
     pub session_id: Option<&'a str>,
     pub node_id: Option<&'a str>,
     pub node_name: Option<&'a str>,
@@ -95,6 +96,7 @@ pub struct UsageRequestSyncRow {
     pub api_key_ref: String,
     pub model: String,
     pub origin: String,
+    pub transport: String,
     pub session_id: String,
     pub node_id: String,
     pub node_name: String,
@@ -131,6 +133,17 @@ pub struct LanEditSyncEvent {
     pub entity_id: String,
     pub op: String,
     pub payload: Value,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SharedTrackedSpendDaySourceRow {
+    pub provider: String,
+    pub shared_provider_id: String,
+    pub day_key: String,
+    pub source_node_id: String,
+    pub source_node_name: String,
+    pub row: Value,
+    pub updated_at_unix_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -187,6 +200,16 @@ impl Default for EventPolicy {
             display_bucket: None,
         }
     }
+}
+
+pub struct StoredEventRow {
+    pub id: String,
+    pub provider: String,
+    pub level: String,
+    pub code: String,
+    pub message: String,
+    pub fields: Value,
+    pub unix_ms: u64,
 }
 
 macro_rules! define_event_codes {
@@ -259,6 +282,7 @@ define_event_codes! {
     CONFIG_PROVIDER_QUOTA_HARD_CAP_UPDATED => ("info", "config.provider_quota_hard_cap_updated"),
     CONFIG_PROVIDER_RENAMED => ("info", "config.provider_renamed"),
     CONFIG_PROVIDER_SCHEDULE_UPDATED => ("info", "config.provider_schedule_updated"),
+    CONFIG_PROVIDER_SUPPORTS_WEBSOCKETS_UPDATED => ("info", "config.provider_supports_websockets_updated"),
     CONFIG_PROVIDER_TIMELINE_UPDATED => ("info", "config.provider_timeline_updated"),
     CONFIG_PROVIDER_UPSERTED => ("info", "config.provider_upserted"),
     CONFIG_ROUTE_MODE_UPDATED => ("info", "config.route_mode_updated"),
@@ -281,6 +305,7 @@ define_event_codes! {
     GATEWAY_RUNTIME_LISTENER_SKIPPED => ("info", "gateway.runtime_listener_skipped"),
     GATEWAY_STREAM_FALLBACK_TO_NON_STREAM => ("warning", "gateway.stream_fallback_to_non_stream"),
     GATEWAY_UPSTREAM_RETRY => ("warning", "gateway.upstream_retry"),
+    GATEWAY_WEBSOCKET_FALLBACK_TO_HTTP => ("warning", "gateway.websocket_fallback_to_http"),
     HEALTH_PROBE_FAILED => ("error", "health.probe_failed"),
     HEALTH_PROBE_OK => ("info", "health.probe_ok"),
     LAN_EDIT_SYNC_APPLIED => ("info", "lan.edit_sync_applied"),
@@ -416,6 +441,7 @@ define_scoped_event_methods!(ConfigEventReporter {
     provider_order_updated => CONFIG_PROVIDER_ORDER_UPDATED,
     provider_renamed => CONFIG_PROVIDER_RENAMED,
     provider_upserted => CONFIG_PROVIDER_UPSERTED,
+    provider_supports_websockets_updated => CONFIG_PROVIDER_SUPPORTS_WEBSOCKETS_UPDATED,
     route_mode_updated => CONFIG_ROUTE_MODE_UPDATED,
     session_preferred_provider_cleared => CONFIG_SESSION_PREFERRED_PROVIDER_CLEARED,
     session_preferred_provider_updated => CONFIG_SESSION_PREFERRED_PROVIDER_UPDATED,
@@ -659,6 +685,7 @@ impl Store {
               api_key_ref TEXT NOT NULL,
               model TEXT NOT NULL,
               origin TEXT NOT NULL,
+              transport TEXT NOT NULL DEFAULT 'http',
               session_id TEXT NOT NULL,
               node_id TEXT NOT NULL DEFAULT '',
               node_name TEXT NOT NULL DEFAULT '',
@@ -734,6 +761,28 @@ impl Store {
             );
             CREATE INDEX IF NOT EXISTS idx_spend_days_remote_provider_started_at
               ON spend_days_remote(provider, day_started_at_unix_ms ASC, source_node_id ASC);
+            CREATE TABLE IF NOT EXISTS tracked_spend_days_shared(
+              provider TEXT NOT NULL,
+              shared_provider_id TEXT NOT NULL,
+              day_key TEXT NOT NULL,
+              row_json TEXT NOT NULL,
+              updated_at_unix_ms INTEGER NOT NULL,
+              PRIMARY KEY(shared_provider_id, day_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tracked_spend_days_shared_provider_day
+              ON tracked_spend_days_shared(provider, day_key ASC);
+            CREATE TABLE IF NOT EXISTS tracked_spend_days_shared_sources(
+              provider TEXT NOT NULL,
+              shared_provider_id TEXT NOT NULL,
+              day_key TEXT NOT NULL,
+              source_node_id TEXT NOT NULL,
+              source_node_name TEXT NOT NULL,
+              row_json TEXT NOT NULL,
+              updated_at_unix_ms INTEGER NOT NULL,
+              PRIMARY KEY(shared_provider_id, day_key, source_node_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tracked_spend_days_shared_sources_provider_day
+              ON tracked_spend_days_shared_sources(provider, day_key ASC, source_node_id ASC);
             CREATE TABLE IF NOT EXISTS spend_manual_days(
               provider TEXT NOT NULL,
               day_key TEXT NOT NULL,
@@ -976,6 +1025,12 @@ impl Store {
         if !columns.contains("node_name") {
             conn.execute(
                 "ALTER TABLE usage_requests ADD COLUMN node_name TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        if !columns.contains("transport") {
+            conn.execute(
+                "ALTER TABLE usage_requests ADD COLUMN transport TEXT NOT NULL DEFAULT 'http'",
                 [],
             )?;
         }
@@ -1950,6 +2005,7 @@ impl Store {
     }
 
     fn event_from_sql_row(
+        id: String,
         unix_ms: i64,
         provider: String,
         level: String,
@@ -1965,6 +2021,7 @@ impl Store {
             None => Value::Null,
         };
         Some(serde_json::json!({
+            "id": id,
             "provider": provider,
             "level": level,
             "unix_ms": unix_ms,
@@ -2735,6 +2792,14 @@ impl Store {
                 "UPDATE spend_manual_days SET provider=?1 WHERE provider=?2",
                 params![new, old],
             );
+            let _ = conn.execute(
+                "UPDATE tracked_spend_days_shared SET provider=?1 WHERE provider=?2",
+                params![new, old],
+            );
+            let _ = conn.execute(
+                "UPDATE tracked_spend_days_shared_sources SET provider=?1 WHERE provider=?2",
+                params![new, old],
+            );
         }
 
         for prefix in ["usage_day:"] {
@@ -2797,7 +2862,7 @@ impl Store {
         let mut out: Vec<Value> = Vec::with_capacity(error_cap.min(128));
         let conn = self.events_db.lock();
         let Ok(mut stmt) = conn.prepare(
-            "SELECT unix_ms, provider, level, code, message, fields_json
+            "SELECT id, unix_ms, provider, level, code, message, fields_json
              FROM events
              WHERE level = 'error'
              ORDER BY unix_ms DESC
@@ -2807,19 +2872,20 @@ impl Store {
         };
         let Ok(rows) = stmt.query_map([error_cap as i64], |row| {
             Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
             ))
         }) else {
             return out;
         };
-        for (unix_ms, provider, level, code, message, fields_json) in rows.flatten() {
+        for (id, unix_ms, provider, level, code, message, fields_json) in rows.flatten() {
             if let Some(v) =
-                Self::event_from_sql_row(unix_ms, provider, level, code, message, fields_json)
+                Self::event_from_sql_row(id, unix_ms, provider, level, code, message, fields_json)
             {
                 out.push(v);
             }
@@ -2922,7 +2988,7 @@ impl Store {
         let mut out: Vec<Value> = Vec::with_capacity(cap.min(1024));
         let conn = self.events_db.lock();
         let Ok(mut stmt) = conn.prepare(
-            "SELECT unix_ms, provider, level, code, message, fields_json
+            "SELECT id, unix_ms, provider, level, code, message, fields_json
              FROM events
              WHERE (?1 IS NULL OR unix_ms >= ?1)
                AND (?2 IS NULL OR unix_ms <= ?2)
@@ -2933,24 +2999,178 @@ impl Store {
         };
         let Ok(rows) = stmt.query_map(params![from_i64, to_i64, cap as i64], |row| {
             Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
             ))
         }) else {
             return out;
         };
-        for (unix_ms, provider, level, code, message, fields_json) in rows.flatten() {
+        for (id, unix_ms, provider, level, code, message, fields_json) in rows.flatten() {
             if let Some(v) =
-                Self::event_from_sql_row(unix_ms, provider, level, code, message, fields_json)
+                Self::event_from_sql_row(id, unix_ms, provider, level, code, message, fields_json)
             {
                 out.push(v);
             }
         }
         out
+    }
+
+    pub fn get_event_by_id(&self, id: &str) -> Option<Value> {
+        let trimmed_id = id.trim();
+        if trimmed_id.is_empty() {
+            return None;
+        }
+        let conn = self.events_db.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, unix_ms, provider, level, code, message, fields_json
+                 FROM events
+                 WHERE id = ?1
+                 LIMIT 1",
+            )
+            .ok()?;
+        let (id, unix_ms, provider, level, code, message, fields_json) = stmt
+            .query_row([trimmed_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
+            .ok()?;
+        Self::event_from_sql_row(id, unix_ms, provider, level, code, message, fields_json)
+    }
+
+    pub fn find_recent_error_event_for_provider(
+        &self,
+        provider: &str,
+        unix_ms: u64,
+        message: &str,
+    ) -> Option<Value> {
+        let Ok(unix_ms_i64) = i64::try_from(unix_ms) else {
+            return None;
+        };
+        let provider = provider.trim();
+        if provider.is_empty() {
+            return None;
+        }
+        let conn = self.events_db.lock();
+        let window_start = unix_ms_i64.saturating_sub(5 * 60 * 1000);
+        let window_end = unix_ms_i64.saturating_add(5 * 60 * 1000);
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, unix_ms, provider, level, code, message, fields_json
+                 FROM events
+                 WHERE provider = ?1
+                   AND level = 'error'
+                   AND unix_ms >= ?2
+                   AND unix_ms <= ?3
+                 ORDER BY unix_ms DESC
+                 LIMIT 32",
+            )
+            .ok()?;
+        let rows = stmt
+            .query_map(params![provider, window_start, window_end], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
+            .ok()?;
+        let message = message.trim();
+        let mut exact: Option<(u64, Value)> = None;
+        for (id, row_unix_ms, row_provider, level, code, row_message, fields_json) in rows.flatten()
+        {
+            let Some(event) = Self::event_from_sql_row(
+                id,
+                row_unix_ms,
+                row_provider,
+                level,
+                code,
+                row_message.clone(),
+                fields_json,
+            ) else {
+                continue;
+            };
+            let Ok(distance) = u64::try_from((row_unix_ms - unix_ms_i64).abs()) else {
+                continue;
+            };
+            if row_message.trim() == message {
+                match exact {
+                    Some((best_distance, _)) if best_distance <= distance => {}
+                    _ => exact = Some((distance, event)),
+                }
+            }
+        }
+        exact.map(|(_, event)| event)
+    }
+
+    pub fn insert_event_row(&self, row: StoredEventRow) -> bool {
+        let id = row.id.trim();
+        if id.is_empty() {
+            return false;
+        }
+        let fields = match row.fields {
+            Value::Object(obj) => Value::Object(obj),
+            Value::Null => Value::Null,
+            other => serde_json::json!({ "value": other }),
+        };
+        let fields_json = serde_json::to_string(&fields).unwrap_or_else(|_| "null".to_string());
+        let Ok(ts_i64) = i64::try_from(row.unix_ms) else {
+            return false;
+        };
+        let Some(day_key) = Self::local_day_key_from_unix_ms(row.unix_ms) else {
+            return false;
+        };
+        let Some(day_start_unix_ms) =
+            Self::day_start_unix_ms_from_day_key(&day_key).and_then(|x| i64::try_from(x).ok())
+        else {
+            return false;
+        };
+        let mut conn = self.events_db.lock();
+        let Ok(tx) = conn.transaction() else {
+            return false;
+        };
+        let inserted = tx.execute(
+            "INSERT OR IGNORE INTO events(id, unix_ms, provider, level, code, message, fields_json)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id,
+                ts_i64,
+                row.provider,
+                row.level,
+                row.code,
+                row.message,
+                fields_json
+            ],
+        );
+        let Ok(inserted) = inserted else {
+            let _ = tx.rollback();
+            return false;
+        };
+        if inserted == 0 {
+            let _ = tx.rollback();
+            return false;
+        }
+        if Self::upsert_event_day_counts(&tx, &day_key, day_start_unix_ms, &row.level).is_err() {
+            let _ = tx.rollback();
+            return false;
+        }
+        tx.commit().is_ok()
     }
 
     pub fn backfill_usage_request_node_identity(&self, node_id: &str, node_name: &str) -> usize {
@@ -2974,7 +3194,7 @@ impl Store {
         let mut out: Vec<Value> = Vec::with_capacity(limit.min(1024));
         let conn = self.events_db.lock();
         let Ok(mut stmt) = conn.prepare(
-            "SELECT id, provider, api_key_ref, model, origin, session_id, unix_ms, node_id, node_name,
+            "SELECT id, provider, api_key_ref, model, origin, transport, session_id, unix_ms, node_id, node_name,
                     input_tokens, output_tokens, total_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens
              FROM usage_requests
@@ -2990,15 +3210,16 @@ impl Store {
                 "api_key_ref": row.get::<_, String>(2)?,
                 "model": row.get::<_, String>(3)?,
                 "origin": row.get::<_, String>(4)?,
-                "session_id": row.get::<_, String>(5)?,
-                "unix_ms": u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
-                "node_id": row.get::<_, String>(7)?,
-                "node_name": row.get::<_, String>(8)?,
-                "input_tokens": u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
-                "output_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
-                "total_tokens": u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
-                "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
-                "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
+                "transport": row.get::<_, String>(5)?,
+                "session_id": row.get::<_, String>(6)?,
+                "unix_ms": u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                "node_id": row.get::<_, String>(8)?,
+                "node_name": row.get::<_, String>(9)?,
+                "input_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+                "output_tokens": u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+                "total_tokens": u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
+                "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
+                "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(14)?).unwrap_or(0),
             }))
         }) else {
             return out;
@@ -3028,6 +3249,7 @@ impl Store {
                 api_key_ref,
                 model,
                 origin,
+                transport,
                 session_id,
                 node_id,
                 node_name,
@@ -3060,14 +3282,15 @@ impl Store {
                     api_key_ref: row.get::<_, String>(4)?,
                     model: row.get::<_, String>(5)?,
                     origin: row.get::<_, String>(6)?,
-                    session_id: row.get::<_, String>(7)?,
-                    node_id: row.get::<_, String>(8)?,
-                    node_name: row.get::<_, String>(9)?,
-                    input_tokens: u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
-                    output_tokens: u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
-                    total_tokens: u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
-                    cache_creation_input_tokens: u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
-                    cache_read_input_tokens: u64::try_from(row.get::<_, i64>(14)?).unwrap_or(0),
+                    transport: row.get::<_, String>(7)?,
+                    session_id: row.get::<_, String>(8)?,
+                    node_id: row.get::<_, String>(9)?,
+                    node_name: row.get::<_, String>(10)?,
+                    input_tokens: u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+                    output_tokens: u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
+                    total_tokens: u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
+                    cache_creation_input_tokens: u64::try_from(row.get::<_, i64>(14)?).unwrap_or(0),
+                    cache_read_input_tokens: u64::try_from(row.get::<_, i64>(15)?).unwrap_or(0),
                 })
             },
         ) else {
@@ -3095,10 +3318,10 @@ impl Store {
         for row in rows {
             let Ok(changed) = tx.execute(
                 "INSERT OR IGNORE INTO usage_requests(
-                    id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, session_id,
+                    id, unix_ms, ingested_at_unix_ms, provider, api_key_ref, model, origin, transport, session_id,
                     node_id, node_name, input_tokens, output_tokens, total_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                 params![
                     row.id,
                     i64::try_from(row.unix_ms).unwrap_or(i64::MAX),
@@ -3107,6 +3330,7 @@ impl Store {
                     row.api_key_ref,
                     row.model,
                     row.origin,
+                    row.transport,
                     row.session_id,
                     row.node_id,
                     row.node_name,
@@ -3138,12 +3362,13 @@ impl Store {
         providers: &[String],
         models: &[String],
         origins: &[String],
+        transports: &[String],
         sessions: &[String],
         limit: usize,
         offset: usize,
     ) -> (Vec<Value>, bool) {
         let mut sql = String::from(
-            "SELECT id, provider, api_key_ref, model, origin, session_id, unix_ms, node_id, node_name,
+            "SELECT id, provider, api_key_ref, model, origin, transport, session_id, unix_ms, node_id, node_name,
                     input_tokens, output_tokens, total_tokens,
                     cache_creation_input_tokens, cache_read_input_tokens
              FROM usage_requests
@@ -3201,6 +3426,15 @@ impl Store {
                 ));
             }
         }
+        if !transports.is_empty() {
+            let placeholders = vec!["?"; transports.len()].join(", ");
+            sql.push_str(&format!(" AND lower(transport) IN ({placeholders})"));
+            for transport in transports {
+                params.push(rusqlite::types::Value::Text(
+                    transport.trim().to_ascii_lowercase(),
+                ));
+            }
+        }
         if !sessions.is_empty() {
             let placeholders = vec!["?"; sessions.len()].join(", ");
             sql.push_str(&format!(" AND lower(session_id) IN ({placeholders})"));
@@ -3230,15 +3464,16 @@ impl Store {
                     "api_key_ref": row.get::<_, String>(2)?,
                     "model": row.get::<_, String>(3)?,
                     "origin": row.get::<_, String>(4)?,
-                    "session_id": row.get::<_, String>(5)?,
-                    "unix_ms": u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
-                    "node_id": row.get::<_, String>(7)?,
-                    "node_name": row.get::<_, String>(8)?,
-                    "input_tokens": u64::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
-                    "output_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
-                    "total_tokens": u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
-                    "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
-                    "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
+                    "transport": row.get::<_, String>(5)?,
+                    "session_id": row.get::<_, String>(6)?,
+                    "unix_ms": u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                    "node_id": row.get::<_, String>(8)?,
+                    "node_name": row.get::<_, String>(9)?,
+                    "input_tokens": u64::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+                    "output_tokens": u64::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+                    "total_tokens": u64::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
+                    "cache_creation_input_tokens": u64::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
+                    "cache_read_input_tokens": u64::try_from(row.get::<_, i64>(14)?).unwrap_or(0),
                 }))
             }) else {
                 return (out, false);
@@ -3264,6 +3499,7 @@ impl Store {
         providers: &[String],
         models: &[String],
         origins: &[String],
+        transports: &[String],
         sessions: &[String],
     ) -> (u64, u64, u64, u64, u64, u64) {
         let mut sql = String::from(
@@ -3325,6 +3561,15 @@ impl Store {
             for origin in origins {
                 params.push(rusqlite::types::Value::Text(
                     origin.trim().to_ascii_lowercase(),
+                ));
+            }
+        }
+        if !transports.is_empty() {
+            let placeholders = vec!["?"; transports.len()].join(", ");
+            sql.push_str(&format!(" AND lower(transport) IN ({placeholders})"));
+            for transport in transports {
+                params.push(rusqlite::types::Value::Text(
+                    transport.trim().to_ascii_lowercase(),
                 ));
             }
         }

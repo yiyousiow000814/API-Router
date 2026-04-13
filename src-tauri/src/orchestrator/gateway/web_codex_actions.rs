@@ -1445,6 +1445,7 @@ pub(super) async fn codex_rpc_proxy(
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::{
         build_turn_start_params, build_turn_start_response, parse_slash_command,
@@ -1727,7 +1728,7 @@ mod tests {
             .iter()
             .find(|entry| entry.command == "/fast")
             .expect("fast command");
-        assert!(fast.children.iter().all(|child| child.active == false));
+        assert!(fast.children.iter().all(|child| !child.active));
     }
 
     #[test]

@@ -101,6 +101,7 @@ export type UseProviderActionsResult = {
   saveProviderBaseUrl: () => Promise<void>
   setUsageBaseUrl: (provider: string, url: string) => Promise<void>
   clearUsageBaseUrl: (name: string) => Promise<void>
+  setProviderSupportsWebsockets: (provider: string, enabled: boolean) => Promise<void>
   setProviderQuotaHardCap: (
     provider: string,
     field: 'daily' | 'weekly' | 'monthly',

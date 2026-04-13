@@ -230,17 +230,22 @@ pub(super) fn resume_import_order(workspace_hint: Option<WorkspaceTarget>) -> Ve
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "windows")]
+    use super::codex_home_dir_for_override;
     use super::{
-        codex_home_dir_for_override, import_rollout_file_into_codex_home,
-        import_rollout_from_known_path, resume_import_order, WorkspaceTarget,
+        import_rollout_file_into_codex_home, import_rollout_from_known_path, resume_import_order,
+        WorkspaceTarget,
     };
+    #[cfg(target_os = "windows")]
     use crate::orchestrator::gateway::web_codex_home::{lock_wsl_identity_cache, WslIdentityCache};
     use std::path::Path;
 
+    #[cfg(target_os = "windows")]
     struct WslIdentityGuard {
         previous: Option<WslIdentityCache>,
     }
 
+    #[cfg(target_os = "windows")]
     impl WslIdentityGuard {
         fn set(distro: &str, home: &str) -> Self {
             let mut cache = lock_wsl_identity_cache();
@@ -255,6 +260,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "windows")]
     impl Drop for WslIdentityGuard {
         fn drop(&mut self) {
             let mut cache = lock_wsl_identity_cache();

@@ -8,51 +8,43 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+mod status_snapshot_support;
+
+#[allow(unused_imports)]
+pub(crate) use self::status_snapshot_support::{
+    merge_thread_index_session_hints, next_last_discovered_unix_ms,
+    recent_client_sessions_with_main_parent_context, retain_live_app_server_sessions,
+    session_has_rollout, session_is_active, session_last_seen_unix_ms, should_keep_runtime_session,
+    thread_item_bool_field, thread_item_is_live_presence, thread_item_parent_session_id,
+    thread_item_status_type, thread_item_string_field, thread_item_updated_unix_ms,
+    visible_client_session_items,
+};
+
 fn tracked_spend_day_key(day: &Value) -> Option<String> {
-    let started_at_unix_ms = day
-        .get("started_at_unix_ms")
-        .and_then(Value::as_u64)
+    day.get("day_key")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
         .or_else(|| {
-            day.get("ended_at_unix_ms")
+            let started_at_unix_ms = day
+                .get("started_at_unix_ms")
                 .and_then(Value::as_u64)
-                .map(|value| value.saturating_sub(1))
+                .or_else(|| {
+                    day.get("ended_at_unix_ms")
+                        .and_then(Value::as_u64)
+                        .map(|value| value.saturating_sub(1))
+                })
+                .or_else(|| day.get("updated_at_unix_ms").and_then(Value::as_u64))?;
+            local_day_key_from_unix_ms(started_at_unix_ms)
         })
-        .or_else(|| day.get("updated_at_unix_ms").and_then(Value::as_u64))?;
-    local_day_key_from_unix_ms(started_at_unix_ms)
 }
 
 fn tracked_spend_days_with_remote_fallback(
     store: &crate::orchestrator::store::Store,
     provider: &str,
 ) -> Vec<Value> {
-    let local_days = store.list_local_spend_days(provider);
-    let mut day_keys_with_positive_local = BTreeSet::new();
-    for day in &local_days {
-        let tracked = day
-            .get("tracked_spend_usd")
-            .and_then(|value| {
-                value
-                    .as_f64()
-                    .or_else(|| value.as_i64().map(|n| n as f64))
-                    .or_else(|| value.as_u64().map(|n| n as f64))
-            })
-            .filter(|value| value.is_finite() && *value > 0.0);
-        if let (Some(day_key), Some(_)) = (tracked_spend_day_key(day), tracked) {
-            day_keys_with_positive_local.insert(day_key);
-        }
-    }
-
-    let mut merged = local_days;
-    for day in store.list_remote_spend_days(provider) {
-        let Some(day_key) = tracked_spend_day_key(&day) else {
-            continue;
-        };
-        if day_keys_with_positive_local.contains(&day_key) {
-            continue;
-        }
-        merged.push(day);
-    }
-    merged
+    store.list_shared_tracked_spend_days(provider)
 }
 
 include!("commands/status_snapshot.rs");

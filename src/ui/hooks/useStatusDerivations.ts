@@ -1,5 +1,6 @@
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import type { Config, Status } from '../types'
+import { recordUiTrace } from '../tauriCore'
 
 type UseStatusDerivationsOptions = {
   status: Status | null
@@ -40,6 +41,23 @@ export function useStatusDerivations({
     }
     return [...sessions].sort((a, b) => (order[a.id] ?? 0) - (order[b.id] ?? 0))
   }, [status])
+
+  useEffect(() => {
+    recordUiTrace('sessions.status_derivation', {
+      count: clientSessions.length,
+      sessions: clientSessions.slice(0, 40).map((session) => ({
+        id: session.id,
+        parent: session.agent_parent_session_id ?? null,
+        active: session.active,
+        verified: session.verified ?? true,
+        is_agent: session.is_agent ?? false,
+        is_review: session.is_review ?? false,
+        current_provider: session.current_provider ?? null,
+        reported_model_provider: session.reported_model_provider ?? null,
+        last_seen_unix_ms: session.last_seen_unix_ms,
+      })),
+    })
+  }, [clientSessions])
 
   return {
     providers,

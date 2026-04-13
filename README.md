@@ -16,23 +16,22 @@ inside the app without editing your Codex config again.
 - Usage display is best-effort (depends on each provider's usage endpoint).
 - Runs in the background (tray icon with Show/Quit).
 
-## Quick start (Windows)
+## Quick start
 
-1) Install dependencies:
+1) Download the latest Windows build from GitHub Releases and run it.
+
+2) Clone this repo and build the EXE locally:
 
 ```powershell
 npm install
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools\build\build-root-exe.ps1
 ```
 
-2) Run the app:
+The built app is written to the repo root as `API Router.exe`.
 
-```powershell
-npm run tauri dev
-```
+Then open the app, add providers, and set their API keys.
 
-3) In the app, add providers and set their API keys.
-
-4) Set the gateway token in `.codex/auth.json`:
+Set the gateway token in `.codex/auth.json`:
 
 ```json
 {
@@ -44,7 +43,7 @@ Notes:
 - The file must be UTF-8 **without BOM** (BOM breaks JSON parsing).
 - The gateway token is stored locally at `./user-data/secrets.json` (gitignored).
 
-5) Point Codex to API Router (one-time):
+Point Codex to API Router (one-time):
 
 ```toml
 model_provider = "api_router"
@@ -70,11 +69,16 @@ After this, you switch providers inside the app.
   Sessions may appear as verified or unverified (best-effort pre-discovery before the first request).
   Closed Codex sessions disappear automatically. See `docs/windows-terminal-sessions.md`.
 
+## Platform support
+
+- Windows desktop app
+- WSL2 is supported as a companion environment for Codex and session integration
+
 ## Not supported
 
 - Chat Completions API (this app focuses on Responses).
 - Reusing official OAuth credentials for upstream providers.
-- Non-Windows platforms are untested.
+- Non-Windows native installs.
 
 ## Troubleshooting
 
@@ -127,30 +131,3 @@ Reset to normal mode:
 ```powershell
 Remove-Item Env:API_ROUTER_PROFILE
 ```
-
-## Build EXE (local)
-
-```powershell
-npm run build:root-exe
-```
-
-The EXE will be written to the repo root as `API Router.exe`.
-
-To build Windows installer bundles (`msi` / `nsis`) as well, run:
-
-```powershell
-npm run build:root-installers
-```
-
-## Checks
-
-```powershell
-npm run test
-npm run backend:check
-npm run ui:check
-npm run check:all
-```
-
-Notes:
-- `ui:check` is Windows-only and auto-skips on non-Windows.
-- `check:all` runs frontend tests + backend tests + UI check.

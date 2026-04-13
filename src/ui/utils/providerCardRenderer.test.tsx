@@ -86,7 +86,7 @@ function buildStatusWithoutDetectedWindows(): Status {
   return status
 }
 
-function renderCardHtml(config: Config, status: Status): string {
+function renderCardHtml(config: Config, status: Status, openProviderCapsMenu: string | null = null): string {
   const setProviderNameDrafts = (() => undefined) as React.Dispatch<
     React.SetStateAction<Record<string, string>>
   >
@@ -110,6 +110,7 @@ function renderCardHtml(config: Config, status: Status): string {
     setProviderDisabled: async () => undefined,
     openProviderGroupManager: () => undefined,
     openProviderBaseUrlModal: () => undefined,
+    setProviderSupportsWebsockets: async () => undefined,
     openKeyModal: async () => undefined,
     clearKey: async () => undefined,
     deleteProvider: async () => undefined,
@@ -119,6 +120,10 @@ function renderCardHtml(config: Config, status: Status): string {
     openProviderEmailModal: () => undefined,
     clearUsageBaseUrl: async () => undefined,
     setProviderQuotaHardCap: async () => undefined,
+    showProviderWsTooltip: () => undefined,
+    hideProviderWsTooltip: () => undefined,
+    openProviderCapsMenu,
+    toggleProviderCapsMenu: () => undefined,
   })
 
   const card = renderer('p1')
@@ -133,8 +138,8 @@ describe('provider usage controls rendering', () => {
     expect(html).not.toContain('Usage Auth')
     expect(html).toContain('Base URL')
     expect(html).toContain('Usage URL')
-    expect(html).toContain('daily cap')
-    expect(html).toContain('monthly cap')
+    expect(html).toContain('Caps')
+    expect(html).toContain('2/2')
     expect(html).not.toContain('Usage controls')
     expect(html).not.toContain('Show')
     expect(html).not.toContain('Hide')
@@ -153,6 +158,17 @@ describe('provider usage controls rendering', () => {
     expect(html).toContain('Email')
     expect(html).toContain('Open Group Manager')
     expect(html).not.toContain('Current group: alpha')
+  })
+
+  it('shows websocket badge when provider supports websockets', () => {
+    const config = buildConfig(null)
+    config.providers.p1 = {
+      ...config.providers.p1,
+      supports_websockets: true,
+    }
+    const html = renderCardHtml(config, buildStatus())
+    expect(html).toContain('WS')
+    expect(html).toContain('Disable WebSocket')
   })
 
   it('disables grouped controls on borrowed providers', () => {
@@ -180,6 +196,13 @@ describe('provider usage controls rendering', () => {
     expect(html).toContain('Usage Auth')
     expect(html).not.toContain('Usage URL')
     expect(html).not.toContain('Usage URL sets the usage endpoint.')
+  })
+
+  it('keeps caps menu content out of the inline provider card markup', () => {
+    const html = renderCardHtml(buildConfig(null), buildStatus(), 'p1')
+    expect(html).toContain('Caps')
+    expect(html).not.toContain('Quota hard caps')
+    expect(html).not.toContain('daily cap')
   })
 
   it('keeps only usage url for packycode hosts', () => {
