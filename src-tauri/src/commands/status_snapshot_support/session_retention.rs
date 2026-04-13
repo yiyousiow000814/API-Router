@@ -29,8 +29,7 @@ pub(crate) fn retain_live_app_server_sessions(
         .collect();
     let terminal_live_wt_sessions: HashSet<String> = terminal_snapshot_items
         .iter()
-        .map(|item| item.wt_session.trim().to_ascii_lowercase())
-        .filter(|wt| !wt.is_empty())
+        .filter_map(|item| normalized_wt_session_key(&item.wt_session))
         .collect();
     let snapshot_live_session_ids: HashSet<String> = snapshot_items
         .iter()
@@ -225,7 +224,7 @@ fn runtime_session_is_wsl(entry: &ClientSessionRuntime) -> bool {
         let normalized = path.trim().replace('/', "\\").to_ascii_lowercase();
         normalized.starts_with(r"\\wsl.localhost\")
             || normalized.starts_with(r"\\wsl$\")
-            || normalized.contains(r"\home\")
+            || normalized.starts_with(r"\home\")
     })
 }
 
@@ -240,8 +239,18 @@ fn terminal_session_present(
     entry
         .wt_session
         .as_deref()
-        .map(str::trim)
-        .filter(|wt| !wt.is_empty())
-        .map(|wt| wt.to_ascii_lowercase())
+        .and_then(normalized_wt_session_key)
         .is_some_and(|wt| live_wt_sessions.contains(&wt))
+}
+
+fn normalized_wt_session_key(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let normalized = trimmed
+        .trim_start_matches("wsl:")
+        .trim_start_matches("WSL:")
+        .trim();
+    (!normalized.is_empty()).then(|| normalized.to_ascii_lowercase())
 }

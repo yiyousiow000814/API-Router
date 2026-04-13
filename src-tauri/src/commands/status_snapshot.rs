@@ -4098,6 +4098,57 @@ mod tests {
     }
 
     #[test]
+    fn fresh_terminal_snapshot_matches_wsl_session_even_without_wsl_prefix() {
+        let now = 2_000_000_u64;
+        let mut map = HashMap::from([(
+            "wsl-live-terminal".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "wsl-live-terminal".to_string(),
+                pid: 0,
+                wt_session: Some("wsl:live-tab".to_string()),
+                last_request_unix_ms: now.saturating_sub(90_000),
+                last_discovered_unix_ms: now.saturating_sub(90_000),
+                last_reported_model_provider: Some("api_router".to_string()),
+                last_reported_model: Some("gpt-5.4".to_string()),
+                last_reported_base_url: Some("http://172.26.144.1:4000/v1".to_string()),
+                rollout_path: Some(
+                    "\\\\wsl.localhost\\Ubuntu\\home\\yiyou\\.codex\\sessions\\wsl-live-terminal.jsonl"
+                        .to_string(),
+                ),
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: true,
+            },
+        )]);
+
+        let terminal_items = vec![crate::platform::windows_terminal::InferredWtSession {
+            wt_session: "live-tab".to_string(),
+            pid: 0,
+            linux_pid: Some(4242),
+            wsl_distro: None,
+            cwd: None,
+            rollout_path: None,
+            codex_session_id: None,
+            reported_model_provider: None,
+            reported_base_url: None,
+            agent_parent_session_id: None,
+            is_agent: false,
+            is_review: false,
+            router_confirmed: false,
+        }];
+
+        let removed =
+            retain_live_app_server_sessions(&mut map, now, &terminal_items, true, &[], true);
+
+        assert!(removed.is_empty());
+        assert!(
+            map.contains_key("wsl-live-terminal"),
+            "wsl-prefixed runtime markers should still match unprefixed terminal snapshot ids",
+        );
+    }
+
+    #[test]
     fn thread_index_not_loaded_item_no_longer_refreshes_runtime_session_to_now() {
         let now = 1_800_000_000_000_u64;
         let mut map = HashMap::from([(
@@ -4146,6 +4197,34 @@ mod tests {
         assert!(
             !should_keep_runtime_session(entry, now, |_pid| true, |_wt| true, false, 0, true),
             "stale pidless runtime sessions should disappear once only historical notLoaded evidence remains",
+        );
+    }
+
+    #[test]
+    fn windows_path_with_home_segment_is_not_classified_as_wsl() {
+        let now = 2_000_000_u64;
+        let entry = ClientSessionRuntime {
+            codex_session_id: "desktop-home-path".to_string(),
+            pid: 0,
+            wt_session: None,
+            last_request_unix_ms: 0,
+            last_discovered_unix_ms: now.saturating_sub(5_000),
+            last_reported_model_provider: Some("api_router".to_string()),
+            last_reported_model: Some("gpt-5.4".to_string()),
+            last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+            rollout_path: Some(
+                "D:\\home\\user\\.codex\\sessions\\desktop-home-path.jsonl".to_string(),
+            ),
+            agent_parent_session_id: None,
+            is_agent: false,
+            is_review: false,
+            confirmed_router: true,
+        };
+
+        let keep = should_keep_runtime_session(&entry, now, |_pid| true, |_wt| true, false, 0, true);
+        assert!(
+            keep,
+            "ordinary Windows paths containing \\\\home\\\\ should stay on the desktop retention path",
         );
     }
 
