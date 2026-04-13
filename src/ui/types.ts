@@ -20,6 +20,7 @@ export type Status = {
   metrics: Record<string, { ok_requests: number; error_requests: number; total_tokens: number }>
   // Dashboard snapshot window (small/recent only), not full Event Log history.
   recent_events: Array<{
+    id?: string
     provider: string
     level: string
     unix_ms: number

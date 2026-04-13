@@ -8,6 +8,22 @@ export type LastErrorJump = {
   provider: string
   unixMs: number
   message: string
+  eventId?: string | null
+}
+
+export function findLastErrorEventId(
+  events: Status['recent_events'],
+  target: { provider: string; unixMs: number; message: string },
+): string | null {
+  const providerNeedle = target.provider.trim().toLowerCase()
+  const messageNeedle = target.message.trim()
+  const candidates = (events ?? []).filter((event) => event.provider.trim().toLowerCase() === providerNeedle && event.level === 'error')
+  if (!candidates.length) return null
+  const exactMessage = candidates.filter((event) => event.message.trim() === messageNeedle)
+  const pool = exactMessage.length ? exactMessage : candidates
+  const targetUnixMs = Number(target.unixMs) || 0
+  const closest = [...pool].sort((a, b) => Math.abs(a.unix_ms - targetUnixMs) - Math.abs(b.unix_ms - targetUnixMs))[0]
+  return closest?.id ?? null
 }
 
 type Props = {
@@ -287,6 +303,11 @@ export function ProvidersTable({
                             provider: p,
                             unixMs: lastErrorAt,
                             message: h.last_error,
+                            eventId: findLastErrorEventId(status.recent_events, {
+                              provider: p,
+                              unixMs: lastErrorAt,
+                              message: h.last_error,
+                            }),
                           })
                         }
                         title="Open in Event Log"

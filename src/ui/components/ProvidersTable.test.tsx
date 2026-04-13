@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { ProvidersTable } from './ProvidersTable'
+import { findLastErrorEventId, ProvidersTable } from './ProvidersTable'
 import type { Config, Status, UsageStatistics } from '../types'
 import { fmtWhen } from '../utils/format'
 
@@ -57,6 +57,18 @@ function buildStatus(): Status {
 }
 
 describe('ProvidersTable', () => {
+  it('resolves last error jump to an exact preview event id when available', () => {
+    const status = buildStatus()
+
+    expect(
+      findLastErrorEventId(status.recent_events, {
+        provider: 'packycode',
+        unixMs: 1234,
+        message: 'request error: boom',
+      }),
+    ).toBeDefined()
+  })
+
   it('keeps Last Error jump button visible when provider is closed', () => {
     const html = renderToStaticMarkup(
       <ProvidersTable
