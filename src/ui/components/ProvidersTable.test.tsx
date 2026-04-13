@@ -17,6 +17,7 @@ function buildStatus(): Status {
         last_error: 'request error: boom',
         last_ok_at_unix_ms: 0,
         last_fail_at_unix_ms: 1234,
+        last_error_event_id: 'evt-packycode-1234',
       },
     },
     metrics: {},
@@ -84,8 +85,26 @@ describe('ProvidersTable', () => {
     expect(html).toContain('aoLastErrorViewBtn')
   })
 
-  it('hides Last Error jump button when preview event id is unavailable', () => {
+  it('keeps Last Error jump button visible when provider snapshot carries an event id', () => {
     const status = buildStatus()
+    status.recent_events = []
+
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['packycode']}
+        status={status}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
+
+    expect(html).toContain('aoLastErrorViewBtn')
+  })
+
+  it('hides Last Error jump button when neither provider snapshot nor preview expose an event id', () => {
+    const status = buildStatus()
+    status.providers.packycode.last_error_event_id = null
     status.recent_events = [
       {
         provider: 'packycode',
@@ -157,6 +176,7 @@ describe('ProvidersTable', () => {
         last_error: 'usage refresh failed: unexpected response',
         last_ok_at_unix_ms: 1_000,
         last_fail_at_unix_ms: 2_000,
+        last_error_event_id: 'evt-packycode-2000',
       },
       packycode2: {
         status: 'unhealthy',
@@ -165,6 +185,7 @@ describe('ProvidersTable', () => {
         last_error: 'upstream returned 502',
         last_ok_at_unix_ms: 1_100,
         last_fail_at_unix_ms: 2_100,
+        last_error_event_id: 'evt-packycode2-2100',
       },
     }
     // Keep only one unrelated preview row: this reproduces the dashboard compact snapshot shape.

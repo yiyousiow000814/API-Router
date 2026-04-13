@@ -5,6 +5,7 @@ export type ProviderHealth = {
   last_error: string
   last_ok_at_unix_ms: number
   last_fail_at_unix_ms: number
+  last_error_event_id?: string | null
 }
 
 export type Status = {

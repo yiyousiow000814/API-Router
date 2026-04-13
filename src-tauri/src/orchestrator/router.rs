@@ -15,6 +15,7 @@ pub struct ProviderHealthSnapshot {
     pub last_error: String,
     pub last_ok_at_unix_ms: u64,
     pub last_fail_at_unix_ms: u64,
+    pub last_error_event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -355,6 +356,7 @@ impl RouterState {
             last_error: v.last_error.clone(),
             last_ok_at_unix_ms: v.last_ok_at_unix_ms,
             last_fail_at_unix_ms: v.last_fail_at_unix_ms,
+            last_error_event_id: None,
         }
     }
 
@@ -593,9 +595,27 @@ impl RouterState {
 
     pub fn snapshot(&self, now_ms: u64) -> HashMap<String, ProviderHealthSnapshot> {
         let health = self.health.read();
+        let store = self.store.clone();
         health
             .iter()
-            .map(|(k, v)| (k.clone(), Self::snapshot_from_health(v, now_ms)))
+            .map(|(k, v)| {
+                let mut snapshot = Self::snapshot_from_health(v, now_ms);
+                if let Some(store) = store.as_ref() {
+                    snapshot.last_error_event_id = store
+                        .find_recent_error_event_for_provider(
+                            k,
+                            snapshot.last_fail_at_unix_ms,
+                            &snapshot.last_error,
+                        )
+                        .and_then(|event| {
+                            event
+                                .get("id")
+                                .and_then(|value| value.as_str())
+                                .map(str::to_string)
+                        });
+                }
+                (k.clone(), snapshot)
+            })
             .collect()
     }
 
@@ -688,6 +708,7 @@ mod tests {
         assert_eq!(health.cooldown_until_unix_ms, 0);
         assert_eq!(health.last_error, "boom");
         assert_eq!(health.last_ok_at_unix_ms, 2_000);
+        assert_eq!(health.last_error_event_id, None);
     }
 
     #[test]
@@ -704,6 +725,38 @@ mod tests {
 
         assert_eq!(health.last_error.len(), 900);
         assert_eq!(health.last_error, long_error);
+        assert_eq!(health.last_error_event_id, None);
+    }
+
+    #[test]
+    fn snapshot_resolves_last_error_event_id_from_store() {
+        let mut cfg = AppConfig::default_config();
+        cfg.routing.failure_threshold = 1;
+        let provider = "official";
+        let unix_ms = 1_717_171_709_000;
+        let (_tmp, store) = build_test_store();
+        let router = RouterState::new_with_store(&cfg, 0, Some(store.clone()));
+
+        assert!(
+            store.insert_event_row(crate::orchestrator::store::StoredEventRow {
+                id: "evt-official-shared-1".to_string(),
+                provider: provider.to_string(),
+                level: "error".to_string(),
+                code: "gateway.request_failed".to_string(),
+                message: "boom".to_string(),
+                fields: serde_json::Value::Null,
+                unix_ms,
+            })
+        );
+
+        router.mark_failure(provider, &cfg, "boom", unix_ms);
+        let snapshot = router.snapshot(unix_ms);
+        let health = snapshot.get(provider).expect("provider health snapshot");
+
+        assert_eq!(
+            health.last_error_event_id.as_deref(),
+            Some("evt-official-shared-1")
+        );
     }
 
     #[test]
