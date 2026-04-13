@@ -272,9 +272,10 @@ export function ProvidersTable({
             const lastErrorMessage = h.last_error?.trim() ?? ''
             const lastErrorAt = h.last_fail_at_unix_ms
             // Show each provider's own latest failure in-place. Event Log jump remains best-effort:
-            // the Event Log page re-runs a provider+message+time search against its full loaded window.
+            // only surface dashboard last-error state when Event Log can locate a backing event.
             const providerIsHealthy = h.status === 'healthy'
             const showLastError =
+              !!lastErrorEventId &&
               lastErrorAt > 0 &&
               lastErrorMessage.length > 0 &&
               (!providerIsHealthy || lastErrorAt >= (h.last_ok_at_unix_ms ?? 0))

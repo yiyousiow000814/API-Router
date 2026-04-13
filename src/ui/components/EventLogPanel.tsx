@@ -318,6 +318,24 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
       // Keep current list if targeted hydration fails.
     }
   }, [hasTauriInvoke, mergeKnownYears, mergeSourceEvents])
+  const fetchFocusEventById = useCallback(async (focus: EventLogFocusRequest) => {
+    if (!hasTauriInvoke) return
+    const eventId = focus.eventId?.trim() ?? ''
+    if (!eventId) return
+    const reqId = ++focusHydrateSeqRef.current
+    try {
+      const row = await invoke<EventLogEntry | null>('get_event_log_entry_by_id', { eventId })
+      if (focusHydrateSeqRef.current !== reqId) return
+      if (!row || !Number.isFinite(Number(row.unix_ms))) return
+      mergeSourceEvents([row])
+      mergeKnownYears([row])
+    } catch {
+      // Fall back to the time-window hydration path if exact lookup fails.
+      if (focusHydrateSeqRef.current === reqId) {
+        void fetchFocusWindowEntries(focus)
+      }
+    }
+  }, [fetchFocusWindowEntries, hasTauriInvoke, mergeKnownYears, mergeSourceEvents])
 
   const now = Date.now()
   const defaultRangeEndDay = startOfDayMs(now)
@@ -611,7 +629,11 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
     if (!target) {
       if (hasTauriInvoke && focusHydrateNonceRef.current !== focusRequest.nonce) {
         focusHydrateNonceRef.current = focusRequest.nonce
-        void fetchFocusWindowEntries(focusRequest)
+        if (focusRequest.eventId?.trim()) {
+          void fetchFocusEventById(focusRequest)
+        } else {
+          void fetchFocusWindowEntries(focusRequest)
+        }
       }
       return
     }
@@ -619,7 +641,7 @@ export function EventLogPanel({ events, dailyStatsSeed = [], focusRequest, onFoc
     setFocusNonce(focusRequest.nonce)
     handledFocusNonceRef.current = focusRequest.nonce
     onFocusRequestHandled(focusRequest.nonce)
-  }, [fetchFocusWindowEntries, focusRequest, hasTauriInvoke, onFocusRequestHandled, sourceEvents])
+  }, [fetchFocusEventById, fetchFocusWindowEntries, focusRequest, hasTauriInvoke, onFocusRequestHandled, sourceEvents])
 
   return (
     <div className="aoEventLogLayout">

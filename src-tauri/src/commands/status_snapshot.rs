@@ -1422,6 +1422,21 @@ pub(crate) fn get_event_log_entries(
 }
 
 #[tauri::command]
+pub(crate) fn get_event_log_entry_by_id(
+    state: tauri::State<'_, app_state::AppState>,
+    event_id: String,
+) -> serde_json::Value {
+    state
+        .gateway
+        .store
+        .get_event_by_id(&event_id)
+        .filter(event_shape_is_valid)
+        .map(|event| crate::orchestrator::store::Store::compress_events_for_display(vec![event]))
+        .and_then(|mut events| events.pop())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+#[tauri::command]
 pub(crate) fn get_event_log_years(state: tauri::State<'_, app_state::AppState>) -> Vec<i32> {
     let mut years = state.gateway.store.list_event_years();
     let backup_root = backup_data_root_from_config_path(state.config_path.as_path());

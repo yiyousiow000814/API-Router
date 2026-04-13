@@ -102,7 +102,7 @@ describe('ProvidersTable', () => {
     expect(html).toContain('aoLastErrorViewBtn')
   })
 
-  it('hides Last Error jump button when neither provider snapshot nor preview expose an event id', () => {
+  it('hides last error entirely when neither provider snapshot nor preview expose an event id', () => {
     const status = buildStatus()
     status.providers.packycode.last_error_event_id = null
     status.recent_events = [
@@ -127,6 +127,8 @@ describe('ProvidersTable', () => {
     )
 
     expect(html).not.toContain('aoLastErrorViewBtn')
+    expect(html).toContain('<td>-</td>')
+    expect(html).not.toContain(fmtWhen(1234))
   })
 
   it('does not resolve a nearby event id when the message does not match exactly', () => {
