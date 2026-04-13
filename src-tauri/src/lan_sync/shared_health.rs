@@ -292,6 +292,16 @@ pub(crate) fn run_shared_health_loop(
                     .apply_shared_sync_snapshot(sibling_provider, shared, true);
             }
 
+            let last_error_event = build_shared_error_event_packet(&gateway, provider_name, shared);
+            let last_error_event_signature = last_error_event
+                .as_ref()
+                .map(|event| {
+                    format!(
+                        "{}|{}|{}|{}",
+                        event.event_id, event.unix_ms, event.code, event.message
+                    )
+                })
+                .unwrap_or_default();
             let signature = format!(
                 "{}|{}|{}|{}|{}|{}",
                 shared.updated_at_unix_ms,
@@ -299,13 +309,13 @@ pub(crate) fn run_shared_health_loop(
                 shared.cooldown_until_unix_ms,
                 shared.consecutive_failures,
                 shared.last_ok_at_unix_ms,
-                shared.last_fail_at_unix_ms
+                shared.last_fail_at_unix_ms,
             );
+            let signature = format!("{signature}|{last_error_event_signature}");
             if last_broadcasted.get(fingerprint) == Some(&signature) {
                 continue;
             }
             last_broadcasted.insert(fingerprint.clone(), signature);
-            let last_error_event = build_shared_error_event_packet(&gateway, provider_name, shared);
             broadcast_shared_health_packet(
                 &gateway,
                 &LanSharedHealthPacket {

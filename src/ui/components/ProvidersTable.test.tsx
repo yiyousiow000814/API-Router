@@ -22,6 +22,7 @@ function buildStatus(): Status {
     metrics: {},
     recent_events: [
       {
+        id: 'evt-packycode-1234',
         provider: 'packycode',
         level: 'error',
         unix_ms: 1234,
@@ -66,7 +67,7 @@ describe('ProvidersTable', () => {
         unixMs: 1234,
         message: 'request error: boom',
       }),
-    ).toBeDefined()
+    ).toBe('evt-packycode-1234')
   })
 
   it('keeps Last Error jump button visible when provider is closed', () => {
