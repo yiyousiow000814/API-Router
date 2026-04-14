@@ -10,7 +10,14 @@ import './DashboardPanel.css'
 export interface WatchdogSummary {
   healthy: boolean
   last_incident_kind: string | null
+  last_incident_unix_ms?: number | null
+  last_incident_file?: string | null
   incident_count: number
+  recent_incidents?: Array<{
+    unix_ms: number
+    kind: string
+    file: string
+  }>
 }
 
 export interface EventCount {
@@ -64,6 +71,36 @@ function fmtTs(unixMs: number): string {
   return new Date(unixMs).toLocaleTimeString()
 }
 
+function fmtDateTime(unixMs: number): string {
+  if (!unixMs) return '—'
+  return new Date(unixMs).toLocaleString()
+}
+
+export function describeMonitoringRuntimeContext(status: Status | null) {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  const port = window.location.port || ''
+  const isVitePreview = port === '5173'
+  if (hasTauriInvokeAvailable()) {
+    return null
+  }
+  if (isVitePreview) {
+    return {
+      title: 'Running in Vite preview (5173)',
+      detail: 'This page is rendering from the browser dev server, so desktop-side watchdog files and WebTransport diagnostics are not available here. Open the API Router desktop window to inspect live diagnostics.',
+      nextStep: status?.listen?.port
+        ? `Use port ${status.listen.port} in the desktop app flow, not the 5173 preview shell.`
+        : 'Open the API Router desktop app to inspect live diagnostics.',
+    }
+  }
+  return {
+    title: 'Desktop diagnostics unavailable',
+    detail: 'This view is outside the Tauri desktop runtime, so desktop-side watchdog files and WebTransport diagnostics are unavailable here.',
+    nextStep: 'Open the API Router desktop app to inspect live diagnostics.',
+  }
+}
+
 export function hasTauriInvokeAvailable(): boolean {
   if (typeof window === 'undefined') return false
   const w = window as unknown as {
@@ -84,6 +121,7 @@ interface WatchdogSectionProps {
 
 function WatchdogSection({ summary, loading }: WatchdogSectionProps) {
   const healthy = summary?.healthy ?? null
+  const recentIncidents = summary?.recent_incidents ?? []
   return (
     <div className="aoCard" style={{ padding: '12px 14px' }}>
       <div className="aoCardHeader">
@@ -109,16 +147,46 @@ function WatchdogSection({ summary, loading }: WatchdogSectionProps) {
         )}
       </div>
       {summary ? (
-        <div className="aoKvp">
-          <span className="aoKey">incidents</span>
-          <span className="aoVal">{summary.incident_count}</span>
-          {summary.last_incident_kind ? (
-            <>
-              <span className="aoKey">last incident</span>
-              <span className="aoVal">{summary.last_incident_kind}</span>
-            </>
+        <>
+          <div className="aoKvp">
+            <span className="aoKey">incidents</span>
+            <span className="aoVal">{summary.incident_count}</span>
+            {summary.last_incident_kind ? (
+              <>
+                <span className="aoKey">last incident</span>
+                <span className="aoVal">{summary.last_incident_kind}</span>
+                <span className="aoKey">last seen</span>
+                <span className="aoVal">{fmtDateTime(summary.last_incident_unix_ms ?? 0)}</span>
+                <span className="aoKey">last file</span>
+                <span className="aoVal aoValSmall">{summary.last_incident_file ?? '—'}</span>
+              </>
+            ) : null}
+          </div>
+          {recentIncidents.length > 0 ? (
+            <div style={{ display: 'grid', gap: 6, marginTop: 10 }}>
+              <div className="aoHint" style={{ fontSize: 11, fontWeight: 700 }}>Recent incidents</div>
+              {recentIncidents.map((incident) => (
+                <div
+                  key={incident.file}
+                  style={{
+                    display: 'grid',
+                    gap: 2,
+                    padding: '8px 10px',
+                    borderRadius: 10,
+                    border: '1px solid rgba(13,18,32,0.08)',
+                    background: 'rgba(255,255,255,0.52)',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: 'rgba(13,18,32,0.88)' }}>{incident.kind}</span>
+                    <span className="aoHint" style={{ fontSize: 10 }}>{fmtDateTime(incident.unix_ms)}</span>
+                  </div>
+                  <div className="aoHint" style={{ fontSize: 10 }}>{incident.file}</div>
+                </div>
+              ))}
+            </div>
           ) : null}
-        </div>
+        </>
       ) : (
         !loading && <p className="aoHint">No watchdog data available.</p>
       )}
@@ -167,7 +235,10 @@ function WebTransportSection({ snapshot, loading }: WtSectionProps) {
         <div className="aoCardHeader">
           <div className="aoCardTitle">WebTransport</div>
         </div>
-        <p className="aoHint">No WebTransport data available.</p>
+        <p className="aoHint">No WebTransport data available yet.</p>
+        <p className="aoHint" style={{ marginTop: 8 }}>
+          Open Web Codex from the desktop app and trigger a connection or reconnect cycle to populate this panel.
+        </p>
       </div>
     )
   }
@@ -415,6 +486,7 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
   const [watchdog, setWatchdog] = useState<WatchdogSummary | null>(null)
   const [wtSnapshot, setWtSnapshot] = useState<WebTransportDomainSnapshot | null>(null)
   const hasTauriInvoke = useMemo(() => hasTauriInvokeAvailable(), [])
+  const runtimeContext = useMemo(() => describeMonitoringRuntimeContext(status), [status])
 
   // Poll local diagnostics (watchdog + webtransport) every 5s
   useEffect(() => {
@@ -460,6 +532,25 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
         padding: '0 4px 20px',
       }}
     >
+      {runtimeContext ? (
+        <div
+          className="aoCard"
+          style={{
+            gridColumn: '1 / -1',
+            padding: '12px 14px',
+            border: '1px solid rgba(242, 193, 77, 0.42)',
+            background: 'linear-gradient(180deg, rgba(255, 248, 225, 0.96), rgba(255, 252, 243, 0.98))',
+          }}
+        >
+          <div className="aoCardHeader">
+            <div className="aoCardTitle">{runtimeContext.title}</div>
+          </div>
+          <p className="aoHint" style={{ color: 'rgba(13,18,32,0.72)' }}>{runtimeContext.detail}</p>
+          <p className="aoHint" style={{ marginTop: 8, fontWeight: 700, color: 'rgba(13,18,32,0.76)' }}>
+            {runtimeContext.nextStep}
+          </p>
+        </div>
+      ) : null}
       <WatchdogSection summary={watchdog} loading={false} />
       <WebTransportSection snapshot={wtSnapshot} loading={false} />
       <PeerDiagsSection status={status} />

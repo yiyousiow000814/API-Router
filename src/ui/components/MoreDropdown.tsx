@@ -86,7 +86,7 @@ export const MoreDropdown = memo(function MoreDropdown({
       <button
         type="button"
         ref={buttonRef}
-        className={`aoTopNavBtn${activePage === 'monitor' || activePage === 'web_codex' ? ' is-active' : ''}`}
+        className={`aoTopNavMenuBtn${activePage === 'monitor' || activePage === 'web_codex' ? ' is-active' : ''}`}
         onClick={toggle}
         aria-haspopup="true"
         aria-expanded={open}

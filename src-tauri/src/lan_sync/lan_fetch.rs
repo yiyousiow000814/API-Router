@@ -109,21 +109,39 @@ pub fn watchdog_summary() -> serde_json::Value {
         return serde_json::json!({
             "healthy": true,
             "last_incident_kind": serde_json::Value::Null,
+            "last_incident_unix_ms": serde_json::Value::Null,
+            "last_incident_file": serde_json::Value::Null,
             "incident_count": 0,
+            "recent_incidents": [],
         });
     }
 
     watchdog_files.sort_by_key(|(ts, _, _)| *ts);
-    let last = watchdog_files
+    let (last_ts, last_trigger, last_file) = watchdog_files
         .last()
-        .map(|(_, t, _)| t.clone())
-        .unwrap_or_default();
+        .cloned()
+        .unwrap_or_else(|| (0, String::new(), String::new()));
     let incident_count = watchdog_files.len() as u32;
+    let recent_incidents: Vec<serde_json::Value> = watchdog_files
+        .iter()
+        .rev()
+        .take(5)
+        .map(|(ts, trigger, file_name)| {
+            serde_json::json!({
+                "unix_ms": ts,
+                "kind": trigger,
+                "file": file_name,
+            })
+        })
+        .collect();
 
     serde_json::json!({
         "healthy": false,
-        "last_incident_kind": last,
+        "last_incident_kind": last_trigger,
+        "last_incident_unix_ms": last_ts,
+        "last_incident_file": last_file,
         "incident_count": incident_count,
+        "recent_incidents": recent_incidents,
     })
 }
 
@@ -143,10 +161,20 @@ mod tests {
             .and_then(|v| v.as_bool())
             .unwrap_or(false));
         assert!(result.get("last_incident_kind").unwrap().is_null());
+        assert!(result.get("last_incident_unix_ms").unwrap().is_null());
+        assert!(result.get("last_incident_file").unwrap().is_null());
         assert_eq!(
             result
                 .get("incident_count")
                 .and_then(|v| v.as_u64())
+                .unwrap_or(1),
+            0
+        );
+        assert_eq!(
+            result
+                .get("recent_incidents")
+                .and_then(|v| v.as_array())
+                .map(|v| v.len())
                 .unwrap_or(1),
             0
         );
@@ -170,10 +198,20 @@ mod tests {
             .and_then(|v| v.as_bool())
             .unwrap_or(false));
         assert!(result.get("last_incident_kind").unwrap().is_null());
+        assert!(result.get("last_incident_unix_ms").unwrap().is_null());
+        assert!(result.get("last_incident_file").unwrap().is_null());
         assert_eq!(
             result
                 .get("incident_count")
                 .and_then(|v| v.as_u64())
+                .unwrap_or(1),
+            0
+        );
+        assert_eq!(
+            result
+                .get("recent_incidents")
+                .and_then(|v| v.as_array())
+                .map(|v| v.len())
                 .unwrap_or(1),
             0
         );
@@ -220,6 +258,27 @@ mod tests {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0),
             3
+        );
+        assert_eq!(
+            result.get("last_incident_unix_ms").and_then(|v| v.as_u64()),
+            Some(1_700_000_002_000)
+        );
+        assert_eq!(
+            result.get("last_incident_file").and_then(|v| v.as_str()),
+            Some("slow-refresh-1700000002000-status.json")
+        );
+        let recent = result
+            .get("recent_incidents")
+            .and_then(|v| v.as_array())
+            .expect("recent incidents");
+        assert_eq!(recent.len(), 3);
+        assert_eq!(
+            recent[0].get("kind").and_then(|v| v.as_str()),
+            Some("status")
+        );
+        assert_eq!(
+            recent[0].get("file").and_then(|v| v.as_str()),
+            Some("slow-refresh-1700000002000-status.json")
         );
     }
 }
