@@ -906,7 +906,7 @@
 
 .aoGroupManagerAssignModeBtn {
   position: relative;
-  z-index: 1;
+  z-index: var(--z-sticky-section);
   flex: 1 1 0;
   height: 26px;
   border: 0;
@@ -1109,7 +1109,7 @@
 
 .aoProviderConfigDragging {
   position: relative;
-  z-index: 6;
+  z-index: var(--z-drag-overlay);
   /* Keep the drag overlay fully opaque to avoid blending/double-dark borders when it overlaps other cards. */
   opacity: 1;
   background: #fff;
@@ -1388,7 +1388,7 @@
   right: auto;
   top: 0;
   transform: translateX(-100%);
-  z-index: 10150;
+  z-index: var(--z-provider-panel);
   width: auto;
   min-width: 132px;
   display: grid;
@@ -1429,7 +1429,7 @@
   letter-spacing: 0.01em;
   white-space: nowrap;
   pointer-events: none;
-  z-index: 10160;
+  z-index: var(--z-provider-label);
 }
 
 .aoKeyRow {
@@ -1746,7 +1746,7 @@
   position: absolute;
   right: 0;
   top: 36px;
-  z-index: 5;
+  z-index: var(--z-local-action-menu);
   width: 172px;
   border-radius: 14px;
   border: 1px solid rgba(13, 18, 32, 0.14);
