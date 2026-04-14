@@ -322,6 +322,14 @@ function getLocalDomainAccent(domain: LocalDomain | null | undefined): string {
   return LOCAL_DOMAIN_ACCENTS[domain]
 }
 
+function getLocalDomainGlow(domain: LocalDomain | null | undefined): string {
+  const accent = getLocalDomainAccent(domain)
+  if (accent === 'var(--ao-line)') {
+    return '0 1px 0 rgba(13,18,32,0.02)'
+  }
+  return `0 0 0 1px ${accent}, 0 10px 28px ${accent.replace('0.42', '0.08')}`
+}
+
 export function isMonitoringDevPreview() {
   if (typeof window === 'undefined') return false
   if (hasTauriInvokeAvailable()) return false
@@ -1143,6 +1151,7 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
             style={{
               padding: '14px 16px',
               borderColor: getLocalDomainAccent(expandedLocalDomain),
+              boxShadow: getLocalDomainGlow(expandedLocalDomain),
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
