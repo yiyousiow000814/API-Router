@@ -69,7 +69,10 @@ pub fn watchdog_summary() -> serde_json::Value {
         return serde_json::json!({
             "healthy": true,
             "last_incident_kind": serde_json::Value::Null,
+            "last_incident_unix_ms": serde_json::Value::Null,
+            "last_incident_file": serde_json::Value::Null,
             "incident_count": 0,
+            "recent_incidents": [],
         });
     };
 
@@ -79,7 +82,10 @@ pub fn watchdog_summary() -> serde_json::Value {
             return serde_json::json!({
                 "healthy": true,
                 "last_incident_kind": serde_json::Value::Null,
+                "last_incident_unix_ms": serde_json::Value::Null,
+                "last_incident_file": serde_json::Value::Null,
                 "incident_count": 0,
+                "recent_incidents": [],
             });
         }
     };
@@ -97,9 +103,12 @@ pub fn watchdog_summary() -> serde_json::Value {
             let after_prefix = &file_name_str[(*prefix).len()..];
             if let Some(dash_pos) = after_prefix.find('-') {
                 if let Ok(ts) = after_prefix[..dash_pos].parse::<u64>() {
-                    let trigger_end = file_name_str.len() - 5; // strip ".json"
-                    let trigger = &file_name_str[(*prefix).len() + dash_pos + 1..trigger_end];
-                    watchdog_files.push((ts, trigger.to_string(), file_name_str.to_string()));
+                    // Only accept files that explicitly end with ".json"
+                    if file_name_str.ends_with(".json") {
+                        let trigger_end = file_name_str.len() - 5; // strip ".json"
+                        let trigger = &file_name_str[(*prefix).len() + dash_pos + 1..trigger_end];
+                        watchdog_files.push((ts, trigger.to_string(), file_name_str.to_string()));
+                    }
                 }
             }
         }
@@ -279,6 +288,46 @@ mod tests {
         assert_eq!(
             recent[0].get("file").and_then(|v| v.as_str()),
             Some("slow-refresh-1700000002000-status.json")
+        );
+    }
+
+    #[test]
+    fn watchdog_summary_skips_files_without_json_extension() {
+        // BUG-0003: files matching watchdog prefix but without .json extension
+        // must not cause a panic (range-reversed slice or wrong trigger)
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let diag_dir = tmp.path().join("diagnostics");
+        std::fs::create_dir_all(&diag_dir).expect("create diag dir");
+
+        // These files match prefixes but are NOT valid watchdog dumps
+        std::fs::write(diag_dir.join("ui-freeze-1700000000000-a"), "panic content")
+            .expect("write file"); // too short, no .json
+        std::fs::write(
+            diag_dir.join("slow-refresh-1700000001000-trigger"),
+            "no json",
+        )
+        .expect("write file"); // no .json
+        std::fs::write(
+            diag_dir.join("ui-freeze-1700000002000-heartbeat-stall.json"),
+            "{}",
+        )
+        .expect("write file"); // valid
+
+        std::env::set_var("API_ROUTER_USER_DATA_DIR", tmp.path());
+        let result = watchdog_summary();
+        std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+
+        // Only the valid .json file should be counted
+        assert_eq!(
+            result
+                .get("incident_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            1
+        );
+        assert_eq!(
+            result.get("last_incident_kind").and_then(|v| v.as_str()),
+            Some("heartbeat-stall")
         );
     }
 }

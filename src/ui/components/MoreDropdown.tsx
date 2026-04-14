@@ -43,8 +43,27 @@ export const MoreDropdown = memo(function MoreDropdown({
   const [open, setOpen] = useState(false)
   const [buttonRect, setButtonRect] = useState<DOMRect | null>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   const toggle = useCallback(() => setOpen(v => !v), [])
   const close = useCallback(() => setOpen(false), [])
+
+  // Close on outside click — document-level mousedown with explicit contains()
+  // checks on both the button and the portaled menu, so the menu does NOT need
+  // to be a DOM child of containerRef.
+  useEffect(() => {
+    if (!open) return
+    function handleOutsideClick(e: MouseEvent) {
+      const btn = buttonRef.current
+      const menu = menuRef.current
+      if (!btn || !menu) return
+      if (btn.contains(e.target as Node)) return
+      if (menu.contains(e.target as Node)) return
+      setOpen(false)
+    }
+    document.addEventListener('mousedown', handleOutsideClick)
+    return () => document.removeEventListener('mousedown', handleOutsideClick)
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -82,7 +101,7 @@ export const MoreDropdown = memo(function MoreDropdown({
     : null
 
   return (
-    <div className="aoMoreDropdown" style={{ position: 'relative', display: 'inline-block' }}>
+    <div ref={containerRef} className="aoMoreDropdown" style={{ position: 'relative', display: 'inline-block' }}>
       <button
         type="button"
         ref={buttonRef}
@@ -95,36 +114,34 @@ export const MoreDropdown = memo(function MoreDropdown({
         <span>More</span>
       </button>
       {open && menuPosition && createPortal(
-        <>
-          <div className="aoMoreDropdownOverlay" onClick={close} />
-          <div
-            className="aoMoreDropdownMenu"
-            role="menu"
-            style={{
-              top: menuPosition.top,
-              right: menuPosition.right,
-            }}
+        <div
+          ref={menuRef}
+          className="aoMoreDropdownMenu"
+          role="menu"
+          style={{
+            top: menuPosition.top,
+            right: menuPosition.right,
+          }}
+        >
+          <button
+            type="button"
+            className={`aoMoreDropdownItem${activePage === 'monitor' ? ' is-active' : ''}`}
+            role="menuitem"
+            onClick={handleMonitorSelect}
           >
-            <button
-              type="button"
-              className={`aoMoreDropdownItem${activePage === 'monitor' ? ' is-active' : ''}`}
-              role="menuitem"
-              onClick={handleMonitorSelect}
-            >
-              <MonitorIcon />
-              <span>Monitor</span>
-            </button>
-            <button
-              type="button"
-              className={`aoMoreDropdownItem${activePage === 'web_codex' ? ' is-active' : ''}`}
-              role="menuitem"
-              onClick={handleWebCodexSelect}
-            >
-              <WebCodexIcon />
-              <span>Web Codex</span>
-            </button>
-          </div>
-        </>,
+            <MonitorIcon />
+            <span>Monitor</span>
+          </button>
+          <button
+            type="button"
+            className={`aoMoreDropdownItem${activePage === 'web_codex' ? ' is-active' : ''}`}
+            role="menuitem"
+            onClick={handleWebCodexSelect}
+          >
+            <WebCodexIcon />
+            <span>Web Codex</span>
+          </button>
+        </div>,
         document.body,
       )}
     </div>

@@ -1,7 +1,9 @@
-#[cfg(windows)]
+#[cfg(any(test, windows))]
 use std::net::IpAddr;
+#[cfg(test)]
 use std::net::SocketAddr;
 
+#[cfg(test)]
 fn resolve_reachable_gateway_ipv4(
     ipv4: &[String],
     listen_port: u16,
@@ -14,19 +16,6 @@ fn resolve_reachable_gateway_ipv4(
             probe(addr).then(|| ip.clone())
         })
         .collect()
-}
-
-async fn resolve_reachable_gateway_ipv4_blocking(
-    ipv4: Vec<String>,
-    listen_port: u16,
-) -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        resolve_reachable_gateway_ipv4(&ipv4, listen_port, |addr| {
-            std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(180)).is_ok()
-        })
-    })
-    .await
-    .map_err(|err| format!("tailscale_probe_join_failed: {err}"))
 }
 
 #[cfg(windows)]
@@ -77,10 +66,16 @@ pub(crate) async fn tailscale_status(
     state: tauri::State<'_, crate::app_state::AppState>,
 ) -> Result<Value, String> {
     let listen_port = state.gateway.cfg.read().listen.port;
-    let snapshot = crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(listen_port);
+    // Wrap blocking I/O (CLI call + TCP probes) in spawn_blocking to avoid blocking tokio
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
+        crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(listen_port)
+    })
+    .await
+    .map_err(|err| format!("tailscale_snapshot_failed: {err}"))?;
     let connected = snapshot.connected;
     let ipv4 = snapshot.ipv4.clone();
     let dns_name = snapshot.dns_name.clone();
+    let reachable_ipv4 = snapshot.reachable_ipv4.clone();
     #[cfg(windows)]
     let runtime_binding_in_progress = {
         maybe_refresh_runtime_tailscale_listener(
@@ -92,12 +87,7 @@ pub(crate) async fn tailscale_status(
     };
     #[cfg(not(windows))]
     let runtime_binding_in_progress = false;
-    let reachable_ipv4 = if connected {
-        resolve_reachable_gateway_ipv4_blocking(ipv4.clone(), listen_port).await?
-    } else {
-        Vec::new()
-    };
-    let gateway_reachable = !reachable_ipv4.is_empty();
+    let gateway_reachable = snapshot.gateway_reachable;
     let needs_gateway_restart = needs_gateway_restart(
         connected,
         &ipv4,
@@ -117,7 +107,7 @@ pub(crate) async fn tailscale_status(
         "needsGatewayRestart": needs_gateway_restart,
         "statusError": snapshot.status_error,
         "bootstrap": snapshot.bootstrap,
-        "downloadUrl": "https://tailscale.com/download",
+        "downloadUrl": "https://download.tailscale.com",
     }))
 }
 

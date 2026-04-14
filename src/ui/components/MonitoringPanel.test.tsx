@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { describeMonitoringRuntimeContext, hasTauriInvokeAvailable, MonitoringPanel } from './MonitoringPanel'
+import { hasTauriInvokeAvailable, isMonitoringDevPreview, MonitoringPanel } from './MonitoringPanel'
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(),
@@ -49,20 +49,12 @@ describe('MonitoringPanel', () => {
     expect(html).toContain('Remote peer diagnostics are available in the Tauri desktop app only.')
   })
 
-  it('explains the 5173 preview shell explicitly', () => {
+  it('uses simulated monitor data in the 5173 preview shell', () => {
     ;(globalThis as { window?: unknown }).window = {
       location: { port: '5173' },
     }
 
-    expect(
-      describeMonitoringRuntimeContext({
-        listen: { host: '127.0.0.1', port: 4312 },
-      } as any),
-    ).toEqual(
-      expect.objectContaining({
-        title: 'Running in Vite preview (5173)',
-      }),
-    )
+    expect(isMonitoringDevPreview()).toBe(true)
 
     const html = renderToStaticMarkup(
       <MonitoringPanel
@@ -74,8 +66,13 @@ describe('MonitoringPanel', () => {
       />,
     )
 
-    expect(html).toContain('Running in Vite preview (5173)')
-    expect(html).toContain('Use port 4312 in the desktop app flow, not the 5173 preview shell.')
+    expect(html).toContain('Preview data')
+    expect(html).toContain('Gateway reachable')
+    expect(html).toContain('desk-monitor.tail.ts.net')
+    expect(html).toContain('heartbeat-stall')
+    expect(html).toContain('ECONNRESET')
+    expect(html).toContain('Desk B')
+    expect(html).toContain('restart API Router')
   })
 
   it('renders recent watchdog incidents when the backend provides them', () => {

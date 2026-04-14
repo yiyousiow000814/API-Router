@@ -218,7 +218,7 @@ export const AppTopNav = memo(function AppTopNav({
         onSelectMonitor={() => activateAndSwitch('monitor')}
         onSelectWebCodex={() => activateAndSwitch('web_codex')}
       />
-      <button className="aoTinyBtn" style={{ height: '30px' }} aria-label="Getting Started" onClick={onOpenGettingStarted}>
+      <button className="aoTinyBtn aoTopNavGettingStartedBtn" aria-label="Getting Started" onClick={onOpenGettingStarted}>
         Getting Started
       </button>
     </div>

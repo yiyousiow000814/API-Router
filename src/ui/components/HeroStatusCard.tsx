@@ -67,7 +67,6 @@ export function HeroStatusCard({
 }: HeroStatusProps) {
   const wslGatewayHost = status.wsl_gateway_host?.trim() || GATEWAY_WSL2_HOST
   const lanNode = status.lan_sync?.local_node
-  const peerTailscaleIssues = lanPeerTailscaleSummary(status)
   return (
     <div className="aoCard aoHeroCard aoHeroStatus">
       <div className="aoCardHeader">
@@ -94,14 +93,6 @@ export function HeroStatusCard({
             </div>
             <div className="aoStatLabel">LAN peers</div>
             <div className="aoStatValue">{lanPeersSummary(status)}</div>
-          </>
-        ) : null}
-        <div className="aoStatLabel">Tailscale</div>
-        <div className="aoStatValue">{tailscaleSummary(status)}</div>
-        {peerTailscaleIssues ? (
-          <>
-            <div className="aoStatLabel">Peer Tailscale</div>
-            <div className="aoStatValue">{peerTailscaleIssues}</div>
           </>
         ) : null}
       </div>

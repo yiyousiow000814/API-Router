@@ -118,6 +118,17 @@
   background: linear-gradient(135deg, rgba(40, 199, 217, 0.4), rgba(242, 193, 77, 0.3));
 }
 
+.aoTopNavGettingStartedBtn {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  white-space: nowrap;
+}
+
 .aoTopNavIcon {
   width: 14px;
   height: 14px;

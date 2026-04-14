@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { Status } from '../types'
 import './DashboardPanel.css'
@@ -51,6 +51,170 @@ export interface LanDiagnosticsResponsePacket {
   domains: Record<string, unknown>
 }
 
+type TailscaleSummary = NonNullable<Status['tailscale']>
+
+const DEV_PREVIEW_WATCHDOG_SUMMARY: WatchdogSummary = {
+  healthy: false,
+  incident_count: 3,
+  last_incident_kind: 'heartbeat-stall',
+  last_incident_unix_ms: 1_700_000_002_000,
+  last_incident_file: 'ui-freeze-1700000002000-heartbeat-stall.json',
+  recent_incidents: [
+    {
+      unix_ms: 1_700_000_002_000,
+      kind: 'heartbeat-stall',
+      file: 'ui-freeze-1700000002000-heartbeat-stall.json',
+    },
+    {
+      unix_ms: 1_700_000_001_000,
+      kind: 'slow-refresh',
+      file: 'slow-refresh-1700000001000-status.json',
+    },
+    {
+      unix_ms: 1_700_000_000_000,
+      kind: 'frame-stall',
+      file: 'frame-stall-1700000000000-render-blocked.json',
+    },
+  ],
+}
+
+const DEV_PREVIEW_WEBTRANSPORT_SNAPSHOT: WebTransportDomainSnapshot = {
+  ws_open_observed: { count: 4, last_unix_ms: 1_700_000_002_500 },
+  ws_error_observed: {
+    count: 2,
+    last_unix_ms: 1_700_000_002_000,
+    latest_detail: 'ECONNRESET',
+  },
+  ws_close_observed: {
+    count: 2,
+    last_unix_ms: 1_700_000_002_100,
+    latest_close_code: 1006,
+  },
+  ws_reconnect_scheduled: { count: 3, last_unix_ms: 1_700_000_002_150 },
+  ws_reconnect_attempted: { count: 3, last_unix_ms: 1_700_000_002_220 },
+  http_fallback_engaged: { count: 1, last_unix_ms: 1_700_000_001_500 },
+  thread_refresh_failed: { count: 1, last_unix_ms: 1_700_000_001_200 },
+  active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
+  live_notification_gap_observed: { count: 1, last_unix_ms: 1_700_000_001_800 },
+}
+
+const DEV_PREVIEW_TAILSCALE_SUMMARY: TailscaleSummary = {
+  installed: true,
+  connected: true,
+  backend_state: 'Running',
+  dns_name: 'desk-monitor.tail.ts.net',
+  ipv4: ['100.64.0.8'],
+  reachable_ipv4: ['100.64.0.8'],
+  gateway_reachable: true,
+  needs_gateway_restart: false,
+  status_error: null,
+  bootstrap: {
+    last_stage: 'listener-ready',
+    last_detail: 'overlay listener bound to tailscale address',
+    updated_at_unix_ms: 1_700_000_002_400,
+  },
+}
+
+const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
+  {
+    node_id: 'node-desk-b',
+    node_name: 'Desk B',
+    health: 'error',
+    last_incident: 'heartbeat-stall',
+    fetched_at: Date.now() - 2_000,
+    tailscale: {
+      installed: true,
+      connected: true,
+      backend_state: 'Running',
+      dns_name: 'desk-b.tail.ts.net',
+      ipv4: ['100.64.0.18'],
+      reachable_ipv4: [],
+      gateway_reachable: false,
+      needs_gateway_restart: true,
+      status_error: null,
+      bootstrap: {
+        last_stage: 'gateway-bind-pending',
+        last_detail: 'listener will bind after next app restart',
+        updated_at_unix_ms: 1_700_000_001_200,
+      },
+    },
+    watchdog: {
+      healthy: false,
+      incident_count: 2,
+      last_incident_kind: 'heartbeat-stall',
+      last_incident_unix_ms: 1_700_000_001_800,
+      last_incident_file: 'ui-freeze-1700000001800-heartbeat-stall.json',
+      recent_incidents: [
+        {
+          unix_ms: 1_700_000_001_800,
+          kind: 'heartbeat-stall',
+          file: 'ui-freeze-1700000001800-heartbeat-stall.json',
+        },
+        {
+          unix_ms: 1_700_000_001_500,
+          kind: 'frame-stall',
+          file: 'frame-stall-1700000001500-render-blocked.json',
+        },
+      ],
+    },
+    webtransport: {
+      ws_open_observed: { count: 1, last_unix_ms: 1_700_000_001_700 },
+      ws_error_observed: {
+        count: 1,
+        last_unix_ms: 1_700_000_001_750,
+        latest_detail: 'ENOTFOUND',
+      },
+      ws_close_observed: {
+        count: 1,
+        last_unix_ms: 1_700_000_001_760,
+        latest_close_code: 1006,
+      },
+      ws_reconnect_scheduled: { count: 2, last_unix_ms: 1_700_000_001_770 },
+      ws_reconnect_attempted: { count: 2, last_unix_ms: 1_700_000_001_775 },
+      http_fallback_engaged: { count: 1, last_unix_ms: 1_700_000_001_600 },
+      thread_refresh_failed: { count: 1, last_unix_ms: 1_700_000_001_620 },
+      active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
+      live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
+    },
+  },
+  {
+    node_id: 'node-laptop-c',
+    node_name: 'Laptop C',
+    health: 'ok',
+    last_incident: null,
+    fetched_at: Date.now() - 8_000,
+    tailscale: {
+      installed: false,
+      connected: false,
+      backend_state: null,
+      dns_name: null,
+      ipv4: [],
+      reachable_ipv4: [],
+      gateway_reachable: false,
+      needs_gateway_restart: false,
+      status_error: 'tailscale_not_found',
+      bootstrap: null,
+    },
+    watchdog: {
+      healthy: true,
+      incident_count: 0,
+      last_incident_kind: null,
+      recent_incidents: [],
+    },
+    webtransport: {
+      ws_open_observed: { count: 0, last_unix_ms: 0 },
+      ws_error_observed: { count: 0, last_unix_ms: 0, latest_detail: null },
+      ws_close_observed: { count: 0, last_unix_ms: 0, latest_close_code: null },
+      ws_reconnect_scheduled: { count: 0, last_unix_ms: 0 },
+      ws_reconnect_attempted: { count: 0, last_unix_ms: 0 },
+      http_fallback_engaged: { count: 0, last_unix_ms: 0 },
+      thread_refresh_failed: { count: 0, last_unix_ms: 0 },
+      active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
+      live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
+    },
+  },
+]
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -76,29 +240,30 @@ function fmtDateTime(unixMs: number): string {
   return new Date(unixMs).toLocaleString()
 }
 
-export function describeMonitoringRuntimeContext(status: Status | null) {
-  if (typeof window === 'undefined') {
-    return null
-  }
-  const port = window.location.port || ''
-  const isVitePreview = port === '5173'
-  if (hasTauriInvokeAvailable()) {
-    return null
-  }
-  if (isVitePreview) {
-    return {
-      title: 'Running in Vite preview (5173)',
-      detail: 'This page is rendering from the browser dev server, so desktop-side watchdog files and WebTransport diagnostics are not available here. Open the API Router desktop window to inspect live diagnostics.',
-      nextStep: status?.listen?.port
-        ? `Use port ${status.listen.port} in the desktop app flow, not the 5173 preview shell.`
-        : 'Open the API Router desktop app to inspect live diagnostics.',
-    }
-  }
-  return {
-    title: 'Desktop diagnostics unavailable',
-    detail: 'This view is outside the Tauri desktop runtime, so desktop-side watchdog files and WebTransport diagnostics are unavailable here.',
-    nextStep: 'Open the API Router desktop app to inspect live diagnostics.',
-  }
+function getTailscaleHeadline(summary: TailscaleSummary | null | undefined): string {
+  if (!summary) return 'Unknown'
+  if (!summary.installed) return 'Not installed'
+  if (!summary.connected) return 'Not connected'
+  if (summary.gateway_reachable) return 'Gateway reachable'
+  if (summary.needs_gateway_restart) return 'Restart required'
+  return 'Gateway unreachable'
+}
+
+function getTailscaleDetail(summary: TailscaleSummary | null | undefined): string {
+  if (!summary) return 'No tailscale diagnostics available.'
+  if (!summary.installed) return 'Install Tailscale on this device.'
+  if (!summary.connected) return summary.status_error?.trim() || 'Connect this device to the tailnet.'
+  const host = summary.dns_name?.trim() || summary.reachable_ipv4[0] || summary.ipv4[0] || 'No host'
+  if (summary.gateway_reachable) return host
+  if (summary.needs_gateway_restart) return `${host} · restart API Router`
+  if (summary.status_error?.trim()) return `${host} · ${summary.status_error.trim()}`
+  return `${host} · gateway unreachable`
+}
+
+export function isMonitoringDevPreview() {
+  if (typeof window === 'undefined') return false
+  if (hasTauriInvokeAvailable()) return false
+  return window.location.port === '5173'
 }
 
 export function hasTauriInvokeAvailable(): boolean {
@@ -206,13 +371,22 @@ interface WtSectionProps {
 function fmtRow(label: string, ec: EventCount | undefined) {
   if (!ec) return null
   return (
-    <div className="aoKvp">
-      <span className="aoKey">{label}</span>
-      <span className="aoVal">
-        {ec.count}
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'minmax(0,1fr) auto',
+        gap: 12,
+        alignItems: 'start',
+      }}
+    >
+      <span className="aoKey" style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{label}</span>
+      <span className="aoVal" style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+        <span>{ec.count}</span>
         {ec.last_unix_ms ? (
           <span className="aoHint" style={{ marginLeft: 8 }}>{fmtTs(ec.last_unix_ms)}</span>
-        ) : null}
+        ) : (
+          <span className="aoHint" style={{ marginLeft: 8 }}>—</span>
+        )}
       </span>
     </div>
   )
@@ -253,13 +427,23 @@ function WebTransportSection({ snapshot, loading }: WtSectionProps) {
       <div style={{ display: 'grid', gap: 4 }}>
         {fmtRow('ws_open', snapshot.ws_open_observed)}
         {snapshot.ws_error_observed.count > 0 && (
-          <div className="aoKvp">
-            <span className="aoKey">ws_error</span>
-            <span className="aoVal aoValSmall" style={{ color: 'var(--ao-danger)' }}>
-              {snapshot.ws_error_observed.count} {fmtTs(snapshot.ws_error_observed.last_unix_ms)}
-              {snapshot.ws_error_observed.latest_detail
-                ? ` — ${snapshot.ws_error_observed.latest_detail}`
-                : null}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'minmax(0,1fr) auto',
+              gap: 12,
+              alignItems: 'start',
+            }}
+          >
+            <span className="aoKey" style={{ minWidth: 0, overflowWrap: 'anywhere' }}>ws_error</span>
+            <span className="aoVal aoValSmall" style={{ color: 'var(--ao-danger)', textAlign: 'right' }}>
+              <span>{snapshot.ws_error_observed.count}</span>
+              <span className="aoHint" style={{ marginLeft: 8 }}>{fmtTs(snapshot.ws_error_observed.last_unix_ms)}</span>
+              {snapshot.ws_error_observed.latest_detail ? (
+                <span style={{ display: 'block', marginTop: 2, overflowWrap: 'anywhere' }}>
+                  {snapshot.ws_error_observed.latest_detail}
+                </span>
+              ) : null}
             </span>
           </div>
         )}
@@ -268,9 +452,16 @@ function WebTransportSection({ snapshot, loading }: WtSectionProps) {
           count: snapshot.ws_close_observed.count,
         })}
         {snapshot.ws_close_observed.latest_close_code != null && (
-          <div className="aoKvp">
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'minmax(0,1fr) auto',
+              gap: 12,
+              alignItems: 'start',
+            }}
+          >
             <span className="aoKey">close_code</span>
-            <span className="aoVal">{snapshot.ws_close_observed.latest_close_code}</span>
+            <span className="aoVal" style={{ textAlign: 'right' }}>{snapshot.ws_close_observed.latest_close_code}</span>
           </div>
         )}
         {fmtRow('ws_reconnect_scheduled', snapshot.ws_reconnect_scheduled)}
@@ -294,6 +485,9 @@ interface PeerDiagEntry {
   health: 'ok' | 'error' | 'unknown'
   last_incident: string | null
   fetched_at: number
+  tailscale: TailscaleSummary | null
+  watchdog: WatchdogSummary | null
+  webtransport: WebTransportDomainSnapshot | null
 }
 
 interface PeerDiagsSectionProps {
@@ -301,12 +495,41 @@ interface PeerDiagsSectionProps {
 }
 
 function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
-  const [peers, setPeers] = useState<PeerDiagEntry[]>([])
+  const hasTauriInvoke = useMemo(() => hasTauriInvokeAvailable(), [])
+  const isDevPreview = useMemo(() => isMonitoringDevPreview(), [])
+  const previewPeers = useMemo(
+    () =>
+      DEV_PREVIEW_REMOTE_PEERS.map((peer) => ({
+        node_id: peer.node_id,
+        node_name: peer.node_name,
+      })),
+    [],
+  )
+  const [peers, setPeers] = useState<PeerDiagEntry[]>(() => (isDevPreview ? DEV_PREVIEW_REMOTE_PEERS : []))
   const [fetchErrors, setFetchErrors] = useState<Record<string, string>>({})
   const [refreshing, setRefreshing] = useState(false)
-  const hasTauriInvoke = useMemo(() => hasTauriInvokeAvailable(), [])
+  const [expandedPeers, setExpandedPeers] = useState<Set<string>>(new Set())
+  const togglePeer = useCallback((nodeId: string) => {
+    setExpandedPeers(prev => {
+      const next = new Set(prev)
+      if (next.has(nodeId)) {
+        next.delete(nodeId)
+      } else {
+        next.add(nodeId)
+      }
+      return next
+    })
+  }, [])
+  // Use ref to avoid recreating fetchPeerDiags on every status poll (BUG-0002 fix)
+  const peersRef = useRef(status?.lan_sync?.peers ?? [])
+  peersRef.current = status?.lan_sync?.peers ?? []
 
   const fetchPeerDiags = useCallback(async () => {
+    if (isDevPreview) {
+      setPeers(DEV_PREVIEW_REMOTE_PEERS)
+      setFetchErrors({})
+      return
+    }
     if (!hasTauriInvoke) {
       setPeers([])
       setFetchErrors({})
@@ -314,7 +537,7 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
     }
     setRefreshing(true)
     try {
-      const knownPeers = status?.lan_sync?.peers ?? []
+      const knownPeers = peersRef.current
       if (knownPeers.length === 0) {
         setPeers([])
         return
@@ -324,7 +547,7 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
         knownPeers.map((peer) =>
           invoke<LanDiagnosticsResponsePacket>('get_remote_peer_diagnostics', {
             peerNodeId: peer.node_id,
-            domains: ['watchdog'],
+            domains: ['watchdog', 'webtransport'],
           }),
         ),
       )
@@ -337,14 +560,18 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
         if (result.status === 'fulfilled') {
           const diag = result.value
           const wd = diag.domains?.watchdog as
-            | { healthy: boolean; last_incident_kind: string | null; incident_count: number }
+            | { healthy: boolean; last_incident_kind: string | null; incident_count: number; last_incident_unix_ms?: number | null; last_incident_file?: string | null; recent_incidents?: Array<{ unix_ms: number; kind: string; file: string }> }
             | undefined
+          const wts = diag.domains?.webtransport as WebTransportDomainSnapshot | undefined
           entries.push({
             node_id: peer.node_id,
             node_name: peer.node_name,
             health: wd?.healthy === false ? 'error' : wd?.healthy === true ? 'ok' : 'unknown',
             last_incident: wd?.last_incident_kind ?? null,
             fetched_at: Date.now(),
+            tailscale: peer.tailscale ?? null,
+            watchdog: wd ?? null,
+            webtransport: wts ?? null,
           })
         } else {
           errors[peer.node_id] = String(result.reason ?? 'fetch failed')
@@ -354,6 +581,9 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
             health: 'unknown',
             last_incident: null,
             fetched_at: Date.now(),
+            tailscale: peer.tailscale ?? null,
+            watchdog: null,
+            webtransport: null,
           })
         }
       })
@@ -363,7 +593,7 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
     } finally {
       setRefreshing(false)
     }
-  }, [hasTauriInvoke, status?.lan_sync?.peers])
+  }, [hasTauriInvoke, isDevPreview])
 
   useEffect(() => {
     void fetchPeerDiags()
@@ -373,7 +603,7 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
     return () => window.clearInterval(timer)
   }, [fetchPeerDiags])
 
-  const knownPeers = status?.lan_sync?.peers ?? []
+  const knownPeers = isDevPreview ? previewPeers : (status?.lan_sync?.peers ?? [])
 
   return (
     <div className="aoCard" style={{ padding: '12px 14px' }}>
@@ -408,66 +638,192 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
       </div>
       {!status ? (
         <p className="aoHint">Waiting for live gateway status.</p>
-      ) : !hasTauriInvoke ? (
+      ) : !hasTauriInvoke && !isDevPreview ? (
         <p className="aoHint">Remote peer diagnostics are available in the Tauri desktop app only.</p>
       ) : knownPeers.length === 0 ? (
         <p className="aoHint">No LAN peers discovered yet.</p>
       ) : (
         <div style={{ display: 'grid', gap: 6 }}>
-          {peers.map((peer) => (
-            <div
-              key={peer.node_id}
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'minmax(0,1fr) auto',
-                gap: 8,
-                alignItems: 'center',
-                padding: '8px 10px',
-                borderRadius: 10,
-                border: '1px solid rgba(13,18,32,0.08)',
-                background: 'rgba(255,255,255,0.5)',
-              }}
-            >
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: 'rgba(13,18,32,0.86)' }}>
-                  {peer.node_name}
+          {peers.map((peer) => {
+            const isExpanded = expandedPeers.has(peer.node_id)
+            return (
+              <div key={peer.node_id}>
+                {/* Peer row — clickable to expand/collapse */}
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'minmax(0,1fr) auto',
+                    gap: 8,
+                    alignItems: 'center',
+                    padding: '8px 10px',
+                    borderRadius: 10,
+                    border: '1px solid rgba(13,18,32,0.08)',
+                    background: 'rgba(255,255,255,0.5)',
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => togglePeer(peer.node_id)}
+                  role="button"
+                  aria-expanded={isExpanded}
+                  tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') togglePeer(peer.node_id) }}
+                >
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'rgba(13,18,32,0.86)' }}>
+                      {peer.node_name}
+                    </div>
+                    <div className="aoHint" style={{ fontSize: 11 }}>
+                      {peer.node_id.slice(0, 12)} · fetched {fmtAge(peer.fetched_at)}
+                    </div>
+                    <div className="aoHint" style={{ fontSize: 10, marginTop: 4 }}>
+                      Tailscale: {getTailscaleDetail(peer.tailscale)}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span className={`aoPill${peer.health === 'ok' ? ' aoPulse' : ''}`} style={{ fontSize: 11 }}>
+                        {peer.health === 'ok' ? (
+                          <>
+                            <span className="aoDot" style={{ width: 6, height: 6 }} />
+                            <span className="aoPillText">ok</span>
+                          </>
+                        ) : peer.health === 'error' ? (
+                          <>
+                            <span className="aoDot aoDotBad" style={{ width: 6, height: 6 }} />
+                            <span className="aoPillText">error</span>
+                          </>
+                        ) : (
+                          <span className="aoPillText">unknown</span>
+                        )}
+                      </span>
+                      {/* Expand/collapse chevron */}
+                      <svg
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                        style={{
+                          width: 16,
+                          height: 16,
+                          flexShrink: 0,
+                          transition: 'transform 150ms',
+                          transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                          color: 'rgba(13,18,32,0.4)',
+                        }}
+                      >
+                        <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </div>
+                    {peer.last_incident ? (
+                      <span className="aoHint" style={{ fontSize: 10, maxWidth: 160, textAlign: 'right' }}>
+                        {peer.last_incident}
+                      </span>
+                    ) : null}
+                    {fetchErrors[peer.node_id] ? (
+                      <span
+                        style={{ fontSize: 10, color: 'var(--ao-danger)', maxWidth: 160, textAlign: 'right' }}
+                      >
+                        {fetchErrors[peer.node_id]}
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
-                <div className="aoHint" style={{ fontSize: 11 }}>
-                  {peer.node_id.slice(0, 12)} · fetched {fmtAge(peer.fetched_at)}
-                </div>
+                {/* Expanded diagnostics */}
+                {isExpanded && (
+                  <div style={{ display: 'grid', gap: 8, padding: '8px 0 4px 12px', borderLeft: '2px solid rgba(13,18,32,0.12)', marginLeft: 8 }}>
+                    {peer.watchdog ? (
+                      <WatchdogSection summary={peer.watchdog} loading={false} />
+                    ) : (
+                      <div className="aoCard" style={{ padding: '12px 14px' }}>
+                        <div className="aoCardHeader">
+                          <div className="aoCardTitle">Watchdog</div>
+                        </div>
+                        <p className="aoHint">No watchdog data from this peer.</p>
+                      </div>
+                    )}
+                    {peer.webtransport ? (
+                      <WebTransportSection snapshot={peer.webtransport} loading={false} />
+                    ) : (
+                      <div className="aoCard" style={{ padding: '12px 14px' }}>
+                        <div className="aoCardHeader">
+                          <div className="aoCardTitle">WebTransport</div>
+                        </div>
+                        <p className="aoHint">No WebTransport data from this peer.</p>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
-                <span className={`aoPill${peer.health === 'ok' ? ' aoPulse' : ''}`} style={{ fontSize: 11 }}>
-                  {peer.health === 'ok' ? (
-                    <>
-                      <span className="aoDot" style={{ width: 6, height: 6 }} />
-                      <span className="aoPillText">ok</span>
-                    </>
-                  ) : peer.health === 'error' ? (
-                    <>
-                      <span className="aoDot aoDotBad" style={{ width: 6, height: 6 }} />
-                      <span className="aoPillText">error</span>
-                    </>
-                  ) : (
-                    <span className="aoPillText">unknown</span>
-                  )}
-                </span>
-                {peer.last_incident ? (
-                  <span className="aoHint" style={{ fontSize: 10, maxWidth: 160, textAlign: 'right' }}>
-                    {peer.last_incident}
-                  </span>
-                ) : null}
-                {fetchErrors[peer.node_id] ? (
-                  <span
-                    style={{ fontSize: 10, color: 'var(--ao-danger)', maxWidth: 160, textAlign: 'right' }}
-                  >
-                    {fetchErrors[peer.node_id]}
-                  </span>
-                ) : null}
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
+      )}
+    </div>
+  )
+}
+
+interface TailscaleSectionProps {
+  summary: TailscaleSummary | null
+  loading: boolean
+}
+
+function TailscaleSection({ summary, loading }: TailscaleSectionProps) {
+  const host = summary?.dns_name?.trim() || summary?.reachable_ipv4[0] || summary?.ipv4[0] || '—'
+  return (
+    <div className="aoCard" style={{ padding: '12px 14px' }}>
+      <div className="aoCardHeader">
+        <div className="aoCardTitle">Tailscale</div>
+        {loading ? (
+          <span className="aoHint">loading…</span>
+        ) : (
+          <span className={`aoPill${summary?.gateway_reachable ? ' aoPulse' : ''}`}>
+            {summary?.gateway_reachable ? (
+              <>
+                <span className="aoDot" />
+                <span className="aoPillText">reachable</span>
+              </>
+            ) : summary?.installed === false ? (
+              <span className="aoPillText">not installed</span>
+            ) : summary?.connected === false ? (
+              <span className="aoPillText">offline</span>
+            ) : (
+              <>
+                <span className="aoDot aoDotBad" />
+                <span className="aoPillText">attention</span>
+              </>
+            )}
+          </span>
+        )}
+      </div>
+      {summary ? (
+        <div className="aoKvp">
+          <span className="aoKey">state</span>
+          <span className="aoVal">{getTailscaleHeadline(summary)}</span>
+          <span className="aoKey">host</span>
+          <span className="aoVal aoValSmall">{host}</span>
+          <span className="aoKey">ipv4</span>
+          <span className="aoVal aoValSmall">{summary.ipv4.join(', ') || '—'}</span>
+          <span className="aoKey">reachable</span>
+          <span className="aoVal aoValSmall">{summary.reachable_ipv4.join(', ') || '—'}</span>
+          <span className="aoKey">backend</span>
+          <span className="aoVal">{summary.backend_state || '—'}</span>
+          {summary.bootstrap?.last_stage ? (
+            <>
+              <span className="aoKey">bootstrap</span>
+              <span className="aoVal aoValSmall">
+                {summary.bootstrap.last_stage}
+                {summary.bootstrap.last_detail ? ` · ${summary.bootstrap.last_detail}` : ''}
+              </span>
+            </>
+          ) : null}
+          {summary.status_error ? (
+            <>
+              <span className="aoKey">detail</span>
+              <span className="aoVal aoValSmall" style={{ color: 'var(--ao-danger)' }}>
+                {summary.status_error}
+              </span>
+            </>
+          ) : null}
+        </div>
+      ) : (
+        !loading && <p className="aoHint">No tailscale data available.</p>
       )}
     </div>
   )
@@ -483,16 +839,30 @@ interface MonitoringPanelProps {
 }
 
 export function MonitoringPanel({ status }: MonitoringPanelProps) {
-  const [watchdog, setWatchdog] = useState<WatchdogSummary | null>(null)
-  const [wtSnapshot, setWtSnapshot] = useState<WebTransportDomainSnapshot | null>(null)
   const hasTauriInvoke = useMemo(() => hasTauriInvokeAvailable(), [])
-  const runtimeContext = useMemo(() => describeMonitoringRuntimeContext(status), [status])
+  const isDevPreview = useMemo(() => isMonitoringDevPreview(), [])
+  const [watchdog, setWatchdog] = useState<WatchdogSummary | null>(() => (
+    isDevPreview ? DEV_PREVIEW_WATCHDOG_SUMMARY : null
+  ))
+  const [wtSnapshot, setWtSnapshot] = useState<WebTransportDomainSnapshot | null>(() => (
+    isDevPreview ? DEV_PREVIEW_WEBTRANSPORT_SNAPSHOT : null
+  ))
+  const [tailscale, setTailscale] = useState<TailscaleSummary | null>(() => (
+    isDevPreview ? DEV_PREVIEW_TAILSCALE_SUMMARY : (status?.tailscale ?? null)
+  ))
 
-  // Poll local diagnostics (watchdog + webtransport) every 5s
+  // Poll local diagnostics (watchdog + webtransport + tailscale) every 5s
   useEffect(() => {
+    if (isDevPreview) {
+      setWatchdog(DEV_PREVIEW_WATCHDOG_SUMMARY)
+      setWtSnapshot(DEV_PREVIEW_WEBTRANSPORT_SNAPSHOT)
+      setTailscale(DEV_PREVIEW_TAILSCALE_SUMMARY)
+      return
+    }
     if (!hasTauriInvoke) {
       setWatchdog(null)
       setWtSnapshot(null)
+      setTailscale(status?.tailscale ?? null)
       return
     }
     let cancelled = false
@@ -501,7 +871,7 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
     const load = async () => {
       try {
         const result = await invoke<Record<string, unknown>>('get_local_diagnostics', {
-          domains: ['watchdog', 'webtransport'],
+          domains: ['watchdog', 'webtransport', 'tailscale'],
         })
         if (cancelled) return
         if (result.watchdog) {
@@ -509,6 +879,9 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
         }
         if (result.webtransport) {
           setWtSnapshot(result.webtransport as WebTransportDomainSnapshot)
+        }
+        if (result.tailscale) {
+          setTailscale(result.tailscale as TailscaleSummary)
         }
       } catch {
         // silently ignore — panel stays at last known state or null
@@ -521,7 +894,7 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
       cancelled = true
       if (timer) clearInterval(timer)
     }
-  }, [hasTauriInvoke])
+  }, [hasTauriInvoke, isDevPreview, status?.tailscale])
 
   return (
     <div
@@ -532,7 +905,7 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
         padding: '0 4px 20px',
       }}
     >
-      {runtimeContext ? (
+      {isDevPreview ? (
         <div
           className="aoCard"
           style={{
@@ -543,14 +916,14 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
           }}
         >
           <div className="aoCardHeader">
-            <div className="aoCardTitle">{runtimeContext.title}</div>
+            <div className="aoCardTitle">Preview data</div>
           </div>
-          <p className="aoHint" style={{ color: 'rgba(13,18,32,0.72)' }}>{runtimeContext.detail}</p>
-          <p className="aoHint" style={{ marginTop: 8, fontWeight: 700, color: 'rgba(13,18,32,0.76)' }}>
-            {runtimeContext.nextStep}
+          <p className="aoHint" style={{ color: 'rgba(13,18,32,0.72)' }}>
+            Simulated monitor diagnostics for the 5173 preview shell.
           </p>
         </div>
       ) : null}
+      <TailscaleSection summary={tailscale} loading={false} />
       <WatchdogSection summary={watchdog} loading={false} />
       <WebTransportSection snapshot={wtSnapshot} loading={false} />
       <PeerDiagsSection status={status} />

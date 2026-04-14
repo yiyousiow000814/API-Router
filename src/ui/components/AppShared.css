@@ -45,13 +45,9 @@
   --z-toast: 18;
 }
 
-.aoMoreDropdownOverlay {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-dropdown-overlay);
-}
 .aoMoreDropdownMenu {
   position: fixed;
+  margin-top: 4px;
   background: var(--surface, #fff);
   border: 1px solid var(--border, #e0e0e0);
   border-radius: 6px;

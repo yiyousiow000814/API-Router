@@ -1,5 +1,7 @@
+import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { lanPeerTailscaleSummary, lanPeersSummary, tailscaleSummary } from './HeroStatusCard'
+import { HeroStatusCard } from './HeroStatusCard'
 import type { Status } from '../types'
 
 function buildStatus(): Status {
@@ -115,5 +117,20 @@ describe('HeroStatusCard', () => {
     ]
 
     expect(lanPeerTailscaleSummary(status)).toBe('Peer A: needs restart')
+  })
+
+  it('keeps tailscale diagnostics out of the dashboard gateway card', () => {
+    const status = buildStatus()
+    const html = renderToStaticMarkup(
+      <HeroStatusCard
+        status={status}
+        gatewayTokenPreview="ao_test"
+        onCopyToken={() => {}}
+        onShowRotate={() => {}}
+      />,
+    )
+
+    expect(html).not.toContain('Tailscale')
+    expect(html).not.toContain('Peer Tailscale')
   })
 })
