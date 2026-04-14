@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { Status } from '../types'
+import './DashboardPanel.css'
 
 // ---------------------------------------------------------------------------
 // Domain types (mirroring the backend)
@@ -61,6 +62,15 @@ function fmtAge(unixMs: number): string {
 function fmtTs(unixMs: number): string {
   if (!unixMs) return '—'
   return new Date(unixMs).toLocaleTimeString()
+}
+
+export function hasTauriInvokeAvailable(): boolean {
+  if (typeof window === 'undefined') return false
+  const w = window as unknown as {
+    __TAURI__?: { core?: { invoke?: unknown } }
+    __TAURI_INTERNALS__?: { invoke?: unknown }
+  }
+  return typeof w.__TAURI__?.core?.invoke === 'function' || typeof w.__TAURI_INTERNALS__?.invoke === 'function'
 }
 
 // ---------------------------------------------------------------------------
@@ -223,8 +233,14 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
   const [peers, setPeers] = useState<PeerDiagEntry[]>([])
   const [fetchErrors, setFetchErrors] = useState<Record<string, string>>({})
   const [refreshing, setRefreshing] = useState(false)
+  const hasTauriInvoke = useMemo(() => hasTauriInvokeAvailable(), [])
 
   const fetchPeerDiags = useCallback(async () => {
+    if (!hasTauriInvoke) {
+      setPeers([])
+      setFetchErrors({})
+      return
+    }
     setRefreshing(true)
     try {
       const knownPeers = status?.lan_sync?.peers ?? []
@@ -276,10 +292,14 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
     } finally {
       setRefreshing(false)
     }
-  }, [status?.lan_sync?.peers])
+  }, [hasTauriInvoke, status?.lan_sync?.peers])
 
   useEffect(() => {
     void fetchPeerDiags()
+    const timer = window.setInterval(() => {
+      void fetchPeerDiags()
+    }, 30_000)
+    return () => window.clearInterval(timer)
   }, [fetchPeerDiags])
 
   const knownPeers = status?.lan_sync?.peers ?? []
@@ -300,17 +320,25 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
             polled every 30s
           </span>
           <button
-            className="aoTinyBtn"
+            className={`aoUsageRefreshBtn aoUsageRefreshBtnMini${refreshing ? ' aoUsageRefreshBtnSpin' : ''}`}
             onClick={() => { void fetchPeerDiags() }}
             disabled={refreshing}
             title="Refresh peer diagnostics"
+            aria-label="Refresh peer diagnostics"
           >
-            {refreshing ? '…' : '↻'}
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M23 4v6h-6" />
+              <path d="M1 20v-6h6" />
+              <path d="M3.5 9a9 9 0 0 1 14.1-3.4L23 10" />
+              <path d="M1 14l5.3 5.3A9 9 0 0 0 20.5 15" />
+            </svg>
           </button>
         </div>
       </div>
       {!status ? (
         <p className="aoHint">Waiting for live gateway status.</p>
+      ) : !hasTauriInvoke ? (
+        <p className="aoHint">Remote peer diagnostics are available in the Tauri desktop app only.</p>
       ) : knownPeers.length === 0 ? (
         <p className="aoHint">No LAN peers discovered yet.</p>
       ) : (
@@ -386,9 +414,15 @@ interface MonitoringPanelProps {
 export function MonitoringPanel({ status }: MonitoringPanelProps) {
   const [watchdog, setWatchdog] = useState<WatchdogSummary | null>(null)
   const [wtSnapshot, setWtSnapshot] = useState<WebTransportDomainSnapshot | null>(null)
+  const hasTauriInvoke = useMemo(() => hasTauriInvokeAvailable(), [])
 
   // Poll local diagnostics (watchdog + webtransport) every 5s
   useEffect(() => {
+    if (!hasTauriInvoke) {
+      setWatchdog(null)
+      setWtSnapshot(null)
+      return
+    }
     let cancelled = false
     let timer: ReturnType<typeof setInterval> | null = null
 
@@ -415,7 +449,7 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
       cancelled = true
       if (timer) clearInterval(timer)
     }
-  }, [])
+  }, [hasTauriInvoke])
 
   return (
     <div
