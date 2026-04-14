@@ -4,7 +4,7 @@ import type { TopPage } from './AppTopNav'
 
 export function resolveMoreDropdownMenuPosition(buttonRect: Pick<DOMRect, 'bottom' | 'right'>, viewportWidth: number) {
   return {
-    top: buttonRect.bottom + 4,
+    top: buttonRect.bottom + 2,
     right: viewportWidth - buttonRect.right,
   }
 }
