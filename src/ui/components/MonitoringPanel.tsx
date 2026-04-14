@@ -309,6 +309,19 @@ function getTailscaleDetail(summary: TailscaleSummary | null | undefined): strin
   return `${host} · gateway unreachable`
 }
 
+type LocalDomain = 'tailscale' | 'webtransport' | 'watchdog'
+
+const LOCAL_DOMAIN_ACCENTS: Record<LocalDomain, string> = {
+  tailscale: 'rgba(23,115,200,0.42)',
+  webtransport: 'rgba(130,80,220,0.42)',
+  watchdog: 'rgba(255,94,125,0.42)',
+}
+
+function getLocalDomainAccent(domain: LocalDomain | null | undefined): string {
+  if (!domain) return 'var(--ao-line)'
+  return LOCAL_DOMAIN_ACCENTS[domain]
+}
+
 export function isMonitoringDevPreview() {
   if (typeof window === 'undefined') return false
   if (hasTauriInvokeAvailable()) return false
@@ -1054,7 +1067,7 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
   const [tailscale, setTailscale] = useState<TailscaleSummary | null>(() => (
     isDevPreview ? DEV_PREVIEW_TAILSCALE_SUMMARY : (status?.tailscale ?? null)
   ))
-  const [expandedLocalDomain, setExpandedLocalDomain] = useState<string | null>(null)
+  const [expandedLocalDomain, setExpandedLocalDomain] = useState<LocalDomain | null>(null)
 
   // Poll local diagnostics (watchdog + webtransport + tailscale) every 5s
   useEffect(() => {
@@ -1125,7 +1138,13 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
         </div>
         {expandedLocalDomain ? (
           /* Full-width detail view when a domain is expanded */
-          <div className="aoCard" style={{ padding: '14px 16px' }}>
+          <div
+            className="aoCard"
+            style={{
+              padding: '14px 16px',
+              borderColor: getLocalDomainAccent(expandedLocalDomain),
+            }}
+          >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: 'rgba(13,18,32,0.88)' }}>
                 {expandedLocalDomain === 'tailscale' ? 'Tailscale' :

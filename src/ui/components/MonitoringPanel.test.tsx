@@ -134,6 +134,8 @@ describe('MonitoringPanel', () => {
     expect(source).toContain("domains: ['watchdog', 'webtransport', 'tailscale']")
     expect(source).toContain('tailscale: ts ?? peer.tailscale ?? null')
     expect(source).toContain('No Tailscale data from this peer.')
+    expect(source).toContain('borderColor: getLocalDomainAccent(expandedLocalDomain)')
+    expect(source).toContain("watchdog: 'rgba(255,94,125,0.42)'")
     expect(source.indexOf('<TailscaleSection summary={peer.tailscale ?? null} loading={false} />')).toBeGreaterThan(
       -1,
     )
