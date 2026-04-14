@@ -89,6 +89,7 @@ export type Status = {
     signed_in?: boolean
     remaining?: string | null
     limit_5h_remaining?: string | null
+    limit_5h_reset_at?: string | null
     limit_weekly_remaining?: string | null
     limit_weekly_reset_at?: string | null
     code_review_remaining?: string | null

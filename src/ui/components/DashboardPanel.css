@@ -588,6 +588,277 @@
   flex-shrink: 0;
 }
 
+.aoWatchdogTimeline {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 18px;
+}
+
+.aoWatchdogTimelineBucket {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  position: relative;
+  outline: none;
+  cursor: help;
+}
+
+.aoWatchdogTimelineBar {
+  width: 100%;
+  min-height: 18px;
+  border-radius: 999px;
+}
+
+.aoWatchdogTimelineBucket:hover .aoWatchdogTimelineBar,
+.aoWatchdogTimelineBucket:focus-visible .aoWatchdogTimelineBar {
+  filter: saturate(1.08) brightness(1.02);
+}
+
+.aoWatchdogTimelineTooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  z-index: var(--z-local-tooltip);
+  min-width: 180px;
+  max-width: 260px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow:
+    0 16px 30px rgba(13, 18, 32, 0.16),
+    0 3px 10px rgba(13, 18, 32, 0.09);
+  color: rgba(13, 18, 32, 0.86);
+  font-size: 11px;
+  line-height: 1.35;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.aoWatchdogTimelineTooltip::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  transform: translateX(-50%);
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 6px solid rgba(255, 255, 255, 0.98);
+  filter: drop-shadow(0 1px 0 rgba(13, 18, 32, 0.08));
+}
+
+.aoWatchdogTimelineTooltipTitle {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.aoWatchdogTimelineTooltipText {
+  display: grid;
+  gap: 2px;
+}
+
+.aoWatchdogTimelineTooltipText > div {
+  white-space: nowrap;
+}
+
+.aoWebTransportRows {
+  display: grid;
+  gap: 6px;
+}
+
+.aoPillDanger {
+  border-color: rgba(255, 94, 125, 0.28);
+  background: rgba(255, 94, 125, 0.08);
+}
+
+.aoPillWarn {
+  border-color: rgba(255, 182, 72, 0.28);
+  background: rgba(255, 182, 72, 0.09);
+}
+
+.aoWebTransportHero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(220px, 0.9fr);
+  gap: 12px;
+  align-items: start;
+  margin-bottom: 10px;
+}
+
+.aoWebTransportHeroText {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.aoWebTransportHeroPill {
+  width: fit-content;
+}
+
+.aoWebTransportHeroHeadline {
+  font-size: 16px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.88);
+  line-height: 1.2;
+}
+
+.aoWebTransportHeroSubhead {
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.56);
+}
+
+.aoWebTransportHeroMeta {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  background: rgba(255, 255, 255, 0.66);
+}
+
+.aoWebTransportHeroMetaLine {
+  display: grid;
+  gap: 2px;
+}
+
+.aoWebTransportHeroMetaValue {
+  font-size: 13px;
+  font-weight: 650;
+  color: rgba(13, 18, 32, 0.88);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aoWebTransportCardGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.aoWebTransportCard {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  background: rgba(255, 255, 255, 0.68);
+  min-width: 0;
+}
+
+.aoWebTransportCardNeutral {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.aoWebTransportCardWarn {
+  border-color: rgba(255, 182, 72, 0.22);
+  background: rgba(255, 248, 228, 0.7);
+}
+
+.aoWebTransportCardDanger {
+  border-color: rgba(255, 94, 125, 0.22);
+  background: rgba(255, 240, 244, 0.76);
+}
+
+.aoWebTransportCardLabel {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.52);
+}
+
+.aoWebTransportCardValue {
+  font-size: 15px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.88);
+  line-height: 1.25;
+}
+
+.aoWebTransportCardDetail {
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.58);
+  line-height: 1.35;
+}
+
+.aoWebTransportSectionLabel {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.52);
+}
+
+.aoWebTransportPanel {
+  display: grid;
+  gap: 10px;
+  margin-top: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  background: rgba(255, 255, 255, 0.56);
+}
+
+.aoWebTransportSubsection {
+  display: grid;
+  gap: 8px;
+}
+
+.aoWebTransportPanelDivider {
+  height: 1px;
+  background: rgba(13, 18, 32, 0.08);
+}
+
+.aoWebTransportSignalsSummary {
+  font-size: 12px;
+  font-weight: 650;
+  color: rgba(13, 18, 32, 0.72);
+}
+
+.aoWebTransportSignalsList {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.aoWebTransportSignalRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.aoWebTransportSignalLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(13, 18, 32, 0.76);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.aoWebTransportSignalValue {
+  display: inline-flex;
+  gap: 6px;
+  align-items: baseline;
+  white-space: nowrap;
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.68);
+  text-align: right;
+}
+
+.aoWebTransportSignalRowWarn .aoWebTransportSignalValue {
+  color: rgba(171, 108, 20, 0.94);
+}
+
+.aoWebTransportSignalRowDanger .aoWebTransportSignalValue {
+  color: rgba(186, 51, 79, 0.96);
+}
+
 @media (max-width: 1000px) {
   .aoHero {
     grid-template-columns: 1fr;
@@ -599,6 +870,16 @@
 
   .aoMonLocalNode {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .aoWebTransportHero,
+  .aoWebTransportCardGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .aoWebTransportSignalRow {
+    flex-direction: column;
+    gap: 4px;
   }
 }
 

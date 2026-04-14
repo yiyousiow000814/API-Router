@@ -14,6 +14,13 @@ export interface WatchdogSummary {
   last_incident_unix_ms?: number | null
   last_incident_file?: string | null
   incident_count: number
+  activity_window_minutes?: number
+  activity_bucket_minutes?: number
+  activity_buckets?: Array<{
+    bucket_start_unix_ms: number
+    bucket_end_unix_ms: number
+    count: number
+  }>
   recent_incidents?: Array<{
     unix_ms: number
     kind: string
@@ -57,10 +64,113 @@ type TailscaleSummary = NonNullable<Status['tailscale']>
 type LanPeerStatus = NonNullable<Status['lan_sync']>['peers'][number]
 
 const LAN_DIAGNOSTICS_CAPABILITY = 'lan_debug_v2'
+const WATCHDOG_ACTIVITY_WINDOW_MINUTES = 12 * 60
+const WATCHDOG_ACTIVITY_BUCKET_MINUTES = 5
+const WATCHDOG_ACTIVITY_BUCKET_COUNT =
+  WATCHDOG_ACTIVITY_WINDOW_MINUTES / WATCHDOG_ACTIVITY_BUCKET_MINUTES
+const WEB_TRANSPORT_RECENT_WINDOW_MINUTES = 15
+const WEB_TRANSPORT_RECENT_WINDOW_MS = WEB_TRANSPORT_RECENT_WINDOW_MINUTES * 60_000
+
+const DEV_PREVIEW_WEB_TRANSPORT_NOW_MS = Date.now()
+const previewWebTransportMs = (offsetMs: number) => DEV_PREVIEW_WEB_TRANSPORT_NOW_MS - offsetMs
+
+type WatchdogActivityBucket = NonNullable<WatchdogSummary['activity_buckets']>[number]
+
+function buildWatchdogActivityBuckets(baseUnixMs: number, counts: number[]): WatchdogActivityBucket[] {
+  const now = baseUnixMs
+  const windowStart = now - WATCHDOG_ACTIVITY_WINDOW_MINUTES * 60_000
+  return counts.map((count, index) => {
+    const bucketStart = windowStart + index * WATCHDOG_ACTIVITY_BUCKET_MINUTES * 60_000
+    return {
+      bucket_start_unix_ms: bucketStart,
+      bucket_end_unix_ms: bucketStart + WATCHDOG_ACTIVITY_BUCKET_MINUTES * 60_000,
+      count,
+    }
+  })
+}
+
+function formatWatchdogActivityWindow(minutes: number): string {
+  if (minutes % (24 * 60) === 0) {
+    return `${minutes / (24 * 60)}d`
+  }
+  if (minutes % 60 === 0) {
+    return `${minutes / 60}h`
+  }
+  return `${minutes}m`
+}
+
+function formatWatchdogActivityBucketAriaLabel(bucket: WatchdogActivityBucket): string {
+  const incidentLabel =
+    bucket.count === 0 ? 'No incidents' : `${bucket.count} incident${bucket.count === 1 ? '' : 's'}`
+  return `Watchdog activity bucket, ${incidentLabel}, ${formatWatchdogActivityBucketTimeRange(bucket.bucket_start_unix_ms, bucket.bucket_end_unix_ms)}`
+}
+
+function formatWatchdogActivityBucketTimeRange(startUnixMs: number, endUnixMs: number): string {
+  const start = new Date(startUnixMs)
+  const end = new Date(endUnixMs)
+  const sameDay =
+    start.getFullYear() === end.getFullYear() &&
+    start.getMonth() === end.getMonth() &&
+    start.getDate() === end.getDate()
+
+  if (sameDay) {
+    return `${start.toLocaleDateString()} ${start.toLocaleTimeString()} - ${end.toLocaleTimeString()}`
+  }
+
+  return `${start.toLocaleString()} - ${end.toLocaleString()}`
+}
+
+function formatWatchdogActivityBucketDetail(bucket: WatchdogActivityBucket): string {
+  if (bucket.count === 0) return 'No incidents'
+  return `${bucket.count} incident${bucket.count === 1 ? '' : 's'}`
+}
+
+function makeWatchdogActivityCounts(spikes: Array<[number, number]>): number[] {
+  const counts = Array.from({ length: WATCHDOG_ACTIVITY_BUCKET_COUNT }, () => 0)
+  for (const [index, value] of spikes) {
+    if (index < 0 || index >= counts.length) continue
+    counts[index] = value
+  }
+  return counts
+}
+
+function getWatchdogActivityTone(count: number): { background: string; boxShadow: string } {
+  if (count >= 5) {
+    return {
+      background: 'rgba(255,94,125,0.88)',
+      boxShadow: 'inset 0 0 0 1px rgba(255,94,125,0.14)',
+    }
+  }
+  if (count > 0) {
+    return {
+      background: 'rgba(255,182,72,0.92)',
+      boxShadow: 'inset 0 0 0 1px rgba(255,182,72,0.16)',
+    }
+  }
+  return {
+    background: 'rgba(50,180,100,0.34)',
+    boxShadow: 'inset 0 0 0 1px rgba(50,180,100,0.10)',
+  }
+}
 
 const DEV_PREVIEW_WATCHDOG_SUMMARY: WatchdogSummary = {
   healthy: false,
   incident_count: 3,
+  activity_window_minutes: WATCHDOG_ACTIVITY_WINDOW_MINUTES,
+  activity_bucket_minutes: WATCHDOG_ACTIVITY_BUCKET_MINUTES,
+  activity_buckets: buildWatchdogActivityBuckets(
+    1_700_000_000_000,
+    makeWatchdogActivityCounts([
+      [8, 1],
+      [19, 2],
+      [33, 1],
+      [51, 3],
+      [74, 2],
+      [97, 4],
+      [121, 2],
+      [136, 1],
+    ]),
+  ),
   last_incident_kind: 'heartbeat-stall',
   last_incident_detail: 'UI heartbeat stalled',
   last_incident_unix_ms: 1_700_000_002_000,
@@ -88,23 +198,23 @@ const DEV_PREVIEW_WATCHDOG_SUMMARY: WatchdogSummary = {
 }
 
 const DEV_PREVIEW_WEBTRANSPORT_SNAPSHOT: WebTransportDomainSnapshot = {
-  ws_open_observed: { count: 4, last_unix_ms: 1_700_000_002_500 },
+  ws_open_observed: { count: 4, last_unix_ms: previewWebTransportMs(8 * 60_000) },
   ws_error_observed: {
-    count: 2,
-    last_unix_ms: 1_700_000_002_000,
-    latest_detail: 'ECONNRESET',
+    count: 0,
+    last_unix_ms: 0,
+    latest_detail: null,
   },
   ws_close_observed: {
-    count: 2,
-    last_unix_ms: 1_700_000_002_100,
-    latest_close_code: 1006,
+    count: 0,
+    last_unix_ms: 0,
+    latest_close_code: null,
   },
-  ws_reconnect_scheduled: { count: 3, last_unix_ms: 1_700_000_002_150 },
-  ws_reconnect_attempted: { count: 3, last_unix_ms: 1_700_000_002_220 },
-  http_fallback_engaged: { count: 1, last_unix_ms: 1_700_000_001_500 },
-  thread_refresh_failed: { count: 1, last_unix_ms: 1_700_000_001_200 },
+  ws_reconnect_scheduled: { count: 3, last_unix_ms: previewWebTransportMs(3 * 60_000 + 30_000) },
+  ws_reconnect_attempted: { count: 3, last_unix_ms: previewWebTransportMs(3 * 60_000 + 5_000) },
+  http_fallback_engaged: { count: 0, last_unix_ms: 0 },
+  thread_refresh_failed: { count: 1, last_unix_ms: previewWebTransportMs(9 * 60_000) },
   active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
-  live_notification_gap_observed: { count: 1, last_unix_ms: 1_700_000_001_800 },
+  live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
 }
 
 const DEV_PREVIEW_TAILSCALE_SUMMARY: TailscaleSummary = {
@@ -128,7 +238,7 @@ const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
   {
     node_id: 'node-desk-b',
     node_name: 'Desk B',
-    health: 'error',
+    health: 'degraded',
     last_incident: 'heartbeat-stall',
     fetched_at: Date.now() - 2_000,
     tailscale: {
@@ -150,6 +260,18 @@ const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
     watchdog: {
       healthy: false,
       incident_count: 2,
+      activity_window_minutes: WATCHDOG_ACTIVITY_WINDOW_MINUTES,
+      activity_bucket_minutes: WATCHDOG_ACTIVITY_BUCKET_MINUTES,
+      activity_buckets: buildWatchdogActivityBuckets(
+        1_700_000_000_000,
+        makeWatchdogActivityCounts([
+          [18, 1],
+          [37, 2],
+          [65, 1],
+          [91, 2],
+          [113, 1],
+        ]),
+      ),
       last_incident_kind: 'heartbeat-stall',
       last_incident_detail: 'UI heartbeat stalled',
       last_incident_unix_ms: 1_700_000_001_800,
@@ -170,21 +292,21 @@ const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
       ],
     },
     webtransport: {
-      ws_open_observed: { count: 1, last_unix_ms: 1_700_000_001_700 },
+      ws_open_observed: { count: 1, last_unix_ms: previewWebTransportMs(5 * 60_000) },
       ws_error_observed: {
         count: 1,
-        last_unix_ms: 1_700_000_001_750,
+        last_unix_ms: previewWebTransportMs(4 * 60_000 + 30_000),
         latest_detail: 'ENOTFOUND',
       },
       ws_close_observed: {
         count: 1,
-        last_unix_ms: 1_700_000_001_760,
+        last_unix_ms: previewWebTransportMs(4 * 60_000 + 20_000),
         latest_close_code: 1006,
       },
-      ws_reconnect_scheduled: { count: 2, last_unix_ms: 1_700_000_001_770 },
-      ws_reconnect_attempted: { count: 2, last_unix_ms: 1_700_000_001_775 },
-      http_fallback_engaged: { count: 1, last_unix_ms: 1_700_000_001_600 },
-      thread_refresh_failed: { count: 1, last_unix_ms: 1_700_000_001_620 },
+      ws_reconnect_scheduled: { count: 2, last_unix_ms: previewWebTransportMs(4 * 60_000 + 10_000) },
+      ws_reconnect_attempted: { count: 2, last_unix_ms: previewWebTransportMs(4 * 60_000 + 5_000) },
+      http_fallback_engaged: { count: 1, last_unix_ms: previewWebTransportMs(8 * 60_000) },
+      thread_refresh_failed: { count: 1, last_unix_ms: previewWebTransportMs(8 * 60_000 + 20_000) },
       active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
       live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
     },
@@ -192,7 +314,7 @@ const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
   {
     node_id: 'node-laptop-c',
     node_name: 'Laptop C',
-    health: 'ok',
+    health: 'healthy',
     last_incident: null,
     fetched_at: Date.now() - 8_000,
     tailscale: {
@@ -207,9 +329,15 @@ const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
       status_error: 'tailscale_not_found',
       bootstrap: null,
     },
-      watchdog: {
+    watchdog: {
       healthy: true,
       incident_count: 0,
+      activity_window_minutes: WATCHDOG_ACTIVITY_WINDOW_MINUTES,
+      activity_bucket_minutes: WATCHDOG_ACTIVITY_BUCKET_MINUTES,
+      activity_buckets: buildWatchdogActivityBuckets(
+        1_700_000_000_000,
+        makeWatchdogActivityCounts([]),
+      ),
       last_incident_kind: null,
       last_incident_detail: null,
       recent_incidents: [],
@@ -246,6 +374,96 @@ function fmtAge(unixMs: number): string {
 function fmtTs(unixMs: number): string {
   if (!unixMs) return '—'
   return new Date(unixMs).toLocaleTimeString()
+}
+
+type StatusTone = 'healthy' | 'degraded' | 'warn' | 'unknown'
+
+type StatusPresentation = {
+  tone: StatusTone
+  label: string
+  pulse?: boolean
+}
+
+type StatusTheme = {
+  pillClass: string
+  dotClass: string
+  dotStyle?: {
+    background: string
+    boxShadow?: string
+  }
+}
+
+const STATUS_THEME: Record<StatusTone, StatusTheme> = {
+  healthy: {
+    pillClass: '',
+    dotClass: 'aoDot',
+  },
+  degraded: {
+    pillClass: ' aoPillDanger',
+    dotClass: 'aoDot aoDotBad',
+  },
+  warn: {
+    pillClass: ' aoPillWarn',
+    dotClass: 'aoDot aoDotMuted',
+    dotStyle: {
+      background: 'var(--ao-warn, rgba(255,182,72,0.92))',
+      boxShadow: '0 0 0 3px rgba(255, 182, 72, 0.16)',
+    },
+  },
+  unknown: {
+    pillClass: '',
+    dotClass: 'aoDot aoDotMuted',
+    dotStyle: {
+      background: 'rgba(13,18,32,0.2)',
+      boxShadow: '0 0 0 3px rgba(13, 18, 32, 0.08)',
+    },
+  },
+}
+
+function getStatusTheme(tone: StatusTone): StatusTheme {
+  return STATUS_THEME[tone]
+}
+
+function StatusDot({
+  tone,
+  size = 6,
+  title,
+}: {
+  tone: StatusTone
+  size?: number
+  title?: string
+}) {
+  const theme = getStatusTheme(tone)
+  return (
+    <span
+      title={title}
+      className={theme.dotClass}
+      style={{
+        width: size,
+        height: size,
+        ...theme.dotStyle,
+      }}
+    />
+  )
+}
+
+function StatusBadge({
+  tone,
+  label,
+  pulse = false,
+}: {
+  tone: StatusTone
+  label: string
+  pulse?: boolean
+}) {
+  const theme = getStatusTheme(tone)
+
+  return (
+    <span className={`aoPill${pulse ? ' aoPulse' : ''}${theme.pillClass}`} style={{ fontSize: 10 }}>
+      <StatusDot tone={tone} />
+      <span className="aoPillText">{label}</span>
+    </span>
+  )
 }
 
 function fmtDateTime(unixMs: number): string {
@@ -309,6 +527,14 @@ function getTailscaleDetail(summary: TailscaleSummary | null | undefined): strin
   return `${host} · gateway unreachable`
 }
 
+function getTailscaleStatusPresentation(summary: TailscaleSummary | null | undefined): StatusPresentation | null {
+  if (!summary) return null
+  if (summary.gateway_reachable) return { tone: 'healthy', label: 'healthy', pulse: true }
+  if (summary.installed === false) return { tone: 'unknown', label: 'not installed' }
+  if (summary.connected === false) return { tone: 'degraded', label: 'offline' }
+  return { tone: 'warn', label: 'Attention' }
+}
+
 type LocalDomain = 'tailscale' | 'webtransport' | 'watchdog'
 
 const LOCAL_DOMAIN_ACCENTS: Record<LocalDomain, string> = {
@@ -358,31 +584,18 @@ interface WatchdogSectionProps {
 }
 
 function WatchdogSection({ summary, loading, showIncidents = true }: WatchdogSectionProps) {
-  const healthy = summary?.healthy ?? null
   const recentIncidents = summary?.recent_incidents ?? []
+  const activityBuckets = summary?.activity_buckets ?? []
+  const activityWindowMinutes = summary?.activity_window_minutes ?? WATCHDOG_ACTIVITY_WINDOW_MINUTES
+  const activityBucketMinutes = summary?.activity_bucket_minutes ?? WATCHDOG_ACTIVITY_BUCKET_MINUTES
+  const activityWindowLabel = formatWatchdogActivityWindow(activityWindowMinutes)
+  const [hoveredBucket, setHoveredBucket] = useState<WatchdogActivityBucket | null>(null)
+  const status = getWatchdogStatusPresentation(summary)
   return (
     <div className="aoCard" style={{ padding: '12px 14px' }}>
       <div className="aoCardHeader">
         <div className="aoCardTitle">Watchdog</div>
-        {loading ? (
-          <span className="aoHint">loading…</span>
-        ) : (
-          <span className={`aoPill${healthy === true ? ' aoPulse' : ''}`}>
-            {healthy === true ? (
-              <>
-                <span className="aoDot" />
-                <span className="aoPillText">healthy</span>
-              </>
-            ) : healthy === false ? (
-              <>
-                <span className="aoDot aoDotBad" />
-                <span className="aoPillText">unhealthy</span>
-              </>
-            ) : (
-              <span className="aoPillText">unknown</span>
-            )}
-          </span>
-        )}
+        {loading ? <span className="aoHint">loading…</span> : status ? <StatusBadge tone={status.tone} label={status.label} pulse={status.pulse} /> : <StatusBadge tone="unknown" label="unknown" />}
       </div>
       {summary ? (
         <>
@@ -402,6 +615,51 @@ function WatchdogSection({ summary, loading, showIncidents = true }: WatchdogSec
               </>
             ) : null}
           </div>
+          {activityBuckets.length > 0 ? (
+            <div style={{ display: 'grid', gap: 6, marginTop: 10 }}>
+              <div className="aoHint" style={{ fontSize: 11, fontWeight: 700 }}>
+                Recent activity
+                <span style={{ marginLeft: 6, fontWeight: 600 }}>
+                  last {activityWindowLabel} · {activityBucketMinutes}m bars
+                </span>
+              </div>
+              <div
+                className="aoWatchdogTimeline"
+                aria-label={`Watchdog activity over the last ${activityWindowLabel}`}
+              >
+                {activityBuckets.map((bucket) => {
+                  const tone = getWatchdogActivityTone(bucket.count)
+                  return (
+                    <div
+                      key={bucket.bucket_start_unix_ms}
+                      className="aoWatchdogTimelineBucket"
+                      aria-label={formatWatchdogActivityBucketAriaLabel(bucket)}
+                      onMouseEnter={() => setHoveredBucket(bucket)}
+                      onMouseLeave={() => setHoveredBucket(null)}
+                    >
+                      {hoveredBucket?.bucket_start_unix_ms === bucket.bucket_start_unix_ms ? (
+                        <div className="aoWatchdogTimelineTooltip" role="tooltip">
+                          <div className="aoWatchdogTimelineTooltipTitle">Watchdog activity</div>
+                          <div className="aoWatchdogTimelineTooltipText">
+                            <div>{`Window: last ${activityWindowLabel} · ${activityBucketMinutes}m buckets`}</div>
+                            <div>{`Time: ${formatWatchdogActivityBucketTimeRange(bucket.bucket_start_unix_ms, bucket.bucket_end_unix_ms)}`}</div>
+                            <div>{`Incidents: ${formatWatchdogActivityBucketDetail(bucket)}`}</div>
+                          </div>
+                        </div>
+                      ) : null}
+                      <span
+                        className="aoWatchdogTimelineBar"
+                        style={{
+                          background: tone.background,
+                          boxShadow: tone.boxShadow,
+                        }}
+                      />
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          ) : null}
           {showIncidents && recentIncidents.length > 0 ? (
             <div style={{ display: 'grid', gap: 6, marginTop: 10 }}>
               <div className="aoHint" style={{ fontSize: 11, fontWeight: 700 }}>Recent incidents</div>
@@ -445,28 +703,137 @@ interface WtSectionProps {
   loading: boolean
 }
 
-function fmtRow(label: string, ec: EventCount | undefined) {
-  if (!ec) return null
+function formatObservedCount(count: number, noun: string): string {
+  return `${count} ${count === 1 ? noun : `${noun}s`}`
+}
+
+function getLatestUnixMs(values: Array<number | null | undefined>): number {
+  return values.reduce<number>((max, value) => {
+    const current = value ?? 0
+    return current > max ? current : max
+  }, 0)
+}
+
+function isRecentWebTransportSignal(unixMs: number | null | undefined, nowMs: number): boolean {
+  return Boolean(unixMs && nowMs - unixMs <= WEB_TRANSPORT_RECENT_WINDOW_MS)
+}
+
+export type WebTransportHealth = 'healthy' | 'noisy' | 'degraded'
+
+export function getWebTransportHealth(snapshot: WebTransportDomainSnapshot, nowMs = Date.now()): WebTransportHealth {
+  if (
+    isRecentWebTransportSignal(snapshot.ws_error_observed.last_unix_ms, nowMs) ||
+    isRecentWebTransportSignal(snapshot.thread_refresh_failed.last_unix_ms, nowMs) ||
+    isRecentWebTransportSignal(snapshot.active_thread_poll_failed.last_unix_ms, nowMs)
+  ) {
+    return 'degraded'
+  }
+  if (
+    isRecentWebTransportSignal(snapshot.http_fallback_engaged.last_unix_ms, nowMs) ||
+    isRecentWebTransportSignal(snapshot.live_notification_gap_observed.last_unix_ms, nowMs)
+  ) {
+    return 'noisy'
+  }
+  return 'healthy'
+}
+
+function getWebTransportStatusDetail(snapshot: WebTransportDomainSnapshot, nowMs = Date.now()): string {
+  if (isRecentWebTransportSignal(snapshot.ws_error_observed.last_unix_ms, nowMs)) {
+    const detail = snapshot.ws_error_observed.latest_detail?.trim()
+    return detail ? `Latest error: ${detail}` : 'WebSocket errors detected'
+  }
+  if (isRecentWebTransportSignal(snapshot.thread_refresh_failed.last_unix_ms, nowMs)) {
+    return 'Thread refresh failures detected'
+  }
+  if (isRecentWebTransportSignal(snapshot.active_thread_poll_failed.last_unix_ms, nowMs)) {
+    return 'Active thread polling has failed'
+  }
+  if (isRecentWebTransportSignal(snapshot.http_fallback_engaged.last_unix_ms, nowMs)) {
+    return 'HTTP fallback was used recently'
+  }
+  if (isRecentWebTransportSignal(snapshot.live_notification_gap_observed.last_unix_ms, nowMs)) {
+    return 'Live notification gaps were observed'
+  }
+  return 'No recent transport errors'
+}
+
+function formatWebTransportErrorDetail(detail: string | null | undefined): string {
+  const value = detail?.trim()
+  return value || 'No error detail'
+}
+
+function getWebTransportStatusPresentation(
+  snapshot: WebTransportDomainSnapshot | null | undefined,
+  nowMs = Date.now(),
+): StatusPresentation | null {
+  if (!snapshot) return null
+  const health = getWebTransportHealth(snapshot, nowMs)
+  if (health === 'degraded') return { tone: 'degraded', label: 'Degraded' }
+  if (health === 'noisy') return { tone: 'warn', label: 'Noisy' }
+  return { tone: 'healthy', label: 'Healthy', pulse: true }
+}
+
+function getWebTransportRecentSignals(snapshot: WebTransportDomainSnapshot, nowMs: number) {
+  const rows: Array<{ label: string; value: string; tone?: 'warn' | 'danger' }> = []
+
+  if (isRecentWebTransportSignal(snapshot.thread_refresh_failed.last_unix_ms, nowMs) && snapshot.thread_refresh_failed.count > 0) {
+    rows.push({
+      label: 'Thread refresh failures',
+      value: `${formatObservedCount(snapshot.thread_refresh_failed.count, 'failure')} · last ${fmtTs(snapshot.thread_refresh_failed.last_unix_ms)}`,
+      tone: 'danger',
+    })
+  }
+  if (isRecentWebTransportSignal(snapshot.active_thread_poll_failed.last_unix_ms, nowMs) && snapshot.active_thread_poll_failed.count > 0) {
+    rows.push({
+      label: 'Active thread poll failures',
+      value: `${formatObservedCount(snapshot.active_thread_poll_failed.count, 'failure')} · last ${fmtTs(snapshot.active_thread_poll_failed.last_unix_ms)}`,
+      tone: 'danger',
+    })
+  }
+  if (isRecentWebTransportSignal(snapshot.http_fallback_engaged.last_unix_ms, nowMs) && snapshot.http_fallback_engaged.count > 0) {
+    rows.push({
+      label: 'HTTP fallback',
+      value: `${formatObservedCount(snapshot.http_fallback_engaged.count, 'fallback')} · last ${fmtTs(snapshot.http_fallback_engaged.last_unix_ms)}`,
+      tone: 'warn',
+    })
+  }
+  if (
+    isRecentWebTransportSignal(snapshot.live_notification_gap_observed.last_unix_ms, nowMs) &&
+    snapshot.live_notification_gap_observed.count > 0
+  ) {
+    rows.push({
+      label: 'Live notification gaps',
+      value: `${formatObservedCount(snapshot.live_notification_gap_observed.count, 'gap')} · last ${fmtTs(snapshot.live_notification_gap_observed.last_unix_ms)}`,
+      tone: 'warn',
+    })
+  }
+
+  return rows
+}
+
+function WebTransportMetricCard({
+  label,
+  value,
+  detail,
+  tone = 'neutral',
+}: {
+  label: string
+  value: string
+  detail?: string | null
+  tone?: 'neutral' | 'warn' | 'danger'
+}) {
   return (
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateColumns: 'minmax(0,1fr) auto',
-        gap: 12,
-        alignItems: 'start',
-      }}
-    >
-      <span className="aoKey" style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{label}</span>
-      <span className="aoVal" style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-        <span>{ec.count}</span>
-        {ec.last_unix_ms ? (
-          <span className="aoHint" style={{ marginLeft: 8 }}>{fmtTs(ec.last_unix_ms)}</span>
-        ) : (
-          <span className="aoHint" style={{ marginLeft: 8 }}>—</span>
-        )}
-      </span>
+    <div className={`aoWebTransportCard aoWebTransportCard${tone[0].toUpperCase()}${tone.slice(1)}`}>
+      <div className="aoWebTransportCardLabel">{label}</div>
+      <div className="aoWebTransportCardValue">{value}</div>
+      {detail ? <div className="aoWebTransportCardDetail">{detail}</div> : null}
     </div>
   )
+}
+
+function getWatchdogStatusPresentation(summary: WatchdogSummary | null | undefined): StatusPresentation | null {
+  if (!summary) return null
+  return summary.healthy ? { tone: 'healthy', label: 'healthy', pulse: true } : { tone: 'degraded', label: 'Degraded' }
 }
 
 function WebTransportSection({ snapshot, loading }: WtSectionProps) {
@@ -493,60 +860,110 @@ function WebTransportSection({ snapshot, loading }: WtSectionProps) {
       </div>
     )
   }
+  const nowMs = Date.now()
+  const status = getWebTransportStatusPresentation(snapshot, nowMs)
+  const statusDetail = getWebTransportStatusDetail(snapshot, nowMs)
+  const recentSignals = getWebTransportRecentSignals(snapshot, nowMs)
+  const heroMetaLines = [
+    isRecentWebTransportSignal(snapshot.ws_error_observed.last_unix_ms, nowMs) ? (
+      <div key="error" className="aoWebTransportHeroMetaLine">
+        <span className="aoHint">Latest error</span>
+        <span className="aoWebTransportHeroMetaValue">{formatWebTransportErrorDetail(snapshot.ws_error_observed.latest_detail)}</span>
+      </div>
+    ) : null,
+    isRecentWebTransportSignal(snapshot.ws_close_observed.last_unix_ms, nowMs) && snapshot.ws_close_observed.latest_close_code != null ? (
+      <div key="close" className="aoWebTransportHeroMetaLine">
+        <span className="aoHint">Latest close code</span>
+        <span className="aoWebTransportHeroMetaValue">{snapshot.ws_close_observed.latest_close_code}</span>
+      </div>
+    ) : null,
+  ].filter(Boolean)
+  const latestActivity = getLatestUnixMs([
+    snapshot.ws_open_observed.last_unix_ms,
+    snapshot.ws_error_observed.last_unix_ms,
+    snapshot.ws_close_observed.last_unix_ms,
+    snapshot.ws_reconnect_scheduled.last_unix_ms,
+    snapshot.ws_reconnect_attempted.last_unix_ms,
+    snapshot.http_fallback_engaged.last_unix_ms,
+    snapshot.thread_refresh_failed.last_unix_ms,
+    snapshot.active_thread_poll_failed.last_unix_ms,
+    snapshot.live_notification_gap_observed.last_unix_ms,
+  ])
   return (
     <div className="aoCard" style={{ padding: '12px 14px' }}>
       <div className="aoCardHeader">
         <div className="aoCardTitle">WebTransport</div>
-        <span className="aoHint" style={{ fontSize: 11 }}>
-          polled every 5s
-        </span>
+        {status ? <StatusBadge tone={status.tone} label={status.label} pulse={status.pulse} /> : null}
       </div>
-      <div style={{ display: 'grid', gap: 4 }}>
-        {fmtRow('ws_open', snapshot.ws_open_observed)}
-        {snapshot.ws_error_observed.count > 0 && (
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'minmax(0,1fr) auto',
-              gap: 12,
-              alignItems: 'start',
-            }}
-          >
-            <span className="aoKey" style={{ minWidth: 0, overflowWrap: 'anywhere' }}>ws_error</span>
-            <span className="aoVal aoValSmall" style={{ color: 'var(--ao-danger)', textAlign: 'right' }}>
-              <span>{snapshot.ws_error_observed.count}</span>
-              <span className="aoHint" style={{ marginLeft: 8 }}>{fmtTs(snapshot.ws_error_observed.last_unix_ms)}</span>
-              {snapshot.ws_error_observed.latest_detail ? (
-                <span style={{ display: 'block', marginTop: 2, overflowWrap: 'anywhere' }}>
-                  {snapshot.ws_error_observed.latest_detail}
-                </span>
-              ) : null}
-            </span>
+      <div className="aoWebTransportHero">
+        <div className="aoWebTransportHeroText">
+          <div className="aoWebTransportHeroHeadline">{statusDetail}</div>
+          <div className="aoWebTransportHeroSubhead">Last activity {fmtTs(latestActivity)}</div>
+          <div className="aoWebTransportHeroSubhead">Polled every 5s</div>
+        </div>
+        {heroMetaLines.length > 0 ? <div className="aoWebTransportHeroMeta">{heroMetaLines}</div> : null}
+      </div>
+      <div className="aoWebTransportPanel">
+        <div className="aoWebTransportSubsection">
+          <div className="aoWebTransportSectionLabel">Summary</div>
+          <div className="aoWebTransportCardGrid">
+            <WebTransportMetricCard
+              label="Socket activity"
+              value={`${formatObservedCount(snapshot.ws_open_observed.count, 'open')} · ${formatObservedCount(snapshot.ws_close_observed.count, 'close')}`}
+              detail={`Last seen ${fmtTs(getLatestUnixMs([
+                snapshot.ws_open_observed.last_unix_ms,
+                snapshot.ws_close_observed.last_unix_ms,
+              ]))}`}
+            />
+            <WebTransportMetricCard
+              label="Reconnect loop"
+              value={`${formatObservedCount(snapshot.ws_reconnect_scheduled.count, 'scheduled')} · ${formatObservedCount(snapshot.ws_reconnect_attempted.count, 'attempt')}`}
+              detail={`Last seen ${fmtTs(getLatestUnixMs([
+                snapshot.ws_reconnect_scheduled.last_unix_ms,
+                snapshot.ws_reconnect_attempted.last_unix_ms,
+              ]))}`}
+            />
+            <WebTransportMetricCard
+              label="Errors"
+              value={formatObservedCount(snapshot.ws_error_observed.count, 'error')}
+              detail={formatWebTransportErrorDetail(snapshot.ws_error_observed.latest_detail)}
+              tone={isRecentWebTransportSignal(snapshot.ws_error_observed.last_unix_ms, nowMs) ? 'danger' : 'neutral'}
+            />
+            <WebTransportMetricCard
+              label="Fallbacks"
+              value={`${formatObservedCount(snapshot.http_fallback_engaged.count, 'HTTP fallback')} · ${formatObservedCount(snapshot.live_notification_gap_observed.count, 'gap')}`}
+              detail={`Last seen ${fmtTs(getLatestUnixMs([
+                snapshot.http_fallback_engaged.last_unix_ms,
+                snapshot.live_notification_gap_observed.last_unix_ms,
+              ]))}`}
+              tone={
+                isRecentWebTransportSignal(snapshot.http_fallback_engaged.last_unix_ms, nowMs) ||
+                isRecentWebTransportSignal(snapshot.live_notification_gap_observed.last_unix_ms, nowMs)
+                  ? 'warn'
+                  : 'neutral'
+              }
+            />
           </div>
-        )}
-        {fmtRow('ws_close', {
-          last_unix_ms: snapshot.ws_close_observed.last_unix_ms,
-          count: snapshot.ws_close_observed.count,
-        })}
-        {snapshot.ws_close_observed.latest_close_code != null && (
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'minmax(0,1fr) auto',
-              gap: 12,
-              alignItems: 'start',
-            }}
-          >
-            <span className="aoKey">close_code</span>
-            <span className="aoVal" style={{ textAlign: 'right' }}>{snapshot.ws_close_observed.latest_close_code}</span>
-          </div>
-        )}
-        {fmtRow('ws_reconnect_scheduled', snapshot.ws_reconnect_scheduled)}
-        {fmtRow('ws_reconnect_attempted', snapshot.ws_reconnect_attempted)}
-        {fmtRow('http_fallback', snapshot.http_fallback_engaged)}
-        {fmtRow('thread_refresh_failed', snapshot.thread_refresh_failed)}
-        {fmtRow('active_thread_poll_failed', snapshot.active_thread_poll_failed)}
-        {fmtRow('live_notification_gap', snapshot.live_notification_gap_observed)}
+        </div>
+        {recentSignals.length > 0 ? (
+          <>
+            <div className="aoWebTransportPanelDivider" />
+            <div className="aoWebTransportSubsection">
+              <div className="aoWebTransportSignalsSummary">Event details</div>
+              <div className="aoWebTransportSignalsList">
+                {recentSignals.map((signal) => (
+                  <div
+                    key={signal.label}
+                    className={`aoWebTransportSignalRow${signal.tone ? ` aoWebTransportSignalRow${signal.tone[0].toUpperCase()}${signal.tone.slice(1)}` : ''}`}
+                  >
+                    <span className="aoWebTransportSignalLabel">{signal.label}</span>
+                    <span className="aoWebTransportSignalValue">{signal.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        ) : null}
       </div>
     </div>
   )
@@ -563,6 +980,7 @@ interface TailscaleSectionProps {
 
 function TailscaleSection({ summary, loading }: TailscaleSectionProps) {
   const host = summary?.dns_name?.trim() || summary?.reachable_ipv4[0] || summary?.ipv4[0] || '—'
+  const status = getTailscaleStatusPresentation(summary)
   if (loading && !summary) {
     return (
       <div className="aoCard" style={{ padding: '12px 14px' }}>
@@ -587,26 +1005,7 @@ function TailscaleSection({ summary, loading }: TailscaleSectionProps) {
     <div className="aoCard" style={{ padding: '12px 14px' }}>
       <div className="aoCardHeader">
         <div className="aoCardTitle">Tailscale</div>
-        <span className={`aoPill${summary.gateway_reachable ? ' aoPulse' : ''}`}>
-          {summary.gateway_reachable ? (
-            <>
-              <span className="aoDot" />
-              <span className="aoPillText">reachable</span>
-            </>
-          ) : summary.installed === false ? (
-            <>
-              <span className="aoDot aoDotBad" />
-              <span className="aoPillText">missing</span>
-            </>
-          ) : summary.connected === false ? (
-            <>
-              <span className="aoDot aoDotBad" />
-              <span className="aoPillText">disconnected</span>
-            </>
-          ) : (
-            <span className="aoPillText">ok</span>
-          )}
-        </span>
+        {status ? <StatusBadge tone={status.tone} label={status.label} pulse={status.pulse} /> : <span className="aoHint">—</span>}
       </div>
       <div className="aoKvp">
         <span className="aoKey">state</span>
@@ -648,12 +1047,18 @@ function TailscaleSection({ summary, loading }: TailscaleSectionProps) {
 interface PeerDiagEntry {
   node_id: string
   node_name: string
-  health: 'ok' | 'error' | 'unknown'
+  health: 'healthy' | 'degraded' | 'unknown'
   last_incident: string | null
   fetched_at: number
   tailscale: TailscaleSummary | null
   watchdog: WatchdogSummary | null
   webtransport: WebTransportDomainSnapshot | null
+}
+
+function getPeerHealthPresentation(health: PeerDiagEntry['health']): StatusPresentation {
+  if (health === 'healthy') return { tone: 'healthy', label: 'healthy', pulse: true }
+  if (health === 'degraded') return { tone: 'degraded', label: 'Degraded' }
+  return { tone: 'unknown', label: 'unknown' }
 }
 
 interface PeerDiagsSectionProps {
@@ -768,7 +1173,7 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
           entries.push({
             node_id: peer.node_id,
             node_name: peer.node_name,
-            health: wd?.healthy === false ? 'error' : wd?.healthy === true ? 'ok' : 'unknown',
+          health: wd?.healthy === false ? 'degraded' : wd?.healthy === true ? 'healthy' : 'unknown',
             last_incident: wd?.last_incident_kind ?? null,
             fetched_at: now,
             tailscale: ts ?? peer.tailscale ?? null,
@@ -856,6 +1261,10 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
             const isExpanded = expandedPeers.has(peer.node_id)
             const peerStatus = isDevPreview ? null : status?.lan_sync?.peers?.find(p => p.node_id === peer.node_id)
             const listenAddr = peerStatus?.listen_addr || peer.node_id.slice(0, 12)
+            const peerHealth = getPeerHealthPresentation(peer.health)
+            const tailscaleStatus = getTailscaleStatusPresentation(peer.tailscale)
+            const watchdogStatus = getWatchdogStatusPresentation(peer.watchdog)
+            const webtransportStatus = peer.webtransport ? getWebTransportStatusPresentation(peer.webtransport) : null
 
             return (
               <div key={peer.node_id} className="aoMonPeerCard">
@@ -865,15 +1274,7 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
                   <div className="aoMonPeerCardMeta">
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span className="aoMonPeerCardName">{peer.node_name}</span>
-                      <span className={`aoPill${peer.health === 'ok' ? ' aoPulse' : peer.health === 'error' ? '' : ''}`} style={{ fontSize: 10 }}>
-                        {peer.health === 'ok' ? (
-                          <><span className="aoDot" style={{ width: 5, height: 5 }} /><span className="aoPillText">ok</span></>
-                        ) : peer.health === 'error' ? (
-                          <><span className="aoDot aoDotBad" style={{ width: 5, height: 5 }} /><span className="aoPillText">error</span></>
-                        ) : (
-                          <span className="aoPillText">unknown</span>
-                        )}
-                      </span>
+                      <StatusBadge tone={peerHealth.tone} label={peerHealth.label} pulse={peerHealth.pulse} />
                     </div>
                     <div className="aoMonPeerCardId">
                       {listenAddr} · fetched {fmtAge(peer.fetched_at)}
@@ -890,46 +1291,15 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
                     {/* Domain status dots */}
                     <div className="aoMonPeerDomainDots">
                       <span className="aoMonPeerDomainDot" title="Tailscale">
-                        <span
-                          className="aoDot"
-                          style={{
-                            width: 6,
-                            height: 6,
-                            background: peer.tailscale?.gateway_reachable
-                              ? undefined
-                              : peer.tailscale?.connected
-                              ? 'var(--ao-warn, rgba(255,182,72,0.9))'
-                              : 'rgba(13,18,32,0.2)',
-                          }}
-                        />
+                        <StatusDot tone={tailscaleStatus?.tone ?? 'unknown'} />
                         <span>TS</span>
                       </span>
                       <span className="aoMonPeerDomainDot" title="Watchdog">
-                        <span
-                          className="aoDot"
-                          style={{
-                            width: 6,
-                            height: 6,
-                            background: peer.watchdog?.healthy === false
-                              ? 'var(--ao-danger, rgba(255,94,125,0.9))'
-                              : peer.watchdog?.healthy === true
-                              ? undefined
-                              : 'rgba(13,18,32,0.2)',
-                          }}
-                        />
+                        <StatusDot tone={watchdogStatus?.tone ?? 'unknown'} />
                         <span>WD</span>
                       </span>
                       <span className="aoMonPeerDomainDot" title="WebTransport">
-                        <span
-                          className="aoDot"
-                          style={{
-                            width: 6,
-                            height: 6,
-                            background: peer.webtransport?.ws_error_observed.count === 0
-                              ? undefined
-                              : 'var(--ao-danger, rgba(255,94,125,0.9))',
-                          }}
-                        />
+                        <StatusDot tone={webtransportStatus?.tone ?? 'unknown'} />
                         <span>WS</span>
                       </span>
                     </div>
@@ -1076,6 +1446,9 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
     isDevPreview ? DEV_PREVIEW_TAILSCALE_SUMMARY : (status?.tailscale ?? null)
   ))
   const [expandedLocalDomain, setExpandedLocalDomain] = useState<LocalDomain | null>(null)
+  const localTailscaleStatus = getTailscaleStatusPresentation(tailscale)
+  const localWebTransportStatus = getWebTransportStatusPresentation(wtSnapshot)
+  const localWatchdogStatus = getWatchdogStatusPresentation(watchdog)
 
   // Poll local diagnostics (watchdog + webtransport + tailscale) every 5s
   useEffect(() => {
@@ -1198,22 +1571,13 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
         ) : (
           /* Compact card grid */
           <div className="aoMonLocalNode">
-            {/* Tailscale card */}
+            <>
+              {/* Tailscale card */}
             <div className="aoMonLocalCard" style={{ boxShadow: 'inset 3px 0 0 rgba(23,115,200,0.75)' }}>
               <div className="aoMonLocalCardHeader">
                 <span className="aoMonLocalCardTitle">Tailscale</span>
-                {tailscale ? (
-                  <span className={`aoPill${tailscale.gateway_reachable ? ' aoPulse' : ''}`}>
-                    {tailscale.gateway_reachable ? (
-                      <><span className="aoDot" /><span className="aoPillText">ok</span></>
-                    ) : tailscale.installed === false ? (
-                      <span className="aoPillText">not installed</span>
-                    ) : tailscale.connected === false ? (
-                      <span className="aoPillText">offline</span>
-                    ) : (
-                      <><span className="aoDot aoDotBad" /><span className="aoPillText">attention</span></>
-                    )}
-                  </span>
+                {localTailscaleStatus ? (
+                  <StatusBadge tone={localTailscaleStatus.tone} label={localTailscaleStatus.label} pulse={localTailscaleStatus.pulse} />
                 ) : (
                   <span className="aoHint" style={{ fontSize: 11 }}>—</span>
                 )}
@@ -1251,17 +1615,25 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
               </button>
             </div>
             {/* WebTransport card */}
-            <div className="aoMonLocalCard" style={{ boxShadow: 'inset 3px 0 0 rgba(130,80,220,0.75)' }}>
+            <div
+              className="aoMonLocalCard"
+              style={{
+                boxShadow:
+                  localWebTransportStatus?.tone === 'degraded'
+                    ? 'inset 3px 0 0 rgba(255,94,125,0.8)'
+                    : localWebTransportStatus?.tone === 'warn'
+                    ? 'inset 3px 0 0 rgba(255,182,72,0.78)'
+                    : 'inset 3px 0 0 rgba(130,80,220,0.75)',
+              }}
+            >
               <div className="aoMonLocalCardHeader">
                 <span className="aoMonLocalCardTitle">WebTransport</span>
                 {wtSnapshot ? (
-                  <span className={`aoPill${wtSnapshot.ws_error_observed.count === 0 ? ' aoPulse' : ''}`}>
-                    {wtSnapshot.ws_error_observed.count === 0 ? (
-                      <><span className="aoDot" /><span className="aoPillText">ok</span></>
-                    ) : (
-                      <><span className="aoDot aoDotBad" /><span className="aoPillText">{wtSnapshot.ws_error_observed.count} error</span></>
-                    )}
-                  </span>
+                  <StatusBadge
+                    tone={localWebTransportStatus?.tone ?? 'unknown'}
+                    label={localWebTransportStatus?.label ?? 'unknown'}
+                    pulse={localWebTransportStatus?.pulse}
+                  />
                 ) : (
                   <span className="aoHint" style={{ fontSize: 11 }}>—</span>
                 )}
@@ -1269,14 +1641,20 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
               <div className="aoMonLocalCardBody">
                 {wtSnapshot ? (
                   <>
-                    <div>
-                      {wtSnapshot.ws_error_observed.count === 0 ? 'Connection stable' : `${wtSnapshot.ws_error_observed.count} error(s)`}
+                    <div>{getWebTransportStatusDetail(wtSnapshot)}</div>
+                    <div style={{ marginTop: 2, fontSize: 11, color: 'rgba(13,18,32,0.56)' }}>
+                      Last activity {fmtAge(getLatestUnixMs([
+                        wtSnapshot.ws_open_observed.last_unix_ms,
+                        wtSnapshot.ws_error_observed.last_unix_ms,
+                        wtSnapshot.ws_close_observed.last_unix_ms,
+                        wtSnapshot.ws_reconnect_scheduled.last_unix_ms,
+                        wtSnapshot.ws_reconnect_attempted.last_unix_ms,
+                        wtSnapshot.http_fallback_engaged.last_unix_ms,
+                        wtSnapshot.thread_refresh_failed.last_unix_ms,
+                        wtSnapshot.active_thread_poll_failed.last_unix_ms,
+                        wtSnapshot.live_notification_gap_observed.last_unix_ms,
+                      ]))}
                     </div>
-                    {wtSnapshot.http_fallback_engaged.count > 0 && (
-                      <div style={{ marginTop: 2, fontSize: 11, color: 'var(--ao-danger)' }}>
-                        {wtSnapshot.http_fallback_engaged.count} HTTP fallback(s)
-                      </div>
-                    )}
                   </>
                 ) : (
                   <div>No WebTransport data yet.</div>
@@ -1303,17 +1681,16 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
               </button>
             </div>
             {/* Watchdog card */}
-            <div className="aoMonLocalCard" style={{ boxShadow: 'inset 3px 0 0 rgba(255,94,125,0.8)' }}>
+            <div
+              className="aoMonLocalCard"
+              style={{
+                boxShadow: 'inset 3px 0 0 rgba(255,94,125,0.8)',
+              }}
+            >
               <div className="aoMonLocalCardHeader">
                 <span className="aoMonLocalCardTitle">Watchdog</span>
-                {watchdog !== null ? (
-                  <span className={`aoPill${watchdog.healthy ? ' aoPulse' : ''}`}>
-                    {watchdog.healthy ? (
-                      <><span className="aoDot" /><span className="aoPillText">ok</span></>
-                    ) : (
-                      <><span className="aoDot aoDotBad" /><span className="aoPillText">unhealthy</span></>
-                    )}
-                  </span>
+                {localWatchdogStatus ? (
+                  <StatusBadge tone={localWatchdogStatus.tone} label={localWatchdogStatus.label} pulse={localWatchdogStatus.pulse} />
                 ) : (
                   <span className="aoHint" style={{ fontSize: 11 }}>—</span>
                 )}
@@ -1360,15 +1737,13 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
             <div className="aoMonLocalCard" style={{ boxShadow: 'inset 3px 0 0 rgba(50,180,100,0.7)' }}>
               <div className="aoMonLocalCardHeader">
                 <span className="aoMonLocalCardTitle">LAN</span>
-                <span className="aoPill aoPulse">
-                  <span className="aoDot" />
-                  <span className="aoPillText">ok</span>
-                </span>
+                <StatusBadge tone="healthy" label="healthy" pulse />
               </div>
               <div className="aoMonLocalCardBody">
                 <div>{status?.lan_sync?.peers?.length ?? 0} peer(s) discovered</div>
               </div>
             </div>
+            </>
           </div>
         )}
       </div>
@@ -1416,7 +1791,8 @@ function ActiveAbnormalConditions({ watchdog, wtSnapshot, tailscale }: AbnormCon
 
   // WebTransport
   if (wtSnapshot) {
-    if (wtSnapshot.ws_error_observed.count > 0) {
+    const nowMs = Date.now()
+    if (isRecentWebTransportSignal(wtSnapshot.ws_error_observed.last_unix_ms, nowMs)) {
       conditions.push({
         kind: 'WebSocket error',
         severity: 'error',
@@ -1425,7 +1801,7 @@ function ActiveAbnormalConditions({ watchdog, wtSnapshot, tailscale }: AbnormCon
         age: wtSnapshot.ws_error_observed.last_unix_ms ? fmtAge(wtSnapshot.ws_error_observed.last_unix_ms) : undefined,
       })
     }
-    if (wtSnapshot.http_fallback_engaged.count > 0) {
+    if (isRecentWebTransportSignal(wtSnapshot.http_fallback_engaged.last_unix_ms, nowMs)) {
       conditions.push({
         kind: 'HTTP fallback',
         severity: 'warn',
@@ -1434,13 +1810,22 @@ function ActiveAbnormalConditions({ watchdog, wtSnapshot, tailscale }: AbnormCon
         age: wtSnapshot.http_fallback_engaged.last_unix_ms ? fmtAge(wtSnapshot.http_fallback_engaged.last_unix_ms) : undefined,
       })
     }
-    if (wtSnapshot.thread_refresh_failed.count > 0) {
+    if (isRecentWebTransportSignal(wtSnapshot.thread_refresh_failed.last_unix_ms, nowMs)) {
       conditions.push({
         kind: 'WebTransport thread refresh failed',
         severity: 'error',
         domain: 'wt',
         detail: `${wtSnapshot.thread_refresh_failed.count} failure(s)`,
         age: wtSnapshot.thread_refresh_failed.last_unix_ms ? fmtAge(wtSnapshot.thread_refresh_failed.last_unix_ms) : undefined,
+      })
+    }
+    if (isRecentWebTransportSignal(wtSnapshot.active_thread_poll_failed.last_unix_ms, nowMs)) {
+      conditions.push({
+        kind: 'Active thread poll failed',
+        severity: 'error',
+        domain: 'wt',
+        detail: `${wtSnapshot.active_thread_poll_failed.count} failure(s)`,
+        age: wtSnapshot.active_thread_poll_failed.last_unix_ms ? fmtAge(wtSnapshot.active_thread_poll_failed.last_unix_ms) : undefined,
       })
     }
   }

@@ -654,6 +654,7 @@ export const devStatus: Status = {
     signed_in: true,
     remaining: '13%',
     limit_5h_remaining: '87%',
+    limit_5h_reset_at: String(DEV_NOW + 2 * 60 * 60 * 1000),
     limit_weekly_remaining: '13%',
     limit_weekly_reset_at: String(DEV_NOW + 3 * 24 * 60 * 60 * 1000),
     code_review_remaining: '92%',

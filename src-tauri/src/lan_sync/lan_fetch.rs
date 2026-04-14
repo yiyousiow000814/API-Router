@@ -8,6 +8,15 @@ use crate::diagnostics::current_diagnostics_dir;
 use crate::diagnostics::WATCHDOG_DUMP_PREFIXES;
 use crate::lan_sync::authorize_lan_sync_http_request;
 
+const WATCHDOG_HEALTH_WINDOW_MINUTES: u64 = 60;
+const WATCHDOG_ACTIVITY_WINDOW_MINUTES: u64 = 12 * 60;
+const WATCHDOG_ACTIVITY_BUCKET_MINUTES: u64 = 5;
+const WATCHDOG_HEALTH_WINDOW_MS: u64 = WATCHDOG_HEALTH_WINDOW_MINUTES * 60_000;
+const WATCHDOG_ACTIVITY_WINDOW_MS: u64 = WATCHDOG_ACTIVITY_WINDOW_MINUTES * 60_000;
+const WATCHDOG_ACTIVITY_BUCKET_MS: u64 = WATCHDOG_ACTIVITY_BUCKET_MINUTES * 60_000;
+const WATCHDOG_ACTIVITY_BUCKETS: usize =
+    (WATCHDOG_ACTIVITY_WINDOW_MS / WATCHDOG_ACTIVITY_BUCKET_MS) as usize;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LanDiagnosticsRequestPacket {
     pub version: u8,
@@ -94,28 +103,16 @@ pub async fn lan_sync_diagnostics_http(
 /// Reads watchdog-related dump files from the diagnostics directory and returns a
 /// normalized summary.
 pub fn watchdog_summary() -> serde_json::Value {
+    let now_ms = crate::orchestrator::store::unix_ms();
+    let empty_buckets = build_watchdog_activity_buckets(now_ms, &[]);
     let Some(diag_dir) = current_diagnostics_dir() else {
-        return serde_json::json!({
-            "healthy": true,
-            "last_incident_kind": serde_json::Value::Null,
-            "last_incident_unix_ms": serde_json::Value::Null,
-            "last_incident_file": serde_json::Value::Null,
-            "incident_count": 0,
-            "recent_incidents": [],
-        });
+        return empty_watchdog_summary(empty_buckets);
     };
 
     let entries = match std::fs::read_dir(&diag_dir) {
         Ok(entries) => entries,
         Err(_) => {
-            return serde_json::json!({
-                "healthy": true,
-                "last_incident_kind": serde_json::Value::Null,
-                "last_incident_unix_ms": serde_json::Value::Null,
-                "last_incident_file": serde_json::Value::Null,
-                "incident_count": 0,
-                "recent_incidents": [],
-            });
+            return empty_watchdog_summary(empty_buckets);
         }
     };
 
@@ -149,23 +146,32 @@ pub fn watchdog_summary() -> serde_json::Value {
     }
 
     if watchdog_files.is_empty() {
-        return serde_json::json!({
-            "healthy": true,
-            "last_incident_kind": serde_json::Value::Null,
-            "last_incident_unix_ms": serde_json::Value::Null,
-            "last_incident_file": serde_json::Value::Null,
-            "incident_count": 0,
-            "recent_incidents": [],
-        });
+        return empty_watchdog_summary(empty_buckets);
     }
 
     watchdog_files.sort_by_key(|(ts, _, _, _)| *ts);
-    let (last_ts, last_trigger, last_prefix, last_file) = watchdog_files
+    let activity_cutoff = now_ms.saturating_sub(WATCHDOG_ACTIVITY_WINDOW_MS);
+    let health_cutoff = now_ms.saturating_sub(WATCHDOG_HEALTH_WINDOW_MS);
+    let activity_watchdog_files: Vec<(u64, String, String, String)> = watchdog_files
+        .iter()
+        .filter(|(ts, _, _, _)| *ts >= activity_cutoff)
+        .cloned()
+        .collect();
+    let activity_buckets = build_watchdog_activity_buckets(now_ms, &activity_watchdog_files);
+    let is_healthy = !watchdog_files
+        .iter()
+        .any(|(ts, _, _, _)| *ts >= health_cutoff);
+
+    if activity_watchdog_files.is_empty() {
+        return empty_watchdog_summary(activity_buckets);
+    }
+
+    let (last_ts, last_trigger, last_prefix, last_file) = activity_watchdog_files
         .last()
         .cloned()
         .unwrap_or_else(|| (0, String::new(), String::new(), String::new()));
-    let incident_count = watchdog_files.len() as u32;
-    let recent_incidents: Vec<serde_json::Value> = watchdog_files
+    let incident_count = activity_watchdog_files.len() as u32;
+    let recent_incidents: Vec<serde_json::Value> = activity_watchdog_files
         .iter()
         .rev()
         .take(5)
@@ -184,14 +190,65 @@ pub fn watchdog_summary() -> serde_json::Value {
         read_watchdog_incident_detail(&diag_dir.join(&last_file), &last_prefix, &last_trigger);
 
     serde_json::json!({
-        "healthy": false,
+        "healthy": is_healthy,
         "last_incident_kind": last_trigger,
         "last_incident_unix_ms": last_ts,
         "last_incident_file": last_file,
         "last_incident_detail": last_incident_detail,
         "incident_count": incident_count,
         "recent_incidents": recent_incidents,
+        "health_window_minutes": WATCHDOG_HEALTH_WINDOW_MINUTES,
+        "activity_window_minutes": WATCHDOG_ACTIVITY_WINDOW_MINUTES,
+        "activity_bucket_minutes": WATCHDOG_ACTIVITY_BUCKET_MINUTES,
+        "activity_buckets": activity_buckets,
     })
+}
+
+fn empty_watchdog_summary(activity_buckets: Vec<serde_json::Value>) -> serde_json::Value {
+    serde_json::json!({
+        "healthy": true,
+        "last_incident_kind": serde_json::Value::Null,
+        "last_incident_unix_ms": serde_json::Value::Null,
+        "last_incident_file": serde_json::Value::Null,
+        "last_incident_detail": serde_json::Value::Null,
+        "incident_count": 0,
+        "recent_incidents": [],
+        "health_window_minutes": WATCHDOG_HEALTH_WINDOW_MINUTES,
+        "activity_window_minutes": WATCHDOG_ACTIVITY_WINDOW_MINUTES,
+        "activity_bucket_minutes": WATCHDOG_ACTIVITY_BUCKET_MINUTES,
+        "activity_buckets": activity_buckets,
+    })
+}
+
+fn build_watchdog_activity_buckets(
+    now_ms: u64,
+    incidents: &[(u64, String, String, String)],
+) -> Vec<serde_json::Value> {
+    let window_start = now_ms.saturating_sub(WATCHDOG_ACTIVITY_WINDOW_MS);
+    let bucket_count = WATCHDOG_ACTIVITY_BUCKETS;
+    let mut counts = vec![0u64; bucket_count];
+
+    for (incident_ts, _, _, _) in incidents {
+        if *incident_ts < window_start {
+            continue;
+        }
+        let bucket_index = ((*incident_ts - window_start) / WATCHDOG_ACTIVITY_BUCKET_MS) as usize;
+        let clamped_index = bucket_index.min(bucket_count.saturating_sub(1));
+        counts[clamped_index] += 1;
+    }
+
+    counts
+        .into_iter()
+        .enumerate()
+        .map(|(index, count)| {
+            let bucket_start = window_start + (index as u64 * WATCHDOG_ACTIVITY_BUCKET_MS);
+            serde_json::json!({
+                "bucket_start_unix_ms": bucket_start,
+                "bucket_end_unix_ms": bucket_start + WATCHDOG_ACTIVITY_BUCKET_MS,
+                "count": count,
+            })
+        })
+        .collect()
 }
 
 fn read_watchdog_incident_detail(
@@ -358,13 +415,40 @@ fn humanize_watchdog_trigger(prefix: &str, trigger: &str) -> String {
 mod tests {
     use super::local_diagnostics_snapshot;
     use super::watchdog_summary;
+    use crate::orchestrator::store::unix_ms;
+    use std::sync::{Mutex, OnceLock};
+
+    fn write_watchdog_dump(
+        diag_dir: &std::path::Path,
+        ts: u64,
+        prefix: &str,
+        trigger: &str,
+        payload: serde_json::Value,
+    ) {
+        let file_name = format!("{prefix}{ts}-{trigger}.json");
+        std::fs::write(
+            diag_dir.join(file_name),
+            serde_json::to_vec(&payload).expect("encode payload"),
+        )
+        .expect("write watchdog dump");
+    }
+
+    fn watchdog_summary_for_user_data_dir(user_data_dir: &std::path::Path) -> serde_json::Value {
+        static WATCHDOG_TEST_GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = WATCHDOG_TEST_GUARD
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("watchdog test mutex poisoned");
+        std::env::set_var("API_ROUTER_USER_DATA_DIR", user_data_dir);
+        let result = watchdog_summary();
+        std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        result
+    }
 
     #[test]
     fn watchdog_summary_no_dir_returns_healthy() {
         // Set an invalid path so current_diagnostics_dir returns None
-        std::env::set_var("API_ROUTER_USER_DATA_DIR", "/nonexistent/path");
-        let result = watchdog_summary();
-        std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        let result = watchdog_summary_for_user_data_dir(std::path::Path::new("/nonexistent/path"));
 
         assert!(result
             .get("healthy")
@@ -387,6 +471,14 @@ mod tests {
                 .map(|v| v.len())
                 .unwrap_or(1),
             0
+        );
+        assert_eq!(
+            result
+                .get("activity_buckets")
+                .and_then(|v| v.as_array())
+                .map(|v| v.len())
+                .unwrap_or(0),
+            144
         );
     }
 
@@ -399,9 +491,7 @@ mod tests {
         // Create a non-watchdog file
         std::fs::write(diag_dir.join("some-other-file.json"), "{}").expect("write file");
 
-        std::env::set_var("API_ROUTER_USER_DATA_DIR", tmp.path());
-        let result = watchdog_summary();
-        std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        let result = watchdog_summary_for_user_data_dir(tmp.path());
 
         assert!(result
             .get("healthy")
@@ -425,6 +515,14 @@ mod tests {
                 .unwrap_or(1),
             0
         );
+        assert_eq!(
+            result
+                .get("activity_buckets")
+                .and_then(|v| v.as_array())
+                .map(|v| v.len())
+                .unwrap_or(0),
+            144
+        );
     }
 
     #[test]
@@ -432,26 +530,34 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let diag_dir = tmp.path().join("diagnostics");
         std::fs::create_dir_all(&diag_dir).expect("create diag dir");
+        let now = unix_ms();
 
         std::fs::write(
-            diag_dir.join("ui-freeze-1700000000000-heartbeat-stall.json"),
+            diag_dir.join(format!(
+                "ui-freeze-{}-heartbeat-stall.json",
+                now.saturating_sub(3 * 60_000)
+            )),
             "{}",
         )
         .expect("write file 1");
         std::fs::write(
-            diag_dir.join("frame-stall-1700000001000-some-trigger.json"),
+            diag_dir.join(format!(
+                "frame-stall-{}-some-trigger.json",
+                now.saturating_sub(2 * 60_000)
+            )),
             "{}",
         )
         .expect("write file 2");
         std::fs::write(
-            diag_dir.join("slow-refresh-1700000002000-status.json"),
+            diag_dir.join(format!(
+                "slow-refresh-{}-status.json",
+                now.saturating_sub(60_000)
+            )),
             "{}",
         )
         .expect("write file 3");
 
-        std::env::set_var("API_ROUTER_USER_DATA_DIR", tmp.path());
-        let result = watchdog_summary();
-        std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        let result = watchdog_summary_for_user_data_dir(tmp.path());
 
         assert!(!result
             .get("healthy")
@@ -471,11 +577,12 @@ mod tests {
         );
         assert_eq!(
             result.get("last_incident_unix_ms").and_then(|v| v.as_u64()),
-            Some(1_700_000_002_000u64)
+            Some(now.saturating_sub(60_000))
         );
+        let expected_last_file = format!("slow-refresh-{}-status.json", now.saturating_sub(60_000));
         assert_eq!(
             result.get("last_incident_file").and_then(|v| v.as_str()),
-            Some("slow-refresh-1700000002000-status.json")
+            Some(expected_last_file.as_str())
         );
         let recent = result
             .get("recent_incidents")
@@ -486,9 +593,26 @@ mod tests {
             recent[0].get("kind").and_then(|v| v.as_str()),
             Some("status")
         );
+        let expected_recent_file =
+            format!("slow-refresh-{}-status.json", now.saturating_sub(60_000));
         assert_eq!(
             recent[0].get("file").and_then(|v| v.as_str()),
-            Some("slow-refresh-1700000002000-status.json")
+            Some(expected_recent_file.as_str())
+        );
+        let activity_buckets = result
+            .get("activity_buckets")
+            .and_then(|v| v.as_array())
+            .expect("activity buckets");
+        assert_eq!(activity_buckets.len(), 144);
+        assert_eq!(
+            activity_buckets
+                .iter()
+                .map(|bucket| bucket
+                    .get("count")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0))
+                .sum::<u64>(),
+            3
         );
     }
 
@@ -497,10 +621,14 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let diag_dir = tmp.path().join("diagnostics");
         std::fs::create_dir_all(&diag_dir).expect("create diag dir");
+        let now = unix_ms();
 
-        std::fs::write(
-            diag_dir.join("ui-freeze-1700000001000-slow-refresh.json"),
-            serde_json::to_vec(&serde_json::json!({
+        write_watchdog_dump(
+            &diag_dir,
+            now.saturating_sub(10 * 60_000),
+            "ui-freeze-",
+            "slow-refresh",
+            serde_json::json!({
                 "recent_traces": [
                     {
                         "kind": "status_refresh_requested",
@@ -527,13 +655,14 @@ mod tests {
                     "unresponsive_since_unix_ms": 0,
                     "visible": true
                 }
-            }))
-            .expect("encode payload"),
-        )
-        .expect("write file 1");
-        std::fs::write(
-            diag_dir.join("ui-freeze-1700000002000-slow-invoke.json"),
-            serde_json::to_vec(&serde_json::json!({
+            }),
+        );
+        write_watchdog_dump(
+            &diag_dir,
+            now.saturating_sub(5 * 60_000),
+            "ui-freeze-",
+            "slow-invoke",
+            serde_json::json!({
                 "recent_traces": [
                     {
                         "kind": "invoke",
@@ -558,14 +687,10 @@ mod tests {
                     "unresponsive_since_unix_ms": 0,
                     "visible": true
                 }
-            }))
-            .expect("encode payload"),
-        )
-        .expect("write file 2");
+            }),
+        );
 
-        std::env::set_var("API_ROUTER_USER_DATA_DIR", tmp.path());
-        let result = watchdog_summary();
-        std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        let result = watchdog_summary_for_user_data_dir(tmp.path());
 
         assert_eq!(
             result.get("last_incident_detail").and_then(|v| v.as_str()),
@@ -592,24 +717,32 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let diag_dir = tmp.path().join("diagnostics");
         std::fs::create_dir_all(&diag_dir).expect("create diag dir");
+        let now = unix_ms();
 
         // These files match prefixes but are NOT valid watchdog dumps
-        std::fs::write(diag_dir.join("ui-freeze-1700000000000-a"), "panic content")
-            .expect("write file"); // too short, no .json
         std::fs::write(
-            diag_dir.join("slow-refresh-1700000001000-trigger"),
+            diag_dir.join(format!("ui-freeze-{}-a", now.saturating_sub(2 * 60_000))),
+            "panic content",
+        )
+        .expect("write file"); // too short, no .json
+        std::fs::write(
+            diag_dir.join(format!(
+                "slow-refresh-{}-trigger",
+                now.saturating_sub(60_000)
+            )),
             "no json",
         )
         .expect("write file"); // no .json
         std::fs::write(
-            diag_dir.join("ui-freeze-1700000002000-heartbeat-stall.json"),
+            diag_dir.join(format!(
+                "ui-freeze-{}-heartbeat-stall.json",
+                now.saturating_sub(30_000)
+            )),
             "{}",
         )
         .expect("write file"); // valid
 
-        std::env::set_var("API_ROUTER_USER_DATA_DIR", tmp.path());
-        let result = watchdog_summary();
-        std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        let result = watchdog_summary_for_user_data_dir(tmp.path());
 
         // Only the valid .json file should be counted
         assert_eq!(
@@ -622,6 +755,66 @@ mod tests {
         assert_eq!(
             result.get("last_incident_kind").and_then(|v| v.as_str()),
             Some("heartbeat-stall")
+        );
+    }
+
+    #[test]
+    fn watchdog_summary_ignores_incidents_outside_activity_window() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let diag_dir = tmp.path().join("diagnostics");
+        std::fs::create_dir_all(&diag_dir).expect("create diag dir");
+        let now = unix_ms();
+
+        std::fs::write(
+            diag_dir.join(format!(
+                "ui-freeze-{}-heartbeat-stall.json",
+                now.saturating_sub(13 * 60 * 60_000)
+            )),
+            "{}",
+        )
+        .expect("write file");
+
+        let result = watchdog_summary_for_user_data_dir(tmp.path());
+
+        assert!(result
+            .get("healthy")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false));
+        assert_eq!(
+            result
+                .get("incident_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1),
+            0
+        );
+        assert!(result
+            .get("last_incident_kind")
+            .and_then(|v| v.as_str())
+            .is_none());
+        assert_eq!(
+            result
+                .get("recent_incidents")
+                .and_then(|v| v.as_array())
+                .map(|v| v.len())
+                .unwrap_or(1),
+            0
+        );
+        assert_eq!(
+            result
+                .get("activity_buckets")
+                .and_then(|v| v.as_array())
+                .map(|v| {
+                    v.iter()
+                        .map(|bucket| {
+                            bucket
+                                .get("count")
+                                .and_then(|value| value.as_u64())
+                                .unwrap_or(0)
+                        })
+                        .sum::<u64>()
+                })
+                .unwrap_or(1),
+            0
         );
     }
 

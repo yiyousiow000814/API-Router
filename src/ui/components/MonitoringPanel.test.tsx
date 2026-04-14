@@ -7,7 +7,9 @@ import {
   formatIncidentKind,
   isMonitoringDevPreview,
   MonitoringPanel,
+  getWebTransportHealth,
   peerSupportsLanDiagnostics,
+  type WebTransportDomainSnapshot,
 } from './MonitoringPanel'
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -98,10 +100,37 @@ describe('MonitoringPanel', () => {
     expect(html).toContain('Preview data')
     expect(html).toContain('Gateway reachable')
     expect(html).toContain('desk-monitor.tail.ts.net')
-    expect(html).toContain('UI heartbeat stalled')
-    expect(html).toContain('WebTransport thread refresh failed')
+    expect(html).toContain('Degraded')
+    expect(html).toContain('Thread refresh failures detected')
     expect(html).toContain('Desk B')
     expect(html).toContain('restart API Router')
+  })
+
+  it('returns healthy once webtransport signals fall outside the recent window', () => {
+    const now = 1_700_000_000_000
+    const baseSnapshot: WebTransportDomainSnapshot = {
+      ws_open_observed: { count: 1, last_unix_ms: now - 2 * 60_000 },
+      ws_error_observed: { count: 1, last_unix_ms: now - 2 * 60_000, latest_detail: 'ECONNRESET' },
+      ws_close_observed: { count: 1, last_unix_ms: now - 2 * 60_000, latest_close_code: 1006 },
+      ws_reconnect_scheduled: { count: 1, last_unix_ms: now - 2 * 60_000 },
+      ws_reconnect_attempted: { count: 1, last_unix_ms: now - 2 * 60_000 },
+      http_fallback_engaged: { count: 0, last_unix_ms: 0 },
+      thread_refresh_failed: { count: 0, last_unix_ms: 0 },
+      active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
+      live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
+    }
+
+    expect(getWebTransportHealth(baseSnapshot, now)).toBe('degraded')
+    expect(
+      getWebTransportHealth(
+        {
+          ...baseSnapshot,
+          ws_error_observed: { ...baseSnapshot.ws_error_observed, last_unix_ms: now - 16 * 60_000 },
+          ws_close_observed: { ...baseSnapshot.ws_close_observed, last_unix_ms: now - 16 * 60_000 },
+        },
+        now,
+      ),
+    ).toBe('healthy')
   })
 
   it('formats incident kinds into human-readable labels', () => {
@@ -136,6 +165,27 @@ describe('MonitoringPanel', () => {
     expect(source).toContain('No Tailscale data from this peer.')
     expect(source).toContain('borderColor: getLocalDomainAccent(expandedLocalDomain)')
     expect(source).toContain('boxShadow: getLocalDomainGlow(expandedLocalDomain)')
+    expect(source).toContain('Summary')
+    expect(source).toContain('Recent activity')
+    expect(source).toContain('aoWatchdogTimeline')
+    expect(source).toContain('aoWatchdogTimelineTooltip')
+    expect(source).toContain('WATCHDOG_ACTIVITY_WINDOW_MINUTES = 12 * 60')
+    expect(source).toContain('activity_window_minutes')
+    expect(source).toContain('formatWatchdogActivityWindow')
+    expect(source).toContain('formatWatchdogActivityBucketAriaLabel')
+    expect(source).toContain('formatWatchdogActivityBucketTimeRange')
+    expect(source).toContain('WebTransportMetricCard')
+    expect(source).toContain('getWebTransportStatusPresentation')
+    expect(source).toContain('getWebTransportStatusDetail')
+    expect(source).toContain('getWatchdogStatusPresentation')
+    expect(source).toContain('getTailscaleStatusPresentation')
+    expect(source).toContain('StatusDot')
+    expect(source).toContain('label="healthy"')
+    expect(source).not.toContain('label="ok"')
+    expect(source).toContain('Socket activity')
+    expect(source).toContain('Reconnect loop')
+    expect(source).toContain('Event details')
+    expect(source).toContain('getWebTransportHealth')
     expect(source).toContain("watchdog: 'rgba(255,94,125,0.42)'")
     expect(source.indexOf('<TailscaleSection summary={peer.tailscale ?? null} loading={false} />')).toBeGreaterThan(
       -1,
