@@ -340,6 +340,8 @@ define_event_codes! {
     LAN_SHARED_RECOVERY_PROBE_OK => ("info", "lan.shared_recovery_probe_ok"),
     LAN_SYNC_CONTRACT_MISMATCH => ("warning", "lan.sync_contract_mismatch"),
     LAN_SYNC_CONTRACT_RECOVERED => ("info", "lan.sync_contract_recovered"),
+    LAN_PEER_BUILD_MISMATCH => ("warning", "lan.peer_build_mismatch"),
+    LAN_PEER_BUILD_RECOVERED => ("info", "lan.peer_build_recovered"),
     LAN_USAGE_SYNC_HTTP_RECOVERED => ("info", "lan.usage_sync_http_recovered"),
     LAN_USAGE_SYNC_HTTP_FAILED => ("warning", "lan.usage_sync_http_failed"),
     ROUTING_BACK_TO_PREFERRED => ("info", "routing.back_to_preferred"),

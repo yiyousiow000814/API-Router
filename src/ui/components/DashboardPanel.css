@@ -432,6 +432,158 @@
   margin-top: 12px;
 }
 
+.aoMonLocalNode {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.aoMonLocalCard {
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aoMonLocalCardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aoMonLocalCardTitle {
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.88);
+}
+
+.aoMonLocalCardBody {
+  font-size: 12px;
+  color: rgba(13, 18, 32, 0.6);
+}
+
+.aoMonPeerCard {
+  padding: 10px 12px;
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.72);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aoMonPeerCard + .aoMonPeerCard {
+  margin-top: 8px;
+}
+
+.aoMonPeerCardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.aoMonPeerCardMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.aoMonPeerCardName {
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(13, 18, 32, 0.88);
+}
+
+.aoMonPeerCardId {
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.45);
+  font-family: ui-monospace, monospace;
+}
+
+.aoMonPeerCardActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.aoMonPeerDomainDots {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.aoMonPeerDomainDot {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.55);
+  font-weight: 600;
+}
+
+.aoMonPeerDomainDot .aoDot {
+  width: 6px;
+  height: 6px;
+}
+
+.aoMonPeerExpanded {
+  border-top: 1px solid rgba(13, 18, 32, 0.07);
+  padding-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.aoMonAbnormalList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.aoMonAbnormalItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(13, 18, 32, 0.06);
+  font-size: 12px;
+}
+
+.aoMonAbnormalText {
+  flex: 1;
+  min-width: 0;
+}
+
+.aoMonAbnormalAge {
+  font-size: 11px;
+  color: rgba(13, 18, 32, 0.45);
+  flex-shrink: 0;
+}
+
+@media (max-width: 1000px) {
+  .aoHero {
+    grid-template-columns: 1fr;
+  }
+
+  .aoLimitGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .aoMonLocalNode {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
 .aoSectionHeader {
   display: flex;
   align-items: baseline;

@@ -753,6 +753,9 @@ pub struct LanSyncRuntime {
     pending_trust_bundle_pins: Arc<RwLock<HashMap<String, String>>>,
     started: Arc<AtomicBool>,
     last_peer_prune_unix_ms: Arc<AtomicU64>,
+    /// Tracks whether a build mismatch event has been reported for each peer.
+    /// Key: peer node_id, Value: true = mismatch reported
+    build_mismatch_reported: Arc<RwLock<HashMap<String, bool>>>,
 }
 
 impl LanSyncRuntime {
@@ -772,6 +775,7 @@ impl LanSyncRuntime {
             pending_trust_bundle_pins: Arc::new(RwLock::new(HashMap::new())),
             started: Arc::new(AtomicBool::new(false)),
             last_peer_prune_unix_ms: Arc::new(AtomicU64::new(0)),
+            build_mismatch_reported: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -3102,7 +3106,12 @@ fn run_listener(
                     };
                     match wire_packet {
                         LanWirePacket::Heartbeat(packet) => {
-                            runtime.note_peer_heartbeat(*packet, source)
+                            let node_id = packet.node_id.clone();
+                            runtime.note_peer_heartbeat(*packet, source);
+                            if let Some(peer) = runtime.peers.read().get(&node_id) {
+                                let snapshot = lan_peer_snapshot_from_runtime(peer);
+                                ensure_peer_build_compatible(&runtime, &gateway, &snapshot);
+                            }
                         }
                         LanWirePacket::Protected(packet) => {
                             let Some(decoded) = deserialize_wire_packet(
@@ -3115,7 +3124,12 @@ fn run_listener(
                             };
                             match decoded {
                                 LanSyncPacket::Heartbeat(packet) => {
-                                    runtime.note_peer_heartbeat(*packet, source)
+                                    let node_id = packet.node_id.clone();
+                                    runtime.note_peer_heartbeat(*packet, source);
+                                    if let Some(peer) = runtime.peers.read().get(&node_id) {
+                                        let snapshot = lan_peer_snapshot_from_runtime(peer);
+                                        ensure_peer_build_compatible(&runtime, &gateway, &snapshot);
+                                    }
                                 }
                                 LanSyncPacket::SharedHealth(packet) => {
                                     apply_shared_health_packet(&runtime, &gateway, *packet);
@@ -3856,6 +3870,63 @@ fn ensure_peer_sync_contract(
             }),
         );
         reported.insert(key, reason);
+    }
+    false
+}
+
+/// Checks if a peer's build matches the local build and emits build mismatch/recovery
+/// events. Uses `runtime.build_mismatch_reported` to track state across heartbeat cycles,
+/// ensuring events fire only on state transitions (mismatch → recovered, recovered →
+/// mismatch).
+///
+/// Returns `true` if the peer's build matches the local build, `false` otherwise.
+fn ensure_peer_build_compatible(
+    runtime: &LanSyncRuntime,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    peer: &LanPeerSnapshot,
+) -> bool {
+    let local_build = current_build_identity();
+    let matches = peer.build_matches_local;
+
+    let reported = &mut *runtime.build_mismatch_reported.write();
+    let key = &peer.node_id;
+
+    if matches {
+        if let Some(_prev) = reported.remove(key) {
+            // Build mismatch resolved — emit recovery event
+            gateway.store.events().emit(
+                "gateway",
+                crate::orchestrator::store::EventCode::LAN_PEER_BUILD_RECOVERED,
+                &format!("{} is now on the same build as this device", peer.node_name),
+                serde_json::json!({
+                    "peer_node_id": peer.node_id,
+                    "peer_node_name": peer.node_name,
+                    "peer_build": peer.build_identity,
+                    "local_build": local_build,
+                }),
+            );
+        }
+        return true;
+    }
+
+    // Build mismatch detected
+    if !reported.contains_key(key) {
+        // First time reporting this mismatch — emit mismatch event
+        reported.insert(key.to_string(), true);
+        gateway.store.events().emit(
+            "gateway",
+            crate::orchestrator::store::EventCode::LAN_PEER_BUILD_MISMATCH,
+            &format!(
+                "{} is on a different build than this device. Usage sync may be limited.",
+                peer.node_name
+            ),
+            serde_json::json!({
+                "peer_node_id": peer.node_id,
+                "peer_node_name": peer.node_name,
+                "peer_build": peer.build_identity,
+                "local_build": local_build,
+            }),
+        );
     }
     false
 }
