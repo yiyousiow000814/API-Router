@@ -1484,6 +1484,14 @@ pub(crate) fn peer_remote_update_blocked_reason(peer: &LanPeerSnapshot) -> Optio
     )
 }
 
+fn trust_peer_snapshot(
+    mut peer: LanPeerSnapshot,
+    trusted_node_ids: &std::collections::BTreeSet<String>,
+) -> LanPeerSnapshot {
+    peer.trusted = trusted_node_ids.contains(&peer.node_id);
+    peer
+}
+
 impl LanSyncRuntime {
     pub async fn request_peer_remote_update(
         &self,
@@ -1505,6 +1513,7 @@ impl LanSyncRuntime {
                 self.recent_peer_by_node_id(normalized_node_id, LAN_PEER_HTTP_GRACE_AFTER_MS)
             })
             .ok_or_else(|| format!("peer is not reachable on LAN: {normalized_node_id}"))?;
+        let peer = trust_peer_snapshot(peer, &gateway.secrets.trusted_lan_node_ids());
         if let Some(reason) = peer_remote_update_blocked_reason(&peer) {
             return Err(reason);
         }
@@ -1677,6 +1686,7 @@ impl LanSyncRuntime {
                 self.recent_peer_by_node_id(normalized_node_id, LAN_PEER_HTTP_GRACE_AFTER_MS)
             })
             .ok_or_else(|| format!("peer is not reachable on LAN: {normalized_node_id}"))?;
+        let peer = trust_peer_snapshot(peer, &gateway.secrets.trusted_lan_node_ids());
         if !peer_supports_lan_diagnostics(&peer) {
             return Err(format!(
                 "{} does not expose LAN diagnostics yet. Update and restart that machine first.",
@@ -2386,6 +2396,38 @@ mod tests {
             .capabilities
             .retain(|value| value != "lan_debug_v2");
         assert!(!peer_supports_lan_diagnostics(&missing_capability_peer));
+    }
+
+    #[test]
+    fn trust_peer_snapshot_sets_trusted_for_known_nodes() {
+        let peer = super::LanPeerSnapshot {
+            node_id: "node-a".to_string(),
+            node_name: "Node A".to_string(),
+            listen_addr: "192.168.1.10:4000".to_string(),
+            last_heartbeat_unix_ms: 1,
+            capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::local_version_inventory(),
+            build_identity: super::current_build_identity(),
+            remote_update_readiness: None,
+            remote_update_status: None,
+            provider_fingerprints: Vec::new(),
+            provider_definitions_revision: String::new(),
+            sync_contracts: super::local_sync_contracts(),
+            followed_source_node_id: None,
+            trusted: false,
+            pair_state: None,
+            pair_request_id: None,
+            sync_blocked_domains: Vec::new(),
+            sync_diagnostics: Vec::new(),
+            build_matches_local: true,
+        };
+
+        let trusted_node_ids = std::collections::BTreeSet::from([String::from("node-a")]);
+        let trusted_peer = trust_peer_snapshot(peer.clone(), &trusted_node_ids);
+        assert!(trusted_peer.trusted);
+
+        let untrusted_peer = trust_peer_snapshot(peer, &std::collections::BTreeSet::new());
+        assert!(!untrusted_peer.trusted);
     }
 
     #[test]

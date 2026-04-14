@@ -80,6 +80,62 @@ fn load_web_transport_snapshot_uncached() -> WebTransportDomainSnapshot {
     serde_json::from_slice(&bytes).unwrap_or_else(|_| default_snapshot())
 }
 
+fn apply_web_transport_event(
+    snapshot: &mut WebTransportDomainSnapshot,
+    event_type: &str,
+    detail: Option<String>,
+    now: u64,
+) -> bool {
+    match event_type {
+        "ws_open_observed" => {
+            snapshot.ws_open_observed.last_unix_ms = now;
+            snapshot.ws_open_observed.count += 1;
+        }
+        "ws_error_observed" => {
+            snapshot.ws_error_observed.last_unix_ms = now;
+            snapshot.ws_error_observed.count += 1;
+            snapshot.ws_error_observed.latest_detail = detail;
+        }
+        "ws_close_observed" => {
+            snapshot.ws_close_observed.last_unix_ms = now;
+            snapshot.ws_close_observed.count += 1;
+            if let Some(d) = &detail {
+                snapshot.ws_close_observed.latest_close_code = d.parse().ok();
+            }
+        }
+        "ws_reconnect_scheduled" => {
+            snapshot.ws_reconnect_scheduled.last_unix_ms = now;
+            snapshot.ws_reconnect_scheduled.count += 1;
+        }
+        "ws_reconnect_attempted" => {
+            snapshot.ws_reconnect_attempted.last_unix_ms = now;
+            snapshot.ws_reconnect_attempted.count += 1;
+        }
+        "http_fallback_engaged" => {
+            snapshot.http_fallback_engaged.last_unix_ms = now;
+            snapshot.http_fallback_engaged.count += 1;
+            snapshot.http_fallback_engaged.latest_route = detail;
+        }
+        "thread_refresh_failed" => {
+            snapshot.thread_refresh_failed.last_unix_ms = now;
+            snapshot.thread_refresh_failed.count += 1;
+        }
+        "active_thread_poll_failed" => {
+            snapshot.active_thread_poll_failed.last_unix_ms = now;
+            snapshot.active_thread_poll_failed.count += 1;
+        }
+        "live_notification_gap_observed" => {
+            snapshot.live_notification_gap_observed.last_unix_ms = now;
+            snapshot.live_notification_gap_observed.count += 1;
+        }
+        _ => {
+            log::warn!("unknown web transport event type: {event_type}");
+            return false;
+        }
+    }
+    true
+}
+
 pub(crate) fn persist_web_transport_events(snapshot: &WebTransportDomainSnapshot) {
     let Some(dir) = current_diagnostics_dir() else {
         return;
@@ -97,66 +153,21 @@ pub(crate) fn persist_web_transport_events(snapshot: &WebTransportDomainSnapshot
 
 pub(crate) fn record_web_transport_event(event_type: &str, detail: Option<String>) {
     let now = unix_ms();
-    let (updated, snapshot) = {
-        let snapshot = current_web_transport_snapshot();
-        let mut s = snapshot.clone();
-        match event_type {
-            "ws_open_observed" => {
-                s.ws_open_observed.last_unix_ms = now;
-                s.ws_open_observed.count += 1;
-            }
-            "ws_error_observed" => {
-                s.ws_error_observed.last_unix_ms = now;
-                s.ws_error_observed.count += 1;
-                s.ws_error_observed.latest_detail = detail;
-            }
-            "ws_close_observed" => {
-                s.ws_close_observed.last_unix_ms = now;
-                s.ws_close_observed.count += 1;
-                if let Some(d) = &detail {
-                    s.ws_close_observed.latest_close_code = d.parse().ok();
-                }
-            }
-            "ws_reconnect_scheduled" => {
-                s.ws_reconnect_scheduled.last_unix_ms = now;
-                s.ws_reconnect_scheduled.count += 1;
-            }
-            "ws_reconnect_attempted" => {
-                s.ws_reconnect_attempted.last_unix_ms = now;
-                s.ws_reconnect_attempted.count += 1;
-            }
-            "http_fallback_engaged" => {
-                s.http_fallback_engaged.last_unix_ms = now;
-                s.http_fallback_engaged.count += 1;
-                s.http_fallback_engaged.latest_route = detail;
-            }
-            "thread_refresh_failed" => {
-                s.thread_refresh_failed.last_unix_ms = now;
-                s.thread_refresh_failed.count += 1;
-            }
-            "active_thread_poll_failed" => {
-                s.active_thread_poll_failed.last_unix_ms = now;
-                s.active_thread_poll_failed.count += 1;
-            }
-            "live_notification_gap_observed" => {
-                s.live_notification_gap_observed.last_unix_ms = now;
-                s.live_notification_gap_observed.count += 1;
-            }
-            _ => {
-                log::warn!("unknown web transport event type: {event_type}");
-                return;
-            }
+    let cache = web_transport_cache();
+    let mut guard = cache.write();
+    let mut snapshot = match guard.as_ref() {
+        Some((captured_at, snapshot))
+            if now.saturating_sub(*captured_at) < WEB_TRANSPORT_CACHE_TTL_MS =>
+        {
+            snapshot.clone()
         }
-        (true, s)
+        _ => load_web_transport_snapshot_uncached(),
     };
-
-    if updated {
-        persist_web_transport_events(&snapshot);
-        // Invalidate the in-memory cache so the next read picks up the persisted state.
-        let cache = web_transport_cache();
-        let mut guard = cache.write();
-        *guard = Some((now, snapshot));
+    if !apply_web_transport_event(&mut snapshot, event_type, detail, now) {
+        return;
     }
+    persist_web_transport_events(&snapshot);
+    *guard = Some((now, snapshot));
 }
 
 pub(crate) fn current_web_transport_snapshot() -> WebTransportDomainSnapshot {
@@ -175,12 +186,19 @@ pub(crate) fn current_web_transport_snapshot() -> WebTransportDomainSnapshot {
 #[cfg(test)]
 mod tests {
     use super::{
-        current_web_transport_snapshot, default_snapshot, persist_web_transport_events,
-        record_web_transport_event, reset_web_transport_cache_for_test,
+        apply_web_transport_event, current_web_transport_snapshot, default_snapshot,
+        persist_web_transport_events, record_web_transport_event,
+        reset_web_transport_cache_for_test,
     };
     use crate::diagnostics::set_test_user_data_dir_override;
+    use std::sync::{Mutex, OnceLock};
 
     fn with_test_dir(f: impl FnOnce()) {
+        static WEB_TRANSPORT_TEST_GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = WEB_TRANSPORT_TEST_GUARD
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("web transport test mutex poisoned");
         let temp = tempfile::tempdir().expect("temp dir");
         let prev = set_test_user_data_dir_override(Some(temp.path()));
         // Reset the in-memory cache so each test starts with a clean slate.
@@ -242,6 +260,25 @@ mod tests {
                 Some("/v1/threads/123")
             );
         });
+    }
+
+    #[test]
+    fn apply_web_transport_event_updates_existing_snapshot() {
+        let mut snap = default_snapshot();
+        assert!(apply_web_transport_event(
+            &mut snap,
+            "ws_open_observed",
+            None,
+            42,
+        ));
+        assert!(apply_web_transport_event(
+            &mut snap,
+            "ws_open_observed",
+            None,
+            43,
+        ));
+        assert_eq!(snap.ws_open_observed.count, 2);
+        assert_eq!(snap.ws_open_observed.last_unix_ms, 43);
     }
 
     #[test]
