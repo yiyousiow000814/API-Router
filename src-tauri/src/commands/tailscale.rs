@@ -1,4 +1,4 @@
-#[cfg(any(test, windows))]
+#[cfg(windows)]
 use std::net::IpAddr;
 #[cfg(test)]
 use std::net::SocketAddr;

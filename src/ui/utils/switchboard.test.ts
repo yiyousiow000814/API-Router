@@ -41,7 +41,7 @@ describe('buildCodexSwapBadge', () => {
     expect(badge.badgeText).toBe('DP:packycode')
   })
 
-  it('uses projected ledgers for usage projection when available', () => {
+  it('uses live ledgers for usage projection', () => {
     const config: Config = {
       listen: { host: '127.0.0.1', port: 4000 },
       routing: {
@@ -92,13 +92,6 @@ describe('buildCodexSwapBadge', () => {
           last_reset_unix_ms: 1_000,
         },
       },
-      projected_ledgers: {
-        packycode: {
-          since_last_quota_refresh_requests: 9,
-          since_last_quota_refresh_total_tokens: 900,
-          last_reset_unix_ms: 1_000,
-        },
-      },
       last_activity_unix_ms: 1_000,
       codex_account: { ok: false },
     }
@@ -137,6 +130,6 @@ describe('buildCodexSwapBadge', () => {
       pctOf: (value, total) => (value != null && total ? value / total : null),
     })
 
-    expect(cards[0]?.usageDetail).toContain('6.08')
+    expect(cards[0]?.usageDetail).toContain('5.12')
   })
 })

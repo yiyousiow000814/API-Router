@@ -9,7 +9,6 @@ function buildStatus(): Status {
     metrics: {},
     quota: [],
     ledgers: [],
-    projected_ledgers: [],
     client_sessions: [],
     recent_events: [],
     preferred_provider: 'provider_1',

@@ -23,6 +23,48 @@ pub struct LanDiagnosticsResponsePacket {
     pub domains: serde_json::Value,
 }
 
+pub(crate) fn local_diagnostics_snapshot(
+    listen_port: u16,
+    requested_domains: &[String],
+) -> serde_json::Value {
+    let all_domains =
+        requested_domains.is_empty() || requested_domains.iter().any(|domain| domain == "all");
+    let requested = |domain: &str| {
+        all_domains
+            || requested_domains
+                .iter()
+                .any(|requested| requested == domain)
+    };
+
+    let mut domains = serde_json::Map::new();
+
+    if requested("watchdog") {
+        domains.insert(
+            "watchdog".to_string(),
+            serde_json::to_value(watchdog_summary()).unwrap_or(serde_json::Value::Null),
+        );
+    }
+
+    if requested("webtransport") {
+        let snapshot = crate::diagnostics::codex_web_transport::current_web_transport_snapshot();
+        domains.insert(
+            "webtransport".to_string(),
+            serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null),
+        );
+    }
+
+    if requested("tailscale") {
+        let snapshot =
+            crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(listen_port);
+        domains.insert(
+            "tailscale".to_string(),
+            serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null),
+        );
+    }
+
+    serde_json::Value::Object(domains)
+}
+
 pub async fn lan_sync_diagnostics_http(
     State(gateway): State<crate::orchestrator::gateway::GatewayState>,
     headers: HeaderMap,
@@ -31,7 +73,7 @@ pub async fn lan_sync_diagnostics_http(
     if let Err(err) = authorize_lan_sync_http_request(&gateway, &headers, &packet.node_id) {
         return err.into_response();
     }
-    let domains = get_local_diagnostics(&packet.domains);
+    let listen_port = gateway.cfg.read().listen.port;
     let node = gateway.secrets.get_lan_node_identity().unwrap_or_else(|| {
         crate::lan_sync::LanNodeIdentity {
             node_id: String::new(),
@@ -43,23 +85,9 @@ pub async fn lan_sync_diagnostics_http(
         node_id: node.node_id,
         node_name: node.node_name,
         sent_at_unix_ms: crate::orchestrator::store::unix_ms(),
-        domains,
+        domains: local_diagnostics_snapshot(listen_port, &packet.domains),
     })
     .into_response()
-}
-
-fn get_local_diagnostics(requested_domains: &[String]) -> serde_json::Value {
-    let mut domains = serde_json::Map::new();
-
-    let watchdog_summary = watchdog_summary();
-    if requested_domains.is_empty() || requested_domains.iter().any(|d| d == "watchdog") {
-        domains.insert(
-            "watchdog".to_string(),
-            serde_json::to_value(watchdog_summary).unwrap_or(serde_json::Value::Null),
-        );
-    }
-
-    serde_json::Value::Object(domains)
 }
 
 /// Reads watchdog-related dump files from the diagnostics directory and returns a
@@ -156,6 +184,7 @@ pub fn watchdog_summary() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    use super::local_diagnostics_snapshot;
     use super::watchdog_summary;
 
     #[test]
@@ -329,5 +358,22 @@ mod tests {
             result.get("last_incident_kind").and_then(|v| v.as_str()),
             Some("heartbeat-stall")
         );
+    }
+
+    #[test]
+    fn local_diagnostics_snapshot_includes_requested_domains() {
+        let snapshot = local_diagnostics_snapshot(
+            4000,
+            &[
+                "watchdog".to_string(),
+                "webtransport".to_string(),
+                "tailscale".to_string(),
+            ],
+        );
+
+        let domains = snapshot.as_object().expect("snapshot object");
+        assert!(domains.contains_key("watchdog"));
+        assert!(domains.contains_key("webtransport"));
+        assert!(domains.contains_key("tailscale"));
     }
 }

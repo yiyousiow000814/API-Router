@@ -42,7 +42,7 @@ mod build_info {
 }
 
 pub(crate) use lan_fetch::{
-    lan_sync_diagnostics_http, watchdog_summary, LanDiagnosticsRequestPacket,
+    lan_sync_diagnostics_http, local_diagnostics_snapshot, LanDiagnosticsRequestPacket,
     LanDiagnosticsResponsePacket,
 };
 pub use local_state::{

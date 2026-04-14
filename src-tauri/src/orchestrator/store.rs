@@ -3604,6 +3604,7 @@ impl Store {
         })
     }
 
+    #[cfg(test)]
     pub fn summarize_usage_requests_since_by_provider(
         &self,
         provider: &str,

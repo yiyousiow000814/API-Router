@@ -52,6 +52,9 @@ export interface LanDiagnosticsResponsePacket {
 }
 
 type TailscaleSummary = NonNullable<Status['tailscale']>
+type LanPeerStatus = NonNullable<Status['lan_sync']>['peers'][number]
+
+const LAN_DIAGNOSTICS_CAPABILITY = 'lan_debug_v2'
 
 const DEV_PREVIEW_WATCHDOG_SUMMARY: WatchdogSummary = {
   healthy: false,
@@ -238,6 +241,20 @@ function fmtTs(unixMs: number): string {
 function fmtDateTime(unixMs: number): string {
   if (!unixMs) return '—'
   return new Date(unixMs).toLocaleString()
+}
+
+export function peerSupportsLanDiagnostics(peer: LanPeerStatus): boolean {
+  return Boolean(peer.trusted && (peer.version_inventory ?? []).includes(LAN_DIAGNOSTICS_CAPABILITY))
+}
+
+function lanDiagnosticsUnavailableReason(peer: LanPeerStatus): string {
+  if (!peer.trusted) {
+    return 'Peer is not trusted for LAN diagnostics.'
+  }
+  if (!(peer.version_inventory ?? []).includes(LAN_DIAGNOSTICS_CAPABILITY)) {
+    return 'Peer does not advertise LAN diagnostics yet.'
+  }
+  return ''
 }
 
 function getTailscaleHeadline(summary: TailscaleSummary | null | undefined): string {
@@ -479,6 +496,95 @@ function WebTransportSection({ snapshot, loading }: WtSectionProps) {
 }
 
 // ---------------------------------------------------------------------------
+// Section 3 — Tailscale
+// ---------------------------------------------------------------------------
+
+interface TailscaleSectionProps {
+  summary: TailscaleSummary | null
+  loading: boolean
+}
+
+function TailscaleSection({ summary, loading }: TailscaleSectionProps) {
+  const host = summary?.dns_name?.trim() || summary?.reachable_ipv4[0] || summary?.ipv4[0] || '—'
+  if (loading && !summary) {
+    return (
+      <div className="aoCard" style={{ padding: '12px 14px' }}>
+        <div className="aoCardHeader">
+          <div className="aoCardTitle">Tailscale</div>
+          <span className="aoHint">loading…</span>
+        </div>
+      </div>
+    )
+  }
+  if (!summary) {
+    return (
+      <div className="aoCard" style={{ padding: '12px 14px' }}>
+        <div className="aoCardHeader">
+          <div className="aoCardTitle">Tailscale</div>
+        </div>
+        <p className="aoHint">No Tailscale data from this peer.</p>
+      </div>
+    )
+  }
+  return (
+    <div className="aoCard" style={{ padding: '12px 14px' }}>
+      <div className="aoCardHeader">
+        <div className="aoCardTitle">Tailscale</div>
+        <span className={`aoPill${summary.gateway_reachable ? ' aoPulse' : ''}`}>
+          {summary.gateway_reachable ? (
+            <>
+              <span className="aoDot" />
+              <span className="aoPillText">reachable</span>
+            </>
+          ) : summary.installed === false ? (
+            <>
+              <span className="aoDot aoDotBad" />
+              <span className="aoPillText">missing</span>
+            </>
+          ) : summary.connected === false ? (
+            <>
+              <span className="aoDot aoDotBad" />
+              <span className="aoPillText">disconnected</span>
+            </>
+          ) : (
+            <span className="aoPillText">ok</span>
+          )}
+        </span>
+      </div>
+      <div className="aoKvp">
+        <span className="aoKey">state</span>
+        <span className="aoVal">{getTailscaleHeadline(summary)}</span>
+        <span className="aoKey">host</span>
+        <span className="aoVal aoValSmall">{host}</span>
+        <span className="aoKey">ipv4</span>
+        <span className="aoVal aoValSmall">{summary.ipv4.join(', ') || '—'}</span>
+        <span className="aoKey">reachable</span>
+        <span className="aoVal aoValSmall">{summary.reachable_ipv4.join(', ') || '—'}</span>
+        <span className="aoKey">backend</span>
+        <span className="aoVal">{summary.backend_state || '—'}</span>
+        {summary.bootstrap?.last_stage ? (
+          <>
+            <span className="aoKey">bootstrap</span>
+            <span className="aoVal aoValSmall">
+              {summary.bootstrap.last_stage}
+              {summary.bootstrap.last_detail ? ` · ${summary.bootstrap.last_detail}` : ''}
+            </span>
+          </>
+        ) : null}
+        {summary.status_error ? (
+          <>
+            <span className="aoKey">detail</span>
+            <span className="aoVal aoValSmall" style={{ color: 'var(--ao-danger)' }}>
+              {summary.status_error}
+            </span>
+          </>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Section 3 — Remote Peer Diagnostics (each peer = its own card)
 // ---------------------------------------------------------------------------
 
@@ -511,6 +617,8 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
   const [peers, setPeers] = useState<PeerDiagEntry[]>(() => (isDevPreview ? DEV_PREVIEW_REMOTE_PEERS : []))
   const [fetchErrors, setFetchErrors] = useState<Record<string, string>>({})
   const [refreshing, setRefreshing] = useState(false)
+  const [refreshSpinActive, setRefreshSpinActive] = useState(false)
+  const [refreshSpinStopRequested, setRefreshSpinStopRequested] = useState(false)
   const [expandedPeers, setExpandedPeers] = useState<Set<string>>(new Set())
   const togglePeer = useCallback((nodeId: string) => {
     setExpandedPeers(prev => {
@@ -527,6 +635,21 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
   const peersRef = useRef(status?.lan_sync?.peers ?? [])
   peersRef.current = status?.lan_sync?.peers ?? []
 
+  const startRefreshSpin = useCallback(() => {
+    setRefreshSpinActive(true)
+    setRefreshSpinStopRequested(false)
+  }, [])
+
+  const requestRefreshSpinStop = useCallback(() => {
+    setRefreshSpinStopRequested(true)
+  }, [])
+
+  const handleRefreshSpinIteration = useCallback(() => {
+    if (!refreshSpinStopRequested) return
+    setRefreshSpinActive(false)
+    setRefreshSpinStopRequested(false)
+  }, [refreshSpinStopRequested])
+
   const fetchPeerDiags = useCallback(async () => {
     if (isDevPreview) {
       setPeers(DEV_PREVIEW_REMOTE_PEERS)
@@ -538,6 +661,7 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
       setFetchErrors({})
       return
     }
+    startRefreshSpin()
     setRefreshing(true)
     try {
       const knownPeers = peersRef.current
@@ -546,33 +670,51 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
         return
       }
 
+      const fetchablePeers = knownPeers.filter(peerSupportsLanDiagnostics)
       const results = await Promise.allSettled(
-        knownPeers.map((peer) =>
+        fetchablePeers.map((peer) =>
           invoke<LanDiagnosticsResponsePacket>('get_remote_peer_diagnostics', {
             peerNodeId: peer.node_id,
-            domains: ['watchdog', 'webtransport'],
+            domains: ['watchdog', 'webtransport', 'tailscale'],
           }),
         ),
       )
 
       const entries: PeerDiagEntry[] = []
       const errors: Record<string, string> = {}
+      const fetchableResults = new Map(fetchablePeers.map((peer, idx) => [peer.node_id, results[idx]] as const))
+      const now = Date.now()
 
-      knownPeers.forEach((peer, idx) => {
-        const result = results[idx]
+      knownPeers.forEach((peer) => {
+        const result = fetchableResults.get(peer.node_id)
+        if (!result) {
+          errors[peer.node_id] = lanDiagnosticsUnavailableReason(peer)
+          entries.push({
+            node_id: peer.node_id,
+            node_name: peer.node_name,
+            health: 'unknown',
+            last_incident: null,
+            fetched_at: now,
+            tailscale: peer.tailscale ?? null,
+            watchdog: null,
+            webtransport: null,
+          })
+          return
+        }
         if (result.status === 'fulfilled') {
           const diag = result.value
           const wd = diag.domains?.watchdog as
             | { healthy: boolean; last_incident_kind: string | null; incident_count: number; last_incident_unix_ms?: number | null; last_incident_file?: string | null; recent_incidents?: Array<{ unix_ms: number; kind: string; file: string }> }
             | undefined
           const wts = diag.domains?.webtransport as WebTransportDomainSnapshot | undefined
+          const ts = diag.domains?.tailscale as TailscaleSummary | undefined
           entries.push({
             node_id: peer.node_id,
             node_name: peer.node_name,
             health: wd?.healthy === false ? 'error' : wd?.healthy === true ? 'ok' : 'unknown',
             last_incident: wd?.last_incident_kind ?? null,
-            fetched_at: Date.now(),
-            tailscale: peer.tailscale ?? null,
+            fetched_at: now,
+            tailscale: ts ?? peer.tailscale ?? null,
             watchdog: wd ?? null,
             webtransport: wts ?? null,
           })
@@ -583,7 +725,7 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
             node_name: peer.node_name,
             health: 'unknown',
             last_incident: null,
-            fetched_at: Date.now(),
+            fetched_at: now,
             tailscale: peer.tailscale ?? null,
             watchdog: null,
             webtransport: null,
@@ -595,8 +737,9 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
       setFetchErrors(errors)
     } finally {
       setRefreshing(false)
+      requestRefreshSpinStop()
     }
-  }, [hasTauriInvoke, isDevPreview])
+  }, [hasTauriInvoke, isDevPreview, requestRefreshSpinStop, startRefreshSpin])
 
   useEffect(() => {
     void fetchPeerDiags()
@@ -621,14 +764,14 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
           )}
         </div>
         <button
-          className={`aoUsageRefreshBtn aoUsageRefreshBtnMini${refreshing ? ' aoUsageRefreshBtnSpin' : ''}`}
+          className={`aoUsageRefreshBtn aoUsageRefreshBtnMini${refreshing || refreshSpinActive ? ' aoUsageRefreshBtnSpin' : ''}`}
           onClick={fetchAll}
-          disabled={refreshing || !hasTauriInvoke || isDevPreview}
+          disabled={refreshing || refreshSpinActive || !hasTauriInvoke || isDevPreview}
           title="Fetch diagnostics from all peers"
           aria-label="Fetch diagnostics from all peers"
           style={{ opacity: (!hasTauriInvoke || isDevPreview) ? 0.4 : 1 }}
         >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true" onAnimationIteration={handleRefreshSpinIteration}>
             <path d="M23 4v6h-6" />
             <path d="M1 20v-6h6" />
             <path d="M3.5 9a9 9 0 0 1 14.1-3.4L23 10" />
@@ -778,16 +921,7 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
                 {/* Expanded diagnostics */}
                 {isExpanded && (
                   <div className="aoMonPeerExpanded">
-                    {peer.watchdog ? (
-                      <WatchdogSection summary={peer.watchdog} loading={false} />
-                    ) : (
-                      <div className="aoCard" style={{ padding: '12px 14px' }}>
-                        <div className="aoCardHeader">
-                          <div className="aoCardTitle">Watchdog</div>
-                        </div>
-                        <p className="aoHint">No watchdog data from this peer.</p>
-                      </div>
-                    )}
+                    <TailscaleSection summary={peer.tailscale ?? null} loading={false} />
                     {peer.webtransport ? (
                       <WebTransportSection snapshot={peer.webtransport} loading={false} />
                     ) : (
@@ -796,6 +930,16 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
                           <div className="aoCardTitle">WebTransport</div>
                         </div>
                         <p className="aoHint">No WebTransport data from this peer.</p>
+                      </div>
+                    )}
+                    {peer.watchdog ? (
+                      <WatchdogSection summary={peer.watchdog} loading={false} />
+                    ) : (
+                      <div className="aoCard" style={{ padding: '12px 14px' }}>
+                        <div className="aoCardHeader">
+                          <div className="aoCardTitle">Watchdog</div>
+                        </div>
+                        <p className="aoHint">No watchdog data from this peer.</p>
                       </div>
                     )}
                   </div>
@@ -1030,6 +1174,7 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
                   background: 'none',
                   border: 'none',
                   padding: '4px 0 0',
+                  marginTop: 'auto',
                   cursor: 'pointer',
                   fontSize: 11,
                   fontWeight: 600,
@@ -1081,6 +1226,7 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
                   background: 'none',
                   border: 'none',
                   padding: '4px 0 0',
+                  marginTop: 'auto',
                   cursor: 'pointer',
                   fontSize: 11,
                   fontWeight: 600,
@@ -1134,6 +1280,7 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
                   background: 'none',
                   border: 'none',
                   padding: '4px 0 0',
+                  marginTop: 'auto',
                   cursor: 'pointer',
                   fontSize: 11,
                   fontWeight: 600,
@@ -1307,16 +1454,30 @@ function ActiveAbnormalConditions({ watchdog, wtSnapshot, tailscale }: AbnormCon
             <div
               key={i}
               className="aoMonAbnormalItem"
-              style={{
-                boxShadow: `inset 3px 0 0 ${
-                  cond.domain === 'wd' ? 'rgba(255,94,125,0.8)' :
-                  cond.domain === 'wt' ? 'rgba(130,80,220,0.75)' :
-                  cond.domain === 'ts' ? 'rgba(23,115,200,0.75)' :
-                  'rgba(50,180,100,0.7)'
-                }`,
-              }}
             >
-              {/* Left accent via box-shadow */}
+              <div className="aoMonAbnormalRail" aria-hidden="true">
+                <span
+                  className="aoMonAbnormalRailDot"
+                  style={{
+                    background:
+                      cond.domain === 'wd'
+                        ? 'rgba(255,94,125,0.8)'
+                        : cond.domain === 'wt'
+                          ? 'rgba(130,80,220,0.78)'
+                          : cond.domain === 'ts'
+                            ? 'rgba(23,115,200,0.78)'
+                            : 'rgba(50,180,100,0.72)',
+                    boxShadow:
+                      cond.domain === 'wd'
+                        ? 'inset 0 0 0 1px rgba(255,94,125,0.18)'
+                        : cond.domain === 'wt'
+                          ? 'inset 0 0 0 1px rgba(130,80,220,0.18)'
+                          : cond.domain === 'ts'
+                            ? 'inset 0 0 0 1px rgba(23,115,200,0.18)'
+                            : 'inset 0 0 0 1px rgba(50,180,100,0.18)',
+                  }}
+                />
+              </div>
               <div className="aoMonAbnormalText" style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: 'rgba(13,18,32,0.82)' }}>{cond.kind}</div>
                 {cond.detail ? (

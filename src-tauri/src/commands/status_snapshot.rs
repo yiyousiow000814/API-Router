@@ -244,7 +244,6 @@ pub(crate) fn get_status(
         }
     }
     let ledgers = state.gateway.store.list_ledgers();
-    let projected_ledgers = projected_usage_ledgers(&state.gateway, &quota);
     phase_timings_ms.insert(
         "metrics_quota_ledgers".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
@@ -336,33 +335,34 @@ pub(crate) fn get_status(
                 cfg.listen.port,
                 expected_gateway_token,
             );
-        let mut map = state.gateway.client_sessions.read().clone();
-        merge_discovered_terminal_sessions(&mut map, now, &terminal_discovery);
-        merge_thread_index_session_hints(
-            &mut map,
-            now,
-            &thread_index_snapshot.items,
-            thread_index_snapshot.fresh,
-        );
-        confirm_router_from_live_thread_base_url(
-            &mut map,
-            &thread_index_snapshot.items,
-            cfg.listen.port,
-        );
-        backfill_main_confirmation_from_verified_agent(&mut map, now);
-        let removed_main_sessions = retain_live_app_server_sessions(
-            &mut map,
-            now,
-            &terminal_discovery.items,
-            terminal_discovery.fresh,
-            &thread_index_snapshot.items,
-            thread_index_snapshot.fresh,
-        );
-        clear_removed_main_session_routes_and_assignments(&state.gateway, &removed_main_sessions);
-        rebalance_balanced_assignments_on_main_session_change(&state.gateway, &cfg, &map);
-        *state.gateway.client_sessions.write() = map.clone();
-        let last_used_by_session = state.gateway.last_used_by_session.read().clone();
-        let items = visible_client_session_items(&map, 20);
+        let items = {
+            let mut map = state.gateway.client_sessions.write();
+            merge_discovered_terminal_sessions(&mut map, now, &terminal_discovery);
+            merge_thread_index_session_hints(
+                &mut map,
+                now,
+                &thread_index_snapshot.items,
+                thread_index_snapshot.fresh,
+            );
+            confirm_router_from_live_thread_base_url(
+                &mut map,
+                &thread_index_snapshot.items,
+                cfg.listen.port,
+            );
+            backfill_main_confirmation_from_verified_agent(&mut map, now);
+            let removed_main_sessions = retain_live_app_server_sessions(
+                &mut map,
+                now,
+                &terminal_discovery.items,
+                terminal_discovery.fresh,
+                &thread_index_snapshot.items,
+                thread_index_snapshot.fresh,
+            );
+            clear_removed_main_session_routes_and_assignments(&state.gateway, &removed_main_sessions);
+            rebalance_balanced_assignments_on_main_session_change(&state.gateway, &cfg, &map);
+            visible_client_session_items(&map, 20)
+        };
+        let last_used_by_session = state.gateway.last_used_by_session.read();
         let sessions = items
             .into_iter()
             .map(|(_codex_session_id, v)| {
@@ -436,7 +436,6 @@ pub(crate) fn get_status(
       "active_provider_counts": active_provider_counts,
       "quota": quota,
       "ledgers": ledgers,
-      "projected_ledgers": projected_ledgers,
       "last_activity_unix_ms": last_activity,
       "codex_account": codex_account,
       "client_sessions": client_sessions,
@@ -519,44 +518,6 @@ fn config_revision(state: &app_state::AppState, cfg: &crate::orchestrator::confi
     });
     let digest = sha2::Sha256::digest(serde_json::to_vec(&payload).unwrap_or_default());
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn projected_usage_ledgers(
-    gateway: &crate::orchestrator::gateway::GatewayState,
-    quota: &serde_json::Value,
-) -> serde_json::Value {
-    let mut out = serde_json::Map::new();
-    let Some(quota_map) = quota.as_object() else {
-        return serde_json::Value::Object(out);
-    };
-
-    for (provider_name, snapshot) in quota_map {
-        let Some(kind) = snapshot.get("kind").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        if kind != "budget_info" {
-            continue;
-        }
-        let Some(updated_at_unix_ms) = snapshot.get("updated_at_unix_ms").and_then(|value| value.as_u64()) else {
-            continue;
-        };
-        if updated_at_unix_ms == 0 {
-            continue;
-        }
-        let (request_count, total_tokens) = gateway
-            .store
-            .summarize_usage_requests_since_by_provider(provider_name, updated_at_unix_ms);
-        out.insert(
-            provider_name.clone(),
-            serde_json::json!({
-                "since_last_quota_refresh_requests": request_count,
-                "since_last_quota_refresh_total_tokens": total_tokens,
-                "last_reset_unix_ms": updated_at_unix_ms,
-            }),
-        );
-    }
-
-    serde_json::Value::Object(out)
 }
 
 #[tauri::command]
@@ -3541,11 +3502,12 @@ mod tests {
     }
 
     #[test]
-    fn projected_usage_ledgers_include_synced_requests_since_last_refresh() {
+    fn status_projected_ledgers_reuse_live_ledger_snapshot() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_path = tmp.path().join("user-data").join("config.toml");
         let data_dir = tmp.path().join("user-data").join("data");
         let state = crate::app_state::build_state(config_path, data_dir).expect("build state");
+        state.gateway.store.reset_ledger("packycode");
         let now = unix_ms();
         state
             .gateway
@@ -3588,17 +3550,14 @@ mod tests {
             }]);
         assert_eq!(inserted, 1);
 
-        let projected = super::projected_usage_ledgers(
-            &state.gateway,
-            &state.gateway.store.list_quota_snapshots(),
-        );
+        let projected = state.gateway.store.list_ledgers();
         assert_eq!(
             projected
                 .get("packycode")
                 .and_then(serde_json::Value::as_object)
                 .and_then(|value| value.get("since_last_quota_refresh_requests"))
                 .and_then(serde_json::Value::as_u64),
-            Some(1)
+            Some(0)
         );
         assert_eq!(
             projected
@@ -3606,7 +3565,7 @@ mod tests {
                 .and_then(serde_json::Value::as_object)
                 .and_then(|value| value.get("since_last_quota_refresh_total_tokens"))
                 .and_then(serde_json::Value::as_u64),
-            Some(128)
+            Some(0)
         );
     }
 

@@ -94,7 +94,7 @@ export function ProvidersTable({
           const q = simulateQuotaForDisplay(
             p,
             status.quota?.[p],
-            status.projected_ledgers?.[p] ?? status.ledgers?.[p],
+            status.ledgers?.[p],
             usageStatistics,
           )
           const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info' | 'balance_info'
