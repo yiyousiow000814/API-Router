@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   hasTauriInvokeAvailable,
+  formatIncidentKind,
   isMonitoringDevPreview,
   MonitoringPanel,
   peerSupportsLanDiagnostics,
@@ -97,10 +98,17 @@ describe('MonitoringPanel', () => {
     expect(html).toContain('Preview data')
     expect(html).toContain('Gateway reachable')
     expect(html).toContain('desk-monitor.tail.ts.net')
-    expect(html).toContain('heartbeat-stall')
-    expect(html).toContain('ECONNRESET')
+    expect(html).toContain('UI heartbeat stalled')
+    expect(html).toContain('WebTransport thread refresh failed')
     expect(html).toContain('Desk B')
     expect(html).toContain('restart API Router')
+  })
+
+  it('formats incident kinds into human-readable labels', () => {
+    expect(formatIncidentKind('heartbeat-stall')).toBe('UI heartbeat stalled')
+    expect(formatIncidentKind('slow-refresh')).toBe('Remote diagnostics refresh too slow')
+    expect(formatIncidentKind('invoke-error')).toBe('Remote diagnostics request failed')
+    expect(formatIncidentKind('custom-case')).toBe('Custom Case')
   })
 
   it('renders recent watchdog incidents when the backend provides them', () => {

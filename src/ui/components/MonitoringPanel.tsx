@@ -10,6 +10,7 @@ import './DashboardPanel.css'
 export interface WatchdogSummary {
   healthy: boolean
   last_incident_kind: string | null
+  last_incident_detail?: string | null
   last_incident_unix_ms?: number | null
   last_incident_file?: string | null
   incident_count: number
@@ -17,6 +18,7 @@ export interface WatchdogSummary {
     unix_ms: number
     kind: string
     file: string
+    detail?: string | null
   }>
 }
 
@@ -60,6 +62,7 @@ const DEV_PREVIEW_WATCHDOG_SUMMARY: WatchdogSummary = {
   healthy: false,
   incident_count: 3,
   last_incident_kind: 'heartbeat-stall',
+  last_incident_detail: 'UI heartbeat stalled',
   last_incident_unix_ms: 1_700_000_002_000,
   last_incident_file: 'ui-freeze-1700000002000-heartbeat-stall.json',
   recent_incidents: [
@@ -67,16 +70,19 @@ const DEV_PREVIEW_WATCHDOG_SUMMARY: WatchdogSummary = {
       unix_ms: 1_700_000_002_000,
       kind: 'heartbeat-stall',
       file: 'ui-freeze-1700000002000-heartbeat-stall.json',
+      detail: 'UI heartbeat stalled',
     },
     {
       unix_ms: 1_700_000_001_000,
       kind: 'slow-refresh',
       file: 'slow-refresh-1700000001000-status.json',
+      detail: 'Status poll interval refresh too slow',
     },
     {
       unix_ms: 1_700_000_000_000,
       kind: 'frame-stall',
       file: 'frame-stall-1700000000000-render-blocked.json',
+      detail: 'UI frame stalled',
     },
   ],
 }
@@ -145,6 +151,7 @@ const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
       healthy: false,
       incident_count: 2,
       last_incident_kind: 'heartbeat-stall',
+      last_incident_detail: 'UI heartbeat stalled',
       last_incident_unix_ms: 1_700_000_001_800,
       last_incident_file: 'ui-freeze-1700000001800-heartbeat-stall.json',
       recent_incidents: [
@@ -152,11 +159,13 @@ const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
           unix_ms: 1_700_000_001_800,
           kind: 'heartbeat-stall',
           file: 'ui-freeze-1700000001800-heartbeat-stall.json',
+          detail: 'UI heartbeat stalled',
         },
         {
           unix_ms: 1_700_000_001_500,
           kind: 'frame-stall',
           file: 'frame-stall-1700000001500-render-blocked.json',
+          detail: 'UI frame stalled',
         },
       ],
     },
@@ -198,10 +207,11 @@ const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
       status_error: 'tailscale_not_found',
       bootstrap: null,
     },
-    watchdog: {
+      watchdog: {
       healthy: true,
       incident_count: 0,
       last_incident_kind: null,
+      last_incident_detail: null,
       recent_incidents: [],
     },
     webtransport: {
@@ -241,6 +251,28 @@ function fmtTs(unixMs: number): string {
 function fmtDateTime(unixMs: number): string {
   if (!unixMs) return '—'
   return new Date(unixMs).toLocaleString()
+}
+
+export function formatIncidentKind(kind: string | null | undefined): string {
+  if (!kind) return 'Incident'
+  switch (kind) {
+    case 'heartbeat-stall':
+      return 'UI heartbeat stalled'
+    case 'slow-refresh':
+      return 'Remote diagnostics refresh too slow'
+    case 'slow-invoke':
+      return 'Remote diagnostics request too slow'
+    case 'invoke-error':
+      return 'Remote diagnostics request failed'
+    case 'frame-stall':
+      return 'UI main thread stalled'
+    case 'status':
+      return 'Status snapshot issue'
+    default:
+      return kind
+        .replace(/[-_]+/g, ' ')
+        .replace(/\b\w/g, (match) => match.toUpperCase())
+    }
 }
 
 export function peerSupportsLanDiagnostics(peer: LanPeerStatus): boolean {
@@ -339,7 +371,9 @@ function WatchdogSection({ summary, loading, showIncidents = true }: WatchdogSec
             {summary.last_incident_kind ? (
               <>
                 <span className="aoKey">last incident</span>
-                <span className="aoVal">{summary.last_incident_kind}</span>
+                <span className="aoVal">
+                  {summary.last_incident_detail ?? formatIncidentKind(summary.last_incident_kind)}
+                </span>
                 <span className="aoKey">last seen</span>
                 <span className="aoVal">{fmtDateTime(summary.last_incident_unix_ms ?? 0)}</span>
                 <span className="aoKey">last file</span>
@@ -363,7 +397,9 @@ function WatchdogSection({ summary, loading, showIncidents = true }: WatchdogSec
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: 'rgba(13,18,32,0.88)' }}>{incident.kind}</span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: 'rgba(13,18,32,0.88)' }}>
+                      {incident.detail ?? formatIncidentKind(incident.kind)}
+                    </span>
                     <span className="aoHint" style={{ fontSize: 10 }}>{fmtDateTime(incident.unix_ms)}</span>
                   </div>
                   <div className="aoHint" style={{ fontSize: 10 }}>{incident.file}</div>
@@ -1260,7 +1296,7 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
                     <div>
                       {watchdog.healthy
                         ? 'All systems healthy'
-                        : `${watchdog.incident_count} incident(s), last: ${watchdog.last_incident_kind || '—'}`}
+                        : `${watchdog.incident_count} incident(s), last: ${formatIncidentKind(watchdog.last_incident_kind)}`}
                     </div>
                     {watchdog.last_incident_unix_ms && (
                       <div style={{ marginTop: 2, fontSize: 11 }}>
@@ -1342,7 +1378,7 @@ function ActiveAbnormalConditions({ watchdog, wtSnapshot, tailscale }: AbnormCon
   // Watchdog
   if (watchdog && !watchdog.healthy && watchdog.last_incident_kind) {
     conditions.push({
-      kind: watchdog.last_incident_kind,
+      kind: watchdog.last_incident_detail ?? formatIncidentKind(watchdog.last_incident_kind),
       severity: 'error',
       domain: 'wd',
       detail: watchdog.last_incident_file ?? '',
@@ -1372,7 +1408,7 @@ function ActiveAbnormalConditions({ watchdog, wtSnapshot, tailscale }: AbnormCon
     }
     if (wtSnapshot.thread_refresh_failed.count > 0) {
       conditions.push({
-        kind: 'Thread refresh failed',
+        kind: 'WebTransport thread refresh failed',
         severity: 'error',
         domain: 'wt',
         detail: `${wtSnapshot.thread_refresh_failed.count} failure(s)`,

@@ -2,6 +2,7 @@ use axum::extract::{Json, State};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::diagnostics::current_diagnostics_dir;
 use crate::diagnostics::WATCHDOG_DUMP_PREFIXES;
@@ -118,7 +119,7 @@ pub fn watchdog_summary() -> serde_json::Value {
         }
     };
 
-    let mut watchdog_files: Vec<(u64, String, String)> = Vec::new();
+    let mut watchdog_files: Vec<(u64, String, String, String)> = Vec::new();
     for entry in entries.filter_map(|e| e.ok()) {
         let file_name = entry.file_name();
         let file_name_str = file_name.to_string_lossy();
@@ -135,7 +136,12 @@ pub fn watchdog_summary() -> serde_json::Value {
                     if file_name_str.ends_with(".json") {
                         let trigger_end = file_name_str.len() - 5; // strip ".json"
                         let trigger = &file_name_str[(*prefix).len() + dash_pos + 1..trigger_end];
-                        watchdog_files.push((ts, trigger.to_string(), file_name_str.to_string()));
+                        watchdog_files.push((
+                            ts,
+                            trigger.to_string(),
+                            prefix.trim_end_matches('-').to_string(),
+                            file_name_str.to_string(),
+                        ));
                     }
                 }
             }
@@ -153,33 +159,199 @@ pub fn watchdog_summary() -> serde_json::Value {
         });
     }
 
-    watchdog_files.sort_by_key(|(ts, _, _)| *ts);
-    let (last_ts, last_trigger, last_file) = watchdog_files
+    watchdog_files.sort_by_key(|(ts, _, _, _)| *ts);
+    let (last_ts, last_trigger, last_prefix, last_file) = watchdog_files
         .last()
         .cloned()
-        .unwrap_or_else(|| (0, String::new(), String::new()));
+        .unwrap_or_else(|| (0, String::new(), String::new(), String::new()));
     let incident_count = watchdog_files.len() as u32;
     let recent_incidents: Vec<serde_json::Value> = watchdog_files
         .iter()
         .rev()
         .take(5)
-        .map(|(ts, trigger, file_name)| {
+        .map(|(ts, trigger, prefix, file_name)| {
+            let detail = read_watchdog_incident_detail(&diag_dir.join(file_name), prefix, trigger);
             serde_json::json!({
                 "unix_ms": ts,
                 "kind": trigger,
                 "file": file_name,
+                "detail": detail,
             })
         })
         .collect();
+
+    let last_incident_detail =
+        read_watchdog_incident_detail(&diag_dir.join(&last_file), &last_prefix, &last_trigger);
 
     serde_json::json!({
         "healthy": false,
         "last_incident_kind": last_trigger,
         "last_incident_unix_ms": last_ts,
         "last_incident_file": last_file,
+        "last_incident_detail": last_incident_detail,
         "incident_count": incident_count,
         "recent_incidents": recent_incidents,
     })
+}
+
+fn read_watchdog_incident_detail(
+    path: &std::path::Path,
+    prefix: &str,
+    trigger: &str,
+) -> Option<String> {
+    let payload = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())?;
+    describe_watchdog_incident(prefix, trigger, &payload)
+}
+
+fn describe_watchdog_incident(prefix: &str, trigger: &str, payload: &Value) -> Option<String> {
+    let recent_traces = payload.get("recent_traces")?.as_array()?;
+    match trigger {
+        "slow-refresh" | "status" | "config" | "provider_switch" => {
+            let refresh_source = recent_traces.iter().rev().find_map(|trace| {
+                if trace.get("kind").and_then(|v| v.as_str()) == Some("status_refresh_requested") {
+                    return trace
+                        .get("fields")
+                        .and_then(|fields| fields.get("fields"))
+                        .and_then(|fields| fields.get("source"))
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToString::to_string);
+                }
+                None
+            });
+            let source_label = refresh_source
+                .as_deref()
+                .map(humanize_watchdog_source)
+                .unwrap_or_else(|| humanize_watchdog_trigger(prefix, trigger));
+            Some(format!("{source_label} refresh too slow"))
+        }
+        "slow-invoke" => {
+            let command = recent_traces.iter().rev().find_map(|trace| {
+                if trace.get("kind").and_then(|v| v.as_str()) == Some("invoke") {
+                    return trace
+                        .get("fields")
+                        .and_then(|fields| fields.get("command"))
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToString::to_string);
+                }
+                None
+            });
+            let label = command
+                .as_deref()
+                .map(humanize_watchdog_command)
+                .unwrap_or_else(|| humanize_watchdog_trigger(prefix, trigger));
+            Some(format!("{label} request too slow"))
+        }
+        "invoke-error" => {
+            let command = recent_traces.iter().rev().find_map(|trace| {
+                if trace.get("kind").and_then(|v| v.as_str()) == Some("invoke") {
+                    return trace
+                        .get("fields")
+                        .and_then(|fields| fields.get("command"))
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToString::to_string);
+                }
+                None
+            });
+            let label = command
+                .as_deref()
+                .map(humanize_watchdog_command)
+                .unwrap_or_else(|| humanize_watchdog_trigger(prefix, trigger));
+            Some(format!("{label} request failed"))
+        }
+        "frame-stall" => {
+            let monitor_kind = recent_traces.iter().rev().find_map(|trace| {
+                if trace.get("kind").and_then(|v| v.as_str()) == Some("frame_stall") {
+                    return trace
+                        .get("fields")
+                        .and_then(|fields| fields.get("monitor_kind"))
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToString::to_string);
+                }
+                None
+            });
+            let label = monitor_kind
+                .as_deref()
+                .map(humanize_watchdog_source)
+                .unwrap_or_else(|| "UI frame".to_string());
+            Some(format!("{label} stalled"))
+        }
+        "heartbeat-stall" => {
+            let snapshot = payload.get("snapshot");
+            let mut detail = String::from("UI heartbeat stalled");
+            if snapshot
+                .and_then(|value| value.get("status_in_flight"))
+                .and_then(|value| value.as_bool())
+                == Some(true)
+            {
+                detail.push_str(" while status refresh was active");
+            } else if snapshot
+                .and_then(|value| value.get("config_in_flight"))
+                .and_then(|value| value.as_bool())
+                == Some(true)
+            {
+                detail.push_str(" while config refresh was active");
+            } else if snapshot
+                .and_then(|value| value.get("provider_switch_in_flight"))
+                .and_then(|value| value.as_bool())
+                == Some(true)
+            {
+                detail.push_str(" while provider switch was active");
+            }
+            Some(detail)
+        }
+        _ => None,
+    }
+}
+
+fn humanize_watchdog_source(source: &str) -> String {
+    match source {
+        "status_poll_interval" => "Status poll interval".to_string(),
+        "manual_refresh" => "Manual refresh".to_string(),
+        "status" => "Status snapshot".to_string(),
+        "config" => "Config".to_string(),
+        "provider_switch" => "Provider switch".to_string(),
+        other => humanize_watchdog_trigger("", other),
+    }
+}
+
+fn humanize_watchdog_command(command: &str) -> String {
+    match command {
+        "get_status" => "Status snapshot".to_string(),
+        "get_local_diagnostics" => "Local diagnostics".to_string(),
+        "get_remote_peer_diagnostics" => "Remote peer diagnostics".to_string(),
+        other => humanize_watchdog_trigger("", other),
+    }
+}
+
+fn humanize_watchdog_trigger(prefix: &str, trigger: &str) -> String {
+    let raw = if prefix.is_empty() {
+        trigger
+    } else if trigger.is_empty() {
+        prefix
+    } else {
+        trigger
+    };
+    raw.replace(['-', '_'], " ")
+        .split_whitespace()
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -299,7 +471,7 @@ mod tests {
         );
         assert_eq!(
             result.get("last_incident_unix_ms").and_then(|v| v.as_u64()),
-            Some(1_700_000_002_000)
+            Some(1_700_000_002_000u64)
         );
         assert_eq!(
             result.get("last_incident_file").and_then(|v| v.as_str()),
@@ -317,6 +489,99 @@ mod tests {
         assert_eq!(
             recent[0].get("file").and_then(|v| v.as_str()),
             Some("slow-refresh-1700000002000-status.json")
+        );
+    }
+
+    #[test]
+    fn watchdog_summary_derives_specific_operation_details() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let diag_dir = tmp.path().join("diagnostics");
+        std::fs::create_dir_all(&diag_dir).expect("create diag dir");
+
+        std::fs::write(
+            diag_dir.join("ui-freeze-1700000001000-slow-refresh.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "recent_traces": [
+                    {
+                        "kind": "status_refresh_requested",
+                        "fields": {
+                            "active_page": "monitor",
+                            "fields": {
+                                "detail_level": "full",
+                                "interactive": false,
+                                "refresh_swap_status": false,
+                                "source": "status_poll_interval"
+                            },
+                            "visible": true
+                        },
+                        "unix_ms": 1_700_000_001_000u64
+                    }
+                ],
+                "snapshot": {
+                    "active_page": "monitor",
+                    "config_in_flight": false,
+                    "last_heartbeat_unix_ms": 1_700_000_001_000u64,
+                    "provider_switch_in_flight": false,
+                    "status_in_flight": true,
+                    "unresponsive_logged": false,
+                    "unresponsive_since_unix_ms": 0,
+                    "visible": true
+                }
+            }))
+            .expect("encode payload"),
+        )
+        .expect("write file 1");
+        std::fs::write(
+            diag_dir.join("ui-freeze-1700000002000-slow-invoke.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "recent_traces": [
+                    {
+                        "kind": "invoke",
+                        "fields": {
+                            "active_page": "monitor",
+                            "command": "get_status",
+                            "elapsed_ms": 3199,
+                            "error": null,
+                            "ok": true,
+                            "visible": true
+                        },
+                        "unix_ms": 1_700_000_002_000u64
+                    }
+                ],
+                "snapshot": {
+                    "active_page": "monitor",
+                    "config_in_flight": false,
+                    "last_heartbeat_unix_ms": 1_700_000_002_000u64,
+                    "provider_switch_in_flight": false,
+                    "status_in_flight": true,
+                    "unresponsive_logged": false,
+                    "unresponsive_since_unix_ms": 0,
+                    "visible": true
+                }
+            }))
+            .expect("encode payload"),
+        )
+        .expect("write file 2");
+
+        std::env::set_var("API_ROUTER_USER_DATA_DIR", tmp.path());
+        let result = watchdog_summary();
+        std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+
+        assert_eq!(
+            result.get("last_incident_detail").and_then(|v| v.as_str()),
+            Some("Status snapshot request too slow")
+        );
+        let recent = result
+            .get("recent_incidents")
+            .and_then(|v| v.as_array())
+            .expect("recent incidents");
+        assert_eq!(
+            recent[0].get("detail").and_then(|v| v.as_str()),
+            Some("Status snapshot request too slow")
+        );
+        assert_eq!(
+            recent[1].get("detail").and_then(|v| v.as_str()),
+            Some("Status poll interval refresh too slow")
         );
     }
 
