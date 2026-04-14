@@ -68,25 +68,34 @@ pub(crate) async fn tailscale_status(
     let listen_port = state.gateway.cfg.read().listen.port;
     // Wrap blocking I/O (CLI call + TCP probes) in spawn_blocking to avoid blocking tokio
     let snapshot = tauri::async_runtime::spawn_blocking(move || {
-        crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(listen_port)
+        crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot_uncached(listen_port)
     })
     .await
     .map_err(|err| format!("tailscale_snapshot_failed: {err}"))?;
-    let connected = snapshot.connected;
-    let ipv4 = snapshot.ipv4.clone();
-    let dns_name = snapshot.dns_name.clone();
-    let reachable_ipv4 = snapshot.reachable_ipv4.clone();
+    let mut snapshot = snapshot;
     #[cfg(windows)]
     let runtime_binding_in_progress = {
         maybe_refresh_runtime_tailscale_listener(
             &state,
-            connected,
-            &ipv4,
+            snapshot.connected,
+            &snapshot.ipv4,
             snapshot.gateway_reachable,
         ) > 0
     };
     #[cfg(not(windows))]
     let runtime_binding_in_progress = false;
+    #[cfg(windows)]
+    if runtime_binding_in_progress {
+        snapshot = tauri::async_runtime::spawn_blocking(move || {
+            crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot_uncached(listen_port)
+        })
+        .await
+        .map_err(|err| format!("tailscale_snapshot_refresh_failed: {err}"))?;
+    }
+    let connected = snapshot.connected;
+    let ipv4 = snapshot.ipv4.clone();
+    let dns_name = snapshot.dns_name.clone();
+    let reachable_ipv4 = snapshot.reachable_ipv4.clone();
     let gateway_reachable = snapshot.gateway_reachable;
     let needs_gateway_restart = needs_gateway_restart(
         connected,
@@ -107,7 +116,7 @@ pub(crate) async fn tailscale_status(
         "needsGatewayRestart": needs_gateway_restart,
         "statusError": snapshot.status_error,
         "bootstrap": snapshot.bootstrap,
-        "downloadUrl": "https://download.tailscale.com",
+        "downloadUrl": "https://tailscale.com/download",
     }))
 }
 

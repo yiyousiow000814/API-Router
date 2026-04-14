@@ -439,9 +439,9 @@ mod tests {
             .get_or_init(|| Mutex::new(()))
             .lock()
             .expect("watchdog test mutex poisoned");
-        std::env::set_var("API_ROUTER_USER_DATA_DIR", user_data_dir);
+        let previous = crate::diagnostics::set_test_user_data_dir_override(Some(user_data_dir));
         let result = watchdog_summary();
-        std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        crate::diagnostics::set_test_user_data_dir_override(previous.as_deref());
         result
     }
 

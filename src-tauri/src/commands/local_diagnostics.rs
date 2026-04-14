@@ -4,12 +4,17 @@
 /// * `domains` - List of domain names to include. If empty or contains "all", all domains are returned.
 ///   Supported domains: "watchdog", "webtransport", "tailscale". Unknown domains are silently ignored.
 #[tauri::command]
-pub async fn get_local_diagnostics(
+pub(crate) async fn get_local_diagnostics(
     state: tauri::State<'_, app_state::AppState>,
     domains: Vec<String>,
 ) -> Result<serde_json::Value, String> {
     let listen_port = state.gateway.cfg.read().listen.port;
-    Ok(crate::lan_sync::local_diagnostics_snapshot(listen_port, &domains))
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
+        crate::lan_sync::local_diagnostics_snapshot(listen_port, &domains)
+    })
+    .await
+    .map_err(|err| format!("local_diagnostics_snapshot_failed: {err}"))?;
+    Ok(snapshot)
 }
 
 #[cfg(test)]

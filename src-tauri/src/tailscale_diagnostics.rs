@@ -109,12 +109,7 @@ fn tailscale_status_json() -> Result<Value, String> {
 }
 
 fn read_gateway_bootstrap_summary() -> Option<TailscaleBootstrapSummary> {
-    let user_data_dir = std::env::var("API_ROUTER_USER_DATA_DIR").ok()?;
-    let trimmed = user_data_dir.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let path = std::path::PathBuf::from(trimmed).join("gateway-bootstrap.json");
+    let path = crate::diagnostics::current_user_data_dir()?.join("gateway-bootstrap.json");
     let bytes = std::fs::read(path).ok()?;
     let parsed = serde_json::from_slice::<Value>(&bytes).ok()?;
     let stages = parsed.get("stages").and_then(|v| v.as_array())?;
@@ -177,6 +172,22 @@ fn current_tailscale_base_status() -> TailscaleBaseStatus {
 pub(crate) fn current_tailscale_diagnostic_snapshot(
     listen_port: u16,
 ) -> TailscaleDiagnosticSnapshot {
+    static CACHE: OnceLock<RwLock<Option<(u64, TailscaleDiagnosticSnapshot)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| RwLock::new(None));
+    let now = crate::orchestrator::store::unix_ms();
+    if let Some((captured_at, snapshot)) = cache.read().clone() {
+        if now.saturating_sub(captured_at) < TAILSCALE_DIAGNOSTIC_CACHE_TTL_MS {
+            return snapshot;
+        }
+    }
+    let snapshot = current_tailscale_diagnostic_snapshot_uncached(listen_port);
+    *cache.write() = Some((now, snapshot.clone()));
+    snapshot
+}
+
+pub(crate) fn current_tailscale_diagnostic_snapshot_uncached(
+    listen_port: u16,
+) -> TailscaleDiagnosticSnapshot {
     let base = current_tailscale_base_status();
     let reachable_ipv4 = if base.connected {
         resolve_reachable_gateway_ipv4(&base.ipv4, listen_port)
@@ -228,7 +239,7 @@ mod tests {
     #[test]
     fn gateway_bootstrap_summary_reads_last_stage() {
         let temp = tempfile::tempdir().expect("temp dir");
-        std::env::set_var("API_ROUTER_USER_DATA_DIR", temp.path());
+        let previous = crate::diagnostics::set_test_user_data_dir_override(Some(temp.path()));
         std::fs::write(
             temp.path().join("gateway-bootstrap.json"),
             serde_json::to_vec(&serde_json::json!({
@@ -249,5 +260,28 @@ mod tests {
         );
         assert_eq!(summary.last_detail.as_deref(), Some("count=1"));
         assert_eq!(summary.updated_at_unix_ms, Some(99));
+        crate::diagnostics::set_test_user_data_dir_override(previous.as_deref());
+    }
+
+    #[test]
+    fn gateway_bootstrap_summary_uses_thread_local_test_override() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let previous = crate::diagnostics::set_test_user_data_dir_override(Some(temp.path()));
+        std::fs::write(
+            temp.path().join("gateway-bootstrap.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "stages": [
+                    { "stage": "tailscale_ok", "detail": "ready", "updatedAtUnixMs": 7 }
+                ],
+                "updatedAtUnixMs": 7
+            }))
+            .expect("json"),
+        )
+        .expect("write bootstrap");
+
+        let summary = read_gateway_bootstrap_summary().expect("bootstrap summary");
+        assert_eq!(summary.last_stage.as_deref(), Some("tailscale_ok"));
+        assert_eq!(summary.last_detail.as_deref(), Some("ready"));
+        crate::diagnostics::set_test_user_data_dir_override(previous.as_deref());
     }
 }
