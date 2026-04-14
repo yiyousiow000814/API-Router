@@ -72,7 +72,6 @@ pub(crate) async fn tailscale_status(
     })
     .await
     .map_err(|err| format!("tailscale_snapshot_failed: {err}"))?;
-    let mut snapshot = snapshot;
     #[cfg(windows)]
     let runtime_binding_in_progress = {
         maybe_refresh_runtime_tailscale_listener(
@@ -85,13 +84,15 @@ pub(crate) async fn tailscale_status(
     #[cfg(not(windows))]
     let runtime_binding_in_progress = false;
     #[cfg(windows)]
-    if runtime_binding_in_progress {
-        snapshot = tauri::async_runtime::spawn_blocking(move || {
+    let snapshot = if runtime_binding_in_progress {
+        tauri::async_runtime::spawn_blocking(move || {
             crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot_uncached(listen_port)
         })
         .await
-        .map_err(|err| format!("tailscale_snapshot_refresh_failed: {err}"))?;
-    }
+        .map_err(|err| format!("tailscale_snapshot_refresh_failed: {err}"))?
+    } else {
+        snapshot
+    };
     let connected = snapshot.connected;
     let ipv4 = snapshot.ipv4.clone();
     let dns_name = snapshot.dns_name.clone();
