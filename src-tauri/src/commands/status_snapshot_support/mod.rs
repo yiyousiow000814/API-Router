@@ -1,3 +1,4 @@
+pub(crate) mod dashboard_snapshot_cache;
 pub(crate) mod session_retention;
 pub(crate) mod session_visibility;
 pub(crate) mod thread_index_merge;
