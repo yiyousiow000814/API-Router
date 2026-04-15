@@ -112,12 +112,23 @@ export type Status = {
     probe?: {
       attempts: Array<{
         command_path: string
-        source: 'registry_app_path' | 'registry_install_location' | 'standard_install_root' | 'path'
+        source:
+          | 'service_image_path'
+          | 'registry_app_path'
+          | 'registry_install_location'
+          | 'standard_install_root'
+          | 'path'
         outcome: string
         detail?: string | null
       }>
       selected_command_path?: string | null
-      selected_command_source?: 'registry_app_path' | 'registry_install_location' | 'standard_install_root' | 'path' | null
+      selected_command_source?:
+        | 'service_image_path'
+        | 'registry_app_path'
+        | 'registry_install_location'
+        | 'standard_install_root'
+        | 'path'
+        | null
     } | null
     bootstrap?: {
       last_stage?: string | null

@@ -107,7 +107,9 @@ describe('MonitoringPanel', () => {
     expect(html).toContain('Degraded')
     expect(html).toContain('Thread refresh failures detected')
     expect(html).toContain('Desk B')
-    expect(html).toContain('restart API Router')
+    expect(html).toContain(
+      'Tried: C:\\Program Files\\Tailscale\\tailscale.exe (not found) → C:\\Program Files\\Tailscale\\tailscale.exe (found)',
+    )
   })
 
   it('returns healthy once webtransport signals fall outside the recent window', () => {
@@ -188,6 +190,36 @@ describe('MonitoringPanel', () => {
         bootstrap: null,
       } as any),
     ).toBe('C:\\Program Files\\Tailscale\\tailscale.exe (standard install root)')
+  })
+
+  it('formats tailscale probe evidence from the service image path source', () => {
+    expect(
+      formatTailscaleProbeEvidence({
+        installed: false,
+        connected: false,
+        backend_state: null,
+        dns_name: null,
+        ipv4: [],
+        reachable_ipv4: [],
+        gateway_reachable: false,
+        needs_gateway_restart: false,
+        status_error: 'tailscale_not_found',
+        command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
+        command_source: 'service_image_path',
+        probe: {
+          attempts: [
+            {
+              command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
+              source: 'service_image_path',
+              outcome: 'not_found',
+            },
+          ],
+          selected_command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
+          selected_command_source: 'service_image_path',
+        },
+        bootstrap: null,
+      } as any),
+    ).toBe('C:\\Program Files\\Tailscale\\tailscale.exe (service image path)')
   })
 
   it('keeps remote peer polling and refresh controls aligned with the dashboard refresh affordance', () => {

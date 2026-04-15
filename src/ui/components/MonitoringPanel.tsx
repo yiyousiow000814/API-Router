@@ -233,6 +233,11 @@ const DEV_PREVIEW_TAILSCALE_SUMMARY: TailscaleSummary = {
     attempts: [
       {
         command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
+        source: 'service_image_path',
+        outcome: 'not_found',
+      },
+      {
+        command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
         source: 'standard_install_root',
         outcome: 'found',
       },
@@ -353,10 +358,15 @@ const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
       gateway_reachable: false,
       needs_gateway_restart: false,
       status_error: 'tailscale_not_found',
-      command_path: 'tailscale',
-      command_source: 'path',
+      command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
+      command_source: 'service_image_path',
       probe: {
         attempts: [
+          {
+            command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
+            source: 'service_image_path',
+            outcome: 'not_found',
+          },
           {
             command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
             source: 'standard_install_root',
@@ -368,8 +378,8 @@ const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
             outcome: 'not_found',
           },
         ],
-        selected_command_path: null,
-        selected_command_source: null,
+        selected_command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
+        selected_command_source: 'service_image_path',
       },
       bootstrap: null,
     },
@@ -572,31 +582,6 @@ function getTailscaleHeadline(summary: TailscaleSummary | null | undefined): str
   return 'Gateway unreachable'
 }
 
-function getTailscaleDetail(summary: TailscaleSummary | null | undefined): string {
-  if (!summary) return 'No tailscale diagnostics available.'
-  const probeEvidence = formatTailscaleProbeEvidence(summary)
-  const probeTrail = formatTailscaleProbeTrail(summary)
-  const probeStatus = formatTailscaleProbeStatus(summary)
-  if (!summary.installed) {
-    const parts = ['Install Tailscale on this device.']
-    if (probeStatus) parts.push(probeStatus)
-    if (probeEvidence) parts.push(`Probe: ${probeEvidence}`)
-    if (probeTrail) parts.push(`Tried: ${probeTrail}`)
-    return parts.join('\n')
-  }
-  if (!summary.connected) return summary.status_error?.trim() || 'Connect this device to the tailnet.'
-  const host = summary.dns_name?.trim() || summary.reachable_ipv4[0] || summary.ipv4[0] || 'No host'
-  if (summary.gateway_reachable) return host
-  if (summary.needs_gateway_restart) return `${host} · restart API Router`
-  if (summary.status_error?.trim()) {
-    const parts = [host, summary.status_error.trim()]
-    if (probeEvidence) parts.push(`Probe: ${probeEvidence}`)
-    if (probeTrail) parts.push(`Tried: ${probeTrail}`)
-    return parts.join('\n')
-  }
-  return `${host} · gateway unreachable`
-}
-
 function getTailscaleStatusPresentation(summary: TailscaleSummary | null | undefined): StatusPresentation | null {
   if (!summary) return null
   if (summary.gateway_reachable) return { tone: 'healthy', label: 'healthy', pulse: true }
@@ -618,6 +603,7 @@ function getTailscaleStatusPresentation(summary: TailscaleSummary | null | undef
 }
 
 type TailscaleProbeSource =
+  | 'service_image_path'
   | 'registry_app_path'
   | 'registry_install_location'
   | 'standard_install_root'
@@ -625,6 +611,9 @@ type TailscaleProbeSource =
 
 function formatTailscaleProbeSource(source: TailscaleProbeSource | string | null | undefined): string {
   switch (source) {
+    case 'service_image_path':
+    case 'service image path':
+      return 'service image path'
     case 'registry_app_path':
     case 'registry app path':
       return 'registry app path'
@@ -1447,11 +1436,6 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
                     <div className="aoMonPeerCardId">
                       {listenAddr} · fetched {fmtAge(peer.fetched_at)}
                     </div>
-                    {peer.tailscale && (
-                      <div className="aoHint" style={{ fontSize: 11, marginTop: 2, whiteSpace: 'pre-line' }}>
-                        {getTailscaleDetail(peer.tailscale)}
-                      </div>
-                    )}
                   </div>
 
                   {/* Right: domain dots + expand */}

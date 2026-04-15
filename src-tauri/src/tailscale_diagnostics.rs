@@ -44,6 +44,7 @@ pub struct TailscaleDiagnosticSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum TailscaleCommandSource {
+    ServiceImagePath,
     RegistryAppPath,
     RegistryInstallLocation,
     StandardInstallRoot,
@@ -53,6 +54,7 @@ pub(crate) enum TailscaleCommandSource {
 impl std::fmt::Display for TailscaleCommandSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::ServiceImagePath => "service_image_path",
             Self::RegistryAppPath => "registry_app_path",
             Self::RegistryInstallLocation => "registry_install_location",
             Self::StandardInstallRoot => "standard_install_root",
@@ -229,7 +231,16 @@ fn registry_install_dir_from_text(value: &str) -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
+fn service_image_path_to_command_path(value: &str) -> Option<PathBuf> {
+    registry_install_dir_from_text(value).map(|install_dir| install_dir.join("tailscale.exe"))
+}
+
+#[cfg(windows)]
 fn registry_tailscale_command_resolutions() -> Vec<TailscaleCommandResolution> {
+    let service_candidates = [(
+        RegKey::predef(HKEY_LOCAL_MACHINE),
+        r"SYSTEM\CurrentControlSet\Services",
+    )];
     let roots = [
         (
             RegKey::predef(HKEY_LOCAL_MACHINE),
@@ -250,6 +261,39 @@ fn registry_tailscale_command_resolutions() -> Vec<TailscaleCommandResolution> {
 
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
+
+    for (root, subkey) in service_candidates {
+        let Ok(services) = root.open_subkey(subkey) else {
+            continue;
+        };
+        for key_name in services.enum_keys().flatten() {
+            let Ok(service) = services.open_subkey(&key_name) else {
+                continue;
+            };
+            let display_name = service
+                .get_value::<String, _>("DisplayName")
+                .ok()
+                .unwrap_or_default();
+            let key_name_lc = key_name.to_ascii_lowercase();
+            let display_name_lc = display_name.to_ascii_lowercase();
+            if !key_name_lc.contains("tailscale") && !display_name_lc.contains("tailscale") {
+                continue;
+            }
+            let Ok(image_path) = service.get_value::<String, _>("ImagePath") else {
+                continue;
+            };
+            let Some(candidate) = service_image_path_to_command_path(&image_path) else {
+                continue;
+            };
+            if seen.insert(candidate.clone()) {
+                candidates.push(TailscaleCommandResolution {
+                    path: candidate,
+                    source: TailscaleCommandSource::ServiceImagePath,
+                });
+            }
+        }
+    }
+
     for (root, subkey, source) in roots {
         if let Some(path) = registry_string_value(&root, subkey, "") {
             let candidate = registry_path_from_text(&path).unwrap_or_else(|| PathBuf::from(path));
@@ -310,7 +354,7 @@ fn registry_tailscale_command_resolutions() -> Vec<TailscaleCommandResolution> {
                 });
             if let Some(install_dir) = install_dir {
                 let candidate = install_dir.join("tailscale.exe");
-                if candidate.exists() && seen.insert(candidate.clone()) {
+                if seen.insert(candidate.clone()) {
                     candidates.push(TailscaleCommandResolution {
                         path: candidate,
                         source: TailscaleCommandSource::RegistryInstallLocation,
@@ -381,6 +425,7 @@ fn enumerate_tailscale_command_resolutions() -> Vec<TailscaleCommandResolution> 
     candidates
 }
 
+#[cfg(windows)]
 fn resolve_tailscale_command_resolution() -> TailscaleCommandResolution {
     enumerate_tailscale_command_resolutions()
         .into_iter()
@@ -391,6 +436,7 @@ fn resolve_tailscale_command_resolution() -> TailscaleCommandResolution {
         })
 }
 
+#[cfg(windows)]
 pub(crate) fn resolve_tailscale_command_path() -> PathBuf {
     resolve_tailscale_command_resolution().path
 }
@@ -554,6 +600,13 @@ fn current_tailscale_base_status_uncached() -> TailscaleBaseStatus {
     }
 
     let final_error = last_probe_error.unwrap_or(TailscaleCliProbeError::NotFound);
+    let selected_command_path = attempts.first().map(|attempt| attempt.command_path.clone());
+    let selected_command_source = attempts.first().map(|attempt| attempt.source.clone());
+    let command_path = selected_command_path.clone().unwrap_or_default();
+    let command_source = selected_command_source
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
     TailscaleBaseStatus {
         installed: false,
         connected: false,
@@ -561,12 +614,12 @@ fn current_tailscale_base_status_uncached() -> TailscaleBaseStatus {
         dns_name: None,
         ipv4: Vec::new(),
         status_error: Some(final_error.status_code()),
-        command_path: String::new(),
-        command_source: String::new(),
+        command_path,
+        command_source,
         probe: TailscaleProbeReport {
             attempts,
-            selected_command_path: None,
-            selected_command_source: None,
+            selected_command_path,
+            selected_command_source,
         },
     }
 }
@@ -755,6 +808,19 @@ mod tests {
         let resolved = resolve_tailscale_command_path_from_roots([install_root]);
 
         assert_eq!(resolved.as_deref(), Some(tailscale_exe.as_path()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn service_image_path_uses_install_directory_for_cli_resolution() {
+        let command_path = super::service_image_path_to_command_path(
+            r#""C:\Program Files\Tailscale\Tailscale Service.exe" --service"#,
+        )
+        .expect("service command path");
+        assert_eq!(
+            command_path,
+            std::path::PathBuf::from(r"C:\Program Files\Tailscale\tailscale.exe")
+        );
     }
 
     #[cfg(windows)]
