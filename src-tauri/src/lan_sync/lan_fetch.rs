@@ -90,12 +90,21 @@ pub async fn lan_sync_diagnostics_http(
             node_name: String::new(),
         }
     });
+    let domains = packet.domains.clone();
+    let domains_snapshot = tauri::async_runtime::spawn_blocking(move || {
+        local_diagnostics_snapshot(listen_port, &domains)
+    })
+    .await
+    .unwrap_or_else(|err| {
+        log::warn!("lan_sync_diagnostics_http failed to build snapshot: {err}");
+        serde_json::json!({})
+    });
     Json(LanDiagnosticsResponsePacket {
         version: 1,
         node_id: node.node_id,
         node_name: node.node_name,
         sent_at_unix_ms: crate::orchestrator::store::unix_ms(),
-        domains: local_diagnostics_snapshot(listen_port, &packet.domains),
+        domains: domains_snapshot,
     })
     .into_response()
 }

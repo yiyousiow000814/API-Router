@@ -3829,6 +3829,10 @@ fn sync_domains_blocked_for_peer(peer: &LanPeerSnapshot) -> Vec<String> {
         .collect()
 }
 
+fn peer_build_matches_local(peer: &LanPeerSnapshot) -> bool {
+    peer.build_identity == current_build_identity()
+}
+
 fn ensure_peer_sync_contract(
     gateway: &crate::orchestrator::gateway::GatewayState,
     peer: &LanPeerSnapshot,
@@ -3886,7 +3890,7 @@ fn ensure_peer_build_compatible(
     peer: &LanPeerSnapshot,
 ) -> bool {
     let local_build = current_build_identity();
-    let matches = peer.build_matches_local;
+    let matches = peer_build_matches_local(peer);
 
     let reported = &mut *runtime.build_mismatch_reported.write();
     let key = &peer.node_id;
@@ -6510,6 +6514,18 @@ mod tests {
             &missing_capability_peer,
             "edit_sync_v1"
         ));
+    }
+
+    #[test]
+    fn peer_build_matches_local_uses_build_identity_not_cached_flag() {
+        let mut matching_peer = test_peer_snapshot();
+        matching_peer.build_matches_local = false;
+        assert!(super::peer_build_matches_local(&matching_peer));
+
+        let mut mismatching_peer = test_peer_snapshot();
+        mismatching_peer.build_identity.app_version.push_str("-alt");
+        mismatching_peer.build_matches_local = true;
+        assert!(!super::peer_build_matches_local(&mismatching_peer));
     }
 
     #[test]

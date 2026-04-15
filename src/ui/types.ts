@@ -107,6 +107,8 @@ export type Status = {
     gateway_reachable: boolean
     needs_gateway_restart: boolean
     status_error?: string | null
+    command_path?: string | null
+    command_source?: string | null
     bootstrap?: {
       last_stage?: string | null
       last_detail?: string | null

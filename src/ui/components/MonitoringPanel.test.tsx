@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   hasTauriInvokeAvailable,
   formatIncidentKind,
+  formatTailscaleProbeEvidence,
   isMonitoringDevPreview,
   MonitoringPanel,
   getWebTransportHealth,
@@ -151,6 +152,25 @@ describe('MonitoringPanel', () => {
     expect(html).toContain('Remote Peers')
   })
 
+  it('formats tailscale probe evidence when the CLI is not detected', () => {
+    expect(
+      formatTailscaleProbeEvidence({
+        installed: false,
+        connected: false,
+        backend_state: null,
+        dns_name: null,
+        ipv4: [],
+        reachable_ipv4: [],
+        gateway_reachable: false,
+        needs_gateway_restart: false,
+        status_error: 'tailscale_not_found',
+        command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
+        command_source: 'standard_install_root',
+        bootstrap: null,
+      } as any),
+    ).toBe('C:\\Program Files\\Tailscale\\tailscale.exe (standard install root)')
+  })
+
   it('keeps remote peer polling and refresh controls aligned with the dashboard refresh affordance', () => {
     const source = fs.readFileSync(new URL('./MonitoringPanel.tsx', import.meta.url), 'utf8')
 
@@ -179,6 +199,7 @@ describe('MonitoringPanel', () => {
     expect(source).toContain('getWebTransportStatusDetail')
     expect(source).toContain('getWatchdogStatusPresentation')
     expect(source).toContain('getTailscaleStatusPresentation')
+    expect(source).toContain('formatTailscaleProbeEvidence')
     expect(source).toContain('StatusDot')
     expect(source).toContain('label="healthy"')
     expect(source).not.toContain('label="ok"')
@@ -200,5 +221,8 @@ describe('MonitoringPanel', () => {
     )
     expect(source).toContain('Recent incidents')
     expect(source).toContain('No WebTransport data available yet.')
+    expect(source).toContain('command_path')
+    expect(source).toContain('command_source')
+    expect(source).toContain('Probe:')
   })
 })

@@ -116,6 +116,8 @@ pub(crate) async fn tailscale_status(
         "gatewayReachable": gateway_reachable,
         "needsGatewayRestart": needs_gateway_restart,
         "statusError": snapshot.status_error,
+        "commandPath": snapshot.command_path,
+        "commandSource": snapshot.command_source,
         "bootstrap": snapshot.bootstrap,
         "downloadUrl": "https://tailscale.com/download",
     }))

@@ -2,6 +2,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 #[cfg(windows)]
@@ -27,6 +28,8 @@ pub struct TailscaleDiagnosticSnapshot {
     pub gateway_reachable: bool,
     pub needs_gateway_restart: bool,
     pub status_error: Option<String>,
+    pub command_path: String,
+    pub command_source: String,
     pub bootstrap: Option<TailscaleBootstrapSummary>,
 }
 
@@ -38,9 +41,17 @@ struct TailscaleBaseStatus {
     dns_name: Option<String>,
     ipv4: Vec<String>,
     status_error: Option<String>,
+    command_path: String,
+    command_source: String,
 }
 
-fn tailscale_hidden_command(program: &str) -> std::process::Command {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TailscaleCommandResolution {
+    path: PathBuf,
+    source: &'static str,
+}
+
+fn tailscale_hidden_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
     #[cfg(windows)]
     let mut cmd = std::process::Command::new(program);
     #[cfg(not(windows))]
@@ -50,6 +61,62 @@ fn tailscale_hidden_command(program: &str) -> std::process::Command {
         std::os::windows::process::CommandExt::creation_flags(&mut cmd, TAILSCALE_CREATE_NO_WINDOW);
     }
     cmd
+}
+
+fn resolve_tailscale_command_resolution_from_roots<I>(
+    roots: I,
+) -> Option<TailscaleCommandResolution>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    roots.into_iter().find_map(|root| {
+        let candidate = root.join("Tailscale").join("tailscale.exe");
+        candidate.exists().then_some(TailscaleCommandResolution {
+            path: candidate,
+            source: "standard_install_root",
+        })
+    })
+}
+
+#[cfg(test)]
+fn resolve_tailscale_command_path_from_roots<I>(roots: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    resolve_tailscale_command_resolution_from_roots(roots).map(|resolution| resolution.path)
+}
+
+fn resolve_tailscale_command_resolution() -> TailscaleCommandResolution {
+    #[cfg(windows)]
+    {
+        let roots = [
+            std::env::var_os("ProgramFiles"),
+            std::env::var_os("ProgramFiles(x86)"),
+            std::env::var_os("ProgramW6432"),
+        ]
+        .into_iter()
+        .flatten()
+        .map(PathBuf::from);
+
+        resolve_tailscale_command_resolution_from_roots(roots).unwrap_or(
+            TailscaleCommandResolution {
+                path: PathBuf::from("tailscale"),
+                source: "path",
+            },
+        )
+    }
+
+    #[cfg(not(windows))]
+    {
+        TailscaleCommandResolution {
+            path: PathBuf::from("tailscale"),
+            source: "path",
+        }
+    }
+}
+
+pub(crate) fn resolve_tailscale_command_path() -> PathBuf {
+    resolve_tailscale_command_resolution().path
 }
 
 fn parse_tailscale_summary(parsed: &Value) -> TailscaleBaseStatus {
@@ -94,11 +161,13 @@ fn parse_tailscale_summary(parsed: &Value) -> TailscaleBaseStatus {
         },
         ipv4,
         status_error: None,
+        command_path: String::new(),
+        command_source: String::new(),
     }
 }
 
-fn tailscale_status_json() -> Result<Value, String> {
-    let output = tailscale_hidden_command("tailscale")
+fn tailscale_status_json(command_path: &std::path::Path) -> Result<Value, String> {
+    let output = tailscale_hidden_command(command_path)
         .args(["status", "--json"])
         .output()
         .map_err(|_| "tailscale_not_found".to_string())?;
@@ -128,8 +197,16 @@ fn read_gateway_bootstrap_summary() -> Option<TailscaleBootstrapSummary> {
 }
 
 fn current_tailscale_base_status_uncached() -> TailscaleBaseStatus {
-    match tailscale_status_json() {
-        Ok(parsed) => parse_tailscale_summary(&parsed),
+    let resolution = resolve_tailscale_command_resolution();
+    let command_path = resolution.path.display().to_string();
+    let command_source = resolution.source.to_string();
+    match tailscale_status_json(&resolution.path) {
+        Ok(parsed) => {
+            let mut base = parse_tailscale_summary(&parsed);
+            base.command_path = command_path;
+            base.command_source = command_source;
+            base
+        }
         Err(err) => TailscaleBaseStatus {
             installed: err != "tailscale_not_found",
             connected: false,
@@ -137,6 +214,8 @@ fn current_tailscale_base_status_uncached() -> TailscaleBaseStatus {
             dns_name: None,
             ipv4: Vec::new(),
             status_error: Some(err),
+            command_path,
+            command_source,
         },
     }
 }
@@ -205,13 +284,18 @@ pub(crate) fn current_tailscale_diagnostic_snapshot_uncached(
         gateway_reachable,
         needs_gateway_restart: base.connected && !base.ipv4.is_empty() && !gateway_reachable,
         status_error: base.status_error,
+        command_path: base.command_path,
+        command_source: base.command_source,
         bootstrap: read_gateway_bootstrap_summary(),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_tailscale_summary, read_gateway_bootstrap_summary, TailscaleBaseStatus};
+    use super::{
+        parse_tailscale_summary, read_gateway_bootstrap_summary,
+        resolve_tailscale_command_path_from_roots, TailscaleBaseStatus,
+    };
 
     #[test]
     fn parse_tailscale_summary_reads_backend_dns_and_ipv4() {
@@ -232,6 +316,8 @@ mod tests {
                 dns_name: Some("desktop-kk6sa2d-1.tail997985.ts.net".to_string()),
                 ipv4: vec!["100.64.208.117".to_string()],
                 status_error: None,
+                command_path: String::new(),
+                command_source: String::new(),
             }
         );
     }
@@ -283,5 +369,19 @@ mod tests {
         assert_eq!(summary.last_stage.as_deref(), Some("tailscale_ok"));
         assert_eq!(summary.last_detail.as_deref(), Some("ready"));
         crate::diagnostics::set_test_user_data_dir_override(previous.as_deref());
+    }
+
+    #[test]
+    fn resolve_tailscale_command_path_prefers_standard_install_root() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let install_root = temp.path().join("Program Files");
+        let tailscale_exe = install_root.join("Tailscale").join("tailscale.exe");
+        std::fs::create_dir_all(tailscale_exe.parent().expect("tailscale parent directory"))
+            .expect("create tailscale directory");
+        std::fs::write(&tailscale_exe, b"fake tailscale binary").expect("write tailscale binary");
+
+        let resolved = resolve_tailscale_command_path_from_roots([install_root]);
+
+        assert_eq!(resolved.as_deref(), Some(tailscale_exe.as_path()));
     }
 }

@@ -227,6 +227,8 @@ const DEV_PREVIEW_TAILSCALE_SUMMARY: TailscaleSummary = {
   gateway_reachable: true,
   needs_gateway_restart: false,
   status_error: null,
+  command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
+  command_source: 'standard_install_root',
   bootstrap: {
     last_stage: 'listener-ready',
     last_detail: 'overlay listener bound to tailscale address',
@@ -251,6 +253,8 @@ const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
       gateway_reachable: false,
       needs_gateway_restart: true,
       status_error: null,
+      command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
+      command_source: 'standard_install_root',
       bootstrap: {
         last_stage: 'gateway-bind-pending',
         last_detail: 'listener will bind after next app restart',
@@ -327,6 +331,8 @@ const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
       gateway_reachable: false,
       needs_gateway_restart: false,
       status_error: 'tailscale_not_found',
+      command_path: 'tailscale',
+      command_source: 'path',
       bootstrap: null,
     },
     watchdog: {
@@ -518,12 +524,17 @@ function getTailscaleHeadline(summary: TailscaleSummary | null | undefined): str
 
 function getTailscaleDetail(summary: TailscaleSummary | null | undefined): string {
   if (!summary) return 'No tailscale diagnostics available.'
-  if (!summary.installed) return 'Install Tailscale on this device.'
+  const probeEvidence = formatTailscaleProbeEvidence(summary)
+  if (!summary.installed) {
+    return probeEvidence ? `Install Tailscale on this device. Probe: ${probeEvidence}` : 'Install Tailscale on this device.'
+  }
   if (!summary.connected) return summary.status_error?.trim() || 'Connect this device to the tailnet.'
   const host = summary.dns_name?.trim() || summary.reachable_ipv4[0] || summary.ipv4[0] || 'No host'
   if (summary.gateway_reachable) return host
   if (summary.needs_gateway_restart) return `${host} · restart API Router`
-  if (summary.status_error?.trim()) return `${host} · ${summary.status_error.trim()}`
+  if (summary.status_error?.trim()) {
+    return probeEvidence ? `${host} · ${summary.status_error.trim()} · Probe: ${probeEvidence}` : `${host} · ${summary.status_error.trim()}`
+  }
   return `${host} · gateway unreachable`
 }
 
@@ -533,6 +544,14 @@ function getTailscaleStatusPresentation(summary: TailscaleSummary | null | undef
   if (summary.installed === false) return { tone: 'unknown', label: 'not installed' }
   if (summary.connected === false) return { tone: 'degraded', label: 'offline' }
   return { tone: 'warn', label: 'Attention' }
+}
+
+export function formatTailscaleProbeEvidence(summary: TailscaleSummary | null | undefined): string | null {
+  if (!summary) return null
+  if (summary.installed) return null
+  const path = summary.command_path?.trim() || 'tailscale'
+  const source = summary.command_source === 'standard_install_root' ? 'standard install root' : 'PATH'
+  return `${path} (${source})`
 }
 
 type LocalDomain = 'tailscale' | 'webtransport' | 'watchdog'
@@ -1386,6 +1405,7 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
 
 function TailscaleDetailView({ summary }: { summary: TailscaleSummary | null }) {
   const host = summary?.dns_name?.trim() || summary?.reachable_ipv4[0] || summary?.ipv4[0] || '—'
+  const probeEvidence = formatTailscaleProbeEvidence(summary)
   if (!summary) {
     return <p className="aoHint">No tailscale data available.</p>
   }
@@ -1409,6 +1429,12 @@ function TailscaleDetailView({ summary }: { summary: TailscaleSummary | null }) 
               {summary.bootstrap.last_stage}
               {summary.bootstrap.last_detail ? ` · ${summary.bootstrap.last_detail}` : ''}
             </span>
+          </>
+        ) : null}
+        {probeEvidence ? (
+          <>
+            <span className="aoKey">probe</span>
+            <span className="aoVal aoValSmall">{probeEvidence}</span>
           </>
         ) : null}
         {summary.status_error ? (
@@ -1589,6 +1615,11 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
                     <div style={{ marginTop: 2, fontSize: 11 }}>
                       {tailscale.dns_name || tailscale.ipv4[0] || '—'}
                     </div>
+                    {formatTailscaleProbeEvidence(tailscale) ? (
+                      <div style={{ marginTop: 2, fontSize: 11, color: 'rgba(13,18,32,0.56)' }}>
+                        Probe: {formatTailscaleProbeEvidence(tailscale)}
+                      </div>
+                    ) : null}
                   </>
                 ) : (
                   <div>No tailscale data available.</div>
