@@ -67,6 +67,18 @@ export const MoreDropdown = memo(function MoreDropdown({
 
   useEffect(() => {
     if (!open) return
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      close()
+      buttonRef.current?.focus()
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [close, open])
+
+  useEffect(() => {
+    if (!open) return
     const updateRect = () => {
       if (buttonRef.current) {
         setButtonRect(buttonRef.current.getBoundingClientRect())

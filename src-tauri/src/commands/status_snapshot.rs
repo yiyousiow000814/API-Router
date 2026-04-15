@@ -252,7 +252,7 @@ pub(crate) fn get_status(
     let active_recent = last_activity > 0 && now.saturating_sub(last_activity) < 2 * 60 * 1000;
     let phase_started_at = std::time::Instant::now();
     let (active_provider, active_reason, active_provider_counts) = if active_recent {
-        let map = state.gateway.last_used_by_session.read();
+        let map = state.gateway.last_used_by_session.read().clone();
 
         // Multiple Codex sessions can be active simultaneously, potentially routing through different
         // providers. Expose the full active provider set so the UI can mark multiple providers as
