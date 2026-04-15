@@ -125,13 +125,42 @@ where
         .map_err(|err| format!("blocking_snapshot_failed: {err}"))
 }
 
+fn fallback_tailscale_snapshot(status_error: Option<String>) -> crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot {
+    crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot {
+        installed: false,
+        connected: false,
+        backend_state: None,
+        dns_name: None,
+        ipv4: Vec::new(),
+        reachable_ipv4: Vec::new(),
+        gateway_reachable: false,
+        needs_gateway_restart: false,
+        status_error,
+        command_path: String::new(),
+        command_source: String::new(),
+        probe: crate::tailscale_diagnostics::TailscaleProbeReport {
+            attempts: Vec::new(),
+            selected_command_path: None,
+            selected_command_source: None,
+        },
+        bootstrap: None,
+    }
+}
+
 async fn current_tailscale_snapshot_for_status(
     listen_port: u16,
-) -> Result<crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot, String> {
-    run_blocking_snapshot(move || {
+) -> crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot {
+    match run_blocking_snapshot(move || {
         crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(listen_port)
     })
     .await
+    {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            log::warn!("tailscale snapshot failed, returning fallback: {err}");
+            fallback_tailscale_snapshot(Some(format!("snapshot_failed: {err}")))
+        }
+    }
 }
 
 fn load_visible_last_error_events_with_cache(
@@ -327,7 +356,7 @@ pub(crate) async fn get_status(
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
     let phase_started_at = std::time::Instant::now();
-    let tailscale = current_tailscale_snapshot_for_status(cfg.listen.port).await?;
+    let tailscale = current_tailscale_snapshot_for_status(cfg.listen.port).await;
     phase_timings_ms.insert(
         "tailscale_snapshot".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
@@ -1594,7 +1623,7 @@ pub(crate) fn get_event_log_daily_stats(
 
 #[cfg(test)]
 mod tests {
-    use super::run_blocking_snapshot;
+    use super::{fallback_tailscale_snapshot, run_blocking_snapshot};
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
     use crate::commands::{
         attach_visible_last_error_event_ids,
@@ -1822,6 +1851,16 @@ mod tests {
                 .and_then(|snapshot| snapshot.last_error_event_id.as_deref()),
             Some("evt-visible-codex-error")
         );
+    }
+
+    #[test]
+    fn fallback_tailscale_snapshot_marks_status_error_without_breaking_status_payload() {
+        let snapshot = fallback_tailscale_snapshot(Some("snapshot_failed: boom".to_string()));
+        assert!(!snapshot.installed);
+        assert!(!snapshot.connected);
+        assert_eq!(snapshot.status_error.as_deref(), Some("snapshot_failed: boom"));
+        assert!(snapshot.probe.attempts.is_empty());
+        assert!(snapshot.command_path.is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
