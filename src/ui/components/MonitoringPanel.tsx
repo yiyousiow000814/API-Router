@@ -582,7 +582,7 @@ function getTailscaleDetail(summary: TailscaleSummary | null | undefined): strin
     if (probeStatus) parts.push(probeStatus)
     if (probeEvidence) parts.push(`Probe: ${probeEvidence}`)
     if (probeTrail) parts.push(`Tried: ${probeTrail}`)
-    return parts.join(' ')
+    return parts.join('\n')
   }
   if (!summary.connected) return summary.status_error?.trim() || 'Connect this device to the tailnet.'
   const host = summary.dns_name?.trim() || summary.reachable_ipv4[0] || summary.ipv4[0] || 'No host'
@@ -592,7 +592,7 @@ function getTailscaleDetail(summary: TailscaleSummary | null | undefined): strin
     const parts = [host, summary.status_error.trim()]
     if (probeEvidence) parts.push(`Probe: ${probeEvidence}`)
     if (probeTrail) parts.push(`Tried: ${probeTrail}`)
-    return parts.join(' · ')
+    return parts.join('\n')
   }
   return `${host} · gateway unreachable`
 }
@@ -642,6 +642,30 @@ function formatTailscaleProbeSource(source: TailscaleProbeSource | string | null
   }
 }
 
+function formatTailscaleProbeOutcome(outcome: string | null | undefined): string {
+  switch ((outcome || '').trim()) {
+    case 'found':
+      return 'found'
+    case 'not_found':
+      return 'not found'
+    case 'launch_blocked':
+      return 'launch blocked'
+    case 'launch_failed':
+      return 'launch failed'
+    case 'not_connected':
+      return 'not connected'
+    case 'bad_json':
+      return 'bad output'
+    default:
+      return 'unknown'
+  }
+}
+
+function formatTailscaleProbeAttempt(attempt: NonNullable<TailscaleSummary['probe']>['attempts'][number]): string {
+  const path = attempt.command_path?.trim() || 'tailscale'
+  return `${path} (${formatTailscaleProbeOutcome(attempt.outcome)})`
+}
+
 export function formatTailscaleProbeEvidence(summary: TailscaleSummary | null | undefined): string | null {
   if (!summary) return null
   if (summary.installed) return null
@@ -656,8 +680,7 @@ function formatTailscaleProbeTrail(summary: TailscaleSummary | null | undefined)
   const attempts = summary?.probe?.attempts ?? []
   if (attempts.length <= 0) return null
   return attempts
-    .map((attempt) => formatTailscaleProbeSource(attempt.source))
-    .filter((value) => value !== 'unknown')
+    .map((attempt) => formatTailscaleProbeAttempt(attempt))
     .join(' → ')
 }
 
@@ -1425,7 +1448,7 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
                       {listenAddr} · fetched {fmtAge(peer.fetched_at)}
                     </div>
                     {peer.tailscale && (
-                      <div className="aoHint" style={{ fontSize: 11, marginTop: 2 }}>
+                      <div className="aoHint" style={{ fontSize: 11, marginTop: 2, whiteSpace: 'pre-line' }}>
                         {getTailscaleDetail(peer.tailscale)}
                       </div>
                     )}
@@ -1755,9 +1778,19 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
                     <div style={{ marginTop: 2, fontSize: 11 }}>
                       {tailscale.dns_name || tailscale.ipv4[0] || '—'}
                     </div>
+                    {formatTailscaleProbeStatus(tailscale) ? (
+                      <div style={{ marginTop: 2, fontSize: 11, color: 'rgba(13,18,32,0.56)', whiteSpace: 'pre-line' }}>
+                        {formatTailscaleProbeStatus(tailscale)}
+                      </div>
+                    ) : null}
                     {formatTailscaleProbeEvidence(tailscale) ? (
-                      <div style={{ marginTop: 2, fontSize: 11, color: 'rgba(13,18,32,0.56)' }}>
+                      <div style={{ marginTop: 2, fontSize: 11, color: 'rgba(13,18,32,0.56)', whiteSpace: 'pre-line' }}>
                         Probe: {formatTailscaleProbeEvidence(tailscale)}
+                      </div>
+                    ) : null}
+                    {formatTailscaleProbeTrail(tailscale) ? (
+                      <div style={{ marginTop: 2, fontSize: 11, color: 'rgba(13,18,32,0.56)', whiteSpace: 'pre-line' }}>
+                        Tried: {formatTailscaleProbeTrail(tailscale)}
                       </div>
                     ) : null}
                   </>

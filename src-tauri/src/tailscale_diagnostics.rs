@@ -253,7 +253,7 @@ fn registry_tailscale_command_resolutions() -> Vec<TailscaleCommandResolution> {
     for (root, subkey, source) in roots {
         if let Some(path) = registry_string_value(&root, subkey, "") {
             let candidate = registry_path_from_text(&path).unwrap_or_else(|| PathBuf::from(path));
-            if candidate.exists() && seen.insert(candidate.clone()) {
+            if seen.insert(candidate.clone()) {
                 candidates.push(TailscaleCommandResolution {
                     path: candidate,
                     source: source.clone(),
@@ -354,7 +354,7 @@ fn enumerate_tailscale_command_resolutions() -> Vec<TailscaleCommandResolution> 
 
         for root in roots {
             let candidate = root.join("Tailscale").join("tailscale.exe");
-            if candidate.exists() && seen.insert(candidate.clone()) {
+            if seen.insert(candidate.clone()) {
                 candidates.push(TailscaleCommandResolution {
                     path: candidate,
                     source: TailscaleCommandSource::StandardInstallRoot,
