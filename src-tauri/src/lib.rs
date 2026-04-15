@@ -547,7 +547,15 @@ pub fn run() {
             app.manage(state);
             {
                 let st = app.state::<app_state::AppState>();
+                let cfg = st.gateway.cfg.read().clone();
+                let listen_port = cfg.listen.port;
                 crate::lan_sync::register_gateway_status_runtime(st.lan_sync.clone());
+                crate::commands::spawn_dashboard_snapshot_warmup(
+                    listen_port,
+                    st.lan_sync.clone(),
+                    cfg,
+                    st.secrets.clone(),
+                );
                 crate::platform::local_network::spawn_monitor(
                     app.handle(),
                     st.local_network.clone(),

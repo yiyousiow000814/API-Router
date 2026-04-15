@@ -1,5 +1,9 @@
 use sha2::Digest;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use crate::commands::status_snapshot_support::dashboard_snapshot_cache::DashboardSnapshotCache;
+
+const DASHBOARD_STATUS_SNAPSHOT_CACHE_TTL_MS: u64 = 5_000;
 
 fn status_client_sessions_trace_cache() -> &'static Mutex<Option<String>> {
     static CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -115,6 +119,7 @@ fn elapsed_ms_since(started_at: std::time::Instant) -> u64 {
     started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
+#[cfg(test)]
 async fn run_blocking_snapshot<T, F>(snapshot_fn: F) -> Result<T, String>
 where
     T: Send + 'static,
@@ -125,7 +130,26 @@ where
         .map_err(|err| format!("blocking_snapshot_failed: {err}"))
 }
 
-fn fallback_tailscale_snapshot(status_error: Option<String>) -> crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot {
+fn dashboard_lan_sync_snapshot_cache(
+) -> &'static Arc<DashboardSnapshotCache<crate::lan_sync::LanSyncStatusSnapshot>> {
+    static CACHE: OnceLock<Arc<DashboardSnapshotCache<crate::lan_sync::LanSyncStatusSnapshot>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Arc::new(DashboardSnapshotCache::new()))
+}
+
+fn dashboard_tailscale_snapshot_cache(
+) -> &'static Arc<DashboardSnapshotCache<crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot>>
+{
+    static CACHE: OnceLock<
+        Arc<DashboardSnapshotCache<crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot>>,
+    > = OnceLock::new();
+    CACHE.get_or_init(|| Arc::new(DashboardSnapshotCache::new()))
+}
+
+#[cfg(test)]
+fn fallback_tailscale_snapshot(
+    status_error: Option<String>,
+) -> crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot {
     crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot {
         installed: false,
         connected: false,
@@ -147,20 +171,60 @@ fn fallback_tailscale_snapshot(status_error: Option<String>) -> crate::tailscale
     }
 }
 
-async fn current_tailscale_snapshot_for_status(
+fn current_dashboard_tailscale_snapshot(
     listen_port: u16,
 ) -> crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot {
-    match run_blocking_snapshot(move || {
-        crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(listen_port)
-    })
-    .await
-    {
-        Ok(snapshot) => snapshot,
-        Err(err) => {
-            log::warn!("tailscale snapshot failed, returning fallback: {err}");
-            fallback_tailscale_snapshot(Some("tailscale_snapshot_failed".to_string()))
-        }
+    let cache = dashboard_tailscale_snapshot_cache();
+    if let Some(snapshot) = cache.snapshot_if_fresh(DASHBOARD_STATUS_SNAPSHOT_CACHE_TTL_MS) {
+        return snapshot;
     }
+    let compute = Arc::new(move || {
+        crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(listen_port)
+    });
+    cache.read_or_refresh(DASHBOARD_STATUS_SNAPSHOT_CACHE_TTL_MS, compute)
+}
+
+fn current_dashboard_lan_sync_snapshot(
+    listen_port: u16,
+    cfg: &crate::orchestrator::config::AppConfig,
+    secrets: &crate::orchestrator::secrets::SecretStore,
+    lan_sync: &crate::lan_sync::LanSyncRuntime,
+) -> crate::lan_sync::LanSyncStatusSnapshot {
+    let cache = dashboard_lan_sync_snapshot_cache();
+    if let Some(snapshot) = cache.snapshot_if_fresh(DASHBOARD_STATUS_SNAPSHOT_CACHE_TTL_MS) {
+        return snapshot;
+    }
+    let cfg = cfg.clone();
+    let secrets = secrets.clone();
+    let lan_sync = lan_sync.clone();
+    let compute = Arc::new(move || lan_sync.snapshot(listen_port, &cfg, &secrets));
+    cache.read_or_refresh(DASHBOARD_STATUS_SNAPSHOT_CACHE_TTL_MS, compute)
+}
+
+pub(crate) fn spawn_dashboard_snapshot_warmup(
+    listen_port: u16,
+    lan_sync: crate::lan_sync::LanSyncRuntime,
+    cfg: crate::orchestrator::config::AppConfig,
+    secrets: crate::orchestrator::secrets::SecretStore,
+) {
+    let lan_sync_cache = Arc::clone(dashboard_lan_sync_snapshot_cache());
+    let tailscale_cache = Arc::clone(dashboard_tailscale_snapshot_cache());
+    tauri::async_runtime::spawn(async move {
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            let compute = Arc::new(move || lan_sync.snapshot(listen_port, &cfg, &secrets));
+            lan_sync_cache.refresh_now(compute)
+        })
+        .await;
+    });
+    tauri::async_runtime::spawn(async move {
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            let compute = Arc::new(move || {
+                crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(listen_port)
+            });
+            tailscale_cache.refresh_now(compute)
+        })
+        .await;
+    });
 }
 
 fn load_visible_last_error_events_with_cache(
@@ -223,7 +287,7 @@ fn write_dashboard_status_slow_diag(
 }
 
 #[tauri::command]
-pub(crate) async fn get_status(
+pub(crate) fn get_status(
     state: tauri::State<'_, app_state::AppState>,
     detail_level: Option<String>,
 ) -> Result<serde_json::Value, String> {
@@ -348,15 +412,18 @@ pub(crate) async fn get_status(
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
     let phase_started_at = std::time::Instant::now();
-    let lan_sync = state
-        .lan_sync
-        .snapshot(cfg.listen.port, &cfg, &state.secrets);
+    let lan_sync = current_dashboard_lan_sync_snapshot(
+        cfg.listen.port,
+        &cfg,
+        &state.secrets,
+        &state.lan_sync,
+    );
     phase_timings_ms.insert(
         "lan_sync_snapshot".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
     let phase_started_at = std::time::Instant::now();
-    let tailscale = current_tailscale_snapshot_for_status(cfg.listen.port).await;
+    let tailscale = current_dashboard_tailscale_snapshot(cfg.listen.port);
     phase_timings_ms.insert(
         "tailscale_snapshot".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
