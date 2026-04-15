@@ -7,7 +7,7 @@ description: Standardized commit + push + PR workflow. Use when the user asks to
 
 Applies to this repo's conventions:
 - Do not commit directly to `main`; use a feature branch and a PR.
-- PR/issue titles: English. PR bodies/comments: English by default.
+- PR/issue titles: English. PR bodies/comments: Simplified Chinese by default (unless the request starts with `[EN]`).
 - PR titles must start with one of: `feat:`, `fix:`, `docs:`, `chore:`.
 - PR bodies should follow the repository PR template: `## TL;DR`, `## Before`, `## After`, `## Key architectural changes`, `## Verification`.
 - Line endings policy: repository files must use LF; CRLF is only allowed for `.bat`, `.cmd`, and `.ps1`.
