@@ -174,13 +174,14 @@ fn fallback_tailscale_snapshot(
 fn current_dashboard_tailscale_snapshot(
     listen_port: u16,
 ) -> crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot {
+    let cache = dashboard_tailscale_snapshot_cache();
+    if let Some(snapshot) = cache.snapshot_if_fresh(DASHBOARD_STATUS_SNAPSHOT_CACHE_TTL_MS) {
+        return snapshot;
+    }
     let compute = Arc::new(move || {
         crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(listen_port)
     });
-    dashboard_tailscale_snapshot_cache().read_or_refresh(
-        DASHBOARD_STATUS_SNAPSHOT_CACHE_TTL_MS,
-        compute,
-    )
+    cache.read_or_refresh(DASHBOARD_STATUS_SNAPSHOT_CACHE_TTL_MS, compute)
 }
 
 fn current_dashboard_lan_sync_snapshot(
@@ -189,14 +190,15 @@ fn current_dashboard_lan_sync_snapshot(
     secrets: &crate::orchestrator::secrets::SecretStore,
     lan_sync: &crate::lan_sync::LanSyncRuntime,
 ) -> crate::lan_sync::LanSyncStatusSnapshot {
+    let cache = dashboard_lan_sync_snapshot_cache();
+    if let Some(snapshot) = cache.snapshot_if_fresh(DASHBOARD_STATUS_SNAPSHOT_CACHE_TTL_MS) {
+        return snapshot;
+    }
     let cfg = cfg.clone();
     let secrets = secrets.clone();
     let lan_sync = lan_sync.clone();
     let compute = Arc::new(move || lan_sync.snapshot(listen_port, &cfg, &secrets));
-    dashboard_lan_sync_snapshot_cache().read_or_refresh(
-        DASHBOARD_STATUS_SNAPSHOT_CACHE_TTL_MS,
-        compute,
-    )
+    cache.read_or_refresh(DASHBOARD_STATUS_SNAPSHOT_CACHE_TTL_MS, compute)
 }
 
 pub(crate) fn spawn_dashboard_snapshot_warmup(
@@ -208,9 +210,6 @@ pub(crate) fn spawn_dashboard_snapshot_warmup(
     let lan_sync_cache = Arc::clone(dashboard_lan_sync_snapshot_cache());
     let tailscale_cache = Arc::clone(dashboard_tailscale_snapshot_cache());
     tauri::async_runtime::spawn(async move {
-        let cfg = cfg.clone();
-        let secrets = secrets.clone();
-        let lan_sync = lan_sync.clone();
         let _ = tauri::async_runtime::spawn_blocking(move || {
             let compute = Arc::new(move || lan_sync.snapshot(listen_port, &cfg, &secrets));
             lan_sync_cache.refresh_now(compute)
@@ -288,7 +287,7 @@ fn write_dashboard_status_slow_diag(
 }
 
 #[tauri::command]
-pub(crate) async fn get_status(
+pub(crate) fn get_status(
     state: tauri::State<'_, app_state::AppState>,
     detail_level: Option<String>,
 ) -> Result<serde_json::Value, String> {
