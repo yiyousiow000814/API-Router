@@ -21,6 +21,7 @@ import {
   linkedProvidersForApiKey as resolveLinkedProvidersForApiKey,
 } from "../utils/switchboard";
 import {
+  buildUsageModelFilterDisplayOptions,
   buildUsageModelFilterOptions,
   buildUsageOriginFilterOptions,
   buildUsagePricingGroups,
@@ -54,7 +55,6 @@ type Params = {
   setUsageFilterNodes: Dispatch<SetStateAction<string[]>>;
   usageFilterProviders: string[];
   setUsageFilterProviders: Dispatch<SetStateAction<string[]>>;
-  usageFilterModels: string[];
   usageFilterOrigins: string[];
   setUsageFilterOrigins: Dispatch<SetStateAction<string[]>>;
   usageWindowHours: number;
@@ -206,6 +206,10 @@ export function useDashboardDerivations(params: Params) {
   const usageModelFilterOptions = useMemo(
     () => buildUsageModelFilterOptions(usageCatalogModels),
     [usageCatalogModels],
+  );
+  const usageModelFilterDisplayOptions = useMemo(
+    () => buildUsageModelFilterDisplayOptions(usageModelFilterOptions),
+    [usageModelFilterOptions],
   );
   const usageOriginFilterOptions = useMemo(
     () => buildUsageOriginFilterOptions(usageCatalogOrigins),
@@ -424,6 +428,7 @@ export function useDashboardDerivations(params: Params) {
     usageProviderFilterOptions,
     usageProviderFilterDisplayOptions,
     usageModelFilterOptions,
+    usageModelFilterDisplayOptions,
     usageNodeFilterOptions,
     usageOriginFilterOptions,
     usageProviderDisplayGroups,

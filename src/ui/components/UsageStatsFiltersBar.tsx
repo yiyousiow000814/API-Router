@@ -1,6 +1,8 @@
-import { useMemo, type ReactNode } from "react";
-import type { UsageProviderFilterDisplayOption } from "../utils/usageStatisticsView";
-import { buildUsageModelFilterDisplayOptions } from "../utils/usageStatisticsView";
+import type { Dispatch, ReactNode, SetStateAction } from "react";
+import type {
+  UsageModelFilterDisplayOption,
+  UsageProviderFilterDisplayOption,
+} from "../utils/usageStatisticsView";
 
 type Props = {
   usageWindowHours: number;
@@ -15,8 +17,8 @@ type Props = {
   usageProviderFilterDisplayOptions: UsageProviderFilterDisplayOption[];
   toggleUsageProviderFilterDisplayOption: (providers: string[]) => void;
   usageFilterModels: string[];
-  setUsageFilterModels: (models: string[]) => void;
-  usageModelFilterOptions: string[];
+  setUsageFilterModels: Dispatch<SetStateAction<string[]>>;
+  usageModelFilterDisplayOptions: UsageModelFilterDisplayOption[];
   usageFilterOrigins: string[];
   setUsageFilterOrigins: (origins: string[]) => void;
   usageOriginFilterOptions: string[];
@@ -38,7 +40,7 @@ export function UsageStatsFiltersBar({
   toggleUsageProviderFilterDisplayOption,
   usageFilterModels,
   setUsageFilterModels,
-  usageModelFilterOptions,
+  usageModelFilterDisplayOptions,
   usageFilterOrigins,
   setUsageFilterOrigins,
   usageOriginFilterOptions,
@@ -46,10 +48,6 @@ export function UsageStatsFiltersBar({
   headerExtraAction,
 }: Props) {
   const originOptionsLoaded = usageOriginFilterOptions.length > 0;
-  const usageModelFilterDisplayOptions = useMemo(
-    () => buildUsageModelFilterDisplayOptions(usageModelFilterOptions),
-    [usageModelFilterOptions],
-  );
   return (
     <>
       <div className="aoUsageStatsHeader">
@@ -220,18 +218,13 @@ export function UsageStatsFiltersBar({
                   className={`aoUsageFilterChip${allSelected ? " is-active" : ""}`}
                   disabled={usageStatisticsLoading}
                   onClick={() => {
-                    const next = allSelected
-                      ? usageModelFilterOptions.filter(
-                          (modelName) =>
-                            usageFilterModels.includes(modelName) &&
-                            !option.models.includes(modelName),
-                        )
-                      : usageModelFilterOptions.filter(
-                          (modelName) =>
-                            usageFilterModels.includes(modelName) ||
-                            option.models.includes(modelName),
-                        );
-                    setUsageFilterModels(next);
+                    setUsageFilterModels((prev) =>
+                      allSelected
+                        ? prev.filter(
+                            (modelName) => !option.models.includes(modelName),
+                          )
+                        : [...new Set([...prev, ...option.models])],
+                    );
                   }}
                   title={option.models.join(" · ")}
                 >

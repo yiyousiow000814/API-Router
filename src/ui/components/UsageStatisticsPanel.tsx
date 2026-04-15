@@ -36,6 +36,7 @@ import {
   countUsageModelFilterDisplayOptionsSelected,
   buildUsageProviderFilterDisplayOptions,
   formatUsageModelDisplayName,
+  type UsageModelFilterDisplayOption,
   type UsageProviderFilterDisplayOption,
 } from "../utils/usageStatisticsView";
 
@@ -1554,8 +1555,8 @@ type Props = {
   usageProviderFilterDisplayOptions: UsageProviderFilterDisplayOption[];
   toggleUsageProviderFilterDisplayOption: (providers: string[]) => void;
   usageFilterModels: string[];
-  setUsageFilterModels: (models: string[]) => void;
-  usageModelFilterOptions: string[];
+  setUsageFilterModels: Dispatch<SetStateAction<string[]>>;
+  usageModelFilterDisplayOptions: UsageModelFilterDisplayOption[];
   usageFilterOrigins: string[];
   setUsageFilterOrigins: (origins: string[]) => void;
   usageOriginFilterOptions: string[];
@@ -1635,7 +1636,7 @@ export function UsageStatisticsPanel({
   toggleUsageProviderFilterDisplayOption,
   usageFilterModels,
   setUsageFilterModels,
-  usageModelFilterOptions,
+  usageModelFilterDisplayOptions,
   usageFilterOrigins,
   setUsageFilterOrigins,
   usageOriginFilterOptions,
@@ -4067,10 +4068,6 @@ export function UsageStatisticsPanel({
     () => buildUsageModelFilterDisplayOptions(usageRequestFilterOptions.model),
     [usageRequestFilterOptions.model],
   );
-  const usageModelFilterDisplayOptions = useMemo(
-    () => buildUsageModelFilterDisplayOptions(usageModelFilterOptions),
-    [usageModelFilterOptions],
-  );
   const usageRequestProviderFilterDisplayOptions = useMemo(
     () =>
       buildUsageProviderFilterDisplayOptions(
@@ -4629,7 +4626,7 @@ export function UsageStatisticsPanel({
             }
             usageFilterModels={usageFilterModels}
             setUsageFilterModels={setUsageFilterModels}
-            usageModelFilterOptions={usageModelFilterOptions}
+            usageModelFilterDisplayOptions={usageModelFilterDisplayOptions}
             usageFilterOrigins={usageFilterOrigins}
             setUsageFilterOrigins={setUsageFilterOrigins}
             usageOriginFilterOptions={usageOriginFilterOptions}
