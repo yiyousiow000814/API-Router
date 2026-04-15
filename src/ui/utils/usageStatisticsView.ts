@@ -77,14 +77,13 @@ export function formatUsageModelDisplayName(
 }
 
 export function buildUsageModelFilterDisplayOptions(
-  usageCatalogModels: string[],
+  orderedUsageCatalogModels: string[],
   options?: {
     modelDisplayName?: (model: string) => string;
   },
 ): UsageModelFilterDisplayOption[] {
-  const orderedModels = buildUsageModelFilterOptions(usageCatalogModels);
   const grouped = new Map<string, UsageModelFilterDisplayOption>();
-  orderedModels.forEach((model) => {
+  orderedUsageCatalogModels.forEach((model) => {
     const label =
       options?.modelDisplayName?.(model) ?? formatUsageModelDisplayName(model);
     const key = `model:${label}`;
@@ -113,6 +112,24 @@ export function countUsageModelFilterDisplayOptionsSelected(
       (option.models.every((modelName) => selected.has(modelName)) ? 1 : 0),
     0,
   );
+}
+
+export function isUsageModelFilterDisplayOptionSelected(
+  selectedModels: string[],
+  optionModels: string[],
+): boolean {
+  if (optionModels.length === 0) return false;
+  const selected = new Set(selectedModels);
+  return optionModels.every((modelName) => selected.has(modelName));
+}
+
+export function toggleUsageModelFilterDisplayOptionSelection(
+  selectedModels: string[],
+  optionModels: string[],
+): string[] {
+  return isUsageModelFilterDisplayOptionSelected(selectedModels, optionModels)
+    ? selectedModels.filter((modelName) => !optionModels.includes(modelName))
+    : [...new Set([...selectedModels, ...optionModels])];
 }
 
 export function buildUsageOriginFilterOptions(

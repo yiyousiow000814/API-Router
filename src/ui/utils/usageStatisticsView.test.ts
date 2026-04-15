@@ -3,10 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   countUsageModelFilterDisplayOptionsSelected,
   buildUsageModelFilterDisplayOptions,
+  buildUsageModelFilterOptions,
   buildUsageProviderDisplayGroups,
   buildUsageProviderFilterDisplayOptions,
-  orderUsageProvidersByConfig,
   formatUsageModelDisplayName,
+  isUsageModelFilterDisplayOptionSelected,
+  orderUsageProvidersByConfig,
+  toggleUsageModelFilterDisplayOptionSelection,
 } from "./usageStatisticsView";
 
 function makeRow(provider: string, apiKeyRef: string) {
@@ -135,11 +138,13 @@ describe("formatUsageModelDisplayName", () => {
 
 describe("buildUsageModelFilterDisplayOptions", () => {
   it("merges date-variant models under the same filter option", () => {
-    const options = buildUsageModelFilterDisplayOptions([
-      "gpt-5.4-mini-2026-03-17",
-      "gpt-5.4-mini",
-      "unknown",
-    ]);
+    const options = buildUsageModelFilterDisplayOptions(
+      buildUsageModelFilterOptions([
+        "gpt-5.4-mini-2026-03-17",
+        "gpt-5.4-mini",
+        "unknown",
+      ]),
+    );
 
     expect(options).toHaveLength(2);
     expect(options[0]).toEqual({
@@ -169,6 +174,28 @@ describe("buildUsageModelFilterDisplayOptions", () => {
       ["gpt-5.4"],
       ["gpt-5.4-mini"],
     ]);
+  });
+});
+
+describe("model filter toggle helpers", () => {
+  it("recognizes and toggles whole model groups", () => {
+    const optionModels = [
+      "gpt-5.4-mini",
+      "gpt-5.4-mini-2026-03-17",
+    ];
+
+    expect(
+      isUsageModelFilterDisplayOptionSelected(["gpt-5.4-mini"], optionModels),
+    ).toBe(false);
+    expect(
+      isUsageModelFilterDisplayOptionSelected(optionModels, optionModels),
+    ).toBe(true);
+    expect(
+      toggleUsageModelFilterDisplayOptionSelection(["gpt-5.4-mini"], optionModels),
+    ).toEqual(optionModels);
+    expect(
+      toggleUsageModelFilterDisplayOptionSelection(optionModels, optionModels),
+    ).toEqual([]);
   });
 });
 

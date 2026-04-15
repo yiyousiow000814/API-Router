@@ -3,6 +3,10 @@ import type {
   UsageModelFilterDisplayOption,
   UsageProviderFilterDisplayOption,
 } from "../utils/usageStatisticsView";
+import {
+  isUsageModelFilterDisplayOptionSelected,
+  toggleUsageModelFilterDisplayOptionSelection,
+} from "../utils/usageStatisticsView";
 
 type Props = {
   usageWindowHours: number;
@@ -207,11 +211,10 @@ export function UsageStatsFiltersBar({
               All models
             </button>
             {usageModelFilterDisplayOptions.map((option) => {
-              const allSelected =
-                option.models.length > 0 &&
-                option.models.every((modelName) =>
-                  usageFilterModels.includes(modelName),
-                );
+              const allSelected = isUsageModelFilterDisplayOptionSelected(
+                usageFilterModels,
+                option.models,
+              );
               return (
                 <button
                   key={option.id}
@@ -219,11 +222,10 @@ export function UsageStatsFiltersBar({
                   disabled={usageStatisticsLoading}
                   onClick={() => {
                     setUsageFilterModels((prev) =>
-                      allSelected
-                        ? prev.filter(
-                            (modelName) => !option.models.includes(modelName),
-                          )
-                        : [...new Set([...prev, ...option.models])],
+                      toggleUsageModelFilterDisplayOptionSelection(
+                        prev,
+                        option.models,
+                      ),
                     );
                   }}
                   title={option.models.join(" · ")}
