@@ -7,9 +7,9 @@ description: Standardized commit + push + PR workflow. Use when the user asks to
 
 Applies to this repo's conventions:
 - Do not commit directly to `main`; use a feature branch and a PR.
-- PR/issue titles: English. PR bodies/comments: Simplified Chinese by default (unless the request starts with `[EN]`).
+- PR/issue titles: English. PR bodies/comments: English by default.
 - PR titles must start with one of: `feat:`, `fix:`, `docs:`, `chore:`.
-- PR bodies must include `## What`, `## Why`, `## Changes`, `## Verify`. If the PR is long, add `## TL;DR` at the very top.
+- PR bodies should follow the repository PR template: `## TL;DR`, `## Before`, `## After`, `## Key architectural changes`, `## Verification`.
 - Line endings policy: repository files must use LF; CRLF is only allowed for `.bat`, `.cmd`, and `.ps1`.
 - Avoid GitHub CLI `--body` with escaped newlines; prefer `--body-file` or stdin to prevent literal `\\n`.
 - PowerShell gotcha: backtick (`` ` ``) is an escape character. Avoid putting Markdown inline code (backticks) inside PowerShell double-quoted strings passed to `gh` (it can be swallowed/rewritten). Prefer single quotes, or use `--body-file -` with a here-string.
@@ -89,19 +89,19 @@ gh auth status
 
 @'
 ## TL;DR
-(Only for long PRs; short PRs can omit this section.)
+1-2 sentences only. Keep this section short.
 
-## What
-- ...
+## Before
+- Describe the previous behavior in 1-2 bullets.
 
-## Why
-- ...
+## After
+- Describe the new behavior in 1-2 bullets.
 
-## Changes
-- ...
+## Key architectural changes
+- 1-3 bullets focused on system responsibilities or module boundaries.
 
-## Verify
-- ...
+## Verification
+- List the checks you ran.
 '@ | gh pr create --draft --base main --title "docs: ..." --body-file -
 ```
 
@@ -128,19 +128,19 @@ $payload = @{
   base  = 'main'
   body  = @"
 ## TL;DR
-(Only for long PRs; short PRs can omit this section.)
+1-2 sentences only. Keep this section short.
 
-## What
-- ...
+## Before
+- Describe the previous behavior in 1-2 bullets.
 
-## Why
-- ...
+## After
+- Describe the new behavior in 1-2 bullets.
 
-## Changes
-- ...
+## Key architectural changes
+- 1-3 bullets focused on system responsibilities or module boundaries.
 
-## Verify
-- ...
+## Verification
+- List the checks you ran.
 "@
   draft = $true
 } | ConvertTo-Json
@@ -173,19 +173,19 @@ $payloadObj = @{
   base  = 'main'
   body  = @"
 ## TL;DR
-(Only for long PRs; short PRs can omit this section.)
+1-2 sentences only. Keep this section short.
 
-## What
-- ...
+## Before
+- Describe the previous behavior in 1-2 bullets.
 
-## Why
-- ...
+## After
+- Describe the new behavior in 1-2 bullets.
 
-## Changes
-- ...
+## Key architectural changes
+- 1-3 bullets focused on system responsibilities or module boundaries.
 
-## Verify
-- ...
+## Verification
+- List the checks you ran.
 "@
   draft = $true
 }
