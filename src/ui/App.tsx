@@ -1,8 +1,16 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
-import './App.css'
-import './components/AppShared.css'
-import { recordStartupStage } from './startupTrace'
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { invoke } from "@tauri-apps/api/core";
+import "./App.css";
+import "./components/AppShared.css";
+import { recordStartupStage } from "./startupTrace";
 import type {
   CodexSwapStatus,
   Config,
@@ -10,125 +18,135 @@ import type {
   Status,
   UsageStatistics,
   UsageStatisticsOverview,
-} from './types'
-import { fmtAmount, fmtPct, fmtUsd, pctOf } from './utils/format'
+} from "./types";
+import { fmtAmount, fmtPct, fmtUsd, pctOf } from "./utils/format";
 import {
   fmtKpiTokens as formatKpiTokens,
   fmtPricingSource as formatPricingSource,
   fmtUsdMaybe as formatUsdMaybe,
   fmtUsageBucketLabel as formatUsageBucketLabel,
-} from './utils/usageDisplay'
-import type { SpendHistoryRow } from './devMockData'
+} from "./utils/usageDisplay";
+import type { SpendHistoryRow } from "./devMockData";
 import type {
   ProviderScheduleDraft,
   UsageHistoryDraft,
   UsagePricingDraft,
   UsagePricingSaveState,
   UsageScheduleSaveState,
-} from './types/usage'
+} from "./types/usage";
 import {
   convertCurrencyToUsd,
   currencyLabel,
   normalizeCurrencyCode,
   parsePositiveAmount,
-} from './utils/currency'
-import { AppMainContent, preloadAppMainContentModules } from './components/AppMainContent'
-import { MonitoringPanel } from './components/MonitoringPanel'
-import { AppTopNav } from './components/AppTopNav'
-import { ProviderCapsMenuPortal } from './components/ProviderCapsMenuPortal'
-import { ProviderWsTooltipPortal } from './components/ProviderWsTooltipPortal'
-import type { LastErrorJump } from './components/ProvidersTable'
-import { useConfigDrag } from './hooks/useConfigDrag'
-import { useProviderActions } from './hooks/useProviderActions'
-import { useUsageHistoryScrollbar } from './hooks/useUsageHistoryScrollbar'
-import { useAppPolling } from './hooks/useAppPolling'
-import { useAppPrefs } from './hooks/useAppPrefs'
-import { useRefreshScheduler } from './hooks/useRefreshScheduler'
-import { useSwitchboardStatusActions } from './hooks/useSwitchboardStatusActions'
-import { useStatusDerivations } from './hooks/useStatusDerivations'
-import { usePageScroll } from './hooks/usePageScroll'
-import { useAppUsageEffects } from './hooks/useAppUsageEffects'
-import { buildUsageRefreshRevision } from './hooks/useAppUsageEffects'
-import { buildUsageHistoryQuotaRefreshToken } from './hooks/useAppUsageEffects'
-import { useDashboardDerivations } from './hooks/useDashboardDerivations'
-import { useProviderPanelUi } from './hooks/useProviderPanelUi'
-import { useAppActions } from './hooks/useAppActions'
-import { useUsageOpsBridge } from './hooks/useUsageOpsBridge'
-import { useUsageUiDerived } from './hooks/useUsageUiDerived'
-import { useMainContentCallbacks } from './hooks/useMainContentCallbacks'
-import { useTopNavIntentPrefetch } from './hooks/useTopNavIntentPrefetch'
+} from "./utils/currency";
+import {
+  AppMainContent,
+  preloadAppMainContentModules,
+} from "./components/AppMainContent";
+import { MonitoringPanel } from "./components/MonitoringPanel";
+import { AppTopNav } from "./components/AppTopNav";
+import { ProviderCapsMenuPortal } from "./components/ProviderCapsMenuPortal";
+import { ProviderWsTooltipPortal } from "./components/ProviderWsTooltipPortal";
+import type { LastErrorJump } from "./components/ProvidersTable";
+import { useConfigDrag } from "./hooks/useConfigDrag";
+import { useProviderActions } from "./hooks/useProviderActions";
+import { useUsageHistoryScrollbar } from "./hooks/useUsageHistoryScrollbar";
+import { useAppPolling } from "./hooks/useAppPolling";
+import { useAppPrefs } from "./hooks/useAppPrefs";
+import { useRefreshScheduler } from "./hooks/useRefreshScheduler";
+import { useSwitchboardStatusActions } from "./hooks/useSwitchboardStatusActions";
+import { useStatusDerivations } from "./hooks/useStatusDerivations";
+import { usePageScroll } from "./hooks/usePageScroll";
+import { useAppUsageEffects } from "./hooks/useAppUsageEffects";
+import { buildUsageRefreshRevision } from "./hooks/useAppUsageEffects";
+import { buildUsageHistoryQuotaRefreshToken } from "./hooks/useAppUsageEffects";
+import { useDashboardDerivations } from "./hooks/useDashboardDerivations";
+import { useProviderPanelUi } from "./hooks/useProviderPanelUi";
+import { useAppActions } from "./hooks/useAppActions";
+import { useUsageOpsBridge } from "./hooks/useUsageOpsBridge";
+import { useUsageUiDerived } from "./hooks/useUsageUiDerived";
+import { useMainContentCallbacks } from "./hooks/useMainContentCallbacks";
+import { useTopNavIntentPrefetch } from "./hooks/useTopNavIntentPrefetch";
 import type {
   KeyModalState,
   ProviderBaseUrlModalState,
   ProviderEmailModalState,
   UsageAuthModalState,
   UsageBaseModalState,
-} from './hooks/providerActions/types'
-import {
-  buildCodexSwapBadge,
-  resolveCliHomes,
-} from './utils/switchboard'
-import { usageProviderRowKey } from './utils/usageStatisticsView'
-import { isRemoteUpdateStatusCurrentForPending } from './utils/remoteUpdateStatus'
+} from "./hooks/providerActions/types";
+import { buildCodexSwapBadge, resolveCliHomes } from "./utils/switchboard";
+import { usageProviderRowKey } from "./utils/usageStatisticsView";
+import { isRemoteUpdateStatusCurrentForPending } from "./utils/remoteUpdateStatus";
 import {
   USAGE_REQUESTS_CANONICAL_QUERY_KEY,
   primeUsageRequestsPrefetchCache,
-} from './components/UsageStatisticsPanel'
+} from "./components/UsageStatisticsPanel";
 import {
   buildDevPreviewFollowConfig,
   copyDevPreviewBorrowedProvider,
   getDevPreviewSourceProviders,
   updateDevPreviewPairState,
-} from './utils/devPreviewConfigSource'
-import { lanConfigSourceSyncSignature } from './utils/lanConfigSourceSync'
-import { ensureLanConfigSourceTrust, waitForLanConfigSourceTrust } from './utils/lanPairCompletion'
-import { buildProviderCapsMenuData } from './utils/providerCapsMenu'
+} from "./utils/devPreviewConfigSource";
+import { lanConfigSourceSyncSignature } from "./utils/lanConfigSourceSync";
+import {
+  ensureLanConfigSourceTrust,
+  waitForLanConfigSourceTrust,
+} from "./utils/lanPairCompletion";
+import { buildProviderCapsMenuData } from "./utils/providerCapsMenu";
 
 const AppModals = lazy(async () => {
-  const module = await import('./components/AppModals')
-  return { default: module.AppModals }
-})
+  const module = await import("./components/AppModals");
+  return { default: module.AppModals };
+});
 
 const ProviderGroupManagerModal = lazy(async () => {
-  const module = await import('./components/ProviderGroupManagerModal')
-  return { default: module.ProviderGroupManagerModal }
-})
+  const module = await import("./components/ProviderGroupManagerModal");
+  return { default: module.ProviderGroupManagerModal };
+});
 
 type TopPage =
-  | 'dashboard'
-  | 'usage_statistics'
-  | 'usage_requests'
-  | 'provider_switchboard'
-  | 'event_log'
-  | 'web_codex'
-  | 'monitor'
-const RAW_DRAFT_WINDOWS_KEY = '__draft_windows__'
-const RAW_DRAFT_WSL_KEY = '__draft_wsl2__'
-const RAW_DRAFT_STORAGE_KEY = 'ao.rawConfigDraft.shared.v1'
-const RAW_DRAFT_WINDOWS_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.windows.v1'
-const RAW_DRAFT_WSL_STORAGE_KEY_LEGACY = 'ao.rawConfigDraft.wsl2.v1'
-const USAGE_PROVIDER_SHOW_DETAILS_KEY = 'ao.usage.provider.showDetails.v1'
+  | "dashboard"
+  | "usage_statistics"
+  | "usage_requests"
+  | "provider_switchboard"
+  | "event_log"
+  | "web_codex"
+  | "monitor";
+const RAW_DRAFT_WINDOWS_KEY = "__draft_windows__";
+const RAW_DRAFT_WSL_KEY = "__draft_wsl2__";
+const RAW_DRAFT_STORAGE_KEY = "ao.rawConfigDraft.shared.v1";
+const RAW_DRAFT_WINDOWS_STORAGE_KEY_LEGACY = "ao.rawConfigDraft.windows.v1";
+const RAW_DRAFT_WSL_STORAGE_KEY_LEGACY = "ao.rawConfigDraft.wsl2.v1";
+const USAGE_PROVIDER_SHOW_DETAILS_KEY = "ao.usage.provider.showDetails.v1";
 
 type CopyProviderResult = {
-  target_name: string
-  local_copy_state: 'copied' | 'linked'
-}
+  target_name: string;
+  local_copy_state: "copied" | "linked";
+};
 
-type DevPreviewModule = typeof import('./devMockData')
+type DevPreviewModule = typeof import("./devMockData");
 type LocalNetworkConnectivityPayload = {
-  online: boolean
-}
+  online: boolean;
+};
 
 function parseDevFlag(raw: string | null): boolean {
-  const normalized = String(raw ?? '').trim().toLowerCase()
-  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on'
+  const normalized = String(raw ?? "")
+    .trim()
+    .toLowerCase();
+  return (
+    normalized === "1" ||
+    normalized === "true" ||
+    normalized === "yes" ||
+    normalized === "on"
+  );
 }
 
 function createEmptyDevStatus(): Status {
   return {
-    listen: { host: '127.0.0.1', port: 4000 },
+    listen: { host: "127.0.0.1", port: 4000 },
     local_network_online: true,
-    preferred_provider: '',
+    preferred_provider: "",
     manual_override: null,
     providers: {},
     metrics: {},
@@ -137,14 +155,14 @@ function createEmptyDevStatus(): Status {
     ledgers: {},
     last_activity_unix_ms: 0,
     codex_account: { ok: false, signed_in: false },
-  }
+  };
 }
 
 function createEmptyDevConfig(): Config {
   return {
-    listen: { host: '127.0.0.1', port: 4000 },
+    listen: { host: "127.0.0.1", port: 4000 },
     routing: {
-      preferred_provider: '',
+      preferred_provider: "",
       session_preferred_providers: {},
       auto_return_to_preferred: true,
       preferred_stable_seconds: 30,
@@ -154,162 +172,227 @@ function createEmptyDevConfig(): Config {
     },
     providers: {},
     provider_order: [],
-  }
+  };
 }
 
-recordStartupStage('frontend_app_module_loaded')
+recordStartupStage("frontend_app_module_loaded");
 
 export default function App() {
   useEffect(() => {
-    recordStartupStage('frontend_app_component_mounted')
-  }, [])
+    recordStartupStage("frontend_app_component_mounted");
+  }, []);
   const isDevPreview = useMemo(() => {
-    if (!import.meta.env.DEV) return false
-    if (typeof window === 'undefined') return false
-    const w = window as unknown as { __TAURI__?: { core?: { invoke?: unknown } } }
-    return !Boolean(w.__TAURI__?.core?.invoke)
-  }, [])
+    if (!import.meta.env.DEV) return false;
+    if (typeof window === "undefined") return false;
+    const w = window as unknown as {
+      __TAURI__?: { core?: { invoke?: unknown } };
+    };
+    return !Boolean(w.__TAURI__?.core?.invoke);
+  }, []);
   const devFlags = useMemo(() => {
-    if (typeof window === 'undefined') return new URLSearchParams()
-    return new URLSearchParams(window.location.search)
-  }, [])
-  const [devPreviewModule, setDevPreviewModule] = useState<DevPreviewModule | null>(null)
-  const devMockHistoryEnabled = useMemo(() => parseDevFlag(devFlags.get('mockHistory')), [devFlags])
-  const devAutoOpenHistory = useMemo(() => parseDevFlag(devFlags.get('openHistory')), [devFlags])
-  const rawConfigTestMode = useMemo(() => parseDevFlag(devFlags.get('test')), [devFlags])
-  const devStatus = useMemo(() => devPreviewModule?.devStatus ?? createEmptyDevStatus(), [devPreviewModule])
-  const devConfig = useMemo(() => devPreviewModule?.devConfig ?? createEmptyDevConfig(), [devPreviewModule])
-  const [status, setStatus] = useState<Status | null>(null)
-  const [config, setConfig] = useState<Config | null>(null)
-  const [, setBaselineBaseUrls] = useState<Record<string, string>>({})
-  const [toast, setToast] = useState<string>('')
-  const [override, setOverride] = useState<string>('') // '' => auto
-  const [newProviderName, setNewProviderName] = useState<string>('')
-  const [newProviderBaseUrl, setNewProviderBaseUrl] = useState<string>('')
-  const [newProviderKey, setNewProviderKey] = useState<string>('')
-  const [newProviderKeyStorage, setNewProviderKeyStorage] = useState<'auth_json' | 'config_toml_experimental_bearer_token'>('auth_json')
-  const [providerPanelsOpen, setProviderPanelsOpen] = useState<Record<string, boolean>>({})
+    if (typeof window === "undefined") return new URLSearchParams();
+    return new URLSearchParams(window.location.search);
+  }, []);
+  const [devPreviewModule, setDevPreviewModule] =
+    useState<DevPreviewModule | null>(null);
+  const devMockHistoryEnabled = useMemo(
+    () => parseDevFlag(devFlags.get("mockHistory")),
+    [devFlags],
+  );
+  const devAutoOpenHistory = useMemo(
+    () => parseDevFlag(devFlags.get("openHistory")),
+    [devFlags],
+  );
+  const rawConfigTestMode = useMemo(
+    () => parseDevFlag(devFlags.get("test")),
+    [devFlags],
+  );
+  const devStatus = useMemo(
+    () => devPreviewModule?.devStatus ?? createEmptyDevStatus(),
+    [devPreviewModule],
+  );
+  const devConfig = useMemo(
+    () => devPreviewModule?.devConfig ?? createEmptyDevConfig(),
+    [devPreviewModule],
+  );
+  const [status, setStatus] = useState<Status | null>(null);
+  const [config, setConfig] = useState<Config | null>(null);
+  const [, setBaselineBaseUrls] = useState<Record<string, string>>({});
+  const [toast, setToast] = useState<string>("");
+  const [override, setOverride] = useState<string>(""); // '' => auto
+  const [newProviderName, setNewProviderName] = useState<string>("");
+  const [newProviderBaseUrl, setNewProviderBaseUrl] = useState<string>("");
+  const [newProviderKey, setNewProviderKey] = useState<string>("");
+  const [newProviderKeyStorage, setNewProviderKeyStorage] = useState<
+    "auth_json" | "config_toml_experimental_bearer_token"
+  >("auth_json");
+  const [providerPanelsOpen, setProviderPanelsOpen] = useState<
+    Record<string, boolean>
+  >({});
   const [keyModal, setKeyModal] = useState<KeyModalState>({
     open: false,
-    provider: '',
-    value: '',
-    storage: 'auth_json',
+    provider: "",
+    value: "",
+    storage: "auth_json",
     loading: false,
     loadFailed: false,
-  })
-  const [providerBaseUrlModal, setProviderBaseUrlModal] = useState<ProviderBaseUrlModalState>({
-    open: false,
-    provider: '',
-    value: '',
-  })
+  });
+  const [providerBaseUrlModal, setProviderBaseUrlModal] =
+    useState<ProviderBaseUrlModalState>({
+      open: false,
+      provider: "",
+      value: "",
+    });
   const [usageBaseModal, setUsageBaseModal] = useState<UsageBaseModalState>({
     open: false,
-    provider: '',
-    baseUrl: '',
+    provider: "",
+    baseUrl: "",
     showUrlInput: true,
-    value: '',
+    value: "",
     auto: false,
-    explicitValue: '',
-    effectiveValue: '',
-    token: '',
-    username: '',
-    password: '',
+    explicitValue: "",
+    effectiveValue: "",
+    token: "",
+    username: "",
+    password: "",
     loading: false,
     loadFailed: false,
-  })
+  });
   const [usageAuthModal, setUsageAuthModal] = useState<UsageAuthModalState>({
     open: false,
-    provider: '',
-    baseUrl: '',
-    token: '',
-    username: '',
-    password: '',
+    provider: "",
+    baseUrl: "",
+    token: "",
+    username: "",
+    password: "",
     loading: false,
     loadFailed: false,
-  })
-  const [providerEmailModal, setProviderEmailModal] = useState<ProviderEmailModalState>({
-    open: false,
-    provider: '',
-    value: '',
-  })
-  const overrideDirtyRef = useRef<boolean>(false)
-  const [gatewayTokenPreview, setGatewayTokenPreview] = useState<string>('')
-  const [gatewayTokenReveal, setGatewayTokenReveal] = useState<string>('')
-  const [gatewayModalOpen, setGatewayModalOpen] = useState<boolean>(false)
-  const [configModalOpen, setConfigModalOpen] = useState<boolean>(false)
-  const [rawConfigModalOpen, setRawConfigModalOpen] = useState<boolean>(false)
-  const [rawConfigTexts, setRawConfigTexts] = useState<Record<string, string>>({})
-  const [rawConfigLoadingByHome, setRawConfigLoadingByHome] = useState<Record<string, boolean>>({})
-  const [rawConfigSavingByHome, setRawConfigSavingByHome] = useState<Record<string, boolean>>({})
-  const [rawConfigDirtyByHome, setRawConfigDirtyByHome] = useState<Record<string, boolean>>({})
-  const [rawConfigLoadedByHome, setRawConfigLoadedByHome] = useState<Record<string, boolean>>({})
-  const [rawConfigDraftByHome, setRawConfigDraftByHome] = useState<Record<string, boolean>>({})
-  const [rawConfigHomeOptions, setRawConfigHomeOptions] = useState<string[]>([])
-  const [rawConfigHomeLabels, setRawConfigHomeLabels] = useState<Record<string, string>>({})
-  const [instructionModalOpen, setInstructionModalOpen] = useState<boolean>(false)
-  const [codexSwapModalOpen, setCodexSwapModalOpen] = useState<boolean>(false)
-  const [codexSwapDir1, setCodexSwapDir1] = useState<string>('')
-  const [codexSwapDir2, setCodexSwapDir2] = useState<string>('')
-  const [codexSwapUseWindows, setCodexSwapUseWindows] = useState<boolean>(false)
-  const [codexSwapUseWsl, setCodexSwapUseWsl] = useState<boolean>(false)
-  const [codexSwapTarget, setCodexSwapTarget] = useState<'windows' | 'wsl2' | 'both'>('both')
-  const [codexSwapStatus, setCodexSwapStatus] = useState<CodexSwapStatus | null>(null)
-  const [editingProviderName, setEditingProviderName] = useState<string | null>(null)
-  const [providerNameDrafts, setProviderNameDrafts] = useState<Record<string, string>>({})
-  const [refreshingProviders, setRefreshingProviders] = useState<Record<string, boolean>>({})
-  const [codexRefreshing, setCodexRefreshing] = useState<boolean>(false)
-  const [activePage, setActivePage] = useState<TopPage>('dashboard')
-  const { runPrimaryRefresh, enqueueBackgroundRefresh } = useRefreshScheduler(activePage)
+  });
+  const [providerEmailModal, setProviderEmailModal] =
+    useState<ProviderEmailModalState>({
+      open: false,
+      provider: "",
+      value: "",
+    });
+  const overrideDirtyRef = useRef<boolean>(false);
+  const [gatewayTokenPreview, setGatewayTokenPreview] = useState<string>("");
+  const [gatewayTokenReveal, setGatewayTokenReveal] = useState<string>("");
+  const [gatewayModalOpen, setGatewayModalOpen] = useState<boolean>(false);
+  const [configModalOpen, setConfigModalOpen] = useState<boolean>(false);
+  const [rawConfigModalOpen, setRawConfigModalOpen] = useState<boolean>(false);
+  const [rawConfigTexts, setRawConfigTexts] = useState<Record<string, string>>(
+    {},
+  );
+  const [rawConfigLoadingByHome, setRawConfigLoadingByHome] = useState<
+    Record<string, boolean>
+  >({});
+  const [rawConfigSavingByHome, setRawConfigSavingByHome] = useState<
+    Record<string, boolean>
+  >({});
+  const [rawConfigDirtyByHome, setRawConfigDirtyByHome] = useState<
+    Record<string, boolean>
+  >({});
+  const [rawConfigLoadedByHome, setRawConfigLoadedByHome] = useState<
+    Record<string, boolean>
+  >({});
+  const [rawConfigDraftByHome, setRawConfigDraftByHome] = useState<
+    Record<string, boolean>
+  >({});
+  const [rawConfigHomeOptions, setRawConfigHomeOptions] = useState<string[]>(
+    [],
+  );
+  const [rawConfigHomeLabels, setRawConfigHomeLabels] = useState<
+    Record<string, string>
+  >({});
+  const [instructionModalOpen, setInstructionModalOpen] =
+    useState<boolean>(false);
+  const [codexSwapModalOpen, setCodexSwapModalOpen] = useState<boolean>(false);
+  const [codexSwapDir1, setCodexSwapDir1] = useState<string>("");
+  const [codexSwapDir2, setCodexSwapDir2] = useState<string>("");
+  const [codexSwapUseWindows, setCodexSwapUseWindows] =
+    useState<boolean>(false);
+  const [codexSwapUseWsl, setCodexSwapUseWsl] = useState<boolean>(false);
+  const [codexSwapTarget, setCodexSwapTarget] = useState<
+    "windows" | "wsl2" | "both"
+  >("both");
+  const [codexSwapStatus, setCodexSwapStatus] =
+    useState<CodexSwapStatus | null>(null);
+  const [editingProviderName, setEditingProviderName] = useState<string | null>(
+    null,
+  );
+  const [providerNameDrafts, setProviderNameDrafts] = useState<
+    Record<string, string>
+  >({});
+  const [refreshingProviders, setRefreshingProviders] = useState<
+    Record<string, boolean>
+  >({});
+  const [codexRefreshing, setCodexRefreshing] = useState<boolean>(false);
+  const [activePage, setActivePage] = useState<TopPage>("dashboard");
+  const { runPrimaryRefresh, enqueueBackgroundRefresh } =
+    useRefreshScheduler(activePage);
   const [eventLogFocusRequest, setEventLogFocusRequest] = useState<{
-    provider: string
-    unixMs: number
-    message: string
-    eventId: string | null
-    nonce: number
-  } | null>(null)
-  const [providerSwitchStatus, setProviderSwitchStatus] = useState<ProviderSwitchboardStatus | null>(null)
+    provider: string;
+    unixMs: number;
+    message: string;
+    eventId: string | null;
+    nonce: number;
+  } | null>(null);
+  const [providerSwitchStatus, setProviderSwitchStatus] =
+    useState<ProviderSwitchboardStatus | null>(null);
 
   useEffect(() => {
-    if (isDevPreview || typeof window === 'undefined') return
-    let disposed = false
-    let unlisten: null | (() => void) = null
-    void import('@tauri-apps/api/event')
+    if (isDevPreview || typeof window === "undefined") return;
+    let disposed = false;
+    let unlisten: null | (() => void) = null;
+    void import("@tauri-apps/api/event")
       .then(({ listen }) =>
-        listen<LocalNetworkConnectivityPayload>('local-network-connectivity-changed', (event) => {
-          setStatus((prev) => {
-            if (!prev) return prev
-            if (prev.local_network_online === event.payload.online) return prev
-            return {
-              ...prev,
-              local_network_online: event.payload.online,
-            }
-          })
-        }),
+        listen<LocalNetworkConnectivityPayload>(
+          "local-network-connectivity-changed",
+          (event) => {
+            setStatus((prev) => {
+              if (!prev) return prev;
+              if (prev.local_network_online === event.payload.online)
+                return prev;
+              return {
+                ...prev,
+                local_network_online: event.payload.online,
+              };
+            });
+          },
+        ),
       )
       .then((cleanup) => {
         if (disposed) {
-          cleanup()
-          return
+          cleanup();
+          return;
         }
-        unlisten = cleanup
+        unlisten = cleanup;
       })
-      .catch(() => {})
+      .catch(() => {});
     return () => {
-      disposed = true
+      disposed = true;
       if (unlisten) {
-        unlisten()
+        unlisten();
       }
-    }
-  }, [isDevPreview])
-  const [providerGroupManagerOpen, setProviderGroupManagerOpen] = useState<boolean>(false)
-  const [providerGroupManagerFocusProvider, setProviderGroupManagerFocusProvider] = useState<string | null>(null)
-  const [usageOverview, setUsageOverview] = useState<UsageStatisticsOverview | null>(null)
-  const [usageStatistics, setUsageStatistics] = useState<UsageStatistics | null>(null)
-  const [usageWindowHours, setUsageWindowHours] = useState<number>(24)
-  const [usageFilterNodes, setUsageFilterNodes] = useState<string[]>([])
-  const [usageFilterProviders, setUsageFilterProviders] = useState<string[]>([])
-  const [usageFilterModels, setUsageFilterModels] = useState<string[]>([])
-  const [usageFilterOrigins, setUsageFilterOrigins] = useState<string[]>([])
+    };
+  }, [isDevPreview]);
+  const [providerGroupManagerOpen, setProviderGroupManagerOpen] =
+    useState<boolean>(false);
+  const [
+    providerGroupManagerFocusProvider,
+    setProviderGroupManagerFocusProvider,
+  ] = useState<string | null>(null);
+  const [usageOverview, setUsageOverview] =
+    useState<UsageStatisticsOverview | null>(null);
+  const [usageStatistics, setUsageStatistics] =
+    useState<UsageStatistics | null>(null);
+  const [usageWindowHours, setUsageWindowHours] = useState<number>(24);
+  const [usageFilterNodes, setUsageFilterNodes] = useState<string[]>([]);
+  const [usageFilterProviders, setUsageFilterProviders] = useState<string[]>(
+    [],
+  );
+  const [usageFilterModels, setUsageFilterModels] = useState<string[]>([]);
+  const [usageFilterOrigins, setUsageFilterOrigins] = useState<string[]>([]);
   const usageRefreshRevision = useMemo(
     () =>
       buildUsageRefreshRevision({
@@ -326,57 +409,90 @@ export default function App() {
       usageFilterModels,
       usageFilterOrigins,
     ],
-  )
-  const [usageStatisticsLoading, setUsageStatisticsLoading] = useState<boolean>(false)
-  const [usagePricingModalOpen, setUsagePricingModalOpen] = useState<boolean>(false)
-  const [usagePricingDrafts, setUsagePricingDrafts] = useState<Record<string, UsagePricingDraft>>({})
-  const [usagePricingSaveState, setUsagePricingSaveState] = useState<Record<string, UsagePricingSaveState>>({})
-  const [usageScheduleModalOpen, setUsageScheduleModalOpen] = useState<boolean>(false)
-  const [usageScheduleProvider, setUsageScheduleProvider] = useState<string>('')
-  const [usageScheduleRows, setUsageScheduleRows] = useState<ProviderScheduleDraft[]>([])
-  const [usageScheduleLoading, setUsageScheduleLoading] = useState<boolean>(false)
-  const [usageScheduleSaving, setUsageScheduleSaving] = useState<boolean>(false)
-  const [usageScheduleSaveState, setUsageScheduleSaveState] = useState<UsageScheduleSaveState>('idle')
-  const [usageScheduleSaveError, setUsageScheduleSaveError] = useState<string>('')
-  const [usageHistoryModalOpen, setUsageHistoryModalOpen] = useState<boolean>(false)
-  const [usageHistoryRows, setUsageHistoryRows] = useState<SpendHistoryRow[]>([])
-  const [usageHistoryDrafts, setUsageHistoryDrafts] = useState<Record<string, UsageHistoryDraft>>({})
-  const [usageHistoryEditCell, setUsageHistoryEditCell] = useState<string | null>(null)
-  const [usageHistoryLoading, setUsageHistoryLoading] = useState<boolean>(false)
-  const [usageProviderShowDetails, setUsageProviderShowDetails] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return true
-    return window.localStorage.getItem(USAGE_PROVIDER_SHOW_DETAILS_KEY) !== '0'
-  })
+  );
+  const [usageStatisticsLoading, setUsageStatisticsLoading] =
+    useState<boolean>(false);
+  const [usagePricingModalOpen, setUsagePricingModalOpen] =
+    useState<boolean>(false);
+  const [usagePricingDrafts, setUsagePricingDrafts] = useState<
+    Record<string, UsagePricingDraft>
+  >({});
+  const [usagePricingSaveState, setUsagePricingSaveState] = useState<
+    Record<string, UsagePricingSaveState>
+  >({});
+  const [usageScheduleModalOpen, setUsageScheduleModalOpen] =
+    useState<boolean>(false);
+  const [usageScheduleProvider, setUsageScheduleProvider] =
+    useState<string>("");
+  const [usageScheduleRows, setUsageScheduleRows] = useState<
+    ProviderScheduleDraft[]
+  >([]);
+  const [usageScheduleLoading, setUsageScheduleLoading] =
+    useState<boolean>(false);
+  const [usageScheduleSaving, setUsageScheduleSaving] =
+    useState<boolean>(false);
+  const [usageScheduleSaveState, setUsageScheduleSaveState] =
+    useState<UsageScheduleSaveState>("idle");
+  const [usageScheduleSaveError, setUsageScheduleSaveError] =
+    useState<string>("");
+  const [usageHistoryModalOpen, setUsageHistoryModalOpen] =
+    useState<boolean>(false);
+  const [usageHistoryRows, setUsageHistoryRows] = useState<SpendHistoryRow[]>(
+    [],
+  );
+  const [usageHistoryDrafts, setUsageHistoryDrafts] = useState<
+    Record<string, UsageHistoryDraft>
+  >({});
+  const [usageHistoryEditCell, setUsageHistoryEditCell] = useState<
+    string | null
+  >(null);
+  const [usageHistoryLoading, setUsageHistoryLoading] =
+    useState<boolean>(false);
+  const [usageProviderShowDetails, setUsageProviderShowDetails] =
+    useState<boolean>(() => {
+      if (typeof window === "undefined") return true;
+      return (
+        window.localStorage.getItem(USAGE_PROVIDER_SHOW_DETAILS_KEY) !== "0"
+      );
+    });
   const [usagePricingCurrencyMenu, setUsagePricingCurrencyMenu] = useState<{
-    provider: string
-    providers: string[]
-    left: number
-    top: number
-    width: number
-  } | null>(null)
-  const [usagePricingCurrencyQuery, setUsagePricingCurrencyQuery] = useState<string>('')
+    provider: string;
+    providers: string[];
+    left: number;
+    top: number;
+    width: number;
+  } | null>(null);
+  const [usagePricingCurrencyQuery, setUsagePricingCurrencyQuery] =
+    useState<string>("");
   const [usageScheduleCurrencyMenu, setUsageScheduleCurrencyMenu] = useState<{
-    rowIndex: number
-    left: number
-    top: number
-    width: number
-  } | null>(null)
-  const [usageScheduleCurrencyQuery, setUsageScheduleCurrencyQuery] = useState<string>('')
+    rowIndex: number;
+    left: number;
+    top: number;
+    width: number;
+  } | null>(null);
+  const [usageScheduleCurrencyQuery, setUsageScheduleCurrencyQuery] =
+    useState<string>("");
   const openProviderGroupManager = useCallback((provider?: string) => {
-    setProviderGroupManagerFocusProvider(provider?.trim() ? provider.trim() : null)
-    setProviderGroupManagerOpen(true)
-  }, [])
-  const [fxRatesByCurrency, setFxRatesByCurrency] = useState<Record<string, number>>({ USD: 1 })
-  const [fxRatesDate, setFxRatesDate] = useState<string>('')
+    setProviderGroupManagerFocusProvider(
+      provider?.trim() ? provider.trim() : null,
+    );
+    setProviderGroupManagerOpen(true);
+  }, []);
+  const [fxRatesByCurrency, setFxRatesByCurrency] = useState<
+    Record<string, number>
+  >({ USD: 1 });
+  const [fxRatesDate, setFxRatesDate] = useState<string>("");
   const [usageChartHover, setUsageChartHover] = useState<{
-    x: number
-    y: number
-    title: string
-    subtitle: string
-  } | null>(null)
-  const [updatingSessionPref, setUpdatingSessionPref] = useState<Record<string, boolean>>({})
-  const usagePricingDraftsPrimedRef = useRef<boolean>(false)
-  const usageHistoryLoadedRef = useRef<boolean>(false)
+    x: number;
+    y: number;
+    title: string;
+    subtitle: string;
+  } | null>(null);
+  const [updatingSessionPref, setUpdatingSessionPref] = useState<
+    Record<string, boolean>
+  >({});
+  const usagePricingDraftsPrimedRef = useRef<boolean>(false);
+  const usageHistoryLoadedRef = useRef<boolean>(false);
   const {
     usageHistoryTableSurfaceRef,
     usageHistoryTableWrapRef,
@@ -391,155 +507,188 @@ export default function App() {
     onUsageHistoryScrollbarLostPointerCapture,
     resetUsageHistoryScrollbarState,
     clearUsageHistoryScrollbarTimers,
-  } = useUsageHistoryScrollbar()
-  const codexSwapDir1Ref = useRef<string>('')
-  const codexSwapDir2Ref = useRef<string>('')
-  const codexSwapUseWindowsRef = useRef<boolean>(false)
-  const codexSwapUseWslRef = useRef<boolean>(false)
-  const swapPrefsLoadedRef = useRef<boolean>(false)
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const contentRef = useRef<HTMLDivElement | null>(null)
-  const mainAreaRef = useRef<HTMLDivElement | null>(null)
-  const usagePricingCurrencyMenuRef = useRef<HTMLDivElement | null>(null)
-  const usageScheduleCurrencyMenuRef = useRef<HTMLDivElement | null>(null)
-  const autoSaveTimersRef = useRef<Record<string, number>>({})
-  const usagePricingLastSavedSigRef = useRef<Record<string, string>>({})
-  const usageScheduleLastSavedSigRef = useRef<string>('')
-  const usageScheduleLastSavedByProviderRef = useRef<Record<string, string>>({})
-  const toastTimerRef = useRef<number | null>(null)
-  const rawConfigTestFailOnceRef = useRef<Record<string, boolean>>({})
-  const devPreviewLocalConfigRef = useRef<Config | null>(null)
-  const devPreviewFollowSourceProvidersRef = useRef<Config['providers'] | null>(null)
-  const rawConfigTextsRef = useRef<Record<string, string>>({})
-  const rawConfigDraftAutoSaveTimerRef = useRef<Record<string, number>>({})
-  const lastLanConfigSyncSignatureRef = useRef<string>('')
-  const pairCompletionWatchSeqRef = useRef(0)
+  } = useUsageHistoryScrollbar();
+  const codexSwapDir1Ref = useRef<string>("");
+  const codexSwapDir2Ref = useRef<string>("");
+  const codexSwapUseWindowsRef = useRef<boolean>(false);
+  const codexSwapUseWslRef = useRef<boolean>(false);
+  const swapPrefsLoadedRef = useRef<boolean>(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const mainAreaRef = useRef<HTMLDivElement | null>(null);
+  const usagePricingCurrencyMenuRef = useRef<HTMLDivElement | null>(null);
+  const usageScheduleCurrencyMenuRef = useRef<HTMLDivElement | null>(null);
+  const autoSaveTimersRef = useRef<Record<string, number>>({});
+  const usagePricingLastSavedSigRef = useRef<Record<string, string>>({});
+  const usageScheduleLastSavedSigRef = useRef<string>("");
+  const usageScheduleLastSavedByProviderRef = useRef<Record<string, string>>(
+    {},
+  );
+  const toastTimerRef = useRef<number | null>(null);
+  const rawConfigTestFailOnceRef = useRef<Record<string, boolean>>({});
+  const devPreviewLocalConfigRef = useRef<Config | null>(null);
+  const devPreviewFollowSourceProvidersRef = useRef<Config["providers"] | null>(
+    null,
+  );
+  const rawConfigTextsRef = useRef<Record<string, string>>({});
+  const rawConfigDraftAutoSaveTimerRef = useRef<Record<string, number>>({});
+  const lastLanConfigSyncSignatureRef = useRef<string>("");
+  const pairCompletionWatchSeqRef = useRef(0);
   const setRawConfigTextsSync = (
-    updater: Record<string, string> | ((prev: Record<string, string>) => Record<string, string>),
+    updater:
+      | Record<string, string>
+      | ((prev: Record<string, string>) => Record<string, string>),
   ) => {
     setRawConfigTexts((prev) => {
-      const next = typeof updater === 'function' ? (updater as (p: Record<string, string>) => Record<string, string>)(prev) : updater
-      rawConfigTextsRef.current = next
-      return next
-    })
-  }
-  const { switchPage } = usePageScroll({ containerRef, mainAreaRef, activePage, setActivePage: (next) => setActivePage(next as TopPage) })
-  const handleOpenLastErrorInEventLog = useCallback((payload: LastErrorJump) => {
-    const nonce = Date.now()
-    setEventLogFocusRequest({
-      provider: payload.provider,
-      unixMs: payload.unixMs,
-      message: payload.message,
-      eventId: payload.eventId ?? null,
-      nonce,
-    })
-    switchPage('event_log')
-  }, [switchPage])
+      const next =
+        typeof updater === "function"
+          ? (updater as (p: Record<string, string>) => Record<string, string>)(
+              prev,
+            )
+          : updater;
+      rawConfigTextsRef.current = next;
+      return next;
+    });
+  };
+  const { switchPage } = usePageScroll({
+    containerRef,
+    mainAreaRef,
+    activePage,
+    setActivePage: (next) => setActivePage(next as TopPage),
+  });
+  const handleOpenLastErrorInEventLog = useCallback(
+    (payload: LastErrorJump) => {
+      const nonce = Date.now();
+      setEventLogFocusRequest({
+        provider: payload.provider,
+        unixMs: payload.unixMs,
+        message: payload.message,
+        eventId: payload.eventId ?? null,
+        nonce,
+      });
+      switchPage("event_log");
+    },
+    [switchPage],
+  );
   const handleEventLogFocusRequestHandled = (nonce: number) => {
     setEventLogFocusRequest((current) => {
-      if (!current) return current
-      return current.nonce === nonce ? null : current
-    })
-  }
-  const eventLogSeedEvents = useMemo(() => status?.recent_events ?? [], [status?.recent_events])
+      if (!current) return current;
+      return current.nonce === nonce ? null : current;
+    });
+  };
+  const eventLogSeedEvents = useMemo(
+    () => status?.recent_events ?? [],
+    [status?.recent_events],
+  );
   useEffect(() => {
-    if (typeof window === 'undefined') return
+    if (typeof window === "undefined") return;
     const w = window as Window & {
-        __ui_check__?: {
-          jumpToEventLogError?: ((payload?: { provider: string; unixMs: number; message: string; eventId?: string | null }) => boolean) | undefined
-        primeRequestsPrefetchCache?: ((payload: {
-          rows: Array<{
-            id: string
-            provider: string
-            api_key_ref: string
-            model: string
-            origin: string
-            session_id: string
-            unix_ms: number
-            node_id: string
-            node_name: string
-            input_tokens: number
-            output_tokens: number
-            total_tokens: number
-            cache_creation_input_tokens: number
-            cache_read_input_tokens: number
-          }>
-          hasMore?: boolean
-          dailyTotals?: {
-            days: Array<{
-              day_start_unix_ms: number
-              provider_totals: Record<string, number>
-              total_tokens: number
-            }>
-            providers: Array<{
-              provider: string
-              total_tokens: number
-            }>
-          }
-        }) => void) | undefined
-      }
-    }
-    const prev = w.__ui_check__?.jumpToEventLogError
-    const prevPrime = w.__ui_check__?.primeRequestsPrefetchCache
-    const next = w.__ui_check__ ?? {}
+      __ui_check__?: {
+        jumpToEventLogError?:
+          | ((payload?: {
+              provider: string;
+              unixMs: number;
+              message: string;
+              eventId?: string | null;
+            }) => boolean)
+          | undefined;
+        primeRequestsPrefetchCache?:
+          | ((payload: {
+              rows: Array<{
+                id: string;
+                provider: string;
+                api_key_ref: string;
+                model: string;
+                origin: string;
+                session_id: string;
+                unix_ms: number;
+                node_id: string;
+                node_name: string;
+                input_tokens: number;
+                output_tokens: number;
+                total_tokens: number;
+                cache_creation_input_tokens: number;
+                cache_read_input_tokens: number;
+              }>;
+              hasMore?: boolean;
+              dailyTotals?: {
+                days: Array<{
+                  day_start_unix_ms: number;
+                  provider_totals: Record<string, number>;
+                  total_tokens: number;
+                }>;
+                providers: Array<{
+                  provider: string;
+                  total_tokens: number;
+                }>;
+              };
+            }) => void)
+          | undefined;
+      };
+    };
+    const prev = w.__ui_check__?.jumpToEventLogError;
+    const prevPrime = w.__ui_check__?.primeRequestsPrefetchCache;
+    const next = w.__ui_check__ ?? {};
     next.jumpToEventLogError = (payload) => {
-      const candidate =
-        payload
-          ? {
-              provider: payload.provider,
-              id: payload.eventId ?? undefined,
-              unix_ms: payload.unixMs,
-              message: payload.message,
-            }
-          : eventLogSeedEvents.find((row) => row.level === 'error')
-      if (!candidate) return false
+      const candidate = payload
+        ? {
+            provider: payload.provider,
+            id: payload.eventId ?? undefined,
+            unix_ms: payload.unixMs,
+            message: payload.message,
+          }
+        : eventLogSeedEvents.find((row) => row.level === "error");
+      if (!candidate) return false;
       handleOpenLastErrorInEventLog({
         provider: candidate.provider,
         unixMs: candidate.unix_ms,
         message: candidate.message,
         eventId: candidate.id ?? null,
-      })
-      return true
-    }
+      });
+      return true;
+    };
     next.primeRequestsPrefetchCache = (payload) => {
       primeUsageRequestsPrefetchCache({
         queryKey: USAGE_REQUESTS_CANONICAL_QUERY_KEY,
         rows: payload?.rows ?? [],
         hasMore: Boolean(payload?.hasMore),
         dailyTotals: payload?.dailyTotals ?? null,
-      })
-    }
-    w.__ui_check__ = next
+      });
+    };
+    w.__ui_check__ = next;
     return () => {
-      if (!w.__ui_check__) return
-      if (prev) w.__ui_check__.jumpToEventLogError = prev
-      else delete w.__ui_check__.jumpToEventLogError
-      if (prevPrime) w.__ui_check__.primeRequestsPrefetchCache = prevPrime
-      else delete w.__ui_check__.primeRequestsPrefetchCache
-    }
-  }, [eventLogSeedEvents, handleOpenLastErrorInEventLog])
+      if (!w.__ui_check__) return;
+      if (prev) w.__ui_check__.jumpToEventLogError = prev;
+      else delete w.__ui_check__.jumpToEventLogError;
+      if (prevPrime) w.__ui_check__.primeRequestsPrefetchCache = prevPrime;
+      else delete w.__ui_check__.primeRequestsPrefetchCache;
+    };
+  }, [eventLogSeedEvents, handleOpenLastErrorInEventLog]);
   useEffect(() => {
-    if (!isDevPreview) return
-    let cancelled = false
-    void import('./devMockData').then((module) => {
-      if (cancelled) return
-      setDevPreviewModule(module)
-      setStatus(module.devStatus)
-      setConfig(module.devConfig)
+    if (!isDevPreview) return;
+    let cancelled = false;
+    void import("./devMockData").then((module) => {
+      if (cancelled) return;
+      setDevPreviewModule(module);
+      setStatus(module.devStatus);
+      setConfig(module.devConfig);
       setBaselineBaseUrls(
         Object.fromEntries(
-          Object.entries(module.devConfig.providers).map(([name, provider]) => [name, provider.base_url]),
+          Object.entries(module.devConfig.providers).map(([name, provider]) => [
+            name,
+            provider.base_url,
+          ]),
         ),
-      )
-      setGatewayTokenPreview('ao_dev********7f2a')
-    })
+      );
+      setGatewayTokenPreview("ao_dev********7f2a");
+    });
     return () => {
-      cancelled = true
-    }
-  }, [isDevPreview])
+      cancelled = true;
+    };
+  }, [isDevPreview]);
   useEffect(() => {
-    rawConfigTextsRef.current = rawConfigTexts
-  }, [rawConfigTexts])
+    rawConfigTextsRef.current = rawConfigTexts;
+  }, [rawConfigTexts]);
   useAppPrefs({
     isDevPreview,
     devAutoOpenHistory,
@@ -560,116 +709,124 @@ export default function App() {
     codexSwapUseWindowsRef,
     codexSwapUseWslRef,
     swapPrefsLoadedRef,
-  })
+  });
   useEffect(() => {
-    if (typeof window === 'undefined') return
-    const raw = window.localStorage.getItem('ao.codexSwap.target')
-    if (raw === 'windows' || raw === 'wsl2' || raw === 'both') {
-      setCodexSwapTarget(raw)
+    if (typeof window === "undefined") return;
+    const raw = window.localStorage.getItem("ao.codexSwap.target");
+    if (raw === "windows" || raw === "wsl2" || raw === "both") {
+      setCodexSwapTarget(raw);
     }
-  }, [])
+  }, []);
   useEffect(() => {
-    if (typeof window === 'undefined') return
-    window.localStorage.setItem('ao.codexSwap.target', codexSwapTarget)
-  }, [codexSwapTarget])
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("ao.codexSwap.target", codexSwapTarget);
+  }, [codexSwapTarget]);
   useEffect(() => {
-    if (codexSwapUseWindows && codexSwapUseWsl) return
-    if (codexSwapUseWindows && codexSwapTarget !== 'windows') {
-      setCodexSwapTarget('windows')
-      return
+    if (codexSwapUseWindows && codexSwapUseWsl) return;
+    if (codexSwapUseWindows && codexSwapTarget !== "windows") {
+      setCodexSwapTarget("windows");
+      return;
     }
-    if (codexSwapUseWsl && codexSwapTarget !== 'wsl2') {
-      setCodexSwapTarget('wsl2')
-      return
+    if (codexSwapUseWsl && codexSwapTarget !== "wsl2") {
+      setCodexSwapTarget("wsl2");
+      return;
     }
-  }, [codexSwapUseWindows, codexSwapUseWsl, codexSwapTarget])
+  }, [codexSwapUseWindows, codexSwapUseWsl, codexSwapTarget]);
   const { providers, clientSessions } = useStatusDerivations({
     status,
     config,
-  })
-  const flashToast = useCallback((msg: string, kind: 'info' | 'error' = 'info') => {
-    setToast(msg)
-    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current)
-    const ms = kind === 'error' ? 5200 : 2400
-    toastTimerRef.current = window.setTimeout(() => setToast(''), ms)
-  }, [])
+  });
+  const flashToast = useCallback(
+    (msg: string, kind: "info" | "error" = "info") => {
+      setToast(msg);
+      if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+      const ms = kind === "error" ? 5200 : 2400;
+      toastTimerRef.current = window.setTimeout(() => setToast(""), ms);
+    },
+    [],
+  );
 
   function draftStorageKeyForHome(home: string): string | null {
-    if (home === RAW_DRAFT_WINDOWS_KEY || home === RAW_DRAFT_WSL_KEY) return RAW_DRAFT_STORAGE_KEY
-    return null
+    if (home === RAW_DRAFT_WINDOWS_KEY || home === RAW_DRAFT_WSL_KEY)
+      return RAW_DRAFT_STORAGE_KEY;
+    return null;
   }
 
   function readDraftFromStorage(home: string): string {
-    if (typeof window === 'undefined') return ''
-    const key = draftStorageKeyForHome(home)
-    if (!key) return ''
+    if (typeof window === "undefined") return "";
+    const key = draftStorageKeyForHome(home);
+    if (!key) return "";
     try {
-      const current = window.localStorage.getItem(key)
-      if (current != null) return current
+      const current = window.localStorage.getItem(key);
+      if (current != null) return current;
       // one-time legacy fallback: prefer non-empty value if it exists
-      const legacyWindows = window.localStorage.getItem(RAW_DRAFT_WINDOWS_STORAGE_KEY_LEGACY) ?? ''
-      const legacyWsl = window.localStorage.getItem(RAW_DRAFT_WSL_STORAGE_KEY_LEGACY) ?? ''
-      const migrated = legacyWindows || legacyWsl
+      const legacyWindows =
+        window.localStorage.getItem(RAW_DRAFT_WINDOWS_STORAGE_KEY_LEGACY) ?? "";
+      const legacyWsl =
+        window.localStorage.getItem(RAW_DRAFT_WSL_STORAGE_KEY_LEGACY) ?? "";
+      const migrated = legacyWindows || legacyWsl;
       if (migrated) {
-        window.localStorage.setItem(key, migrated)
+        window.localStorage.setItem(key, migrated);
       }
-      return migrated
+      return migrated;
     } catch {
-      return ''
+      return "";
     }
   }
 
   function writeDraftToStorage(home: string, text: string): void {
-    if (typeof window === 'undefined') return
-    const key = draftStorageKeyForHome(home)
-    if (!key) return
+    if (typeof window === "undefined") return;
+    const key = draftStorageKeyForHome(home);
+    if (!key) return;
     try {
-      window.localStorage.setItem(key, text)
+      window.localStorage.setItem(key, text);
     } catch {
       // ignore storage write failures
     }
   }
 
   async function loadRawConfigHome(home: string) {
-    const target = home.trim()
-    if (!target) return
-    setRawConfigLoadingByHome((prev) => ({ ...prev, [target]: true }))
+    const target = home.trim();
+    if (!target) return;
+    setRawConfigLoadingByHome((prev) => ({ ...prev, [target]: true }));
     try {
       if (rawConfigTestMode || isDevPreview) {
-        const lower = target.toLowerCase()
-        const shouldFailOnce = (lower.includes('\\wsl.localhost\\') || lower.includes('\\wsl$\\')) && !rawConfigTestFailOnceRef.current[target]
+        const lower = target.toLowerCase();
+        const shouldFailOnce =
+          (lower.includes("\\wsl.localhost\\") || lower.includes("\\wsl$\\")) &&
+          !rawConfigTestFailOnceRef.current[target];
         if (shouldFailOnce) {
-          rawConfigTestFailOnceRef.current[target] = true
-          setRawConfigTextsSync((prev) => ({ ...prev, [target]: '' }))
-          setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
-          setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: false }))
-          flashToast('[TEST] Simulated load failure for WSL2 target.', 'error')
-          return
+          rawConfigTestFailOnceRef.current[target] = true;
+          setRawConfigTextsSync((prev) => ({ ...prev, [target]: "" }));
+          setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }));
+          setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: false }));
+          flashToast("[TEST] Simulated load failure for WSL2 target.", "error");
+          return;
         }
         const mockToml = Array.from({ length: 64 }, (_, idx) => {
-          const n = String(idx + 1).padStart(2, '0')
-          return `# [TEST] sample line ${n}\nmodel_provider = "api_router"\n`
-        }).join('\n')
+          const n = String(idx + 1).padStart(2, "0");
+          return `# [TEST] sample line ${n}\nmodel_provider = "api_router"\n`;
+        }).join("\n");
         setRawConfigTextsSync((prev) => ({
           ...prev,
           [target]: prev[target] || mockToml,
-        }))
-        setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
-        setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: true }))
-        return
+        }));
+        setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }));
+        setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: true }));
+        return;
       }
-      const txt = await invoke<string>('get_codex_cli_config_toml', {
+      const txt = await invoke<string>("get_codex_cli_config_toml", {
         cliHome: target,
-      })
-      setRawConfigTextsSync((prev) => ({ ...prev, [target]: txt }))
-      setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
-      setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: true }))
+      });
+      setRawConfigTextsSync((prev) => ({ ...prev, [target]: txt }));
+      setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }));
+      setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: true }));
     } catch (e) {
-      setRawConfigTextsSync((prev) => ({ ...prev, [target]: '' }))
-      setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: false }))
-      flashToast(String(e), 'error')
+      setRawConfigTextsSync((prev) => ({ ...prev, [target]: "" }));
+      setRawConfigLoadedByHome((prev) => ({ ...prev, [target]: false }));
+      flashToast(String(e), "error");
     } finally {
-      setRawConfigLoadingByHome((prev) => ({ ...prev, [target]: false }))
+      setRawConfigLoadingByHome((prev) => ({ ...prev, [target]: false }));
     }
   }
 
@@ -679,133 +836,164 @@ export default function App() {
     wslEnabled: boolean,
     wslHome: string,
   ): {
-    homeOptions: string[]
-    draftByHome: Record<string, boolean>
-    labels: Record<string, string>
+    homeOptions: string[];
+    draftByHome: Record<string, boolean>;
+    labels: Record<string, string>;
   } {
-    const windowsPane = windowsEnabled && windowsHome ? windowsHome : RAW_DRAFT_WINDOWS_KEY
-    const wslPane = wslEnabled && wslHome ? wslHome : RAW_DRAFT_WSL_KEY
-    const windowsIsDraft = windowsPane === RAW_DRAFT_WINDOWS_KEY
-    const wslIsDraft = wslPane === RAW_DRAFT_WSL_KEY
+    const windowsPane =
+      windowsEnabled && windowsHome ? windowsHome : RAW_DRAFT_WINDOWS_KEY;
+    const wslPane = wslEnabled && wslHome ? wslHome : RAW_DRAFT_WSL_KEY;
+    const windowsIsDraft = windowsPane === RAW_DRAFT_WINDOWS_KEY;
+    const wslIsDraft = wslPane === RAW_DRAFT_WSL_KEY;
 
-    let homeOptions: string[]
+    let homeOptions: string[];
     if (!windowsIsDraft && !wslIsDraft) {
-      homeOptions = [windowsPane, wslPane]
+      homeOptions = [windowsPane, wslPane];
     } else if (!windowsIsDraft && wslIsDraft) {
-      homeOptions = [windowsPane, wslPane]
+      homeOptions = [windowsPane, wslPane];
     } else if (windowsIsDraft && !wslIsDraft) {
-      homeOptions = [wslPane, windowsPane]
+      homeOptions = [wslPane, windowsPane];
     } else {
-      homeOptions = [windowsPane, wslPane]
+      homeOptions = [windowsPane, wslPane];
     }
 
     const draftByHome: Record<string, boolean> = {
       [windowsPane]: windowsIsDraft,
       [wslPane]: wslIsDraft,
-    }
+    };
     const labels: Record<string, string> = {
       [windowsPane]: windowsIsDraft
-        ? 'Draft: local scratchpad (not written to file)'
+        ? "Draft: local scratchpad (not written to file)"
         : `Windows: ${windowsPane}`,
       [wslPane]: wslIsDraft
-        ? 'Draft: local scratchpad (not written to file)'
+        ? "Draft: local scratchpad (not written to file)"
         : `WSL2: ${wslPane}`,
-    }
-    return { homeOptions, draftByHome, labels }
+    };
+    return { homeOptions, draftByHome, labels };
   }
 
-  async function openRawConfigModal(options?: { reopenGettingStartedOnFail?: boolean }) {
-    const reopenGettingStartedOnFail = Boolean(options?.reopenGettingStartedOnFail)
+  async function openRawConfigModal(options?: {
+    reopenGettingStartedOnFail?: boolean;
+  }) {
+    const reopenGettingStartedOnFail = Boolean(
+      options?.reopenGettingStartedOnFail,
+    );
     if (rawConfigTestMode || isDevPreview) {
-      const mockWindowsHome = 'C:\\Users\\<user>\\.codex'
-      const mockWslHome = '\\\\wsl.localhost\\Ubuntu\\home\\<user>\\.codex'
+      const mockWindowsHome = "C:\\Users\\<user>\\.codex";
+      const mockWslHome = "\\\\wsl.localhost\\Ubuntu\\home\\<user>\\.codex";
       const { homeOptions, draftByHome, labels } = buildRawConfigModalPanes(
         codexSwapUseWindows,
         mockWindowsHome,
         codexSwapUseWsl,
         mockWslHome,
-      )
-      setRawConfigHomeOptions(homeOptions)
-      setRawConfigDraftByHome(draftByHome)
-      setRawConfigHomeLabels(labels)
+      );
+      setRawConfigHomeOptions(homeOptions);
+      setRawConfigDraftByHome(draftByHome);
+      setRawConfigHomeLabels(labels);
       setRawConfigTextsSync(
-        Object.fromEntries(homeOptions.map((home) => [home, draftByHome[home] ? readDraftFromStorage(home) : ''])),
-      )
-      setRawConfigDirtyByHome({})
-      setRawConfigLoadedByHome(Object.fromEntries(homeOptions.map((home) => [home, draftByHome[home]])))
-      setRawConfigSavingByHome({})
-      setRawConfigLoadingByHome({})
-      rawConfigTestFailOnceRef.current = {}
-      setRawConfigModalOpen(true)
-      await Promise.all(homeOptions.filter((home) => !draftByHome[home]).map((home) => loadRawConfigHome(home)))
-      return
+        Object.fromEntries(
+          homeOptions.map((home) => [
+            home,
+            draftByHome[home] ? readDraftFromStorage(home) : "",
+          ]),
+        ),
+      );
+      setRawConfigDirtyByHome({});
+      setRawConfigLoadedByHome(
+        Object.fromEntries(
+          homeOptions.map((home) => [home, draftByHome[home]]),
+        ),
+      );
+      setRawConfigSavingByHome({});
+      setRawConfigLoadingByHome({});
+      rawConfigTestFailOnceRef.current = {};
+      setRawConfigModalOpen(true);
+      await Promise.all(
+        homeOptions
+          .filter((home) => !draftByHome[home])
+          .map((home) => loadRawConfigHome(home)),
+      );
+      return;
     }
     try {
-      const windowsHome = codexSwapDir1.trim()
-      const wslHome = codexSwapDir2.trim()
+      const windowsHome = codexSwapDir1.trim();
+      const wslHome = codexSwapDir2.trim();
       const { homeOptions, draftByHome, labels } = buildRawConfigModalPanes(
         codexSwapUseWindows,
         windowsHome,
         codexSwapUseWsl,
         wslHome,
-      )
-      setRawConfigDraftByHome(draftByHome)
-      setRawConfigHomeOptions(homeOptions)
-      setRawConfigHomeLabels(labels)
+      );
+      setRawConfigDraftByHome(draftByHome);
+      setRawConfigHomeOptions(homeOptions);
+      setRawConfigHomeLabels(labels);
       setRawConfigTextsSync(
-        Object.fromEntries(homeOptions.map((home) => [home, draftByHome[home] ? readDraftFromStorage(home) : ''])),
-      )
-      setRawConfigDirtyByHome({})
-      setRawConfigLoadedByHome(Object.fromEntries(homeOptions.map((home) => [home, Boolean(draftByHome[home])])))
-      setRawConfigSavingByHome({})
-      setRawConfigLoadingByHome({})
-      setRawConfigModalOpen(true)
-      await Promise.all(homeOptions.filter((home) => !draftByHome[home]).map((home) => loadRawConfigHome(home)))
+        Object.fromEntries(
+          homeOptions.map((home) => [
+            home,
+            draftByHome[home] ? readDraftFromStorage(home) : "",
+          ]),
+        ),
+      );
+      setRawConfigDirtyByHome({});
+      setRawConfigLoadedByHome(
+        Object.fromEntries(
+          homeOptions.map((home) => [home, Boolean(draftByHome[home])]),
+        ),
+      );
+      setRawConfigSavingByHome({});
+      setRawConfigLoadingByHome({});
+      setRawConfigModalOpen(true);
+      await Promise.all(
+        homeOptions
+          .filter((home) => !draftByHome[home])
+          .map((home) => loadRawConfigHome(home)),
+      );
     } catch (e) {
-      const msg = String(e)
-      flashToast(msg, 'error')
-      if (reopenGettingStartedOnFail) setInstructionModalOpen(true)
+      const msg = String(e);
+      flashToast(msg, "error");
+      if (reopenGettingStartedOnFail) setInstructionModalOpen(true);
     }
   }
 
   function updateRawConfigText(home: string, next: string) {
-    setRawConfigTextsSync((prev) => ({ ...prev, [home]: next }))
-    setRawConfigDirtyByHome((prev) => ({ ...prev, [home]: true }))
+    setRawConfigTextsSync((prev) => ({ ...prev, [home]: next }));
+    setRawConfigDirtyByHome((prev) => ({ ...prev, [home]: true }));
     if (rawConfigDraftByHome[home]) {
-      setRawConfigSavingByHome((prev) => ({ ...prev, [home]: true }))
+      setRawConfigSavingByHome((prev) => ({ ...prev, [home]: true }));
     }
   }
 
   async function saveRawConfigHome(home: string) {
-    const target = home.trim()
-    if (!target) return
-    if (rawConfigSavingByHome[target]) return
-    if (!rawConfigLoadedByHome[target]) return
+    const target = home.trim();
+    if (!target) return;
+    if (rawConfigSavingByHome[target]) return;
+    if (!rawConfigLoadedByHome[target]) return;
     if (rawConfigDraftByHome[target]) {
-      setRawConfigSavingByHome((prev) => ({ ...prev, [target]: true }))
-      writeDraftToStorage(target, rawConfigTextsRef.current[target] ?? '')
-      setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
-      setRawConfigSavingByHome((prev) => ({ ...prev, [target]: false }))
-      flashToast('Saved draft')
-      return
+      setRawConfigSavingByHome((prev) => ({ ...prev, [target]: true }));
+      writeDraftToStorage(target, rawConfigTextsRef.current[target] ?? "");
+      setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }));
+      setRawConfigSavingByHome((prev) => ({ ...prev, [target]: false }));
+      flashToast("Saved draft");
+      return;
     }
     if (rawConfigTestMode || isDevPreview) {
-      setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
-      flashToast('[TEST] Saved in sandbox only (no real files changed).')
-      return
+      setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }));
+      flashToast("[TEST] Saved in sandbox only (no real files changed).");
+      return;
     }
-    setRawConfigSavingByHome((prev) => ({ ...prev, [target]: true }))
+    setRawConfigSavingByHome((prev) => ({ ...prev, [target]: true }));
     try {
-      await invoke('set_codex_cli_config_toml', {
+      await invoke("set_codex_cli_config_toml", {
         cliHome: target,
-        tomlText: rawConfigTextsRef.current[target] ?? '',
-      })
-      setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }))
-      flashToast(`Saved: ${target}`)
+        tomlText: rawConfigTextsRef.current[target] ?? "",
+      });
+      setRawConfigDirtyByHome((prev) => ({ ...prev, [target]: false }));
+      flashToast(`Saved: ${target}`);
     } catch (e) {
-      flashToast(String(e), 'error')
+      flashToast(String(e), "error");
     } finally {
-      setRawConfigSavingByHome((prev) => ({ ...prev, [target]: false }))
+      setRawConfigSavingByHome((prev) => ({ ...prev, [target]: false }));
     }
   }
   const {
@@ -840,35 +1028,39 @@ export default function App() {
     providerSwitchStatus,
     setProviderSwitchStatus,
     flashToast,
-  })
+  });
 
   useEffect(() => {
-    if (typeof window === 'undefined') return
-    for (const [home, timer] of Object.entries(rawConfigDraftAutoSaveTimerRef.current)) {
+    if (typeof window === "undefined") return;
+    for (const [home, timer] of Object.entries(
+      rawConfigDraftAutoSaveTimerRef.current,
+    )) {
       if (!rawConfigDraftByHome[home] && timer != null) {
-        window.clearTimeout(timer)
-        delete rawConfigDraftAutoSaveTimerRef.current[home]
+        window.clearTimeout(timer);
+        delete rawConfigDraftAutoSaveTimerRef.current[home];
       }
     }
     for (const [home, isDraft] of Object.entries(rawConfigDraftByHome)) {
-      if (!isDraft) continue
-      if (!rawConfigDirtyByHome[home]) continue
-      const prevTimer = rawConfigDraftAutoSaveTimerRef.current[home]
-      if (prevTimer != null) window.clearTimeout(prevTimer)
+      if (!isDraft) continue;
+      if (!rawConfigDirtyByHome[home]) continue;
+      const prevTimer = rawConfigDraftAutoSaveTimerRef.current[home];
+      if (prevTimer != null) window.clearTimeout(prevTimer);
       rawConfigDraftAutoSaveTimerRef.current[home] = window.setTimeout(() => {
-        setRawConfigSavingByHome((prev) => ({ ...prev, [home]: true }))
-        writeDraftToStorage(home, rawConfigTextsRef.current[home] ?? '')
-        setRawConfigDirtyByHome((prev) => ({ ...prev, [home]: false }))
-        setRawConfigSavingByHome((prev) => ({ ...prev, [home]: false }))
-        delete rawConfigDraftAutoSaveTimerRef.current[home]
-      }, 450)
+        setRawConfigSavingByHome((prev) => ({ ...prev, [home]: true }));
+        writeDraftToStorage(home, rawConfigTextsRef.current[home] ?? "");
+        setRawConfigDirtyByHome((prev) => ({ ...prev, [home]: false }));
+        setRawConfigSavingByHome((prev) => ({ ...prev, [home]: false }));
+        delete rawConfigDraftAutoSaveTimerRef.current[home];
+      }, 450);
     }
     return () => {
-      for (const timer of Object.values(rawConfigDraftAutoSaveTimerRef.current)) {
-        if (timer != null) window.clearTimeout(timer)
+      for (const timer of Object.values(
+        rawConfigDraftAutoSaveTimerRef.current,
+      )) {
+        if (timer != null) window.clearTimeout(timer);
       }
-    }
-  }, [rawConfigDraftByHome, rawConfigDirtyByHome, rawConfigTexts])
+    };
+  }, [rawConfigDraftByHome, rawConfigDirtyByHome, rawConfigTexts]);
   const {
     setSessionPreferred,
     orderedConfigProviders,
@@ -894,45 +1086,54 @@ export default function App() {
     setGatewayTokenPreview,
     devStatus,
     devConfig,
-  })
+  });
   useEffect(() => {
-    if (!config) return
+    if (!config) return;
     setBaselineBaseUrls((prev) => {
-      const next: Record<string, string> = { ...prev }
-      let changed = false
+      const next: Record<string, string> = { ...prev };
+      let changed = false;
       for (const [name, provider] of Object.entries(config.providers ?? {})) {
         if (!Object.prototype.hasOwnProperty.call(next, name)) {
-          next[name] = provider.base_url
-          changed = true
+          next[name] = provider.base_url;
+          changed = true;
         }
       }
       for (const name of Object.keys(next)) {
         if (!config.providers?.[name]) {
-          delete next[name]
-          changed = true
+          delete next[name];
+          changed = true;
         }
       }
-      return changed ? next : prev
-    })
-  }, [config, setBaselineBaseUrls])
+      return changed ? next : prev;
+    });
+  }, [config, setBaselineBaseUrls]);
   const onDevPreviewTick = useCallback(() => {
-    if (!devPreviewModule) return
-    setStatus((prev) => devPreviewModule.evolveDevStatus(prev))
-  }, [devPreviewModule])
+    if (!devPreviewModule) return;
+    setStatus((prev) => devPreviewModule.evolveDevStatus(prev));
+  }, [devPreviewModule]);
   const codexSwapBadge = useMemo(() => {
-    const windowsHome = codexSwapUseWindows ? codexSwapDir1.trim() : ''
-    const wslHome = codexSwapUseWsl ? codexSwapDir2.trim() : ''
+    const windowsHome = codexSwapUseWindows ? codexSwapDir1.trim() : "";
+    const wslHome = codexSwapUseWsl ? codexSwapDir2.trim() : "";
     const selectedHomes =
-      codexSwapTarget === 'windows'
+      codexSwapTarget === "windows"
         ? windowsHome
           ? [windowsHome]
           : []
-        : codexSwapTarget === 'wsl2'
+        : codexSwapTarget === "wsl2"
           ? wslHome
             ? [wslHome]
             : []
-          : resolveCliHomes(codexSwapDir1, codexSwapDir2, codexSwapUseWindows, codexSwapUseWsl)
-    return buildCodexSwapBadge(codexSwapStatus, providerSwitchStatus, selectedHomes)
+          : resolveCliHomes(
+              codexSwapDir1,
+              codexSwapDir2,
+              codexSwapUseWindows,
+              codexSwapUseWsl,
+            );
+    return buildCodexSwapBadge(
+      codexSwapStatus,
+      providerSwitchStatus,
+      selectedHomes,
+    );
   }, [
     codexSwapStatus,
     providerSwitchStatus,
@@ -941,10 +1142,10 @@ export default function App() {
     codexSwapDir2,
     codexSwapUseWindows,
     codexSwapUseWsl,
-  ])
-  const routeMode = (config?.routing.route_mode ?? 'follow_preferred_auto') as
-    | 'follow_preferred_auto'
-    | 'balanced_auto'
+  ]);
+  const routeMode = (config?.routing.route_mode ?? "follow_preferred_auto") as
+    | "follow_preferred_auto"
+    | "balanced_auto";
   const {
     providerListRef,
     registerProviderCardRef,
@@ -955,7 +1156,11 @@ export default function App() {
     dragOffsetY,
     dragBaseTop,
     dragCardHeight,
-  } = useConfigDrag({ orderedConfigProviders, applyProviderOrder, configModalOpen })
+  } = useConfigDrag({
+    orderedConfigProviders,
+    applyProviderOrder,
+    configModalOpen,
+  });
   const {
     onCopyToken,
     onShowGatewayRotate,
@@ -984,7 +1189,7 @@ export default function App() {
     setOverride,
     overrideDirtyRef,
     applyOverride,
-  })
+  });
   const {
     clearAutoSaveTimer,
     clearAutoSaveTimersByPrefix,
@@ -1060,7 +1265,7 @@ export default function App() {
     setUsageHistoryDrafts,
     setUsageHistoryEditCell,
     usageHistoryDrafts,
-  })
+  });
   const {
     handleUsageStatisticsIntentPrefetch,
     handleUsageRequestsIntentPrefetch,
@@ -1068,45 +1273,72 @@ export default function App() {
     activePage,
     refreshUsageStatistics,
     clientSessions: status?.client_sessions ?? [],
-  })
+  });
   const usageHistoryQuotaRefreshToken = useMemo(
     () => buildUsageHistoryQuotaRefreshToken(status?.quota),
     [status?.quota],
-  )
+  );
   useEffect(() => {
-    if (typeof window === 'undefined') return
-    let cancelled = false
-    let idleId: number | null = null
-    let timerId: number | null = null
+    if (typeof window === "undefined") return;
+    let cancelled = false;
+    let idleId: number | null = null;
+    let timerId: number | null = null;
     const runPreload = () => {
-      if (cancelled) return
-      void preloadAppMainContentModules()
-    }
-    if (typeof window.requestIdleCallback === 'function') {
-      idleId = window.requestIdleCallback(runPreload, { timeout: 1200 })
+      if (cancelled) return;
+      void preloadAppMainContentModules();
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      idleId = window.requestIdleCallback(runPreload, { timeout: 1200 });
     } else {
-      timerId = window.setTimeout(runPreload, 300)
+      timerId = window.setTimeout(runPreload, 300);
     }
     return () => {
-      cancelled = true
-      if (idleId != null && typeof window.cancelIdleCallback === 'function') {
-        window.cancelIdleCallback(idleId)
+      cancelled = true;
+      if (idleId != null && typeof window.cancelIdleCallback === "function") {
+        window.cancelIdleCallback(idleId);
       }
       if (timerId != null) {
-        window.clearTimeout(timerId)
+        window.clearTimeout(timerId);
       }
-    }
-  }, [])
+    };
+  }, []);
   const {
-    providerGroupLabelByName, linkedProvidersForApiKey, switchboardProviderCards, switchboardModeLabel,
-    switchboardModelProviderLabel, switchboardTargetDirsLabel, usageSummary, usageByProvider, usageTotalInputTokens,
-    usageTotalOutputTokens, usageAvgTokensPerRequest, usageTopModel, usageNodeFilterOptions, usageProviderFilterOptions,
-    usageProviderFilterDisplayOptions, usageModelFilterOptions,
+    providerGroupLabelByName,
+    linkedProvidersForApiKey,
+    switchboardProviderCards,
+    switchboardModeLabel,
+    switchboardModelProviderLabel,
+    switchboardTargetDirsLabel,
+    usageSummary,
+    usageByProvider,
+    usageTotalInputTokens,
+    usageTotalOutputTokens,
+    usageAvgTokensPerRequest,
+    usageTopModel,
+    usageNodeFilterOptions,
+    usageProviderFilterOptions,
+    usageProviderFilterDisplayOptions,
+    usageModelFilterOptions,
+    usageModelFilterDisplayOptions,
     usageOriginFilterOptions,
-    usageProviderDisplayGroups, usagePricedRequestCount, usageDedupedTotalUsedUsd, usagePricedCoveragePct,
-    usageActiveWindowHours, usageAvgRequestsPerHour, usageAvgTokensPerHour, usageWindowLabel,
-    usageProviderTotalsAndAverages, usagePricingProviderNames, usagePricingGroups, usageScheduleProviderOptions,
-    usageAnomalies, toggleUsageProviderFilterDisplayOption, toggleUsageModelFilter, toggleUsageNodeFilter, toggleUsageOriginFilter, usageChart, showUsageChartHover,
+    usageProviderDisplayGroups,
+    usagePricedRequestCount,
+    usageDedupedTotalUsedUsd,
+    usagePricedCoveragePct,
+    usageActiveWindowHours,
+    usageAvgRequestsPerHour,
+    usageAvgTokensPerHour,
+    usageWindowLabel,
+    usageProviderTotalsAndAverages,
+    usagePricingProviderNames,
+    usagePricingGroups,
+    usageScheduleProviderOptions,
+    usageAnomalies,
+    toggleUsageProviderFilterDisplayOption,
+    toggleUsageNodeFilter,
+    toggleUsageOriginFilter,
+    usageChart,
+    showUsageChartHover,
   } = useDashboardDerivations({
     config,
     orderedConfigProviders,
@@ -1119,36 +1351,49 @@ export default function App() {
     pctOf,
     usageOverview,
     usageStatistics,
-    usageFilterNodes,
     setUsageFilterNodes,
-    usageFilterProviders,
     setUsageFilterProviders,
-    usageFilterModels,
-    setUsageFilterModels,
-    usageFilterOrigins,
     setUsageFilterOrigins,
     usageWindowHours,
     setUsageChartHover,
     formatUsdMaybe,
-  })
-  const { providerDisplayName, usageScheduleSaveStatusText } = useUsageUiDerived({
-    providerGroupLabelByName,
-    usageScheduleSaveState,
-    usageScheduleSaveError,
-    setUsageFilterNodes,
-    usageNodeFilterOptions,
-    setUsageFilterProviders,
-    usageProviderFilterOptions,
-    setUsageFilterModels,
-    usageModelFilterOptions,
-    setUsageFilterOrigins,
-    usageOriginFilterOptions,
-  })
+  });
+  const { providerDisplayName, usageScheduleSaveStatusText } =
+    useUsageUiDerived({
+      providerGroupLabelByName,
+      usageScheduleSaveState,
+      usageScheduleSaveError,
+      setUsageFilterNodes,
+      usageNodeFilterOptions,
+      setUsageFilterProviders,
+      usageProviderFilterOptions,
+      setUsageFilterModels,
+      usageModelFilterOptions,
+      setUsageFilterOrigins,
+      usageOriginFilterOptions,
+    });
   const {
-    setProviderDisabled, deleteProvider, saveKey, clearKey, saveProviderBaseUrl, setProviderSupportsWebsockets, refreshQuota,
-    saveUsageBaseUrl, saveUsageAuth, clearUsageAuth, saveProviderEmail, clearProviderEmail,
-    setUsageBaseUrl, clearUsageBaseUrl, setProviderQuotaHardCap,
-    openKeyModal, openProviderBaseUrlModal, openUsageBaseModal, openUsageAuthModal, openProviderEmailModal, addProvider,
+    setProviderDisabled,
+    deleteProvider,
+    saveKey,
+    clearKey,
+    saveProviderBaseUrl,
+    setProviderSupportsWebsockets,
+    refreshQuota,
+    saveUsageBaseUrl,
+    saveUsageAuth,
+    clearUsageAuth,
+    saveProviderEmail,
+    clearProviderEmail,
+    setUsageBaseUrl,
+    clearUsageBaseUrl,
+    setProviderQuotaHardCap,
+    openKeyModal,
+    openProviderBaseUrlModal,
+    openUsageBaseModal,
+    openUsageAuthModal,
+    openProviderEmailModal,
+    addProvider,
     setProvidersGroup,
   } = useProviderActions({
     config,
@@ -1178,316 +1423,365 @@ export default function App() {
     refreshStatus,
     refreshConfig,
     flashToast,
-  })
+  });
   async function followConfigSource(nodeId: string) {
     try {
       if (isDevPreview) {
         setConfig((prev) => {
-          if (!prev) return prev
-          const localSnapshot = devPreviewLocalConfigRef.current ?? prev
-          if (prev.config_source?.mode !== 'follow') {
-            devPreviewLocalConfigRef.current = prev
+          if (!prev) return prev;
+          const localSnapshot = devPreviewLocalConfigRef.current ?? prev;
+          if (prev.config_source?.mode !== "follow") {
+            devPreviewLocalConfigRef.current = prev;
           }
-          devPreviewFollowSourceProvidersRef.current = getDevPreviewSourceProviders(nodeId, localSnapshot)
+          devPreviewFollowSourceProvidersRef.current =
+            getDevPreviewSourceProviders(nodeId, localSnapshot);
           return buildDevPreviewFollowConfig(
             prev,
             nodeId,
             localSnapshot,
             devPreviewFollowSourceProvidersRef.current,
-          )
-        })
-        flashToast(`Following config source [TEST]: ${nodeId}`)
-        return
+          );
+        });
+        flashToast(`Following config source [TEST]: ${nodeId}`);
+        return;
       }
-      await invoke('set_followed_config_source', { nodeId })
-      flashToast(`Following config source: ${nodeId}`)
-      await refreshStatus()
-      await refreshConfig()
+      await invoke("set_followed_config_source", { nodeId });
+      flashToast(`Following config source: ${nodeId}`);
+      await refreshStatus();
+      await refreshConfig();
     } catch (e) {
-      flashToast(String(e), 'error')
+      flashToast(String(e), "error");
     }
   }
   async function clearFollowedConfigSource() {
     try {
       if (isDevPreview) {
-        setConfig(devPreviewLocalConfigRef.current ?? devConfig)
-        devPreviewLocalConfigRef.current = null
-        devPreviewFollowSourceProvidersRef.current = null
-        flashToast('Returned to local config source [TEST]')
-        return
+        setConfig(devPreviewLocalConfigRef.current ?? devConfig);
+        devPreviewLocalConfigRef.current = null;
+        devPreviewFollowSourceProvidersRef.current = null;
+        flashToast("Returned to local config source [TEST]");
+        return;
       }
-      await invoke('clear_followed_config_source')
-      flashToast('Returned to local config source')
-      await refreshStatus()
-      await refreshConfig()
+      await invoke("clear_followed_config_source");
+      flashToast("Returned to local config source");
+      await refreshStatus();
+      await refreshConfig();
     } catch (e) {
-      flashToast(String(e), 'error')
+      flashToast(String(e), "error");
     }
   }
   async function requestLanPair(nodeId: string): Promise<string | null> {
     try {
       if (isDevPreview) {
-        const requestId = `pair_${nodeId}`
+        const requestId = `pair_${nodeId}`;
         setConfig((prev) => {
-          if (!prev) return prev
+          if (!prev) return prev;
           return updateDevPreviewPairState(prev, nodeId, (source) => ({
             ...source,
             trusted: false,
-            pair_state: 'pin_required',
+            pair_state: "pin_required",
             pair_request_id: requestId,
             follow_allowed: false,
-            follow_blocked_reason: 'pair this device before following its config',
-          }))
-        })
-        return requestId
+            follow_blocked_reason:
+              "pair this device before following its config",
+          }));
+        });
+        return requestId;
       }
-      const requestId = await invoke<string>('request_lan_pair', { nodeId })
-      await refreshConfig()
-      return requestId
+      const requestId = await invoke<string>("request_lan_pair", { nodeId });
+      await refreshConfig();
+      return requestId;
     } catch (e) {
-      flashToast(String(e), 'error')
-      return null
+      flashToast(String(e), "error");
+      return null;
     }
   }
   async function watchLanPairTrust(nodeId: string): Promise<boolean> {
-    if (isDevPreview) return true
-    const watchSeq = ++pairCompletionWatchSeqRef.current
+    if (isDevPreview) return true;
+    const watchSeq = ++pairCompletionWatchSeqRef.current;
     return waitForLanConfigSourceTrust({
       nodeId,
-      loadStatus: () => invoke<Status>('get_status'),
-      loadConfig: () => invoke<Config>('get_config'),
+      loadStatus: () => invoke<Status>("get_status"),
+      loadConfig: () => invoke<Config>("get_config"),
       applyStatus: (nextStatus) => {
-        if (pairCompletionWatchSeqRef.current !== watchSeq) return
-        setStatus(nextStatus)
-        if (!overrideDirtyRef.current) setOverride(nextStatus.manual_override ?? '')
+        if (pairCompletionWatchSeqRef.current !== watchSeq) return;
+        setStatus(nextStatus);
+        if (!overrideDirtyRef.current)
+          setOverride(nextStatus.manual_override ?? "");
       },
       applyConfig: (nextConfig) => {
-        if (pairCompletionWatchSeqRef.current !== watchSeq) return
-        setConfig(nextConfig)
+        if (pairCompletionWatchSeqRef.current !== watchSeq) return;
+        setConfig(nextConfig);
         setBaselineBaseUrls(
-          Object.fromEntries(Object.entries(nextConfig.providers ?? {}).map(([name, provider]) => [name, provider.base_url])),
-        )
+          Object.fromEntries(
+            Object.entries(nextConfig.providers ?? {}).map(
+              ([name, provider]) => [name, provider.base_url],
+            ),
+          ),
+        );
       },
-    })
+    });
   }
   async function approveLanPair(requestId: string): Promise<string | null> {
     try {
-      const nodeId = config?.config_source?.sources.find((entry) => entry.pair_request_id === requestId)?.node_id ?? ''
+      const nodeId =
+        config?.config_source?.sources.find(
+          (entry) => entry.pair_request_id === requestId,
+        )?.node_id ?? "";
       if (isDevPreview) {
         if (!nodeId) {
-          flashToast('Pair request not found [TEST]', 'error')
-          return null
+          flashToast("Pair request not found [TEST]", "error");
+          return null;
         }
         setConfig((prev) => {
-          if (!prev) return prev
+          if (!prev) return prev;
           return updateDevPreviewPairState(prev, nodeId, (source) => ({
             ...source,
             trusted: false,
-            pair_state: 'pin_required',
+            pair_state: "pin_required",
             pair_request_id: requestId,
             follow_allowed: false,
-            follow_blocked_reason: 'pair this device before following its config',
-          }))
-        })
-        return '123456'
+            follow_blocked_reason:
+              "pair this device before following its config",
+          }));
+        });
+        return "123456";
       }
-      const pinCode = await invoke<string>('approve_lan_pair', { requestId })
-      await refreshConfig()
+      const pinCode = await invoke<string>("approve_lan_pair", { requestId });
+      await refreshConfig();
       if (nodeId) {
-        void watchLanPairTrust(nodeId)
+        void watchLanPairTrust(nodeId);
       }
-      return pinCode
+      return pinCode;
     } catch (e) {
-      flashToast(String(e), 'error')
-      return null
+      flashToast(String(e), "error");
+      return null;
     }
   }
-  async function submitLanPairPin(nodeId: string, requestId: string, pinCode: string) {
+  async function submitLanPairPin(
+    nodeId: string,
+    requestId: string,
+    pinCode: string,
+  ) {
     if (isDevPreview) {
       setConfig((prev) => {
-        if (!prev) return prev
+        if (!prev) return prev;
         return updateDevPreviewPairState(prev, nodeId, (source) => ({
           ...source,
           trusted: true,
-          pair_state: 'trusted',
+          pair_state: "trusted",
           pair_request_id: null,
           follow_allowed: true,
           follow_blocked_reason: null,
-        }))
-      })
-      return
+        }));
+      });
+      return;
     }
-    await invoke('submit_lan_pair_pin', { nodeId, requestId, pinCode })
-    await refreshConfig()
+    await invoke("submit_lan_pair_pin", { nodeId, requestId, pinCode });
+    await refreshConfig();
     await ensureLanConfigSourceTrust({
       nodeId,
-      loadStatus: () => invoke<Status>('get_status'),
-      loadConfig: () => invoke<Config>('get_config'),
+      loadStatus: () => invoke<Status>("get_status"),
+      loadConfig: () => invoke<Config>("get_config"),
       applyStatus: (nextStatus) => {
-        setStatus(nextStatus)
-        if (!overrideDirtyRef.current) setOverride(nextStatus.manual_override ?? '')
+        setStatus(nextStatus);
+        if (!overrideDirtyRef.current)
+          setOverride(nextStatus.manual_override ?? "");
       },
       applyConfig: (nextConfig) => {
-        setConfig(nextConfig)
+        setConfig(nextConfig);
         setBaselineBaseUrls(
-          Object.fromEntries(Object.entries(nextConfig.providers ?? {}).map(([name, provider]) => [name, provider.base_url])),
-        )
+          Object.fromEntries(
+            Object.entries(nextConfig.providers ?? {}).map(
+              ([name, provider]) => [name, provider.base_url],
+            ),
+          ),
+        );
       },
-    })
+    });
   }
-  const [lanRemoteUpdatePendingByNode, setLanRemoteUpdatePendingByNode] = useState<
-    Record<string, { stage: 'requesting' | 'refreshing'; detail: string; startedAtUnixMs: number }>
-  >({})
+  const [lanRemoteUpdatePendingByNode, setLanRemoteUpdatePendingByNode] =
+    useState<
+      Record<
+        string,
+        {
+          stage: "requesting" | "refreshing";
+          detail: string;
+          startedAtUnixMs: number;
+        }
+      >
+    >({});
 
   useEffect(() => {
-    const sources = config?.config_source?.sources ?? []
+    const sources = config?.config_source?.sources ?? [];
     setLanRemoteUpdatePendingByNode((prev) => {
-      let changed = false
-      const next = { ...prev }
+      let changed = false;
+      const next = { ...prev };
       for (const nodeId of Object.keys(prev)) {
-        const source = sources.find((item) => item.node_id === nodeId && item.kind === 'peer')
-        if (!source) continue
-        const pendingStage = prev[nodeId]
-        const remoteState = source.remote_update_status?.state?.trim() || ''
+        const source = sources.find(
+          (item) => item.node_id === nodeId && item.kind === "peer",
+        );
+        if (!source) continue;
+        const pendingStage = prev[nodeId];
+        const remoteState = source.remote_update_status?.state?.trim() || "";
         const hasCurrentTerminalRemoteUpdateStatus =
           Boolean(source.remote_update_status?.state?.trim()) &&
           isRemoteUpdateStatusCurrentForPending(source, pendingStage) &&
-          ['failed', 'succeeded', 'superseded'].includes(remoteState)
-        if (hasCurrentTerminalRemoteUpdateStatus || !source.version_sync_required) {
-          delete next[nodeId]
-          changed = true
+          ["failed", "succeeded", "superseded"].includes(remoteState);
+        if (
+          hasCurrentTerminalRemoteUpdateStatus ||
+          !source.version_sync_required
+        ) {
+          delete next[nodeId];
+          changed = true;
         }
       }
-      return changed ? next : prev
-    })
-  }, [config])
+      return changed ? next : prev;
+    });
+  }, [config]);
 
-  const lanRemoteUpdatePendingNodeIdsKey = Object.keys(lanRemoteUpdatePendingByNode).sort().join('|')
+  const lanRemoteUpdatePendingNodeIdsKey = Object.keys(
+    lanRemoteUpdatePendingByNode,
+  )
+    .sort()
+    .join("|");
 
   useEffect(() => {
-    if (isDevPreview || !lanRemoteUpdatePendingNodeIdsKey) return
-    let cancelled = false
-    let refreshInFlight = false
+    if (isDevPreview || !lanRemoteUpdatePendingNodeIdsKey) return;
+    let cancelled = false;
+    let refreshInFlight = false;
     const refreshRemoteUpdateProgress = async () => {
-      if (cancelled || refreshInFlight) return
-      refreshInFlight = true
+      if (cancelled || refreshInFlight) return;
+      refreshInFlight = true;
       try {
-        await refreshConfig({ refreshProviderSwitchStatus: false, force: true })
+        await refreshConfig({
+          refreshProviderSwitchStatus: false,
+          force: true,
+        });
       } finally {
-        refreshInFlight = false
+        refreshInFlight = false;
       }
-    }
-    void refreshRemoteUpdateProgress()
+    };
+    void refreshRemoteUpdateProgress();
     const timer = window.setInterval(() => {
-      void refreshRemoteUpdateProgress()
-    }, 1000)
+      void refreshRemoteUpdateProgress();
+    }, 1000);
     return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [isDevPreview, lanRemoteUpdatePendingNodeIdsKey, refreshConfig])
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [isDevPreview, lanRemoteUpdatePendingNodeIdsKey, refreshConfig]);
 
   async function requestLanRemoteUpdateSameVersion(nodeId: string) {
-    if (lanRemoteUpdatePendingByNode[nodeId]) return
+    if (lanRemoteUpdatePendingByNode[nodeId]) return;
     setLanRemoteUpdatePendingByNode((prev) => ({
       ...prev,
       [nodeId]: {
-        stage: 'requesting',
-        detail: 'Sending update request to peer',
+        stage: "requesting",
+        detail: "Sending update request to peer",
         startedAtUnixMs: Date.now(),
       },
-    }))
+    }));
     try {
       if (isDevPreview) {
-        flashToast(`Requested ${nodeId} to sync to this build [TEST]`)
+        flashToast(`Requested ${nodeId} to sync to this build [TEST]`);
         setLanRemoteUpdatePendingByNode((prev) => {
-          const next = { ...prev }
-          delete next[nodeId]
-          return next
-        })
-        return
+          const next = { ...prev };
+          delete next[nodeId];
+          return next;
+        });
+        return;
       }
-      await invoke('request_lan_remote_update_same_version', { nodeId })
+      await invoke("request_lan_remote_update_same_version", { nodeId });
       setLanRemoteUpdatePendingByNode((prev) => ({
         ...prev,
         [nodeId]: {
-          stage: 'refreshing',
-          detail: 'Peer accepted request. Refreshing remote progress',
+          stage: "refreshing",
+          detail: "Peer accepted request. Refreshing remote progress",
           startedAtUnixMs: prev[nodeId]?.startedAtUnixMs ?? Date.now(),
         },
-      }))
-      flashToast('Peer version sync requested')
-      await refreshConfig({ refreshProviderSwitchStatus: false, force: true })
+      }));
+      flashToast("Peer version sync requested");
+      await refreshConfig({ refreshProviderSwitchStatus: false, force: true });
     } catch (error) {
       setLanRemoteUpdatePendingByNode((prev) => {
-        const next = { ...prev }
-        delete next[nodeId]
-        return next
-      })
-      flashToast(String(error), 'error')
+        const next = { ...prev };
+        delete next[nodeId];
+        return next;
+      });
+      flashToast(String(error), "error");
     }
   }
-  async function copyProviderFromConfigSource(sourceNodeId: string, sharedProviderId: string) {
+  async function copyProviderFromConfigSource(
+    sourceNodeId: string,
+    sharedProviderId: string,
+  ) {
     try {
       if (isDevPreview) {
-        const activeConfig = config
-        const localBase = devPreviewLocalConfigRef.current ?? activeConfig ?? devConfig
+        const activeConfig = config;
+        const localBase =
+          devPreviewLocalConfigRef.current ?? activeConfig ?? devConfig;
         if (!activeConfig) {
-          flashToast('Borrowed provider not found [TEST]', 'error')
-          return
+          flashToast("Borrowed provider not found [TEST]", "error");
+          return;
         }
         const sourceProviders =
-          devPreviewFollowSourceProvidersRef.current ?? getDevPreviewSourceProviders(sourceNodeId, localBase)
+          devPreviewFollowSourceProvidersRef.current ??
+          getDevPreviewSourceProviders(sourceNodeId, localBase);
         const copied = copyDevPreviewBorrowedProvider({
           activeConfig,
           localBase,
           sourceNodeId,
           sharedProviderId,
           sourceProviders,
-        })
+        });
         if (!copied) {
-          flashToast('Borrowed provider not found [TEST]', 'error')
-          return
+          flashToast("Borrowed provider not found [TEST]", "error");
+          return;
         }
-        devPreviewLocalConfigRef.current = copied.nextLocalConfig
+        devPreviewLocalConfigRef.current = copied.nextLocalConfig;
         setConfig((prev) => {
-          if (!prev || prev.config_source?.mode !== 'follow') return prev
-          return copied.nextFollowConfig
-        })
+          if (!prev || prev.config_source?.mode !== "follow") return prev;
+          return copied.nextFollowConfig;
+        });
         flashToast(
-          copied.localCopyState === 'linked'
+          copied.localCopyState === "linked"
             ? `Linked provider [TEST]: ${copied.targetName}`
             : `Copied provider [TEST]: ${copied.targetName}`,
-        )
-        return
+        );
+        return;
       }
-      const result = await invoke<CopyProviderResult>('copy_provider_from_config_source', {
-        sourceNodeId,
-        sharedProviderId,
-      })
+      const result = await invoke<CopyProviderResult>(
+        "copy_provider_from_config_source",
+        {
+          sourceNodeId,
+          sharedProviderId,
+        },
+      );
       setConfig((prev) => {
-        if (!prev || prev.config_source?.mode !== 'follow') return prev
+        if (!prev || prev.config_source?.mode !== "follow") return prev;
         return {
           ...prev,
           providers: Object.fromEntries(
             Object.entries(prev.providers).map(([name, provider]) => [
               name,
-              provider.source_node_id === sourceNodeId && provider.shared_provider_id === sharedProviderId
+              provider.source_node_id === sourceNodeId &&
+              provider.shared_provider_id === sharedProviderId
                 ? { ...provider, local_copy_state: result.local_copy_state }
                 : provider,
             ]),
           ),
-        }
-      })
+        };
+      });
       flashToast(
-        result.local_copy_state === 'linked'
+        result.local_copy_state === "linked"
           ? `Linked provider: ${result.target_name}`
           : `Copied provider: ${result.target_name}`,
-      )
-      await refreshStatus()
-      await refreshConfig()
+      );
+      await refreshStatus();
+      await refreshConfig();
     } catch (e) {
-      flashToast(String(e), 'error')
+      flashToast(String(e), "error");
     }
   }
   useAppPolling({
@@ -1507,20 +1801,20 @@ export default function App() {
     refreshGatewayTokenPreview,
     onDevPreviewBootstrap,
     onDevPreviewTick,
-  })
+  });
   useEffect(() => {
-    if (isDevPreview || !status) return
-    const nextSignature = lanConfigSourceSyncSignature(status.lan_sync)
-    const prevSignature = lastLanConfigSyncSignatureRef.current
-    lastLanConfigSyncSignatureRef.current = nextSignature
-    if (!prevSignature || prevSignature === nextSignature) return
-    void refreshConfig({ refreshProviderSwitchStatus: false, force: true })
-  }, [isDevPreview, refreshConfig, status])
+    if (isDevPreview || !status) return;
+    const nextSignature = lanConfigSourceSyncSignature(status.lan_sync);
+    const prevSignature = lastLanConfigSyncSignatureRef.current;
+    lastLanConfigSyncSignatureRef.current = nextSignature;
+    if (!prevSignature || prevSignature === nextSignature) return;
+    void refreshConfig({ refreshProviderSwitchStatus: false, force: true });
+  }, [isDevPreview, refreshConfig, status]);
   useEffect(() => {
-    if (!isDevPreview) return
-    devPreviewLocalConfigRef.current = null
-    devPreviewFollowSourceProvidersRef.current = null
-  }, [isDevPreview])
+    if (!isDevPreview) return;
+    devPreviewLocalConfigRef.current = null;
+    devPreviewFollowSourceProvidersRef.current = null;
+  }, [isDevPreview]);
   useAppUsageEffects({
     activePage,
     usageRefreshRevision,
@@ -1568,7 +1862,7 @@ export default function App() {
     setUsageScheduleSaveError,
     queueAutoSaveTimer,
     autoSaveUsageScheduleRows,
-  })
+  });
   const {
     renderProviderCard,
     providerCapsMenu,
@@ -1604,12 +1898,19 @@ export default function App() {
     clearUsageBaseUrl,
     setProviderQuotaHardCap,
     editingProviderName,
-  })
+  });
   const providerCapsMenuData = useMemo(
-    () => buildProviderCapsMenuData(configModalOpen, config, status, providerCapsMenu),
+    () =>
+      buildProviderCapsMenuData(
+        configModalOpen,
+        config,
+        status,
+        providerCapsMenu,
+      ),
     [configModalOpen, config, providerCapsMenu, status],
-  )
-  const clearUsageScheduleRowsAutoSave = () => clearAutoSaveTimer('schedule:rows')
+  );
+  const clearUsageScheduleRowsAutoSave = () =>
+    clearAutoSaveTimer("schedule:rows");
   const shouldRenderAppModals =
     keyModal.open ||
     providerBaseUrlModal.open ||
@@ -1623,7 +1924,7 @@ export default function App() {
     codexSwapModalOpen ||
     usageHistoryModalOpen ||
     usagePricingModalOpen ||
-    usageScheduleModalOpen
+    usageScheduleModalOpen;
 
   const usageProps = useMemo(
     () => ({
@@ -1642,8 +1943,7 @@ export default function App() {
       toggleUsageProviderFilterDisplayOption,
       usageFilterModels,
       setUsageFilterModels,
-      usageModelFilterOptions,
-      toggleUsageModelFilter,
+      usageModelFilterDisplayOptions,
       usageFilterOrigins,
       setUsageFilterOrigins,
       usageOriginFilterOptions,
@@ -1697,8 +1997,7 @@ export default function App() {
       usageProviderFilterDisplayOptions,
       toggleUsageProviderFilterDisplayOption,
       usageFilterModels,
-      usageModelFilterOptions,
-      toggleUsageModelFilter,
+      usageModelFilterDisplayOptions,
       usageFilterOrigins,
       usageOriginFilterOptions,
       toggleUsageOriginFilter,
@@ -1730,7 +2029,7 @@ export default function App() {
       status?.last_activity_unix_ms,
       status?.client_sessions,
     ],
-  )
+  );
 
   const switchboardProps = useMemo(
     () => ({
@@ -1762,7 +2061,7 @@ export default function App() {
       setProviderSwitchTarget,
       openRawConfigModal,
     ],
-  )
+  );
 
   return (
     <div className="aoRoot" ref={containerRef}>
@@ -1775,10 +2074,16 @@ export default function App() {
           ) : null}
           <div className="aoBrand">
             <div className="aoBrandLeft">
-              <img className="aoMark" src="/ao-icon.png" alt="API Router icon" />
+              <img
+                className="aoMark"
+                src="/ao-icon.png"
+                alt="API Router icon"
+              />
               <div>
                 <div className="aoTitle">API Router</div>
-                <div className="aoSubtitle">Local gateway + smart failover for Codex</div>
+                <div className="aoSubtitle">
+                  Local gateway + smart failover for Codex
+                </div>
               </div>
             </div>
             <AppTopNav
@@ -1791,13 +2096,16 @@ export default function App() {
           </div>
           {/* Surface errors via toast to avoid layout shifts. */}
           <div
-            className={`aoMainArea${activePage === 'dashboard' ? '' : ' aoMainAreaFill'}${
-              activePage === 'usage_requests' ? ' aoMainAreaRequestsFill' : ''
+            className={`aoMainArea${activePage === "dashboard" ? "" : " aoMainAreaFill"}${
+              activePage === "usage_requests" ? " aoMainAreaRequestsFill" : ""
             }`}
             ref={mainAreaRef}
           >
-            {activePage === 'monitor' ? (
-              <MonitoringPanel status={status} gatewayTokenPreview={gatewayTokenPreview} />
+            {activePage === "monitor" ? (
+              <MonitoringPanel
+                status={status}
+                gatewayTokenPreview={gatewayTokenPreview}
+              />
             ) : (
               <AppMainContent
                 activePage={activePage}
@@ -1828,12 +2136,16 @@ export default function App() {
                 onRefreshQuota={(name) => void refreshQuota(name)}
                 clientSessions={clientSessions ?? []}
                 updatingSessionPref={updatingSessionPref}
-                onSetSessionPreferred={(sessionId, provider) => void setSessionPreferred(sessionId, provider)}
+                onSetSessionPreferred={(sessionId, provider) =>
+                  void setSessionPreferred(sessionId, provider)
+                }
                 onOpenLastErrorInEventLog={handleOpenLastErrorInEventLog}
                 eventLogSeedEvents={eventLogSeedEvents}
                 eventLogSeedDailyStats={[]}
                 eventLogFocusRequest={eventLogFocusRequest}
-                onEventLogFocusRequestHandled={handleEventLogFocusRequestHandled}
+                onEventLogFocusRequestHandled={
+                  handleEventLogFocusRequestHandled
+                }
                 usageProps={usageProps}
                 switchboardProps={switchboardProps}
               />
@@ -1881,7 +2193,9 @@ export default function App() {
             requestLanPair={requestLanPair}
             approveLanPair={approveLanPair}
             submitLanPairPin={submitLanPairPin}
-            requestLanRemoteUpdateSameVersion={requestLanRemoteUpdateSameVersion}
+            requestLanRemoteUpdateSameVersion={
+              requestLanRemoteUpdateSameVersion
+            }
             lanRemoteUpdatePendingByNode={lanRemoteUpdatePendingByNode}
             openProviderGroupManager={openProviderGroupManager}
             setConfigModalOpen={setConfigModalOpen}
@@ -1934,12 +2248,20 @@ export default function App() {
             usageHistoryTableWrapRef={usageHistoryTableWrapRef}
             usageHistoryScrollbarOverlayRef={usageHistoryScrollbarOverlayRef}
             usageHistoryScrollbarThumbRef={usageHistoryScrollbarThumbRef}
-            scheduleUsageHistoryScrollbarSync={scheduleUsageHistoryScrollbarSync}
+            scheduleUsageHistoryScrollbarSync={
+              scheduleUsageHistoryScrollbarSync
+            }
             activateUsageHistoryScrollbarUi={activateUsageHistoryScrollbarUi}
-            onUsageHistoryScrollbarPointerDown={onUsageHistoryScrollbarPointerDown}
-            onUsageHistoryScrollbarPointerMove={onUsageHistoryScrollbarPointerMove}
+            onUsageHistoryScrollbarPointerDown={
+              onUsageHistoryScrollbarPointerDown
+            }
+            onUsageHistoryScrollbarPointerMove={
+              onUsageHistoryScrollbarPointerMove
+            }
             onUsageHistoryScrollbarPointerUp={onUsageHistoryScrollbarPointerUp}
-            onUsageHistoryScrollbarLostPointerCapture={onUsageHistoryScrollbarLostPointerCapture}
+            onUsageHistoryScrollbarLostPointerCapture={
+              onUsageHistoryScrollbarLostPointerCapture
+            }
             usagePricingModalOpen={usagePricingModalOpen}
             setUsagePricingModalOpen={setUsagePricingModalOpen}
             fxRatesDate={fxRatesDate}
@@ -1949,8 +2271,12 @@ export default function App() {
             usagePricingSaveState={usagePricingSaveState}
             setUsagePricingDrafts={setUsagePricingDrafts}
             buildUsagePricingDraft={buildUsagePricingDraft}
-            queueUsagePricingAutoSaveForProviders={queueUsagePricingAutoSaveForProviders}
-            setUsagePricingSaveStateForProviders={setUsagePricingSaveStateForProviders}
+            queueUsagePricingAutoSaveForProviders={
+              queueUsagePricingAutoSaveForProviders
+            }
+            setUsagePricingSaveStateForProviders={
+              setUsagePricingSaveStateForProviders
+            }
             saveUsagePricingForProviders={saveUsagePricingForProviders}
             openUsageScheduleModal={openUsageScheduleModal}
             providerPreferredCurrency={providerPreferredCurrency}
@@ -2012,7 +2338,13 @@ export default function App() {
       <ProviderCapsMenuPortal
         menu={providerCapsMenuData}
         periods={providerCapsMenuData?.periods ?? []}
-        quotaHardCap={providerCapsMenuData?.quotaHardCap ?? { daily: true, weekly: true, monthly: true }}
+        quotaHardCap={
+          providerCapsMenuData?.quotaHardCap ?? {
+            daily: true,
+            weekly: true,
+            monthly: true,
+          }
+        }
         editable={providerCapsMenuData?.editable ?? false}
         registerMenuRef={registerProviderCapsMenuRef}
         setProviderQuotaHardCap={setProviderQuotaHardCap}
@@ -2027,8 +2359,8 @@ export default function App() {
             orderedConfigProviders={orderedConfigProviders}
             focusProvider={providerGroupManagerFocusProvider}
             onClose={() => {
-              setProviderGroupManagerOpen(false)
-              setProviderGroupManagerFocusProvider(null)
+              setProviderGroupManagerOpen(false);
+              setProviderGroupManagerFocusProvider(null);
             }}
             onAssignGroup={setProvidersGroup}
             onSetUsageBase={setUsageBaseUrl}
@@ -2041,5 +2373,5 @@ export default function App() {
         </Suspense>
       ) : null}
     </div>
-  )
+  );
 }

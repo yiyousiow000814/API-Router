@@ -1,28 +1,34 @@
-import type { ReactNode } from 'react'
-import type { UsageProviderFilterDisplayOption } from '../utils/usageStatisticsView'
+import type { Dispatch, ReactNode, SetStateAction } from "react";
+import type {
+  UsageModelFilterDisplayOption,
+  UsageProviderFilterDisplayOption,
+} from "../utils/usageStatisticsView";
+import {
+  isUsageModelFilterDisplayOptionSelected,
+  toggleUsageModelFilterDisplayOptionSelection,
+} from "../utils/usageStatisticsView";
 
 type Props = {
-  usageWindowHours: number
-  setUsageWindowHours: (hours: number) => void
-  usageStatisticsLoading: boolean
-  usageFilterNodes: string[]
-  setUsageFilterNodes: (nodes: string[]) => void
-  usageNodeFilterOptions: string[]
-  toggleUsageNodeFilter: (nodeName: string) => void
-  usageFilterProviders: string[]
-  setUsageFilterProviders: (providers: string[]) => void
-  usageProviderFilterDisplayOptions: UsageProviderFilterDisplayOption[]
-  toggleUsageProviderFilterDisplayOption: (providers: string[]) => void
-  usageFilterModels: string[]
-  setUsageFilterModels: (models: string[]) => void
-  usageModelFilterOptions: string[]
-  toggleUsageModelFilter: (modelName: string) => void
-  usageFilterOrigins: string[]
-  setUsageFilterOrigins: (origins: string[]) => void
-  usageOriginFilterOptions: string[]
-  toggleUsageOriginFilter: (originName: string) => void
-  headerExtraAction?: ReactNode
-}
+  usageWindowHours: number;
+  setUsageWindowHours: (hours: number) => void;
+  usageStatisticsLoading: boolean;
+  usageFilterNodes: string[];
+  setUsageFilterNodes: (nodes: string[]) => void;
+  usageNodeFilterOptions: string[];
+  toggleUsageNodeFilter: (nodeName: string) => void;
+  usageFilterProviders: string[];
+  setUsageFilterProviders: (providers: string[]) => void;
+  usageProviderFilterDisplayOptions: UsageProviderFilterDisplayOption[];
+  toggleUsageProviderFilterDisplayOption: (providers: string[]) => void;
+  usageFilterModels: string[];
+  setUsageFilterModels: Dispatch<SetStateAction<string[]>>;
+  usageModelFilterDisplayOptions: UsageModelFilterDisplayOption[];
+  usageFilterOrigins: string[];
+  setUsageFilterOrigins: (origins: string[]) => void;
+  usageOriginFilterOptions: string[];
+  toggleUsageOriginFilter: (originName: string) => void;
+  headerExtraAction?: ReactNode;
+};
 
 export function UsageStatsFiltersBar({
   usageWindowHours,
@@ -38,26 +44,32 @@ export function UsageStatsFiltersBar({
   toggleUsageProviderFilterDisplayOption,
   usageFilterModels,
   setUsageFilterModels,
-  usageModelFilterOptions,
-  toggleUsageModelFilter,
+  usageModelFilterDisplayOptions,
   usageFilterOrigins,
   setUsageFilterOrigins,
   usageOriginFilterOptions,
   toggleUsageOriginFilter,
   headerExtraAction,
 }: Props) {
-  const originOptionsLoaded = usageOriginFilterOptions.length > 0
+  const originOptionsLoaded = usageOriginFilterOptions.length > 0;
   return (
     <>
       <div className="aoUsageStatsHeader">
         <div>
           <div className="aoPagePlaceholderTitle">Usage Statistics</div>
-          <div className="aoHint">Requests, tokens, model mix, and provider-aware estimated request pricing.</div>
+          <div className="aoHint">
+            Requests, tokens, model mix, and provider-aware estimated request
+            pricing.
+          </div>
         </div>
         <div className="aoUsageStatsActions">
-          <div className="aoUsageStatsActionGroup" role="group" aria-label="Usage origin">
+          <div
+            className="aoUsageStatsActionGroup"
+            role="group"
+            aria-label="Usage origin"
+          >
             <button
-              className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnOrigin${usageFilterOrigins.length === 0 ? ' aoUsageWindowBtnActive' : ''}`}
+              className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnOrigin${usageFilterOrigins.length === 0 ? " aoUsageWindowBtnActive" : ""}`}
               onClick={() => setUsageFilterOrigins([])}
               disabled={usageStatisticsLoading}
               aria-pressed={usageFilterOrigins.length === 0}
@@ -65,28 +77,32 @@ export function UsageStatsFiltersBar({
               All
             </button>
             <button
-              className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnOrigin${usageFilterOrigins.includes('windows') ? ' aoUsageWindowBtnActive' : ''}`}
-              onClick={() => toggleUsageOriginFilter('windows')}
+              className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnOrigin${usageFilterOrigins.includes("windows") ? " aoUsageWindowBtnActive" : ""}`}
+              onClick={() => toggleUsageOriginFilter("windows")}
               disabled={usageStatisticsLoading}
-              title={originOptionsLoaded ? undefined : 'No origin data yet'}
-              aria-pressed={usageFilterOrigins.includes('windows')}
+              title={originOptionsLoaded ? undefined : "No origin data yet"}
+              aria-pressed={usageFilterOrigins.includes("windows")}
             >
               Windows
             </button>
             <button
-              className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnOrigin${usageFilterOrigins.includes('wsl2') ? ' aoUsageWindowBtnActive' : ''}`}
-              onClick={() => toggleUsageOriginFilter('wsl2')}
+              className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnOrigin${usageFilterOrigins.includes("wsl2") ? " aoUsageWindowBtnActive" : ""}`}
+              onClick={() => toggleUsageOriginFilter("wsl2")}
               disabled={usageStatisticsLoading}
-              title={originOptionsLoaded ? undefined : 'No origin data yet'}
-              aria-pressed={usageFilterOrigins.includes('wsl2')}
+              title={originOptionsLoaded ? undefined : "No origin data yet"}
+              aria-pressed={usageFilterOrigins.includes("wsl2")}
             >
               WSL2
             </button>
           </div>
           <span className="aoUsageStatsActionsDivider" aria-hidden="true" />
-          <div className="aoUsageStatsActionGroup" role="group" aria-label="Usage window">
+          <div
+            className="aoUsageStatsActionGroup"
+            role="group"
+            aria-label="Usage window"
+          >
             <button
-              className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 24 ? ' aoUsageWindowBtnActive' : ''}`}
+              className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 24 ? " aoUsageWindowBtnActive" : ""}`}
               onClick={() => setUsageWindowHours(24)}
               disabled={usageStatisticsLoading}
               aria-pressed={usageWindowHours === 24}
@@ -94,7 +110,7 @@ export function UsageStatsFiltersBar({
               24h
             </button>
             <button
-              className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 7 * 24 ? ' aoUsageWindowBtnActive' : ''}`}
+              className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 7 * 24 ? " aoUsageWindowBtnActive" : ""}`}
               onClick={() => setUsageWindowHours(7 * 24)}
               disabled={usageStatisticsLoading}
               aria-pressed={usageWindowHours === 7 * 24}
@@ -102,7 +118,7 @@ export function UsageStatsFiltersBar({
               7d
             </button>
             <button
-              className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 30 * 24 ? ' aoUsageWindowBtnActive' : ''}`}
+              className={`aoTinyBtn aoUsageActionBtn aoUsageActionBtnWindow${usageWindowHours === 30 * 24 ? " aoUsageWindowBtnActive" : ""}`}
               onClick={() => setUsageWindowHours(30 * 24)}
               disabled={usageStatisticsLoading}
               aria-pressed={usageWindowHours === 30 * 24}
@@ -113,7 +129,11 @@ export function UsageStatsFiltersBar({
           {headerExtraAction ? (
             <>
               <span className="aoUsageStatsActionsDivider" aria-hidden="true" />
-              <div className="aoUsageStatsActionGroup" role="group" aria-label="Usage extra action">
+              <div
+                className="aoUsageStatsActionGroup"
+                role="group"
+                aria-label="Usage extra action"
+              >
                 {headerExtraAction}
               </div>
             </>
@@ -127,7 +147,7 @@ export function UsageStatsFiltersBar({
           </div>
           <div className="aoUsageFilterChips">
             <button
-              className={`aoUsageFilterChip${usageFilterNodes.length === 0 ? ' is-active' : ''}`}
+              className={`aoUsageFilterChip${usageFilterNodes.length === 0 ? " is-active" : ""}`}
               disabled={usageStatisticsLoading}
               onClick={() => setUsageFilterNodes([])}
             >
@@ -136,7 +156,7 @@ export function UsageStatsFiltersBar({
             {usageNodeFilterOptions.map((nodeName) => (
               <button
                 key={nodeName}
-                className={`aoUsageFilterChip${usageFilterNodes.includes(nodeName) ? ' is-active' : ''}`}
+                className={`aoUsageFilterChip${usageFilterNodes.includes(nodeName) ? " is-active" : ""}`}
                 disabled={usageStatisticsLoading}
                 onClick={() => toggleUsageNodeFilter(nodeName)}
               >
@@ -151,7 +171,7 @@ export function UsageStatsFiltersBar({
           </div>
           <div className="aoUsageFilterChips">
             <button
-              className={`aoUsageFilterChip${usageFilterProviders.length === 0 ? ' is-active' : ''}`}
+              className={`aoUsageFilterChip${usageFilterProviders.length === 0 ? " is-active" : ""}`}
               disabled={usageStatisticsLoading}
               onClick={() => setUsageFilterProviders([])}
             >
@@ -162,12 +182,16 @@ export function UsageStatsFiltersBar({
                 key={option.id}
                 className={`aoUsageFilterChip${
                   option.providers.length > 0 &&
-                  option.providers.every((providerName) => usageFilterProviders.includes(providerName))
-                    ? ' is-active'
-                    : ''
+                  option.providers.every((providerName) =>
+                    usageFilterProviders.includes(providerName),
+                  )
+                    ? " is-active"
+                    : ""
                 }`}
                 disabled={usageStatisticsLoading}
-                onClick={() => toggleUsageProviderFilterDisplayOption(option.providers)}
+                onClick={() =>
+                  toggleUsageProviderFilterDisplayOption(option.providers)
+                }
               >
                 {option.label}
               </button>
@@ -180,25 +204,39 @@ export function UsageStatsFiltersBar({
           </div>
           <div className="aoUsageFilterChips">
             <button
-              className={`aoUsageFilterChip${usageFilterModels.length === 0 ? ' is-active' : ''}`}
+              className={`aoUsageFilterChip${usageFilterModels.length === 0 ? " is-active" : ""}`}
               disabled={usageStatisticsLoading}
               onClick={() => setUsageFilterModels([])}
             >
               All models
             </button>
-            {usageModelFilterOptions.map((modelName) => (
-              <button
-                key={modelName}
-                className={`aoUsageFilterChip${usageFilterModels.includes(modelName) ? ' is-active' : ''}`}
-                disabled={usageStatisticsLoading}
-                onClick={() => toggleUsageModelFilter(modelName)}
-              >
-                {modelName}
-              </button>
-            ))}
+            {usageModelFilterDisplayOptions.map((option) => {
+              const allSelected = isUsageModelFilterDisplayOptionSelected(
+                usageFilterModels,
+                option.models,
+              );
+              return (
+                <button
+                  key={option.id}
+                  className={`aoUsageFilterChip${allSelected ? " is-active" : ""}`}
+                  disabled={usageStatisticsLoading}
+                  onClick={() => {
+                    setUsageFilterModels((prev) =>
+                      toggleUsageModelFilterDisplayOptionSelection(
+                        prev,
+                        option.models,
+                      ),
+                    );
+                  }}
+                  title={option.models.join(" · ")}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
     </>
-  )
+  );
 }
