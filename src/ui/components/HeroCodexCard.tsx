@@ -103,6 +103,13 @@ export function HeroCodexCard({
         <div className="aoLimitCard">
           <div className="aoMiniLabel">5-hour limit</div>
           <div className="aoLimitValue">{status.codex_account?.limit_5h_remaining ?? '-'}</div>
+          {status.codex_account?.limit_5h_remaining &&
+          status.codex_account.limit_5h_remaining !== '100%' &&
+          status.codex_account?.limit_5h_reset_at ? (
+            <div className="aoHint aoResetHint" style={{ marginTop: 0 }}>
+              {fmtResetIn(status.codex_account.limit_5h_reset_at) ?? 'Reset soon'}
+            </div>
+          ) : null}
         </div>
         <div className="aoLimitCard">
           <div className="aoMiniLabel">Weekly limit</div>

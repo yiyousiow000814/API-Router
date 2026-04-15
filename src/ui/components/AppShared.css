@@ -1,3 +1,86 @@
 @import './AppShared.layout.css';
 @import './AppShared.usage.css';
 @import './AppShared.tables.css';
+
+:root {
+  /* Global z-index scale
+   * 0  base surfaces
+   * 1  sticky section rows / inline foreground controls
+   * 2  local scrollbar overlays
+   * 3  local tooltips
+   * 4  local filter menus
+   * 5  local action menus
+   * 6  drag overlays
+   * 7  panel popovers
+   * 8  app sticky chrome
+   * 9  chrome-attached dropdowns
+   * 10 floating filter menus
+   * 11 modal backdrops
+   * 12 raised modal backdrops
+   * 13 portal-attached menus
+   * 14 full-screen dropdown overlays
+   * 15 full-screen dropdown menus
+   * 16 elevated provider panels
+   * 17 elevated provider labels
+   * 18 app toasts
+   */
+  --z-base: 0;
+  --z-sticky-section: 1;
+  --z-scroll-overlay: 2;
+  --z-local-tooltip: 3;
+  --z-local-filter-menu: 4;
+  --z-local-action-menu: 5;
+  --z-drag-overlay: 6;
+  --z-panel-popover: 7;
+  --z-app-sticky-chrome: 8;
+  --z-chrome-dropdown: 9;
+  --z-floating-filter-menu: 10;
+  --z-modal-backdrop: 11;
+  --z-modal-backdrop-top: 12;
+  --z-portal-menu: 13;
+  --z-dropdown-overlay: 14;
+  --z-dropdown-menu: 15;
+  --z-provider-panel: 16;
+  --z-provider-label: 17;
+  --z-toast: 18;
+}
+
+.aoMoreDropdownMenu {
+  position: fixed;
+  margin-top: 4px;
+  background: var(--surface, #fff);
+  border: 1px solid rgba(13, 18, 32, 0.08);
+  border-radius: 14px;
+  box-shadow:
+    0 16px 32px rgba(13, 18, 32, 0.12),
+    0 4px 12px rgba(13, 18, 32, 0.06);
+  z-index: var(--z-dropdown-menu);
+  min-width: 160px;
+  padding: 6px;
+  overflow: hidden;
+  backdrop-filter: blur(12px);
+}
+.aoMoreDropdownItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  color: inherit;
+}
+.aoMoreDropdownItem:hover {
+  background: rgba(13, 18, 32, 0.04);
+}
+.aoMoreDropdownItem.is-active {
+  font-weight: 600;
+  color: var(--accent, #1a73e8);
+  background: rgba(13, 18, 32, 0.06);
+  border-radius: 10px;
+}

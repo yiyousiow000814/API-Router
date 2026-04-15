@@ -115,6 +115,54 @@ fn elapsed_ms_since(started_at: std::time::Instant) -> u64 {
     started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
+async fn run_blocking_snapshot<T, F>(snapshot_fn: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(snapshot_fn)
+        .await
+        .map_err(|err| format!("blocking_snapshot_failed: {err}"))
+}
+
+fn fallback_tailscale_snapshot(status_error: Option<String>) -> crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot {
+    crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot {
+        installed: false,
+        connected: false,
+        backend_state: None,
+        dns_name: None,
+        ipv4: Vec::new(),
+        reachable_ipv4: Vec::new(),
+        gateway_reachable: false,
+        needs_gateway_restart: false,
+        status_error,
+        command_path: String::new(),
+        command_source: String::new(),
+        probe: crate::tailscale_diagnostics::TailscaleProbeReport {
+            attempts: Vec::new(),
+            selected_command_path: None,
+            selected_command_source: None,
+        },
+        bootstrap: None,
+    }
+}
+
+async fn current_tailscale_snapshot_for_status(
+    listen_port: u16,
+) -> crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot {
+    match run_blocking_snapshot(move || {
+        crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(listen_port)
+    })
+    .await
+    {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            log::warn!("tailscale snapshot failed, returning fallback: {err}");
+            fallback_tailscale_snapshot(Some("tailscale_snapshot_failed".to_string()))
+        }
+    }
+}
+
 fn load_visible_last_error_events_with_cache(
     store: &crate::orchestrator::store::Store,
     config_path: &std::path::Path,
@@ -175,10 +223,10 @@ fn write_dashboard_status_slow_diag(
 }
 
 #[tauri::command]
-pub(crate) fn get_status(
+pub(crate) async fn get_status(
     state: tauri::State<'_, app_state::AppState>,
     detail_level: Option<String>,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, String> {
     let command_started_at = std::time::Instant::now();
     let mut phase_timings_ms = serde_json::Map::new();
     let dashboard_detail = detail_level
@@ -244,7 +292,6 @@ pub(crate) fn get_status(
         }
     }
     let ledgers = state.gateway.store.list_ledgers();
-    let projected_ledgers = projected_usage_ledgers(&state.gateway, &quota);
     phase_timings_ms.insert(
         "metrics_quota_ledgers".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
@@ -253,7 +300,7 @@ pub(crate) fn get_status(
     let active_recent = last_activity > 0 && now.saturating_sub(last_activity) < 2 * 60 * 1000;
     let phase_started_at = std::time::Instant::now();
     let (active_provider, active_reason, active_provider_counts) = if active_recent {
-        let map = state.gateway.last_used_by_session.read();
+        let map = state.gateway.last_used_by_session.read().clone();
 
         // Multiple Codex sessions can be active simultaneously, potentially routing through different
         // providers. Expose the full active provider set so the UI can mark multiple providers as
@@ -309,6 +356,12 @@ pub(crate) fn get_status(
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
     let phase_started_at = std::time::Instant::now();
+    let tailscale = current_tailscale_snapshot_for_status(cfg.listen.port).await;
+    phase_timings_ms.insert(
+        "tailscale_snapshot".to_string(),
+        serde_json::json!(elapsed_ms_since(phase_started_at)),
+    );
+    let phase_started_at = std::time::Instant::now();
     let shared_quota_owners = if dashboard_detail {
         Vec::new()
     } else {
@@ -330,33 +383,34 @@ pub(crate) fn get_status(
                 cfg.listen.port,
                 expected_gateway_token,
             );
-        let mut map = state.gateway.client_sessions.read().clone();
-        merge_discovered_terminal_sessions(&mut map, now, &terminal_discovery);
-        merge_thread_index_session_hints(
-            &mut map,
-            now,
-            &thread_index_snapshot.items,
-            thread_index_snapshot.fresh,
-        );
-        confirm_router_from_live_thread_base_url(
-            &mut map,
-            &thread_index_snapshot.items,
-            cfg.listen.port,
-        );
-        backfill_main_confirmation_from_verified_agent(&mut map, now);
-        let removed_main_sessions = retain_live_app_server_sessions(
-            &mut map,
-            now,
-            &terminal_discovery.items,
-            terminal_discovery.fresh,
-            &thread_index_snapshot.items,
-            thread_index_snapshot.fresh,
-        );
-        clear_removed_main_session_routes_and_assignments(&state.gateway, &removed_main_sessions);
-        rebalance_balanced_assignments_on_main_session_change(&state.gateway, &cfg, &map);
-        *state.gateway.client_sessions.write() = map.clone();
-        let last_used_by_session = state.gateway.last_used_by_session.read().clone();
-        let items = visible_client_session_items(&map, 20);
+        let items = {
+            let mut map = state.gateway.client_sessions.write();
+            merge_discovered_terminal_sessions(&mut map, now, &terminal_discovery);
+            merge_thread_index_session_hints(
+                &mut map,
+                now,
+                &thread_index_snapshot.items,
+                thread_index_snapshot.fresh,
+            );
+            confirm_router_from_live_thread_base_url(
+                &mut map,
+                &thread_index_snapshot.items,
+                cfg.listen.port,
+            );
+            backfill_main_confirmation_from_verified_agent(&mut map, now);
+            let removed_main_sessions = retain_live_app_server_sessions(
+                &mut map,
+                now,
+                &terminal_discovery.items,
+                terminal_discovery.fresh,
+                &thread_index_snapshot.items,
+                thread_index_snapshot.fresh,
+            );
+            clear_removed_main_session_routes_and_assignments(&state.gateway, &removed_main_sessions);
+            rebalance_balanced_assignments_on_main_session_change(&state.gateway, &cfg, &map);
+            visible_client_session_items(&map, 20)
+        };
+        let last_used_by_session = state.gateway.last_used_by_session.read();
         let sessions = items
             .into_iter()
             .map(|(_codex_session_id, v)| {
@@ -430,11 +484,11 @@ pub(crate) fn get_status(
       "active_provider_counts": active_provider_counts,
       "quota": quota,
       "ledgers": ledgers,
-      "projected_ledgers": projected_ledgers,
       "last_activity_unix_ms": last_activity,
       "codex_account": codex_account,
       "client_sessions": client_sessions,
       "lan_sync": lan_sync,
+      "tailscale": tailscale,
       "shared_quota_owners": shared_quota_owners
     });
     let total_elapsed_ms = elapsed_ms_since(command_started_at);
@@ -448,7 +502,7 @@ pub(crate) fn get_status(
             &phase_timings_ms,
         );
     }
-    response
+    Ok(response)
 }
 
 fn config_revision(state: &app_state::AppState, cfg: &crate::orchestrator::config::AppConfig) -> String {
@@ -512,44 +566,6 @@ fn config_revision(state: &app_state::AppState, cfg: &crate::orchestrator::confi
     });
     let digest = sha2::Sha256::digest(serde_json::to_vec(&payload).unwrap_or_default());
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn projected_usage_ledgers(
-    gateway: &crate::orchestrator::gateway::GatewayState,
-    quota: &serde_json::Value,
-) -> serde_json::Value {
-    let mut out = serde_json::Map::new();
-    let Some(quota_map) = quota.as_object() else {
-        return serde_json::Value::Object(out);
-    };
-
-    for (provider_name, snapshot) in quota_map {
-        let Some(kind) = snapshot.get("kind").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        if kind != "budget_info" {
-            continue;
-        }
-        let Some(updated_at_unix_ms) = snapshot.get("updated_at_unix_ms").and_then(|value| value.as_u64()) else {
-            continue;
-        };
-        if updated_at_unix_ms == 0 {
-            continue;
-        }
-        let (request_count, total_tokens) = gateway
-            .store
-            .summarize_usage_requests_since_by_provider(provider_name, updated_at_unix_ms);
-        out.insert(
-            provider_name.clone(),
-            serde_json::json!({
-                "since_last_quota_refresh_requests": request_count,
-                "since_last_quota_refresh_total_tokens": total_tokens,
-                "last_reset_unix_ms": updated_at_unix_ms,
-            }),
-        );
-    }
-
-    serde_json::Value::Object(out)
 }
 
 #[tauri::command]
@@ -1607,6 +1623,7 @@ pub(crate) fn get_event_log_daily_stats(
 
 #[cfg(test)]
 mod tests {
+    use super::{fallback_tailscale_snapshot, run_blocking_snapshot};
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
     use crate::commands::{
         attach_visible_last_error_event_ids,
@@ -1834,6 +1851,33 @@ mod tests {
                 .and_then(|snapshot| snapshot.last_error_event_id.as_deref()),
             Some("evt-visible-codex-error")
         );
+    }
+
+    #[test]
+    fn fallback_tailscale_snapshot_marks_status_error_without_breaking_status_payload() {
+        let snapshot = fallback_tailscale_snapshot(Some("snapshot_failed: boom".to_string()));
+        assert!(!snapshot.installed);
+        assert!(!snapshot.connected);
+        assert_eq!(snapshot.status_error.as_deref(), Some("snapshot_failed: boom"));
+        assert!(snapshot.probe.attempts.is_empty());
+        assert!(snapshot.command_path.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_blocking_snapshot_uses_a_separate_thread() {
+        let outer_thread_id = std::thread::current().id();
+        let value = run_blocking_snapshot(move || {
+            let inner_thread_id = std::thread::current().id();
+            assert_ne!(
+                inner_thread_id, outer_thread_id,
+                "blocking snapshot should run on a blocking worker thread"
+            );
+            42_u8
+        })
+        .await
+        .expect("blocking snapshot");
+
+        assert_eq!(value, 42);
     }
 
     #[test]
@@ -3534,11 +3578,12 @@ mod tests {
     }
 
     #[test]
-    fn projected_usage_ledgers_include_synced_requests_since_last_refresh() {
+    fn status_projected_ledgers_reuse_live_ledger_snapshot() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_path = tmp.path().join("user-data").join("config.toml");
         let data_dir = tmp.path().join("user-data").join("data");
         let state = crate::app_state::build_state(config_path, data_dir).expect("build state");
+        state.gateway.store.reset_ledger("packycode");
         let now = unix_ms();
         state
             .gateway
@@ -3581,17 +3626,14 @@ mod tests {
             }]);
         assert_eq!(inserted, 1);
 
-        let projected = super::projected_usage_ledgers(
-            &state.gateway,
-            &state.gateway.store.list_quota_snapshots(),
-        );
+        let projected = state.gateway.store.list_ledgers();
         assert_eq!(
             projected
                 .get("packycode")
                 .and_then(serde_json::Value::as_object)
                 .and_then(|value| value.get("since_last_quota_refresh_requests"))
                 .and_then(serde_json::Value::as_u64),
-            Some(1)
+            Some(0)
         );
         assert_eq!(
             projected
@@ -3599,7 +3641,7 @@ mod tests {
                 .and_then(serde_json::Value::as_object)
                 .and_then(|value| value.get("since_last_quota_refresh_total_tokens"))
                 .and_then(serde_json::Value::as_u64),
-            Some(128)
+            Some(0)
         );
     }
 

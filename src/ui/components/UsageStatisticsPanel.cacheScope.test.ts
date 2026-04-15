@@ -185,6 +185,7 @@ describe('buildUsageRequestsQueryKey', () => {
         providers: [],
         models: [],
         origins: [],
+        transports: [],
         sessions: [],
       }),
     )

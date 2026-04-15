@@ -40,6 +40,7 @@ export function createCodexWebComposition(deps) {
     applyPendingPayloads: (...args) => applyPendingPayloads(...args),
     addChat: (...args) => addChat(...args),
     upsertProvisionalThreadItem: (...args) => upsertProvisionalThreadItem(...args),
+    recordWebTransportEvent: deps.recordWebTransportEvent,
     LAST_EVENT_ID_KEY: deps.LAST_EVENT_ID_KEY,
     transportMode: deps.transportMode,
   });

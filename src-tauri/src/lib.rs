@@ -10,6 +10,7 @@ mod lan_sync;
 mod orchestrator;
 mod platform;
 mod provider_switchboard;
+mod tailscale_diagnostics;
 
 use tauri::Manager;
 #[cfg(target_os = "windows")]
@@ -763,6 +764,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::record_app_startup_stage,
+            commands::record_web_transport_event,
             commands::record_ui_watchdog_heartbeat,
             commands::record_ui_trace,
             commands::record_ui_diagnostics_batch,
@@ -772,6 +774,7 @@ pub fn run() {
             commands::record_ui_frontend_error,
             commands::record_ui_invoke_result,
             commands::open_external_url,
+            commands::get_local_diagnostics,
             commands::get_event_log_entries,
             commands::get_event_log_entry_by_id,
             commands::get_event_log_years,
@@ -784,6 +787,7 @@ pub fn run() {
             commands::request_lan_remote_update,
             commands::request_lan_remote_update_same_version,
             commands::fetch_lan_peer_remote_update_debug,
+            commands::get_remote_peer_diagnostics,
             commands::set_followed_config_source,
             commands::clear_followed_config_source,
             commands::copy_provider_from_config_source,

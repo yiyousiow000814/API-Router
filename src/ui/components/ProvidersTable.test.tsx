@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { findLastErrorEventId, ProvidersTable } from './ProvidersTable'
-import type { Config, Status, UsageStatistics } from '../types'
+import type { Config, Status } from '../types'
 import { fmtWhen } from '../utils/format'
 
 function buildStatus(): Status {
@@ -346,46 +346,18 @@ describe('ProvidersTable', () => {
         last_reset_unix_ms: 1_000,
       },
     }
-    const usageStatistics: UsageStatistics = {
-      ok: true,
-      generated_at_unix_ms: 1_000,
-      window_hours: 24,
-      bucket_seconds: 300,
-      summary: {
-        total_requests: 10,
-        total_tokens: 1000,
-        input_tokens: 600,
-        output_tokens: 400,
-        unique_models: 1,
-        top_model: null,
-        estimated_total_cost_usd: 1.2,
-        by_model: [],
-        by_provider: [
-          {
-            provider: 'packycode',
-            requests: 10,
-            total_tokens: 1000,
-            estimated_total_cost_usd: 1.2,
-            estimated_avg_request_cost_usd: 0.12,
-            estimated_cost_request_count: 10,
-          },
-        ],
-        timeline: [],
-      },
-    }
-
     const html = renderToStaticMarkup(
       <ProvidersTable
         providers={['packycode']}
         status={status}
-        usageStatistics={usageStatistics}
         refreshingProviders={{}}
         onRefreshQuota={() => {}}
         onOpenLastErrorInEventLog={() => {}}
       />,
     )
 
-    expect(html).toContain('daily: $120.36 / $120')
+    expect(html).toContain('daily: $120 / $120')
+    expect(html).toContain('weekly: $200 / $300')
   })
 
   it('shows codex-for dashboard daily and monthly values', () => {

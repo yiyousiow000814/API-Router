@@ -33,6 +33,7 @@ import {
   parsePositiveAmount,
 } from './utils/currency'
 import { AppMainContent, preloadAppMainContentModules } from './components/AppMainContent'
+import { MonitoringPanel } from './components/MonitoringPanel'
 import { AppTopNav } from './components/AppTopNav'
 import { ProviderCapsMenuPortal } from './components/ProviderCapsMenuPortal'
 import { ProviderWsTooltipPortal } from './components/ProviderWsTooltipPortal'
@@ -100,6 +101,7 @@ type TopPage =
   | 'provider_switchboard'
   | 'event_log'
   | 'web_codex'
+  | 'monitor'
 const RAW_DRAFT_WINDOWS_KEY = '__draft_windows__'
 const RAW_DRAFT_WSL_KEY = '__draft_wsl2__'
 const RAW_DRAFT_STORAGE_KEY = 'ao.rawConfigDraft.shared.v1'
@@ -1794,45 +1796,48 @@ export default function App() {
             }`}
             ref={mainAreaRef}
           >
-            <AppMainContent
-              activePage={activePage}
-              status={status}
-              config={config}
-              providers={providers}
-              gatewayTokenPreview={gatewayTokenPreview}
-              onCopyToken={onCopyToken}
-              onShowGatewayRotate={onShowGatewayRotate}
-              onCodexLoginLogout={onCodexLoginLogout}
-              onCodexRefresh={onCodexRefresh}
-              codexRefreshing={codexRefreshing}
-              onCodexSwapAuthConfig={onCodexSwapAuthConfig}
-              onOpenCodexSwapOptions={onOpenCodexSwapOptions}
-              codexSwapTarget={codexSwapTarget}
-              codexSwapUseWindows={codexSwapUseWindows}
-              codexSwapUseWsl={codexSwapUseWsl}
-              onChangeCodexSwapTarget={setCodexSwapTarget}
-              codexSwapBadgeText={codexSwapBadge.badgeText}
-              codexSwapBadgeTitle={codexSwapBadge.badgeTitle}
-              routeMode={routeMode}
-              onRouteModeChange={setRouteMode}
-              override={override}
-              onOverrideChange={onOverrideChange}
-              onPreferredChange={(next) => void setPreferred(next)}
-              onOpenConfigModal={() => setConfigModalOpen(true)}
-              refreshingProviders={refreshingProviders}
-              onRefreshQuota={(name) => void refreshQuota(name)}
-              clientSessions={clientSessions ?? []}
-              updatingSessionPref={updatingSessionPref}
-              onSetSessionPreferred={(sessionId, provider) => void setSessionPreferred(sessionId, provider)}
-              onOpenLastErrorInEventLog={handleOpenLastErrorInEventLog}
-              eventLogSeedEvents={eventLogSeedEvents}
-              eventLogSeedDailyStats={[]}
-              eventLogFocusRequest={eventLogFocusRequest}
-              onEventLogFocusRequestHandled={handleEventLogFocusRequestHandled}
-              usageOverview={usageOverview}
-              usageProps={usageProps}
-              switchboardProps={switchboardProps}
-            />
+            {activePage === 'monitor' ? (
+              <MonitoringPanel status={status} gatewayTokenPreview={gatewayTokenPreview} />
+            ) : (
+              <AppMainContent
+                activePage={activePage}
+                status={status}
+                config={config}
+                providers={providers}
+                gatewayTokenPreview={gatewayTokenPreview}
+                onCopyToken={onCopyToken}
+                onShowGatewayRotate={onShowGatewayRotate}
+                onCodexLoginLogout={onCodexLoginLogout}
+                onCodexRefresh={onCodexRefresh}
+                codexRefreshing={codexRefreshing}
+                onCodexSwapAuthConfig={onCodexSwapAuthConfig}
+                onOpenCodexSwapOptions={onOpenCodexSwapOptions}
+                codexSwapTarget={codexSwapTarget}
+                codexSwapUseWindows={codexSwapUseWindows}
+                codexSwapUseWsl={codexSwapUseWsl}
+                onChangeCodexSwapTarget={setCodexSwapTarget}
+                codexSwapBadgeText={codexSwapBadge.badgeText}
+                codexSwapBadgeTitle={codexSwapBadge.badgeTitle}
+                routeMode={routeMode}
+                onRouteModeChange={setRouteMode}
+                override={override}
+                onOverrideChange={onOverrideChange}
+                onPreferredChange={(next) => void setPreferred(next)}
+                onOpenConfigModal={() => setConfigModalOpen(true)}
+                refreshingProviders={refreshingProviders}
+                onRefreshQuota={(name) => void refreshQuota(name)}
+                clientSessions={clientSessions ?? []}
+                updatingSessionPref={updatingSessionPref}
+                onSetSessionPreferred={(sessionId, provider) => void setSessionPreferred(sessionId, provider)}
+                onOpenLastErrorInEventLog={handleOpenLastErrorInEventLog}
+                eventLogSeedEvents={eventLogSeedEvents}
+                eventLogSeedDailyStats={[]}
+                eventLogFocusRequest={eventLogFocusRequest}
+                onEventLogFocusRequestHandled={handleEventLogFocusRequestHandled}
+                usageProps={usageProps}
+                switchboardProps={switchboardProps}
+              />
+            )}
           </div>
         </div>
       </div>

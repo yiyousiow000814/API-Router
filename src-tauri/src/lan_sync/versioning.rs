@@ -82,7 +82,7 @@ const LAN_VERSION_RULES: &[LanVersionRule] = &[
     },
     LanVersionRule {
         name: "lan_debug",
-        version: 1,
+        version: 2,
         kind: LanVersionKind::Capability,
         bump_rule: "Bump when LAN diagnostics/debug endpoints change incompatibly.",
     },

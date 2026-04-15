@@ -1,74 +1,9 @@
 #[cfg(windows)]
-const TAILSCALE_CREATE_NO_WINDOW: u32 = 0x08000000;
-
-#[cfg(windows)]
 use std::net::IpAddr;
-use std::net::{SocketAddr, TcpStream};
+#[cfg(test)]
+use std::net::SocketAddr;
 
-fn tailscale_hidden_command(program: &str) -> std::process::Command {
-    #[cfg(windows)]
-    let mut cmd = std::process::Command::new(program);
-    #[cfg(not(windows))]
-    let cmd = std::process::Command::new(program);
-    #[cfg(windows)]
-    {
-        std::os::windows::process::CommandExt::creation_flags(
-            &mut cmd,
-            TAILSCALE_CREATE_NO_WINDOW,
-        );
-    }
-    cmd
-}
-
-fn tailscale_status_json() -> Result<Value, String> {
-    let output = tailscale_hidden_command("tailscale")
-        .args(["status", "--json"])
-        .output()
-        .map_err(|_| "tailscale_not_found".to_string())?;
-    if !output.status.success() {
-        return Err("tailscale_not_connected".to_string());
-    }
-    serde_json::from_slice(&output.stdout).map_err(|_| "tailscale_bad_json".to_string())
-}
-
-fn parse_tailscale_summary(parsed: &Value) -> (bool, Option<String>, Vec<String>) {
-    let backend_state = parsed
-        .get("BackendState")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    let connected = matches!(backend_state, "Running" | "Starting");
-
-    let self_info = parsed.get("Self").cloned().unwrap_or(Value::Null);
-    let dns_name = self_info
-        .get("DNSName")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .trim()
-        .trim_end_matches('.')
-        .to_string();
-
-    let mut ipv4 = Vec::new();
-    if let Some(arr) = self_info.get("TailscaleIPs").and_then(|v| v.as_array()) {
-        for item in arr {
-            if let Some(ip) = item.as_str() {
-                if ip.contains('.') {
-                    ipv4.push(ip.to_string());
-                }
-            }
-        }
-    }
-
-    (
-        connected,
-        if dns_name.is_empty() { None } else { Some(dns_name) },
-        ipv4,
-    )
-}
-
-fn probe_gateway_addr(addr: SocketAddr) -> bool {
-    TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(180)).is_ok()
-}
-
+#[cfg(test)]
 fn resolve_reachable_gateway_ipv4(
     ipv4: &[String],
     listen_port: u16,
@@ -81,17 +16,6 @@ fn resolve_reachable_gateway_ipv4(
             probe(addr).then(|| ip.clone())
         })
         .collect()
-}
-
-async fn resolve_reachable_gateway_ipv4_blocking(
-    ipv4: Vec<String>,
-    listen_port: u16,
-) -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        resolve_reachable_gateway_ipv4(&ipv4, listen_port, probe_gateway_addr)
-    })
-    .await
-    .map_err(|err| format!("tailscale_probe_join_failed: {err}"))
 }
 
 #[cfg(windows)]
@@ -120,9 +44,12 @@ fn maybe_refresh_runtime_tailscale_listener(
     ) else {
         return 0;
     };
-    crate::orchestrator::gateway::ensure_runtime_gateway_listener_bindings(state.gateway.clone(), &addrs)
-        .map(|newly_bound| newly_bound.len())
-        .unwrap_or(0)
+    crate::orchestrator::gateway::ensure_runtime_gateway_listener_bindings(
+        state.gateway.clone(),
+        &addrs,
+    )
+    .map(|newly_bound| newly_bound.len())
+    .unwrap_or(0)
 }
 
 fn needs_gateway_restart(
@@ -138,47 +65,39 @@ fn needs_gateway_restart(
 pub(crate) async fn tailscale_status(
     state: tauri::State<'_, crate::app_state::AppState>,
 ) -> Result<Value, String> {
-    let parsed = tauri::async_runtime::spawn_blocking(tailscale_status_json)
-        .await
-        .map_err(|err| format!("tailscale_status_join_failed: {err}"))?;
-    let Ok(parsed) = parsed else {
-        let err = parsed.err().unwrap_or_default();
-        return Ok(serde_json::json!({
-            "ok": true,
-            "installed": err != "tailscale_not_found",
-            "connected": false,
-            "dnsName": Value::Null,
-            "ipv4": [],
-            "reachableIpv4": [],
-            "gatewayReachable": false,
-            "needsGatewayRestart": false,
-            "downloadUrl": "https://tailscale.com/download",
-        }));
-    };
-    let (connected, dns_name, ipv4) = parse_tailscale_summary(&parsed);
     let listen_port = state.gateway.cfg.read().listen.port;
+    // Wrap blocking I/O (CLI call + TCP probes) in spawn_blocking to avoid blocking tokio
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
+        crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot_uncached(listen_port)
+    })
+    .await
+    .map_err(|err| format!("tailscale_snapshot_failed: {err}"))?;
     #[cfg(windows)]
     let runtime_binding_in_progress = {
-        let initial_reachable_ipv4 = if connected {
-            resolve_reachable_gateway_ipv4_blocking(ipv4.clone(), listen_port).await?
-        } else {
-            Vec::new()
-        };
         maybe_refresh_runtime_tailscale_listener(
             &state,
-            connected,
-            &ipv4,
-            !initial_reachable_ipv4.is_empty(),
+            snapshot.connected,
+            &snapshot.ipv4,
+            snapshot.gateway_reachable,
         ) > 0
     };
     #[cfg(not(windows))]
     let runtime_binding_in_progress = false;
-    let reachable_ipv4 = if connected {
-        resolve_reachable_gateway_ipv4_blocking(ipv4.clone(), listen_port).await?
+    #[cfg(windows)]
+    let snapshot = if runtime_binding_in_progress {
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot_uncached(listen_port)
+        })
+        .await
+        .map_err(|err| format!("tailscale_snapshot_refresh_failed: {err}"))?
     } else {
-        Vec::new()
+        snapshot
     };
-    let gateway_reachable = !reachable_ipv4.is_empty();
+    let connected = snapshot.connected;
+    let ipv4 = snapshot.ipv4.clone();
+    let dns_name = snapshot.dns_name.clone();
+    let reachable_ipv4 = snapshot.reachable_ipv4.clone();
+    let gateway_reachable = snapshot.gateway_reachable;
     let needs_gateway_restart = needs_gateway_restart(
         connected,
         &ipv4,
@@ -188,31 +107,21 @@ pub(crate) async fn tailscale_status(
 
     Ok(serde_json::json!({
         "ok": true,
-        "installed": true,
+        "installed": snapshot.installed,
         "connected": connected,
+        "backendState": snapshot.backend_state,
         "dnsName": dns_name.map(Value::String).unwrap_or(Value::Null),
         "ipv4": ipv4,
         "reachableIpv4": reachable_ipv4,
         "gatewayReachable": gateway_reachable,
         "needsGatewayRestart": needs_gateway_restart,
+        "statusError": snapshot.status_error,
+        "commandPath": snapshot.command_path,
+        "commandSource": snapshot.command_source,
+        "probe": snapshot.probe,
+        "bootstrap": snapshot.bootstrap,
         "downloadUrl": "https://tailscale.com/download",
     }))
-}
-
-#[cfg(test)]
-#[test]
-fn parses_connected_tailscale_ipv4_summary() {
-    let parsed = serde_json::json!({
-        "BackendState": "Running",
-        "Self": {
-            "DNSName": "desktop-kk6sa2d-1.tail997985.ts.net.",
-            "TailscaleIPs": ["100.64.208.117", "fd7a:115c:a1e0::201:d089"]
-        }
-    });
-    let (connected, dns_name, ipv4) = parse_tailscale_summary(&parsed);
-    assert!(connected);
-    assert_eq!(dns_name.as_deref(), Some("desktop-kk6sa2d-1.tail997985.ts.net"));
-    assert_eq!(ipv4, vec!["100.64.208.117"]);
 }
 
 #[cfg(test)]

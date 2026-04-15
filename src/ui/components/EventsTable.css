@@ -190,7 +190,7 @@
   pointer-events: none;
   touch-action: none;
   transition: opacity 140ms ease;
-  z-index: 2;
+  z-index: var(--z-scroll-overlay);
 }
 
 .aoEventsScrollbarOverlayVisible {

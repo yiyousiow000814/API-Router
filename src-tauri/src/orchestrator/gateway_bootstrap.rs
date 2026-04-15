@@ -76,7 +76,7 @@ fn gateway_listen_addrs_with_overlays(
 }
 
 #[cfg(windows)]
-fn tailscale_hidden_command(program: &str) -> Command {
+fn tailscale_hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut cmd = Command::new(program);
     std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x08000000);
     cmd
@@ -121,9 +121,10 @@ fn write_gateway_bootstrap_diag(stage: &str, detail: Option<&str>) {
 #[cfg(windows)]
 fn detected_tailscale_ipv4_addrs() -> Vec<IpAddr> {
     write_gateway_bootstrap_diag("tailscale_ipv4_detect_start", None);
-    let output = tailscale_hidden_command("tailscale")
-        .args(["ip", "-4"])
-        .output();
+    let output =
+        tailscale_hidden_command(crate::tailscale_diagnostics::resolve_tailscale_command_path())
+            .args(["ip", "-4"])
+            .output();
     let Ok(output) = output else {
         write_gateway_bootstrap_diag("tailscale_ipv4_detect_unavailable", None);
         return Vec::new();

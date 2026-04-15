@@ -1,6 +1,5 @@
 import { fmtAmount, fmtPct, fmtUsd, fmtWhen, pctOf } from '../utils/format'
-import type { Config, Status, UsageStatistics, UsageStatisticsOverview } from '../types'
-import { simulateQuotaForDisplay } from '../utils/quotaSimulation'
+import type { Config, Status } from '../types'
 
 const mono = 'ui-monospace, "Cascadia Mono", "Consolas", monospace'
 
@@ -47,7 +46,6 @@ type Props = {
   providers: string[]
   status: Status
   config?: Config | null
-  usageStatistics?: UsageStatistics | UsageStatisticsOverview | null
   refreshingProviders: Record<string, boolean>
   onRefreshQuota: (provider: string) => void
   onOpenLastErrorInEventLog: (payload: LastErrorJump) => void
@@ -57,7 +55,6 @@ export function ProvidersTable({
   providers,
   status,
   config = null,
-  usageStatistics = null,
   refreshingProviders,
   onRefreshQuota,
   onOpenLastErrorInEventLog,
@@ -91,12 +88,7 @@ export function ProvidersTable({
           const h = status.providers[p]
           const lastErrorEventId = resolveLastErrorEventId(h, status.recent_events, p)
           const isOffline = localNetworkOffline
-          const q = simulateQuotaForDisplay(
-            p,
-            status.quota?.[p],
-            status.projected_ledgers?.[p] ?? status.ledgers?.[p],
-            usageStatistics,
-          )
+          const q = status.quota?.[p]
           const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info' | 'balance_info'
           const quotaHardCap = config?.providers?.[p]?.quota_hard_cap ?? { daily: true, weekly: true, monthly: true }
           const isClosed = h.status === 'closed'
