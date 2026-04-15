@@ -158,7 +158,7 @@ async fn current_tailscale_snapshot_for_status(
         Ok(snapshot) => snapshot,
         Err(err) => {
             log::warn!("tailscale snapshot failed, returning fallback: {err}");
-            fallback_tailscale_snapshot(Some(format!("snapshot_failed: {err}")))
+            fallback_tailscale_snapshot(Some("tailscale_snapshot_failed".to_string()))
         }
     }
 }

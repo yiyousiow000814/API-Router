@@ -261,6 +261,39 @@ describe('MonitoringPanel', () => {
     ).toBe('C:\\Program Files\\Tailscale\\tailscale.exe (service image path)')
   })
 
+  it('shows snapshot failed rather than not installed when status polling falls back', () => {
+    const html = renderToStaticMarkup(
+      <MonitoringPanel
+        status={{
+          tailscale: {
+            installed: false,
+            connected: false,
+            backend_state: null,
+            dns_name: null,
+            ipv4: [],
+            reachable_ipv4: [],
+            gateway_reachable: false,
+            needs_gateway_restart: false,
+            status_error: 'tailscale_snapshot_failed',
+            command_path: '',
+            command_source: '',
+            probe: {
+              attempts: [],
+              selected_command_path: null,
+              selected_command_source: null,
+            },
+            bootstrap: null,
+          } as any,
+          lan_sync: { peers: [] },
+        } as any}
+        gatewayTokenPreview=""
+      />,
+    )
+
+    expect(html).toContain('Snapshot failed')
+    expect(html).not.toContain('Not installed')
+  })
+
   it('keeps remote peer polling and refresh controls aligned with the dashboard refresh affordance', () => {
     const source = fs.readFileSync(new URL('./MonitoringPanel.tsx', import.meta.url), 'utf8')
 

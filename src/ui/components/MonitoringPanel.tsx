@@ -571,6 +571,8 @@ function getTailscaleHeadline(summary: TailscaleSummary | null | undefined): str
   if (!summary) return 'Unknown'
   if (!summary.installed) {
     switch (summary.status_error) {
+      case 'tailscale_snapshot_failed':
+        return 'Snapshot failed'
       case 'tailscale_launch_blocked':
         return 'Launch blocked'
       case 'tailscale_launch_failed':
@@ -593,6 +595,8 @@ function getTailscaleStatusPresentation(summary: TailscaleSummary | null | undef
   if (summary.gateway_reachable) return { tone: 'healthy', label: 'healthy', pulse: true }
   if (summary.installed === false) {
     switch (summary.status_error) {
+      case 'tailscale_snapshot_failed':
+        return { tone: 'warn', label: 'Snapshot failed' }
       case 'tailscale_launch_blocked':
         return { tone: 'warn', label: 'Launch blocked' }
       case 'tailscale_launch_failed':
@@ -683,6 +687,8 @@ function formatTailscaleProbeStatus(summary: TailscaleSummary | null | undefined
   const code = summary?.status_error?.trim()
   if (!code) return null
   switch (code) {
+    case 'tailscale_snapshot_failed':
+      return 'snapshot failed'
     case 'tailscale_not_found':
       return 'CLI not found'
     case 'tailscale_launch_blocked':
