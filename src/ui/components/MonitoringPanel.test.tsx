@@ -9,7 +9,9 @@ import {
   isMonitoringDevPreview,
   MonitoringPanel,
   getWebTransportHealth,
+  getWatchdogStatusPresentation,
   peerSupportsLanDiagnostics,
+  type WatchdogSummary,
   type WebTransportDomainSnapshot,
 } from './MonitoringPanel'
 
@@ -137,6 +139,43 @@ describe('MonitoringPanel', () => {
         now,
       ),
     ).toBe('healthy')
+  })
+
+  it('treats watchdog health as the latest activity bucket only', () => {
+    const baseSummary: WatchdogSummary = {
+      healthy: false,
+      incident_count: 3,
+      activity_window_minutes: 720,
+      activity_bucket_minutes: 5,
+      activity_buckets: [
+        { bucket_start_unix_ms: 1_700_000_000_000, bucket_end_unix_ms: 1_700_000_300_000, count: 2 },
+        { bucket_start_unix_ms: 1_700_000_300_000, bucket_end_unix_ms: 1_700_000_600_000, count: 0 },
+      ],
+      last_incident_kind: 'heartbeat-stall',
+      last_incident_detail: 'UI heartbeat stalled',
+      last_incident_unix_ms: 1_700_000_100_000,
+      last_incident_file: 'ui-freeze-1700000100000-heartbeat-stall.json',
+      recent_incidents: [],
+    }
+
+    expect(getWatchdogStatusPresentation(baseSummary)).toEqual({
+      tone: 'healthy',
+      label: 'healthy',
+      pulse: true,
+    })
+
+    expect(
+      getWatchdogStatusPresentation({
+        ...baseSummary,
+        activity_buckets: [
+          { bucket_start_unix_ms: 1_700_000_000_000, bucket_end_unix_ms: 1_700_000_300_000, count: 0 },
+          { bucket_start_unix_ms: 1_700_000_300_000, bucket_end_unix_ms: 1_700_000_600_000, count: 2 },
+        ],
+      }),
+    ).toEqual({
+      tone: 'warn',
+      label: 'Attention',
+    })
   })
 
   it('formats incident kinds into human-readable labels', () => {

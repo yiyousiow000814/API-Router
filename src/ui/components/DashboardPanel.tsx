@@ -4,7 +4,7 @@ import { DashboardProvidersSection } from './DashboardProvidersSection'
 import { DashboardSessionsSection } from './DashboardSessionsSection'
 import { LoadingSurface } from './LoadingSurface'
 import type { LastErrorJump } from './ProvidersTable'
-import type { Config, Status, UsageStatisticsOverview } from '../types'
+import type { Config, Status } from '../types'
 import './DashboardPanel.css'
 
 type Props = {
@@ -34,7 +34,6 @@ type Props = {
   refreshingProviders: Record<string, boolean>
   onRefreshQuota: (provider: string) => void
   onOpenLastErrorInEventLog: (payload: LastErrorJump) => void
-  usageOverview?: UsageStatisticsOverview | null
   clientSessions: NonNullable<Status['client_sessions']>
   updatingSessionPref: Record<string, boolean>
   onSetSessionPreferred: (sessionId: string, provider: string | null) => void
@@ -67,7 +66,6 @@ export function DashboardPanel({
   refreshingProviders,
   onRefreshQuota,
   onOpenLastErrorInEventLog,
-  usageOverview,
   clientSessions,
   updatingSessionPref,
   onSetSessionPreferred,
@@ -145,7 +143,6 @@ export function DashboardPanel({
             onRefreshQuota={onRefreshQuota}
             onOpenConfigModal={onOpenConfigModal}
             onOpenLastErrorInEventLog={onOpenLastErrorInEventLog}
-            usageOverview={usageOverview ?? null}
           />
 
           <DashboardSessionsSection

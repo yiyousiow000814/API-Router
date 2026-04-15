@@ -125,6 +125,12 @@ function formatWatchdogActivityBucketDetail(bucket: WatchdogActivityBucket): str
   return `${bucket.count} incident${bucket.count === 1 ? '' : 's'}`
 }
 
+function getWatchdogLatestActivityBucketCount(summary: WatchdogSummary | null | undefined): number | null {
+  const latestBucket = summary?.activity_buckets?.at(-1)
+  if (!latestBucket) return null
+  return Number.isFinite(latestBucket.count) ? latestBucket.count : null
+}
+
 function makeWatchdogActivityCounts(spikes: Array<[number, number]>): number[] {
   const counts = Array.from({ length: WATCHDOG_ACTIVITY_BUCKET_COUNT }, () => 0)
   for (const [index, value] of spikes) {
@@ -988,9 +994,15 @@ function WebTransportMetricCard({
   )
 }
 
-function getWatchdogStatusPresentation(summary: WatchdogSummary | null | undefined): StatusPresentation | null {
+export function getWatchdogStatusPresentation(summary: WatchdogSummary | null | undefined): StatusPresentation | null {
   if (!summary) return null
-  return summary.healthy ? { tone: 'healthy', label: 'healthy', pulse: true } : { tone: 'degraded', label: 'Degraded' }
+  const latestBucketCount = getWatchdogLatestActivityBucketCount(summary)
+  if (latestBucketCount == null) {
+    return summary.healthy ? { tone: 'healthy', label: 'healthy', pulse: true } : { tone: 'degraded', label: 'Degraded' }
+  }
+  if (latestBucketCount >= 5) return { tone: 'degraded', label: 'Degraded' }
+  if (latestBucketCount > 0) return { tone: 'warn', label: 'Attention' }
+  return { tone: 'healthy', label: 'healthy', pulse: true }
 }
 
 function WebTransportSection({ snapshot, loading }: WtSectionProps) {
@@ -1204,7 +1216,7 @@ function TailscaleSection({ summary, loading }: TailscaleSectionProps) {
 interface PeerDiagEntry {
   node_id: string
   node_name: string
-  health: 'healthy' | 'degraded' | 'unknown'
+  health: 'healthy' | 'warn' | 'degraded' | 'unknown'
   last_incident: string | null
   fetched_at: number
   tailscale: TailscaleSummary | null
@@ -1214,6 +1226,7 @@ interface PeerDiagEntry {
 
 function getPeerHealthPresentation(health: PeerDiagEntry['health']): StatusPresentation {
   if (health === 'healthy') return { tone: 'healthy', label: 'healthy', pulse: true }
+  if (health === 'warn') return { tone: 'warn', label: 'Attention' }
   if (health === 'degraded') return { tone: 'degraded', label: 'Degraded' }
   return { tone: 'unknown', label: 'unknown' }
 }
@@ -1327,10 +1340,18 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
             | undefined
           const wts = diag.domains?.webtransport as WebTransportDomainSnapshot | undefined
           const ts = diag.domains?.tailscale as TailscaleSummary | undefined
+          const wdStatus = getWatchdogStatusPresentation(wd ?? null)
           entries.push({
             node_id: peer.node_id,
             node_name: peer.node_name,
-          health: wd?.healthy === false ? 'degraded' : wd?.healthy === true ? 'healthy' : 'unknown',
+            health:
+              wdStatus?.tone === 'healthy'
+                ? 'healthy'
+                : wdStatus?.tone === 'warn'
+                  ? 'warn'
+                  : wdStatus?.tone === 'degraded'
+                    ? 'degraded'
+                    : 'unknown',
             last_incident: wd?.last_incident_kind ?? null,
             fetched_at: now,
             tailscale: ts ?? peer.tailscale ?? null,
@@ -1887,9 +1908,11 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
                 {watchdog !== null ? (
                   <>
                     <div>
-                      {watchdog.healthy
+                      {localWatchdogStatus?.tone === 'healthy'
                         ? 'All systems healthy'
-                        : `${watchdog.incident_count} incident(s), last: ${formatIncidentKind(watchdog.last_incident_kind)}`}
+                        : localWatchdogStatus?.tone === 'warn'
+                          ? `Latest 5m bar shows attention (${watchdog.incident_count} incident(s))`
+                          : `${watchdog.incident_count} incident(s), last: ${formatIncidentKind(watchdog.last_incident_kind)}`}
                     </div>
                     {watchdog.last_incident_unix_ms && (
                       <div style={{ marginTop: 2, fontSize: 11 }}>
@@ -1967,7 +1990,8 @@ function ActiveAbnormalConditions({ watchdog, wtSnapshot, tailscale }: AbnormCon
   const conditions: Cond[] = []
 
   // Watchdog
-  if (watchdog && !watchdog.healthy && watchdog.last_incident_kind) {
+  const watchdogStatus = getWatchdogStatusPresentation(watchdog)
+  if (watchdog && watchdogStatus?.tone === 'degraded' && watchdog.last_incident_kind) {
     conditions.push({
       kind: watchdog.last_incident_detail ?? formatIncidentKind(watchdog.last_incident_kind),
       severity: 'error',

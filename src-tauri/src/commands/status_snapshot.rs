@@ -115,6 +115,25 @@ fn elapsed_ms_since(started_at: std::time::Instant) -> u64 {
     started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
+async fn run_blocking_snapshot<T, F>(snapshot_fn: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(snapshot_fn)
+        .await
+        .map_err(|err| format!("blocking_snapshot_failed: {err}"))
+}
+
+async fn current_tailscale_snapshot_for_status(
+    listen_port: u16,
+) -> Result<crate::tailscale_diagnostics::TailscaleDiagnosticSnapshot, String> {
+    run_blocking_snapshot(move || {
+        crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(listen_port)
+    })
+    .await
+}
+
 fn load_visible_last_error_events_with_cache(
     store: &crate::orchestrator::store::Store,
     config_path: &std::path::Path,
@@ -175,10 +194,10 @@ fn write_dashboard_status_slow_diag(
 }
 
 #[tauri::command]
-pub(crate) fn get_status(
+pub(crate) async fn get_status(
     state: tauri::State<'_, app_state::AppState>,
     detail_level: Option<String>,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, String> {
     let command_started_at = std::time::Instant::now();
     let mut phase_timings_ms = serde_json::Map::new();
     let dashboard_detail = detail_level
@@ -308,7 +327,7 @@ pub(crate) fn get_status(
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
     let phase_started_at = std::time::Instant::now();
-    let tailscale = crate::tailscale_diagnostics::current_tailscale_diagnostic_snapshot(cfg.listen.port);
+    let tailscale = current_tailscale_snapshot_for_status(cfg.listen.port).await?;
     phase_timings_ms.insert(
         "tailscale_snapshot".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
@@ -454,7 +473,7 @@ pub(crate) fn get_status(
             &phase_timings_ms,
         );
     }
-    response
+    Ok(response)
 }
 
 fn config_revision(state: &app_state::AppState, cfg: &crate::orchestrator::config::AppConfig) -> String {
@@ -1575,6 +1594,7 @@ pub(crate) fn get_event_log_daily_stats(
 
 #[cfg(test)]
 mod tests {
+    use super::run_blocking_snapshot;
     use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
     use crate::commands::{
         attach_visible_last_error_event_ids,
@@ -1802,6 +1822,23 @@ mod tests {
                 .and_then(|snapshot| snapshot.last_error_event_id.as_deref()),
             Some("evt-visible-codex-error")
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_blocking_snapshot_uses_a_separate_thread() {
+        let outer_thread_id = std::thread::current().id();
+        let value = run_blocking_snapshot(move || {
+            let inner_thread_id = std::thread::current().id();
+            assert_ne!(
+                inner_thread_id, outer_thread_id,
+                "blocking snapshot should run on a blocking worker thread"
+            );
+            42_u8
+        })
+        .await
+        .expect("blocking snapshot");
+
+        assert_eq!(value, 42);
     }
 
     #[test]

@@ -8,10 +8,8 @@ use crate::diagnostics::current_diagnostics_dir;
 use crate::diagnostics::WATCHDOG_DUMP_PREFIXES;
 use crate::lan_sync::authorize_lan_sync_http_request;
 
-const WATCHDOG_HEALTH_WINDOW_MINUTES: u64 = 60;
 const WATCHDOG_ACTIVITY_WINDOW_MINUTES: u64 = 12 * 60;
 const WATCHDOG_ACTIVITY_BUCKET_MINUTES: u64 = 5;
-const WATCHDOG_HEALTH_WINDOW_MS: u64 = WATCHDOG_HEALTH_WINDOW_MINUTES * 60_000;
 const WATCHDOG_ACTIVITY_WINDOW_MS: u64 = WATCHDOG_ACTIVITY_WINDOW_MINUTES * 60_000;
 const WATCHDOG_ACTIVITY_BUCKET_MS: u64 = WATCHDOG_ACTIVITY_BUCKET_MINUTES * 60_000;
 const WATCHDOG_ACTIVITY_BUCKETS: usize =
@@ -160,16 +158,18 @@ pub fn watchdog_summary() -> serde_json::Value {
 
     watchdog_files.sort_by_key(|(ts, _, _, _)| *ts);
     let activity_cutoff = now_ms.saturating_sub(WATCHDOG_ACTIVITY_WINDOW_MS);
-    let health_cutoff = now_ms.saturating_sub(WATCHDOG_HEALTH_WINDOW_MS);
     let activity_watchdog_files: Vec<(u64, String, String, String)> = watchdog_files
         .iter()
         .filter(|(ts, _, _, _)| *ts >= activity_cutoff)
         .cloned()
         .collect();
     let activity_buckets = build_watchdog_activity_buckets(now_ms, &activity_watchdog_files);
-    let is_healthy = !watchdog_files
-        .iter()
-        .any(|(ts, _, _, _)| *ts >= health_cutoff);
+    let latest_bucket_count = activity_buckets
+        .last()
+        .and_then(|bucket| bucket.get("count"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let is_healthy = latest_bucket_count == 0;
 
     if activity_watchdog_files.is_empty() {
         return empty_watchdog_summary(activity_buckets);
@@ -206,7 +206,7 @@ pub fn watchdog_summary() -> serde_json::Value {
         "last_incident_detail": last_incident_detail,
         "incident_count": incident_count,
         "recent_incidents": recent_incidents,
-        "health_window_minutes": WATCHDOG_HEALTH_WINDOW_MINUTES,
+        "health_window_minutes": WATCHDOG_ACTIVITY_BUCKET_MINUTES,
         "activity_window_minutes": WATCHDOG_ACTIVITY_WINDOW_MINUTES,
         "activity_bucket_minutes": WATCHDOG_ACTIVITY_BUCKET_MINUTES,
         "activity_buckets": activity_buckets,
@@ -222,7 +222,7 @@ fn empty_watchdog_summary(activity_buckets: Vec<serde_json::Value>) -> serde_jso
         "last_incident_detail": serde_json::Value::Null,
         "incident_count": 0,
         "recent_incidents": [],
-        "health_window_minutes": WATCHDOG_HEALTH_WINDOW_MINUTES,
+        "health_window_minutes": WATCHDOG_ACTIVITY_BUCKET_MINUTES,
         "activity_window_minutes": WATCHDOG_ACTIVITY_WINDOW_MINUTES,
         "activity_bucket_minutes": WATCHDOG_ACTIVITY_BUCKET_MINUTES,
         "activity_buckets": activity_buckets,
@@ -824,6 +824,51 @@ mod tests {
                 })
                 .unwrap_or(1),
             0
+        );
+    }
+
+    #[test]
+    fn watchdog_summary_marks_recent_history_healthy_when_latest_bucket_is_clear() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let diag_dir = tmp.path().join("diagnostics");
+        std::fs::create_dir_all(&diag_dir).expect("create diag dir");
+        let now = unix_ms();
+
+        std::fs::write(
+            diag_dir.join(format!(
+                "ui-freeze-{}-heartbeat-stall.json",
+                now.saturating_sub(7 * 60_000)
+            )),
+            "{}",
+        )
+        .expect("write file 1");
+        std::fs::write(
+            diag_dir.join(format!(
+                "slow-refresh-{}-status.json",
+                now.saturating_sub(6 * 60_000)
+            )),
+            "{}",
+        )
+        .expect("write file 2");
+
+        let result = watchdog_summary_for_user_data_dir(tmp.path());
+
+        assert_eq!(result.get("healthy").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            result
+                .get("incident_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            2
+        );
+        assert_eq!(
+            result
+                .get("activity_buckets")
+                .and_then(|v| v.as_array())
+                .and_then(|buckets| buckets.last())
+                .and_then(|bucket| bucket.get("count"))
+                .and_then(|count| count.as_u64()),
+            Some(0)
         );
     }
 

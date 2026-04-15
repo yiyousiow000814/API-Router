@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildCodexSwapBadge, buildSwitchboardProviderCards } from './switchboard'
-import type { Config, ProviderSwitchboardStatus, Status, UsageStatistics } from '../types'
+import type { Config, ProviderSwitchboardStatus, Status } from '../types'
 
 describe('buildCodexSwapBadge', () => {
   it('returns Mixed when scoped provider dirs use different providers', () => {
@@ -41,7 +41,7 @@ describe('buildCodexSwapBadge', () => {
     expect(badge.badgeText).toBe('DP:packycode')
   })
 
-  it('uses live ledgers for usage projection', () => {
+  it('uses raw quota snapshots for usage display', () => {
     const config: Config = {
       listen: { host: '127.0.0.1', port: 4000 },
       routing: {
@@ -95,41 +95,13 @@ describe('buildCodexSwapBadge', () => {
       last_activity_unix_ms: 1_000,
       codex_account: { ok: false },
     }
-    const usageStatistics: UsageStatistics = {
-      ok: true,
-      generated_at_unix_ms: 1_000,
-      window_hours: 24,
-      bucket_seconds: 300,
-      summary: {
-        total_requests: 10,
-        total_tokens: 1000,
-        input_tokens: 600,
-        output_tokens: 400,
-        unique_models: 1,
-        top_model: null,
-        estimated_total_cost_usd: 1.2,
-        by_model: [],
-        by_provider: [
-          {
-            provider: 'packycode',
-            requests: 10,
-            total_tokens: 1000,
-            estimated_total_cost_usd: 1.2,
-            estimated_avg_request_cost_usd: 0.12,
-            estimated_cost_request_count: 10,
-          },
-        ],
-        timeline: [],
-      },
-    }
-
-    const cards = buildSwitchboardProviderCards(['packycode'], config, status, usageStatistics, {
+    const cards = buildSwitchboardProviderCards(['packycode'], config, status, {
       fmtPct: (value) => `${Math.round((value ?? 0) * 100)}%`,
       fmtAmount: (value) => `${value ?? 0}`,
       fmtUsd: (value) => `${value ?? 0}`,
       pctOf: (value, total) => (value != null && total ? value / total : null),
     })
 
-    expect(cards[0]?.usageDetail).toContain('5.12')
+    expect(cards[0]?.usageDetail).toBe('Daily $5 / $20')
   })
 })

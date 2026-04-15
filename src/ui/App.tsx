@@ -1834,7 +1834,6 @@ export default function App() {
                 eventLogSeedDailyStats={[]}
                 eventLogFocusRequest={eventLogFocusRequest}
                 onEventLogFocusRequestHandled={handleEventLogFocusRequestHandled}
-                usageOverview={usageOverview}
                 usageProps={usageProps}
                 switchboardProps={switchboardProps}
               />
