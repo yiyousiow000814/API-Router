@@ -27,6 +27,26 @@ export interface WatchdogSummary {
     file: string
     detail?: string | null
   }>
+  live_frontend?: {
+    last_heartbeat_unix_ms: number
+    heartbeat_age_ms: number
+    active_page: string
+    visible: boolean
+    status_in_flight: boolean
+    config_in_flight: boolean
+    provider_switch_in_flight: boolean
+    stalled: boolean
+  }
+  live_backend_status?: {
+    in_flight: boolean
+    detail_level?: string | null
+    started_unix_ms?: number | null
+    last_progress_unix_ms?: number | null
+    last_finished_unix_ms?: number | null
+    phase?: string | null
+    progress_age_ms?: number | null
+    stalled: boolean
+  }
 }
 
 export interface EventCount {
@@ -181,6 +201,26 @@ const DEV_PREVIEW_WATCHDOG_SUMMARY: WatchdogSummary = {
   last_incident_detail: 'UI heartbeat stalled',
   last_incident_unix_ms: 1_700_000_002_000,
   last_incident_file: 'ui-freeze-1700000002000-heartbeat-stall.json',
+  live_frontend: {
+    last_heartbeat_unix_ms: 1_700_000_002_300,
+    heartbeat_age_ms: 700,
+    active_page: 'dashboard',
+    visible: true,
+    status_in_flight: true,
+    config_in_flight: false,
+    provider_switch_in_flight: false,
+    stalled: false,
+  },
+  live_backend_status: {
+    in_flight: true,
+    detail_level: 'dashboard',
+    started_unix_ms: 1_700_000_002_100,
+    last_progress_unix_ms: 1_700_000_002_350,
+    last_finished_unix_ms: 1_700_000_001_900,
+    phase: 'client_sessions',
+    progress_age_ms: 650,
+    stalled: false,
+  },
   recent_incidents: [
     {
       unix_ms: 1_700_000_002_000,
@@ -313,6 +353,26 @@ const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
       last_incident_detail: 'UI heartbeat stalled',
       last_incident_unix_ms: 1_700_000_001_800,
       last_incident_file: 'ui-freeze-1700000001800-heartbeat-stall.json',
+      live_frontend: {
+        last_heartbeat_unix_ms: 1_700_000_001_000,
+        heartbeat_age_ms: 7_500,
+        active_page: 'dashboard',
+        visible: true,
+        status_in_flight: true,
+        config_in_flight: false,
+        provider_switch_in_flight: false,
+        stalled: true,
+      },
+      live_backend_status: {
+        in_flight: true,
+        detail_level: 'dashboard',
+        started_unix_ms: 1_700_000_000_900,
+        last_progress_unix_ms: 1_700_000_001_100,
+        last_finished_unix_ms: 1_700_000_000_200,
+        phase: 'client_sessions',
+        progress_age_ms: 7_400,
+        stalled: true,
+      },
       recent_incidents: [
         {
           unix_ms: 1_700_000_001_800,
@@ -400,6 +460,26 @@ const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
       ),
       last_incident_kind: null,
       last_incident_detail: null,
+      live_frontend: {
+        last_heartbeat_unix_ms: 1_700_000_002_200,
+        heartbeat_age_ms: 600,
+        active_page: 'requests',
+        visible: true,
+        status_in_flight: false,
+        config_in_flight: false,
+        provider_switch_in_flight: false,
+        stalled: false,
+      },
+      live_backend_status: {
+        in_flight: false,
+        detail_level: null,
+        started_unix_ms: null,
+        last_progress_unix_ms: null,
+        last_finished_unix_ms: 1_700_000_002_050,
+        phase: null,
+        progress_age_ms: null,
+        stalled: false,
+      },
       recent_incidents: [],
     },
     webtransport: {
@@ -434,6 +514,17 @@ function fmtAge(unixMs: number): string {
 function fmtTs(unixMs: number): string {
   if (!unixMs) return '—'
   return new Date(unixMs).toLocaleTimeString()
+}
+
+function fmtElapsed(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms)) return '—'
+  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`
+  const secs = Math.floor(ms / 1000)
+  if (secs < 60) return `${secs}s`
+  const mins = Math.floor(secs / 60)
+  if (mins < 60) return `${mins}m`
+  const hrs = Math.floor(mins / 60)
+  return `${hrs}h`
 }
 
 type StatusTone = 'healthy' | 'degraded' | 'warn' | 'unknown'
@@ -641,6 +732,63 @@ function formatTailscaleProbeSource(source: TailscaleProbeSource | string | null
   }
 }
 
+function getWatchdogPhaseLabel(phase: string | null | undefined): string | null {
+  if (!phase) return null
+  return formatIncidentKind(phase)
+}
+
+function getWatchdogLiveHeadline(summary: WatchdogSummary | null | undefined): string | null {
+  if (!summary) return null
+  const frontend = summary.live_frontend
+  const backend = summary.live_backend_status
+  const phaseLabel = getWatchdogPhaseLabel(backend?.phase)
+
+  if (frontend?.stalled && backend?.in_flight && backend?.stalled) {
+    return phaseLabel
+      ? `UI stalled after backend status refresh stalled at ${phaseLabel}`
+      : 'UI stalled after backend status refresh stalled'
+  }
+  if (frontend?.stalled && backend?.in_flight) {
+    return phaseLabel
+      ? `UI stalled while backend status refresh was active at ${phaseLabel}`
+      : 'UI stalled while backend status refresh was active'
+  }
+  if (frontend?.stalled) {
+    return 'UI heartbeat is currently stalled'
+  }
+  if (backend?.stalled) {
+    return phaseLabel
+      ? `Backend status refresh stalled at ${phaseLabel}`
+      : 'Backend status refresh stalled'
+  }
+  if (backend?.in_flight) {
+    return phaseLabel
+      ? `Backend status refresh active at ${phaseLabel}`
+      : 'Backend status refresh active'
+  }
+  return null
+}
+
+function getWatchdogLiveDetail(summary: WatchdogSummary | null | undefined): string | null {
+  if (!summary) return null
+  const frontend = summary.live_frontend
+  const backend = summary.live_backend_status
+
+  if (backend?.stalled && backend.progress_age_ms != null) {
+    return `No backend progress for ${fmtElapsed(backend.progress_age_ms)}`
+  }
+  if (backend?.in_flight && backend.progress_age_ms != null) {
+    return `Last backend progress ${fmtElapsed(backend.progress_age_ms)} ago`
+  }
+  if (frontend?.stalled && frontend.last_heartbeat_unix_ms) {
+    return `Heartbeat last seen ${fmtAge(frontend.last_heartbeat_unix_ms)}`
+  }
+  if (backend?.last_finished_unix_ms) {
+    return `Last backend refresh ${fmtAge(backend.last_finished_unix_ms)}`
+  }
+  return null
+}
+
 function formatTailscaleProbeOutcome(outcome: string | null | undefined): string {
   switch ((outcome || '').trim()) {
     case 'found':
@@ -760,6 +908,8 @@ function WatchdogSection({ summary, loading, showIncidents = true }: WatchdogSec
   const activityWindowLabel = formatWatchdogActivityWindow(activityWindowMinutes)
   const [hoveredBucket, setHoveredBucket] = useState<WatchdogActivityBucket | null>(null)
   const status = getWatchdogStatusPresentation(summary)
+  const liveHeadline = getWatchdogLiveHeadline(summary)
+  const liveDetail = getWatchdogLiveDetail(summary)
   return (
     <div className="aoCard" style={{ padding: '12px 14px' }}>
       <div className="aoCardHeader">
@@ -771,6 +921,18 @@ function WatchdogSection({ summary, loading, showIncidents = true }: WatchdogSec
           <div className="aoKvp">
             <span className="aoKey">incidents</span>
             <span className="aoVal">{summary.incident_count}</span>
+            {liveHeadline ? (
+              <>
+                <span className="aoKey">live status</span>
+                <span className="aoVal">{liveHeadline}</span>
+                {liveDetail ? (
+                  <>
+                    <span className="aoKey">live detail</span>
+                    <span className="aoVal aoValSmall">{liveDetail}</span>
+                  </>
+                ) : null}
+              </>
+            ) : null}
             {summary.last_incident_kind ? (
               <>
                 <span className="aoKey">last incident</span>
@@ -1002,12 +1164,19 @@ function WebTransportMetricCard({
 
 export function getWatchdogStatusPresentation(summary: WatchdogSummary | null | undefined): StatusPresentation | null {
   if (!summary) return null
+  if (summary.live_frontend?.stalled || summary.live_backend_status?.stalled) {
+    return { tone: 'degraded', label: 'Degraded' }
+  }
   const latestBucketCount = getWatchdogLatestActivityBucketCount(summary)
   if (latestBucketCount == null) {
+    if (summary.live_backend_status?.in_flight) {
+      return { tone: 'healthy', label: 'Refreshing', pulse: true }
+    }
     return summary.healthy ? { tone: 'healthy', label: 'healthy', pulse: true } : { tone: 'degraded', label: 'Degraded' }
   }
   if (latestBucketCount >= 5) return { tone: 'degraded', label: 'Degraded' }
   if (latestBucketCount > 0) return { tone: 'warn', label: 'Attention' }
+  if (summary.live_backend_status?.in_flight) return { tone: 'healthy', label: 'Refreshing', pulse: true }
   return { tone: 'healthy', label: 'healthy', pulse: true }
 }
 
@@ -1649,6 +1818,8 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
   const localTailscaleStatus = getTailscaleStatusPresentation(tailscale)
   const localWebTransportStatus = getWebTransportStatusPresentation(wtSnapshot)
   const localWatchdogStatus = getWatchdogStatusPresentation(watchdog)
+  const localWatchdogLiveHeadline = getWatchdogLiveHeadline(watchdog)
+  const localWatchdogLiveDetail = getWatchdogLiveDetail(watchdog)
 
   // Poll local diagnostics (watchdog + webtransport + tailscale) every 5s
   useEffect(() => {
@@ -1914,13 +2085,18 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
                 {watchdog !== null ? (
                   <>
                     <div>
-                      {localWatchdogStatus?.tone === 'healthy'
+                      {localWatchdogLiveHeadline
+                        ? localWatchdogLiveHeadline
+                        : localWatchdogStatus?.tone === 'healthy'
                         ? 'All systems healthy'
                         : localWatchdogStatus?.tone === 'warn'
                           ? `Latest 5m bar shows attention (${watchdog.incident_count} incident(s))`
                           : `${watchdog.incident_count} incident(s), last: ${formatIncidentKind(watchdog.last_incident_kind)}`}
                     </div>
-                    {watchdog.last_incident_unix_ms && (
+                    {localWatchdogLiveDetail ? (
+                      <div style={{ marginTop: 2, fontSize: 11 }}>{localWatchdogLiveDetail}</div>
+                    ) : null}
+                    {!localWatchdogLiveHeadline && watchdog.last_incident_unix_ms && (
                       <div style={{ marginTop: 2, fontSize: 11 }}>
                         {fmtAge(watchdog.last_incident_unix_ms ?? 0)}
                       </div>
@@ -1997,7 +2173,21 @@ function ActiveAbnormalConditions({ watchdog, wtSnapshot, tailscale }: AbnormCon
 
   // Watchdog
   const watchdogStatus = getWatchdogStatusPresentation(watchdog)
-  if (watchdog && watchdogStatus?.tone === 'degraded' && watchdog.last_incident_kind) {
+  const liveWatchdogHeadline = getWatchdogLiveHeadline(watchdog)
+  const liveWatchdogDetail = getWatchdogLiveDetail(watchdog)
+  if (watchdog && (watchdog.live_frontend?.stalled || watchdog.live_backend_status?.stalled)) {
+    conditions.push({
+      kind: liveWatchdogHeadline ?? 'Watchdog stalled',
+      severity: 'error',
+      domain: 'wd',
+      detail: liveWatchdogDetail ?? '',
+      age: watchdog.live_backend_status?.last_progress_unix_ms
+        ? fmtAge(watchdog.live_backend_status.last_progress_unix_ms)
+        : watchdog.live_frontend?.last_heartbeat_unix_ms
+          ? fmtAge(watchdog.live_frontend.last_heartbeat_unix_ms)
+          : undefined,
+    })
+  } else if (watchdog && watchdogStatus?.tone === 'degraded' && watchdog.last_incident_kind) {
     conditions.push({
       kind: watchdog.last_incident_detail ?? formatIncidentKind(watchdog.last_incident_kind),
       severity: 'error',

@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::commands::status_snapshot_support::dashboard_snapshot_cache::DashboardSnapshotCache;
 
 const DASHBOARD_STATUS_SNAPSHOT_CACHE_TTL_MS: u64 = 5_000;
+const DASHBOARD_LAST_ERROR_EVENT_MATCH_WINDOW_MS: u64 = 5 * 60 * 1000;
 
 fn status_client_sessions_trace_cache() -> &'static Mutex<Option<String>> {
     static CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -286,6 +287,39 @@ fn write_dashboard_status_slow_diag(
     let _ = std::fs::write(path, serde_json::to_vec_pretty(&diag).unwrap_or_default());
 }
 
+struct StatusWatchdogGuard<'a> {
+    watchdog: &'a app_state::UiWatchdogState,
+    finished: bool,
+}
+
+impl<'a> StatusWatchdogGuard<'a> {
+    fn start(watchdog: &'a app_state::UiWatchdogState, detail_level: &str) -> Self {
+        watchdog.record_backend_status_started(detail_level, unix_ms());
+        Self {
+            watchdog,
+            finished: false,
+        }
+    }
+
+    fn phase(&self, phase: &str) {
+        self.watchdog.record_backend_status_progress(phase, unix_ms());
+    }
+
+    fn finish(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.watchdog.record_backend_status_finished(unix_ms());
+        self.finished = true;
+    }
+}
+
+impl Drop for StatusWatchdogGuard<'_> {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
 #[tauri::command]
 pub(crate) fn get_status(
     state: tauri::State<'_, app_state::AppState>,
@@ -296,6 +330,12 @@ pub(crate) fn get_status(
     let dashboard_detail = detail_level
         .as_deref()
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("dashboard"));
+    let status_watchdog_detail = detail_level
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("full");
+    let mut status_watchdog = StatusWatchdogGuard::start(&state.ui_watchdog, status_watchdog_detail);
     let phase_started_at = std::time::Instant::now();
     let cfg = state.gateway.cfg.read().clone();
     let config_revision = config_revision(&state, &cfg);
@@ -306,6 +346,7 @@ pub(crate) fn get_status(
         "config_and_revision".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
+    status_watchdog.phase("config_and_revision");
     let now = unix_ms();
     let phase_started_at = std::time::Instant::now();
     state.gateway.router.sync_with_config(&cfg, now);
@@ -314,6 +355,7 @@ pub(crate) fn get_status(
         "router_snapshot".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
+    status_watchdog.phase("router_snapshot");
     let phase_started_at = std::time::Instant::now();
     let visible_event_log_entries = load_visible_last_error_events_with_cache(
         &state.gateway.store,
@@ -325,6 +367,7 @@ pub(crate) fn get_status(
         "visible_last_error_events".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
+    status_watchdog.phase("visible_last_error_events");
     let manual_override = state.gateway.router.manual_override.read().clone();
     // Keep status payload small: expose only a compact latest-error preview.
     let phase_started_at = std::time::Instant::now();
@@ -340,6 +383,7 @@ pub(crate) fn get_status(
         "recent_events".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
+    status_watchdog.phase("recent_events");
     let phase_started_at = std::time::Instant::now();
     let metrics = state.gateway.store.get_metrics();
     let quota = state.gateway.store.list_quota_snapshots();
@@ -360,6 +404,7 @@ pub(crate) fn get_status(
         "metrics_quota_ledgers".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
+    status_watchdog.phase("metrics_quota_ledgers");
     let last_activity = state.gateway.last_activity_unix_ms.load(Ordering::Relaxed);
     let active_recent = last_activity > 0 && now.saturating_sub(last_activity) < 2 * 60 * 1000;
     let phase_started_at = std::time::Instant::now();
@@ -401,6 +446,7 @@ pub(crate) fn get_status(
         "active_provider".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
+    status_watchdog.phase("active_provider");
     let phase_started_at = std::time::Instant::now();
     let codex_account = state
         .gateway
@@ -411,6 +457,7 @@ pub(crate) fn get_status(
         "codex_account".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
+    status_watchdog.phase("codex_account");
     let phase_started_at = std::time::Instant::now();
     let lan_sync = current_dashboard_lan_sync_snapshot(
         cfg.listen.port,
@@ -422,12 +469,14 @@ pub(crate) fn get_status(
         "lan_sync_snapshot".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
+    status_watchdog.phase("lan_sync_snapshot");
     let phase_started_at = std::time::Instant::now();
     let tailscale = current_dashboard_tailscale_snapshot(cfg.listen.port);
     phase_timings_ms.insert(
         "tailscale_snapshot".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
+    status_watchdog.phase("tailscale_snapshot");
     let phase_started_at = std::time::Instant::now();
     let shared_quota_owners = if dashboard_detail {
         Vec::new()
@@ -438,6 +487,7 @@ pub(crate) fn get_status(
         "shared_quota_owners".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
+    status_watchdog.phase("shared_quota_owners");
 
     let phase_started_at = std::time::Instant::now();
     let client_sessions = {
@@ -533,6 +583,7 @@ pub(crate) fn get_status(
         "client_sessions".to_string(),
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
+    status_watchdog.phase("client_sessions");
 
     let response = serde_json::json!({
       "listen": { "host": cfg.listen.host, "port": cfg.listen.port },
@@ -569,6 +620,8 @@ pub(crate) fn get_status(
             &phase_timings_ms,
         );
     }
+    status_watchdog.phase("response_ready");
+    status_watchdog.finish();
     Ok(response)
 }
 
@@ -1480,6 +1533,9 @@ fn attach_visible_last_error_event_ids(
                 continue;
             };
             let distance = event_unix_ms.abs_diff(snapshot.last_fail_at_unix_ms);
+            if distance > DASHBOARD_LAST_ERROR_EVENT_MATCH_WINDOW_MS {
+                continue;
+            }
             match best_match {
                 Some((best_distance, _)) if best_distance <= distance => {}
                 _ => best_match = Some((distance, event_id)),
@@ -1853,6 +1909,42 @@ mod tests {
                 .get(provider)
                 .and_then(|snapshot| snapshot.last_error_event_id.as_deref()),
             Some("evt-visible-error")
+        );
+    }
+
+    #[test]
+    fn visible_last_error_ids_ignore_far_repeated_error_message() {
+        let provider = "aigateway2";
+        let snapshot_ts = 1_776_240_000_000_u64;
+        let mut providers = HashMap::from([(
+            provider.to_string(),
+            ProviderHealthSnapshot {
+                status: "unhealthy".to_string(),
+                consecutive_failures: 1,
+                cooldown_until_unix_ms: 0,
+                last_error: r#"upstream aigateway2 returned 503: {"error":{"message":"Service temporarily unavailable","type":"api_error"}}"#.to_string(),
+                last_ok_at_unix_ms: snapshot_ts + 60_000,
+                last_fail_at_unix_ms: snapshot_ts,
+                last_error_event_id: None,
+            },
+        )]);
+        let visible = vec![serde_json::json!({
+            "id": "evt-far-repeat",
+            "unix_ms": snapshot_ts + (24 * 60 * 60 * 1000),
+            "provider": provider,
+            "level": "error",
+            "code": "upstream.http_error",
+            "message": r#"upstream aigateway2 returned 503: {"error":{"message":"Service temporarily unavailable","type":"api_error"}}"#,
+            "fields": null,
+        })];
+
+        attach_visible_last_error_event_ids(&mut providers, &visible);
+
+        assert_eq!(
+            providers
+                .get(provider)
+                .and_then(|snapshot| snapshot.last_error_event_id.as_deref()),
+            None
         );
     }
 

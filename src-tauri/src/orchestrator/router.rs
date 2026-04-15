@@ -254,12 +254,14 @@ impl RouterState {
 
     pub fn sync_with_config(&self, cfg: &AppConfig, now_ms: u64) {
         let mut health = self.health.write();
+        let original_len = health.len();
         for name in cfg.providers.keys() {
             health
                 .entry(name.clone())
                 .or_insert_with(|| ProviderHealth::new(now_ms));
         }
         health.retain(|name, _| cfg.providers.contains_key(name));
+        let health_changed = health.len() != original_len;
         drop(health);
 
         let mut quota_closed = self.quota_closed_by_provider.write();
@@ -274,7 +276,9 @@ impl RouterState {
         }
         unhealthy.retain(|name, _| cfg.providers.contains_key(name));
 
-        self.persist_shared_health_state(now_ms);
+        if health_changed {
+            self.persist_shared_health_state(now_ms);
+        }
     }
 
     pub fn record_quota_closed_states(&self, states: &HashMap<String, bool>) -> Vec<String> {
@@ -736,6 +740,32 @@ mod tests {
         let health = snapshot.get(provider).expect("provider health snapshot");
 
         assert_eq!(health.last_error_event_id, None);
+    }
+
+    #[test]
+    fn sync_with_config_skips_shared_health_meta_write_when_provider_set_is_unchanged() {
+        let mut cfg = AppConfig::default_config();
+        cfg.routing.failure_threshold = 1;
+        let provider = "official";
+        let (tmp, store) = build_test_store();
+        let router = RouterState::new_with_store(&cfg, 0, Some(store));
+        router.mark_failure(provider, &cfg, "boom", 1_000);
+
+        let db_path = tmp.path().join("data").join("events.sqlite3");
+        let conn = rusqlite::Connection::open(db_path).expect("open events sqlite");
+        let version_before: u64 = conn
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
+            .expect("data version before");
+
+        router.sync_with_config(&cfg, 2_000);
+
+        let version_after: u64 = conn
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
+            .expect("data version after");
+        assert_eq!(
+            version_after, version_before,
+            "status sync should not rewrite shared health meta when providers are unchanged"
+        );
     }
 
     #[test]
