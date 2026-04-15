@@ -127,9 +127,11 @@ export function toggleUsageModelFilterDisplayOptionSelection(
   selectedModels: string[],
   optionModels: string[],
 ): string[] {
-  return isUsageModelFilterDisplayOptionSelected(selectedModels, optionModels)
-    ? selectedModels.filter((modelName) => !optionModels.includes(modelName))
-    : [...new Set([...selectedModels, ...optionModels])];
+  const optionSet = new Set(optionModels);
+  if (isUsageModelFilterDisplayOptionSelected(selectedModels, optionModels)) {
+    return selectedModels.filter((modelName) => !optionSet.has(modelName));
+  }
+  return [...new Set([...selectedModels, ...optionModels])];
 }
 
 export function buildUsageOriginFilterOptions(

@@ -51,11 +51,8 @@ type Params = {
   pctOf: (part?: number | null, total?: number | null) => number | null;
   usageOverview: UsageStatisticsOverview | null;
   usageStatistics: UsageStatistics | null;
-  usageFilterNodes: string[];
   setUsageFilterNodes: Dispatch<SetStateAction<string[]>>;
-  usageFilterProviders: string[];
   setUsageFilterProviders: Dispatch<SetStateAction<string[]>>;
-  usageFilterOrigins: string[];
   setUsageFilterOrigins: Dispatch<SetStateAction<string[]>>;
   usageWindowHours: number;
   setUsageChartHover: Dispatch<
