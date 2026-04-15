@@ -52,6 +52,13 @@ export function buildUsageModelFilterOptions(usageCatalogModels: string[]): stri
   return [...usageCatalogModels].sort((a, b) => a.localeCompare(b))
 }
 
+export function formatUsageModelDisplayName(model: string | null | undefined): string {
+  const value = String(model ?? '').trim()
+  if (!value) return '-'
+  const stripped = value.replace(/-\d{4}-\d{2}-\d{2}$/, '')
+  return stripped || value
+}
+
 export function buildUsageOriginFilterOptions(usageCatalogOrigins: string[]): string[] {
   const required = ['windows', 'wsl2']
   const merged = new Set<string>([...required, ...usageCatalogOrigins])

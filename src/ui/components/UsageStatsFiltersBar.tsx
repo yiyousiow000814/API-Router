@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import type { UsageProviderFilterDisplayOption } from '../utils/usageStatisticsView'
+import { formatUsageModelDisplayName } from '../utils/usageStatisticsView'
 
 type Props = {
   usageWindowHours: number
@@ -192,8 +193,9 @@ export function UsageStatsFiltersBar({
                 className={`aoUsageFilterChip${usageFilterModels.includes(modelName) ? ' is-active' : ''}`}
                 disabled={usageStatisticsLoading}
                 onClick={() => toggleUsageModelFilter(modelName)}
+                title={modelName}
               >
-                {modelName}
+                {formatUsageModelDisplayName(modelName)}
               </button>
             ))}
           </div>

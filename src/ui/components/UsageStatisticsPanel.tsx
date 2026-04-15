@@ -20,6 +20,7 @@ import { isNearBottom } from '../utils/scroll'
 import { buildProviderGroupMaps, resolveProviderDisplayName } from '../utils/providerGroups'
 import {
   buildUsageProviderFilterDisplayOptions,
+  formatUsageModelDisplayName,
   type UsageProviderFilterDisplayOption,
 } from '../utils/usageStatisticsView'
 
@@ -4692,7 +4693,7 @@ export function UsageStatisticsPanel({
                           <td>{fmtWhen(row.unix_ms)}</td>
                           <td className="aoUsageRequestsMono">{row.node_name || 'Local'}</td>
                           <td className="aoUsageRequestsMono">{resolveRequestProviderName(row.provider)}</td>
-                          <td className="aoUsageRequestsMono">{row.model}</td>
+                          <td className="aoUsageRequestsMono">{formatUsageModelDisplayName(row.model)}</td>
                           <td className="aoUsageReqCellCenter">
                             <div className="aoUsageReqCellCenterInner">
                               {(() => {
@@ -4861,7 +4862,9 @@ export function UsageStatisticsPanel({
         </div>
         <div className="aoUsageKpiCard">
           <div className="aoMiniLabel">Top Model</div>
-          <div className="aoUsageKpiValue aoUsageKpiValueSmall">{usageTopModel ? usageTopModel.model : '-'}</div>
+          <div className="aoUsageKpiValue aoUsageKpiValueSmall">
+            {usageTopModel ? formatUsageModelDisplayName(usageTopModel.model) : '-'}
+          </div>
         </div>
         <div className="aoUsageKpiCard">
           <div className="aoMiniLabel">Total $ Used</div>
