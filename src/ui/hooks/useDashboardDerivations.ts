@@ -330,7 +330,13 @@ export function useDashboardDerivations(params: Params) {
         usageProviderRowKey,
         formatUsdMaybe,
       ),
-    [usageTimeline, orderedUsageByProvider, usageOverview?.window_hours],
+    [
+      formatUsdMaybe,
+      orderedUsageByProvider,
+      usageOverview?.window_hours,
+      usageProviderRowKey,
+      usageTimeline,
+    ],
   );
 
   const toggleUsageProviderFilterDisplayOption = useCallback(
