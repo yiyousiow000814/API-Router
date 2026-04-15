@@ -1,225 +1,254 @@
-import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import { invoke } from '@tauri-apps/api/core'
-import type { Config, Status, UsageStatistics } from '../types'
-import './UsageStatisticsPanel.css'
-import './UsageHistoryModal.css'
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
+import { invoke } from "@tauri-apps/api/core";
+import type { Config, Status, UsageStatistics } from "../types";
+import "./UsageStatisticsPanel.css";
+import "./UsageHistoryModal.css";
 import {
   UsageProviderStatisticsSection,
   type UsageProviderDisplayGroup,
   type UsageProviderTotalsAndAverages,
-} from './UsageProviderStatisticsSection'
+} from "./UsageProviderStatisticsSection";
 import {
   UsageTimelineChart,
   type UsageChartHover,
   type UsageChartModel,
-} from './UsageTimelineChart'
-import { UsageRequestDailyTotalsCard } from './UsageRequestDailyTotalsCard'
-import { UsageStatsFiltersBar } from './UsageStatsFiltersBar'
-import { useUsageHistoryScrollbar } from '../hooks/useUsageHistoryScrollbar'
-import { isNearBottom } from '../utils/scroll'
-import { buildProviderGroupMaps, resolveProviderDisplayName } from '../utils/providerGroups'
+} from "./UsageTimelineChart";
+import { UsageRequestDailyTotalsCard } from "./UsageRequestDailyTotalsCard";
+import { UsageStatsFiltersBar } from "./UsageStatsFiltersBar";
+import { useUsageHistoryScrollbar } from "../hooks/useUsageHistoryScrollbar";
+import { isNearBottom } from "../utils/scroll";
 import {
+  buildProviderGroupMaps,
+  resolveProviderDisplayName,
+} from "../utils/providerGroups";
+import {
+  buildUsageModelFilterDisplayOptions,
+  countUsageModelFilterDisplayOptionsSelected,
   buildUsageProviderFilterDisplayOptions,
   formatUsageModelDisplayName,
   type UsageProviderFilterDisplayOption,
-} from '../utils/usageStatisticsView'
+} from "../utils/usageStatisticsView";
 
-type UsageSummary = UsageStatistics['summary']
-type UsageProviderRow = UsageSummary['by_provider'][number]
-type UsageDetailsTab = 'analytics' | 'requests'
+type UsageSummary = UsageStatistics["summary"];
+type UsageProviderRow = UsageSummary["by_provider"][number];
+type UsageDetailsTab = "analytics" | "requests";
 type UsageRequestEntry = {
-  id?: string
-  provider: string
-  api_key_ref: string
-  model: string
-  origin: string
-  transport?: string
-  session_id: string
-  unix_ms: number
-  node_id?: string
-  node_name?: string
-  input_tokens: number
-  output_tokens: number
-  total_tokens: number
-  cache_creation_input_tokens: number
-  cache_read_input_tokens: number
-}
+  id?: string;
+  provider: string;
+  api_key_ref: string;
+  model: string;
+  origin: string;
+  transport?: string;
+  session_id: string;
+  unix_ms: number;
+  node_id?: string;
+  node_name?: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+};
 type UsageRequestEntriesResponse = {
-  ok: boolean
-  rows: UsageRequestEntry[]
-  has_more: boolean
-  next_offset: number
-}
+  ok: boolean;
+  rows: UsageRequestEntry[];
+  has_more: boolean;
+  next_offset: number;
+};
 type UsageRequestSummaryResponse = {
-  ok: boolean
-  requests: number
-  input_tokens: number
-  output_tokens: number
-  total_tokens: number
-  cache_creation_input_tokens: number
-  cache_read_input_tokens: number
-}
+  ok: boolean;
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+};
 type UsageRequestTableSummary = {
-  requests: number
-  input: number
-  output: number
-  total: number
-  cacheCreate: number
-  cacheRead: number
-}
+  requests: number;
+  input: number;
+  output: number;
+  total: number;
+  cacheCreate: number;
+  cacheRead: number;
+};
 type UsageRequestDailyTotalsResponse = {
-  ok: boolean
+  ok: boolean;
   days: Array<{
-    day_start_unix_ms: number
-    provider_totals: Record<string, number>
-    total_tokens: number
-    total_requests?: number
-    windows_request_count?: number
-    wsl_request_count?: number
-  }>
+    day_start_unix_ms: number;
+    provider_totals: Record<string, number>;
+    total_tokens: number;
+    total_requests?: number;
+    windows_request_count?: number;
+    wsl_request_count?: number;
+  }>;
   providers: Array<{
-    provider: string
-    total_tokens: number
-  }>
-}
+    provider: string;
+    total_tokens: number;
+  }>;
+};
 type UsageRequestsPageCache = {
-  queryKey: string
-  rows: UsageRequestEntry[]
-  hasMore: boolean
-  usingTestFallback: boolean
-}
+  queryKey: string;
+  rows: UsageRequestEntry[];
+  hasMore: boolean;
+  usingTestFallback: boolean;
+};
 type UsageRequestDailyTotalsCache = {
-  days: UsageRequestDailyTotalsResponse['days']
-  providers: UsageRequestDailyTotalsResponse['providers']
-}
+  days: UsageRequestDailyTotalsResponse["days"];
+  providers: UsageRequestDailyTotalsResponse["providers"];
+};
 type UsageRequestGraphRowsCache = {
-  queryKey: string
-  baseRows: UsageRequestEntry[]
-  rowsByProvider: Record<string, UsageRequestEntry[]>
-}
+  queryKey: string;
+  baseRows: UsageRequestEntry[];
+  rowsByProvider: Record<string, UsageRequestEntry[]>;
+};
 type UsageRequestLineSeries = {
-  kind: 'session'
-  id: string
-  provider: string
-  providerName: string
-  origin: 'windows' | 'wsl2'
-  color: string
-  values: number[]
-  present: boolean[]
-  pointIds: string[]
-}
+  kind: "session";
+  id: string;
+  provider: string;
+  providerName: string;
+  origin: "windows" | "wsl2";
+  color: string;
+  values: number[];
+  present: boolean[];
+  pointIds: string[];
+};
 type UsageRequestRenderedLineSeries = UsageRequestLineSeries & {
-  fallbackSlidingEligible?: boolean
-  fallbackSlidingShiftSteps?: number
-  fallbackPreviewNextValue?: number | null
-  fallbackPreviewNextValues?: number[] | null
-  liveSlidingEligible?: boolean
-  liveSlidingShiftSteps?: number
-  livePreviewNextValue?: number | null
-  livePreviewNextValues?: number[] | null
-}
+  fallbackSlidingEligible?: boolean;
+  fallbackSlidingShiftSteps?: number;
+  fallbackPreviewNextValue?: number | null;
+  fallbackPreviewNextValues?: number[] | null;
+  liveSlidingEligible?: boolean;
+  liveSlidingShiftSteps?: number;
+  livePreviewNextValue?: number | null;
+  livePreviewNextValues?: number[] | null;
+};
 const usageRequestRowIdentity = (row: UsageRequestEntry) =>
   [
-    row.id ?? `${row.unix_ms}|${row.provider}|${row.session_id}|${row.total_tokens}`,
-    row.node_id ?? 'node-local',
-  ].join('|')
+    row.id ??
+      `${row.unix_ms}|${row.provider}|${row.session_id}|${row.total_tokens}`,
+    row.node_id ?? "node-local",
+  ].join("|");
 type UsageRequestColumnFilterKey =
-  | 'time'
-  | 'node'
-  | 'provider'
-  | 'model'
-  | 'input'
-  | 'output'
-  | 'cacheRead'
-  | 'origin'
-  | 'transport'
-  | 'session'
-type UsageRequestMultiFilterKey = 'node' | 'provider' | 'model' | 'origin' | 'transport' | 'session'
+  | "time"
+  | "node"
+  | "provider"
+  | "model"
+  | "input"
+  | "output"
+  | "cacheRead"
+  | "origin"
+  | "transport"
+  | "session";
+type UsageRequestMultiFilterKey =
+  | "node"
+  | "provider"
+  | "model"
+  | "origin"
+  | "transport"
+  | "session";
 const USAGE_REQUEST_COLUMN_FILTERS: Array<{
-  key: UsageRequestColumnFilterKey
-  label: string
-  filterable: boolean
+  key: UsageRequestColumnFilterKey;
+  label: string;
+  filterable: boolean;
 }> = [
-  { key: 'time', label: 'Time', filterable: true },
-  { key: 'node', label: 'Node', filterable: true },
-  { key: 'provider', label: 'Provider', filterable: true },
-  { key: 'model', label: 'Model', filterable: true },
-  { key: 'origin', label: 'Origin', filterable: true },
-  { key: 'transport', label: 'Tx', filterable: true },
-  { key: 'session', label: 'Session', filterable: true },
-  { key: 'input', label: 'Input', filterable: false },
-  { key: 'output', label: 'Output', filterable: false },
-  { key: 'cacheRead', label: 'Cache Read', filterable: false },
-]
-const USAGE_REQUEST_PAGE_SIZE = 200
-const USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS = 120
-const USAGE_REQUEST_ROW_HEIGHT_PX = 33
-const USAGE_REQUEST_OVERSCAN_ROWS = 18
-const USAGE_REQUEST_GRAPH_SOURCE_LIMIT = 60
-const USAGE_REQUEST_GRAPH_MAX_SESSIONS = 6
-const USAGE_REQUEST_TEST_MIN_ROWS = 401
-const USAGE_REQUEST_TEST_MIN_WINDOW_HOURS = 24 * 60
-export const USAGE_REQUEST_TEST_DATA_REVISION = 'fallback-v3'
-const USAGE_REQUEST_LINE_HEADROOM_RATIO = 1.04
+  { key: "time", label: "Time", filterable: true },
+  { key: "node", label: "Node", filterable: true },
+  { key: "provider", label: "Provider", filterable: true },
+  { key: "model", label: "Model", filterable: true },
+  { key: "origin", label: "Origin", filterable: true },
+  { key: "transport", label: "Tx", filterable: true },
+  { key: "session", label: "Session", filterable: true },
+  { key: "input", label: "Input", filterable: false },
+  { key: "output", label: "Output", filterable: false },
+  { key: "cacheRead", label: "Cache Read", filterable: false },
+];
+const USAGE_REQUEST_PAGE_SIZE = 200;
+const USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS = 120;
+const USAGE_REQUEST_ROW_HEIGHT_PX = 33;
+const USAGE_REQUEST_OVERSCAN_ROWS = 18;
+const USAGE_REQUEST_GRAPH_SOURCE_LIMIT = 60;
+const USAGE_REQUEST_GRAPH_MAX_SESSIONS = 6;
+const USAGE_REQUEST_TEST_MIN_ROWS = 401;
+const USAGE_REQUEST_TEST_MIN_WINDOW_HOURS = 24 * 60;
+export const USAGE_REQUEST_TEST_DATA_REVISION = "fallback-v3";
+const USAGE_REQUEST_LINE_HEADROOM_RATIO = 1.04;
 const USAGE_REQUEST_GRAPH_COLORS = [
-  '#21a8b7',
-  '#f2c14d',
-  '#ff6a88',
-  '#7f7dff',
-  '#30c48d',
-  '#ff8a3d',
-] as const
-const USAGE_REQUEST_FALLBACK_LINE_STEP_MS = 820
-const USAGE_REQUEST_LIVE_LINE_TRANSITION_MS = 820
-const isOfficialUsageProvider = (provider: string) => provider.trim().toLowerCase() === 'official'
+  "#21a8b7",
+  "#f2c14d",
+  "#ff6a88",
+  "#7f7dff",
+  "#30c48d",
+  "#ff8a3d",
+] as const;
+const USAGE_REQUEST_FALLBACK_LINE_STEP_MS = 820;
+const USAGE_REQUEST_LIVE_LINE_TRANSITION_MS = 820;
+const isOfficialUsageProvider = (provider: string) =>
+  provider.trim().toLowerCase() === "official";
 const compareUsageProvidersForDisplay = (left: string, right: string) => {
-  const leftOfficial = isOfficialUsageProvider(left)
-  const rightOfficial = isOfficialUsageProvider(right)
-  if (leftOfficial !== rightOfficial) return leftOfficial ? -1 : 1
-  return left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' })
-}
+  const leftOfficial = isOfficialUsageProvider(left);
+  const rightOfficial = isOfficialUsageProvider(right);
+  if (leftOfficial !== rightOfficial) return leftOfficial ? -1 : 1;
+  return left.localeCompare(right, undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+};
 function pickUsageRequestDisplayProviders(input: {
-  graphProviders: string[]
-  dailyProviders: string[]
-  analyticsProviders: string[]
-  limit: number
+  graphProviders: string[];
+  dailyProviders: string[];
+  analyticsProviders: string[];
+  limit: number;
 }): string[] {
-  const picked: string[] = []
-  const seen = new Set<string>()
+  const picked: string[] = [];
+  const seen = new Set<string>();
   const append = (provider: string) => {
-    const key = provider.trim()
-    if (!key || seen.has(key)) return
-    seen.add(key)
-    picked.push(key)
-  }
-  input.graphProviders.forEach(append)
-  input.dailyProviders.forEach(append)
-  input.analyticsProviders.forEach(append)
-  return picked.slice(0, input.limit)
+    const key = provider.trim();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    picked.push(key);
+  };
+  input.graphProviders.forEach(append);
+  input.dailyProviders.forEach(append);
+  input.analyticsProviders.forEach(append);
+  return picked.slice(0, input.limit);
 }
 function listTopUsageProvidersFromRows(
   rows: UsageRequestEntry[],
   providerLabel?: (provider: string) => string,
 ): string[] {
-  const counts = new Map<string, number>()
+  const counts = new Map<string, number>();
   for (const row of rows) {
-    const provider = providerLabel ? providerLabel(row.provider) : row.provider
-    counts.set(provider, (counts.get(provider) ?? 0) + 1)
+    const provider = providerLabel ? providerLabel(row.provider) : row.provider;
+    counts.set(provider, (counts.get(provider) ?? 0) + 1);
   }
   return [...counts.entries()]
     .sort((a, b) => {
-      const providerOrder = compareUsageProvidersForDisplay(a[0], b[0])
-      if (providerOrder !== 0) return providerOrder
-      if (a[1] !== b[1]) return b[1] - a[1]
-      return a[0].localeCompare(b[0], undefined, { numeric: true, sensitivity: 'base' })
+      const providerOrder = compareUsageProvidersForDisplay(a[0], b[0]);
+      if (providerOrder !== 0) return providerOrder;
+      if (a[1] !== b[1]) return b[1] - a[1];
+      return a[0].localeCompare(b[0], undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
     })
-    .map(([provider]) => provider)
+    .map(([provider]) => provider);
 }
 
 function shortSessionIdForLegend(sessionId: string): string {
-  const value = sessionId.trim()
-  if (value.length <= 24) return value
-  return `${value.slice(0, 12)}...${value.slice(-8)}`
+  const value = sessionId.trim();
+  if (value.length <= 24) return value;
+  return `${value.slice(0, 12)}...${value.slice(-8)}`;
 }
 
 function resolveUsageRequestVirtualRange(
@@ -227,75 +256,115 @@ function resolveUsageRequestVirtualRange(
   viewportHeight: number,
   rowCount: number,
 ): { start: number; end: number } {
-  if (rowCount <= 0) return { start: 0, end: 0 }
+  if (rowCount <= 0) return { start: 0, end: 0 };
   if (viewportHeight <= 0) {
-    return { start: 0, end: Math.min(rowCount, USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS) }
+    return {
+      start: 0,
+      end: Math.min(rowCount, USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS),
+    };
   }
-  const visibleStart = Math.max(0, Math.floor(scrollTop / USAGE_REQUEST_ROW_HEIGHT_PX))
-  const visibleCount = Math.max(1, Math.ceil(viewportHeight / USAGE_REQUEST_ROW_HEIGHT_PX))
-  const start = Math.max(0, visibleStart - USAGE_REQUEST_OVERSCAN_ROWS)
+  const visibleStart = Math.max(
+    0,
+    Math.floor(scrollTop / USAGE_REQUEST_ROW_HEIGHT_PX),
+  );
+  const visibleCount = Math.max(
+    1,
+    Math.ceil(viewportHeight / USAGE_REQUEST_ROW_HEIGHT_PX),
+  );
+  const start = Math.max(0, visibleStart - USAGE_REQUEST_OVERSCAN_ROWS);
   const end = Math.min(
     rowCount,
     visibleStart + visibleCount + USAGE_REQUEST_OVERSCAN_ROWS,
-  )
-  return { start, end }
+  );
+  return { start, end };
 }
 
 function listUsageRequestDailyProviderHints(
-  providers: UsageRequestDailyTotalsResponse['providers'],
+  providers: UsageRequestDailyTotalsResponse["providers"],
 ): string[] {
   const live = (providers ?? [])
-    .map((row) => String(row?.provider ?? '').trim())
-    .filter((provider) => provider.length > 0)
-  if (live.length > 0) return live
+    .map((row) => String(row?.provider ?? "").trim())
+    .filter((provider) => provider.length > 0);
+  if (live.length > 0) return live;
   return (usageRequestDailyTotalsCache?.providers ?? [])
-    .map((row) => String(row?.provider ?? '').trim())
-    .filter((provider) => provider.length > 0)
+    .map((row) => String(row?.provider ?? "").trim())
+    .filter((provider) => provider.length > 0);
 }
 const TEST_CODEX_SESSION_IDS = [
-  '019c4578-0f3c-7f82-a4f9-b41a1e65e242',
-  '019c03fd-6ea4-7121-961f-9f9b64d2c1b5',
-  '019c7f46-c5ec-7e2e-9205-4e00718a524e',
-  '019c600a-56f3-77b2-8465-f64a4f0566ec',
-  '019c7f4d-b7a5-7add-b7f9-f41049dbe667',
-  '019c9f18-3d72-7ce3-a9a1-2fd7f4d9d100',
-  '019c9f18-89aa-7b11-bc42-6fbe3dc89002',
-  '019ca04e-b5f1-73d8-89fd-13ae6de95021',
-] as const
+  "019c4578-0f3c-7f82-a4f9-b41a1e65e242",
+  "019c03fd-6ea4-7121-961f-9f9b64d2c1b5",
+  "019c7f46-c5ec-7e2e-9205-4e00718a524e",
+  "019c600a-56f3-77b2-8465-f64a4f0566ec",
+  "019c7f4d-b7a5-7add-b7f9-f41049dbe667",
+  "019c9f18-3d72-7ce3-a9a1-2fd7f4d9d100",
+  "019c9f18-89aa-7b11-bc42-6fbe3dc89002",
+  "019ca04e-b5f1-73d8-89fd-13ae6de95021",
+] as const;
 const TEST_USAGE_PROVIDERS = [
-  { provider: 'provider_1', model: 'gpt-5.2-codex', requests: 40, apiKeyRef: '-' },
-  { provider: 'provider_2', model: 'gpt-5.2-codex', requests: 34, apiKeyRef: '-' },
-  { provider: 'provider_3', model: 'gpt-5.2-codex', requests: 26, apiKeyRef: '-' },
-] as const
-const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
-const WEEKDAY_NAMES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']
-const EMPTY_USAGE_REQUEST_ROWS: UsageRequestEntry[] = []
-const EMPTY_USAGE_REQUEST_ROWS_BY_PROVIDER: Record<string, UsageRequestEntry[]> = {}
-const EMPTY_STRING_LIST: string[] = []
-export const USAGE_REQUESTS_CANONICAL_FETCH_HOURS = 24 * 365 * 20
+  {
+    provider: "provider_1",
+    model: "gpt-5.2-codex",
+    requests: 40,
+    apiKeyRef: "-",
+  },
+  {
+    provider: "provider_2",
+    model: "gpt-5.2-codex",
+    requests: 34,
+    apiKeyRef: "-",
+  },
+  {
+    provider: "provider_3",
+    model: "gpt-5.2-codex",
+    requests: 26,
+    apiKeyRef: "-",
+  },
+] as const;
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+const WEEKDAY_NAMES = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+const EMPTY_USAGE_REQUEST_ROWS: UsageRequestEntry[] = [];
+const EMPTY_USAGE_REQUEST_ROWS_BY_PROVIDER: Record<
+  string,
+  UsageRequestEntry[]
+> = {};
+const EMPTY_STRING_LIST: string[] = [];
+export const USAGE_REQUESTS_CANONICAL_FETCH_HOURS = 24 * 365 * 20;
 export function buildUsageRequestsQueryKey(input: {
-  hours: number
-  fromUnixMs: number | null
-  toUnixMs: number | null
-  nodes?: string[] | null
-  providers: string[] | null
-  models: string[] | null
-  origins: string[] | null
-  transports?: string[] | null
-  sessions: string[] | null
-  syntheticRevision?: string | null
+  hours: number;
+  fromUnixMs: number | null;
+  toUnixMs: number | null;
+  nodes?: string[] | null;
+  providers: string[] | null;
+  models: string[] | null;
+  origins: string[] | null;
+  transports?: string[] | null;
+  sessions: string[] | null;
+  syntheticRevision?: string | null;
 }): string {
   const base: {
-    hours: number
-    from_unix_ms: number | null
-    to_unix_ms: number | null
-    nodes: string[]
-    providers: string[]
-    models: string[]
-    origins: string[]
-    transports: string[]
-    sessions: string[]
-    synthetic_revision?: string
+    hours: number;
+    from_unix_ms: number | null;
+    to_unix_ms: number | null;
+    nodes: string[];
+    providers: string[];
+    models: string[];
+    origins: string[];
+    transports: string[];
+    sessions: string[];
+    synthetic_revision?: string;
   } = {
     hours: input.hours,
     from_unix_ms: input.fromUnixMs,
@@ -306,11 +375,14 @@ export function buildUsageRequestsQueryKey(input: {
     origins: input.origins ?? [],
     transports: input.transports ?? [],
     sessions: input.sessions ?? [],
+  };
+  if (
+    input.syntheticRevision != null &&
+    input.syntheticRevision.trim().length > 0
+  ) {
+    base.synthetic_revision = input.syntheticRevision;
   }
-  if (input.syntheticRevision != null && input.syntheticRevision.trim().length > 0) {
-    base.synthetic_revision = input.syntheticRevision
-  }
-  return JSON.stringify(base)
+  return JSON.stringify(base);
 }
 export const USAGE_REQUESTS_CANONICAL_QUERY_KEY = buildUsageRequestsQueryKey({
   hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
@@ -322,49 +394,56 @@ export const USAGE_REQUESTS_CANONICAL_QUERY_KEY = buildUsageRequestsQueryKey({
   origins: null,
   transports: null,
   sessions: null,
-})
-const USAGE_REQUESTS_CACHE_PRIMED_EVENT = 'ao:usage-requests-cache-primed'
-const USAGE_REQUESTS_PAGE_PREFETCH_COOLDOWN_MS = 4_000
-const USAGE_REQUEST_GRAPH_FETCH_HOURS = 24 * 365 * 20
-const USAGE_REQUEST_GRAPH_BASE_FETCH_ORIGINS = ['windows', 'wsl2', 'unknown'] as const
-const USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_PER_ORIGIN = 1000
-const USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_FALLBACK = USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_PER_ORIGIN
+});
+const USAGE_REQUESTS_CACHE_PRIMED_EVENT = "ao:usage-requests-cache-primed";
+const USAGE_REQUESTS_PAGE_PREFETCH_COOLDOWN_MS = 4_000;
+const USAGE_REQUEST_GRAPH_FETCH_HOURS = 24 * 365 * 20;
+const USAGE_REQUEST_GRAPH_BASE_FETCH_ORIGINS = [
+  "windows",
+  "wsl2",
+  "unknown",
+] as const;
+const USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_PER_ORIGIN = 1000;
+const USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_FALLBACK =
+  USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_PER_ORIGIN;
 const USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT =
-  USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_PER_ORIGIN * USAGE_REQUEST_GRAPH_BASE_FETCH_ORIGINS.length
-export const USAGE_REQUEST_GRAPH_QUERY_KEY = 'usage_request_graph:v1:all-history'
-const USAGE_REQUEST_GRAPH_BACKGROUND_REFRESH_MS = 15_000
-const USAGE_REQUEST_GRAPH_TAB_ACTIVATION_REFRESH_COOLDOWN_MS = 2_500
-const USAGE_REQUEST_TAB_ACTIVATION_MERGE_COOLDOWN_MS = 1_200
-let usageRequestsPageCache: UsageRequestsPageCache | null = null
-let usageRequestsLastNonEmptyPageCache: UsageRequestsPageCache | null = null
-let usageRequestDailyTotalsCache: UsageRequestDailyTotalsCache | null = null
-let usageRequestGraphRowsCache: UsageRequestGraphRowsCache | null = null
-let usageRequestSyntheticRevisionCacheTag: string | null = null
-let usageRequestGraphLastRefreshAtCache = 0
-let usageRequestLastMergeAtCache = 0
+  USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_PER_ORIGIN *
+  USAGE_REQUEST_GRAPH_BASE_FETCH_ORIGINS.length;
+export const USAGE_REQUEST_GRAPH_QUERY_KEY =
+  "usage_request_graph:v1:all-history";
+const USAGE_REQUEST_GRAPH_BACKGROUND_REFRESH_MS = 15_000;
+const USAGE_REQUEST_GRAPH_TAB_ACTIVATION_REFRESH_COOLDOWN_MS = 2_500;
+const USAGE_REQUEST_TAB_ACTIVATION_MERGE_COOLDOWN_MS = 1_200;
+let usageRequestsPageCache: UsageRequestsPageCache | null = null;
+let usageRequestsLastNonEmptyPageCache: UsageRequestsPageCache | null = null;
+let usageRequestDailyTotalsCache: UsageRequestDailyTotalsCache | null = null;
+let usageRequestGraphRowsCache: UsageRequestGraphRowsCache | null = null;
+let usageRequestSyntheticRevisionCacheTag: string | null = null;
+let usageRequestGraphLastRefreshAtCache = 0;
+let usageRequestLastMergeAtCache = 0;
 
 export function resolveRequestFetchHours(input: {
-  effectiveDetailsTab: UsageDetailsTab
-  showFilters: boolean
-  usageWindowHours: number
+  effectiveDetailsTab: UsageDetailsTab;
+  showFilters: boolean;
+  usageWindowHours: number;
 }): number {
-  if (input.effectiveDetailsTab !== 'requests') return input.usageWindowHours
-  if (!input.showFilters) return USAGE_REQUESTS_CANONICAL_FETCH_HOURS
-  return input.usageWindowHours
+  if (input.effectiveDetailsTab !== "requests") return input.usageWindowHours;
+  if (!input.showFilters) return USAGE_REQUESTS_CANONICAL_FETCH_HOURS;
+  return input.usageWindowHours;
 }
 
 export function buildUsageRequestEntriesArgs(input: {
-  hours: number
-  fromUnixMs: number | null
-  toUnixMs: number | null
-  nodes?: string[] | null
-  providers: string[] | null
-  models: string[] | null
-  origins: string[] | null
-  transports?: string[] | null
-  sessions: string[] | null
-  limit: number
-  offset: number
+  hours: number;
+  fromUnixMs: number | null;
+  toUnixMs: number | null;
+  nodes?: string[] | null;
+  providers: string[] | null;
+  models: string[] | null;
+  origins: string[] | null;
+  transports?: string[] | null;
+  sessions: string[] | null;
+  limit: number;
+  offset: number;
 }) {
   return {
     hours: input.hours,
@@ -378,29 +457,33 @@ export function buildUsageRequestEntriesArgs(input: {
     sessions: input.sessions,
     limit: input.limit,
     offset: input.offset,
-  }
+  };
 }
 
 export function intersectUsageRequestFilterValues(
   primary: string[] | null,
   secondary: string[] | null,
 ): string[] | null {
-  if (primary == null) return secondary
-  if (secondary == null) return primary
-  const secondaryKeys = new Set(secondary.map((value) => value.trim().toLocaleLowerCase()))
-  return primary.filter((value) => secondaryKeys.has(value.trim().toLocaleLowerCase()))
+  if (primary == null) return secondary;
+  if (secondary == null) return primary;
+  const secondaryKeys = new Set(
+    secondary.map((value) => value.trim().toLocaleLowerCase()),
+  );
+  return primary.filter((value) =>
+    secondaryKeys.has(value.trim().toLocaleLowerCase()),
+  );
 }
 
 function buildUsageRequestSummaryArgs(input: {
-  hours: number
-  fromUnixMs: number | null
-  toUnixMs: number | null
-  nodes?: string[] | null
-  providers: string[] | null
-  models: string[] | null
-  origins: string[] | null
-  transports?: string[] | null
-  sessions: string[] | null
+  hours: number;
+  fromUnixMs: number | null;
+  toUnixMs: number | null;
+  nodes?: string[] | null;
+  providers: string[] | null;
+  models: string[] | null;
+  origins: string[] | null;
+  transports?: string[] | null;
+  sessions: string[] | null;
 }) {
   return {
     hours: input.hours,
@@ -412,40 +495,58 @@ function buildUsageRequestSummaryArgs(input: {
     origins: input.origins,
     transports: input.transports,
     sessions: input.sessions,
-  }
+  };
 }
 
 export function resolveEffectiveSummaryRequestFilters(input: {
-  globalNodes: string[] | null
-  globalProviders: string[] | null
-  globalModels: string[] | null
-  globalOrigins: string[] | null
-  globalTransports?: string[] | null
-  globalSessions: string[] | null
-  columnNodes: string[] | null
-  columnProviders: string[] | null
-  columnModels: string[] | null
-  columnOrigins: string[] | null
-  columnTransports?: string[] | null
-  columnSessions: string[] | null
+  globalNodes: string[] | null;
+  globalProviders: string[] | null;
+  globalModels: string[] | null;
+  globalOrigins: string[] | null;
+  globalTransports?: string[] | null;
+  globalSessions: string[] | null;
+  columnNodes: string[] | null;
+  columnProviders: string[] | null;
+  columnModels: string[] | null;
+  columnOrigins: string[] | null;
+  columnTransports?: string[] | null;
+  columnSessions: string[] | null;
 }) {
   return {
-    nodes: intersectUsageRequestFilterValues(input.globalNodes, input.columnNodes),
-    providers: intersectUsageRequestFilterValues(input.globalProviders, input.columnProviders),
-    models: intersectUsageRequestFilterValues(input.globalModels, input.columnModels),
-    origins: intersectUsageRequestFilterValues(input.globalOrigins, input.columnOrigins),
-    transports: intersectUsageRequestFilterValues(input.globalTransports ?? null, input.columnTransports ?? null),
-    sessions: intersectUsageRequestFilterValues(input.globalSessions, input.columnSessions),
-  }
+    nodes: intersectUsageRequestFilterValues(
+      input.globalNodes,
+      input.columnNodes,
+    ),
+    providers: intersectUsageRequestFilterValues(
+      input.globalProviders,
+      input.columnProviders,
+    ),
+    models: intersectUsageRequestFilterValues(
+      input.globalModels,
+      input.columnModels,
+    ),
+    origins: intersectUsageRequestFilterValues(
+      input.globalOrigins,
+      input.columnOrigins,
+    ),
+    transports: intersectUsageRequestFilterValues(
+      input.globalTransports ?? null,
+      input.columnTransports ?? null,
+    ),
+    sessions: intersectUsageRequestFilterValues(
+      input.globalSessions,
+      input.columnSessions,
+    ),
+  };
 }
 
 export function hasImpossibleSummaryRequestFilters(input: {
-  nodes: string[] | null
-  providers: string[] | null
-  models: string[] | null
-  origins: string[] | null
-  transports?: string[] | null
-  sessions: string[] | null
+  nodes: string[] | null;
+  providers: string[] | null;
+  models: string[] | null;
+  origins: string[] | null;
+  transports?: string[] | null;
+  sessions: string[] | null;
 }): boolean {
   return (
     (input.nodes != null && input.nodes.length === 0) ||
@@ -454,42 +555,53 @@ export function hasImpossibleSummaryRequestFilters(input: {
     (input.origins != null && input.origins.length === 0) ||
     (input.transports != null && input.transports.length === 0) ||
     (input.sessions != null && input.sessions.length === 0)
-  )
+  );
 }
 
 export function resolveUsageRequestEmptyStateLabel(input: {
-  usageRequestLoading: boolean
-  hasImpossibleRequestFilters: boolean
-  defaultTodayOnly: boolean
-  usageRequestHasMore: boolean
-  totalRequestRowsForDisplay: number
+  usageRequestLoading: boolean;
+  hasImpossibleRequestFilters: boolean;
+  defaultTodayOnly: boolean;
+  usageRequestHasMore: boolean;
+  totalRequestRowsForDisplay: number;
 }): string {
-  if (input.hasImpossibleRequestFilters) return 'No request rows match current filters.'
-  if (input.usageRequestLoading) return 'Loading rows...'
-  if (input.defaultTodayOnly && input.usageRequestHasMore && input.totalRequestRowsForDisplay === 0) {
-    return "Loading today's rows..."
+  if (input.hasImpossibleRequestFilters)
+    return "No request rows match current filters.";
+  if (input.usageRequestLoading) return "Loading rows...";
+  if (
+    input.defaultTodayOnly &&
+    input.usageRequestHasMore &&
+    input.totalRequestRowsForDisplay === 0
+  ) {
+    return "Loading today's rows...";
   }
-  return 'No request rows match current filters.'
+  return "No request rows match current filters.";
 }
 
 export function resolveUsageRequestFooterStatusLabel(input: {
-  usageRequestLoading: boolean
-  hasImpossibleRequestFilters: boolean
-  usageRequestHasMore: boolean
-  hasExplicitRequestFilters: boolean
+  usageRequestLoading: boolean;
+  hasImpossibleRequestFilters: boolean;
+  usageRequestHasMore: boolean;
+  hasExplicitRequestFilters: boolean;
 }): string {
-  if (input.hasImpossibleRequestFilters) return 'All loaded'
-  if (input.usageRequestLoading) return 'Loading more...'
+  if (input.hasImpossibleRequestFilters) return "All loaded";
+  if (input.usageRequestLoading) return "Loading more...";
   if (input.usageRequestHasMore) {
-    return input.hasExplicitRequestFilters ? 'Scroll table to load more' : 'Older history available (today view)'
+    return input.hasExplicitRequestFilters
+      ? "Scroll table to load more"
+      : "Older history available (today view)";
   }
-  return 'All loaded'
+  return "All loaded";
 }
 
 function emitUsageRequestsCachePrimed(queryKey: string) {
-  if (typeof window === 'undefined') return
+  if (typeof window === "undefined") return;
   try {
-    window.dispatchEvent(new CustomEvent(USAGE_REQUESTS_CACHE_PRIMED_EVENT, { detail: { queryKey } }))
+    window.dispatchEvent(
+      new CustomEvent(USAGE_REQUESTS_CACHE_PRIMED_EVENT, {
+        detail: { queryKey },
+      }),
+    );
   } catch {
     // ignore
   }
@@ -500,15 +612,15 @@ function groupUsageRequestRowsByProvider(
   perProviderLimit = USAGE_REQUEST_GRAPH_SOURCE_LIMIT,
   providerLabel?: (provider: string) => string,
 ): Record<string, UsageRequestEntry[]> {
-  const grouped = new Map<string, UsageRequestEntry[]>()
+  const grouped = new Map<string, UsageRequestEntry[]>();
   for (const row of rows) {
-    const provider = providerLabel ? providerLabel(row.provider) : row.provider
-    const list = grouped.get(provider) ?? []
-    if (list.length >= perProviderLimit) continue
-    list.push(row)
-    grouped.set(provider, list)
+    const provider = providerLabel ? providerLabel(row.provider) : row.provider;
+    const list = grouped.get(provider) ?? [];
+    if (list.length >= perProviderLimit) continue;
+    list.push(row);
+    grouped.set(provider, list);
   }
-  return Object.fromEntries(grouped.entries())
+  return Object.fromEntries(grouped.entries());
 }
 
 function mergeUsageRequestRowsUniqueNewestFirst(
@@ -516,42 +628,48 @@ function mergeUsageRequestRowsUniqueNewestFirst(
   secondary: UsageRequestEntry[],
   limit: number,
 ): UsageRequestEntry[] {
-  if (primary.length === 0) return secondary.slice(0, limit)
-  if (secondary.length === 0) return primary.slice(0, limit)
-  const seen = new Set<string>()
-  const merged: UsageRequestEntry[] = []
+  if (primary.length === 0) return secondary.slice(0, limit);
+  if (secondary.length === 0) return primary.slice(0, limit);
+  const seen = new Set<string>();
+  const merged: UsageRequestEntry[] = [];
   for (const row of [...primary, ...secondary]) {
-    const id = usageRequestRowIdentity(row)
-    if (seen.has(id)) continue
-    seen.add(id)
-    merged.push(row)
+    const id = usageRequestRowIdentity(row);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(row);
   }
-  return merged.sort((a, b) => b.unix_ms - a.unix_ms).slice(0, limit)
+  return merged.sort((a, b) => b.unix_ms - a.unix_ms).slice(0, limit);
 }
 
-function areUsageRequestRowsIdentical(left: UsageRequestEntry[], right: UsageRequestEntry[]): boolean {
-  if (left === right) return true
-  if (left.length !== right.length) return false
+function areUsageRequestRowsIdentical(
+  left: UsageRequestEntry[],
+  right: UsageRequestEntry[],
+): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
   for (let idx = 0; idx < left.length; idx += 1) {
-    if (usageRequestRowIdentity(left[idx]) !== usageRequestRowIdentity(right[idx])) return false
+    if (
+      usageRequestRowIdentity(left[idx]) !== usageRequestRowIdentity(right[idx])
+    )
+      return false;
   }
-  return true
+  return true;
 }
 
 type UsageRequestLiveLineAnimMeta = {
-  prevValues: number[]
-  prevPresent: boolean[]
-  shiftSteps: number
-  prevLastValue: number
-}
+  prevValues: number[];
+  prevPresent: boolean[];
+  shiftSteps: number;
+  prevLastValue: number;
+};
 
 function countUsageRequestLinePoints(present: boolean[]): number {
-  let count = 0
+  let count = 0;
   for (const value of present) {
-    if (!value) continue
-    count += 1
+    if (!value) continue;
+    count += 1;
   }
-  return count
+  return count;
 }
 
 export function detectUsageRequestLineShiftSteps(
@@ -560,47 +678,57 @@ export function detectUsageRequestLineShiftSteps(
   nextPointIds: string[],
   nextCount: number,
 ): number {
-  const overlapCount = Math.min(prevCount, nextCount)
-  if (overlapCount <= 1) return 0
-  const maxShift = Math.max(0, prevCount - 1)
+  const overlapCount = Math.min(prevCount, nextCount);
+  if (overlapCount <= 1) return 0;
+  const maxShift = Math.max(0, prevCount - 1);
   for (let shift = 0; shift <= maxShift; shift += 1) {
-    const compareCount = Math.min(prevCount - shift, nextCount)
-    if (compareCount <= 0) continue
-    let matches = true
+    const compareCount = Math.min(prevCount - shift, nextCount);
+    if (compareCount <= 0) continue;
+    let matches = true;
     for (let idx = 0; idx < compareCount; idx += 1) {
-      if ((prevPointIds[idx + shift] ?? '') !== (nextPointIds[idx] ?? '')) {
-        matches = false
-        break
+      if ((prevPointIds[idx + shift] ?? "") !== (nextPointIds[idx] ?? "")) {
+        matches = false;
+        break;
       }
     }
-    if (matches) return shift
+    if (matches) return shift;
   }
-  return 0
+  return 0;
 }
 
-export function resolveUsageRequestSlideSteps(rawSteps: number, maxShiftSteps: number): number {
-  const parsed = Math.floor(Number(rawSteps))
-  const safeRaw = Number.isFinite(parsed) ? parsed : 1
-  const safeMax = Math.max(1, Math.floor(Number(maxShiftSteps)) || 1)
-  return Math.max(1, Math.min(safeRaw, safeMax))
+export function resolveUsageRequestSlideSteps(
+  rawSteps: number,
+  maxShiftSteps: number,
+): number {
+  const parsed = Math.floor(Number(rawSteps));
+  const safeRaw = Number.isFinite(parsed) ? parsed : 1;
+  const safeMax = Math.max(1, Math.floor(Number(maxShiftSteps)) || 1);
+  return Math.max(1, Math.min(safeRaw, safeMax));
 }
 
 export function resolveUsageRequestSlidingPreview(input: {
-  values: number[]
-  currentCount: number
-  shiftSteps: number
-  maxShiftSteps: number
-}): { slideSteps: number; previewNextValues: number[]; previewNextValue: number | null } {
-  const slideSteps = resolveUsageRequestSlideSteps(input.shiftSteps, input.maxShiftSteps)
+  values: number[];
+  currentCount: number;
+  shiftSteps: number;
+  maxShiftSteps: number;
+}): {
+  slideSteps: number;
+  previewNextValues: number[];
+  previewNextValue: number | null;
+} {
+  const slideSteps = resolveUsageRequestSlideSteps(
+    input.shiftSteps,
+    input.maxShiftSteps,
+  );
   const previewNextValues = input.values.slice(
     Math.max(0, input.currentCount - slideSteps),
     input.currentCount,
-  )
+  );
   const previewNextValue =
     previewNextValues[previewNextValues.length - 1] ??
     input.values[Math.max(0, input.currentCount - 1)] ??
-    null
-  return { slideSteps, previewNextValues, previewNextValue }
+    null;
+  return { slideSteps, previewNextValues, previewNextValue };
 }
 
 export function calculateUsageRequestSlideOffsetX(
@@ -608,76 +736,89 @@ export function calculateUsageRequestSlideOffsetX(
   requestLinePointSpacing: number,
   slideSteps: number,
 ): number {
-  const phase = Math.max(0, Math.min(1, Number(requestLineAnimPhase)))
-  const spacing = Number.isFinite(requestLinePointSpacing) ? requestLinePointSpacing : 0
-  const steps = Math.max(1, Math.floor(Number(slideSteps)) || 1)
-  return phase * spacing * steps
+  const phase = Math.max(0, Math.min(1, Number(requestLineAnimPhase)));
+  const spacing = Number.isFinite(requestLinePointSpacing)
+    ? requestLinePointSpacing
+    : 0;
+  const steps = Math.max(1, Math.floor(Number(slideSteps)) || 1);
+  return phase * spacing * steps;
 }
 
-function cloneUsageRequestLineSeries(series: UsageRequestLineSeries[]): UsageRequestLineSeries[] {
+function cloneUsageRequestLineSeries(
+  series: UsageRequestLineSeries[],
+): UsageRequestLineSeries[] {
   return series.map((entry) => ({
     ...entry,
     values: [...entry.values],
     present: [...entry.present],
     pointIds: [...entry.pointIds],
-  }))
+  }));
 }
 
 function areUsageRequestLineSeriesIdentical(
   left: UsageRequestLineSeries[],
   right: UsageRequestLineSeries[],
 ): boolean {
-  if (left === right) return true
-  if (left.length !== right.length) return false
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
   for (let idx = 0; idx < left.length; idx += 1) {
-    const a = left[idx]
-    const b = right[idx]
-    if (a.id !== b.id) return false
-    if (a.present.length !== b.present.length || a.values.length !== b.values.length) return false
+    const a = left[idx];
+    const b = right[idx];
+    if (a.id !== b.id) return false;
+    if (
+      a.present.length !== b.present.length ||
+      a.values.length !== b.values.length
+    )
+      return false;
     for (let point = 0; point < a.present.length; point += 1) {
-      if (a.present[point] !== b.present[point]) return false
-      if (a.values[point] !== b.values[point]) return false
-      if ((a.pointIds[point] ?? '') !== (b.pointIds[point] ?? '')) return false
+      if (a.present[point] !== b.present[point]) return false;
+      if (a.values[point] !== b.values[point]) return false;
+      if ((a.pointIds[point] ?? "") !== (b.pointIds[point] ?? "")) return false;
     }
   }
-  return true
+  return true;
 }
 
-function primeUsageRequestGraphCacheFromBaseRows(baseRows: UsageRequestEntry[]) {
-  if (!baseRows.length) return
-  const grouped = groupUsageRequestRowsByProvider(baseRows)
+function primeUsageRequestGraphCacheFromBaseRows(
+  baseRows: UsageRequestEntry[],
+) {
+  if (!baseRows.length) return;
+  const grouped = groupUsageRequestRowsByProvider(baseRows);
   const existing =
-    usageRequestGraphRowsCache != null && usageRequestGraphRowsCache.queryKey === USAGE_REQUEST_GRAPH_QUERY_KEY
+    usageRequestGraphRowsCache != null &&
+    usageRequestGraphRowsCache.queryKey === USAGE_REQUEST_GRAPH_QUERY_KEY
       ? usageRequestGraphRowsCache
-      : null
+      : null;
   if (!existing) {
     usageRequestGraphRowsCache = {
       queryKey: USAGE_REQUEST_GRAPH_QUERY_KEY,
       baseRows,
       rowsByProvider: grouped,
-    }
-    return
+    };
+    return;
   }
-  const mergedRowsByProvider: Record<string, UsageRequestEntry[]> = { ...existing.rowsByProvider }
+  const mergedRowsByProvider: Record<string, UsageRequestEntry[]> = {
+    ...existing.rowsByProvider,
+  };
   for (const [provider, rows] of Object.entries(grouped)) {
     mergedRowsByProvider[provider] = mergeUsageRequestRowsUniqueNewestFirst(
       rows,
       mergedRowsByProvider[provider] ?? [],
       USAGE_REQUEST_GRAPH_SOURCE_LIMIT,
-    )
+    );
   }
   usageRequestGraphRowsCache = {
     queryKey: USAGE_REQUEST_GRAPH_QUERY_KEY,
     baseRows,
     rowsByProvider: mergedRowsByProvider,
-  }
+  };
 }
 
 export function resolveRequestTableSummary(input: {
-  usageRequestSummary: UsageRequestSummaryResponse | null
-  displayedRows: UsageRequestEntry[]
-  hasMore: boolean
-  preferBackendSummary: boolean
+  usageRequestSummary: UsageRequestSummaryResponse | null;
+  displayedRows: UsageRequestEntry[];
+  hasMore: boolean;
+  preferBackendSummary: boolean;
 }): UsageRequestTableSummary | null {
   if (input.preferBackendSummary && input.usageRequestSummary?.ok) {
     return {
@@ -687,370 +828,429 @@ export function resolveRequestTableSummary(input: {
       total: input.usageRequestSummary.total_tokens ?? 0,
       cacheCreate: input.usageRequestSummary.cache_creation_input_tokens ?? 0,
       cacheRead: input.usageRequestSummary.cache_read_input_tokens ?? 0,
-    }
+    };
   }
   // Avoid showing partial totals from the first page when backend summary is unavailable.
-  if (input.hasMore) return null
-  const requests = input.displayedRows.length
+  if (input.hasMore) return null;
+  const requests = input.displayedRows.length;
   const totals = input.displayedRows.reduce(
     (acc, row) => {
-      acc.input += row.input_tokens
-      acc.output += row.output_tokens
-      acc.total += row.total_tokens
-      acc.cacheCreate += row.cache_creation_input_tokens
-      acc.cacheRead += row.cache_read_input_tokens
-      return acc
+      acc.input += row.input_tokens;
+      acc.output += row.output_tokens;
+      acc.total += row.total_tokens;
+      acc.cacheCreate += row.cache_creation_input_tokens;
+      acc.cacheRead += row.cache_read_input_tokens;
+      return acc;
     },
     { input: 0, output: 0, total: 0, cacheCreate: 0, cacheRead: 0 },
-  )
-  return { requests, ...totals }
+  );
+  return { requests, ...totals };
 }
 
 export function primeUsageRequestsPrefetchCache(payload: {
-  queryKey: string
-  rows: UsageRequestEntry[]
-  hasMore: boolean
-  dailyTotals?: UsageRequestDailyTotalsCache | null
-  usingTestFallback?: boolean
+  queryKey: string;
+  rows: UsageRequestEntry[];
+  hasMore: boolean;
+  dailyTotals?: UsageRequestDailyTotalsCache | null;
+  usingTestFallback?: boolean;
 }) {
-  const incomingRows = payload.rows ?? []
-  const currentCache = usageRequestsPageCache
+  const incomingRows = payload.rows ?? [];
+  const currentCache = usageRequestsPageCache;
   const canReuseCurrentRows =
     incomingRows.length === 0 &&
     currentCache != null &&
     currentCache.queryKey === payload.queryKey &&
-    currentCache.rows.length > 0
-  const nextRows = canReuseCurrentRows ? currentCache.rows : incomingRows
-  const nextHasMore = canReuseCurrentRows ? currentCache.hasMore : Boolean(payload.hasMore)
+    currentCache.rows.length > 0;
+  const nextRows = canReuseCurrentRows ? currentCache.rows : incomingRows;
+  const nextHasMore = canReuseCurrentRows
+    ? currentCache.hasMore
+    : Boolean(payload.hasMore);
   const nextUsingTestFallback = canReuseCurrentRows
     ? currentCache.usingTestFallback
-    : Boolean(payload.usingTestFallback)
+    : Boolean(payload.usingTestFallback);
   usageRequestsPageCache = {
     queryKey: payload.queryKey,
     rows: nextRows,
     hasMore: nextHasMore,
     usingTestFallback: nextUsingTestFallback,
-  }
+  };
   if (nextRows.length > 0) {
     usageRequestsLastNonEmptyPageCache = {
       queryKey: payload.queryKey,
       rows: nextRows,
       hasMore: nextHasMore,
       usingTestFallback: nextUsingTestFallback,
-    }
+    };
   }
   if (payload.dailyTotals) {
-    usageRequestDailyTotalsCache = payload.dailyTotals
+    usageRequestDailyTotalsCache = payload.dailyTotals;
   }
-  primeUsageRequestGraphCacheFromBaseRows(nextRows)
-  emitUsageRequestsCachePrimed(payload.queryKey)
+  primeUsageRequestGraphCacheFromBaseRows(nextRows);
+  emitUsageRequestsCachePrimed(payload.queryKey);
 }
 
 export function primeUsageRequestGraphPrefetchCache(payload: {
-  queryKey?: string
-  baseRows: UsageRequestEntry[]
-  rowsByProvider: Record<string, UsageRequestEntry[]>
+  queryKey?: string;
+  baseRows: UsageRequestEntry[];
+  rowsByProvider: Record<string, UsageRequestEntry[]>;
 }) {
   usageRequestGraphRowsCache = {
     queryKey: payload.queryKey ?? USAGE_REQUEST_GRAPH_QUERY_KEY,
     baseRows: payload.baseRows ?? [],
     rowsByProvider: payload.rowsByProvider ?? {},
-  }
+  };
 }
 
 export function resolveRequestPageCached(input: {
-  isRequestsTab: boolean
-  hasStrictRequestQuery: boolean
-  cached: UsageRequestsPageCache | null
-  canonicalCached: UsageRequestsPageCache | null
-  lastNonEmpty: UsageRequestsPageCache | null
+  isRequestsTab: boolean;
+  hasStrictRequestQuery: boolean;
+  cached: UsageRequestsPageCache | null;
+  canonicalCached: UsageRequestsPageCache | null;
+  lastNonEmpty: UsageRequestsPageCache | null;
 }): UsageRequestsPageCache | null {
-  if (input.hasStrictRequestQuery) return input.cached
-  if (input.isRequestsTab) return input.cached
-  return input.cached ?? input.canonicalCached ?? input.lastNonEmpty
+  if (input.hasStrictRequestQuery) return input.cached;
+  if (input.isRequestsTab) return input.cached;
+  return input.cached ?? input.canonicalCached ?? input.lastNonEmpty;
 }
 
 export function pickUsageRequestGraphBaseRows(input: {
-  canonicalPageRows: UsageRequestEntry[]
-  cachedGraphRows: UsageRequestEntry[]
-  fallbackRows: UsageRequestEntry[]
+  canonicalPageRows: UsageRequestEntry[];
+  cachedGraphRows: UsageRequestEntry[];
+  fallbackRows: UsageRequestEntry[];
 }): UsageRequestEntry[] {
   const preferred = [
     input.canonicalPageRows,
     input.cachedGraphRows,
     input.fallbackRows,
-  ]
+  ];
   for (const rows of preferred) {
-    if (rows.length > 0) return rows
+    if (rows.length > 0) return rows;
   }
-  return EMPTY_USAGE_REQUEST_ROWS
+  return EMPTY_USAGE_REQUEST_ROWS;
 }
 
 export function mergeUsageRequestGraphRowsFromRealtime(input: {
-  currentGraphRows: UsageRequestEntry[]
-  incomingRows: UsageRequestEntry[]
-  limit: number
+  currentGraphRows: UsageRequestEntry[];
+  incomingRows: UsageRequestEntry[];
+  limit: number;
 }): UsageRequestEntry[] {
-  if (input.incomingRows.length === 0) return input.currentGraphRows
+  if (input.incomingRows.length === 0) return input.currentGraphRows;
   const merged = mergeUsageRequestRowsUniqueNewestFirst(
     input.incomingRows,
     input.currentGraphRows,
     Math.max(1, input.limit),
-  )
-  return areUsageRequestRowsIdentical(input.currentGraphRows, merged) ? input.currentGraphRows : merged
+  );
+  return areUsageRequestRowsIdentical(input.currentGraphRows, merged)
+    ? input.currentGraphRows
+    : merged;
 }
 
 export function isRequestsTabActivationEdge(input: {
-  isRequestsTab: boolean
-  wasRequestsTab: boolean
+  isRequestsTab: boolean;
+  wasRequestsTab: boolean;
 }): boolean {
-  return input.isRequestsTab && !input.wasRequestsTab
+  return input.isRequestsTab && !input.wasRequestsTab;
 }
 
 export function normalizeUsageRequestProviderFilter(
   providers: string[] | null,
 ): string[] | null {
-  if (!providers || providers.length === 0) return null
-  return [...new Set(providers.map((provider) => provider.trim()).filter(Boolean))]
+  if (!providers || providers.length === 0) return null;
+  return [
+    ...new Set(providers.map((provider) => provider.trim()).filter(Boolean)),
+  ];
 }
 
 export function filterUsageRequestRowsByProviderIds(
   rows: UsageRequestEntry[],
   selectedProviders: string[] | null,
 ): UsageRequestEntry[] {
-  if (!selectedProviders || selectedProviders.length === 0) return rows
-  const providerSet = new Set(selectedProviders)
-  return rows.filter((row) => providerSet.has(String(row.provider ?? '').trim()))
+  if (!selectedProviders || selectedProviders.length === 0) return rows;
+  const providerSet = new Set(selectedProviders);
+  return rows.filter((row) =>
+    providerSet.has(String(row.provider ?? "").trim()),
+  );
 }
 
 export function resolveSummaryFetchWindow(input: {
-  requestFetchFromUnixMs: number | null
-  hasExplicitTimeFilter: boolean
-  rowsForRequestRender: UsageRequestEntry[]
-  requestDefaultDay: number
+  requestFetchFromUnixMs: number | null;
+  hasExplicitTimeFilter: boolean;
+  rowsForRequestRender: UsageRequestEntry[];
+  requestDefaultDay: number;
 }): { fromUnixMs: number | null; toUnixMs: number | null } {
   const hasTodayRowsInRender = input.rowsForRequestRender.some(
     (row) => startOfDayUnixMs(row.unix_ms) === input.requestDefaultDay,
-  )
+  );
   const fromUnixMs =
     input.requestFetchFromUnixMs ??
-    (!input.hasExplicitTimeFilter && hasTodayRowsInRender ? input.requestDefaultDay : null)
+    (!input.hasExplicitTimeFilter && hasTodayRowsInRender
+      ? input.requestDefaultDay
+      : null);
   return {
     fromUnixMs,
     toUnixMs: fromUnixMs == null ? null : fromUnixMs + 24 * 60 * 60 * 1000,
-  }
+  };
 }
 
 function startOfDayUnixMs(unixMs: number): number {
-  const date = new Date(unixMs)
-  date.setHours(0, 0, 0, 0)
-  return date.getTime()
+  const date = new Date(unixMs);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
 }
 
 function formatMonthDay(unixMs: number): string {
-  const date = new Date(unixMs)
-  const dd = String(date.getDate()).padStart(2, '0')
-  const mm = String(date.getMonth() + 1).padStart(2, '0')
-  return `${dd}-${mm}`
+  const date = new Date(unixMs);
+  const dd = String(date.getDate()).padStart(2, "0");
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  return `${dd}-${mm}`;
 }
 
 function dayStartToIso(unixMs: number): string {
-  const d = new Date(unixMs)
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
+  const d = new Date(unixMs);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function parseDateInputToDayStart(dateText: string): number | null {
-  const t = dateText.trim()
-  if (!t) return null
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(t)
-  if (!m) return null
-  const year = Number(m[1])
-  const month = Number(m[2])
-  const day = Number(m[3])
-  const dt = new Date(year, month - 1, day)
-  if (Number.isNaN(dt.getTime())) return null
-  if (dt.getFullYear() !== year || dt.getMonth() + 1 !== month || dt.getDate() !== day) return null
-  return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime()
+  const t = dateText.trim();
+  if (!t) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(t);
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const dt = new Date(year, month - 1, day);
+  if (Number.isNaN(dt.getTime())) return null;
+  if (
+    dt.getFullYear() !== year ||
+    dt.getMonth() + 1 !== month ||
+    dt.getDate() !== day
+  )
+    return null;
+  return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime();
 }
 
 function startOfMonthMs(unixMs: number): number {
-  const d = new Date(unixMs)
-  return new Date(d.getFullYear(), d.getMonth(), 1).getTime()
+  const d = new Date(unixMs);
+  return new Date(d.getFullYear(), d.getMonth(), 1).getTime();
 }
 
 function addMonths(unixMs: number, delta: number): number {
-  const d = new Date(unixMs)
-  return new Date(d.getFullYear(), d.getMonth() + delta, 1).getTime()
+  const d = new Date(unixMs);
+  return new Date(d.getFullYear(), d.getMonth() + delta, 1).getTime();
 }
 
-function normalizeUsageOrigin(origin: string): 'windows' | 'wsl2' | 'unknown' {
-  const lowered = origin.trim().toLowerCase()
-  if (lowered.includes('wsl')) return 'wsl2'
-  if (lowered.includes('win')) return 'windows'
-  return 'unknown'
+function normalizeUsageOrigin(origin: string): "windows" | "wsl2" | "unknown" {
+  const lowered = origin.trim().toLowerCase();
+  if (lowered.includes("wsl")) return "wsl2";
+  if (lowered.includes("win")) return "windows";
+  return "unknown";
 }
 
 export function buildUsageRequestCalendarIndex(input: {
-  isRequestsTab: boolean
-  rowsForRequestRender: UsageRequestEntry[]
-  usageRequestDailyTotalsDays: UsageRequestDailyTotalsResponse['days']
+  isRequestsTab: boolean;
+  rowsForRequestRender: UsageRequestEntry[];
+  usageRequestDailyTotalsDays: UsageRequestDailyTotalsResponse["days"];
 }): {
-  daysWithRecords: Set<number>
-  dayOriginFlags: Map<number, { win: boolean; wsl: boolean }>
+  daysWithRecords: Set<number>;
+  dayOriginFlags: Map<number, { win: boolean; wsl: boolean }>;
 } {
-  const daysWithRecords = new Set<number>()
-  const dayOriginFlags = new Map<number, { win: boolean; wsl: boolean }>()
-  if (!input.isRequestsTab) return { daysWithRecords, dayOriginFlags }
+  const daysWithRecords = new Set<number>();
+  const dayOriginFlags = new Map<number, { win: boolean; wsl: boolean }>();
+  if (!input.isRequestsTab) return { daysWithRecords, dayOriginFlags };
 
   for (const day of input.usageRequestDailyTotalsDays) {
-    if (!day || typeof day.day_start_unix_ms !== 'number') continue
-    const dayStart = day.day_start_unix_ms
-    daysWithRecords.add(dayStart)
-    const winCount = Number(day.windows_request_count ?? 0)
-    const wslCount = Number(day.wsl_request_count ?? 0)
-    const win = Number.isFinite(winCount) && winCount > 0
-    const wsl = Number.isFinite(wslCount) && wslCount > 0
+    if (!day || typeof day.day_start_unix_ms !== "number") continue;
+    const dayStart = day.day_start_unix_ms;
+    daysWithRecords.add(dayStart);
+    const winCount = Number(day.windows_request_count ?? 0);
+    const wslCount = Number(day.wsl_request_count ?? 0);
+    const win = Number.isFinite(winCount) && winCount > 0;
+    const wsl = Number.isFinite(wslCount) && wslCount > 0;
     // Preserve a visible marker even when old payloads do not carry origin split counts.
-    dayOriginFlags.set(dayStart, win || wsl ? { win, wsl } : { win: true, wsl: false })
+    dayOriginFlags.set(
+      dayStart,
+      win || wsl ? { win, wsl } : { win: true, wsl: false },
+    );
   }
 
   for (const row of input.rowsForRequestRender) {
-    const dayStart = startOfDayUnixMs(row.unix_ms)
-    daysWithRecords.add(dayStart)
-    const prev = dayOriginFlags.get(dayStart) ?? { win: false, wsl: false }
-    const origin = normalizeUsageOrigin(row.origin)
+    const dayStart = startOfDayUnixMs(row.unix_ms);
+    daysWithRecords.add(dayStart);
+    const prev = dayOriginFlags.get(dayStart) ?? { win: false, wsl: false };
+    const origin = normalizeUsageOrigin(row.origin);
     dayOriginFlags.set(dayStart, {
-      win: prev.win || origin === 'windows' || origin === 'unknown',
-      wsl: prev.wsl || origin === 'wsl2',
-    })
+      win: prev.win || origin === "windows" || origin === "unknown",
+      wsl: prev.wsl || origin === "wsl2",
+    });
   }
 
-  return { daysWithRecords, dayOriginFlags }
+  return { daysWithRecords, dayOriginFlags };
 }
 
 function buildSmoothLinePath(
   points: Array<{ x: number; y: number }>,
   yBounds: { min: number; max: number },
 ): string {
-  if (points.length === 0) return ''
-  if (points.length === 1) return `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`
-  const clampY = (value: number) => Math.max(yBounds.min, Math.min(yBounds.max, value))
-  let d = `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`
+  if (points.length === 0) return "";
+  if (points.length === 1)
+    return `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`;
+  const clampY = (value: number) =>
+    Math.max(yBounds.min, Math.min(yBounds.max, value));
+  let d = `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`;
   for (let i = 0; i < points.length - 1; i += 1) {
-    const p0 = points[Math.max(0, i - 1)]
-    const p1 = points[i]
-    const p2 = points[i + 1]
-    const p3 = points[Math.min(points.length - 1, i + 2)]
-    const cp1x = p1.x + (p2.x - p0.x) / 6
-    const cp1y = clampY(p1.y + (p2.y - p0.y) / 6)
-    const cp2x = p2.x - (p3.x - p1.x) / 6
-    const cp2y = clampY(p2.y - (p3.y - p1.y) / 6)
-    d += ` C ${cp1x.toFixed(2)} ${cp1y.toFixed(2)}, ${cp2x.toFixed(2)} ${cp2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`
+    const p0 = points[Math.max(0, i - 1)];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[Math.min(points.length - 1, i + 2)];
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp1y = clampY(p1.y + (p2.y - p0.y) / 6);
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    const cp2y = clampY(p2.y - (p3.y - p1.y) / 6);
+    d += ` C ${cp1x.toFixed(2)} ${cp1y.toFixed(2)}, ${cp2x.toFixed(2)} ${cp2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
   }
-  return d
+  return d;
 }
 
 function formatUsageRequestAxisCompact(value: number): string {
-  const n = Math.max(0, Number.isFinite(value) ? value : 0)
-  const formatCompact = (scaled: number, suffix: 'k' | 'M') => {
-    const rounded = Math.round(scaled * 10) / 10
-    return Number.isInteger(rounded) ? `${rounded}${suffix}` : `${rounded.toFixed(1)}${suffix}`
-  }
+  const n = Math.max(0, Number.isFinite(value) ? value : 0);
+  const formatCompact = (scaled: number, suffix: "k" | "M") => {
+    const rounded = Math.round(scaled * 10) / 10;
+    return Number.isInteger(rounded)
+      ? `${rounded}${suffix}`
+      : `${rounded.toFixed(1)}${suffix}`;
+  };
   if (n >= 1_000_000) {
-    return formatCompact(n / 1_000_000, 'M')
+    return formatCompact(n / 1_000_000, "M");
   }
   if (n >= 1_000) {
-    return formatCompact(n / 1_000, 'k')
+    return formatCompact(n / 1_000, "k");
   }
-  return String(Math.round(n))
+  return String(Math.round(n));
 }
 
 export function readTestFlagFromLocation(): boolean {
-  if (typeof window === 'undefined') return false
-  const raw = new URLSearchParams(window.location.search).get('test')
-  if (!raw) return false
-  const normalized = raw.trim().toLowerCase()
-  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on'
+  if (typeof window === "undefined") return false;
+  const raw = new URLSearchParams(window.location.search).get("test");
+  if (!raw) return false;
+  const normalized = raw.trim().toLowerCase();
+  return (
+    normalized === "1" ||
+    normalized === "true" ||
+    normalized === "yes" ||
+    normalized === "on"
+  );
 }
 
 function isUnknownUsageProvider(provider: string): boolean {
-  const normalized = provider.trim().toLowerCase()
-  return normalized.length === 0 || normalized === 'unknown' || normalized === '-'
+  const normalized = provider.trim().toLowerCase();
+  return (
+    normalized.length === 0 || normalized === "unknown" || normalized === "-"
+  );
 }
 
 function stableSeedFromText(text: string): number {
-  let hash = 2166136261
+  let hash = 2166136261;
   for (let idx = 0; idx < text.length; idx += 1) {
-    hash ^= text.charCodeAt(idx)
-    hash = Math.imul(hash, 16777619)
+    hash ^= text.charCodeAt(idx);
+    hash = Math.imul(hash, 16777619);
   }
-  return hash >>> 0
+  return hash >>> 0;
 }
 
 function buildUsageRequestTestRows(
   stats: UsageStatistics | null,
   usageWindowHours: number,
   forceSyntheticProviders = false,
-  clientSessions: Status['client_sessions'] = [],
+  clientSessions: Status["client_sessions"] = [],
 ): UsageRequestEntry[] {
-  const summary = stats?.summary
-  const summaryTotalRequests = summary?.total_requests ?? 0
-  const baseTotalRequests = Math.max(0, Math.min(800, summaryTotalRequests))
-  const totalRequests = Math.max(baseTotalRequests, USAGE_REQUEST_TEST_MIN_ROWS)
-  if (totalRequests <= 0) return []
+  const summary = stats?.summary;
+  const summaryTotalRequests = summary?.total_requests ?? 0;
+  const baseTotalRequests = Math.max(0, Math.min(800, summaryTotalRequests));
+  const totalRequests = Math.max(
+    baseTotalRequests,
+    USAGE_REQUEST_TEST_MIN_ROWS,
+  );
+  if (totalRequests <= 0) return [];
   const summaryProviders =
     summary?.by_provider
       ?.filter((row) => row.requests > 0)
       .map((row) => ({
-        provider: row.provider?.trim() || '',
-        model: 'unknown',
+        provider: row.provider?.trim() || "",
+        model: "unknown",
         requests: row.requests,
-        apiKeyRef: row.api_key_ref ?? '-',
-      })) ?? []
-  const hasUsableSummaryProviders = summaryProviders.some((row) => !isUnknownUsageProvider(row.provider))
-  const providers = !forceSyntheticProviders && hasUsableSummaryProviders
-    ? summaryProviders.filter((row) => {
-        return !isUnknownUsageProvider(row.provider)
-      })
-    : TEST_USAGE_PROVIDERS.map((row) => ({
-        provider: row.provider,
-        model: row.model,
-        requests: Math.max(1, Math.round((totalRequests * row.requests) / 100)),
-        apiKeyRef: row.apiKeyRef,
-      }))
-  const defaultProviderName = providers[0]?.provider?.trim() || TEST_USAGE_PROVIDERS[0].provider
-  const providerMetaByName = new Map<string, { model: string; apiKeyRef: string }>()
+        apiKeyRef: row.api_key_ref ?? "-",
+      })) ?? [];
+  const hasUsableSummaryProviders = summaryProviders.some(
+    (row) => !isUnknownUsageProvider(row.provider),
+  );
+  const providers =
+    !forceSyntheticProviders && hasUsableSummaryProviders
+      ? summaryProviders.filter((row) => {
+          return !isUnknownUsageProvider(row.provider);
+        })
+      : TEST_USAGE_PROVIDERS.map((row) => ({
+          provider: row.provider,
+          model: row.model,
+          requests: Math.max(
+            1,
+            Math.round((totalRequests * row.requests) / 100),
+          ),
+          apiKeyRef: row.apiKeyRef,
+        }));
+  const defaultProviderName =
+    providers[0]?.provider?.trim() || TEST_USAGE_PROVIDERS[0].provider;
+  const providerMetaByName = new Map<
+    string,
+    { model: string; apiKeyRef: string }
+  >();
   providers.forEach((item) => {
-    const providerName = String(item.provider ?? '').trim()
-    if (!providerName || providerMetaByName.has(providerName)) return
+    const providerName = String(item.provider ?? "").trim();
+    if (!providerName || providerMetaByName.has(providerName)) return;
     providerMetaByName.set(providerName, {
-      model: String(item.model ?? '').trim() || 'gpt-5.2-codex',
-      apiKeyRef: String(item.apiKeyRef ?? '-').trim() || '-',
-    })
-  })
+      model: String(item.model ?? "").trim() || "gpt-5.2-codex",
+      apiKeyRef: String(item.apiKeyRef ?? "-").trim() || "-",
+    });
+  });
   const sessionSeedRows = (() => {
-    const bySessionId = new Map<string, { sessionId: string; provider: string; origin: 'windows' | 'wsl2'; requests: number; verified: boolean }>()
+    const bySessionId = new Map<
+      string,
+      {
+        sessionId: string;
+        provider: string;
+        origin: "windows" | "wsl2";
+        requests: number;
+        verified: boolean;
+      }
+    >();
     for (const session of clientSessions ?? []) {
-      if (!session) continue
-      if (session.is_agent || session.is_review) continue
-      const sessionId = String(session.codex_session_id ?? '').trim() || String(session.id ?? '').trim()
-      if (!sessionId) continue
+      if (!session) continue;
+      if (session.is_agent || session.is_review) continue;
+      const sessionId =
+        String(session.codex_session_id ?? "").trim() ||
+        String(session.id ?? "").trim();
+      if (!sessionId) continue;
       const providerCandidates = [
-        String(session.current_provider ?? '').trim(),
-        String(session.preferred_provider ?? '').trim(),
-        String(session.reported_model_provider ?? '').trim(),
-      ]
+        String(session.current_provider ?? "").trim(),
+        String(session.preferred_provider ?? "").trim(),
+        String(session.reported_model_provider ?? "").trim(),
+      ];
       const provider =
-        providerCandidates.find((value) => value && value !== '-' && value.toLowerCase() !== 'api_router') ??
-        defaultProviderName
-      const wtSession = String(session.wt_session ?? '').trim().toLowerCase()
-      const origin: 'windows' | 'wsl2' = wtSession.includes('wsl') ? 'wsl2' : 'windows'
-      const requests = session.active ? 8 : 3
-      const verified = Boolean(session.verified)
-      const existing = bySessionId.get(sessionId)
+        providerCandidates.find(
+          (value) =>
+            value && value !== "-" && value.toLowerCase() !== "api_router",
+        ) ?? defaultProviderName;
+      const wtSession = String(session.wt_session ?? "")
+        .trim()
+        .toLowerCase();
+      const origin: "windows" | "wsl2" = wtSession.includes("wsl")
+        ? "wsl2"
+        : "windows";
+      const requests = session.active ? 8 : 3;
+      const verified = Boolean(session.verified);
+      const existing = bySessionId.get(sessionId);
       if (existing) {
         bySessionId.set(sessionId, {
           ...existing,
@@ -1058,63 +1258,82 @@ function buildUsageRequestTestRows(
           origin,
           requests: Math.max(existing.requests, requests),
           verified: existing.verified || verified,
-        })
-        continue
+        });
+        continue;
       }
-      bySessionId.set(sessionId, { sessionId, provider, origin, requests, verified })
+      bySessionId.set(sessionId, {
+        sessionId,
+        provider,
+        origin,
+        requests,
+        verified,
+      });
     }
-    const all = [...bySessionId.values()]
-    const verifiedOnly = all.filter((item) => item.verified)
+    const all = [...bySessionId.values()];
+    const verifiedOnly = all.filter((item) => item.verified);
     return (verifiedOnly.length > 0 ? verifiedOnly : all).map((item) => ({
       sessionId: item.sessionId,
       provider: item.provider,
       origin: item.origin,
       requests: Math.max(1, item.requests),
-    }))
-  })()
-  const models = [{ model: 'gpt-5.2-codex', requests: totalRequests }]
-  const generatedAt = Date.now()
-  const windowMs = Math.max(usageWindowHours, USAGE_REQUEST_TEST_MIN_WINDOW_HOURS) * 60 * 60 * 1000
+    }));
+  })();
+  const models = [{ model: "gpt-5.2-codex", requests: totalRequests }];
+  const generatedAt = Date.now();
+  const windowMs =
+    Math.max(usageWindowHours, USAGE_REQUEST_TEST_MIN_WINDOW_HOURS) *
+    60 *
+    60 *
+    1000;
   const fingerprint = [
     String(totalRequests),
     ...providers.map((item) => `${item.provider}:${item.requests}`),
-    ...sessionSeedRows.map((item) => `${item.sessionId}:${item.provider}:${item.requests}:${item.origin}`),
-  ].join('|')
-  let seed = stableSeedFromText(fingerprint || String(totalRequests))
+    ...sessionSeedRows.map(
+      (item) =>
+        `${item.sessionId}:${item.provider}:${item.requests}:${item.origin}`,
+    ),
+  ].join("|");
+  let seed = stableSeedFromText(fingerprint || String(totalRequests));
   const rand = () => {
-    seed = (seed * 1103515245 + 12345) >>> 0
-    return seed / 4294967296
-  }
-  const clampNumber = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+    seed = (seed * 1103515245 + 12345) >>> 0;
+    return seed / 4294967296;
+  };
+  const clampNumber = (value: number, min: number, max: number) =>
+    Math.max(min, Math.min(max, value));
   const pick = <T extends { requests: number }>(rows: T[]) => {
-    const sum = rows.reduce((acc, row) => acc + Math.max(0, row.requests), 0)
-    if (sum <= 0) return rows[0]
-    let marker = rand() * sum
+    const sum = rows.reduce((acc, row) => acc + Math.max(0, row.requests), 0);
+    if (sum <= 0) return rows[0];
+    let marker = rand() * sum;
     for (const row of rows) {
-      marker -= Math.max(0, row.requests)
-      if (marker <= 0) return row
+      marker -= Math.max(0, row.requests);
+      if (marker <= 0) return row;
     }
-    return rows[rows.length - 1]
-  }
-  const rows: UsageRequestEntry[] = []
+    return rows[rows.length - 1];
+  };
+  const rows: UsageRequestEntry[] = [];
 
   const baseSessions =
     sessionSeedRows.length > 0
       ? sessionSeedRows.slice(0, 8)
       : TEST_CODEX_SESSION_IDS.slice(0, 5).map((sessionId, index) => ({
           sessionId,
-          provider: providers[index % providers.length]?.provider ?? defaultProviderName,
-          origin: (index % 2 === 0 ? 'windows' : 'wsl2') as 'windows' | 'wsl2',
+          provider:
+            providers[index % providers.length]?.provider ??
+            defaultProviderName,
+          origin: (index % 2 === 0 ? "windows" : "wsl2") as "windows" | "wsl2",
           requests: Math.max(1, 6 - index),
-        }))
+        }));
   type TestSessionPlan = {
-    sessionId: string
-    provider: string
-    origin: 'windows' | 'wsl2'
-    requestCount: number
-  }
+    sessionId: string;
+    provider: string;
+    origin: "windows" | "wsl2";
+    requestCount: number;
+  };
   let sessionPlans: TestSessionPlan[] = baseSessions.map((session, index) => {
-    const normalizedRank = baseSessions.length <= 1 ? 1 : (baseSessions.length - 1 - index) / (baseSessions.length - 1)
+    const normalizedRank =
+      baseSessions.length <= 1
+        ? 1
+        : (baseSessions.length - 1 - index) / (baseSessions.length - 1);
     const preferredCount =
       index === 0
         ? USAGE_REQUEST_GRAPH_SOURCE_LIMIT
@@ -1122,23 +1341,36 @@ function buildUsageRequestTestRows(
           ? Math.round(56 + normalizedRank * 26)
           : index === 2
             ? Math.round(24 + normalizedRank * 18)
-            : Math.round(2 + normalizedRank * 12)
-    const activityBoost = session.requests >= 8 ? 12 : 0
-    const jitter = Math.floor((rand() - 0.5) * (index <= 1 ? 8 : 5))
+            : Math.round(2 + normalizedRank * 12);
+    const activityBoost = session.requests >= 8 ? 12 : 0;
+    const jitter = Math.floor((rand() - 0.5) * (index <= 1 ? 8 : 5));
     return {
       sessionId: session.sessionId,
       provider: session.provider,
       origin: session.origin,
-      requestCount: clampNumber(preferredCount + activityBoost + jitter, 1, USAGE_REQUEST_GRAPH_SOURCE_LIMIT),
-    }
-  })
-  if (sessionPlans.length > 0 && totalRequests >= USAGE_REQUEST_GRAPH_SOURCE_LIMIT) {
-    const first = sessionPlans[0]
-    sessionPlans = [{ ...first, requestCount: USAGE_REQUEST_GRAPH_SOURCE_LIMIT }, ...sessionPlans.slice(1)]
+      requestCount: clampNumber(
+        preferredCount + activityBoost + jitter,
+        1,
+        USAGE_REQUEST_GRAPH_SOURCE_LIMIT,
+      ),
+    };
+  });
+  if (
+    sessionPlans.length > 0 &&
+    totalRequests >= USAGE_REQUEST_GRAPH_SOURCE_LIMIT
+  ) {
+    const first = sessionPlans[0];
+    sessionPlans = [
+      { ...first, requestCount: USAGE_REQUEST_GRAPH_SOURCE_LIMIT },
+      ...sessionPlans.slice(1),
+    ];
   }
-  const plannedPrimaryTotal = sessionPlans.reduce((sum, plan) => sum + plan.requestCount, 0)
+  const plannedPrimaryTotal = sessionPlans.reduce(
+    (sum, plan) => sum + plan.requestCount,
+    0,
+  );
   if (sessionPlans.length > 4 && plannedPrimaryTotal > totalRequests) {
-    const scale = totalRequests / plannedPrimaryTotal
+    const scale = totalRequests / plannedPrimaryTotal;
     sessionPlans = sessionPlans.map((plan, index) => ({
       ...plan,
       requestCount: clampNumber(
@@ -1146,57 +1378,77 @@ function buildUsageRequestTestRows(
         index === 0 ? 6 : 1,
         USAGE_REQUEST_GRAPH_SOURCE_LIMIT,
       ),
-    }))
+    }));
   }
 
   const appendSessionRows = (
     sessionId: string,
     providerName: string,
-    origin: 'windows' | 'wsl2',
+    origin: "windows" | "wsl2",
     rawCount: number,
     trendIndex: number,
   ) => {
-    const count = clampNumber(Math.round(rawCount), 1, USAGE_REQUEST_GRAPH_SOURCE_LIMIT)
-    if (count <= 0) return 0
-    const providerMeta = providerMetaByName.get(providerName) ?? { model: 'gpt-5.2-codex', apiKeyRef: '-' }
-    const model = pick(models)
+    const count = clampNumber(
+      Math.round(rawCount),
+      1,
+      USAGE_REQUEST_GRAPH_SOURCE_LIMIT,
+    );
+    if (count <= 0) return 0;
+    const providerMeta = providerMetaByName.get(providerName) ?? {
+      model: "gpt-5.2-codex",
+      apiKeyRef: "-",
+    };
+    const model = pick(models);
     const seriesSpanMs = clampNumber(
       Math.floor(windowMs * (0.34 + rand() * 0.42)),
       45 * 60 * 1000,
       windowMs,
-    )
-    const earliestAllowed = generatedAt - windowMs
-    const latestStart = generatedAt - seriesSpanMs
+    );
+    const earliestAllowed = generatedAt - windowMs;
+    const latestStart = generatedAt - seriesSpanMs;
     const startMs = clampNumber(
       latestStart - Math.floor(rand() * Math.max(1, windowMs * 0.2)),
       earliestAllowed,
       latestStart,
-    )
-    const stepMs = Math.max(45_000, Math.floor(seriesSpanMs / Math.max(1, count - 1)))
-    const baseline = 92_000 + Math.floor(rand() * 38_000) + trendIndex * 900
-    const driftPerPoint = 8 + Math.floor(rand() * 28)
-    const waveAmplitude = 700 + Math.floor(rand() * 2_100)
-    const wavePeriod = 22 + Math.floor(rand() * 26)
-    const wavePhase = rand() * Math.PI * 2
-    let carryNoise = (rand() - 0.5) * 900
+    );
+    const stepMs = Math.max(
+      45_000,
+      Math.floor(seriesSpanMs / Math.max(1, count - 1)),
+    );
+    const baseline = 92_000 + Math.floor(rand() * 38_000) + trendIndex * 900;
+    const driftPerPoint = 8 + Math.floor(rand() * 28);
+    const waveAmplitude = 700 + Math.floor(rand() * 2_100);
+    const wavePeriod = 22 + Math.floor(rand() * 26);
+    const wavePhase = rand() * Math.PI * 2;
+    let carryNoise = (rand() - 0.5) * 900;
 
     for (let idx = 0; idx < count; idx += 1) {
-      carryNoise = carryNoise * 0.62 + (rand() - 0.5) * 920
-      const wave = Math.sin((idx / wavePeriod) * Math.PI * 2 + wavePhase) * waveAmplitude
+      carryNoise = carryNoise * 0.62 + (rand() - 0.5) * 920;
+      const wave =
+        Math.sin((idx / wavePeriod) * Math.PI * 2 + wavePhase) * waveAmplitude;
       const total = clampNumber(
         Math.round(baseline + idx * driftPerPoint + wave + carryNoise),
         55_000,
         230_000,
-      )
-      const output = Math.max(1_000, Math.round(total * (0.055 + rand() * 0.07)))
-      const input = Math.max(1, total - output)
-      const cacheCreate = idx % 11 === 0 ? Math.max(0, Math.round(total * (0.28 + rand() * 0.22))) : 0
-      const cacheRead = idx % 5 === 0 ? Math.max(0, Math.round(total * (0.24 + rand() * 0.2))) : 0
+      );
+      const output = Math.max(
+        1_000,
+        Math.round(total * (0.055 + rand() * 0.07)),
+      );
+      const input = Math.max(1, total - output);
+      const cacheCreate =
+        idx % 11 === 0
+          ? Math.max(0, Math.round(total * (0.28 + rand() * 0.22)))
+          : 0;
+      const cacheRead =
+        idx % 5 === 0
+          ? Math.max(0, Math.round(total * (0.24 + rand() * 0.2)))
+          : 0;
       const unixMs = clampNumber(
         startMs + idx * stepMs + Math.floor((rand() - 0.5) * stepMs * 0.3),
         earliestAllowed,
         generatedAt,
-      )
+      );
       rows.push({
         id: `synthetic-${providerName}-${sessionId}-${idx}`,
         provider: providerName,
@@ -1205,35 +1457,47 @@ function buildUsageRequestTestRows(
         origin,
         session_id: sessionId,
         unix_ms: unixMs,
-        node_id: 'node-local',
-        node_name: 'Local',
+        node_id: "node-local",
+        node_name: "Local",
         input_tokens: input,
         output_tokens: output,
         total_tokens: total,
         cache_creation_input_tokens: cacheCreate,
         cache_read_input_tokens: cacheRead,
-      })
+      });
     }
-    return count
-  }
+    return count;
+  };
 
-  let allocated = 0
+  let allocated = 0;
   sessionPlans.forEach((plan, index) => {
-    allocated += appendSessionRows(plan.sessionId, plan.provider, plan.origin, plan.requestCount, index)
-  })
+    allocated += appendSessionRows(
+      plan.sessionId,
+      plan.provider,
+      plan.origin,
+      plan.requestCount,
+      index,
+    );
+  });
 
-  let remaining = Math.max(0, totalRequests - allocated)
-  let auxIndex = 0
+  let remaining = Math.max(0, totalRequests - allocated);
+  let auxIndex = 0;
   while (remaining > 0) {
-    const providerName = pick(providers).provider
-    const origin: 'windows' | 'wsl2' = auxIndex % 2 === 0 ? 'windows' : 'wsl2'
-    const chunk = Math.min(remaining, 20 + Math.floor(rand() * 44))
-    const sessionId = `test-aux-session-${String(auxIndex + 1).padStart(2, '0')}`
-    allocated += appendSessionRows(sessionId, providerName, origin, chunk, sessionPlans.length + auxIndex)
-    remaining = Math.max(0, totalRequests - allocated)
-    auxIndex += 1
+    const providerName = pick(providers).provider;
+    const origin: "windows" | "wsl2" = auxIndex % 2 === 0 ? "windows" : "wsl2";
+    const chunk = Math.min(remaining, 20 + Math.floor(rand() * 44));
+    const sessionId = `test-aux-session-${String(auxIndex + 1).padStart(2, "0")}`;
+    allocated += appendSessionRows(
+      sessionId,
+      providerName,
+      origin,
+      chunk,
+      sessionPlans.length + auxIndex,
+    );
+    remaining = Math.max(0, totalRequests - allocated);
+    auxIndex += 1;
   }
-  return rows.sort((a, b) => b.unix_ms - a.unix_ms)
+  return rows.sort((a, b) => b.unix_ms - a.unix_ms);
 }
 
 function buildDailyTotalsCacheFromRows(
@@ -1241,112 +1505,119 @@ function buildDailyTotalsCacheFromRows(
   dayLimit: number,
   providerLabel?: (provider: string) => string,
 ): UsageRequestDailyTotalsCache {
-  const byDay = new Map<number, Map<string, number>>()
-  const providerTotals = new Map<string, number>()
+  const byDay = new Map<number, Map<string, number>>();
+  const providerTotals = new Map<string, number>();
   for (const row of rows) {
-    const provider = providerLabel ? providerLabel(row.provider) : row.provider
-    const day = startOfDayUnixMs(row.unix_ms)
-    const dayMap = byDay.get(day) ?? new Map<string, number>()
-    dayMap.set(provider, (dayMap.get(provider) ?? 0) + row.total_tokens)
-    byDay.set(day, dayMap)
-    providerTotals.set(provider, (providerTotals.get(provider) ?? 0) + row.total_tokens)
+    const provider = providerLabel ? providerLabel(row.provider) : row.provider;
+    const day = startOfDayUnixMs(row.unix_ms);
+    const dayMap = byDay.get(day) ?? new Map<string, number>();
+    dayMap.set(provider, (dayMap.get(provider) ?? 0) + row.total_tokens);
+    byDay.set(day, dayMap);
+    providerTotals.set(
+      provider,
+      (providerTotals.get(provider) ?? 0) + row.total_tokens,
+    );
   }
-  const latestDays = [...byDay.keys()].sort((a, b) => b - a).slice(0, Math.max(1, dayLimit))
+  const latestDays = [...byDay.keys()]
+    .sort((a, b) => b - a)
+    .slice(0, Math.max(1, dayLimit));
   const days = latestDays
     .sort((a, b) => a - b)
     .map((day) => {
-      const map = byDay.get(day) ?? new Map<string, number>()
-      const provider_totals = Object.fromEntries(map.entries())
-      const total_tokens = [...map.values()].reduce((sum, v) => sum + v, 0)
+      const map = byDay.get(day) ?? new Map<string, number>();
+      const provider_totals = Object.fromEntries(map.entries());
+      const total_tokens = [...map.values()].reduce((sum, v) => sum + v, 0);
       return {
         day_start_unix_ms: day,
         provider_totals,
         total_tokens,
-      }
-    })
+      };
+    });
   const providers = [...providerTotals.entries()]
     .sort((a, b) => b[1] - a[1])
-    .map(([provider, total_tokens]) => ({ provider, total_tokens }))
-  return { days, providers }
+    .map(([provider, total_tokens]) => ({ provider, total_tokens }));
+  return { days, providers };
 }
 
 type Props = {
-  config: Config | null
-  usageWindowHours: number
-  setUsageWindowHours: (hours: number) => void
-  usageStatisticsLoading: boolean
-  usageFilterNodes: string[]
-  setUsageFilterNodes: (nodes: string[]) => void
-  usageNodeFilterOptions: string[]
-  toggleUsageNodeFilter: (nodeName: string) => void
-  usageFilterProviders: string[]
-  setUsageFilterProviders: (providers: string[]) => void
-  usageProviderFilterOptions: string[]
-  usageProviderFilterDisplayOptions: UsageProviderFilterDisplayOption[]
-  toggleUsageProviderFilterDisplayOption: (providers: string[]) => void
-  usageFilterModels: string[]
-  setUsageFilterModels: (models: string[]) => void
-  usageModelFilterOptions: string[]
-  toggleUsageModelFilter: (modelName: string) => void
-  usageFilterOrigins: string[]
-  setUsageFilterOrigins: (origins: string[]) => void
-  usageOriginFilterOptions: string[]
-  toggleUsageOriginFilter: (originName: string) => void
+  config: Config | null;
+  usageWindowHours: number;
+  setUsageWindowHours: (hours: number) => void;
+  usageStatisticsLoading: boolean;
+  usageFilterNodes: string[];
+  setUsageFilterNodes: (nodes: string[]) => void;
+  usageNodeFilterOptions: string[];
+  toggleUsageNodeFilter: (nodeName: string) => void;
+  usageFilterProviders: string[];
+  setUsageFilterProviders: (providers: string[]) => void;
+  usageProviderFilterOptions: string[];
+  usageProviderFilterDisplayOptions: UsageProviderFilterDisplayOption[];
+  toggleUsageProviderFilterDisplayOption: (providers: string[]) => void;
+  usageFilterModels: string[];
+  setUsageFilterModels: (models: string[]) => void;
+  usageModelFilterOptions: string[];
+  usageFilterOrigins: string[];
+  setUsageFilterOrigins: (origins: string[]) => void;
+  usageOriginFilterOptions: string[];
+  toggleUsageOriginFilter: (originName: string) => void;
   usageAnomalies: {
-    messages: string[]
-    highCostRowKeys: Set<string>
-  }
-  usageSummary: UsageSummary | null
-  formatKpiTokens: (value: number | null | undefined) => string
+    messages: string[];
+    highCostRowKeys: Set<string>;
+  };
+  usageSummary: UsageSummary | null;
+  formatKpiTokens: (value: number | null | undefined) => string;
   usageTopModel: {
-    model: string
-    share_pct?: number | null
-  } | null
-  formatUsdMaybe: (value: number | null | undefined) => string
-  usageDedupedTotalUsedUsd: number
-  usageTotalInputTokens: number
-  usageTotalOutputTokens: number
-  usageAvgTokensPerRequest: number
-  usageActiveWindowHours: number
-  usagePricedRequestCount: number
-  usagePricedCoveragePct: number
-  usageAvgRequestsPerHour: number
-  usageAvgTokensPerHour: number
-  usageWindowLabel: string
-  usageStatistics: UsageStatistics | null
-  fmtWhen: (unixMs: number) => string
-  usageChart: UsageChartModel | null
-  setUsageChartHover: (hover: UsageChartHover | null) => void
+    model: string;
+    share_pct?: number | null;
+  } | null;
+  formatUsdMaybe: (value: number | null | undefined) => string;
+  usageDedupedTotalUsedUsd: number;
+  usageTotalInputTokens: number;
+  usageTotalOutputTokens: number;
+  usageAvgTokensPerRequest: number;
+  usageActiveWindowHours: number;
+  usagePricedRequestCount: number;
+  usagePricedCoveragePct: number;
+  usageAvgRequestsPerHour: number;
+  usageAvgTokensPerHour: number;
+  usageWindowLabel: string;
+  usageStatistics: UsageStatistics | null;
+  fmtWhen: (unixMs: number) => string;
+  usageChart: UsageChartModel | null;
+  setUsageChartHover: (hover: UsageChartHover | null) => void;
   showUsageChartHover: (
     event: {
-      clientX: number
-      clientY: number
-      currentTarget: { ownerSVGElement?: SVGSVGElement | null }
+      clientX: number;
+      clientY: number;
+      currentTarget: { ownerSVGElement?: SVGSVGElement | null };
     },
     bucketUnixMs: number,
     requests: number,
     totalTokens: number,
-  ) => void
-  usageChartHover: UsageChartHover | null
-  formatUsageBucketLabel: (bucketUnixMs: number, windowHours: number) => string
-  setUsageHistoryModalOpen: (open: boolean) => void
-  setUsagePricingModalOpen: (open: boolean) => void
-  usageScheduleProviderOptions: string[]
-  usageByProvider: UsageProviderRow[]
-  openUsageScheduleModal: (providerName: string, currency: string) => Promise<void>
-  providerPreferredCurrency: (providerName: string) => string
-  setUsageProviderShowDetails: Dispatch<SetStateAction<boolean>>
-  usageProviderShowDetails: boolean
-  usageProviderShowDetailsStorageKey: string
-  usageProviderDisplayGroups: UsageProviderDisplayGroup[]
-  usageProviderRowKey: (row: UsageProviderRow) => string
-  formatPricingSource: (source: string | null | undefined) => string
-  usageProviderTotalsAndAverages: UsageProviderTotalsAndAverages | null
-  usageActivityUnixMs?: number | null
-  clientSessions?: Status['client_sessions']
-  forceDetailsTab?: UsageDetailsTab
-  showFilters?: boolean
-}
+  ) => void;
+  usageChartHover: UsageChartHover | null;
+  formatUsageBucketLabel: (bucketUnixMs: number, windowHours: number) => string;
+  setUsageHistoryModalOpen: (open: boolean) => void;
+  setUsagePricingModalOpen: (open: boolean) => void;
+  usageScheduleProviderOptions: string[];
+  usageByProvider: UsageProviderRow[];
+  openUsageScheduleModal: (
+    providerName: string,
+    currency: string,
+  ) => Promise<void>;
+  providerPreferredCurrency: (providerName: string) => string;
+  setUsageProviderShowDetails: Dispatch<SetStateAction<boolean>>;
+  usageProviderShowDetails: boolean;
+  usageProviderShowDetailsStorageKey: string;
+  usageProviderDisplayGroups: UsageProviderDisplayGroup[];
+  usageProviderRowKey: (row: UsageProviderRow) => string;
+  formatPricingSource: (source: string | null | undefined) => string;
+  usageProviderTotalsAndAverages: UsageProviderTotalsAndAverages | null;
+  usageActivityUnixMs?: number | null;
+  clientSessions?: Status["client_sessions"];
+  forceDetailsTab?: UsageDetailsTab;
+  showFilters?: boolean;
+};
 
 export function UsageStatisticsPanel({
   config,
@@ -1365,7 +1636,6 @@ export function UsageStatisticsPanel({
   usageFilterModels,
   setUsageFilterModels,
   usageModelFilterOptions,
-  toggleUsageModelFilter,
   usageFilterOrigins,
   setUsageFilterOrigins,
   usageOriginFilterOptions,
@@ -1410,180 +1680,242 @@ export function UsageStatisticsPanel({
   forceDetailsTab,
   showFilters = true,
 }: Props) {
-  const [usageRequestTimeFilter, setUsageRequestTimeFilter] = useState('')
-  const [usageRequestMultiFilters, setUsageRequestMultiFilters] = useState<Record<UsageRequestMultiFilterKey, string[] | null>>({
+  const [usageRequestTimeFilter, setUsageRequestTimeFilter] = useState("");
+  const [usageRequestMultiFilters, setUsageRequestMultiFilters] = useState<
+    Record<UsageRequestMultiFilterKey, string[] | null>
+  >({
     node: null,
     provider: null,
     model: null,
     origin: null,
     transport: null,
     session: null,
-  })
-  const [usageRequestFilterSearch, setUsageRequestFilterSearch] = useState<Record<UsageRequestMultiFilterKey, string>>({
-    node: '',
-    provider: '',
-    model: '',
-    origin: '',
-    transport: '',
-    session: '',
-  })
-  const [activeUsageRequestFilterMenu, setActiveUsageRequestFilterMenu] = useState<{
-    key: UsageRequestColumnFilterKey
-    left: number
-    top: number
-    width: number
-  } | null>(null)
-  const [timePickerMonthStartMs, setTimePickerMonthStartMs] = useState<number>(() => startOfMonthMs(Date.now()))
-  const usageRequestFilterMenuRef = useRef<HTMLDivElement | null>(null)
-  const [usageRequestRows, setUsageRequestRows] = useState<UsageRequestEntry[]>([])
-  const [usageRequestGraphBaseRows, setUsageRequestGraphBaseRows] = useState<UsageRequestEntry[]>([])
-  const [usageRequestGraphRowsByProvider, setUsageRequestGraphRowsByProvider] = useState<
-    Record<string, UsageRequestEntry[]>
-  >({})
-  const [usageRequestTableScrollLeft, setUsageRequestTableScrollLeft] = useState(0)
-  const [usageRequestVirtualRange, setUsageRequestVirtualRange] = useState(() => ({ start: 0, end: 0 }))
-  const [usageRequestHasMore, setUsageRequestHasMore] = useState(false)
-  const [usageRequestLoading, setUsageRequestLoading] = useState(false)
-  const [usageRequestError, setUsageRequestError] = useState('')
-  const [usageRequestSummary, setUsageRequestSummary] = useState<UsageRequestSummaryResponse | null>(null)
-  const [usageRequestUsingTestFallback, setUsageRequestUsingTestFallback] = useState(false)
-  const [usageRequestMergeTick, setUsageRequestMergeTick] = useState(0)
-  const [usageRequestDailyTotalsDays, setUsageRequestDailyTotalsDays] = useState<
-    UsageRequestDailyTotalsResponse['days']
-  >([])
-  const [usageRequestDailyTotalsProviders, setUsageRequestDailyTotalsProviders] = useState<
-    UsageRequestDailyTotalsResponse['providers']
-  >([])
-  const [usageRequestDailyTotalsLoading, setUsageRequestDailyTotalsLoading] = useState(false)
-  const [usageRequestsCachePrimedTick, setUsageRequestsCachePrimedTick] = useState(0)
-  const providerGroupMaps = useMemo(() => buildProviderGroupMaps(config), [config])
+  });
+  const [usageRequestFilterSearch, setUsageRequestFilterSearch] = useState<
+    Record<UsageRequestMultiFilterKey, string>
+  >({
+    node: "",
+    provider: "",
+    model: "",
+    origin: "",
+    transport: "",
+    session: "",
+  });
+  const [activeUsageRequestFilterMenu, setActiveUsageRequestFilterMenu] =
+    useState<{
+      key: UsageRequestColumnFilterKey;
+      left: number;
+      top: number;
+      width: number;
+    } | null>(null);
+  const [timePickerMonthStartMs, setTimePickerMonthStartMs] = useState<number>(
+    () => startOfMonthMs(Date.now()),
+  );
+  const usageRequestFilterMenuRef = useRef<HTMLDivElement | null>(null);
+  const [usageRequestRows, setUsageRequestRows] = useState<UsageRequestEntry[]>(
+    [],
+  );
+  const [usageRequestGraphBaseRows, setUsageRequestGraphBaseRows] = useState<
+    UsageRequestEntry[]
+  >([]);
+  const [usageRequestGraphRowsByProvider, setUsageRequestGraphRowsByProvider] =
+    useState<Record<string, UsageRequestEntry[]>>({});
+  const [usageRequestTableScrollLeft, setUsageRequestTableScrollLeft] =
+    useState(0);
+  const [usageRequestVirtualRange, setUsageRequestVirtualRange] = useState(
+    () => ({ start: 0, end: 0 }),
+  );
+  const [usageRequestHasMore, setUsageRequestHasMore] = useState(false);
+  const [usageRequestLoading, setUsageRequestLoading] = useState(false);
+  const [usageRequestError, setUsageRequestError] = useState("");
+  const [usageRequestSummary, setUsageRequestSummary] =
+    useState<UsageRequestSummaryResponse | null>(null);
+  const [usageRequestUsingTestFallback, setUsageRequestUsingTestFallback] =
+    useState(false);
+  const [usageRequestMergeTick, setUsageRequestMergeTick] = useState(0);
+  const [usageRequestDailyTotalsDays, setUsageRequestDailyTotalsDays] =
+    useState<UsageRequestDailyTotalsResponse["days"]>([]);
+  const [
+    usageRequestDailyTotalsProviders,
+    setUsageRequestDailyTotalsProviders,
+  ] = useState<UsageRequestDailyTotalsResponse["providers"]>([]);
+  const [usageRequestDailyTotalsLoading, setUsageRequestDailyTotalsLoading] =
+    useState(false);
+  const [usageRequestsCachePrimedTick, setUsageRequestsCachePrimedTick] =
+    useState(0);
+  const providerGroupMaps = useMemo(
+    () => buildProviderGroupMaps(config),
+    [config],
+  );
   const resolveRequestProviderName = useCallback(
-    (provider: string) => resolveProviderDisplayName(providerGroupMaps.displayNameByProvider, provider),
+    (provider: string) =>
+      resolveProviderDisplayName(
+        providerGroupMaps.displayNameByProvider,
+        provider,
+      ),
     [providerGroupMaps.displayNameByProvider],
-  )
+  );
   const usageRequestDailyProviderHints = useMemo(
-    () => normalizeUsageRequestProviderFilter(listUsageRequestDailyProviderHints(usageRequestDailyTotalsProviders)) ?? [],
+    () =>
+      normalizeUsageRequestProviderFilter(
+        listUsageRequestDailyProviderHints(usageRequestDailyTotalsProviders),
+      ) ?? [],
     [usageRequestDailyTotalsProviders, usageRequestsCachePrimedTick],
-  )
+  );
   const usageRequestAnalyticsProviderHints = useMemo(() => {
-    const out: string[] = []
+    const out: string[] = [];
     for (const row of usageByProvider) {
-      const provider = String(row?.provider ?? '').trim()
-      if (provider.length > 0) out.push(provider)
+      const provider = String(row?.provider ?? "").trim();
+      if (provider.length > 0) out.push(provider);
     }
     const configuredProviders =
-      config && typeof config === 'object' && config.providers && typeof config.providers === 'object'
+      config &&
+      typeof config === "object" &&
+      config.providers &&
+      typeof config.providers === "object"
         ? Object.keys(config.providers)
-        : []
+        : [];
     for (const provider of configuredProviders) {
-      const key = String(provider ?? '').trim()
-      if (key.length > 0) out.push(key)
+      const key = String(provider ?? "").trim();
+      if (key.length > 0) out.push(key);
     }
-    return normalizeUsageRequestProviderFilter(out) ?? []
-  }, [config, usageByProvider])
+    return normalizeUsageRequestProviderFilter(out) ?? [];
+  }, [config, usageByProvider]);
   const verifiedSessionIdSet = useMemo(() => {
-    const ids = new Set<string>()
+    const ids = new Set<string>();
     for (const session of clientSessions ?? []) {
-      if (!session?.verified) continue
-      if (session.is_agent || session.is_review) continue
-      const codexSessionId = String(session.codex_session_id ?? '').trim()
-      if (codexSessionId) ids.add(codexSessionId)
-      const fallbackSessionId = String(session.id ?? '').trim()
-      if (fallbackSessionId) ids.add(fallbackSessionId)
+      if (!session?.verified) continue;
+      if (session.is_agent || session.is_review) continue;
+      const codexSessionId = String(session.codex_session_id ?? "").trim();
+      if (codexSessionId) ids.add(codexSessionId);
+      const fallbackSessionId = String(session.id ?? "").trim();
+      if (fallbackSessionId) ids.add(fallbackSessionId);
     }
-    return ids
-  }, [clientSessions])
-  const usageRequestRefreshInFlightRef = useRef(false)
-  const usageRequestRefreshPendingRef = useRef(false)
-  const usageRequestRefreshPendingLimitRef = useRef(USAGE_REQUEST_PAGE_SIZE)
-  const usageRequestGraphRefreshInFlightRef = useRef(false)
-  const usageRequestGraphRefreshPendingRef = useRef(false)
-  const usageRequestGraphLastRefreshAtRef = useRef(usageRequestGraphLastRefreshAtCache)
-  const usageRequestLastMergeAtRef = useRef(usageRequestLastMergeAtCache)
-  const usageRequestFetchSeqRef = useRef(0)
-  const usageRequestSummaryFetchSeqRef = useRef(0)
-  const usageRequestGraphBaseFetchSeqRef = useRef(0)
-  const usageRequestDailyTotalsFetchSeqRef = useRef(0)
-  const usageRequestLoadedQueryKeyRef = useRef<string | null>(null)
-  const usageRequestResolvedQueryKeyRef = useRef<string | null>(null)
-  const usageRequestPrevQueryKeyRef = useRef<string | null>(null)
-  const usageRequestLastRenderedRowsRef = useRef<UsageRequestEntry[]>([])
-  const usageRequestLastActivityRef = useRef<number | null>(null)
-  const usageRequestWasNearBottomRef = useRef(false)
-  const usageRequestVirtualRowCountRef = useRef(0)
-  const usageRequestWarmupAtRef = useRef(0)
-  const usageRequestDefaultTodayAutoPageRef = useRef(false)
-  const usageRequestsPagePrefetchInFlightRef = useRef(false)
-  const usageRequestsPagePrefetchAtRef = useRef(0)
-  const usageRequestForceSyntheticProviders = useMemo(() => readTestFlagFromLocation(), [])
+    return ids;
+  }, [clientSessions]);
+  const usageRequestRefreshInFlightRef = useRef(false);
+  const usageRequestRefreshPendingRef = useRef(false);
+  const usageRequestRefreshPendingLimitRef = useRef(USAGE_REQUEST_PAGE_SIZE);
+  const usageRequestGraphRefreshInFlightRef = useRef(false);
+  const usageRequestGraphRefreshPendingRef = useRef(false);
+  const usageRequestGraphLastRefreshAtRef = useRef(
+    usageRequestGraphLastRefreshAtCache,
+  );
+  const usageRequestLastMergeAtRef = useRef(usageRequestLastMergeAtCache);
+  const usageRequestFetchSeqRef = useRef(0);
+  const usageRequestSummaryFetchSeqRef = useRef(0);
+  const usageRequestGraphBaseFetchSeqRef = useRef(0);
+  const usageRequestDailyTotalsFetchSeqRef = useRef(0);
+  const usageRequestLoadedQueryKeyRef = useRef<string | null>(null);
+  const usageRequestResolvedQueryKeyRef = useRef<string | null>(null);
+  const usageRequestPrevQueryKeyRef = useRef<string | null>(null);
+  const usageRequestLastRenderedRowsRef = useRef<UsageRequestEntry[]>([]);
+  const usageRequestLastActivityRef = useRef<number | null>(null);
+  const usageRequestWasNearBottomRef = useRef(false);
+  const usageRequestVirtualRowCountRef = useRef(0);
+  const usageRequestWarmupAtRef = useRef(0);
+  const usageRequestDefaultTodayAutoPageRef = useRef(false);
+  const usageRequestsPagePrefetchInFlightRef = useRef(false);
+  const usageRequestsPagePrefetchAtRef = useRef(0);
+  const usageRequestForceSyntheticProviders = useMemo(
+    () => readTestFlagFromLocation(),
+    [],
+  );
   const usageRequestTestFallbackEnabled = useMemo(
     () => usageRequestForceSyntheticProviders || import.meta.env.DEV,
     [usageRequestForceSyntheticProviders],
-  )
+  );
   useEffect(() => {
-    const nextTag = usageRequestTestFallbackEnabled ? USAGE_REQUEST_TEST_DATA_REVISION : null
-    if (usageRequestSyntheticRevisionCacheTag === nextTag) return
-    usageRequestSyntheticRevisionCacheTag = nextTag
-    usageRequestsPageCache = null
-    usageRequestsLastNonEmptyPageCache = null
-    usageRequestDailyTotalsCache = null
-    usageRequestGraphRowsCache = null
-    usageRequestGraphLastRefreshAtCache = 0
-    usageRequestLastMergeAtCache = 0
-    usageRequestGraphLastRefreshAtRef.current = 0
-    usageRequestLastMergeAtRef.current = 0
-    setUsageRequestRows([])
-    setUsageRequestHasMore(false)
-    setUsageRequestUsingTestFallback(false)
-    setUsageRequestGraphBaseRows([])
-    setUsageRequestGraphRowsByProvider({})
-    setUsageRequestDailyTotalsDays([])
-    setUsageRequestDailyTotalsProviders([])
-  }, [usageRequestTestFallbackEnabled])
+    const nextTag = usageRequestTestFallbackEnabled
+      ? USAGE_REQUEST_TEST_DATA_REVISION
+      : null;
+    if (usageRequestSyntheticRevisionCacheTag === nextTag) return;
+    usageRequestSyntheticRevisionCacheTag = nextTag;
+    usageRequestsPageCache = null;
+    usageRequestsLastNonEmptyPageCache = null;
+    usageRequestDailyTotalsCache = null;
+    usageRequestGraphRowsCache = null;
+    usageRequestGraphLastRefreshAtCache = 0;
+    usageRequestLastMergeAtCache = 0;
+    usageRequestGraphLastRefreshAtRef.current = 0;
+    usageRequestLastMergeAtRef.current = 0;
+    setUsageRequestRows([]);
+    setUsageRequestHasMore(false);
+    setUsageRequestUsingTestFallback(false);
+    setUsageRequestGraphBaseRows([]);
+    setUsageRequestGraphRowsByProvider({});
+    setUsageRequestDailyTotalsDays([]);
+    setUsageRequestDailyTotalsProviders([]);
+  }, [usageRequestTestFallbackEnabled]);
   const markUsageRequestGraphRefreshed = useCallback((at = Date.now()) => {
-    usageRequestGraphLastRefreshAtRef.current = at
-    usageRequestGraphLastRefreshAtCache = at
-  }, [])
+    usageRequestGraphLastRefreshAtRef.current = at;
+    usageRequestGraphLastRefreshAtCache = at;
+  }, []);
   const markUsageRequestMerged = useCallback((at = Date.now()) => {
-    usageRequestLastMergeAtRef.current = at
-    usageRequestLastMergeAtCache = at
-  }, [])
+    usageRequestLastMergeAtRef.current = at;
+    usageRequestLastMergeAtCache = at;
+  }, []);
   const usageRequestTestRows = useMemo(
-    () => buildUsageRequestTestRows(usageStatistics, usageWindowHours, usageRequestForceSyntheticProviders, clientSessions),
-    [clientSessions, usageRequestForceSyntheticProviders, usageStatistics, usageWindowHours],
-  )
-  const useGlobalRequestFilters = showFilters
+    () =>
+      buildUsageRequestTestRows(
+        usageStatistics,
+        usageWindowHours,
+        usageRequestForceSyntheticProviders,
+        clientSessions,
+      ),
+    [
+      clientSessions,
+      usageRequestForceSyntheticProviders,
+      usageStatistics,
+      usageWindowHours,
+    ],
+  );
+  const useGlobalRequestFilters = showFilters;
   // Keep table column filters client-side so unselected options remain visible in the filter menu.
   const requestFetchProviders = useMemo(
-    () => (useGlobalRequestFilters && usageFilterProviders.length ? usageFilterProviders : null),
+    () =>
+      useGlobalRequestFilters && usageFilterProviders.length
+        ? usageFilterProviders
+        : null,
     [useGlobalRequestFilters, usageFilterProviders],
-  )
+  );
   const requestFetchNodes = useMemo(
-    () => (useGlobalRequestFilters && usageFilterNodes.length ? usageFilterNodes : null),
+    () =>
+      useGlobalRequestFilters && usageFilterNodes.length
+        ? usageFilterNodes
+        : null,
     [useGlobalRequestFilters, usageFilterNodes],
-  )
+  );
   const requestFetchModels = useMemo(
-    () => (useGlobalRequestFilters && usageFilterModels.length ? usageFilterModels : null),
+    () =>
+      useGlobalRequestFilters && usageFilterModels.length
+        ? usageFilterModels
+        : null,
     [useGlobalRequestFilters, usageFilterModels],
-  )
+  );
   const requestFetchOrigins = useMemo(
-    () => (useGlobalRequestFilters && usageFilterOrigins.length ? usageFilterOrigins : null),
+    () =>
+      useGlobalRequestFilters && usageFilterOrigins.length
+        ? usageFilterOrigins
+        : null,
     [useGlobalRequestFilters, usageFilterOrigins],
-  )
-  const requestFetchSessions: string[] | null = null
-  const hasExplicitTimeFilter = usageRequestTimeFilter.trim().length > 0
+  );
+  const requestFetchSessions: string[] | null = null;
+  const hasExplicitTimeFilter = usageRequestTimeFilter.trim().length > 0;
   const selectedRequestTimeFilterDay = useMemo(
     () => parseDateInputToDayStart(usageRequestTimeFilter),
     [usageRequestTimeFilter],
-  )
-  const requestFetchFromUnixMs = selectedRequestTimeFilterDay
+  );
+  const requestFetchFromUnixMs = selectedRequestTimeFilterDay;
   const requestFetchToUnixMs =
-    selectedRequestTimeFilterDay == null ? null : selectedRequestTimeFilterDay + 24 * 60 * 60 * 1000
+    selectedRequestTimeFilterDay == null
+      ? null
+      : selectedRequestTimeFilterDay + 24 * 60 * 60 * 1000;
   const requestFetchHours = resolveRequestFetchHours({
-    effectiveDetailsTab: forceDetailsTab ?? 'requests',
+    effectiveDetailsTab: forceDetailsTab ?? "requests",
     showFilters,
     usageWindowHours,
-  })
+  });
   const requestQueryKey = useMemo(
     () =>
       buildUsageRequestsQueryKey({
@@ -1596,7 +1928,9 @@ export function UsageStatisticsPanel({
         origins: requestFetchOrigins,
         transports: usageRequestMultiFilters.transport,
         sessions: requestFetchSessions,
-        syntheticRevision: usageRequestTestFallbackEnabled ? USAGE_REQUEST_TEST_DATA_REVISION : null,
+        syntheticRevision: usageRequestTestFallbackEnabled
+          ? USAGE_REQUEST_TEST_DATA_REVISION
+          : null,
       }),
     [
       requestFetchFromUnixMs,
@@ -1610,14 +1944,14 @@ export function UsageStatisticsPanel({
       usageRequestMultiFilters.transport,
       usageRequestTestFallbackEnabled,
     ],
-  )
+  );
   const requestGraphQueryKey = useMemo(
     () =>
       usageRequestTestFallbackEnabled
         ? `${USAGE_REQUEST_GRAPH_QUERY_KEY}:${USAGE_REQUEST_TEST_DATA_REVISION}`
         : USAGE_REQUEST_GRAPH_QUERY_KEY,
     [usageRequestTestFallbackEnabled],
-  )
+  );
   const hasExplicitRequestFilters =
     hasExplicitTimeFilter ||
     usageRequestMultiFilters.node !== null ||
@@ -1625,8 +1959,8 @@ export function UsageStatisticsPanel({
     usageRequestMultiFilters.model !== null ||
     usageRequestMultiFilters.origin !== null ||
     usageRequestMultiFilters.transport !== null ||
-    usageRequestMultiFilters.session !== null
-  const hasStrictRequestQuery = hasExplicitRequestFilters
+    usageRequestMultiFilters.session !== null;
+  const hasStrictRequestQuery = hasExplicitRequestFilters;
   const effectiveSummaryRequestFilters = useMemo(
     () =>
       resolveEffectiveSummaryRequestFilters({
@@ -1651,169 +1985,185 @@ export function UsageStatisticsPanel({
       requestFetchSessions,
       usageRequestMultiFilters,
     ],
-  )
+  );
   const hasImpossibleRequestFilters =
     (requestFetchProviders !== null && requestFetchProviders.length === 0) ||
     (requestFetchNodes !== null && requestFetchNodes.length === 0) ||
     (requestFetchModels !== null && requestFetchModels.length === 0) ||
     (requestFetchOrigins !== null && requestFetchOrigins.length === 0) ||
-    (usageRequestMultiFilters.node !== null && usageRequestMultiFilters.node.length === 0) ||
-    (usageRequestMultiFilters.provider !== null && usageRequestMultiFilters.provider.length === 0) ||
-    (usageRequestMultiFilters.model !== null && usageRequestMultiFilters.model.length === 0) ||
-    (usageRequestMultiFilters.origin !== null && usageRequestMultiFilters.origin.length === 0) ||
-    (usageRequestMultiFilters.transport !== null && usageRequestMultiFilters.transport.length === 0) ||
-    (usageRequestMultiFilters.session !== null && usageRequestMultiFilters.session.length === 0) ||
-    hasImpossibleSummaryRequestFilters(effectiveSummaryRequestFilters)
+    (usageRequestMultiFilters.node !== null &&
+      usageRequestMultiFilters.node.length === 0) ||
+    (usageRequestMultiFilters.provider !== null &&
+      usageRequestMultiFilters.provider.length === 0) ||
+    (usageRequestMultiFilters.model !== null &&
+      usageRequestMultiFilters.model.length === 0) ||
+    (usageRequestMultiFilters.origin !== null &&
+      usageRequestMultiFilters.origin.length === 0) ||
+    (usageRequestMultiFilters.transport !== null &&
+      usageRequestMultiFilters.transport.length === 0) ||
+    (usageRequestMultiFilters.session !== null &&
+      usageRequestMultiFilters.session.length === 0) ||
+    hasImpossibleSummaryRequestFilters(effectiveSummaryRequestFilters);
   const [requestDefaultDay, setRequestDefaultDay] = useState<number>(() =>
     startOfDayUnixMs(Date.now()),
-  )
+  );
   useEffect(() => {
-    if (typeof window === 'undefined') return
-    let timer: number | null = null
+    if (typeof window === "undefined") return;
+    let timer: number | null = null;
     const schedule = () => {
-      const now = Date.now()
-      const nextDayStart = startOfDayUnixMs(now) + 24 * 60 * 60 * 1000
-      const delay = Math.max(1000, nextDayStart - now + 50)
+      const now = Date.now();
+      const nextDayStart = startOfDayUnixMs(now) + 24 * 60 * 60 * 1000;
+      const delay = Math.max(1000, nextDayStart - now + 50);
       timer = window.setTimeout(() => {
-        setRequestDefaultDay(startOfDayUnixMs(Date.now()))
-        schedule()
-      }, delay)
-    }
-    schedule()
+        setRequestDefaultDay(startOfDayUnixMs(Date.now()));
+        schedule();
+      }, delay);
+    };
+    schedule();
     return () => {
-      if (timer != null) window.clearTimeout(timer)
-    }
-  }, [])
-  const [dismissedAnomalyIds, setDismissedAnomalyIds] = useState<Set<string>>(new Set())
-  const anomalyEntries = useMemo(
-    () => {
-      const messageCounts = new Map<string, number>()
-      return usageAnomalies.messages
-        .map((message) => message.trim())
-        .filter((message) => message.length > 0)
-        .map((message) => {
-          const nextCount = (messageCounts.get(message) ?? 0) + 1
-          messageCounts.set(message, nextCount)
-          return { id: `${message}::${nextCount}`, message }
-        })
-    },
-    [usageAnomalies.messages],
-  )
+      if (timer != null) window.clearTimeout(timer);
+    };
+  }, []);
+  const [dismissedAnomalyIds, setDismissedAnomalyIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const anomalyEntries = useMemo(() => {
+    const messageCounts = new Map<string, number>();
+    return usageAnomalies.messages
+      .map((message) => message.trim())
+      .filter((message) => message.length > 0)
+      .map((message) => {
+        const nextCount = (messageCounts.get(message) ?? 0) + 1;
+        messageCounts.set(message, nextCount);
+        return { id: `${message}::${nextCount}`, message };
+      });
+  }, [usageAnomalies.messages]);
   useEffect(() => {
     setDismissedAnomalyIds((prev) => {
-      if (!prev.size) return prev
-      const idSet = new Set(anomalyEntries.map((entry) => entry.id))
-      const next = new Set<string>()
+      if (!prev.size) return prev;
+      const idSet = new Set(anomalyEntries.map((entry) => entry.id));
+      const next = new Set<string>();
       for (const id of prev) {
-        if (idSet.has(id)) next.add(id)
+        if (idSet.has(id)) next.add(id);
       }
-      return next.size === prev.size ? prev : next
-    })
-  }, [anomalyEntries])
+      return next.size === prev.size ? prev : next;
+    });
+  }, [anomalyEntries]);
   const visibleAnomalyEntries = useMemo(
     () => anomalyEntries.filter((entry) => !dismissedAnomalyIds.has(entry.id)),
     [anomalyEntries, dismissedAnomalyIds],
-  )
-  const effectiveDetailsTab = forceDetailsTab ?? 'requests'
-  const isRequestsTab = effectiveDetailsTab === 'requests'
-  const isAnalyticsTab = effectiveDetailsTab === 'analytics'
-  const wasRequestsTabRef = useRef(false)
+  );
+  const effectiveDetailsTab = forceDetailsTab ?? "requests";
+  const isRequestsTab = effectiveDetailsTab === "requests";
+  const isAnalyticsTab = effectiveDetailsTab === "analytics";
+  const wasRequestsTabRef = useRef(false);
   const justActivatedRequestsTab = isRequestsTabActivationEdge({
     isRequestsTab,
     wasRequestsTab: wasRequestsTabRef.current,
-  })
-  const [requestTabImmediateRender, setRequestTabImmediateRender] = useState(false)
-  const shouldUseImmediateRequestRows = isRequestsTab && (justActivatedRequestsTab || requestTabImmediateRender)
-  const shouldPrepareRequestsData = isRequestsTab
-  const isRequestsOnlyPage = effectiveDetailsTab === 'requests' && !showFilters
+  });
+  const [requestTabImmediateRender, setRequestTabImmediateRender] =
+    useState(false);
+  const shouldUseImmediateRequestRows =
+    isRequestsTab && (justActivatedRequestsTab || requestTabImmediateRender);
+  const shouldPrepareRequestsData = isRequestsTab;
+  const isRequestsOnlyPage = effectiveDetailsTab === "requests" && !showFilters;
   const cachedRequestsPage =
-    usageRequestsPageCache != null && usageRequestsPageCache.queryKey === requestQueryKey
+    usageRequestsPageCache != null &&
+    usageRequestsPageCache.queryKey === requestQueryKey
       ? usageRequestsPageCache
-      : null
+      : null;
   const canonicalRequestsPageCache =
-    usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_CANONICAL_QUERY_KEY
+    usageRequestsPageCache != null &&
+    usageRequestsPageCache.queryKey === USAGE_REQUESTS_CANONICAL_QUERY_KEY
       ? usageRequestsPageCache
-      : null
-  const lastNonEmptyRequestsPageCache = usageRequestsLastNonEmptyPageCache
+      : null;
+  const lastNonEmptyRequestsPageCache = usageRequestsLastNonEmptyPageCache;
   const cachedGraphRows =
-    usageRequestGraphRowsCache != null && usageRequestGraphRowsCache.queryKey === requestGraphQueryKey
+    usageRequestGraphRowsCache != null &&
+    usageRequestGraphRowsCache.queryKey === requestGraphQueryKey
       ? usageRequestGraphRowsCache
-      : null
-  const deferredUsageRequestRows = useDeferredValue(usageRequestRows)
-  const requestRowsForRender = shouldUseImmediateRequestRows ? usageRequestRows : deferredUsageRequestRows
+      : null;
+  const deferredUsageRequestRows = useDeferredValue(usageRequestRows);
+  const requestRowsForRender = shouldUseImmediateRequestRows
+    ? usageRequestRows
+    : deferredUsageRequestRows;
   const rowsForRequestRender = isRequestsTab
     ? requestRowsForRender.length > 0
       ? requestRowsForRender
       : usageRequestRows.length > 0
         ? usageRequestRows
-        : cachedRequestsPage?.rows ??
+        : (cachedRequestsPage?.rows ??
           canonicalRequestsPageCache?.rows ??
           lastNonEmptyRequestsPageCache?.rows ??
-          EMPTY_USAGE_REQUEST_ROWS
-    : EMPTY_USAGE_REQUEST_ROWS
-  const deferredUsageRequestGraphBaseRows = useDeferredValue(usageRequestGraphBaseRows)
+          EMPTY_USAGE_REQUEST_ROWS)
+    : EMPTY_USAGE_REQUEST_ROWS;
+  const deferredUsageRequestGraphBaseRows = useDeferredValue(
+    usageRequestGraphBaseRows,
+  );
   const graphBaseRowsForRequestRender = shouldPrepareRequestsData
     ? deferredUsageRequestGraphBaseRows.length > 0 &&
       usageRequestGraphBaseRows.length > 0 &&
-      usageRequestRowIdentity(deferredUsageRequestGraphBaseRows[0]) !== usageRequestRowIdentity(usageRequestGraphBaseRows[0])
+      usageRequestRowIdentity(deferredUsageRequestGraphBaseRows[0]) !==
+        usageRequestRowIdentity(usageRequestGraphBaseRows[0])
       ? usageRequestGraphBaseRows
       : deferredUsageRequestGraphBaseRows.length > 0
         ? deferredUsageRequestGraphBaseRows
         : usageRequestGraphBaseRows.length > 0
           ? usageRequestGraphBaseRows
-          : cachedGraphRows?.baseRows ?? EMPTY_USAGE_REQUEST_ROWS
-    : EMPTY_USAGE_REQUEST_ROWS
+          : (cachedGraphRows?.baseRows ?? EMPTY_USAGE_REQUEST_ROWS)
+    : EMPTY_USAGE_REQUEST_ROWS;
   const usageRequestGraphProviderCount = useMemo(
     () => Object.keys(usageRequestGraphRowsByProvider).length,
     [usageRequestGraphRowsByProvider],
-  )
+  );
 
   useEffect(() => {
-    wasRequestsTabRef.current = isRequestsTab
-  }, [isRequestsTab])
+    wasRequestsTabRef.current = isRequestsTab;
+  }, [isRequestsTab]);
   useEffect(() => {
-    if (usageRequestPrevQueryKeyRef.current === requestQueryKey) return
-    usageRequestPrevQueryKeyRef.current = requestQueryKey
-    usageRequestResolvedQueryKeyRef.current = null
-  }, [requestQueryKey])
+    if (usageRequestPrevQueryKeyRef.current === requestQueryKey) return;
+    usageRequestPrevQueryKeyRef.current = requestQueryKey;
+    usageRequestResolvedQueryKeyRef.current = null;
+  }, [requestQueryKey]);
   useEffect(() => {
-    if (isRequestsTab) return
-    usageRequestLastRenderedRowsRef.current = []
-  }, [isRequestsTab])
+    if (isRequestsTab) return;
+    usageRequestLastRenderedRowsRef.current = [];
+  }, [isRequestsTab]);
 
   useEffect(() => {
     if (!isRequestsTab) {
-      setRequestTabImmediateRender(false)
-      return
+      setRequestTabImmediateRender(false);
+      return;
     }
-    setRequestTabImmediateRender(true)
+    setRequestTabImmediateRender(true);
     const timer = window.setTimeout(() => {
-      setRequestTabImmediateRender(false)
-    }, 1500)
+      setRequestTabImmediateRender(false);
+    }, 1500);
     return () => {
-      window.clearTimeout(timer)
-    }
-  }, [isRequestsTab, requestQueryKey])
+      window.clearTimeout(timer);
+    };
+  }, [isRequestsTab, requestQueryKey]);
 
   useEffect(() => {
-    if (!isRequestsTab) return
-    usageRequestDefaultTodayAutoPageRef.current = false
-  }, [isRequestsTab, requestQueryKey, requestDefaultDay])
+    if (!isRequestsTab) return;
+    usageRequestDefaultTodayAutoPageRef.current = false;
+  }, [isRequestsTab, requestQueryKey, requestDefaultDay]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return
+    if (typeof window === "undefined") return;
     const onPrimed = () => {
-      setUsageRequestsCachePrimedTick((tick) => tick + 1)
-    }
-    window.addEventListener(USAGE_REQUESTS_CACHE_PRIMED_EVENT, onPrimed)
-    return () => window.removeEventListener(USAGE_REQUESTS_CACHE_PRIMED_EVENT, onPrimed)
-  }, [])
+      setUsageRequestsCachePrimedTick((tick) => tick + 1);
+    };
+    window.addEventListener(USAGE_REQUESTS_CACHE_PRIMED_EVENT, onPrimed);
+    return () =>
+      window.removeEventListener(USAGE_REQUESTS_CACHE_PRIMED_EVENT, onPrimed);
+  }, []);
 
   useEffect(() => {
-    if (!isRequestsOnlyPage) return
+    if (!isRequestsOnlyPage) return;
     // Keep existing request filters when switching pages/tabs; only close any floating menu.
-    setActiveUsageRequestFilterMenu(null)
-  }, [isRequestsOnlyPage])
+    setActiveUsageRequestFilterMenu(null);
+  }, [isRequestsOnlyPage]);
 
   const {
     usageHistoryTableSurfaceRef: usageRequestTableSurfaceRef,
@@ -1825,135 +2175,152 @@ export function UsageStatisticsPanel({
     onUsageHistoryScrollbarPointerDown: onUsageRequestScrollbarPointerDown,
     onUsageHistoryScrollbarPointerMove: onUsageRequestScrollbarPointerMove,
     onUsageHistoryScrollbarPointerUp: onUsageRequestScrollbarPointerUp,
-    onUsageHistoryScrollbarLostPointerCapture: onUsageRequestScrollbarLostPointerCapture,
+    onUsageHistoryScrollbarLostPointerCapture:
+      onUsageRequestScrollbarLostPointerCapture,
     clearUsageHistoryScrollbarTimers: clearUsageRequestScrollbarTimers,
-  } = useUsageHistoryScrollbar()
+  } = useUsageHistoryScrollbar();
 
   const syncUsageRequestVirtualRange = useCallback(() => {
-    const wrap = usageRequestTableWrapRef.current
-    const rowCount = usageRequestVirtualRowCountRef.current
+    const wrap = usageRequestTableWrapRef.current;
+    const rowCount = usageRequestVirtualRowCountRef.current;
     if (!wrap || rowCount <= 0) {
-      setUsageRequestVirtualRange({ start: 0, end: rowCount })
-      return
+      setUsageRequestVirtualRange({ start: 0, end: rowCount });
+      return;
     }
     if (rowCount <= USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS) {
-      setUsageRequestVirtualRange({ start: 0, end: rowCount })
-      return
+      setUsageRequestVirtualRange({ start: 0, end: rowCount });
+      return;
     }
-    const nextRange = resolveUsageRequestVirtualRange(wrap.scrollTop, wrap.clientHeight, rowCount)
+    const nextRange = resolveUsageRequestVirtualRange(
+      wrap.scrollTop,
+      wrap.clientHeight,
+      rowCount,
+    );
     setUsageRequestVirtualRange((prev) =>
-      prev.start === nextRange.start && prev.end === nextRange.end ? prev : nextRange,
-    )
-  }, [usageRequestTableWrapRef])
+      prev.start === nextRange.start && prev.end === nextRange.end
+        ? prev
+        : nextRange,
+    );
+  }, [usageRequestTableWrapRef]);
 
   useEffect(() => {
-    if (effectiveDetailsTab !== 'requests' || typeof window === 'undefined') return
+    if (effectiveDetailsTab !== "requests" || typeof window === "undefined")
+      return;
     const sync = () => {
-      scheduleUsageRequestScrollbarSync()
-      syncUsageRequestVirtualRange()
-    }
-    const raf = window.requestAnimationFrame(sync)
-    const onResize = () => sync()
-    window.addEventListener('resize', onResize)
+      scheduleUsageRequestScrollbarSync();
+      syncUsageRequestVirtualRange();
+    };
+    const raf = window.requestAnimationFrame(sync);
+    const onResize = () => sync();
+    window.addEventListener("resize", onResize);
     return () => {
-      window.cancelAnimationFrame(raf)
-      window.removeEventListener('resize', onResize)
-    }
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener("resize", onResize);
+    };
   }, [
     effectiveDetailsTab,
     syncUsageRequestVirtualRange,
     usageRequestRows,
     usageRequestLoading,
     scheduleUsageRequestScrollbarSync,
-  ])
+  ]);
 
-  useEffect(() => () => clearUsageRequestScrollbarTimers(), [clearUsageRequestScrollbarTimers])
+  useEffect(
+    () => () => clearUsageRequestScrollbarTimers(),
+    [clearUsageRequestScrollbarTimers],
+  );
 
   const refreshUsageRequests = useCallback(
     async (limit: number) => {
       if (hasImpossibleRequestFilters) {
-        usageRequestFetchSeqRef.current += 1
-        usageRequestRefreshPendingRef.current = false
-        setUsageRequestLoading(false)
-        setUsageRequestError('')
-        setUsageRequestUsingTestFallback(false)
-        setUsageRequestRows([])
-        setUsageRequestHasMore(false)
-        usageRequestResolvedQueryKeyRef.current = requestQueryKey
-        return
+        usageRequestFetchSeqRef.current += 1;
+        usageRequestRefreshPendingRef.current = false;
+        setUsageRequestLoading(false);
+        setUsageRequestError("");
+        setUsageRequestUsingTestFallback(false);
+        setUsageRequestRows([]);
+        setUsageRequestHasMore(false);
+        usageRequestResolvedQueryKeyRef.current = requestQueryKey;
+        return;
       }
       if (usageRequestRefreshInFlightRef.current) {
-        usageRequestRefreshPendingRef.current = true
-        usageRequestRefreshPendingLimitRef.current = limit
-        return
+        usageRequestRefreshPendingRef.current = true;
+        usageRequestRefreshPendingLimitRef.current = limit;
+        return;
       }
-      usageRequestRefreshInFlightRef.current = true
-      const requestSeq = usageRequestFetchSeqRef.current + 1
-      usageRequestFetchSeqRef.current = requestSeq
-      setUsageRequestLoading(true)
-      setUsageRequestError('')
-      setUsageRequestUsingTestFallback(false)
+      usageRequestRefreshInFlightRef.current = true;
+      const requestSeq = usageRequestFetchSeqRef.current + 1;
+      usageRequestFetchSeqRef.current = requestSeq;
+      setUsageRequestLoading(true);
+      setUsageRequestError("");
+      setUsageRequestUsingTestFallback(false);
       try {
-        const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
-          ...buildUsageRequestEntriesArgs({
-            hours: requestFetchHours,
-            fromUnixMs: requestFetchFromUnixMs,
-            toUnixMs: requestFetchToUnixMs,
-            nodes: requestFetchNodes,
-            providers: requestFetchProviders,
-            models: requestFetchModels,
-            origins: requestFetchOrigins,
-            transports: usageRequestMultiFilters.transport,
-            sessions: requestFetchSessions,
-            limit,
-            offset: 0,
-          }),
-        })
-        if (usageRequestFetchSeqRef.current !== requestSeq) return
-        const nextRows = res.rows ?? []
-        setUsageRequestRows(nextRows)
-        setUsageRequestHasMore(Boolean(res.has_more))
-        usageRequestResolvedQueryKeyRef.current = requestQueryKey
+        const res = await invoke<UsageRequestEntriesResponse>(
+          "get_usage_request_entries",
+          {
+            ...buildUsageRequestEntriesArgs({
+              hours: requestFetchHours,
+              fromUnixMs: requestFetchFromUnixMs,
+              toUnixMs: requestFetchToUnixMs,
+              nodes: requestFetchNodes,
+              providers: requestFetchProviders,
+              models: requestFetchModels,
+              origins: requestFetchOrigins,
+              transports: usageRequestMultiFilters.transport,
+              sessions: requestFetchSessions,
+              limit,
+              offset: 0,
+            }),
+          },
+        );
+        if (usageRequestFetchSeqRef.current !== requestSeq) return;
+        const nextRows = res.rows ?? [];
+        setUsageRequestRows(nextRows);
+        setUsageRequestHasMore(Boolean(res.has_more));
+        usageRequestResolvedQueryKeyRef.current = requestQueryKey;
         if (nextRows.length > 0) {
           usageRequestsLastNonEmptyPageCache = {
             queryKey: requestQueryKey,
             rows: nextRows,
             hasMore: Boolean(res.has_more),
             usingTestFallback: false,
-          }
+          };
         }
       } catch (e) {
-        if (usageRequestFetchSeqRef.current !== requestSeq) return
+        if (usageRequestFetchSeqRef.current !== requestSeq) return;
         if (usageRequestTestFallbackEnabled) {
-          const next = usageRequestTestRows.slice(0, Math.min(limit, usageRequestTestRows.length))
-          setUsageRequestRows(next)
-          setUsageRequestHasMore(usageRequestTestRows.length > next.length)
-          setUsageRequestUsingTestFallback(true)
-          setUsageRequestError('')
-          usageRequestResolvedQueryKeyRef.current = requestQueryKey
+          const next = usageRequestTestRows.slice(
+            0,
+            Math.min(limit, usageRequestTestRows.length),
+          );
+          setUsageRequestRows(next);
+          setUsageRequestHasMore(usageRequestTestRows.length > next.length);
+          setUsageRequestUsingTestFallback(true);
+          setUsageRequestError("");
+          usageRequestResolvedQueryKeyRef.current = requestQueryKey;
           if (next.length > 0) {
             usageRequestsLastNonEmptyPageCache = {
               queryKey: requestQueryKey,
               rows: next,
               hasMore: usageRequestTestRows.length > next.length,
               usingTestFallback: true,
-            }
+            };
           }
         } else {
-          setUsageRequestRows([])
-          setUsageRequestHasMore(false)
-          setUsageRequestError(String(e))
-          usageRequestResolvedQueryKeyRef.current = requestQueryKey
+          setUsageRequestRows([]);
+          setUsageRequestHasMore(false);
+          setUsageRequestError(String(e));
+          usageRequestResolvedQueryKeyRef.current = requestQueryKey;
         }
       } finally {
-        usageRequestRefreshInFlightRef.current = false
+        usageRequestRefreshInFlightRef.current = false;
         if (usageRequestFetchSeqRef.current === requestSeq) {
-          setUsageRequestLoading(false)
+          setUsageRequestLoading(false);
         }
         if (usageRequestRefreshPendingRef.current) {
-          const nextLimit = usageRequestRefreshPendingLimitRef.current
-          usageRequestRefreshPendingRef.current = false
-          void refreshUsageRequestsRef.current(nextLimit)
+          const nextLimit = usageRequestRefreshPendingLimitRef.current;
+          usageRequestRefreshPendingRef.current = false;
+          void refreshUsageRequestsRef.current(nextLimit);
         }
       }
     },
@@ -1971,17 +2338,18 @@ export function UsageStatisticsPanel({
       usageRequestTestFallbackEnabled,
       usageRequestTestRows,
     ],
-  )
-  const refreshUsageRequestsRef = useRef<(limit: number) => Promise<void>>(refreshUsageRequests)
+  );
+  const refreshUsageRequestsRef =
+    useRef<(limit: number) => Promise<void>>(refreshUsageRequests);
   useEffect(() => {
-    refreshUsageRequestsRef.current = refreshUsageRequests
-  }, [refreshUsageRequests])
+    refreshUsageRequestsRef.current = refreshUsageRequests;
+  }, [refreshUsageRequests]);
   const refreshUsageRequestSummary = useCallback(async () => {
-    const requestSeq = usageRequestSummaryFetchSeqRef.current + 1
-    usageRequestSummaryFetchSeqRef.current = requestSeq
-    if (!isRequestsTab) return
+    const requestSeq = usageRequestSummaryFetchSeqRef.current + 1;
+    usageRequestSummaryFetchSeqRef.current = requestSeq;
+    if (!isRequestsTab) return;
     if (hasImpossibleRequestFilters) {
-      if (usageRequestSummaryFetchSeqRef.current !== requestSeq) return
+      if (usageRequestSummaryFetchSeqRef.current !== requestSeq) return;
       setUsageRequestSummary({
         ok: true,
         requests: 0,
@@ -1990,19 +2358,21 @@ export function UsageStatisticsPanel({
         total_tokens: 0,
         cache_creation_input_tokens: 0,
         cache_read_input_tokens: 0,
-      })
-      return
+      });
+      return;
     }
-    const { fromUnixMs: summaryFetchFromUnixMs, toUnixMs: summaryFetchToUnixMs } =
-      resolveSummaryFetchWindow({
-        requestFetchFromUnixMs,
-        hasExplicitTimeFilter,
-        rowsForRequestRender,
-        requestDefaultDay,
-      })
+    const {
+      fromUnixMs: summaryFetchFromUnixMs,
+      toUnixMs: summaryFetchToUnixMs,
+    } = resolveSummaryFetchWindow({
+      requestFetchFromUnixMs,
+      hasExplicitTimeFilter,
+      rowsForRequestRender,
+      requestDefaultDay,
+    });
     try {
       const res = await invoke<UsageRequestSummaryResponse>(
-        'get_usage_request_summary',
+        "get_usage_request_summary",
         buildUsageRequestSummaryArgs({
           hours: requestFetchHours,
           fromUnixMs: summaryFetchFromUnixMs,
@@ -2014,12 +2384,12 @@ export function UsageStatisticsPanel({
           transports: effectiveSummaryRequestFilters.transports,
           sessions: effectiveSummaryRequestFilters.sessions,
         }),
-      )
-      if (usageRequestSummaryFetchSeqRef.current !== requestSeq) return
-      setUsageRequestSummary(res)
+      );
+      if (usageRequestSummaryFetchSeqRef.current !== requestSeq) return;
+      setUsageRequestSummary(res);
     } catch {
-      if (usageRequestSummaryFetchSeqRef.current !== requestSeq) return
-      setUsageRequestSummary(null)
+      if (usageRequestSummaryFetchSeqRef.current !== requestSeq) return;
+      setUsageRequestSummary(null);
     }
   }, [
     hasImpossibleRequestFilters,
@@ -2030,33 +2400,36 @@ export function UsageStatisticsPanel({
     hasExplicitTimeFilter,
     requestDefaultDay,
     rowsForRequestRender,
-  ])
+  ]);
   const mergeLatestUsageRequests = useCallback(
     async (limit: number) => {
-      if (usageRequestRefreshInFlightRef.current) return
-      usageRequestRefreshInFlightRef.current = true
-      const requestSeq = usageRequestFetchSeqRef.current + 1
-      usageRequestFetchSeqRef.current = requestSeq
-      markUsageRequestMerged()
+      if (usageRequestRefreshInFlightRef.current) return;
+      usageRequestRefreshInFlightRef.current = true;
+      const requestSeq = usageRequestFetchSeqRef.current + 1;
+      usageRequestFetchSeqRef.current = requestSeq;
+      markUsageRequestMerged();
       try {
-        const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
-          ...buildUsageRequestEntriesArgs({
-            hours: requestFetchHours,
-            fromUnixMs: requestFetchFromUnixMs,
-            toUnixMs: requestFetchToUnixMs,
-            nodes: requestFetchNodes,
-            providers: requestFetchProviders,
-            models: requestFetchModels,
-            origins: requestFetchOrigins,
-            transports: usageRequestMultiFilters.transport,
-            sessions: requestFetchSessions,
-            limit,
-            offset: 0,
-          }),
-        })
-        if (usageRequestFetchSeqRef.current !== requestSeq) return
-        const incoming = res.rows ?? []
-        if (!incoming.length) return
+        const res = await invoke<UsageRequestEntriesResponse>(
+          "get_usage_request_entries",
+          {
+            ...buildUsageRequestEntriesArgs({
+              hours: requestFetchHours,
+              fromUnixMs: requestFetchFromUnixMs,
+              toUnixMs: requestFetchToUnixMs,
+              nodes: requestFetchNodes,
+              providers: requestFetchProviders,
+              models: requestFetchModels,
+              origins: requestFetchOrigins,
+              transports: usageRequestMultiFilters.transport,
+              sessions: requestFetchSessions,
+              limit,
+              offset: 0,
+            }),
+          },
+        );
+        if (usageRequestFetchSeqRef.current !== requestSeq) return;
+        const incoming = res.rows ?? [];
+        if (!incoming.length) return;
         if (!hasExplicitRequestFilters) {
           setUsageRequestGraphBaseRows((prev) =>
             mergeUsageRequestGraphRowsFromRealtime({
@@ -2064,51 +2437,53 @@ export function UsageStatisticsPanel({
               incomingRows: incoming,
               limit: USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT,
             }),
-          )
+          );
           const graphCache =
-            usageRequestGraphRowsCache != null && usageRequestGraphRowsCache.queryKey === requestGraphQueryKey
+            usageRequestGraphRowsCache != null &&
+            usageRequestGraphRowsCache.queryKey === requestGraphQueryKey
               ? usageRequestGraphRowsCache
-              : null
-          const currentGraphRows = graphCache?.baseRows ?? EMPTY_USAGE_REQUEST_ROWS
+              : null;
+          const currentGraphRows =
+            graphCache?.baseRows ?? EMPTY_USAGE_REQUEST_ROWS;
           const mergedGraphRows = mergeUsageRequestGraphRowsFromRealtime({
             currentGraphRows,
             incomingRows: incoming,
             limit: USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT,
-          })
+          });
           if (mergedGraphRows !== currentGraphRows) {
             usageRequestGraphRowsCache = {
               queryKey: requestGraphQueryKey,
               baseRows: mergedGraphRows,
               rowsByProvider: graphCache?.rowsByProvider ?? {},
-            }
+            };
           }
         }
         setUsageRequestRows((prev) => {
-          if (!prev.length) return incoming
-          const seen = new Set(prev.map(usageRequestRowIdentity))
-          const prepend: UsageRequestEntry[] = []
+          if (!prev.length) return incoming;
+          const seen = new Set(prev.map(usageRequestRowIdentity));
+          const prepend: UsageRequestEntry[] = [];
           for (const row of incoming) {
-            const id = usageRequestRowIdentity(row)
-            if (seen.has(id)) continue
-            prepend.push(row)
+            const id = usageRequestRowIdentity(row);
+            if (seen.has(id)) continue;
+            prepend.push(row);
           }
-          return prepend.length ? [...prepend, ...prev] : prev
-        })
+          return prepend.length ? [...prepend, ...prev] : prev;
+        });
         usageRequestsLastNonEmptyPageCache = {
           queryKey: requestQueryKey,
           rows: incoming,
           hasMore: Boolean(res.has_more),
           usingTestFallback: false,
-        }
+        };
       } catch {
         // Keep current rows when background merge fails.
       } finally {
-        usageRequestRefreshInFlightRef.current = false
-        setUsageRequestMergeTick((tick) => tick + 1)
+        usageRequestRefreshInFlightRef.current = false;
+        setUsageRequestMergeTick((tick) => tick + 1);
         if (usageRequestRefreshPendingRef.current) {
-          const nextLimit = usageRequestRefreshPendingLimitRef.current
-          usageRequestRefreshPendingRef.current = false
-          void refreshUsageRequestsRef.current(nextLimit)
+          const nextLimit = usageRequestRefreshPendingLimitRef.current;
+          usageRequestRefreshPendingRef.current = false;
+          void refreshUsageRequestsRef.current(nextLimit);
         }
       }
     },
@@ -2127,94 +2502,107 @@ export function UsageStatisticsPanel({
       refreshUsageRequests,
       markUsageRequestMerged,
     ],
-  )
-  const prefetchUsageRequestsPageCache = useCallback(async (limit: number) => {
-    if (usageRequestsPagePrefetchInFlightRef.current) return
-    const now = Date.now()
-    if (now - usageRequestsPagePrefetchAtRef.current < USAGE_REQUESTS_PAGE_PREFETCH_COOLDOWN_MS) return
-    const cached =
-      usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_CANONICAL_QUERY_KEY
-        ? usageRequestsPageCache
-        : null
-    if (cached && cached.rows.length > 0) return
-    usageRequestsPagePrefetchAtRef.current = now
-    usageRequestsPagePrefetchInFlightRef.current = true
-    try {
-      const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
-        ...buildUsageRequestEntriesArgs({
-          hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
-          fromUnixMs: null,
-          toUnixMs: null,
-          nodes: null,
-          providers: null,
-          models: null,
-          origins: null,
-          transports: null,
-          sessions: null,
-          limit,
-          offset: 0,
-        }),
-      })
-      const nextRows = res.rows ?? []
-      usageRequestsPageCache = {
-        queryKey: USAGE_REQUESTS_CANONICAL_QUERY_KEY,
-        rows: nextRows,
-        hasMore: Boolean(res.has_more),
-        usingTestFallback: false,
-      }
-      if (nextRows.length > 0) {
-        usageRequestsLastNonEmptyPageCache = {
+  );
+  const prefetchUsageRequestsPageCache = useCallback(
+    async (limit: number) => {
+      if (usageRequestsPagePrefetchInFlightRef.current) return;
+      const now = Date.now();
+      if (
+        now - usageRequestsPagePrefetchAtRef.current <
+        USAGE_REQUESTS_PAGE_PREFETCH_COOLDOWN_MS
+      )
+        return;
+      const cached =
+        usageRequestsPageCache != null &&
+        usageRequestsPageCache.queryKey === USAGE_REQUESTS_CANONICAL_QUERY_KEY
+          ? usageRequestsPageCache
+          : null;
+      if (cached && cached.rows.length > 0) return;
+      usageRequestsPagePrefetchAtRef.current = now;
+      usageRequestsPagePrefetchInFlightRef.current = true;
+      try {
+        const res = await invoke<UsageRequestEntriesResponse>(
+          "get_usage_request_entries",
+          {
+            ...buildUsageRequestEntriesArgs({
+              hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
+              fromUnixMs: null,
+              toUnixMs: null,
+              nodes: null,
+              providers: null,
+              models: null,
+              origins: null,
+              transports: null,
+              sessions: null,
+              limit,
+              offset: 0,
+            }),
+          },
+        );
+        const nextRows = res.rows ?? [];
+        usageRequestsPageCache = {
           queryKey: USAGE_REQUESTS_CANONICAL_QUERY_KEY,
           rows: nextRows,
           hasMore: Boolean(res.has_more),
           usingTestFallback: false,
-        }
-        primeUsageRequestGraphCacheFromBaseRows(nextRows)
-      }
-      emitUsageRequestsCachePrimed(USAGE_REQUESTS_CANONICAL_QUERY_KEY)
-    } catch {
-      if (usageRequestTestFallbackEnabled) {
-        const nextRows = usageRequestTestRows.slice(0, Math.max(1, limit))
-        usageRequestsPageCache = {
-          queryKey: USAGE_REQUESTS_CANONICAL_QUERY_KEY,
-          rows: nextRows,
-          hasMore: usageRequestTestRows.length > nextRows.length,
-          usingTestFallback: true,
-        }
+        };
         if (nextRows.length > 0) {
-          usageRequestsLastNonEmptyPageCache = usageRequestsPageCache
-          primeUsageRequestGraphCacheFromBaseRows(nextRows)
+          usageRequestsLastNonEmptyPageCache = {
+            queryKey: USAGE_REQUESTS_CANONICAL_QUERY_KEY,
+            rows: nextRows,
+            hasMore: Boolean(res.has_more),
+            usingTestFallback: false,
+          };
+          primeUsageRequestGraphCacheFromBaseRows(nextRows);
         }
-        emitUsageRequestsCachePrimed(USAGE_REQUESTS_CANONICAL_QUERY_KEY)
+        emitUsageRequestsCachePrimed(USAGE_REQUESTS_CANONICAL_QUERY_KEY);
+      } catch {
+        if (usageRequestTestFallbackEnabled) {
+          const nextRows = usageRequestTestRows.slice(0, Math.max(1, limit));
+          usageRequestsPageCache = {
+            queryKey: USAGE_REQUESTS_CANONICAL_QUERY_KEY,
+            rows: nextRows,
+            hasMore: usageRequestTestRows.length > nextRows.length,
+            usingTestFallback: true,
+          };
+          if (nextRows.length > 0) {
+            usageRequestsLastNonEmptyPageCache = usageRequestsPageCache;
+            primeUsageRequestGraphCacheFromBaseRows(nextRows);
+          }
+          emitUsageRequestsCachePrimed(USAGE_REQUESTS_CANONICAL_QUERY_KEY);
+        }
+      } finally {
+        usageRequestsPagePrefetchInFlightRef.current = false;
       }
-    } finally {
-      usageRequestsPagePrefetchInFlightRef.current = false
-    }
-  }, [usageRequestTestFallbackEnabled, usageRequestTestRows])
+    },
+    [usageRequestTestFallbackEnabled, usageRequestTestRows],
+  );
   const refreshUsageRequestGraphRows = useCallback(async () => {
     if (usageRequestGraphRefreshInFlightRef.current) {
-      usageRequestGraphRefreshPendingRef.current = true
-      return
+      usageRequestGraphRefreshPendingRef.current = true;
+      return;
     }
-    usageRequestGraphRefreshInFlightRef.current = true
-    const requestSeq = usageRequestGraphBaseFetchSeqRef.current + 1
-    usageRequestGraphBaseFetchSeqRef.current = requestSeq
+    usageRequestGraphRefreshInFlightRef.current = true;
+    const requestSeq = usageRequestGraphBaseFetchSeqRef.current + 1;
+    usageRequestGraphBaseFetchSeqRef.current = requestSeq;
     try {
       const cachedGraph =
-        usageRequestGraphRowsCache != null && usageRequestGraphRowsCache.queryKey === requestGraphQueryKey
+        usageRequestGraphRowsCache != null &&
+        usageRequestGraphRowsCache.queryKey === requestGraphQueryKey
           ? usageRequestGraphRowsCache
-          : null
+          : null;
       const canonicalPageRowsFromCache =
-        usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_CANONICAL_QUERY_KEY
+        usageRequestsPageCache != null &&
+        usageRequestsPageCache.queryKey === USAGE_REQUESTS_CANONICAL_QUERY_KEY
           ? usageRequestsPageCache.rows
-          : EMPTY_USAGE_REQUEST_ROWS
-      let canonicalPageRows = canonicalPageRowsFromCache
+          : EMPTY_USAGE_REQUEST_ROWS;
+      let canonicalPageRows = canonicalPageRowsFromCache;
       try {
         // Fetch Windows/WSL2 independently so one origin does not starve the other
         // when the latest global window is skewed.
         const canonicalByOrigin = await Promise.allSettled(
           USAGE_REQUEST_GRAPH_BASE_FETCH_ORIGINS.map((origin) =>
-            invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
+            invoke<UsageRequestEntriesResponse>("get_usage_request_entries", {
               ...buildUsageRequestEntriesArgs({
                 hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
                 fromUnixMs: null,
@@ -2230,113 +2618,140 @@ export function UsageStatisticsPanel({
               }),
             }),
           ),
-        )
-        if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return
-        let mergedByOrigin: UsageRequestEntry[] = EMPTY_USAGE_REQUEST_ROWS
+        );
+        if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return;
+        let mergedByOrigin: UsageRequestEntry[] = EMPTY_USAGE_REQUEST_ROWS;
         for (const result of canonicalByOrigin) {
-          if (result.status !== 'fulfilled') continue
-          const originRows = (result.value.rows ?? []).sort((a, b) => b.unix_ms - a.unix_ms)
-          if (!originRows.length) continue
+          if (result.status !== "fulfilled") continue;
+          const originRows = (result.value.rows ?? []).sort(
+            (a, b) => b.unix_ms - a.unix_ms,
+          );
+          if (!originRows.length) continue;
           mergedByOrigin = mergeUsageRequestRowsUniqueNewestFirst(
             originRows,
             mergedByOrigin,
             USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT,
-          )
+          );
         }
         if (mergedByOrigin.length > 0) {
-          canonicalPageRows = mergedByOrigin
+          canonicalPageRows = mergedByOrigin;
         } else {
-          const canonicalRes = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
-            ...buildUsageRequestEntriesArgs({
-              hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
-              fromUnixMs: null,
-              toUnixMs: null,
-              nodes: null,
-              providers: null,
-              models: null,
-              origins: null,
-              transports: null,
-              sessions: null,
-              limit: USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_FALLBACK,
-              offset: 0,
-            }),
-          })
-          if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return
-          canonicalPageRows = (canonicalRes.rows ?? []).sort((a, b) => b.unix_ms - a.unix_ms)
+          const canonicalRes = await invoke<UsageRequestEntriesResponse>(
+            "get_usage_request_entries",
+            {
+              ...buildUsageRequestEntriesArgs({
+                hours: USAGE_REQUESTS_CANONICAL_FETCH_HOURS,
+                fromUnixMs: null,
+                toUnixMs: null,
+                nodes: null,
+                providers: null,
+                models: null,
+                origins: null,
+                transports: null,
+                sessions: null,
+                limit: USAGE_REQUEST_GRAPH_BASE_FETCH_LIMIT_FALLBACK,
+                offset: 0,
+              }),
+            },
+          );
+          if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return;
+          canonicalPageRows = (canonicalRes.rows ?? []).sort(
+            (a, b) => b.unix_ms - a.unix_ms,
+          );
         }
       } catch {
-        canonicalPageRows = canonicalPageRowsFromCache
+        canonicalPageRows = canonicalPageRowsFromCache;
       }
-      const fallbackRows = usageRequestTestFallbackEnabled ? usageRequestTestRows : EMPTY_USAGE_REQUEST_ROWS
+      const fallbackRows = usageRequestTestFallbackEnabled
+        ? usageRequestTestRows
+        : EMPTY_USAGE_REQUEST_ROWS;
       const baseRows = pickUsageRequestGraphBaseRows({
         canonicalPageRows,
         cachedGraphRows: cachedGraph?.baseRows ?? EMPTY_USAGE_REQUEST_ROWS,
         fallbackRows,
-      })
-      if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return
+      });
+      if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return;
 
-      if (usageRequestTestFallbackEnabled && baseRows === usageRequestTestRows && usageRequestTestRows.length > 0) {
-        const fallbackRowsByProvider = groupUsageRequestRowsByProvider(usageRequestTestRows)
-        setUsageRequestGraphBaseRows(usageRequestTestRows)
-        setUsageRequestGraphRowsByProvider(fallbackRowsByProvider)
+      if (
+        usageRequestTestFallbackEnabled &&
+        baseRows === usageRequestTestRows &&
+        usageRequestTestRows.length > 0
+      ) {
+        const fallbackRowsByProvider =
+          groupUsageRequestRowsByProvider(usageRequestTestRows);
+        setUsageRequestGraphBaseRows(usageRequestTestRows);
+        setUsageRequestGraphRowsByProvider(fallbackRowsByProvider);
         usageRequestGraphRowsCache = {
           queryKey: requestGraphQueryKey,
           baseRows: usageRequestTestRows,
           rowsByProvider: fallbackRowsByProvider,
-        }
-        markUsageRequestGraphRefreshed()
-        return
+        };
+        markUsageRequestGraphRefreshed();
+        return;
       }
 
       setUsageRequestGraphBaseRows((prev) =>
         areUsageRequestRowsIdentical(prev, baseRows) ? prev : baseRows,
-      )
+      );
       const providerTargets = pickUsageRequestDisplayProviders({
         graphProviders: [
-          ...(baseRows.length ? listTopUsageProvidersFromRows(baseRows) : EMPTY_STRING_LIST),
+          ...(baseRows.length
+            ? listTopUsageProvidersFromRows(baseRows)
+            : EMPTY_STRING_LIST),
           ...Object.keys(usageRequestGraphRowsCache?.rowsByProvider ?? {}),
         ],
         dailyProviders: usageRequestDailyProviderHints,
         analyticsProviders: usageRequestAnalyticsProviderHints,
         limit: Math.min(3, USAGE_REQUEST_GRAPH_COLORS.length),
-      })
+      });
       if (providerTargets.length === 0) {
-        markUsageRequestGraphRefreshed()
-        return
+        markUsageRequestGraphRefreshed();
+        return;
       }
-      const targetSet = new Set(providerTargets)
-      const bootstrapRowsByProvider = baseRows.length ? groupUsageRequestRowsByProvider(baseRows) : EMPTY_USAGE_REQUEST_ROWS_BY_PROVIDER
-      const seedRowsByProvider: Record<string, UsageRequestEntry[]> = {}
+      const targetSet = new Set(providerTargets);
+      const bootstrapRowsByProvider = baseRows.length
+        ? groupUsageRequestRowsByProvider(baseRows)
+        : EMPTY_USAGE_REQUEST_ROWS_BY_PROVIDER;
+      const seedRowsByProvider: Record<string, UsageRequestEntry[]> = {};
       for (const provider of providerTargets) {
-        const fromCache = usageRequestGraphRowsCache?.rowsByProvider?.[provider] ?? EMPTY_USAGE_REQUEST_ROWS
-        const fromBootstrap = bootstrapRowsByProvider[provider] ?? EMPTY_USAGE_REQUEST_ROWS
+        const fromCache =
+          usageRequestGraphRowsCache?.rowsByProvider?.[provider] ??
+          EMPTY_USAGE_REQUEST_ROWS;
+        const fromBootstrap =
+          bootstrapRowsByProvider[provider] ?? EMPTY_USAGE_REQUEST_ROWS;
         seedRowsByProvider[provider] = mergeUsageRequestRowsUniqueNewestFirst(
           fromBootstrap,
           fromCache,
           USAGE_REQUEST_GRAPH_SOURCE_LIMIT,
-        )
+        );
       }
       setUsageRequestGraphRowsByProvider((prev) => {
-        const next: Record<string, UsageRequestEntry[]> = { ...prev }
-        let changed = false
+        const next: Record<string, UsageRequestEntry[]> = { ...prev };
+        let changed = false;
         for (const provider of providerTargets) {
-          const existingRows = prev[provider]
-          const seedRows = seedRowsByProvider[provider]
+          const existingRows = prev[provider];
+          const seedRows = seedRowsByProvider[provider];
           if (existingRows && existingRows.length) {
-            next[provider] = existingRows
+            next[provider] = existingRows;
           } else if (seedRows && seedRows.length) {
-            next[provider] = seedRows
-            changed = true
+            next[provider] = seedRows;
+            changed = true;
           } else if (Object.prototype.hasOwnProperty.call(next, provider)) {
-            delete next[provider]
-            changed = true
+            delete next[provider];
+            changed = true;
           }
         }
-        if (!changed && Object.keys(prev).every((provider) => targetSet.has(provider))) return prev
-        return next
-      })
+        if (
+          !changed &&
+          Object.keys(prev).every((provider) => targetSet.has(provider))
+        )
+          return prev;
+        return next;
+      });
       const existingCacheRows =
-        usageRequestGraphRowsCache?.queryKey === requestGraphQueryKey ? usageRequestGraphRowsCache.rowsByProvider : {}
+        usageRequestGraphRowsCache?.queryKey === requestGraphQueryKey
+          ? usageRequestGraphRowsCache.rowsByProvider
+          : {};
       usageRequestGraphRowsCache = {
         queryKey: requestGraphQueryKey,
         baseRows,
@@ -2344,71 +2759,85 @@ export function UsageStatisticsPanel({
           ...existingCacheRows,
           ...seedRowsByProvider,
         },
-      }
+      };
       await Promise.all(
         providerTargets.map(async (provider) => {
-          let providerRows: UsageRequestEntry[] | null = null
+          let providerRows: UsageRequestEntry[] | null = null;
           try {
-            const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
-              ...buildUsageRequestEntriesArgs({
-                hours: USAGE_REQUEST_GRAPH_FETCH_HOURS,
-                fromUnixMs: null,
-                toUnixMs: null,
-                nodes: null,
-                providers: [provider],
-                models: null,
-                origins: null,
-                transports: null,
-                sessions: null,
-                limit: USAGE_REQUEST_GRAPH_SOURCE_LIMIT,
-                offset: 0,
-              }),
-            })
-            providerRows = (res.rows ?? []).sort((a, b) => b.unix_ms - a.unix_ms)
+            const res = await invoke<UsageRequestEntriesResponse>(
+              "get_usage_request_entries",
+              {
+                ...buildUsageRequestEntriesArgs({
+                  hours: USAGE_REQUEST_GRAPH_FETCH_HOURS,
+                  fromUnixMs: null,
+                  toUnixMs: null,
+                  nodes: null,
+                  providers: [provider],
+                  models: null,
+                  origins: null,
+                  transports: null,
+                  sessions: null,
+                  limit: USAGE_REQUEST_GRAPH_SOURCE_LIMIT,
+                  offset: 0,
+                }),
+              },
+            );
+            providerRows = (res.rows ?? []).sort(
+              (a, b) => b.unix_ms - a.unix_ms,
+            );
           } catch {
-            providerRows = null
+            providerRows = null;
           }
-          if (!providerRows || usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return
+          if (
+            !providerRows ||
+            usageRequestGraphBaseFetchSeqRef.current !== requestSeq
+          )
+            return;
           setUsageRequestGraphRowsByProvider((prev) => {
-            const currentRows = prev[provider] ?? EMPTY_USAGE_REQUEST_ROWS
+            const currentRows = prev[provider] ?? EMPTY_USAGE_REQUEST_ROWS;
             const same =
               currentRows.length === providerRows.length &&
-              currentRows.every((row, idx) => usageRequestRowIdentity(row) === usageRequestRowIdentity(providerRows[idx]))
-            if (same) return prev
-            const next = { ...prev, [provider]: providerRows }
+              currentRows.every(
+                (row, idx) =>
+                  usageRequestRowIdentity(row) ===
+                  usageRequestRowIdentity(providerRows[idx]),
+              );
+            if (same) return prev;
+            const next = { ...prev, [provider]: providerRows };
             if (usageRequestGraphRowsCache?.queryKey === requestGraphQueryKey) {
               usageRequestGraphRowsCache = {
                 ...usageRequestGraphRowsCache,
                 rowsByProvider: next,
-              }
+              };
             }
-            return next
-          })
+            return next;
+          });
         }),
-      )
-      if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return
-      markUsageRequestGraphRefreshed()
+      );
+      if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return;
+      markUsageRequestGraphRefreshed();
     } catch {
-      if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return
+      if (usageRequestGraphBaseFetchSeqRef.current !== requestSeq) return;
       if (usageRequestTestFallbackEnabled) {
-        const fallbackRowsByProvider = groupUsageRequestRowsByProvider(usageRequestTestRows)
-        setUsageRequestGraphBaseRows(usageRequestTestRows)
-        setUsageRequestGraphRowsByProvider(fallbackRowsByProvider)
+        const fallbackRowsByProvider =
+          groupUsageRequestRowsByProvider(usageRequestTestRows);
+        setUsageRequestGraphBaseRows(usageRequestTestRows);
+        setUsageRequestGraphRowsByProvider(fallbackRowsByProvider);
         usageRequestGraphRowsCache = {
           queryKey: requestGraphQueryKey,
           baseRows: usageRequestTestRows,
           rowsByProvider: fallbackRowsByProvider,
-        }
+        };
       } else {
-        setUsageRequestGraphBaseRows([])
-        setUsageRequestGraphRowsByProvider({})
+        setUsageRequestGraphBaseRows([]);
+        setUsageRequestGraphRowsByProvider({});
       }
-      markUsageRequestGraphRefreshed()
+      markUsageRequestGraphRefreshed();
     } finally {
-      usageRequestGraphRefreshInFlightRef.current = false
+      usageRequestGraphRefreshInFlightRef.current = false;
       if (usageRequestGraphRefreshPendingRef.current) {
-        usageRequestGraphRefreshPendingRef.current = false
-        void refreshUsageRequestGraphRows()
+        usageRequestGraphRefreshPendingRef.current = false;
+        void refreshUsageRequestGraphRows();
       }
     }
   }, [
@@ -2419,89 +2848,116 @@ export function UsageStatisticsPanel({
     usageRequestTestFallbackEnabled,
     usageRequestTestRows,
     markUsageRequestGraphRefreshed,
-  ])
+  ]);
   const refreshUsageRequestDailyTotals = useCallback(async () => {
-    const requestSeq = usageRequestDailyTotalsFetchSeqRef.current + 1
-    usageRequestDailyTotalsFetchSeqRef.current = requestSeq
-    setUsageRequestDailyTotalsLoading(true)
+    const requestSeq = usageRequestDailyTotalsFetchSeqRef.current + 1;
+    usageRequestDailyTotalsFetchSeqRef.current = requestSeq;
+    setUsageRequestDailyTotalsLoading(true);
     try {
-      const res = await invoke<UsageRequestDailyTotalsResponse>('get_usage_request_daily_totals', {
-        days: 45,
-      })
-      if (usageRequestDailyTotalsFetchSeqRef.current !== requestSeq) return
-      const nextDays = Array.isArray(res.days) ? res.days : []
-      const nextProviders = Array.isArray(res.providers) ? res.providers : []
-      setUsageRequestDailyTotalsDays(nextDays)
-      setUsageRequestDailyTotalsProviders(nextProviders)
-      usageRequestDailyTotalsCache = { days: nextDays, providers: nextProviders }
+      const res = await invoke<UsageRequestDailyTotalsResponse>(
+        "get_usage_request_daily_totals",
+        {
+          days: 45,
+        },
+      );
+      if (usageRequestDailyTotalsFetchSeqRef.current !== requestSeq) return;
+      const nextDays = Array.isArray(res.days) ? res.days : [];
+      const nextProviders = Array.isArray(res.providers) ? res.providers : [];
+      setUsageRequestDailyTotalsDays(nextDays);
+      setUsageRequestDailyTotalsProviders(nextProviders);
+      usageRequestDailyTotalsCache = {
+        days: nextDays,
+        providers: nextProviders,
+      };
     } catch {
-      if (usageRequestDailyTotalsFetchSeqRef.current !== requestSeq) return
+      if (usageRequestDailyTotalsFetchSeqRef.current !== requestSeq) return;
       if (usageRequestTestFallbackEnabled) {
         const fallbackSource =
-          usageRequestTestRows.length > 0 ? usageRequestTestRows : usageRequestRows
+          usageRequestTestRows.length > 0
+            ? usageRequestTestRows
+            : usageRequestRows;
         if (fallbackSource.length > 0) {
-          const fallback = buildDailyTotalsCacheFromRows(fallbackSource, 45)
-          setUsageRequestDailyTotalsDays(fallback.days)
-          setUsageRequestDailyTotalsProviders(fallback.providers)
-          usageRequestDailyTotalsCache = fallback
-          return
+          const fallback = buildDailyTotalsCacheFromRows(fallbackSource, 45);
+          setUsageRequestDailyTotalsDays(fallback.days);
+          setUsageRequestDailyTotalsProviders(fallback.providers);
+          usageRequestDailyTotalsCache = fallback;
+          return;
         }
       }
       if (usageRequestDailyTotalsCache) {
-        setUsageRequestDailyTotalsDays(usageRequestDailyTotalsCache.days)
-        setUsageRequestDailyTotalsProviders(usageRequestDailyTotalsCache.providers)
+        setUsageRequestDailyTotalsDays(usageRequestDailyTotalsCache.days);
+        setUsageRequestDailyTotalsProviders(
+          usageRequestDailyTotalsCache.providers,
+        );
       }
     } finally {
       if (usageRequestDailyTotalsFetchSeqRef.current === requestSeq) {
-        setUsageRequestDailyTotalsLoading(false)
+        setUsageRequestDailyTotalsLoading(false);
       }
     }
-  }, [usageRequestRows, usageRequestTestFallbackEnabled, usageRequestTestRows])
-  const initialRefreshLimit = 1000
+  }, [usageRequestRows, usageRequestTestFallbackEnabled, usageRequestTestRows]);
+  const initialRefreshLimit = 1000;
 
   useEffect(() => {
-    if (!isRequestsTab && !isAnalyticsTab) return
-    if (usageRequestDailyTotalsDays.length === 0 && usageRequestDailyTotalsCache) {
-      setUsageRequestDailyTotalsDays(usageRequestDailyTotalsCache.days)
-      setUsageRequestDailyTotalsProviders(usageRequestDailyTotalsCache.providers)
+    if (!isRequestsTab && !isAnalyticsTab) return;
+    if (
+      usageRequestDailyTotalsDays.length === 0 &&
+      usageRequestDailyTotalsCache
+    ) {
+      setUsageRequestDailyTotalsDays(usageRequestDailyTotalsCache.days);
+      setUsageRequestDailyTotalsProviders(
+        usageRequestDailyTotalsCache.providers,
+      );
     }
-    void refreshUsageRequestDailyTotals()
-  }, [isAnalyticsTab, isRequestsTab, refreshUsageRequestDailyTotals, usageRequestDailyTotalsDays.length])
+    void refreshUsageRequestDailyTotals();
+  }, [
+    isAnalyticsTab,
+    isRequestsTab,
+    refreshUsageRequestDailyTotals,
+    usageRequestDailyTotalsDays.length,
+  ]);
 
   useEffect(() => {
-    if (!isRequestsTab) return
-    void refreshUsageRequestSummary()
-  }, [isRequestsTab, refreshUsageRequestSummary, requestQueryKey, requestDefaultDay])
+    if (!isRequestsTab) return;
+    void refreshUsageRequestSummary();
+  }, [
+    isRequestsTab,
+    refreshUsageRequestSummary,
+    requestQueryKey,
+    requestDefaultDay,
+  ]);
 
   useEffect(() => {
-    if (!isAnalyticsTab) return
-    void prefetchUsageRequestsPageCache(initialRefreshLimit)
-  }, [initialRefreshLimit, isAnalyticsTab, prefetchUsageRequestsPageCache])
+    if (!isAnalyticsTab) return;
+    void prefetchUsageRequestsPageCache(initialRefreshLimit);
+  }, [initialRefreshLimit, isAnalyticsTab, prefetchUsageRequestsPageCache]);
 
   useEffect(() => {
-    if (!isAnalyticsTab && !isRequestsTab) return
-    if (usageRequestRows.length > 0) return
+    if (!isAnalyticsTab && !isRequestsTab) return;
+    if (usageRequestRows.length > 0) return;
     const cached =
-      usageRequestsPageCache != null && usageRequestsPageCache.queryKey === requestQueryKey
+      usageRequestsPageCache != null &&
+      usageRequestsPageCache.queryKey === requestQueryKey
         ? usageRequestsPageCache
-        : null
+        : null;
     const canonicalCached =
-      usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_CANONICAL_QUERY_KEY
+      usageRequestsPageCache != null &&
+      usageRequestsPageCache.queryKey === USAGE_REQUESTS_CANONICAL_QUERY_KEY
         ? usageRequestsPageCache
-        : null
+        : null;
     const source = resolveRequestPageCached({
       isRequestsTab,
       hasStrictRequestQuery,
       cached,
       canonicalCached,
       lastNonEmpty: usageRequestsLastNonEmptyPageCache,
-    })
-    if (!source || source.rows.length === 0) return
-    usageRequestLoadedQueryKeyRef.current = source.queryKey
-    usageRequestResolvedQueryKeyRef.current = source.queryKey
-    setUsageRequestRows(source.rows)
-    setUsageRequestHasMore(source.hasMore)
-    setUsageRequestUsingTestFallback(source.usingTestFallback)
+    });
+    if (!source || source.rows.length === 0) return;
+    usageRequestLoadedQueryKeyRef.current = source.queryKey;
+    usageRequestResolvedQueryKeyRef.current = source.queryKey;
+    setUsageRequestRows(source.rows);
+    setUsageRequestHasMore(source.hasMore);
+    setUsageRequestUsingTestFallback(source.usingTestFallback);
   }, [
     hasStrictRequestQuery,
     isAnalyticsTab,
@@ -2509,65 +2965,80 @@ export function UsageStatisticsPanel({
     requestQueryKey,
     usageRequestRows.length,
     usageRequestsCachePrimedTick,
-  ])
+  ]);
 
   useEffect(() => {
-    if (!isRequestsTab && !isAnalyticsTab) return
-    usageRequestWasNearBottomRef.current = false
-    usageRequestLastActivityRef.current = usageActivityUnixMs ?? null
+    if (!isRequestsTab && !isAnalyticsTab) return;
+    usageRequestWasNearBottomRef.current = false;
+    usageRequestLastActivityRef.current = usageActivityUnixMs ?? null;
     const cached =
-      usageRequestsPageCache != null && usageRequestsPageCache.queryKey === requestQueryKey
+      usageRequestsPageCache != null &&
+      usageRequestsPageCache.queryKey === requestQueryKey
         ? usageRequestsPageCache
-        : null
+        : null;
     const canonicalCached =
-      usageRequestsPageCache != null && usageRequestsPageCache.queryKey === USAGE_REQUESTS_CANONICAL_QUERY_KEY
+      usageRequestsPageCache != null &&
+      usageRequestsPageCache.queryKey === USAGE_REQUESTS_CANONICAL_QUERY_KEY
         ? usageRequestsPageCache
-        : null
+        : null;
     const requestPageCached = resolveRequestPageCached({
       isRequestsTab,
       hasStrictRequestQuery,
       cached,
       canonicalCached,
       lastNonEmpty: usageRequestsLastNonEmptyPageCache,
-    })
+    });
     const cachedGraph =
-      usageRequestGraphRowsCache != null && usageRequestGraphRowsCache.queryKey === requestGraphQueryKey
+      usageRequestGraphRowsCache != null &&
+      usageRequestGraphRowsCache.queryKey === requestGraphQueryKey
         ? usageRequestGraphRowsCache
-        : null
+        : null;
     if (usageRequestGraphBaseRows.length === 0 && cachedGraph != null) {
-      setUsageRequestGraphBaseRows(cachedGraph.baseRows)
-      setUsageRequestGraphRowsByProvider(cachedGraph.rowsByProvider)
-    } else if (usageRequestGraphBaseRows.length === 0 && canonicalCached?.rows?.length) {
+      setUsageRequestGraphBaseRows(cachedGraph.baseRows);
+      setUsageRequestGraphRowsByProvider(cachedGraph.rowsByProvider);
+    } else if (
+      usageRequestGraphBaseRows.length === 0 &&
+      canonicalCached?.rows?.length
+    ) {
       // Keep chart independent from table filters/date window by bootstrapping from canonical rows.
-      const bootstrapRowsByProvider = groupUsageRequestRowsByProvider(canonicalCached.rows)
-      setUsageRequestGraphBaseRows(canonicalCached.rows)
-      setUsageRequestGraphRowsByProvider(bootstrapRowsByProvider)
+      const bootstrapRowsByProvider = groupUsageRequestRowsByProvider(
+        canonicalCached.rows,
+      );
+      setUsageRequestGraphBaseRows(canonicalCached.rows);
+      setUsageRequestGraphRowsByProvider(bootstrapRowsByProvider);
     }
     const isOnlyUnknownFallbackCache =
       requestPageCached?.usingTestFallback === true &&
       requestPageCached.rows.length > 0 &&
-      requestPageCached.rows.every((row) => isUnknownUsageProvider(row.provider))
+      requestPageCached.rows.every((row) =>
+        isUnknownUsageProvider(row.provider),
+      );
     const hasUsableRequestPageCache =
-      requestPageCached != null && requestPageCached.rows.length > 0 && !isOnlyUnknownFallbackCache
+      requestPageCached != null &&
+      requestPageCached.rows.length > 0 &&
+      !isOnlyUnknownFallbackCache;
     if (isRequestsTab && hasUsableRequestPageCache) {
       // Prefer showing cached rows immediately when entering Requests, even if previous state belonged to a different query.
-      if (usageRequestLoadedQueryKeyRef.current !== requestQueryKey || usageRequestRows.length === 0) {
-        usageRequestLoadedQueryKeyRef.current = requestQueryKey
-        usageRequestResolvedQueryKeyRef.current = requestQueryKey
-        setUsageRequestRows(requestPageCached.rows)
-        setUsageRequestHasMore(requestPageCached.hasMore)
-        setUsageRequestUsingTestFallback(requestPageCached.usingTestFallback)
+      if (
+        usageRequestLoadedQueryKeyRef.current !== requestQueryKey ||
+        usageRequestRows.length === 0
+      ) {
+        usageRequestLoadedQueryKeyRef.current = requestQueryKey;
+        usageRequestResolvedQueryKeyRef.current = requestQueryKey;
+        setUsageRequestRows(requestPageCached.rows);
+        setUsageRequestHasMore(requestPageCached.hasMore);
+        setUsageRequestUsingTestFallback(requestPageCached.usingTestFallback);
       }
     } else if (isRequestsTab && isOnlyUnknownFallbackCache) {
-      usageRequestsPageCache = null
+      usageRequestsPageCache = null;
     }
-    const cachedGraphProviderCount = cachedGraph != null ? Object.keys(cachedGraph.rowsByProvider).length : 0
-    const graphBaseCandidate =
-      cachedGraph?.baseRows?.length
-        ? cachedGraph.baseRows
-        : canonicalCached?.rows?.length
-          ? canonicalCached.rows
-          : EMPTY_USAGE_REQUEST_ROWS
+    const cachedGraphProviderCount =
+      cachedGraph != null ? Object.keys(cachedGraph.rowsByProvider).length : 0;
+    const graphBaseCandidate = cachedGraph?.baseRows?.length
+      ? cachedGraph.baseRows
+      : canonicalCached?.rows?.length
+        ? canonicalCached.rows
+        : EMPTY_USAGE_REQUEST_ROWS;
     const expectedGraphProviders = pickUsageRequestDisplayProviders({
       graphProviders: [
         ...listTopUsageProvidersFromRows(graphBaseCandidate),
@@ -2576,63 +3047,72 @@ export function UsageStatisticsPanel({
       dailyProviders: usageRequestDailyProviderHints,
       analyticsProviders: usageRequestAnalyticsProviderHints,
       limit: Math.min(3, USAGE_REQUEST_GRAPH_COLORS.length),
-    })
-    const visibleGraphProviderCount = Math.max(usageRequestGraphProviderCount, cachedGraphProviderCount)
+    });
+    const visibleGraphProviderCount = Math.max(
+      usageRequestGraphProviderCount,
+      cachedGraphProviderCount,
+    );
     const graphProvidersIncomplete =
-      expectedGraphProviders.length > 0 && visibleGraphProviderCount < expectedGraphProviders.length
+      expectedGraphProviders.length > 0 &&
+      visibleGraphProviderCount < expectedGraphProviders.length;
     const graphSnapshotReady =
-      (usageRequestGraphBaseRows.length > 0 && usageRequestGraphProviderCount > 0) || cachedGraphProviderCount > 0
-    const graphRefreshAgeMs = Date.now() - usageRequestGraphLastRefreshAtRef.current
-    const mergeAgeMs = Date.now() - usageRequestLastMergeAtRef.current
+      (usageRequestGraphBaseRows.length > 0 &&
+        usageRequestGraphProviderCount > 0) ||
+      cachedGraphProviderCount > 0;
+    const graphRefreshAgeMs =
+      Date.now() - usageRequestGraphLastRefreshAtRef.current;
+    const mergeAgeMs = Date.now() - usageRequestLastMergeAtRef.current;
     const immediateRowsCount = hasUsableRequestPageCache
       ? requestPageCached.rows.length
-      : usageRequestRows.length
+      : usageRequestRows.length;
     const shouldForceMergeForSparseRows =
-      immediateRowsCount > 0 && immediateRowsCount < USAGE_REQUEST_PAGE_SIZE
+      immediateRowsCount > 0 && immediateRowsCount < USAGE_REQUEST_PAGE_SIZE;
     const shouldMergeLatestRows =
       shouldForceMergeForSparseRows ||
-      mergeAgeMs > USAGE_REQUEST_TAB_ACTIVATION_MERGE_COOLDOWN_MS
+      mergeAgeMs > USAGE_REQUEST_TAB_ACTIVATION_MERGE_COOLDOWN_MS;
     if (isRequestsTab) {
       if (hasUsableRequestPageCache) {
         const forceGraphRefreshOnEntry =
           justActivatedRequestsTab &&
           (graphProvidersIncomplete ||
             !graphSnapshotReady ||
-            graphRefreshAgeMs > USAGE_REQUEST_GRAPH_TAB_ACTIVATION_REFRESH_COOLDOWN_MS)
+            graphRefreshAgeMs >
+              USAGE_REQUEST_GRAPH_TAB_ACTIVATION_REFRESH_COOLDOWN_MS);
         if (
           forceGraphRefreshOnEntry ||
           graphProvidersIncomplete ||
           !graphSnapshotReady ||
           graphRefreshAgeMs > USAGE_REQUEST_GRAPH_BACKGROUND_REFRESH_MS
         ) {
-          void refreshUsageRequestGraphRows()
+          void refreshUsageRequestGraphRows();
         }
         if (shouldMergeLatestRows) {
-          void mergeLatestUsageRequests(USAGE_REQUEST_PAGE_SIZE)
+          void mergeLatestUsageRequests(USAGE_REQUEST_PAGE_SIZE);
         }
-        return
+        return;
       }
 
       const shouldRefresh =
         usageRequestLoadedQueryKeyRef.current !== requestQueryKey ||
-        (usageRequestRows.length === 0 && usageRequestResolvedQueryKeyRef.current !== requestQueryKey)
+        (usageRequestRows.length === 0 &&
+          usageRequestResolvedQueryKeyRef.current !== requestQueryKey);
       if (shouldRefresh) {
-        usageRequestLoadedQueryKeyRef.current = requestQueryKey
-        void refreshUsageRequests(initialRefreshLimit)
-        void refreshUsageRequestGraphRows()
-        return
+        usageRequestLoadedQueryKeyRef.current = requestQueryKey;
+        void refreshUsageRequests(initialRefreshLimit);
+        void refreshUsageRequestGraphRows();
+        return;
       }
       if (
         graphProvidersIncomplete ||
         !graphSnapshotReady ||
         graphRefreshAgeMs > USAGE_REQUEST_GRAPH_BACKGROUND_REFRESH_MS
       ) {
-        void refreshUsageRequestGraphRows()
+        void refreshUsageRequestGraphRows();
       }
       if (shouldMergeLatestRows) {
-        void mergeLatestUsageRequests(USAGE_REQUEST_PAGE_SIZE)
+        void mergeLatestUsageRequests(USAGE_REQUEST_PAGE_SIZE);
       }
-      return
+      return;
     }
   }, [
     initialRefreshLimit,
@@ -2652,64 +3132,68 @@ export function UsageStatisticsPanel({
     refreshUsageRequests,
     usageRequestRows.length,
     usageRequestsCachePrimedTick,
-  ])
+  ]);
   useEffect(() => {
-    if (!isRequestsTab) return
-    if (!usageRequestRows.length) return
+    if (!isRequestsTab) return;
+    if (!usageRequestRows.length) return;
     usageRequestsPageCache = {
       queryKey: requestQueryKey,
       rows: usageRequestRows,
       hasMore: usageRequestHasMore,
       usingTestFallback: usageRequestUsingTestFallback,
-    }
+    };
     usageRequestsLastNonEmptyPageCache = {
       queryKey: requestQueryKey,
       rows: usageRequestRows,
       hasMore: usageRequestHasMore,
       usingTestFallback: usageRequestUsingTestFallback,
-    }
+    };
   }, [
     isRequestsTab,
     requestQueryKey,
     usageRequestHasMore,
     usageRequestRows,
     usageRequestUsingTestFallback,
-  ])
+  ]);
   useEffect(() => {
-    if (!isRequestsTab) return
-    if (!usageRequestGraphBaseRows.length && Object.keys(usageRequestGraphRowsByProvider).length === 0) return
+    if (!isRequestsTab) return;
+    if (
+      !usageRequestGraphBaseRows.length &&
+      Object.keys(usageRequestGraphRowsByProvider).length === 0
+    )
+      return;
     usageRequestGraphRowsCache = {
       queryKey: requestGraphQueryKey,
       baseRows: usageRequestGraphBaseRows,
       rowsByProvider: usageRequestGraphRowsByProvider,
-    }
+    };
   }, [
     isRequestsTab,
     requestGraphQueryKey,
     usageRequestGraphBaseRows,
     usageRequestGraphRowsByProvider,
-  ])
+  ]);
 
   useEffect(() => {
-    if (!isRequestsTab && !isAnalyticsTab) return
-    if (usageActivityUnixMs == null) return
-    const last = usageRequestLastActivityRef.current
+    if (!isRequestsTab && !isAnalyticsTab) return;
+    if (usageActivityUnixMs == null) return;
+    const last = usageRequestLastActivityRef.current;
     if (last == null) {
-      usageRequestLastActivityRef.current = usageActivityUnixMs
-      return
+      usageRequestLastActivityRef.current = usageActivityUnixMs;
+      return;
     }
-    if (usageActivityUnixMs <= last) return
-    usageRequestLastActivityRef.current = usageActivityUnixMs
-    void refreshUsageRequestDailyTotals()
+    if (usageActivityUnixMs <= last) return;
+    usageRequestLastActivityRef.current = usageActivityUnixMs;
+    void refreshUsageRequestDailyTotals();
     if (isRequestsTab) {
-      void refreshUsageRequestSummary()
+      void refreshUsageRequestSummary();
     }
     if (!isRequestsTab) {
-      void prefetchUsageRequestsPageCache(USAGE_REQUEST_PAGE_SIZE)
-      return
+      void prefetchUsageRequestsPageCache(USAGE_REQUEST_PAGE_SIZE);
+      return;
     }
-    void refreshUsageRequestGraphRows()
-    void mergeLatestUsageRequests(USAGE_REQUEST_PAGE_SIZE)
+    void refreshUsageRequestGraphRows();
+    void mergeLatestUsageRequests(USAGE_REQUEST_PAGE_SIZE);
   }, [
     isAnalyticsTab,
     isRequestsTab,
@@ -2719,67 +3203,78 @@ export function UsageStatisticsPanel({
     refreshUsageRequestDailyTotals,
     refreshUsageRequestSummary,
     refreshUsageRequestGraphRows,
-  ])
+  ]);
 
   const loadMoreUsageRequests = useCallback(async () => {
-    if (usageRequestLoading || !usageRequestHasMore || usageRequestRefreshInFlightRef.current) return
+    if (
+      usageRequestLoading ||
+      !usageRequestHasMore ||
+      usageRequestRefreshInFlightRef.current
+    )
+      return;
     if (usageRequestUsingTestFallback) {
-      const merged = usageRequestTestRows.slice(0, usageRequestRows.length + USAGE_REQUEST_PAGE_SIZE)
-      setUsageRequestRows(merged)
-      setUsageRequestHasMore(merged.length < usageRequestTestRows.length)
+      const merged = usageRequestTestRows.slice(
+        0,
+        usageRequestRows.length + USAGE_REQUEST_PAGE_SIZE,
+      );
+      setUsageRequestRows(merged);
+      setUsageRequestHasMore(merged.length < usageRequestTestRows.length);
       if (merged.length > 0) {
         usageRequestsLastNonEmptyPageCache = {
           queryKey: requestQueryKey,
           rows: merged,
           hasMore: merged.length < usageRequestTestRows.length,
           usingTestFallback: true,
-        }
+        };
       }
-      return
+      return;
     }
-    usageRequestRefreshInFlightRef.current = true
-    const requestSeq = usageRequestFetchSeqRef.current + 1
-    usageRequestFetchSeqRef.current = requestSeq
-    setUsageRequestLoading(true)
-    setUsageRequestError('')
+    usageRequestRefreshInFlightRef.current = true;
+    const requestSeq = usageRequestFetchSeqRef.current + 1;
+    usageRequestFetchSeqRef.current = requestSeq;
+    setUsageRequestLoading(true);
+    setUsageRequestError("");
     try {
-      const res = await invoke<UsageRequestEntriesResponse>('get_usage_request_entries', {
-        ...buildUsageRequestEntriesArgs({
-          hours: requestFetchHours,
-          fromUnixMs: requestFetchFromUnixMs,
-          toUnixMs: requestFetchToUnixMs,
-          nodes: requestFetchNodes,
-          providers: requestFetchProviders,
-          models: requestFetchModels,
-          origins: requestFetchOrigins,
-          transports: usageRequestMultiFilters.transport,
-          sessions: requestFetchSessions,
-          limit: USAGE_REQUEST_PAGE_SIZE,
-          offset: usageRequestRows.length,
-        }),
-      })
-      if (usageRequestFetchSeqRef.current !== requestSeq) return
-      const incoming = res.rows ?? []
-      setUsageRequestRows((prev) => [...prev, ...incoming])
-      setUsageRequestHasMore(Boolean(res.has_more))
+      const res = await invoke<UsageRequestEntriesResponse>(
+        "get_usage_request_entries",
+        {
+          ...buildUsageRequestEntriesArgs({
+            hours: requestFetchHours,
+            fromUnixMs: requestFetchFromUnixMs,
+            toUnixMs: requestFetchToUnixMs,
+            nodes: requestFetchNodes,
+            providers: requestFetchProviders,
+            models: requestFetchModels,
+            origins: requestFetchOrigins,
+            transports: usageRequestMultiFilters.transport,
+            sessions: requestFetchSessions,
+            limit: USAGE_REQUEST_PAGE_SIZE,
+            offset: usageRequestRows.length,
+          }),
+        },
+      );
+      if (usageRequestFetchSeqRef.current !== requestSeq) return;
+      const incoming = res.rows ?? [];
+      setUsageRequestRows((prev) => [...prev, ...incoming]);
+      setUsageRequestHasMore(Boolean(res.has_more));
       if (incoming.length > 0) {
         usageRequestsLastNonEmptyPageCache = {
           queryKey: requestQueryKey,
           rows: [...usageRequestRows, ...incoming],
           hasMore: Boolean(res.has_more),
           usingTestFallback: false,
-        }
+        };
       }
     } catch (e) {
-      if (usageRequestFetchSeqRef.current !== requestSeq) return
-      setUsageRequestError(String(e))
+      if (usageRequestFetchSeqRef.current !== requestSeq) return;
+      setUsageRequestError(String(e));
     } finally {
-      usageRequestRefreshInFlightRef.current = false
-      setUsageRequestLoading(false)
+      usageRequestRefreshInFlightRef.current = false;
+      setUsageRequestLoading(false);
       if (usageRequestRefreshPendingRef.current) {
-        const nextLimit = usageRequestRefreshPendingLimitRef.current
-        usageRequestRefreshPendingRef.current = false
-        void refreshUsageRequestsRef.current(nextLimit)
+        const nextLimit = usageRequestRefreshPendingLimitRef.current;
+        usageRequestRefreshPendingRef.current = false;
+        void refreshUsageRequestsRef.current(nextLimit);
       }
     }
   }, [
@@ -2798,17 +3293,19 @@ export function UsageStatisticsPanel({
     usageRequestRows.length,
     usageRequestTestRows,
     usageRequestUsingTestFallback,
-  ])
+  ]);
 
   useEffect(() => {
-    if (!isRequestsTab) return
-    if (hasExplicitTimeFilter) return
-    if (!hasExplicitRequestFilters) return
-    if (usageRequestLoading || !usageRequestHasMore || !usageRequestRows.length) return
-    const loadedDays = new Set<number>()
-    for (const row of usageRequestRows) loadedDays.add(startOfDayUnixMs(row.unix_ms))
-    if (loadedDays.size >= 45) return
-    void loadMoreUsageRequests()
+    if (!isRequestsTab) return;
+    if (hasExplicitTimeFilter) return;
+    if (!hasExplicitRequestFilters) return;
+    if (usageRequestLoading || !usageRequestHasMore || !usageRequestRows.length)
+      return;
+    const loadedDays = new Set<number>();
+    for (const row of usageRequestRows)
+      loadedDays.add(startOfDayUnixMs(row.unix_ms));
+    if (loadedDays.size >= 45) return;
+    void loadMoreUsageRequests();
   }, [
     isRequestsTab,
     hasExplicitTimeFilter,
@@ -2817,147 +3314,193 @@ export function UsageStatisticsPanel({
     usageRequestHasMore,
     usageRequestLoading,
     usageRequestRows,
-  ])
+  ]);
 
   const graphBaseRowsForVerifiedSessions = useMemo(() => {
-    if (!shouldPrepareRequestsData) return EMPTY_USAGE_REQUEST_ROWS
-    if (verifiedSessionIdSet.size === 0) return EMPTY_USAGE_REQUEST_ROWS
-    return graphBaseRowsForRequestRender.filter((row) => verifiedSessionIdSet.has(String(row.session_id ?? '').trim()))
-  }, [graphBaseRowsForRequestRender, shouldPrepareRequestsData, verifiedSessionIdSet])
+    if (!shouldPrepareRequestsData) return EMPTY_USAGE_REQUEST_ROWS;
+    if (verifiedSessionIdSet.size === 0) return EMPTY_USAGE_REQUEST_ROWS;
+    return graphBaseRowsForRequestRender.filter((row) =>
+      verifiedSessionIdSet.has(String(row.session_id ?? "").trim()),
+    );
+  }, [
+    graphBaseRowsForRequestRender,
+    shouldPrepareRequestsData,
+    verifiedSessionIdSet,
+  ]);
 
   const graphRowsForVerifiedSessions = useMemo(() => {
-    if (!shouldPrepareRequestsData) return EMPTY_USAGE_REQUEST_ROWS
-    if (!graphBaseRowsForVerifiedSessions.length) return EMPTY_USAGE_REQUEST_ROWS
-    return graphBaseRowsForVerifiedSessions
-  }, [graphBaseRowsForVerifiedSessions, shouldPrepareRequestsData])
+    if (!shouldPrepareRequestsData) return EMPTY_USAGE_REQUEST_ROWS;
+    if (!graphBaseRowsForVerifiedSessions.length)
+      return EMPTY_USAGE_REQUEST_ROWS;
+    return graphBaseRowsForVerifiedSessions;
+  }, [graphBaseRowsForVerifiedSessions, shouldPrepareRequestsData]);
 
   const graphRowsBySessionForRequestRender = useMemo(() => {
-    if (!shouldPrepareRequestsData) return EMPTY_USAGE_REQUEST_ROWS_BY_PROVIDER
-    if (!graphRowsForVerifiedSessions.length) return EMPTY_USAGE_REQUEST_ROWS_BY_PROVIDER
-    const grouped = new Map<string, UsageRequestEntry[]>()
+    if (!shouldPrepareRequestsData) return EMPTY_USAGE_REQUEST_ROWS_BY_PROVIDER;
+    if (!graphRowsForVerifiedSessions.length)
+      return EMPTY_USAGE_REQUEST_ROWS_BY_PROVIDER;
+    const grouped = new Map<string, UsageRequestEntry[]>();
     graphRowsForVerifiedSessions.forEach((row) => {
-      const sessionId = String(row.session_id ?? '').trim()
-      if (!sessionId) return
-      const list = grouped.get(sessionId) ?? []
-      list.push(row)
-      grouped.set(sessionId, list)
-    })
-    const out: Record<string, UsageRequestEntry[]> = {}
+      const sessionId = String(row.session_id ?? "").trim();
+      if (!sessionId) return;
+      const list = grouped.get(sessionId) ?? [];
+      list.push(row);
+      grouped.set(sessionId, list);
+    });
+    const out: Record<string, UsageRequestEntry[]> = {};
     grouped.forEach((rows, sessionId) => {
-      out[sessionId] = [...rows].sort((a, b) => b.unix_ms - a.unix_ms).slice(0, USAGE_REQUEST_GRAPH_SOURCE_LIMIT)
-    })
-    return out
-  }, [graphRowsForVerifiedSessions, shouldPrepareRequestsData])
+      out[sessionId] = [...rows]
+        .sort((a, b) => b.unix_ms - a.unix_ms)
+        .slice(0, USAGE_REQUEST_GRAPH_SOURCE_LIMIT);
+    });
+    return out;
+  }, [graphRowsForVerifiedSessions, shouldPrepareRequestsData]);
 
   const usageRequestSessionOptions = useMemo(() => {
-    if (!shouldPrepareRequestsData) return EMPTY_STRING_LIST
+    if (!shouldPrepareRequestsData) return EMPTY_STRING_LIST;
     return Object.entries(graphRowsBySessionForRequestRender)
       .map(([sessionId, rows]) => ({ sessionId, count: rows.length }))
-      .sort((a, b) => b.count - a.count || a.sessionId.localeCompare(b.sessionId, undefined, { numeric: true, sensitivity: 'base' }))
-      .map((item) => item.sessionId)
-  }, [graphRowsBySessionForRequestRender, shouldPrepareRequestsData])
+      .sort(
+        (a, b) =>
+          b.count - a.count ||
+          a.sessionId.localeCompare(b.sessionId, undefined, {
+            numeric: true,
+            sensitivity: "base",
+          }),
+      )
+      .map((item) => item.sessionId);
+  }, [graphRowsBySessionForRequestRender, shouldPrepareRequestsData]);
 
   const usageRequestDisplaySessions = useMemo(() => {
-    if (!usageRequestSessionOptions.length) return EMPTY_STRING_LIST
-    return usageRequestSessionOptions.slice(0, USAGE_REQUEST_GRAPH_MAX_SESSIONS)
-  }, [usageRequestSessionOptions])
-  const activeRequestGraphSessions = usageRequestDisplaySessions
+    if (!usageRequestSessionOptions.length) return EMPTY_STRING_LIST;
+    return usageRequestSessionOptions.slice(
+      0,
+      USAGE_REQUEST_GRAPH_MAX_SESSIONS,
+    );
+  }, [usageRequestSessionOptions]);
+  const activeRequestGraphSessions = usageRequestDisplaySessions;
 
   const requestGraphColorByProvider = useMemo(() => {
     const providers = Array.from(
-      new Set(graphRowsForVerifiedSessions.map((row) => resolveRequestProviderName(row.provider))),
-    ).sort(compareUsageProvidersForDisplay)
-    const map = new Map<string, string>()
+      new Set(
+        graphRowsForVerifiedSessions.map((row) =>
+          resolveRequestProviderName(row.provider),
+        ),
+      ),
+    ).sort(compareUsageProvidersForDisplay);
+    const map = new Map<string, string>();
     providers.forEach((provider, index) => {
-      map.set(provider, USAGE_REQUEST_GRAPH_COLORS[index % USAGE_REQUEST_GRAPH_COLORS.length])
-    })
-    return map
-  }, [graphRowsForVerifiedSessions, resolveRequestProviderName])
+      map.set(
+        provider,
+        USAGE_REQUEST_GRAPH_COLORS[index % USAGE_REQUEST_GRAPH_COLORS.length],
+      );
+    });
+    return map;
+  }, [graphRowsForVerifiedSessions, resolveRequestProviderName]);
 
   const requestGraphProviderBySession = useMemo(() => {
-    const out = new Map<string, string>()
+    const out = new Map<string, string>();
     activeRequestGraphSessions.forEach((sessionId) => {
-      const rows = graphRowsBySessionForRequestRender[sessionId] ?? EMPTY_USAGE_REQUEST_ROWS
-      const counts = new Map<string, number>()
+      const rows =
+        graphRowsBySessionForRequestRender[sessionId] ??
+        EMPTY_USAGE_REQUEST_ROWS;
+      const counts = new Map<string, number>();
       rows.forEach((row) => {
-        const provider = resolveRequestProviderName(row.provider)
-        counts.set(provider, (counts.get(provider) ?? 0) + 1)
-      })
+        const provider = resolveRequestProviderName(row.provider);
+        counts.set(provider, (counts.get(provider) ?? 0) + 1);
+      });
       const dominantProvider =
-        [...counts.entries()].sort((a, b) => b[1] - a[1] || compareUsageProvidersForDisplay(a[0], b[0]))[0]?.[0] ?? '-'
-      out.set(sessionId, dominantProvider)
-    })
-    return out
-  }, [activeRequestGraphSessions, graphRowsBySessionForRequestRender, resolveRequestProviderName])
+        [...counts.entries()].sort(
+          (a, b) => b[1] - a[1] || compareUsageProvidersForDisplay(a[0], b[0]),
+        )[0]?.[0] ?? "-";
+      out.set(sessionId, dominantProvider);
+    });
+    return out;
+  }, [
+    activeRequestGraphSessions,
+    graphRowsBySessionForRequestRender,
+    resolveRequestProviderName,
+  ]);
 
   const requestGraphOriginBySession = useMemo(() => {
-    const out = new Map<string, 'windows' | 'wsl2'>()
+    const out = new Map<string, "windows" | "wsl2">();
     activeRequestGraphSessions.forEach((sessionId) => {
-      const rows = graphRowsBySessionForRequestRender[sessionId] ?? EMPTY_USAGE_REQUEST_ROWS
-      let windowsCount = 0
-      let wslCount = 0
+      const rows =
+        graphRowsBySessionForRequestRender[sessionId] ??
+        EMPTY_USAGE_REQUEST_ROWS;
+      let windowsCount = 0;
+      let wslCount = 0;
       rows.forEach((row) => {
-        const origin = normalizeUsageOrigin(row.origin)
-        if (origin === 'wsl2') {
-          wslCount += 1
-          return
+        const origin = normalizeUsageOrigin(row.origin);
+        if (origin === "wsl2") {
+          wslCount += 1;
+          return;
         }
-        windowsCount += 1
-      })
-      out.set(sessionId, wslCount > windowsCount ? 'wsl2' : 'windows')
-    })
-    return out
-  }, [activeRequestGraphSessions, graphRowsBySessionForRequestRender])
+        windowsCount += 1;
+      });
+      out.set(sessionId, wslCount > windowsCount ? "wsl2" : "windows");
+    });
+    return out;
+  }, [activeRequestGraphSessions, graphRowsBySessionForRequestRender]);
 
-  const usageRequestGraphPointCount = USAGE_REQUEST_GRAPH_SOURCE_LIMIT
+  const usageRequestGraphPointCount = USAGE_REQUEST_GRAPH_SOURCE_LIMIT;
 
   const usageRequestRowsBySession = useMemo(() => {
-    if (!shouldPrepareRequestsData) return new Map<string, UsageRequestEntry[]>()
-    const out = new Map<string, UsageRequestEntry[]>()
+    if (!shouldPrepareRequestsData)
+      return new Map<string, UsageRequestEntry[]>();
+    const out = new Map<string, UsageRequestEntry[]>();
     for (const sessionId of activeRequestGraphSessions) {
-      const rows = graphRowsBySessionForRequestRender[sessionId] ?? []
-      out.set(sessionId, rows.slice(0, USAGE_REQUEST_GRAPH_SOURCE_LIMIT))
+      const rows = graphRowsBySessionForRequestRender[sessionId] ?? [];
+      out.set(sessionId, rows.slice(0, USAGE_REQUEST_GRAPH_SOURCE_LIMIT));
     }
-    return out
-  }, [activeRequestGraphSessions, graphRowsBySessionForRequestRender, shouldPrepareRequestsData])
+    return out;
+  }, [
+    activeRequestGraphSessions,
+    graphRowsBySessionForRequestRender,
+    shouldPrepareRequestsData,
+  ]);
 
   const usageRequestLineSeries = useMemo<UsageRequestLineSeries[]>(() => {
-    if (!shouldPrepareRequestsData) return []
-    const sessions = [...activeRequestGraphSessions]
-    if (!sessions.length) return []
-    const pointCount = usageRequestGraphPointCount
+    if (!shouldPrepareRequestsData) return [];
+    const sessions = [...activeRequestGraphSessions];
+    if (!sessions.length) return [];
+    const pointCount = usageRequestGraphPointCount;
     const providerSeries = sessions.map((sessionId, sessionIndex) => {
-        const values = new Array<number>(pointCount).fill(0)
-        const present = new Array<boolean>(pointCount).fill(false)
-        const pointIds = new Array<string>(pointCount).fill('')
-        const rows = usageRequestRowsBySession.get(sessionId) ?? []
-      const count = Math.min(pointCount, rows.length)
+      const values = new Array<number>(pointCount).fill(0);
+      const present = new Array<boolean>(pointCount).fill(false);
+      const pointIds = new Array<string>(pointCount).fill("");
+      const rows = usageRequestRowsBySession.get(sessionId) ?? [];
+      const count = Math.min(pointCount, rows.length);
       // Plot request points as left-old/right-new:
       // point 1 is the oldest entry within the latest-N window,
       // and the rightmost plotted point is the newest entry.
       for (let idx = 0; idx < count; idx += 1) {
-        const row = rows[count - 1 - idx]
-        values[idx] = row.total_tokens
-        present[idx] = true
-        pointIds[idx] = usageRequestRowIdentity(row)
+        const row = rows[count - 1 - idx];
+        values[idx] = row.total_tokens;
+        present[idx] = true;
+        pointIds[idx] = usageRequestRowIdentity(row);
       }
-      const dominantProvider = requestGraphProviderBySession.get(sessionId) ?? '-'
-      const dominantOrigin = requestGraphOriginBySession.get(sessionId) ?? 'windows'
+      const dominantProvider =
+        requestGraphProviderBySession.get(sessionId) ?? "-";
+      const dominantOrigin =
+        requestGraphOriginBySession.get(sessionId) ?? "windows";
       return {
-        kind: 'session' as const,
+        kind: "session" as const,
         id: sessionId,
         provider: shortSessionIdForLegend(sessionId),
         providerName: dominantProvider,
         origin: dominantOrigin,
         color:
           requestGraphColorByProvider.get(dominantProvider) ??
-          USAGE_REQUEST_GRAPH_COLORS[sessionIndex % USAGE_REQUEST_GRAPH_COLORS.length],
+          USAGE_REQUEST_GRAPH_COLORS[
+            sessionIndex % USAGE_REQUEST_GRAPH_COLORS.length
+          ],
         values,
         present,
         pointIds,
-      }
-    })
-    return providerSeries
+      };
+    });
+    return providerSeries;
   }, [
     activeRequestGraphSessions,
     shouldPrepareRequestsData,
@@ -2966,114 +3509,144 @@ export function UsageStatisticsPanel({
     requestGraphColorByProvider,
     requestGraphOriginBySession,
     requestGraphProviderBySession,
-  ])
-  const previousUsageRequestLineSeriesRef = useRef<UsageRequestLineSeries[]>([])
-  const requestLineLiveAnimMetaRef = useRef<Map<string, UsageRequestLiveLineAnimMeta>>(new Map())
-  const [requestLineLiveAnimElapsedMs, setRequestLineLiveAnimElapsedMs] = useState(0)
-  const [requestLineLiveAnimNonce, setRequestLineLiveAnimNonce] = useState(0)
-  const [requestLineAnimElapsedMs, setRequestLineAnimElapsedMs] = useState(0)
+  ]);
+  const previousUsageRequestLineSeriesRef = useRef<UsageRequestLineSeries[]>(
+    [],
+  );
+  const requestLineLiveAnimMetaRef = useRef<
+    Map<string, UsageRequestLiveLineAnimMeta>
+  >(new Map());
+  const [requestLineLiveAnimElapsedMs, setRequestLineLiveAnimElapsedMs] =
+    useState(0);
+  const [requestLineLiveAnimNonce, setRequestLineLiveAnimNonce] = useState(0);
+  const [requestLineAnimElapsedMs, setRequestLineAnimElapsedMs] = useState(0);
   useEffect(() => {
-    if (!isRequestsTab || !usageRequestUsingTestFallback || usageRequestLineSeries.length === 0) {
-      setRequestLineAnimElapsedMs(0)
-      return
+    if (
+      !isRequestsTab ||
+      !usageRequestUsingTestFallback ||
+      usageRequestLineSeries.length === 0
+    ) {
+      setRequestLineAnimElapsedMs(0);
+      return;
     }
-    const startedAt = performance.now()
-    let rafId = 0
+    const startedAt = performance.now();
+    let rafId = 0;
     const run = (now: number) => {
-      setRequestLineAnimElapsedMs(now - startedAt)
-      rafId = window.requestAnimationFrame(run)
-    }
-    rafId = window.requestAnimationFrame(run)
-    return () => window.cancelAnimationFrame(rafId)
-  }, [isRequestsTab, usageRequestLineSeries.length, usageRequestUsingTestFallback])
+      setRequestLineAnimElapsedMs(now - startedAt);
+      rafId = window.requestAnimationFrame(run);
+    };
+    rafId = window.requestAnimationFrame(run);
+    return () => window.cancelAnimationFrame(rafId);
+  }, [
+    isRequestsTab,
+    usageRequestLineSeries.length,
+    usageRequestUsingTestFallback,
+  ]);
   useLayoutEffect(() => {
-    const nextSeries = cloneUsageRequestLineSeries(usageRequestLineSeries)
-    const previousSeries = previousUsageRequestLineSeriesRef.current
-    previousUsageRequestLineSeriesRef.current = nextSeries
+    const nextSeries = cloneUsageRequestLineSeries(usageRequestLineSeries);
+    const previousSeries = previousUsageRequestLineSeriesRef.current;
+    previousUsageRequestLineSeriesRef.current = nextSeries;
     if (!isRequestsTab || usageRequestUsingTestFallback) {
-      requestLineLiveAnimMetaRef.current = new Map()
-      setRequestLineLiveAnimElapsedMs(0)
-      return
+      requestLineLiveAnimMetaRef.current = new Map();
+      setRequestLineLiveAnimElapsedMs(0);
+      return;
     }
-    if (nextSeries.length === 0 || previousSeries.length === 0) return
-    if (areUsageRequestLineSeriesIdentical(previousSeries, nextSeries)) return
-    const previousById = new Map(previousSeries.map((series) => [series.id, series]))
-    const liveMeta = new Map<string, UsageRequestLiveLineAnimMeta>()
+    if (nextSeries.length === 0 || previousSeries.length === 0) return;
+    if (areUsageRequestLineSeriesIdentical(previousSeries, nextSeries)) return;
+    const previousById = new Map(
+      previousSeries.map((series) => [series.id, series]),
+    );
+    const liveMeta = new Map<string, UsageRequestLiveLineAnimMeta>();
     nextSeries.forEach((series) => {
-      const previous = previousById.get(series.id)
-      if (!previous) return
-      const prevCount = countUsageRequestLinePoints(previous.present)
-      const nextCount = countUsageRequestLinePoints(series.present)
-      if (prevCount <= 0 || nextCount <= 0) return
+      const previous = previousById.get(series.id);
+      if (!previous) return;
+      const prevCount = countUsageRequestLinePoints(previous.present);
+      const nextCount = countUsageRequestLinePoints(series.present);
+      if (prevCount <= 0 || nextCount <= 0) return;
       const shiftSteps = detectUsageRequestLineShiftSteps(
         previous.pointIds,
         prevCount,
         series.pointIds,
         nextCount,
-      )
-      const prevLastIndex = Math.max(0, prevCount - 1)
+      );
+      const prevLastIndex = Math.max(0, prevCount - 1);
       const prevLastValue =
-        previous.values[prevLastIndex] ?? series.values[Math.max(0, nextCount - 1)] ?? 0
+        previous.values[prevLastIndex] ??
+        series.values[Math.max(0, nextCount - 1)] ??
+        0;
       liveMeta.set(series.id, {
         prevValues: [...previous.values],
         prevPresent: [...previous.present],
         shiftSteps,
         prevLastValue,
-      })
-    })
-    if (liveMeta.size === 0) return
-    requestLineLiveAnimMetaRef.current = liveMeta
-    setRequestLineLiveAnimElapsedMs(0)
-    setRequestLineLiveAnimNonce((value) => value + 1)
-  }, [isRequestsTab, usageRequestLineSeries, usageRequestUsingTestFallback])
+      });
+    });
+    if (liveMeta.size === 0) return;
+    requestLineLiveAnimMetaRef.current = liveMeta;
+    setRequestLineLiveAnimElapsedMs(0);
+    setRequestLineLiveAnimNonce((value) => value + 1);
+  }, [isRequestsTab, usageRequestLineSeries, usageRequestUsingTestFallback]);
   useEffect(() => {
-    if (!isRequestsTab || usageRequestUsingTestFallback) return
-    if (requestLineLiveAnimMetaRef.current.size === 0) return
-    const startedAt = performance.now()
-    let rafId = 0
+    if (!isRequestsTab || usageRequestUsingTestFallback) return;
+    if (requestLineLiveAnimMetaRef.current.size === 0) return;
+    const startedAt = performance.now();
+    let rafId = 0;
     const run = (now: number) => {
-      const elapsed = now - startedAt
-      setRequestLineLiveAnimElapsedMs(elapsed)
-      if (elapsed >= USAGE_REQUEST_LIVE_LINE_TRANSITION_MS) return
-      rafId = window.requestAnimationFrame(run)
-    }
-    rafId = window.requestAnimationFrame(run)
-    return () => window.cancelAnimationFrame(rafId)
-  }, [isRequestsTab, requestLineLiveAnimNonce, usageRequestUsingTestFallback])
-  const renderedUsageRequestLineSeries = useMemo<UsageRequestRenderedLineSeries[]>(() => {
-    if (!isRequestsTab) return usageRequestLineSeries
+      const elapsed = now - startedAt;
+      setRequestLineLiveAnimElapsedMs(elapsed);
+      if (elapsed >= USAGE_REQUEST_LIVE_LINE_TRANSITION_MS) return;
+      rafId = window.requestAnimationFrame(run);
+    };
+    rafId = window.requestAnimationFrame(run);
+    return () => window.cancelAnimationFrame(rafId);
+  }, [isRequestsTab, requestLineLiveAnimNonce, usageRequestUsingTestFallback]);
+  const renderedUsageRequestLineSeries = useMemo<
+    UsageRequestRenderedLineSeries[]
+  >(() => {
+    if (!isRequestsTab) return usageRequestLineSeries;
     if (!usageRequestUsingTestFallback) {
-      const liveMeta = requestLineLiveAnimMetaRef.current
+      const liveMeta = requestLineLiveAnimMetaRef.current;
       const livePhase = Math.max(
         0,
-        Math.min(1, requestLineLiveAnimElapsedMs / USAGE_REQUEST_LIVE_LINE_TRANSITION_MS),
-      )
-      if (liveMeta.size === 0 || livePhase >= 1) return usageRequestLineSeries
+        Math.min(
+          1,
+          requestLineLiveAnimElapsedMs / USAGE_REQUEST_LIVE_LINE_TRANSITION_MS,
+        ),
+      );
+      if (liveMeta.size === 0 || livePhase >= 1) return usageRequestLineSeries;
       return usageRequestLineSeries.map((series) => {
-        const meta = liveMeta.get(series.id)
-        if (!meta) return series
-        const prevCount = countUsageRequestLinePoints(meta.prevPresent)
-        const currentCount = countUsageRequestLinePoints(series.present)
+        const meta = liveMeta.get(series.id);
+        if (!meta) return series;
+        const prevCount = countUsageRequestLinePoints(meta.prevPresent);
+        const currentCount = countUsageRequestLinePoints(series.present);
         const slidingEligible =
           meta.shiftSteps >= 1 &&
           prevCount >= usageRequestGraphPointCount &&
-          currentCount >= usageRequestGraphPointCount
+          currentCount >= usageRequestGraphPointCount;
         if (slidingEligible) {
-          const values = new Array<number>(usageRequestGraphPointCount).fill(0)
-          const present = new Array<boolean>(usageRequestGraphPointCount).fill(false)
-          let pointIndex = 0
-          for (let idx = 0; idx < meta.prevPresent.length && pointIndex < usageRequestGraphPointCount; idx += 1) {
-            if (!meta.prevPresent[idx]) continue
-            values[pointIndex] = meta.prevValues[idx] ?? 0
-            present[pointIndex] = true
-            pointIndex += 1
+          const values = new Array<number>(usageRequestGraphPointCount).fill(0);
+          const present = new Array<boolean>(usageRequestGraphPointCount).fill(
+            false,
+          );
+          let pointIndex = 0;
+          for (
+            let idx = 0;
+            idx < meta.prevPresent.length &&
+            pointIndex < usageRequestGraphPointCount;
+            idx += 1
+          ) {
+            if (!meta.prevPresent[idx]) continue;
+            values[pointIndex] = meta.prevValues[idx] ?? 0;
+            present[pointIndex] = true;
+            pointIndex += 1;
           }
-          const { slideSteps, previewNextValues, previewNextValue } = resolveUsageRequestSlidingPreview({
-            values: series.values,
-            currentCount,
-            shiftSteps: meta.shiftSteps,
-            maxShiftSteps: usageRequestGraphPointCount - 1,
-          })
+          const { slideSteps, previewNextValues, previewNextValue } =
+            resolveUsageRequestSlidingPreview({
+              values: series.values,
+              currentCount,
+              shiftSteps: meta.shiftSteps,
+              maxShiftSteps: usageRequestGraphPointCount - 1,
+            });
           return {
             ...series,
             values,
@@ -3082,27 +3655,36 @@ export function UsageStatisticsPanel({
             liveSlidingShiftSteps: slideSteps,
             livePreviewNextValue: previewNextValue,
             livePreviewNextValues: previewNextValues,
-          }
+          };
         }
 
         const growingEligible =
           currentCount === prevCount + 1 &&
           prevCount > 1 &&
-          prevCount < usageRequestGraphPointCount
+          prevCount < usageRequestGraphPointCount;
         if (growingEligible) {
-          const values = new Array<number>(usageRequestGraphPointCount).fill(0)
-          const present = new Array<boolean>(usageRequestGraphPointCount).fill(false)
-          let pointIndex = 0
-          for (let idx = 0; idx < meta.prevPresent.length && pointIndex < usageRequestGraphPointCount; idx += 1) {
-            if (!meta.prevPresent[idx]) continue
-            values[pointIndex] = meta.prevValues[idx] ?? 0
-            present[pointIndex] = true
-            pointIndex += 1
+          const values = new Array<number>(usageRequestGraphPointCount).fill(0);
+          const present = new Array<boolean>(usageRequestGraphPointCount).fill(
+            false,
+          );
+          let pointIndex = 0;
+          for (
+            let idx = 0;
+            idx < meta.prevPresent.length &&
+            pointIndex < usageRequestGraphPointCount;
+            idx += 1
+          ) {
+            if (!meta.prevPresent[idx]) continue;
+            values[pointIndex] = meta.prevValues[idx] ?? 0;
+            present[pointIndex] = true;
+            pointIndex += 1;
           }
           const previewNextValue =
-            series.values[Math.min(series.values.length - 1, Math.max(0, prevCount))] ??
+            series.values[
+              Math.min(series.values.length - 1, Math.max(0, prevCount))
+            ] ??
             series.values[Math.max(0, currentCount - 1)] ??
-            null
+            null;
           return {
             ...series,
             values,
@@ -3114,23 +3696,29 @@ export function UsageStatisticsPanel({
               previewNextValue == null || !Number.isFinite(previewNextValue)
                 ? null
                 : [previewNextValue],
-          }
+          };
         }
 
-        const values = [...series.values]
-        const present = [...series.present]
+        const values = [...series.values];
+        const present = [...series.present];
         for (let idx = 0; idx < usageRequestGraphPointCount; idx += 1) {
-          const wasPresent = Boolean(meta.prevPresent[idx])
-          const isPresent = Boolean(series.present[idx])
+          const wasPresent = Boolean(meta.prevPresent[idx]);
+          const isPresent = Boolean(series.present[idx]);
           if (!wasPresent && !isPresent) {
-            values[idx] = 0
-            present[idx] = false
-            continue
+            values[idx] = 0;
+            present[idx] = false;
+            continue;
           }
-          const prevValue = wasPresent ? (meta.prevValues[idx] ?? 0) : meta.prevLastValue
-          const nextValue = isPresent ? (series.values[idx] ?? prevValue) : prevValue
-          values[idx] = Math.round(prevValue + (nextValue - prevValue) * livePhase)
-          present[idx] = isPresent || (wasPresent && livePhase < 1)
+          const prevValue = wasPresent
+            ? (meta.prevValues[idx] ?? 0)
+            : meta.prevLastValue;
+          const nextValue = isPresent
+            ? (series.values[idx] ?? prevValue)
+            : prevValue;
+          values[idx] = Math.round(
+            prevValue + (nextValue - prevValue) * livePhase,
+          );
+          present[idx] = isPresent || (wasPresent && livePhase < 1);
         }
         return {
           ...series,
@@ -3140,17 +3728,19 @@ export function UsageStatisticsPanel({
           liveSlidingShiftSteps: 1,
           livePreviewNextValue: null,
           livePreviewNextValues: null,
-        }
-      })
+        };
+      });
     }
     return usageRequestLineSeries.map((series) => {
-      const baseValues: number[] = []
+      const baseValues: number[] = [];
       for (let idx = 0; idx < series.present.length; idx += 1) {
-        if (!series.present[idx]) continue
-        baseValues.push(series.values[idx] ?? 0)
+        if (!series.present[idx]) continue;
+        baseValues.push(series.values[idx] ?? 0);
       }
-      const baseCount = baseValues.length
-      const stepIndex = Math.floor(requestLineAnimElapsedMs / USAGE_REQUEST_FALLBACK_LINE_STEP_MS)
+      const baseCount = baseValues.length;
+      const stepIndex = Math.floor(
+        requestLineAnimElapsedMs / USAGE_REQUEST_FALLBACK_LINE_STEP_MS,
+      );
       if (baseCount <= 0) {
         return {
           ...series,
@@ -3158,56 +3748,84 @@ export function UsageStatisticsPanel({
           fallbackSlidingShiftSteps: 1,
           fallbackPreviewNextValue: null as number | null,
           fallbackPreviewNextValues: null as number[] | null,
-        }
+        };
       }
-      const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
-      const baseSeed = stableSeedFromText(String((series as { id?: string }).id ?? series.provider))
-      const buildNextValue = (prev: number, prevPrev: number, stepOrdinal: number) => {
-        const wave = Math.sin((stepOrdinal + (baseSeed % 41)) / 9) * 620
-        const ripple = Math.cos((stepOrdinal + (baseSeed % 67)) / 7) * 390
-        const momentum = (prev - prevPrev) * 0.36
-        return clamp(Math.round(prev + momentum + wave + ripple), 55_000, 230_000)
-      }
-      const sequence = [...baseValues]
-      let previousValue = sequence[Math.max(0, sequence.length - 2)] ?? sequence[0] ?? 100_000
-      let latestValue = sequence[Math.max(0, sequence.length - 1)] ?? previousValue
+      const clamp = (value: number, min: number, max: number) =>
+        Math.max(min, Math.min(max, value));
+      const baseSeed = stableSeedFromText(
+        String((series as { id?: string }).id ?? series.provider),
+      );
+      const buildNextValue = (
+        prev: number,
+        prevPrev: number,
+        stepOrdinal: number,
+      ) => {
+        const wave = Math.sin((stepOrdinal + (baseSeed % 41)) / 9) * 620;
+        const ripple = Math.cos((stepOrdinal + (baseSeed % 67)) / 7) * 390;
+        const momentum = (prev - prevPrev) * 0.36;
+        return clamp(
+          Math.round(prev + momentum + wave + ripple),
+          55_000,
+          230_000,
+        );
+      };
+      const sequence = [...baseValues];
+      let previousValue =
+        sequence[Math.max(0, sequence.length - 2)] ?? sequence[0] ?? 100_000;
+      let latestValue =
+        sequence[Math.max(0, sequence.length - 1)] ?? previousValue;
       const appendSynthetic = (stepOrdinal: number) => {
-        const next = buildNextValue(latestValue, previousValue, stepOrdinal)
-        sequence.push(next)
-        previousValue = latestValue
-        latestValue = next
-      }
+        const next = buildNextValue(latestValue, previousValue, stepOrdinal);
+        sequence.push(next);
+        previousValue = latestValue;
+        latestValue = next;
+      };
 
-      let committedStepCount = 0
+      let committedStepCount = 0;
       if (baseCount < usageRequestGraphPointCount) {
-        const growthSteps = Math.min(stepIndex, usageRequestGraphPointCount - baseCount)
+        const growthSteps = Math.min(
+          stepIndex,
+          usageRequestGraphPointCount - baseCount,
+        );
         for (let idx = 0; idx < growthSteps; idx += 1) {
-          appendSynthetic(idx)
+          appendSynthetic(idx);
         }
-        committedStepCount += growthSteps
-        const slidingSteps = Math.max(0, stepIndex - (usageRequestGraphPointCount - baseCount))
+        committedStepCount += growthSteps;
+        const slidingSteps = Math.max(
+          0,
+          stepIndex - (usageRequestGraphPointCount - baseCount),
+        );
         for (let idx = 0; idx < slidingSteps; idx += 1) {
-          appendSynthetic(growthSteps + idx)
+          appendSynthetic(growthSteps + idx);
         }
-        committedStepCount += slidingSteps
+        committedStepCount += slidingSteps;
       } else {
         for (let idx = 0; idx < stepIndex; idx += 1) {
-          appendSynthetic(idx)
+          appendSynthetic(idx);
         }
-        committedStepCount = stepIndex
+        committedStepCount = stepIndex;
       }
 
-      const windowCount = Math.min(usageRequestGraphPointCount, sequence.length)
-      const windowStart = Math.max(0, sequence.length - windowCount)
-      const windowValues = sequence.slice(windowStart)
-      const values = new Array<number>(usageRequestGraphPointCount).fill(0)
-      const present = new Array<boolean>(usageRequestGraphPointCount).fill(false)
+      const windowCount = Math.min(
+        usageRequestGraphPointCount,
+        sequence.length,
+      );
+      const windowStart = Math.max(0, sequence.length - windowCount);
+      const windowValues = sequence.slice(windowStart);
+      const values = new Array<number>(usageRequestGraphPointCount).fill(0);
+      const present = new Array<boolean>(usageRequestGraphPointCount).fill(
+        false,
+      );
       for (let idx = 0; idx < windowValues.length; idx += 1) {
-        values[idx] = windowValues[idx]
-        present[idx] = true
+        values[idx] = windowValues[idx];
+        present[idx] = true;
       }
-      const slidingEligible = windowCount >= usageRequestGraphPointCount
-      const previewNextValue = buildNextValue(latestValue, previousValue, committedStepCount)
+      const slidingEligible = windowCount >= usageRequestGraphPointCount;
+      const previewNextValue = buildNextValue(
+        latestValue,
+        previousValue,
+        committedStepCount,
+      );
       return {
         ...series,
         values,
@@ -3216,8 +3834,8 @@ export function UsageStatisticsPanel({
         fallbackSlidingShiftSteps: 1,
         fallbackPreviewNextValue: previewNextValue,
         fallbackPreviewNextValues: [previewNextValue],
-      }
-    })
+      };
+    });
   }, [
     isRequestsTab,
     requestLineAnimElapsedMs,
@@ -3226,169 +3844,215 @@ export function UsageStatisticsPanel({
     usageRequestGraphPointCount,
     usageRequestLineSeries,
     usageRequestUsingTestFallback,
-  ])
+  ]);
   const requestLineAnimPhase = useMemo(() => {
-    if (!isRequestsTab || usageRequestLineSeries.length === 0) return 0
+    if (!isRequestsTab || usageRequestLineSeries.length === 0) return 0;
     if (usageRequestUsingTestFallback) {
-      return (requestLineAnimElapsedMs % USAGE_REQUEST_FALLBACK_LINE_STEP_MS) / USAGE_REQUEST_FALLBACK_LINE_STEP_MS
+      return (
+        (requestLineAnimElapsedMs % USAGE_REQUEST_FALLBACK_LINE_STEP_MS) /
+        USAGE_REQUEST_FALLBACK_LINE_STEP_MS
+      );
     }
-    if (requestLineLiveAnimMetaRef.current.size === 0) return 0
+    if (requestLineLiveAnimMetaRef.current.size === 0) return 0;
     const livePhase = Math.max(
       0,
-      Math.min(1, requestLineLiveAnimElapsedMs / USAGE_REQUEST_LIVE_LINE_TRANSITION_MS),
-    )
-    return livePhase >= 1 ? 0 : livePhase
+      Math.min(
+        1,
+        requestLineLiveAnimElapsedMs / USAGE_REQUEST_LIVE_LINE_TRANSITION_MS,
+      ),
+    );
+    return livePhase >= 1 ? 0 : livePhase;
   }, [
     isRequestsTab,
     requestLineAnimElapsedMs,
     requestLineLiveAnimElapsedMs,
     usageRequestLineSeries.length,
     usageRequestUsingTestFallback,
-  ])
+  ]);
   const requestLineSliding = useMemo(() => {
-    if (!isRequestsTab || renderedUsageRequestLineSeries.length === 0) return false
+    if (!isRequestsTab || renderedUsageRequestLineSeries.length === 0)
+      return false;
     return renderedUsageRequestLineSeries.some((series) =>
       Boolean(
-        (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).fallbackSlidingEligible ||
-          (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).liveSlidingEligible,
+        (
+          series as {
+            fallbackSlidingEligible?: boolean;
+            liveSlidingEligible?: boolean;
+          }
+        ).fallbackSlidingEligible ||
+        (
+          series as {
+            fallbackSlidingEligible?: boolean;
+            liveSlidingEligible?: boolean;
+          }
+        ).liveSlidingEligible,
       ),
-    )
-  }, [isRequestsTab, renderedUsageRequestLineSeries])
+    );
+  }, [isRequestsTab, renderedUsageRequestLineSeries]);
 
   const usageRequestLineMaxValue = useMemo(() => {
-    let maxValue = 0
+    let maxValue = 0;
     for (const series of renderedUsageRequestLineSeries) {
       for (const value of series.values) {
-        if (value > maxValue) maxValue = value
+        if (value > maxValue) maxValue = value;
       }
     }
-    if (maxValue <= 0) return 1
-    return Math.max(1, Math.ceil(maxValue * USAGE_REQUEST_LINE_HEADROOM_RATIO))
-  }, [renderedUsageRequestLineSeries])
+    if (maxValue <= 0) return 1;
+    return Math.max(1, Math.ceil(maxValue * USAGE_REQUEST_LINE_HEADROOM_RATIO));
+  }, [renderedUsageRequestLineSeries]);
   const usageRequestLineSeriesByOrigin = useMemo(
     () => ({
-      wsl2: renderedUsageRequestLineSeries.filter((series) => series.origin === 'wsl2'),
-      windows: renderedUsageRequestLineSeries.filter((series) => series.origin === 'windows'),
+      wsl2: renderedUsageRequestLineSeries.filter(
+        (series) => series.origin === "wsl2",
+      ),
+      windows: renderedUsageRequestLineSeries.filter(
+        (series) => series.origin === "windows",
+      ),
     }),
     [renderedUsageRequestLineSeries],
-  )
-  const usageRequestLegendSeries = useMemo(
-    () => {
-      const colorByProvider = new Map<string, string>()
-      renderedUsageRequestLineSeries.forEach((series) => {
-        const providerName = String((series as { providerName?: string }).providerName ?? '').trim() || '-'
-        if (!colorByProvider.has(providerName)) colorByProvider.set(providerName, series.color)
-      })
-      return [...colorByProvider.entries()]
-        .sort((a, b) => compareUsageProvidersForDisplay(a[0], b[0]))
-        .map(([provider, color]) => ({ provider, color }))
-    },
-    [renderedUsageRequestLineSeries],
-  )
+  );
+  const usageRequestLegendSeries = useMemo(() => {
+    const colorByProvider = new Map<string, string>();
+    renderedUsageRequestLineSeries.forEach((series) => {
+      const providerName =
+        String(
+          (series as { providerName?: string }).providerName ?? "",
+        ).trim() || "-";
+      if (!colorByProvider.has(providerName))
+        colorByProvider.set(providerName, series.color);
+    });
+    return [...colorByProvider.entries()]
+      .sort((a, b) => compareUsageProvidersForDisplay(a[0], b[0]))
+      .map(([provider, color]) => ({ provider, color }));
+  }, [renderedUsageRequestLineSeries]);
   const usageRequestDailyWindowRows = useMemo(() => {
-    if (!isRequestsTab || !usageRequestDailyTotalsDays.length) return []
-    const byDay = new Map<number, Record<string, number>>()
+    if (!isRequestsTab || !usageRequestDailyTotalsDays.length) return [];
+    const byDay = new Map<number, Record<string, number>>();
     for (const row of usageRequestDailyTotalsDays) {
-      if (!row || typeof row.day_start_unix_ms !== 'number') continue
-      const normalizedTotals: Record<string, number> = {}
-      for (const [provider, rawValue] of Object.entries(row.provider_totals ?? {})) {
-        const value = Number(rawValue)
-        if (!Number.isFinite(value) || value <= 0) continue
-        const displayProvider = resolveRequestProviderName(provider)
-        normalizedTotals[displayProvider] = (normalizedTotals[displayProvider] ?? 0) + value
+      if (!row || typeof row.day_start_unix_ms !== "number") continue;
+      const normalizedTotals: Record<string, number> = {};
+      for (const [provider, rawValue] of Object.entries(
+        row.provider_totals ?? {},
+      )) {
+        const value = Number(rawValue);
+        if (!Number.isFinite(value) || value <= 0) continue;
+        const displayProvider = resolveRequestProviderName(provider);
+        normalizedTotals[displayProvider] =
+          (normalizedTotals[displayProvider] ?? 0) + value;
       }
-      byDay.set(row.day_start_unix_ms, normalizedTotals)
+      byDay.set(row.day_start_unix_ms, normalizedTotals);
     }
-    if (!byDay.size) return []
-    const latestDay = Math.max(...byDay.keys())
-    const earliestDay = Math.min(...byDay.keys())
-    const dayWindow = 45
-    const dayMs = 86_400_000
-    const loadedSpanDays = Math.floor((latestDay - earliestDay) / dayMs) + 1
+    if (!byDay.size) return [];
+    const latestDay = Math.max(...byDay.keys());
+    const earliestDay = Math.min(...byDay.keys());
+    const dayWindow = 45;
+    const dayMs = 86_400_000;
+    const loadedSpanDays = Math.floor((latestDay - earliestDay) / dayMs) + 1;
     const windowStart =
       loadedSpanDays >= dayWindow
         ? latestDay - (dayWindow - 1) * dayMs
-        : earliestDay
-    const days = Array.from({ length: dayWindow }, (_, idx) => windowStart + idx * dayMs)
+        : earliestDay;
+    const days = Array.from(
+      { length: dayWindow },
+      (_, idx) => windowStart + idx * dayMs,
+    );
     return days.map((day) => ({
       day,
       providerTotals: byDay.get(day) ?? {},
-    }))
-  }, [isRequestsTab, resolveRequestProviderName, usageRequestDailyTotalsDays])
+    }));
+  }, [isRequestsTab, resolveRequestProviderName, usageRequestDailyTotalsDays]);
 
   const dailyTotalsProviders = useMemo(() => {
-    if (!usageRequestDailyWindowRows.length) return EMPTY_STRING_LIST
-    const totals = new Map<string, number>()
+    if (!usageRequestDailyWindowRows.length) return EMPTY_STRING_LIST;
+    const totals = new Map<string, number>();
     for (const row of usageRequestDailyWindowRows) {
       for (const [provider, value] of Object.entries(row.providerTotals)) {
-        if (value <= 0) continue
-        totals.set(provider, (totals.get(provider) ?? 0) + value)
+        if (value <= 0) continue;
+        totals.set(provider, (totals.get(provider) ?? 0) + value);
       }
     }
     return [...totals.entries()]
       .sort((a, b) => {
-        const providerOrder = compareUsageProvidersForDisplay(a[0], b[0])
-        if (providerOrder !== 0) return providerOrder
-        if (a[1] !== b[1]) return b[1] - a[1]
-        return a[0].localeCompare(b[0], undefined, { numeric: true, sensitivity: 'base' })
+        const providerOrder = compareUsageProvidersForDisplay(a[0], b[0]);
+        if (providerOrder !== 0) return providerOrder;
+        if (a[1] !== b[1]) return b[1] - a[1];
+        return a[0].localeCompare(b[0], undefined, {
+          numeric: true,
+          sensitivity: "base",
+        });
       })
-      .map(([provider]) => provider)
-  }, [usageRequestDailyWindowRows])
+      .map(([provider]) => provider);
+  }, [usageRequestDailyWindowRows]);
 
   const usageRequestDailyBars = useMemo(() => {
-    if (!usageRequestDailyWindowRows.length || !dailyTotalsProviders.length) return []
+    if (!usageRequestDailyWindowRows.length || !dailyTotalsProviders.length)
+      return [];
     const labelStride =
-      usageRequestDailyWindowRows.length > 36 ? 3 : usageRequestDailyWindowRows.length > 24 ? 2 : 1
+      usageRequestDailyWindowRows.length > 36
+        ? 3
+        : usageRequestDailyWindowRows.length > 24
+          ? 2
+          : 1;
     return usageRequestDailyWindowRows.map((row, index) => {
-      const total = dailyTotalsProviders.reduce((sum, provider) => sum + (row.providerTotals[provider] ?? 0), 0)
+      const total = dailyTotalsProviders.reduce(
+        (sum, provider) => sum + (row.providerTotals[provider] ?? 0),
+        0,
+      );
       return {
         day: row.day,
         providerTotals: row.providerTotals,
         total,
-        showLabel: (total > 0 && index % labelStride === 0) || index === usageRequestDailyWindowRows.length - 1,
-      }
-    })
-  }, [dailyTotalsProviders, usageRequestDailyWindowRows])
+        showLabel:
+          (total > 0 && index % labelStride === 0) ||
+          index === usageRequestDailyWindowRows.length - 1,
+      };
+    });
+  }, [dailyTotalsProviders, usageRequestDailyWindowRows]);
   const defaultTodayOnly = useMemo(() => {
-    if (effectiveDetailsTab !== 'requests') return false
-    if (hasExplicitTimeFilter) return false
+    if (effectiveDetailsTab !== "requests") return false;
+    if (hasExplicitTimeFilter) return false;
     for (const row of rowsForRequestRender) {
-      if (startOfDayUnixMs(row.unix_ms) === requestDefaultDay) return true
+      if (startOfDayUnixMs(row.unix_ms) === requestDefaultDay) return true;
     }
-    return false
-  }, [effectiveDetailsTab, hasExplicitTimeFilter, requestDefaultDay, rowsForRequestRender])
+    return false;
+  }, [
+    effectiveDetailsTab,
+    hasExplicitTimeFilter,
+    requestDefaultDay,
+    rowsForRequestRender,
+  ]);
 
   const timeScopedUsageRequestRows = useMemo(() => {
-    if (!isRequestsTab) return EMPTY_USAGE_REQUEST_ROWS
-    const timeDay = parseDateInputToDayStart(usageRequestTimeFilter)
-    if (timeDay == null && !defaultTodayOnly) return rowsForRequestRender
+    if (!isRequestsTab) return EMPTY_USAGE_REQUEST_ROWS;
+    const timeDay = parseDateInputToDayStart(usageRequestTimeFilter);
+    if (timeDay == null && !defaultTodayOnly) return rowsForRequestRender;
     return rowsForRequestRender.filter((row) =>
       timeDay != null
         ? startOfDayUnixMs(row.unix_ms) === timeDay
         : startOfDayUnixMs(row.unix_ms) === requestDefaultDay,
-    )
+    );
   }, [
     defaultTodayOnly,
     isRequestsTab,
     requestDefaultDay,
     rowsForRequestRender,
     usageRequestTimeFilter,
-  ])
+  ]);
 
   const usageRequestFilterOptions = useMemo(() => {
-    const nodes = new Set<string>()
-    const providers = new Set<string>()
-    const models = new Set<string>()
-    const origins = new Set<string>()
-    const transports = new Set<string>()
-    const sessions = new Set<string>()
+    const nodes = new Set<string>();
+    const providers = new Set<string>();
+    const models = new Set<string>();
+    const origins = new Set<string>();
+    const transports = new Set<string>();
+    const sessions = new Set<string>();
     for (const row of timeScopedUsageRequestRows) {
-      nodes.add(row.node_name || 'Local')
-      providers.add(row.provider)
-      models.add(row.model)
-      origins.add(row.origin)
-      transports.add(normalizeUsageTransport(row.transport))
-      sessions.add(row.session_id)
+      nodes.add(row.node_name || "Local");
+      providers.add(row.provider);
+      models.add(row.model);
+      origins.add(row.origin);
+      transports.add(normalizeUsageTransport(row.transport));
+      sessions.add(row.session_id);
     }
     return {
       node: [...nodes].sort((a, b) => a.localeCompare(b)),
@@ -3397,41 +4061,78 @@ export function UsageStatisticsPanel({
       origin: [...origins].sort((a, b) => a.localeCompare(b)),
       transport: [...transports].sort((a, b) => a.localeCompare(b)),
       session: [...sessions].sort((a, b) => a.localeCompare(b)),
-    }
-  }, [timeScopedUsageRequestRows])
+    };
+  }, [timeScopedUsageRequestRows]);
+  const usageRequestModelFilterDisplayOptions = useMemo(
+    () => buildUsageModelFilterDisplayOptions(usageRequestFilterOptions.model),
+    [usageRequestFilterOptions.model],
+  );
+  const usageModelFilterDisplayOptions = useMemo(
+    () => buildUsageModelFilterDisplayOptions(usageModelFilterOptions),
+    [usageModelFilterOptions],
+  );
   const usageRequestProviderFilterDisplayOptions = useMemo(
     () =>
-      buildUsageProviderFilterDisplayOptions(usageRequestFilterOptions.provider, {
-        providerDisplayName: (provider) => resolveRequestProviderName(provider),
-        providerGroupName: (provider) => {
-          const group = String(config?.providers?.[provider]?.group ?? '').trim()
-          return group || null
+      buildUsageProviderFilterDisplayOptions(
+        usageRequestFilterOptions.provider,
+        {
+          providerDisplayName: (provider) =>
+            resolveRequestProviderName(provider),
+          providerGroupName: (provider) => {
+            const group = String(
+              config?.providers?.[provider]?.group ?? "",
+            ).trim();
+            return group || null;
+          },
         },
-      }),
-    [config?.providers, resolveRequestProviderName, usageRequestFilterOptions.provider],
-  )
+      ),
+    [
+      config?.providers,
+      resolveRequestProviderName,
+      usageRequestFilterOptions.provider,
+    ],
+  );
   useEffect(() => {
-    if (!isRequestsTab) return
+    if (!isRequestsTab) return;
     setUsageRequestMultiFilters((prev) => ({
-      node: prev.node == null ? null : prev.node.filter((item) => usageRequestFilterOptions.node.includes(item)),
+      node:
+        prev.node == null
+          ? null
+          : prev.node.filter((item) =>
+              usageRequestFilterOptions.node.includes(item),
+            ),
       provider:
         prev.provider == null
           ? null
-          : prev.provider.filter((item) => usageRequestFilterOptions.provider.includes(item)),
+          : prev.provider.filter((item) =>
+              usageRequestFilterOptions.provider.includes(item),
+            ),
       model:
-        prev.model == null ? null : prev.model.filter((item) => usageRequestFilterOptions.model.includes(item)),
+        prev.model == null
+          ? null
+          : prev.model.filter((item) =>
+              usageRequestFilterOptions.model.includes(item),
+            ),
       origin:
-        prev.origin == null ? null : prev.origin.filter((item) => usageRequestFilterOptions.origin.includes(item)),
+        prev.origin == null
+          ? null
+          : prev.origin.filter((item) =>
+              usageRequestFilterOptions.origin.includes(item),
+            ),
       transport:
         prev.transport == null
           ? null
-          : prev.transport.filter((item) => usageRequestFilterOptions.transport.includes(item)),
+          : prev.transport.filter((item) =>
+              usageRequestFilterOptions.transport.includes(item),
+            ),
       session:
         prev.session == null
           ? null
-          : prev.session.filter((item) => usageRequestFilterOptions.session.includes(item)),
-    }))
-  }, [isRequestsTab, usageRequestFilterOptions])
+          : prev.session.filter((item) =>
+              usageRequestFilterOptions.session.includes(item),
+            ),
+    }));
+  }, [isRequestsTab, usageRequestFilterOptions]);
   const usageRequestCalendarIndex = useMemo(
     () =>
       buildUsageRequestCalendarIndex({
@@ -3440,41 +4141,62 @@ export function UsageStatisticsPanel({
         usageRequestDailyTotalsDays,
       }),
     [isRequestsTab, rowsForRequestRender, usageRequestDailyTotalsDays],
-  )
-  const usageRequestDaysWithRecords = usageRequestCalendarIndex.daysWithRecords
-  const usageRequestDayOriginFlags = usageRequestCalendarIndex.dayOriginFlags
+  );
+  const usageRequestDaysWithRecords = usageRequestCalendarIndex.daysWithRecords;
+  const usageRequestDayOriginFlags = usageRequestCalendarIndex.dayOriginFlags;
   const filteredUsageRequestRows = useMemo(() => {
-    if (!isRequestsTab) return EMPTY_USAGE_REQUEST_ROWS
-    const timeDay = parseDateInputToDayStart(usageRequestTimeFilter)
-    const timeNeedle = usageRequestTimeFilter.trim().toLowerCase()
-    const contains = (text: string) => timeNeedle.length === 0 || text.toLowerCase().includes(timeNeedle)
+    if (!isRequestsTab) return EMPTY_USAGE_REQUEST_ROWS;
+    const timeDay = parseDateInputToDayStart(usageRequestTimeFilter);
+    const timeNeedle = usageRequestTimeFilter.trim().toLowerCase();
+    const contains = (text: string) =>
+      timeNeedle.length === 0 || text.toLowerCase().includes(timeNeedle);
     const providerFilterSet =
-      usageRequestMultiFilters.provider == null ? null : new Set(usageRequestMultiFilters.provider)
-    const nodeFilterSet = usageRequestMultiFilters.node == null ? null : new Set(usageRequestMultiFilters.node)
+      usageRequestMultiFilters.provider == null
+        ? null
+        : new Set(usageRequestMultiFilters.provider);
+    const nodeFilterSet =
+      usageRequestMultiFilters.node == null
+        ? null
+        : new Set(usageRequestMultiFilters.node);
     const modelFilterSet =
-      usageRequestMultiFilters.model == null ? null : new Set(usageRequestMultiFilters.model)
+      usageRequestMultiFilters.model == null
+        ? null
+        : new Set(usageRequestMultiFilters.model);
     const originFilterSet =
-      usageRequestMultiFilters.origin == null ? null : new Set(usageRequestMultiFilters.origin)
+      usageRequestMultiFilters.origin == null
+        ? null
+        : new Set(usageRequestMultiFilters.origin);
     const transportFilterSet =
-      usageRequestMultiFilters.transport == null ? null : new Set(usageRequestMultiFilters.transport)
+      usageRequestMultiFilters.transport == null
+        ? null
+        : new Set(usageRequestMultiFilters.transport);
     const sessionFilterSet =
-      usageRequestMultiFilters.session == null ? null : new Set(usageRequestMultiFilters.session)
+      usageRequestMultiFilters.session == null
+        ? null
+        : new Set(usageRequestMultiFilters.session);
     return rowsForRequestRender.filter((row) => {
       if (timeDay != null) {
-        if (startOfDayUnixMs(row.unix_ms) !== timeDay) return false
+        if (startOfDayUnixMs(row.unix_ms) !== timeDay) return false;
       } else if (defaultTodayOnly) {
-        if (startOfDayUnixMs(row.unix_ms) !== requestDefaultDay) return false
+        if (startOfDayUnixMs(row.unix_ms) !== requestDefaultDay) return false;
       } else if (!contains(fmtWhen(row.unix_ms))) {
-        return false
+        return false;
       }
-      if (nodeFilterSet && !nodeFilterSet.has(row.node_name || 'Local')) return false
-      if (providerFilterSet && !providerFilterSet.has(row.provider)) return false
-      if (modelFilterSet && !modelFilterSet.has(row.model)) return false
-      if (originFilterSet && !originFilterSet.has(row.origin)) return false
-      if (transportFilterSet && !transportFilterSet.has(normalizeUsageTransport(row.transport))) return false
-      if (sessionFilterSet && !sessionFilterSet.has(row.session_id)) return false
-      return true
-    })
+      if (nodeFilterSet && !nodeFilterSet.has(row.node_name || "Local"))
+        return false;
+      if (providerFilterSet && !providerFilterSet.has(row.provider))
+        return false;
+      if (modelFilterSet && !modelFilterSet.has(row.model)) return false;
+      if (originFilterSet && !originFilterSet.has(row.origin)) return false;
+      if (
+        transportFilterSet &&
+        !transportFilterSet.has(normalizeUsageTransport(row.transport))
+      )
+        return false;
+      if (sessionFilterSet && !sessionFilterSet.has(row.session_id))
+        return false;
+      return true;
+    });
   }, [
     defaultTodayOnly,
     fmtWhen,
@@ -3484,53 +4206,72 @@ export function UsageStatisticsPanel({
     usageRequestMultiFilters,
     rowsForRequestRender,
     usageRequestTimeFilter,
-  ])
-  const deferredFilteredUsageRequestRows = useDeferredValue(filteredUsageRequestRows)
+  ]);
+  const deferredFilteredUsageRequestRows = useDeferredValue(
+    filteredUsageRequestRows,
+  );
   const displayedFilteredUsageRequestRows = shouldUseImmediateRequestRows
     ? filteredUsageRequestRows
-    : deferredFilteredUsageRequestRows
+    : deferredFilteredUsageRequestRows;
   useEffect(() => {
-    if (displayedFilteredUsageRequestRows.length === 0) return
-    usageRequestLastRenderedRowsRef.current = displayedFilteredUsageRequestRows
-  }, [displayedFilteredUsageRequestRows])
+    if (displayedFilteredUsageRequestRows.length === 0) return;
+    usageRequestLastRenderedRowsRef.current = displayedFilteredUsageRequestRows;
+  }, [displayedFilteredUsageRequestRows]);
   const showPreviousRowsDuringQuerySwitch =
     displayedFilteredUsageRequestRows.length === 0 &&
     hasStrictRequestQuery &&
     !hasImpossibleRequestFilters &&
     usageRequestResolvedQueryKeyRef.current !== requestQueryKey &&
-    usageRequestLastRenderedRowsRef.current.length > 0
+    usageRequestLastRenderedRowsRef.current.length > 0;
   const tableRowsForDisplay = showPreviousRowsDuringQuerySwitch
     ? usageRequestLastRenderedRowsRef.current
-    : displayedFilteredUsageRequestRows
-  usageRequestVirtualRowCountRef.current = tableRowsForDisplay.length
+    : displayedFilteredUsageRequestRows;
+  usageRequestVirtualRowCountRef.current = tableRowsForDisplay.length;
   const shouldVirtualizeUsageRequestRows =
-    isRequestsTab && tableRowsForDisplay.length > USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS
+    isRequestsTab &&
+    tableRowsForDisplay.length > USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS;
   const virtualUsageRequestStart = shouldVirtualizeUsageRequestRows
-    ? Math.min(usageRequestVirtualRange.start, Math.max(0, tableRowsForDisplay.length - 1))
-    : 0
+    ? Math.min(
+        usageRequestVirtualRange.start,
+        Math.max(0, tableRowsForDisplay.length - 1),
+      )
+    : 0;
   const virtualUsageRequestEnd = shouldVirtualizeUsageRequestRows
-    ? Math.max(usageRequestVirtualRange.end, Math.min(tableRowsForDisplay.length, USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS))
-    : tableRowsForDisplay.length
+    ? Math.max(
+        usageRequestVirtualRange.end,
+        Math.min(
+          tableRowsForDisplay.length,
+          USAGE_REQUEST_VIRTUALIZE_AFTER_ROWS,
+        ),
+      )
+    : tableRowsForDisplay.length;
   const visibleUsageRequestRows = shouldVirtualizeUsageRequestRows
-    ? tableRowsForDisplay.slice(virtualUsageRequestStart, virtualUsageRequestEnd)
-    : tableRowsForDisplay
+    ? tableRowsForDisplay.slice(
+        virtualUsageRequestStart,
+        virtualUsageRequestEnd,
+      )
+    : tableRowsForDisplay;
   const usageRequestTopSpacerPx = shouldVirtualizeUsageRequestRows
     ? virtualUsageRequestStart * USAGE_REQUEST_ROW_HEIGHT_PX
-    : 0
+    : 0;
   const usageRequestBottomSpacerPx = shouldVirtualizeUsageRequestRows
-    ? Math.max(0, (tableRowsForDisplay.length - virtualUsageRequestEnd) * USAGE_REQUEST_ROW_HEIGHT_PX)
-    : 0
-  const totalRequestRowsForDisplay = rowsForRequestRender.length
+    ? Math.max(
+        0,
+        (tableRowsForDisplay.length - virtualUsageRequestEnd) *
+          USAGE_REQUEST_ROW_HEIGHT_PX,
+      )
+    : 0;
+  const totalRequestRowsForDisplay = rowsForRequestRender.length;
   const requestFooterTotalRows = defaultTodayOnly
     ? tableRowsForDisplay.length
-    : totalRequestRowsForDisplay
+    : totalRequestRowsForDisplay;
   useEffect(() => {
-    if (effectiveDetailsTab !== 'requests') return
-    if (!hasExplicitTimeFilter) return
-    if (hasImpossibleRequestFilters) return
-    if (usageRequestLoading || !usageRequestHasMore) return
-    if (filteredUsageRequestRows.length > 0) return
-    void loadMoreUsageRequests()
+    if (effectiveDetailsTab !== "requests") return;
+    if (!hasExplicitTimeFilter) return;
+    if (hasImpossibleRequestFilters) return;
+    if (usageRequestLoading || !usageRequestHasMore) return;
+    if (filteredUsageRequestRows.length > 0) return;
+    void loadMoreUsageRequests();
   }, [
     effectiveDetailsTab,
     filteredUsageRequestRows.length,
@@ -3539,24 +4280,24 @@ export function UsageStatisticsPanel({
     loadMoreUsageRequests,
     usageRequestHasMore,
     usageRequestLoading,
-  ])
+  ]);
   useEffect(() => {
-    if (!isRequestsTab) return
-    if (!defaultTodayOnly) return
-    if (usageRequestLoading) return
-    if (!usageRequestHasMore) return
-    if (displayedFilteredUsageRequestRows.length > 0) return
-    const now = Date.now()
-    if (now - usageRequestWarmupAtRef.current < 1200) return
-    usageRequestWarmupAtRef.current = now
+    if (!isRequestsTab) return;
+    if (!defaultTodayOnly) return;
+    if (usageRequestLoading) return;
+    if (!usageRequestHasMore) return;
+    if (displayedFilteredUsageRequestRows.length > 0) return;
+    const now = Date.now();
+    if (now - usageRequestWarmupAtRef.current < 1200) return;
+    usageRequestWarmupAtRef.current = now;
     if (usageRequestRows.length === 0) {
-      void refreshUsageRequests(initialRefreshLimit)
-      return
+      void refreshUsageRequests(initialRefreshLimit);
+      return;
     }
-    if (usageRequestDefaultTodayAutoPageRef.current) return
-    usageRequestDefaultTodayAutoPageRef.current = true
+    if (usageRequestDefaultTodayAutoPageRef.current) return;
+    usageRequestDefaultTodayAutoPageRef.current = true;
     // At most one automatic extra page in default-today mode; avoid repeated 200-row paging loops.
-    void loadMoreUsageRequests()
+    void loadMoreUsageRequests();
   }, [
     defaultTodayOnly,
     displayedFilteredUsageRequestRows.length,
@@ -3567,167 +4308,218 @@ export function UsageStatisticsPanel({
     usageRequestHasMore,
     usageRequestLoading,
     usageRequestRows.length,
-  ])
-  const requestChartMeasureRef = useRef<SVGSVGElement | null>(null)
-  const [requestChartViewportWidth, setRequestChartViewportWidth] = useState(560)
-  const requestChartMeasureOrigin = useMemo<'windows' | 'wsl2'>(() => {
-    if (usageRequestLineSeriesByOrigin.windows.length > 0) return 'windows'
-    if (usageRequestLineSeriesByOrigin.wsl2.length > 0) return 'wsl2'
-    return 'windows'
-  }, [usageRequestLineSeriesByOrigin])
-  const requestChartWidth = Math.max(360, requestChartViewportWidth)
-  const requestChartHeight = 176
-  const requestChartMinX = 36
-  const requestChartRightPadding = 8
-  const requestChartMaxX = Math.max(requestChartMinX + 20, requestChartWidth - requestChartRightPadding)
-  const requestChartTopY = 14
-  const requestChartBottomY = 150
-  const requestChartAxisLabelX = requestChartMinX - 3
-  const requestChartXAxisLabelY = requestChartBottomY + 12
-  const requestChartXAxisLeftLabelX = requestChartMinX + 1
-  const requestChartXAxisRightLabelX = requestChartMaxX - 1
+  ]);
+  const requestChartMeasureRef = useRef<SVGSVGElement | null>(null);
+  const [requestChartViewportWidth, setRequestChartViewportWidth] =
+    useState(560);
+  const requestChartMeasureOrigin = useMemo<"windows" | "wsl2">(() => {
+    if (usageRequestLineSeriesByOrigin.windows.length > 0) return "windows";
+    if (usageRequestLineSeriesByOrigin.wsl2.length > 0) return "wsl2";
+    return "windows";
+  }, [usageRequestLineSeriesByOrigin]);
+  const requestChartWidth = Math.max(360, requestChartViewportWidth);
+  const requestChartHeight = 176;
+  const requestChartMinX = 36;
+  const requestChartRightPadding = 8;
+  const requestChartMaxX = Math.max(
+    requestChartMinX + 20,
+    requestChartWidth - requestChartRightPadding,
+  );
+  const requestChartTopY = 14;
+  const requestChartBottomY = 150;
+  const requestChartAxisLabelX = requestChartMinX - 3;
+  const requestChartXAxisLabelY = requestChartBottomY + 12;
+  const requestChartXAxisLeftLabelX = requestChartMinX + 1;
+  const requestChartXAxisRightLabelX = requestChartMaxX - 1;
   useLayoutEffect(() => {
-    if (!isRequestsTab) return
-    const svg = requestChartMeasureRef.current
-    if (!svg || typeof ResizeObserver === 'undefined') return
+    if (!isRequestsTab) return;
+    const svg = requestChartMeasureRef.current;
+    if (!svg || typeof ResizeObserver === "undefined") return;
     const updateWidth = () => {
-      const width = svg.getBoundingClientRect().width
-      if (!Number.isFinite(width) || width <= 0) return
-      setRequestChartViewportWidth((prev) => (Math.abs(prev - width) < 1 ? prev : width))
-    }
-    updateWidth()
-    const observer = new ResizeObserver(() => updateWidth())
-    observer.observe(svg)
-    return () => observer.disconnect()
-  }, [isRequestsTab, requestChartMeasureOrigin])
+      const width = svg.getBoundingClientRect().width;
+      if (!Number.isFinite(width) || width <= 0) return;
+      setRequestChartViewportWidth((prev) =>
+        Math.abs(prev - width) < 1 ? prev : width,
+      );
+    };
+    updateWidth();
+    const observer = new ResizeObserver(() => updateWidth());
+    observer.observe(svg);
+    return () => observer.disconnect();
+  }, [isRequestsTab, requestChartMeasureOrigin]);
   const requestLinePointSpacing =
-    (requestChartMaxX - requestChartMinX) / Math.max(1, usageRequestGraphPointCount - 1)
-  const requestLineClipPathIdRef = useRef(`aoUsageRequestLineClip-${Math.random().toString(36).slice(2, 10)}`)
-  const requestLineClipPathId = requestLineClipPathIdRef.current
-  const [lineHoverOrigin, setLineHoverOrigin] = useState<'wsl2' | 'windows' | null>(null)
-  const [lineHoverIndex, setLineHoverIndex] = useState<number | null>(null)
-  const [lineHoverX, setLineHoverX] = useState<number | null>(null)
+    (requestChartMaxX - requestChartMinX) /
+    Math.max(1, usageRequestGraphPointCount - 1);
+  const requestLineClipPathIdRef = useRef(
+    `aoUsageRequestLineClip-${Math.random().toString(36).slice(2, 10)}`,
+  );
+  const requestLineClipPathId = requestLineClipPathIdRef.current;
+  const [lineHoverOrigin, setLineHoverOrigin] = useState<
+    "wsl2" | "windows" | null
+  >(null);
+  const [lineHoverIndex, setLineHoverIndex] = useState<number | null>(null);
+  const [lineHoverX, setLineHoverX] = useState<number | null>(null);
   const lineHoverData = useMemo(() => {
-    if (!isRequestsTab) return null
-    if (lineHoverOrigin == null) return null
-    if (lineHoverIndex == null) return null
-    if (lineHoverIndex < 0 || lineHoverIndex >= usageRequestGraphPointCount) return null
-    const hoveredSeries = usageRequestLineSeriesByOrigin[lineHoverOrigin]
-    if (!hoveredSeries.length) return null
-    const byProvider = new Map<string, { id: string; provider: string; color: string; value: number }>()
+    if (!isRequestsTab) return null;
+    if (lineHoverOrigin == null) return null;
+    if (lineHoverIndex == null) return null;
+    if (lineHoverIndex < 0 || lineHoverIndex >= usageRequestGraphPointCount)
+      return null;
+    const hoveredSeries = usageRequestLineSeriesByOrigin[lineHoverOrigin];
+    if (!hoveredSeries.length) return null;
+    const byProvider = new Map<
+      string,
+      { id: string; provider: string; color: string; value: number }
+    >();
     hoveredSeries.forEach((series) => {
-      const providerName = String((series as { providerName?: string }).providerName ?? '').trim() || series.provider
-      const value = series.values[lineHoverIndex] ?? 0
-      const existing = byProvider.get(providerName)
+      const providerName =
+        String(
+          (series as { providerName?: string }).providerName ?? "",
+        ).trim() || series.provider;
+      const value = series.values[lineHoverIndex] ?? 0;
+      const existing = byProvider.get(providerName);
       if (existing) {
-        existing.value += value
-        return
+        existing.value += value;
+        return;
       }
       byProvider.set(providerName, {
         id: providerName,
         provider: providerName,
         color: series.color,
         value,
-      })
-    })
-    const rows = [...byProvider.values()].sort((a, b) => compareUsageProvidersForDisplay(a.provider, b.provider))
+      });
+    });
+    const rows = [...byProvider.values()].sort((a, b) =>
+      compareUsageProvidersForDisplay(a.provider, b.provider),
+    );
     return {
       point: lineHoverIndex + 1,
       rows,
       total: rows.reduce((sum, row) => sum + row.value, 0),
-    }
+    };
   }, [
     isRequestsTab,
     lineHoverOrigin,
     lineHoverIndex,
     usageRequestLineSeriesByOrigin,
     usageRequestGraphPointCount,
-  ])
+  ]);
   const usageRequestSidRowsWithPositionByOrigin = useMemo(() => {
-    const rowHeight = 18
-    const edgeInset = 1
-    const panelHeight = Math.max(24, requestChartBottomY - requestChartTopY)
-    const listHeight = Math.max(24, panelHeight)
-    const minTop = edgeInset
-    const maxTop = Math.max(edgeInset, listHeight - rowHeight - edgeInset)
-    const mapRowsWithPosition = (seriesList: UsageRequestRenderedLineSeries[]) =>
+    const rowHeight = 18;
+    const edgeInset = 1;
+    const panelHeight = Math.max(24, requestChartBottomY - requestChartTopY);
+    const listHeight = Math.max(24, panelHeight);
+    const minTop = edgeInset;
+    const maxTop = Math.max(edgeInset, listHeight - rowHeight - edgeInset);
+    const mapRowsWithPosition = (
+      seriesList: UsageRequestRenderedLineSeries[],
+    ) =>
       seriesList
-        .filter((series) => series.present.reduce((sum, present) => sum + (present ? 1 : 0), 0) > 1)
+        .filter(
+          (series) =>
+            series.present.reduce(
+              (sum, present) => sum + (present ? 1 : 0),
+              0,
+            ) > 1,
+        )
         .map((series) => {
-          let latestIndex = -1
+          let latestIndex = -1;
           for (let idx = series.present.length - 1; idx >= 0; idx -= 1) {
             if (series.present[idx]) {
-              latestIndex = idx
-              break
+              latestIndex = idx;
+              break;
             }
           }
-          if (latestIndex < 0) return null
-          const value = series.values[latestIndex] ?? 0
+          if (latestIndex < 0) return null;
+          const value = series.values[latestIndex] ?? 0;
           const y =
             requestChartBottomY -
-            (value / Math.max(1, usageRequestLineMaxValue)) * (requestChartBottomY - requestChartTopY)
+            (value / Math.max(1, usageRequestLineMaxValue)) *
+              (requestChartBottomY - requestChartTopY);
           const top = Math.min(
             maxTop,
             Math.max(minTop, y - requestChartTopY - rowHeight / 2),
-          )
+          );
           return {
             id: String((series as { id?: string }).id ?? series.provider),
             sidLabel: series.provider,
-            providerName: String((series as { providerName?: string }).providerName ?? '').trim() || '-',
+            providerName:
+              String(
+                (series as { providerName?: string }).providerName ?? "",
+              ).trim() || "-",
             color: series.color,
             top,
             latestValue: value,
-          }
+          };
         })
-      .filter((item): item is { id: string; sidLabel: string; providerName: string; color: string; top: number; latestValue: number } => item != null)
-      .sort((a, b) => a.top - b.top)
+        .filter(
+          (
+            item,
+          ): item is {
+            id: string;
+            sidLabel: string;
+            providerName: string;
+            color: string;
+            top: number;
+            latestValue: number;
+          } => item != null,
+        )
+        .sort((a, b) => a.top - b.top);
     return {
       wsl2: mapRowsWithPosition(usageRequestLineSeriesByOrigin.wsl2),
       windows: mapRowsWithPosition(usageRequestLineSeriesByOrigin.windows),
-    }
+    };
   }, [
     requestChartBottomY,
     requestChartTopY,
     usageRequestLineMaxValue,
     usageRequestLineSeriesByOrigin,
-  ])
+  ]);
   const usageRequestOriginCharts = useMemo(
     () =>
-      ([
-        { key: 'windows' as const, label: 'Windows' },
-        { key: 'wsl2' as const, label: 'WSL2' },
-      ]).filter((originChart) => usageRequestLineSeriesByOrigin[originChart.key].length > 0),
+      [
+        { key: "windows" as const, label: "Windows" },
+        { key: "wsl2" as const, label: "WSL2" },
+      ].filter(
+        (originChart) =>
+          usageRequestLineSeriesByOrigin[originChart.key].length > 0,
+      ),
     [usageRequestLineSeriesByOrigin],
-  )
-  const selectedTimeFilterDay = selectedRequestTimeFilterDay
+  );
+  const selectedTimeFilterDay = selectedRequestTimeFilterDay;
   const timeFilterCalendarCells = useMemo(() => {
-    const monthStart = timePickerMonthStartMs
-    const monthDate = new Date(monthStart)
-    const firstWeekday = monthDate.getDay()
-    const firstGridDayDate = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1 - firstWeekday)
+    const monthStart = timePickerMonthStartMs;
+    const monthDate = new Date(monthStart);
+    const firstWeekday = monthDate.getDay();
+    const firstGridDayDate = new Date(
+      monthDate.getFullYear(),
+      monthDate.getMonth(),
+      1 - firstWeekday,
+    );
     return Array.from({ length: 42 }, (_, idx) => {
       // Use calendar-day arithmetic instead of fixed 24h millis to avoid DST drift.
       const cellDate = new Date(
         firstGridDayDate.getFullYear(),
         firstGridDayDate.getMonth(),
         firstGridDayDate.getDate() + idx,
-      )
-      const dayStartMs = cellDate.getTime()
-      const dayDate = new Date(dayStartMs)
+      );
+      const dayStartMs = cellDate.getTime();
+      const dayDate = new Date(dayStartMs);
       return {
         dayStartMs,
         label: dayDate.getDate(),
         inMonth: dayDate.getMonth() === monthDate.getMonth(),
-      }
-    })
-  }, [timePickerMonthStartMs])
+      };
+    });
+  }, [timePickerMonthStartMs]);
   const requestTableSummary = useMemo(
     () =>
       resolveRequestTableSummary({
         usageRequestSummary,
         displayedRows: displayedFilteredUsageRequestRows,
         hasMore: usageRequestHasMore,
-        preferBackendSummary: !hasExplicitTimeFilter || selectedRequestTimeFilterDay != null,
+        preferBackendSummary:
+          !hasExplicitTimeFilter || selectedRequestTimeFilterDay != null,
       }),
     [
       displayedFilteredUsageRequestRows,
@@ -3736,73 +4528,87 @@ export function UsageStatisticsPanel({
       usageRequestHasMore,
       usageRequestSummary,
     ],
-  )
-  const formatRequestSummaryValue = useCallback((value: number | null | undefined) => {
-    if (value == null) return '-'
-    return value.toLocaleString()
-  }, [])
-  const filteredSelectionCount = useCallback((selectedCount: number, totalCount: number) => {
-    if (selectedCount <= 0) return 0
-    if (totalCount <= 0) return selectedCount
-    return selectedCount < totalCount ? selectedCount : 0
-  }, [])
+  );
+  const formatRequestSummaryValue = useCallback(
+    (value: number | null | undefined) => {
+      if (value == null) return "-";
+      return value.toLocaleString();
+    },
+    [],
+  );
+  const filteredSelectionCount = useCallback(
+    (selectedCount: number, totalCount: number) => {
+      if (selectedCount <= 0) return 0;
+      if (totalCount <= 0) return selectedCount;
+      return selectedCount < totalCount ? selectedCount : 0;
+    },
+    [],
+  );
   const openUsageRequestFilterMenu = useCallback(
     (columnKey: UsageRequestColumnFilterKey, trigger: HTMLButtonElement) => {
-      const rect = trigger.getBoundingClientRect()
-      const left = Math.max(8, Math.min(rect.left, window.innerWidth - 236))
-      const top = rect.bottom + 6
-      const width = Math.max(160, rect.width)
-      if (columnKey === 'time') {
-        setTimePickerMonthStartMs(startOfMonthMs(parseDateInputToDayStart(usageRequestTimeFilter) ?? Date.now()))
+      const rect = trigger.getBoundingClientRect();
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - 236));
+      const top = rect.bottom + 6;
+      const width = Math.max(160, rect.width);
+      if (columnKey === "time") {
+        setTimePickerMonthStartMs(
+          startOfMonthMs(
+            parseDateInputToDayStart(usageRequestTimeFilter) ?? Date.now(),
+          ),
+        );
       }
       setActiveUsageRequestFilterMenu((prev) => {
-        if (prev?.key === columnKey) return null
+        if (prev?.key === columnKey) return null;
         return {
           key: columnKey,
           left,
           top,
           width,
-        }
-      })
+        };
+      });
     },
     [usageRequestTimeFilter],
-  )
+  );
 
   useEffect(() => {
-    if (!activeUsageRequestFilterMenu) return
-    const activeColumn = USAGE_REQUEST_COLUMN_FILTERS.find((item) => item.key === activeUsageRequestFilterMenu.key)
+    if (!activeUsageRequestFilterMenu) return;
+    const activeColumn = USAGE_REQUEST_COLUMN_FILTERS.find(
+      (item) => item.key === activeUsageRequestFilterMenu.key,
+    );
     if (!activeColumn?.filterable) {
-      setActiveUsageRequestFilterMenu(null)
-      return
+      setActiveUsageRequestFilterMenu(null);
+      return;
     }
     const onMouseDown = (event: MouseEvent) => {
-      const target = event.target
+      const target = event.target;
       if (!(target instanceof Element)) {
-        setActiveUsageRequestFilterMenu(null)
-        return
+        setActiveUsageRequestFilterMenu(null);
+        return;
       }
-      if (usageRequestFilterMenuRef.current?.contains(target)) return
-      if (target.closest('.aoUsageReqHeadBtn')) return
-      setActiveUsageRequestFilterMenu(null)
-    }
+      if (usageRequestFilterMenuRef.current?.contains(target)) return;
+      if (target.closest(".aoUsageReqHeadBtn")) return;
+      setActiveUsageRequestFilterMenu(null);
+    };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setActiveUsageRequestFilterMenu(null)
-    }
+      if (event.key === "Escape") setActiveUsageRequestFilterMenu(null);
+    };
     const onAnyScroll = () => {
-      setActiveUsageRequestFilterMenu(null)
-    }
-    window.addEventListener('mousedown', onMouseDown)
-    window.addEventListener('keydown', onKeyDown)
-    window.addEventListener('scroll', onAnyScroll, true)
+      setActiveUsageRequestFilterMenu(null);
+    };
+    window.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("scroll", onAnyScroll, true);
     return () => {
-      window.removeEventListener('mousedown', onMouseDown)
-      window.removeEventListener('keydown', onKeyDown)
-      window.removeEventListener('scroll', onAnyScroll, true)
-    }
-  }, [activeUsageRequestFilterMenu])
+      window.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("scroll", onAnyScroll, true);
+    };
+  }, [activeUsageRequestFilterMenu]);
 
   return (
-    <div className={`aoCard aoUsageStatsPage${isRequestsOnlyPage ? ' is-requests-only' : ''}`}>
+    <div
+      className={`aoCard aoUsageStatsPage${isRequestsOnlyPage ? " is-requests-only" : ""}`}
+    >
       {showFilters ? (
         <>
           <UsageStatsFiltersBar
@@ -3815,12 +4621,15 @@ export function UsageStatisticsPanel({
             toggleUsageNodeFilter={toggleUsageNodeFilter}
             usageFilterProviders={usageFilterProviders}
             setUsageFilterProviders={setUsageFilterProviders}
-            usageProviderFilterDisplayOptions={usageProviderFilterDisplayOptions}
-            toggleUsageProviderFilterDisplayOption={toggleUsageProviderFilterDisplayOption}
+            usageProviderFilterDisplayOptions={
+              usageProviderFilterDisplayOptions
+            }
+            toggleUsageProviderFilterDisplayOption={
+              toggleUsageProviderFilterDisplayOption
+            }
             usageFilterModels={usageFilterModels}
             setUsageFilterModels={setUsageFilterModels}
             usageModelFilterOptions={usageModelFilterOptions}
-            toggleUsageModelFilter={toggleUsageModelFilter}
             usageFilterOrigins={usageFilterOrigins}
             setUsageFilterOrigins={setUsageFilterOrigins}
             usageOriginFilterOptions={usageOriginFilterOptions}
@@ -3828,71 +4637,125 @@ export function UsageStatisticsPanel({
           />
         </>
       ) : null}
-      {effectiveDetailsTab === 'requests' ? (
+      {effectiveDetailsTab === "requests" ? (
         <div className="aoUsageDetailsPane aoUsageDetailsPaneRequests">
-        <div className={`aoUsageRequestsCard${isRequestsOnlyPage ? ' is-page' : ''}`}>
-          <div className="aoSwitchboardSectionHead">
-            <div className="aoMiniLabel">Request Details</div>
-            <div className="aoHint">
-              {hasExplicitRequestFilters
-                ? 'Per-request rows (newest first), aligned with current filters/window.'
-                : 'Default view shows today only. Use column filters to query across all days.'}
-            </div>
-          </div>
-          {usageRequestUsingTestFallback ? (
-            <div className="aoHint">Test mode fallback rows are shown because backend request details are unavailable.</div>
-          ) : null}
-          {usageRequestError ? <div className="aoHint">Failed to load request details: {usageRequestError}</div> : null}
-          <div className="aoUsageRequestChartCard">
+          <div
+            className={`aoUsageRequestsCard${isRequestsOnlyPage ? " is-page" : ""}`}
+          >
             <div className="aoSwitchboardSectionHead">
-              <div className="aoMiniLabel">
-                Latest {USAGE_REQUEST_GRAPH_SOURCE_LIMIT} Verified Session Requests (Total Tokens)
+              <div className="aoMiniLabel">Request Details</div>
+              <div className="aoHint">
+                {hasExplicitRequestFilters
+                  ? "Per-request rows (newest first), aligned with current filters/window."
+                  : "Default view shows today only. Use column filters to query across all days."}
               </div>
             </div>
-            {usageRequestOriginCharts.length ? (
-              <div className={`aoUsageRequestOriginGrid${usageRequestOriginCharts.length === 1 ? ' is-single' : ''}`}>
-                {usageRequestOriginCharts.map((originChart) => {
-                  const seriesList = usageRequestLineSeriesByOrigin[originChart.key]
-                  const sidRows = usageRequestSidRowsWithPositionByOrigin[originChart.key]
-                  const isHoveringOrigin = lineHoverOrigin === originChart.key
-                  const hoverX = isHoveringOrigin ? lineHoverX : null
-                  const hoverIndex = isHoveringOrigin ? lineHoverIndex : null
-                  const clipPathId = `${requestLineClipPathId}-${originChart.key}`
-                  return (
-                    <div key={`request-origin-chart-${originChart.key}`} className="aoUsageRequestOriginCard">
-                      <div className="aoSwitchboardSectionHead aoUsageRequestOriginHead">
-                        <div className="aoMiniLabel aoUsageRequestOriginTitle">{originChart.label}</div>
-                      </div>
-                      <div className="aoUsageRequestLineGraphShell">
+            {usageRequestUsingTestFallback ? (
+              <div className="aoHint">
+                Test mode fallback rows are shown because backend request
+                details are unavailable.
+              </div>
+            ) : null}
+            {usageRequestError ? (
+              <div className="aoHint">
+                Failed to load request details: {usageRequestError}
+              </div>
+            ) : null}
+            <div className="aoUsageRequestChartCard">
+              <div className="aoSwitchboardSectionHead">
+                <div className="aoMiniLabel">
+                  Latest {USAGE_REQUEST_GRAPH_SOURCE_LIMIT} Verified Session
+                  Requests (Total Tokens)
+                </div>
+              </div>
+              {usageRequestOriginCharts.length ? (
+                <div
+                  className={`aoUsageRequestOriginGrid${usageRequestOriginCharts.length === 1 ? " is-single" : ""}`}
+                >
+                  {usageRequestOriginCharts.map((originChart) => {
+                    const seriesList =
+                      usageRequestLineSeriesByOrigin[originChart.key];
+                    const sidRows =
+                      usageRequestSidRowsWithPositionByOrigin[originChart.key];
+                    const isHoveringOrigin =
+                      lineHoverOrigin === originChart.key;
+                    const hoverX = isHoveringOrigin ? lineHoverX : null;
+                    const hoverIndex = isHoveringOrigin ? lineHoverIndex : null;
+                    const clipPathId = `${requestLineClipPathId}-${originChart.key}`;
+                    return (
+                      <div
+                        key={`request-origin-chart-${originChart.key}`}
+                        className="aoUsageRequestOriginCard"
+                      >
+                        <div className="aoSwitchboardSectionHead aoUsageRequestOriginHead">
+                          <div className="aoMiniLabel aoUsageRequestOriginTitle">
+                            {originChart.label}
+                          </div>
+                        </div>
+                        <div className="aoUsageRequestLineGraphShell">
                           <div className="aoUsageRequestLineGraphWrap">
                             <svg
-                              ref={originChart.key === requestChartMeasureOrigin ? requestChartMeasureRef : undefined}
+                              ref={
+                                originChart.key === requestChartMeasureOrigin
+                                  ? requestChartMeasureRef
+                                  : undefined
+                              }
                               className="aoUsageRequestLineGraph"
                               viewBox={`0 0 ${requestChartWidth} ${requestChartHeight}`}
                               preserveAspectRatio="none"
-                              style={{ fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif' }}
+                              style={{
+                                fontFamily:
+                                  'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif',
+                              }}
                               role="img"
                               aria-label={`Request token trend (${originChart.label})`}
                               onMouseLeave={() => {
-                                setLineHoverOrigin(null)
-                                setLineHoverIndex(null)
-                                setLineHoverX(null)
+                                setLineHoverOrigin(null);
+                                setLineHoverIndex(null);
+                                setLineHoverX(null);
                               }}
                               onMouseMove={(event) => {
-                                const rect = (event.currentTarget as SVGElement).getBoundingClientRect()
-                                const ratio = (event.clientX - rect.left) / Math.max(1, rect.width)
-                                const rawX = ratio * requestChartWidth
-                                const clampedX = Math.max(requestChartMinX, Math.min(requestChartMaxX, rawX))
+                                const rect = (
+                                  event.currentTarget as SVGElement
+                                ).getBoundingClientRect();
+                                const ratio =
+                                  (event.clientX - rect.left) /
+                                  Math.max(1, rect.width);
+                                const rawX = ratio * requestChartWidth;
+                                const clampedX = Math.max(
+                                  requestChartMinX,
+                                  Math.min(requestChartMaxX, rawX),
+                                );
                                 const idx = Math.round(
-                                  ((clampedX - requestChartMinX) / Math.max(1, requestChartMaxX - requestChartMinX)) *
-                                    Math.max(1, usageRequestGraphPointCount - 1),
-                                )
+                                  ((clampedX - requestChartMinX) /
+                                    Math.max(
+                                      1,
+                                      requestChartMaxX - requestChartMinX,
+                                    )) *
+                                    Math.max(
+                                      1,
+                                      usageRequestGraphPointCount - 1,
+                                    ),
+                                );
                                 const snappedX =
                                   requestChartMinX +
-                                  (idx / Math.max(1, usageRequestGraphPointCount - 1)) * (requestChartMaxX - requestChartMinX)
-                                setLineHoverOrigin(originChart.key)
-                                setLineHoverIndex(Math.max(0, Math.min(usageRequestGraphPointCount - 1, idx)))
-                                setLineHoverX(snappedX)
+                                  (idx /
+                                    Math.max(
+                                      1,
+                                      usageRequestGraphPointCount - 1,
+                                    )) *
+                                    (requestChartMaxX - requestChartMinX);
+                                setLineHoverOrigin(originChart.key);
+                                setLineHoverIndex(
+                                  Math.max(
+                                    0,
+                                    Math.min(
+                                      usageRequestGraphPointCount - 1,
+                                      idx,
+                                    ),
+                                  ),
+                                );
+                                setLineHoverX(snappedX);
                               }}
                             >
                               <defs>
@@ -3900,137 +4763,312 @@ export function UsageStatisticsPanel({
                                   <rect
                                     x={requestChartMinX}
                                     y={requestChartTopY}
-                                    width={Math.max(0, requestChartMaxX - requestChartMinX)}
-                                    height={Math.max(0, requestChartBottomY - requestChartTopY)}
+                                    width={Math.max(
+                                      0,
+                                      requestChartMaxX - requestChartMinX,
+                                    )}
+                                    height={Math.max(
+                                      0,
+                                      requestChartBottomY - requestChartTopY,
+                                    )}
                                   />
                                 </clipPath>
                               </defs>
-                              <line x1={requestChartMinX} y1={requestChartTopY} x2={requestChartMinX} y2={requestChartBottomY} stroke="rgba(13, 18, 32, 0.24)" strokeWidth="1" />
-                              <line x1={requestChartMinX} y1={requestChartBottomY} x2={requestChartMaxX} y2={requestChartBottomY} stroke="rgba(13, 18, 32, 0.24)" strokeWidth="1" />
                               <line
                                 x1={requestChartMinX}
-                                y1={(requestChartTopY + requestChartBottomY) / 2}
+                                y1={requestChartTopY}
+                                x2={requestChartMinX}
+                                y2={requestChartBottomY}
+                                stroke="rgba(13, 18, 32, 0.24)"
+                                strokeWidth="1"
+                              />
+                              <line
+                                x1={requestChartMinX}
+                                y1={requestChartBottomY}
                                 x2={requestChartMaxX}
-                                y2={(requestChartTopY + requestChartBottomY) / 2}
+                                y2={requestChartBottomY}
+                                stroke="rgba(13, 18, 32, 0.24)"
+                                strokeWidth="1"
+                              />
+                              <line
+                                x1={requestChartMinX}
+                                y1={
+                                  (requestChartTopY + requestChartBottomY) / 2
+                                }
+                                x2={requestChartMaxX}
+                                y2={
+                                  (requestChartTopY + requestChartBottomY) / 2
+                                }
                                 stroke="rgba(13, 18, 32, 0.14)"
                                 strokeWidth="1"
                                 strokeDasharray="4 4"
                               />
-                              <text x={requestChartAxisLabelX} y={requestChartTopY + 4} textAnchor="end" fill="rgba(13, 18, 32, 0.56)" fontSize="10">
-                                {formatUsageRequestAxisCompact(usageRequestLineMaxValue)}
+                              <text
+                                x={requestChartAxisLabelX}
+                                y={requestChartTopY + 4}
+                                textAnchor="end"
+                                fill="rgba(13, 18, 32, 0.56)"
+                                fontSize="10"
+                              >
+                                {formatUsageRequestAxisCompact(
+                                  usageRequestLineMaxValue,
+                                )}
                               </text>
-                              <text x={requestChartAxisLabelX} y={(requestChartTopY + requestChartBottomY) / 2 + 4} textAnchor="end" fill="rgba(13, 18, 32, 0.5)" fontSize="10">
-                                {formatUsageRequestAxisCompact(usageRequestLineMaxValue / 2)}
+                              <text
+                                x={requestChartAxisLabelX}
+                                y={
+                                  (requestChartTopY + requestChartBottomY) / 2 +
+                                  4
+                                }
+                                textAnchor="end"
+                                fill="rgba(13, 18, 32, 0.5)"
+                                fontSize="10"
+                              >
+                                {formatUsageRequestAxisCompact(
+                                  usageRequestLineMaxValue / 2,
+                                )}
                               </text>
-                              <text x={requestChartAxisLabelX} y={requestChartBottomY + 4} textAnchor="end" fill="rgba(13, 18, 32, 0.5)" fontSize="10">
+                              <text
+                                x={requestChartAxisLabelX}
+                                y={requestChartBottomY + 4}
+                                textAnchor="end"
+                                fill="rgba(13, 18, 32, 0.5)"
+                                fontSize="10"
+                              >
                                 0
                               </text>
-                              <text x={requestChartXAxisLeftLabelX} y={requestChartXAxisLabelY} textAnchor="start" fill="rgba(13, 18, 32, 0.54)" fontSize="10">
+                              <text
+                                x={requestChartXAxisLeftLabelX}
+                                y={requestChartXAxisLabelY}
+                                textAnchor="start"
+                                fill="rgba(13, 18, 32, 0.54)"
+                                fontSize="10"
+                              >
                                 Older
                               </text>
-                              <text x={requestChartXAxisRightLabelX} y={requestChartXAxisLabelY} textAnchor="end" fill="rgba(13, 18, 32, 0.54)" fontSize="10">
+                              <text
+                                x={requestChartXAxisRightLabelX}
+                                y={requestChartXAxisLabelY}
+                                textAnchor="end"
+                                fill="rgba(13, 18, 32, 0.54)"
+                                fontSize="10"
+                              >
                                 Newer
                               </text>
                               <g clipPath={`url(#${clipPathId})`}>
                                 {seriesList.map((series) => {
-                                  const activeCount = series.present.reduce((sum, isPresent) => sum + (isPresent ? 1 : 0), 0)
+                                  const activeCount = series.present.reduce(
+                                    (sum, isPresent) =>
+                                      sum + (isPresent ? 1 : 0),
+                                    0,
+                                  );
                                   const slidingEligible = Boolean(
-                                    (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).fallbackSlidingEligible ||
-                                      (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).liveSlidingEligible,
-                                  )
+                                    (
+                                      series as {
+                                        fallbackSlidingEligible?: boolean;
+                                        liveSlidingEligible?: boolean;
+                                      }
+                                    ).fallbackSlidingEligible ||
+                                    (
+                                      series as {
+                                        fallbackSlidingEligible?: boolean;
+                                        liveSlidingEligible?: boolean;
+                                      }
+                                    ).liveSlidingEligible,
+                                  );
                                   const rawSlideSteps =
-                                    (series as { fallbackSlidingShiftSteps?: number; liveSlidingShiftSteps?: number })
-                                      .fallbackSlidingShiftSteps ??
-                                    (series as { fallbackSlidingShiftSteps?: number; liveSlidingShiftSteps?: number })
-                                      .liveSlidingShiftSteps ??
-                                    1
-                                  const slideSteps = resolveUsageRequestSlideSteps(rawSlideSteps, usageRequestGraphPointCount - 1)
+                                    (
+                                      series as {
+                                        fallbackSlidingShiftSteps?: number;
+                                        liveSlidingShiftSteps?: number;
+                                      }
+                                    ).fallbackSlidingShiftSteps ??
+                                    (
+                                      series as {
+                                        fallbackSlidingShiftSteps?: number;
+                                        liveSlidingShiftSteps?: number;
+                                      }
+                                    ).liveSlidingShiftSteps ??
+                                    1;
+                                  const slideSteps =
+                                    resolveUsageRequestSlideSteps(
+                                      rawSlideSteps,
+                                      usageRequestGraphPointCount - 1,
+                                    );
                                   const previewNextValuesRaw =
-                                    (series as { fallbackPreviewNextValues?: number[] | null; livePreviewNextValues?: number[] | null })
-                                      .fallbackPreviewNextValues ??
-                                    (series as { fallbackPreviewNextValues?: number[] | null; livePreviewNextValues?: number[] | null })
-                                      .livePreviewNextValues ??
-                                    null
+                                    (
+                                      series as {
+                                        fallbackPreviewNextValues?:
+                                          | number[]
+                                          | null;
+                                        livePreviewNextValues?: number[] | null;
+                                      }
+                                    ).fallbackPreviewNextValues ??
+                                    (
+                                      series as {
+                                        fallbackPreviewNextValues?:
+                                          | number[]
+                                          | null;
+                                        livePreviewNextValues?: number[] | null;
+                                      }
+                                    ).livePreviewNextValues ??
+                                    null;
                                   const previewNextValue = Number(
-                                    (series as { fallbackPreviewNextValue?: number | null; livePreviewNextValue?: number | null }).fallbackPreviewNextValue ??
-                                      (series as { fallbackPreviewNextValue?: number | null; livePreviewNextValue?: number | null }).livePreviewNextValue ??
+                                    (
+                                      series as {
+                                        fallbackPreviewNextValue?:
+                                          | number
+                                          | null;
+                                        livePreviewNextValue?: number | null;
+                                      }
+                                    ).fallbackPreviewNextValue ??
+                                      (
+                                        series as {
+                                          fallbackPreviewNextValue?:
+                                            | number
+                                            | null;
+                                          livePreviewNextValue?: number | null;
+                                        }
+                                      ).livePreviewNextValue ??
                                       NaN,
+                                  );
+                                  const previewNextValues = Array.isArray(
+                                    previewNextValuesRaw,
                                   )
-                                  const previewNextValues = Array.isArray(previewNextValuesRaw)
-                                    ? previewNextValuesRaw.filter((value) => Number.isFinite(value))
+                                    ? previewNextValuesRaw.filter((value) =>
+                                        Number.isFinite(value),
+                                      )
                                     : Number.isFinite(previewNextValue)
                                       ? [previewNextValue]
-                                      : []
-                                  const hasPreviewNextValue = previewNextValues.length > 0
-                                  const slideOffsetX = calculateUsageRequestSlideOffsetX(
-                                    requestLineAnimPhase,
-                                    requestLinePointSpacing,
-                                    slideSteps,
-                                  )
+                                      : [];
+                                  const hasPreviewNextValue =
+                                    previewNextValues.length > 0;
+                                  const slideOffsetX =
+                                    calculateUsageRequestSlideOffsetX(
+                                      requestLineAnimPhase,
+                                      requestLinePointSpacing,
+                                      slideSteps,
+                                    );
                                   const isSlidingAnimating =
                                     isRequestsTab &&
                                     requestLineSliding &&
                                     slidingEligible &&
-                                    activeCount > 1
+                                    activeCount > 1;
                                   const isGrowingAnimating =
                                     isRequestsTab &&
                                     requestLineAnimPhase > 0 &&
                                     !slidingEligible &&
                                     hasPreviewNextValue &&
                                     activeCount > 1 &&
-                                    activeCount < usageRequestGraphPointCount
-                                  const providerPoints: Array<{ x: number; y: number }> = []
+                                    activeCount < usageRequestGraphPointCount;
+                                  const providerPoints: Array<{
+                                    x: number;
+                                    y: number;
+                                  }> = [];
                                   if (isSlidingAnimating && activeCount > 1) {
-                                    for (let idx = 0; idx < activeCount; idx += 1) {
-                                      const value = series.values[idx] ?? 0
-                                      const x = requestChartMinX + idx * requestLinePointSpacing - slideOffsetX
+                                    for (
+                                      let idx = 0;
+                                      idx < activeCount;
+                                      idx += 1
+                                    ) {
+                                      const value = series.values[idx] ?? 0;
+                                      const x =
+                                        requestChartMinX +
+                                        idx * requestLinePointSpacing -
+                                        slideOffsetX;
                                       const y =
                                         requestChartBottomY -
-                                        (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
-                                      providerPoints.push({ x, y })
+                                        (value / usageRequestLineMaxValue) *
+                                          (requestChartBottomY -
+                                            requestChartTopY);
+                                      providerPoints.push({ x, y });
                                     }
-                                    const previewCount = Math.min(slideSteps, previewNextValues.length)
-                                    for (let previewIdx = 0; previewIdx < previewCount; previewIdx += 1) {
-                                      const previewValue = previewNextValues[previewNextValues.length - previewCount + previewIdx] ?? 0
+                                    const previewCount = Math.min(
+                                      slideSteps,
+                                      previewNextValues.length,
+                                    );
+                                    for (
+                                      let previewIdx = 0;
+                                      previewIdx < previewCount;
+                                      previewIdx += 1
+                                    ) {
+                                      const previewValue =
+                                        previewNextValues[
+                                          previewNextValues.length -
+                                            previewCount +
+                                            previewIdx
+                                        ] ?? 0;
                                       const nextX =
                                         requestChartMinX +
-                                        (activeCount + previewIdx) * requestLinePointSpacing -
-                                        slideOffsetX
+                                        (activeCount + previewIdx) *
+                                          requestLinePointSpacing -
+                                        slideOffsetX;
                                       const nextY =
                                         requestChartBottomY -
-                                        (previewValue / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
-                                      providerPoints.push({ x: nextX, y: nextY })
+                                        (previewValue /
+                                          usageRequestLineMaxValue) *
+                                          (requestChartBottomY -
+                                            requestChartTopY);
+                                      providerPoints.push({
+                                        x: nextX,
+                                        y: nextY,
+                                      });
                                     }
                                   } else {
                                     series.values.forEach((value, idx) => {
-                                      if (!series.present[idx]) return
-                                      const x = requestChartMinX + idx * requestLinePointSpacing
+                                      if (!series.present[idx]) return;
+                                      const x =
+                                        requestChartMinX +
+                                        idx * requestLinePointSpacing;
                                       const y =
                                         requestChartBottomY -
-                                        (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
-                                      providerPoints.push({ x, y })
-                                    })
+                                        (value / usageRequestLineMaxValue) *
+                                          (requestChartBottomY -
+                                            requestChartTopY);
+                                      providerPoints.push({ x, y });
+                                    });
                                   }
-                                  if (isGrowingAnimating && providerPoints.length > 1) {
-                                    const lastPoint = providerPoints[providerPoints.length - 1]
+                                  if (
+                                    isGrowingAnimating &&
+                                    providerPoints.length > 1
+                                  ) {
+                                    const lastPoint =
+                                      providerPoints[providerPoints.length - 1];
                                     const previewY = hasPreviewNextValue
                                       ? requestChartBottomY -
-                                        ((previewNextValues[previewNextValues.length - 1] ?? 0) / usageRequestLineMaxValue) *
-                                          (requestChartBottomY - requestChartTopY)
-                                      : lastPoint.y
-                                    const nextX = Math.min(requestChartMaxX, lastPoint.x + requestLinePointSpacing * requestLineAnimPhase)
+                                        ((previewNextValues[
+                                          previewNextValues.length - 1
+                                        ] ?? 0) /
+                                          usageRequestLineMaxValue) *
+                                          (requestChartBottomY -
+                                            requestChartTopY)
+                                      : lastPoint.y;
+                                    const nextX = Math.min(
+                                      requestChartMaxX,
+                                      lastPoint.x +
+                                        requestLinePointSpacing *
+                                          requestLineAnimPhase,
+                                    );
                                     const nextY = Math.max(
                                       requestChartTopY,
                                       Math.min(
                                         requestChartBottomY,
-                                        lastPoint.y + (previewY - lastPoint.y) * requestLineAnimPhase,
+                                        lastPoint.y +
+                                          (previewY - lastPoint.y) *
+                                            requestLineAnimPhase,
                                       ),
-                                    )
-                                    providerPoints.push({ x: nextX, y: nextY })
+                                    );
+                                    providerPoints.push({ x: nextX, y: nextY });
                                   }
-                                  if (providerPoints.length <= 1) return null
-                                  const pathD = buildSmoothLinePath(providerPoints, { min: requestChartTopY, max: requestChartBottomY })
-                                  if (!pathD.trim()) return null
+                                  if (providerPoints.length <= 1) return null;
+                                  const pathD = buildSmoothLinePath(
+                                    providerPoints,
+                                    {
+                                      min: requestChartTopY,
+                                      max: requestChartBottomY,
+                                    },
+                                  );
+                                  if (!pathD.trim()) return null;
                                   return (
                                     <path
                                       key={`request-line-series-${String((series as { id?: string }).id ?? series.provider)}`}
@@ -4042,7 +5080,7 @@ export function UsageStatisticsPanel({
                                       strokeLinecap="round"
                                       strokeLinejoin="round"
                                     />
-                                  )
+                                  );
                                 })}
                                 {hoverX != null ? (
                                   <line
@@ -4057,37 +5095,72 @@ export function UsageStatisticsPanel({
                                 ) : null}
                                 {hoverIndex != null
                                   ? seriesList.map((series) => {
-                                      if (!series.present[hoverIndex]) return null
-                                      const value = series.values[hoverIndex] ?? 0
+                                      if (!series.present[hoverIndex])
+                                        return null;
+                                      const value =
+                                        series.values[hoverIndex] ?? 0;
                                       const baseX =
                                         requestChartMinX +
-                                        (hoverIndex / Math.max(1, usageRequestGraphPointCount - 1)) *
-                                          (requestChartMaxX - requestChartMinX)
+                                        (hoverIndex /
+                                          Math.max(
+                                            1,
+                                            usageRequestGraphPointCount - 1,
+                                          )) *
+                                          (requestChartMaxX - requestChartMinX);
                                       const slidingEligible = Boolean(
-                                        (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).fallbackSlidingEligible ||
-                                          (series as { fallbackSlidingEligible?: boolean; liveSlidingEligible?: boolean }).liveSlidingEligible,
-                                      )
+                                        (
+                                          series as {
+                                            fallbackSlidingEligible?: boolean;
+                                            liveSlidingEligible?: boolean;
+                                          }
+                                        ).fallbackSlidingEligible ||
+                                        (
+                                          series as {
+                                            fallbackSlidingEligible?: boolean;
+                                            liveSlidingEligible?: boolean;
+                                          }
+                                        ).liveSlidingEligible,
+                                      );
                                       const rawSlideSteps =
-                                        (series as { fallbackSlidingShiftSteps?: number; liveSlidingShiftSteps?: number })
-                                          .fallbackSlidingShiftSteps ??
-                                        (series as { fallbackSlidingShiftSteps?: number; liveSlidingShiftSteps?: number })
-                                          .liveSlidingShiftSteps ??
-                                        1
-                                      const slideSteps = resolveUsageRequestSlideSteps(rawSlideSteps, usageRequestGraphPointCount - 1)
+                                        (
+                                          series as {
+                                            fallbackSlidingShiftSteps?: number;
+                                            liveSlidingShiftSteps?: number;
+                                          }
+                                        ).fallbackSlidingShiftSteps ??
+                                        (
+                                          series as {
+                                            fallbackSlidingShiftSteps?: number;
+                                            liveSlidingShiftSteps?: number;
+                                          }
+                                        ).liveSlidingShiftSteps ??
+                                        1;
+                                      const slideSteps =
+                                        resolveUsageRequestSlideSteps(
+                                          rawSlideSteps,
+                                          usageRequestGraphPointCount - 1,
+                                        );
                                       const isSlidingAnimating =
                                         isRequestsTab &&
                                         requestLineSliding &&
                                         slidingEligible &&
-                                        countUsageRequestLinePoints(series.present) > 1
-                                      const slideOffsetX = calculateUsageRequestSlideOffsetX(
-                                        requestLineAnimPhase,
-                                        requestLinePointSpacing,
-                                        slideSteps,
-                                      )
-                                      const x = isSlidingAnimating ? baseX - slideOffsetX : baseX
+                                        countUsageRequestLinePoints(
+                                          series.present,
+                                        ) > 1;
+                                      const slideOffsetX =
+                                        calculateUsageRequestSlideOffsetX(
+                                          requestLineAnimPhase,
+                                          requestLinePointSpacing,
+                                          slideSteps,
+                                        );
+                                      const x = isSlidingAnimating
+                                        ? baseX - slideOffsetX
+                                        : baseX;
                                       const y =
                                         requestChartBottomY -
-                                        (value / usageRequestLineMaxValue) * (requestChartBottomY - requestChartTopY)
+                                        (value / usageRequestLineMaxValue) *
+                                          (requestChartBottomY -
+                                            requestChartTopY);
                                       return (
                                         <circle
                                           key={`line-hover-dot-${String((series as { id?: string }).id ?? series.provider)}`}
@@ -4096,18 +5169,26 @@ export function UsageStatisticsPanel({
                                           r="2.2"
                                           fill={series.color}
                                         />
-                                      )
+                                      );
                                     })
                                   : null}
                               </g>
                             </svg>
                             {isHoveringOrigin && lineHoverData ? (
-                              <div className="aoUsageRequestHoverOverlay" aria-live="polite">
+                              <div
+                                className="aoUsageRequestHoverOverlay"
+                                aria-live="polite"
+                              >
                                 <span>
-                                  Point {lineHoverData.point}/{usageRequestGraphPointCount} · Total {lineHoverData.total.toLocaleString()}
+                                  Point {lineHoverData.point}/
+                                  {usageRequestGraphPointCount} · Total{" "}
+                                  {lineHoverData.total.toLocaleString()}
                                 </span>
                                 {lineHoverData.rows.map((row) => (
-                                  <span key={`hover-overlay-${originChart.key}-${row.id}`} className="aoUsageRequestHoverSummaryItem">
+                                  <span
+                                    key={`hover-overlay-${originChart.key}-${row.id}`}
+                                    className="aoUsageRequestHoverSummaryItem"
+                                  >
                                     <i style={{ background: row.color }} />
                                     {row.provider}: {row.value.toLocaleString()}
                                   </span>
@@ -4124,17 +5205,27 @@ export function UsageStatisticsPanel({
                                 height: `${requestChartBottomY - requestChartTopY}px`,
                               }}
                             >
-                              <div className="aoMiniLabel aoUsageRequestSidTitle">SID</div>
+                              <div className="aoMiniLabel aoUsageRequestSidTitle">
+                                SID
+                              </div>
                               <div className="aoUsageRequestSidList">
                                 {sidRows.map((item) => (
                                   <div
                                     key={`sid-row-${originChart.key}-${item.id}`}
                                     className="aoUsageRequestSidRow"
-                                    style={{ top: `${item.top}px`, zIndex: Math.max(1, Math.round(item.latestValue)) }}
+                                    style={{
+                                      top: `${item.top}px`,
+                                      zIndex: Math.max(
+                                        1,
+                                        Math.round(item.latestValue),
+                                      ),
+                                    }}
                                   >
                                     <span className="aoUsageRequestSidChip">
                                       <i style={{ background: item.color }} />
-                                      <span className="aoUsageRequestSidLabel">{item.sidLabel}</span>
+                                      <span className="aoUsageRequestSidLabel">
+                                        {item.sidLabel}
+                                      </span>
                                     </span>
                                   </div>
                                 ))}
@@ -4142,333 +5233,676 @@ export function UsageStatisticsPanel({
                             </div>
                           ) : null}
                         </div>
-                    </div>
-                  )
-                })}
-              </div>
-            ) : (
-              <div className="aoHint">
-                {verifiedSessionIdSet.size === 0
-                  ? 'No verified non-agent sessions yet.'
-                  : 'No recent verified-session rows for line graph.'}
-              </div>
-            )}
-            {usageRequestLegendSeries.length ? (
-              <div className="aoUsageRequestLegend">
-                {usageRequestLegendSeries.map((series) => (
-                  <span
-                    key={`request-line-legend-${String((series as { id?: string }).id ?? series.provider)}`}
-                    className="aoUsageRequestLegendItem"
-                  >
-                    <i style={{ background: series.color }} />
-                    {series.provider}
-                  </span>
-                ))}
-              </div>
-            ) : null}
-          </div>
-          <div ref={usageRequestTableSurfaceRef} className="aoUsageHistoryTableSurface aoUsageRequestTableSurface">
-            <div className="aoUsageHistoryTableHead aoUsageRequestTableHead" aria-hidden="true">
-              <table
-                className="aoUsageHistoryTable aoUsageRequestsTable"
-                style={{ transform: `translateX(${-usageRequestTableScrollLeft}px)` }}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="aoHint">
+                  {verifiedSessionIdSet.size === 0
+                    ? "No verified non-agent sessions yet."
+                    : "No recent verified-session rows for line graph."}
+                </div>
+              )}
+              {usageRequestLegendSeries.length ? (
+                <div className="aoUsageRequestLegend">
+                  {usageRequestLegendSeries.map((series) => (
+                    <span
+                      key={`request-line-legend-${String((series as { id?: string }).id ?? series.provider)}`}
+                      className="aoUsageRequestLegendItem"
+                    >
+                      <i style={{ background: series.color }} />
+                      {series.provider}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            <div
+              ref={usageRequestTableSurfaceRef}
+              className="aoUsageHistoryTableSurface aoUsageRequestTableSurface"
+            >
+              <div
+                className="aoUsageHistoryTableHead aoUsageRequestTableHead"
+                aria-hidden="true"
               >
-                <colgroup>
-                  <col className="aoUsageReqColTime" />
-                  <col className="aoUsageReqColNode" />
-                  <col className="aoUsageReqColProvider" />
-                  <col className="aoUsageReqColModel" />
-                  <col className="aoUsageReqColOrigin" />
-                  <col className="aoUsageReqColTransport" />
-                  <col className="aoUsageReqColSession" />
-                  <col className="aoUsageReqColInput" />
-                  <col className="aoUsageReqColOutput" />
-                  <col className="aoUsageReqColCacheRead" />
-                </colgroup>
-                <thead>
-                  <tr>
-                    {USAGE_REQUEST_COLUMN_FILTERS.map((column) => {
-                      const isOpen = activeUsageRequestFilterMenu?.key === column.key
-                      const filterCount =
-                        column.key === 'time'
-                          ? usageRequestTimeFilter.trim().length > 0
-                            ? 1
-                            : 0
-                          : column.key === 'node'
-                            ? filteredSelectionCount(
-                                usageRequestMultiFilters.node == null
-                                  ? usageRequestFilterOptions.node.length
-                                  : usageRequestMultiFilters.node.length,
-                                usageRequestFilterOptions.node.length,
-                              )
-                          : column.key === 'provider'
-                            ? Math.max(
-                                  filteredSelectionCount(
-                                    usageRequestMultiFilters.provider == null
-                                      ? usageRequestFilterOptions.provider.length
-                                      : usageRequestMultiFilters.provider.length,
-                                    usageRequestFilterOptions.provider.length,
-                                  ),
-                                useGlobalRequestFilters
-                                  ? filteredSelectionCount(
-                                      usageFilterProviders.length,
-                                      usageProviderFilterOptions.length,
-                                    )
-                                  : 0,
-                              )
-                            : column.key === 'model'
-                              ? Math.max(
-                                  filteredSelectionCount(
-                                    usageRequestMultiFilters.model == null
-                                      ? usageRequestFilterOptions.model.length
-                                      : usageRequestMultiFilters.model.length,
-                                    usageRequestFilterOptions.model.length,
-                                  ),
-                                  useGlobalRequestFilters
-                                    ? filteredSelectionCount(
-                                        usageFilterModels.length,
-                                        usageModelFilterOptions.length,
-                                      )
-                                    : 0,
+                <table
+                  className="aoUsageHistoryTable aoUsageRequestsTable"
+                  style={{
+                    transform: `translateX(${-usageRequestTableScrollLeft}px)`,
+                  }}
+                >
+                  <colgroup>
+                    <col className="aoUsageReqColTime" />
+                    <col className="aoUsageReqColNode" />
+                    <col className="aoUsageReqColProvider" />
+                    <col className="aoUsageReqColModel" />
+                    <col className="aoUsageReqColOrigin" />
+                    <col className="aoUsageReqColTransport" />
+                    <col className="aoUsageReqColSession" />
+                    <col className="aoUsageReqColInput" />
+                    <col className="aoUsageReqColOutput" />
+                    <col className="aoUsageReqColCacheRead" />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      {USAGE_REQUEST_COLUMN_FILTERS.map((column) => {
+                        const isOpen =
+                          activeUsageRequestFilterMenu?.key === column.key;
+                        const filterCount =
+                          column.key === "time"
+                            ? usageRequestTimeFilter.trim().length > 0
+                              ? 1
+                              : 0
+                            : column.key === "node"
+                              ? filteredSelectionCount(
+                                  usageRequestMultiFilters.node == null
+                                    ? usageRequestFilterOptions.node.length
+                                    : usageRequestMultiFilters.node.length,
+                                  usageRequestFilterOptions.node.length,
                                 )
-                              : column.key === 'origin'
+                              : column.key === "provider"
                                 ? Math.max(
                                     filteredSelectionCount(
-                                      usageRequestMultiFilters.origin == null
-                                        ? usageRequestFilterOptions.origin.length
-                                        : usageRequestMultiFilters.origin.length,
-                                      usageRequestFilterOptions.origin.length,
+                                      usageRequestMultiFilters.provider == null
+                                        ? usageRequestFilterOptions.provider
+                                            .length
+                                        : usageRequestMultiFilters.provider
+                                            .length,
+                                      usageRequestFilterOptions.provider.length,
                                     ),
                                     useGlobalRequestFilters
                                       ? filteredSelectionCount(
-                                          usageFilterOrigins.length,
-                                          usageOriginFilterOptions.length,
+                                          usageFilterProviders.length,
+                                          usageProviderFilterOptions.length,
                                         )
                                       : 0,
                                   )
-                                : column.key === 'transport'
-                                  ? filteredSelectionCount(
-                                      usageRequestMultiFilters.transport == null
-                                        ? usageRequestFilterOptions.transport.length
-                                        : usageRequestMultiFilters.transport.length,
-                                      usageRequestFilterOptions.transport.length,
+                                : column.key === "model"
+                                  ? Math.max(
+                                      filteredSelectionCount(
+                                        countUsageModelFilterDisplayOptionsSelected(
+                                          usageRequestModelFilterDisplayOptions,
+                                          usageRequestMultiFilters.model ??
+                                            usageRequestFilterOptions.model,
+                                        ),
+                                        usageRequestModelFilterDisplayOptions.length,
+                                      ),
+                                      useGlobalRequestFilters
+                                        ? filteredSelectionCount(
+                                            countUsageModelFilterDisplayOptionsSelected(
+                                              usageModelFilterDisplayOptions,
+                                              usageFilterModels,
+                                            ),
+                                            usageModelFilterDisplayOptions.length,
+                                          )
+                                        : 0,
                                     )
-                                : column.key === 'session'
-                                  ? filteredSelectionCount(
-                                      usageRequestMultiFilters.session == null
-                                        ? usageRequestFilterOptions.session.length
-                                        : usageRequestMultiFilters.session.length,
-                                      usageRequestFilterOptions.session.length,
-                                    )
-                                  : 0
-                      const hasFilter =
-                        filterCount > 0
-                      const centerColumn = column.key === 'origin' || column.key === 'transport'
-                      return (
-                        <th
-                          key={`usage-requests-head-${column.key}`}
-                          className={centerColumn ? 'aoUsageReqHeadColCenter' : undefined}
-                        >
-                          <div className={`aoUsageReqHeadCell${centerColumn ? ' is-center' : ''}`}>
-                            {column.filterable ? (
-                              <button
-                                type="button"
-                                className={`aoUsageReqHeadBtn${hasFilter ? ' is-filtered' : ''}${isOpen ? ' is-open' : ''}${centerColumn ? ' is-center' : ''}`}
-                                onPointerDown={(event) => {
-                                  event.stopPropagation()
-                                  if (event.button !== 0) return
-                                  openUsageRequestFilterMenu(column.key, event.currentTarget as HTMLButtonElement)
-                                }}
-                                onClick={(event) => {
-                                  event.stopPropagation()
-                                  event.preventDefault()
-                                }}
-                              >
-                                <span className="aoUsageReqHeadLabel">{column.label}</span>
-                                {hasFilter ? (
-                                  <span className="aoUsageReqHeadFilterBadge is-single">{filterCount}</span>
-                                ) : null}
-                                <span className="aoUsageReqHeadChevron" aria-hidden="true">
-                                  ▾
-                                </span>
-                              </button>
-                            ) : (
-                              <span className="aoUsageReqHeadLabel">{column.label}</span>
-                            )}
-                          </div>
-                        </th>
-                      )
-                    })}
-                  </tr>
-                </thead>
-              </table>
-            </div>
-            {activeUsageRequestFilterMenu ? (
-              <div
-                ref={usageRequestFilterMenuRef}
-                className={`aoUsageReqFilterMenu aoUsageReqFilterMenuFloating${activeUsageRequestFilterMenu.key === 'time' ? ' is-time' : ''}`}
-                style={{
-                  left: `${activeUsageRequestFilterMenu.left}px`,
-                  top: `${activeUsageRequestFilterMenu.top}px`,
-                  width: `${
-                    activeUsageRequestFilterMenu.key === 'time'
-                      ? 292
-                      : activeUsageRequestFilterMenu.key === 'session'
-                        ? Math.min(420, Math.max(activeUsageRequestFilterMenu.width + 180, 320))
-                        : activeUsageRequestFilterMenu.key === 'model'
-                          ? Math.min(360, Math.max(activeUsageRequestFilterMenu.width + 120, 280))
-                          : Math.min(320, Math.max(activeUsageRequestFilterMenu.width + 80, 240))
-                  }px`,
-                }}
-                onClick={(event) => event.stopPropagation()}
-              >
-                {activeUsageRequestFilterMenu.key === 'time' ? (
-                  <>
-                    <div className="aoUsageReqCalendarHead">
-                      <button
-                        type="button"
-                        className="aoUsageReqCalendarNav"
-                        onPointerDown={(event) => {
-                          if (event.button !== 0) return
-                          event.preventDefault()
-                          setTimePickerMonthStartMs((prev) => addMonths(prev, -1))
-                        }}
-                      >
-                        ‹
-                      </button>
-                      <div className="aoUsageReqCalendarTitle">
-                        {MONTH_NAMES[new Date(timePickerMonthStartMs).getMonth()]} {new Date(timePickerMonthStartMs).getFullYear()}
-                      </div>
-                      <button
-                        type="button"
-                        className="aoUsageReqCalendarNav"
-                        onPointerDown={(event) => {
-                          if (event.button !== 0) return
-                          event.preventDefault()
-                          setTimePickerMonthStartMs((prev) => addMonths(prev, 1))
-                        }}
-                      >
-                        ›
-                      </button>
-                    </div>
-                    <div className="aoUsageReqCalendarWeekdays">
-                      {WEEKDAY_NAMES.map((name) => (
-                        <span key={`weekday-${name}`}>{name}</span>
-                      ))}
-                    </div>
-                    <div className="aoUsageReqCalendarGrid">
-                      {timeFilterCalendarCells.map((cell) => {
-                        const selected = selectedTimeFilterDay != null && selectedTimeFilterDay === cell.dayStartMs
-                        const hasRecord = usageRequestDaysWithRecords.has(cell.dayStartMs)
-                        const originFlags = usageRequestDayOriginFlags.get(cell.dayStartMs) ?? { win: false, wsl: false }
+                                  : column.key === "origin"
+                                    ? Math.max(
+                                        filteredSelectionCount(
+                                          usageRequestMultiFilters.origin ==
+                                            null
+                                            ? usageRequestFilterOptions.origin
+                                                .length
+                                            : usageRequestMultiFilters.origin
+                                                .length,
+                                          usageRequestFilterOptions.origin
+                                            .length,
+                                        ),
+                                        useGlobalRequestFilters
+                                          ? filteredSelectionCount(
+                                              usageFilterOrigins.length,
+                                              usageOriginFilterOptions.length,
+                                            )
+                                          : 0,
+                                      )
+                                    : column.key === "transport"
+                                      ? filteredSelectionCount(
+                                          usageRequestMultiFilters.transport ==
+                                            null
+                                            ? usageRequestFilterOptions
+                                                .transport.length
+                                            : usageRequestMultiFilters.transport
+                                                .length,
+                                          usageRequestFilterOptions.transport
+                                            .length,
+                                        )
+                                      : column.key === "session"
+                                        ? filteredSelectionCount(
+                                            usageRequestMultiFilters.session ==
+                                              null
+                                              ? usageRequestFilterOptions
+                                                  .session.length
+                                              : usageRequestMultiFilters.session
+                                                  .length,
+                                            usageRequestFilterOptions.session
+                                              .length,
+                                          )
+                                        : 0;
+                        const hasFilter = filterCount > 0;
+                        const centerColumn =
+                          column.key === "origin" || column.key === "transport";
                         return (
+                          <th
+                            key={`usage-requests-head-${column.key}`}
+                            className={
+                              centerColumn
+                                ? "aoUsageReqHeadColCenter"
+                                : undefined
+                            }
+                          >
+                            <div
+                              className={`aoUsageReqHeadCell${centerColumn ? " is-center" : ""}`}
+                            >
+                              {column.filterable ? (
+                                <button
+                                  type="button"
+                                  className={`aoUsageReqHeadBtn${hasFilter ? " is-filtered" : ""}${isOpen ? " is-open" : ""}${centerColumn ? " is-center" : ""}`}
+                                  onPointerDown={(event) => {
+                                    event.stopPropagation();
+                                    if (event.button !== 0) return;
+                                    openUsageRequestFilterMenu(
+                                      column.key,
+                                      event.currentTarget as HTMLButtonElement,
+                                    );
+                                  }}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    event.preventDefault();
+                                  }}
+                                >
+                                  <span className="aoUsageReqHeadLabel">
+                                    {column.label}
+                                  </span>
+                                  {hasFilter ? (
+                                    <span className="aoUsageReqHeadFilterBadge is-single">
+                                      {filterCount}
+                                    </span>
+                                  ) : null}
+                                  <span
+                                    className="aoUsageReqHeadChevron"
+                                    aria-hidden="true"
+                                  >
+                                    ▾
+                                  </span>
+                                </button>
+                              ) : (
+                                <span className="aoUsageReqHeadLabel">
+                                  {column.label}
+                                </span>
+                              )}
+                            </div>
+                          </th>
+                        );
+                      })}
+                    </tr>
+                  </thead>
+                </table>
+              </div>
+              {activeUsageRequestFilterMenu ? (
+                <div
+                  ref={usageRequestFilterMenuRef}
+                  className={`aoUsageReqFilterMenu aoUsageReqFilterMenuFloating${activeUsageRequestFilterMenu.key === "time" ? " is-time" : ""}`}
+                  style={{
+                    left: `${activeUsageRequestFilterMenu.left}px`,
+                    top: `${activeUsageRequestFilterMenu.top}px`,
+                    width: `${
+                      activeUsageRequestFilterMenu.key === "time"
+                        ? 292
+                        : activeUsageRequestFilterMenu.key === "session"
+                          ? Math.min(
+                              420,
+                              Math.max(
+                                activeUsageRequestFilterMenu.width + 180,
+                                320,
+                              ),
+                            )
+                          : activeUsageRequestFilterMenu.key === "model"
+                            ? Math.min(
+                                360,
+                                Math.max(
+                                  activeUsageRequestFilterMenu.width + 120,
+                                  280,
+                                ),
+                              )
+                            : Math.min(
+                                320,
+                                Math.max(
+                                  activeUsageRequestFilterMenu.width + 80,
+                                  240,
+                                ),
+                              )
+                    }px`,
+                  }}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  {activeUsageRequestFilterMenu.key === "time" ? (
+                    <>
+                      <div className="aoUsageReqCalendarHead">
+                        <button
+                          type="button"
+                          className="aoUsageReqCalendarNav"
+                          onPointerDown={(event) => {
+                            if (event.button !== 0) return;
+                            event.preventDefault();
+                            setTimePickerMonthStartMs((prev) =>
+                              addMonths(prev, -1),
+                            );
+                          }}
+                        >
+                          ‹
+                        </button>
+                        <div className="aoUsageReqCalendarTitle">
+                          {
+                            MONTH_NAMES[
+                              new Date(timePickerMonthStartMs).getMonth()
+                            ]
+                          }{" "}
+                          {new Date(timePickerMonthStartMs).getFullYear()}
+                        </div>
+                        <button
+                          type="button"
+                          className="aoUsageReqCalendarNav"
+                          onPointerDown={(event) => {
+                            if (event.button !== 0) return;
+                            event.preventDefault();
+                            setTimePickerMonthStartMs((prev) =>
+                              addMonths(prev, 1),
+                            );
+                          }}
+                        >
+                          ›
+                        </button>
+                      </div>
+                      <div className="aoUsageReqCalendarWeekdays">
+                        {WEEKDAY_NAMES.map((name) => (
+                          <span key={`weekday-${name}`}>{name}</span>
+                        ))}
+                      </div>
+                      <div className="aoUsageReqCalendarGrid">
+                        {timeFilterCalendarCells.map((cell) => {
+                          const selected =
+                            selectedTimeFilterDay != null &&
+                            selectedTimeFilterDay === cell.dayStartMs;
+                          const hasRecord = usageRequestDaysWithRecords.has(
+                            cell.dayStartMs,
+                          );
+                          const originFlags = usageRequestDayOriginFlags.get(
+                            cell.dayStartMs,
+                          ) ?? { win: false, wsl: false };
+                          return (
+                            <button
+                              key={`time-cell-${cell.dayStartMs}`}
+                              type="button"
+                              className={`aoUsageReqCalendarCell${cell.inMonth ? "" : " is-out"}${selected ? " is-selected" : ""}`}
+                              onPointerDown={(event) => {
+                                if (event.button !== 0) return;
+                                event.preventDefault();
+                                setUsageRequestTimeFilter(
+                                  dayStartToIso(cell.dayStartMs),
+                                );
+                              }}
+                            >
+                              {cell.label}
+                              {hasRecord ? (
+                                <span
+                                  className="aoUsageReqCalendarDots"
+                                  aria-hidden="true"
+                                >
+                                  {originFlags.win ? (
+                                    <span className="aoUsageReqCalendarDot aoUsageReqCalendarDotWin" />
+                                  ) : null}
+                                  {originFlags.wsl ? (
+                                    <span className="aoUsageReqCalendarDot aoUsageReqCalendarDotWsl" />
+                                  ) : null}
+                                </span>
+                              ) : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="aoUsageReqCalendarFoot">
+                        <div className="aoUsageReqCalendarFootGroup">
                           <button
-                            key={`time-cell-${cell.dayStartMs}`}
                             type="button"
-                            className={`aoUsageReqCalendarCell${cell.inMonth ? '' : ' is-out'}${selected ? ' is-selected' : ''}`}
+                            className="aoTinyBtn aoUsageActionBtn"
                             onPointerDown={(event) => {
-                              if (event.button !== 0) return
-                              event.preventDefault()
-                              setUsageRequestTimeFilter(dayStartToIso(cell.dayStartMs))
+                              if (event.button !== 0) return;
+                              event.preventDefault();
+                              setUsageRequestTimeFilter("");
                             }}
                           >
-                            {cell.label}
-                            {hasRecord ? (
-                              <span className="aoUsageReqCalendarDots" aria-hidden="true">
-                                {originFlags.win ? <span className="aoUsageReqCalendarDot aoUsageReqCalendarDotWin" /> : null}
-                                {originFlags.wsl ? <span className="aoUsageReqCalendarDot aoUsageReqCalendarDotWsl" /> : null}
-                              </span>
-                            ) : null}
+                            Clear
                           </button>
-                        )
-                      })}
-                    </div>
-                    <div className="aoUsageReqCalendarFoot">
-                      <div className="aoUsageReqCalendarFootGroup">
-                        <button
-                          type="button"
-                          className="aoTinyBtn aoUsageActionBtn"
-                          onPointerDown={(event) => {
-                            if (event.button !== 0) return
-                            event.preventDefault()
-                            setUsageRequestTimeFilter('')
-                          }}
-                        >
-                          Clear
-                        </button>
-                        <button
-                          type="button"
-                          className="aoTinyBtn aoUsageActionBtn"
-                          onPointerDown={(event) => {
-                            if (event.button !== 0) return
-                            event.preventDefault()
-                            setUsageRequestTimeFilter(dayStartToIso(startOfDayUnixMs(Date.now())))
-                          }}
-                        >
-                          Today
-                        </button>
+                          <button
+                            type="button"
+                            className="aoTinyBtn aoUsageActionBtn"
+                            onPointerDown={(event) => {
+                              if (event.button !== 0) return;
+                              event.preventDefault();
+                              setUsageRequestTimeFilter(
+                                dayStartToIso(startOfDayUnixMs(Date.now())),
+                              );
+                            }}
+                          >
+                            Today
+                          </button>
+                        </div>
+                        <div className="aoUsageReqCalendarFootGroup">
+                          <button
+                            type="button"
+                            className="aoTinyBtn aoUsageActionBtn"
+                            onPointerDown={(event) => {
+                              if (event.button !== 0) return;
+                              event.preventDefault();
+                              setActiveUsageRequestFilterMenu(null);
+                            }}
+                          >
+                            OK
+                          </button>
+                        </div>
                       </div>
-                      <div className="aoUsageReqCalendarFootGroup">
-                        <button
-                          type="button"
-                          className="aoTinyBtn aoUsageActionBtn"
-                          onPointerDown={(event) => {
-                            if (event.button !== 0) return
-                            event.preventDefault()
-                            setActiveUsageRequestFilterMenu(null)
-                          }}
-                        >
-                          OK
-                        </button>
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <input
-                      className="aoUsageReqFilterInput"
-                      placeholder={`Filter ${
-                        USAGE_REQUEST_COLUMN_FILTERS.find((item) => item.key === activeUsageRequestFilterMenu.key)?.label ?? ''
-                      }`}
-                      value={
-                        activeUsageRequestFilterMenu.key === 'provider'
-                          ? usageRequestFilterSearch.provider
-                          : activeUsageRequestFilterMenu.key === 'model'
-                            ? usageRequestFilterSearch.model
-                            : activeUsageRequestFilterMenu.key === 'origin'
-                              ? usageRequestFilterSearch.origin
-                              : activeUsageRequestFilterMenu.key === 'transport'
-                                ? usageRequestFilterSearch.transport
-                                : usageRequestFilterSearch.session
-                      }
-                      onChange={(event) =>
-                        setUsageRequestFilterSearch((prev) => ({
-                          ...prev,
-                          [activeUsageRequestFilterMenu.key]: event.target.value,
-                        }))
-                      }
-                      autoFocus
-                    />
-                    <div className="aoUsageReqFilterOptions">
-                      {(() => {
-                        const key = activeUsageRequestFilterMenu.key as UsageRequestMultiFilterKey
-                        const providerOptions = usageRequestFilterOptions.provider
-                        if (key === 'provider') {
-                          const searchNeedle = usageRequestFilterSearch.provider.toLowerCase()
-                          const visibleOptions = usageRequestProviderFilterDisplayOptions
-                            .filter((option) => {
-                              if (option.label.toLowerCase().includes(searchNeedle)) return true
-                              return option.providers.some((provider) =>
-                                provider.toLowerCase().includes(searchNeedle),
-                              )
-                            })
-                            .slice(0, 40)
-                          const selectedSet = new Set(usageRequestMultiFilters.provider ?? providerOptions)
+                    </>
+                  ) : (
+                    <>
+                      <input
+                        className="aoUsageReqFilterInput"
+                        placeholder={`Filter ${
+                          USAGE_REQUEST_COLUMN_FILTERS.find(
+                            (item) =>
+                              item.key === activeUsageRequestFilterMenu.key,
+                          )?.label ?? ""
+                        }`}
+                        value={
+                          activeUsageRequestFilterMenu.key === "provider"
+                            ? usageRequestFilterSearch.provider
+                            : activeUsageRequestFilterMenu.key === "model"
+                              ? usageRequestFilterSearch.model
+                              : activeUsageRequestFilterMenu.key === "origin"
+                                ? usageRequestFilterSearch.origin
+                                : activeUsageRequestFilterMenu.key ===
+                                    "transport"
+                                  ? usageRequestFilterSearch.transport
+                                  : usageRequestFilterSearch.session
+                        }
+                        onChange={(event) =>
+                          setUsageRequestFilterSearch((prev) => ({
+                            ...prev,
+                            [activeUsageRequestFilterMenu.key]:
+                              event.target.value,
+                          }))
+                        }
+                        autoFocus
+                      />
+                      <div className="aoUsageReqFilterOptions">
+                        {(() => {
+                          const key =
+                            activeUsageRequestFilterMenu.key as UsageRequestMultiFilterKey;
+                          const providerOptions =
+                            usageRequestFilterOptions.provider;
+                          if (key === "provider") {
+                            const searchNeedle =
+                              usageRequestFilterSearch.provider.toLowerCase();
+                            const visibleOptions =
+                              usageRequestProviderFilterDisplayOptions
+                                .filter((option) => {
+                                  if (
+                                    option.label
+                                      .toLowerCase()
+                                      .includes(searchNeedle)
+                                  )
+                                    return true;
+                                  return option.providers.some((provider) =>
+                                    provider
+                                      .toLowerCase()
+                                      .includes(searchNeedle),
+                                  );
+                                })
+                                .slice(0, 40);
+                            const selectedSet = new Set(
+                              usageRequestMultiFilters.provider ??
+                                providerOptions,
+                            );
+                            const allVisibleSelected =
+                              visibleOptions.length > 0 &&
+                              visibleOptions.every((option) =>
+                                option.providers.every((provider) =>
+                                  selectedSet.has(provider),
+                                ),
+                              );
+                            return (
+                              <>
+                                <label className="aoUsageReqFilterOptionBtn aoUsageReqFilterOptionSelectAll">
+                                  <input
+                                    type="checkbox"
+                                    checked={allVisibleSelected}
+                                    onChange={(event) =>
+                                      setUsageRequestMultiFilters((prev) => {
+                                        const current = new Set(
+                                          prev.provider ?? providerOptions,
+                                        );
+                                        visibleOptions.forEach((option) => {
+                                          option.providers.forEach(
+                                            (provider) => {
+                                              if (event.target.checked)
+                                                current.add(provider);
+                                              else current.delete(provider);
+                                            },
+                                          );
+                                        });
+                                        const next = [...current];
+                                        return {
+                                          ...prev,
+                                          provider:
+                                            next.length >=
+                                            providerOptions.length
+                                              ? null
+                                              : next,
+                                        };
+                                      })
+                                    }
+                                  />
+                                  <span>(Select All)</span>
+                                </label>
+                                {visibleOptions.map((option) => {
+                                  const checked =
+                                    option.providers.length > 0 &&
+                                    option.providers.every((provider) =>
+                                      selectedSet.has(provider),
+                                    );
+                                  return (
+                                    <label
+                                      key={`filter-option-provider-${option.id}`}
+                                      className="aoUsageReqFilterOptionBtn"
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        onChange={(event) =>
+                                          setUsageRequestMultiFilters(
+                                            (prev) => {
+                                              const current = new Set(
+                                                prev.provider ??
+                                                  providerOptions,
+                                              );
+                                              option.providers.forEach(
+                                                (provider) => {
+                                                  if (event.target.checked)
+                                                    current.add(provider);
+                                                  else current.delete(provider);
+                                                },
+                                              );
+                                              const next = [...current];
+                                              return {
+                                                ...prev,
+                                                provider:
+                                                  next.length >=
+                                                  providerOptions.length
+                                                    ? null
+                                                    : next,
+                                              };
+                                            },
+                                          )
+                                        }
+                                      />
+                                      <span>{option.label}</span>
+                                    </label>
+                                  );
+                                })}
+                              </>
+                            );
+                          }
+                          if (activeUsageRequestFilterMenu.key === "model") {
+                            const searchNeedle =
+                              usageRequestFilterSearch.model.toLowerCase();
+                            const visibleOptions =
+                              usageRequestModelFilterDisplayOptions
+                                .filter(
+                                  (option) =>
+                                    option.label
+                                      .toLowerCase()
+                                      .includes(searchNeedle) ||
+                                    option.models.some((modelName) =>
+                                      modelName
+                                        .toLowerCase()
+                                        .includes(searchNeedle),
+                                    ),
+                                )
+                                .slice(0, 40);
+                            const selectedSet = new Set(
+                              usageRequestMultiFilters.model ??
+                                usageRequestFilterOptions.model,
+                            );
+                            const allVisibleSelected =
+                              visibleOptions.length > 0 &&
+                              visibleOptions.every((option) =>
+                                option.models.every((modelName) =>
+                                  selectedSet.has(modelName),
+                                ),
+                              );
+                            return (
+                              <>
+                                <label className="aoUsageReqFilterOptionBtn aoUsageReqFilterOptionSelectAll">
+                                  <input
+                                    type="checkbox"
+                                    checked={allVisibleSelected}
+                                    onChange={(event) =>
+                                      setUsageRequestMultiFilters((prev) => {
+                                        const current = new Set(
+                                          prev.model ??
+                                            usageRequestFilterOptions.model,
+                                        );
+                                        if (event.target.checked) {
+                                          for (const option of visibleOptions) {
+                                            for (const modelName of option.models)
+                                              current.add(modelName);
+                                          }
+                                        } else {
+                                          for (const option of visibleOptions) {
+                                            for (const modelName of option.models)
+                                              current.delete(modelName);
+                                          }
+                                        }
+                                        const next = [...current];
+                                        return {
+                                          ...prev,
+                                          model:
+                                            next.length >=
+                                            usageRequestFilterOptions.model
+                                              .length
+                                              ? null
+                                              : next,
+                                        };
+                                      })
+                                    }
+                                  />
+                                  <span>(Select All)</span>
+                                </label>
+                                {visibleOptions.map((option) => {
+                                  const optionSelected = option.models.every(
+                                    (modelName) => selectedSet.has(modelName),
+                                  );
+                                  return (
+                                    <label
+                                      key={`filter-option-${activeUsageRequestFilterMenu.key}-${option.id}`}
+                                      className="aoUsageReqFilterOptionBtn"
+                                      title={option.models.join(" · ")}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={optionSelected}
+                                        onChange={(event) =>
+                                          setUsageRequestMultiFilters(
+                                            (prev) => {
+                                              const baseList =
+                                                prev.model ??
+                                                usageRequestFilterOptions.model;
+                                              const nextSet = new Set(baseList);
+                                              if (event.target.checked) {
+                                                option.models.forEach(
+                                                  (modelName) =>
+                                                    nextSet.add(modelName),
+                                                );
+                                              } else {
+                                                option.models.forEach(
+                                                  (modelName) =>
+                                                    nextSet.delete(modelName),
+                                                );
+                                              }
+                                              const nextList = [...nextSet];
+                                              return {
+                                                ...prev,
+                                                model:
+                                                  nextList.length >=
+                                                  usageRequestFilterOptions
+                                                    .model.length
+                                                    ? null
+                                                    : nextList,
+                                              };
+                                            },
+                                          )
+                                        }
+                                      />
+                                      <span>{option.label}</span>
+                                    </label>
+                                  );
+                                })}
+                              </>
+                            );
+                          }
+                          const options =
+                            activeUsageRequestFilterMenu.key === "node"
+                              ? usageRequestFilterOptions.node
+                              : activeUsageRequestFilterMenu.key === "origin"
+                                ? usageRequestFilterOptions.origin
+                                : activeUsageRequestFilterMenu.key ===
+                                    "transport"
+                                  ? usageRequestFilterOptions.transport
+                                  : usageRequestFilterOptions.session;
+                          const searchNeedle = (
+                            activeUsageRequestFilterMenu.key === "node"
+                              ? usageRequestFilterSearch.node
+                              : activeUsageRequestFilterMenu.key === "origin"
+                                ? usageRequestFilterSearch.origin
+                                : activeUsageRequestFilterMenu.key ===
+                                    "transport"
+                                  ? usageRequestFilterSearch.transport
+                                  : usageRequestFilterSearch.session
+                          ).toLowerCase();
+                          const visibleOptions = options
+                            .filter((item) =>
+                              item.toLowerCase().includes(searchNeedle),
+                            )
+                            .slice(0, 40);
+                          const selectedSet = new Set(
+                            usageRequestMultiFilters[key] ?? options,
+                          );
                           const allVisibleSelected =
                             visibleOptions.length > 0 &&
-                            visibleOptions.every((option) =>
-                              option.providers.every((provider) => selectedSet.has(provider)),
-                            )
+                            visibleOptions.every((item) =>
+                              selectedSet.has(item),
+                            );
                           return (
                             <>
                               <label className="aoUsageReqFilterOptionBtn aoUsageReqFilterOptionSelectAll">
@@ -4477,183 +5911,293 @@ export function UsageStatisticsPanel({
                                   checked={allVisibleSelected}
                                   onChange={(event) =>
                                     setUsageRequestMultiFilters((prev) => {
-                                      const current = new Set(prev.provider ?? providerOptions)
-                                      visibleOptions.forEach((option) => {
-                                        option.providers.forEach((provider) => {
-                                          if (event.target.checked) current.add(provider)
-                                          else current.delete(provider)
-                                        })
-                                      })
-                                      const next = [...current]
+                                      const current = new Set(
+                                        prev[key] ?? options,
+                                      );
+                                      if (event.target.checked) {
+                                        for (const item of visibleOptions)
+                                          current.add(item);
+                                      } else {
+                                        for (const item of visibleOptions)
+                                          current.delete(item);
+                                      }
+                                      const next = [...current];
                                       return {
                                         ...prev,
-                                        provider: next.length >= providerOptions.length ? null : next,
-                                      }
+                                        [key]:
+                                          next.length >= options.length
+                                            ? null
+                                            : next,
+                                      };
                                     })
                                   }
                                 />
                                 <span>(Select All)</span>
                               </label>
-                              {visibleOptions.map((option) => {
-                                const checked =
-                                  option.providers.length > 0 &&
-                                  option.providers.every((provider) => selectedSet.has(provider))
-                                return (
-                                  <label
-                                    key={`filter-option-provider-${option.id}`}
-                                    className="aoUsageReqFilterOptionBtn"
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={checked}
-                                      onChange={(event) =>
-                                        setUsageRequestMultiFilters((prev) => {
-                                          const current = new Set(prev.provider ?? providerOptions)
-                                          option.providers.forEach((provider) => {
-                                            if (event.target.checked) current.add(provider)
-                                            else current.delete(provider)
-                                          })
-                                          const next = [...current]
-                                          return {
-                                            ...prev,
-                                            provider: next.length >= providerOptions.length ? null : next,
-                                          }
-                                        })
-                                      }
-                                    />
-                                    <span>{option.label}</span>
-                                  </label>
-                                )
-                              })}
-                            </>
-                          )
-                        }
-                        const options =
-                          activeUsageRequestFilterMenu.key === 'node'
-                            ? usageRequestFilterOptions.node
-                            : activeUsageRequestFilterMenu.key === 'model'
-                              ? usageRequestFilterOptions.model
-                            : activeUsageRequestFilterMenu.key === 'origin'
-                              ? usageRequestFilterOptions.origin
-                              : activeUsageRequestFilterMenu.key === 'transport'
-                                ? usageRequestFilterOptions.transport
-                                : usageRequestFilterOptions.session
-                        const searchNeedle = (
-                          activeUsageRequestFilterMenu.key === 'node'
-                            ? usageRequestFilterSearch.node
-                            : activeUsageRequestFilterMenu.key === 'model'
-                              ? usageRequestFilterSearch.model
-                            : activeUsageRequestFilterMenu.key === 'origin'
-                              ? usageRequestFilterSearch.origin
-                              : activeUsageRequestFilterMenu.key === 'transport'
-                                ? usageRequestFilterSearch.transport
-                                : usageRequestFilterSearch.session
-                        ).toLowerCase()
-                        const visibleOptions = options
-                          .filter((item) => item.toLowerCase().includes(searchNeedle))
-                          .slice(0, 40)
-                        const selectedSet = new Set(usageRequestMultiFilters[key] ?? options)
-                        const allVisibleSelected =
-                          visibleOptions.length > 0 && visibleOptions.every((item) => selectedSet.has(item))
-                        return (
-                          <>
-                            <label className="aoUsageReqFilterOptionBtn aoUsageReqFilterOptionSelectAll">
-                              <input
-                                type="checkbox"
-                                checked={allVisibleSelected}
-                                onChange={(event) =>
-                                  setUsageRequestMultiFilters((prev) => {
-                                    const current = new Set(prev[key] ?? options)
-                                    if (event.target.checked) {
-                                      for (const item of visibleOptions) current.add(item)
-                                    } else {
-                                      for (const item of visibleOptions) current.delete(item)
+                              {visibleOptions.map((item) => (
+                                <label
+                                  key={`filter-option-${activeUsageRequestFilterMenu.key}-${item}`}
+                                  className="aoUsageReqFilterOptionBtn"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedSet.has(item)}
+                                    onChange={(event) =>
+                                      setUsageRequestMultiFilters((prev) => {
+                                        const baseList = prev[key] ?? options;
+                                        const nextList = event.target.checked
+                                          ? [...new Set([...baseList, item])]
+                                          : baseList.filter(
+                                              (entry) => entry !== item,
+                                            );
+                                        return {
+                                          ...prev,
+                                          [key]:
+                                            nextList.length >= options.length
+                                              ? null
+                                              : nextList,
+                                        };
+                                      })
                                     }
-                                    const next = [...current]
-                                    return { ...prev, [key]: next.length >= options.length ? null : next }
-                                  })
-                                }
-                              />
-                              <span>(Select All)</span>
-                            </label>
-                            {visibleOptions.map((item) => (
-                              <label
-                                key={`filter-option-${activeUsageRequestFilterMenu.key}-${item}`}
-                                className="aoUsageReqFilterOptionBtn"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={selectedSet.has(item)}
-                                  onChange={(event) =>
-                                    setUsageRequestMultiFilters((prev) => {
-                                      const baseList = prev[key] ?? options
-                                      const nextList = event.target.checked
-                                        ? [...new Set([...baseList, item])]
-                                        : baseList.filter((entry) => entry !== item)
-                                      return { ...prev, [key]: nextList.length >= options.length ? null : nextList }
-                                    })
-                                  }
-                                />
-                                <span>{item}</span>
-                              </label>
-                            ))}
-                          </>
-                        )
-                      })()}
-                    </div>
-                  </>
-                )}
-                {activeUsageRequestFilterMenu.key !== 'time' ? (
-                  <div className="aoUsageReqFilterMenuActions">
-                    <button
-                      type="button"
-                      className="aoTinyBtn"
-                      onClick={() =>
-                        setUsageRequestMultiFilters((prev) => ({
-                          ...prev,
-                          [activeUsageRequestFilterMenu.key]: null,
-                        }))
-                      }
-                    >
-                      Clear
-                    </button>
-                    <button type="button" className="aoTinyBtn" onClick={() => setActiveUsageRequestFilterMenu(null)}>
-                      Done
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-            <div className="aoUsageHistoryTableBody">
-              <div
-                ref={usageRequestTableWrapRef}
-                className="aoUsageHistoryTableWrap aoUsageRequestsTableWrap"
-                onScroll={() => {
-                  const wrap = usageRequestTableWrapRef.current
-                  if (wrap) {
-                    setUsageRequestTableScrollLeft(wrap.scrollLeft)
-                    syncUsageRequestVirtualRange()
-                    if (usageRequestHasMore && !usageRequestLoading) {
-                      if (hasExplicitRequestFilters && !hasImpossibleRequestFilters) {
-                        const nearBottom = isNearBottom(wrap, 24)
-                        if (nearBottom && !usageRequestWasNearBottomRef.current) {
-                          void loadMoreUsageRequests()
+                                  />
+                                  <span>{item}</span>
+                                </label>
+                              ))}
+                            </>
+                          );
+                        })()}
+                      </div>
+                    </>
+                  )}
+                  {activeUsageRequestFilterMenu.key !== "time" ? (
+                    <div className="aoUsageReqFilterMenuActions">
+                      <button
+                        type="button"
+                        className="aoTinyBtn"
+                        onClick={() =>
+                          setUsageRequestMultiFilters((prev) => ({
+                            ...prev,
+                            [activeUsageRequestFilterMenu.key]: null,
+                          }))
                         }
-                        usageRequestWasNearBottomRef.current = nearBottom
+                      >
+                        Clear
+                      </button>
+                      <button
+                        type="button"
+                        className="aoTinyBtn"
+                        onClick={() => setActiveUsageRequestFilterMenu(null)}
+                      >
+                        Done
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              <div className="aoUsageHistoryTableBody">
+                <div
+                  ref={usageRequestTableWrapRef}
+                  className="aoUsageHistoryTableWrap aoUsageRequestsTableWrap"
+                  onScroll={() => {
+                    const wrap = usageRequestTableWrapRef.current;
+                    if (wrap) {
+                      setUsageRequestTableScrollLeft(wrap.scrollLeft);
+                      syncUsageRequestVirtualRange();
+                      if (usageRequestHasMore && !usageRequestLoading) {
+                        if (
+                          hasExplicitRequestFilters &&
+                          !hasImpossibleRequestFilters
+                        ) {
+                          const nearBottom = isNearBottom(wrap, 24);
+                          if (
+                            nearBottom &&
+                            !usageRequestWasNearBottomRef.current
+                          ) {
+                            void loadMoreUsageRequests();
+                          }
+                          usageRequestWasNearBottomRef.current = nearBottom;
+                        } else {
+                          usageRequestWasNearBottomRef.current = false;
+                        }
                       } else {
-                        usageRequestWasNearBottomRef.current = false
+                        usageRequestWasNearBottomRef.current = false;
                       }
-                    } else {
-                      usageRequestWasNearBottomRef.current = false
                     }
+                    scheduleUsageRequestScrollbarSync();
+                  }}
+                  onWheel={() => {
+                    scheduleUsageRequestScrollbarSync();
+                    activateUsageRequestScrollbarUi();
+                  }}
+                  onTouchMove={activateUsageRequestScrollbarUi}
+                >
+                  <table className="aoUsageHistoryTable aoUsageRequestsTable">
+                    <colgroup>
+                      <col className="aoUsageReqColTime" />
+                      <col className="aoUsageReqColNode" />
+                      <col className="aoUsageReqColProvider" />
+                      <col className="aoUsageReqColModel" />
+                      <col className="aoUsageReqColOrigin" />
+                      <col className="aoUsageReqColTransport" />
+                      <col className="aoUsageReqColSession" />
+                      <col className="aoUsageReqColInput" />
+                      <col className="aoUsageReqColOutput" />
+                      <col className="aoUsageReqColCacheRead" />
+                    </colgroup>
+                    <tbody>
+                      {!tableRowsForDisplay.length ? (
+                        <tr>
+                          <td colSpan={10} className="aoHint">
+                            {resolveUsageRequestEmptyStateLabel({
+                              usageRequestLoading,
+                              hasImpossibleRequestFilters,
+                              defaultTodayOnly,
+                              usageRequestHasMore,
+                              totalRequestRowsForDisplay,
+                            })}
+                          </td>
+                        </tr>
+                      ) : (
+                        <>
+                          {usageRequestTopSpacerPx > 0 ? (
+                            <tr aria-hidden="true">
+                              <td
+                                colSpan={10}
+                                style={{
+                                  padding: 0,
+                                  borderBottom: 0,
+                                  background: "transparent",
+                                  height: usageRequestTopSpacerPx,
+                                }}
+                              />
+                            </tr>
+                          ) : null}
+                          {visibleUsageRequestRows.map((row) => (
+                            <tr key={usageRequestRowIdentity(row)}>
+                              <td>{fmtWhen(row.unix_ms)}</td>
+                              <td className="aoUsageRequestsMono">
+                                {row.node_name || "Local"}
+                              </td>
+                              <td className="aoUsageRequestsMono">
+                                {resolveRequestProviderName(row.provider)}
+                              </td>
+                              <td className="aoUsageRequestsMono">
+                                {formatUsageModelDisplayName(row.model)}
+                              </td>
+                              <td className="aoUsageReqCellCenter">
+                                <div className="aoUsageReqCellCenterInner">
+                                  {(() => {
+                                    const normalizedOrigin =
+                                      normalizeUsageOrigin(row.origin);
+                                    if (normalizedOrigin === "wsl2") {
+                                      return (
+                                        <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeWsl">
+                                          WSL2
+                                        </span>
+                                      );
+                                    }
+                                    if (normalizedOrigin === "windows") {
+                                      return (
+                                        <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeWindows">
+                                          WIN
+                                        </span>
+                                      );
+                                    }
+                                    return (
+                                      <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeUnknown">
+                                        UNK
+                                      </span>
+                                    );
+                                  })()}
+                                </div>
+                              </td>
+                              <td className="aoUsageReqCellCenter">
+                                <div className="aoUsageReqCellCenterInner">
+                                  {(() => {
+                                    const transport = normalizeUsageTransport(
+                                      row.transport,
+                                    );
+                                    if (transport === "ws") {
+                                      return (
+                                        <span className="aoUsageReqOriginBadge aoUsageReqTransportBadgeWs">
+                                          WS
+                                        </span>
+                                      );
+                                    }
+                                    if (transport === "sse") {
+                                      return (
+                                        <span className="aoUsageReqOriginBadge aoUsageReqTransportBadgeSse">
+                                          SSE
+                                        </span>
+                                      );
+                                    }
+                                    return (
+                                      <span className="aoUsageReqOriginBadge aoUsageReqTransportBadgeHttp">
+                                        HTTP
+                                      </span>
+                                    );
+                                  })()}
+                                </div>
+                              </td>
+                              <td
+                                className={`aoUsageRequestsMono ${
+                                  normalizeUsageOrigin(row.origin) === "wsl2"
+                                    ? "aoUsageReqSessionWsl"
+                                    : normalizeUsageOrigin(row.origin) ===
+                                        "windows"
+                                      ? "aoUsageReqSessionWindows"
+                                      : "aoUsageReqSessionUnknown"
+                                }`}
+                              >
+                                {row.session_id}
+                              </td>
+                              <td>{row.input_tokens.toLocaleString()}</td>
+                              <td>{row.output_tokens.toLocaleString()}</td>
+                              <td>
+                                {row.cache_read_input_tokens.toLocaleString()}
+                              </td>
+                            </tr>
+                          ))}
+                          {usageRequestBottomSpacerPx > 0 ? (
+                            <tr aria-hidden="true">
+                              <td
+                                colSpan={10}
+                                style={{
+                                  padding: 0,
+                                  borderBottom: 0,
+                                  background: "transparent",
+                                  height: usageRequestBottomSpacerPx,
+                                }}
+                              />
+                            </tr>
+                          ) : null}
+                        </>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div
+                  ref={usageRequestScrollbarOverlayRef}
+                  className="aoUsageHistoryScrollbarOverlay"
+                  aria-hidden="true"
+                  onPointerDown={onUsageRequestScrollbarPointerDown}
+                  onPointerMove={onUsageRequestScrollbarPointerMove}
+                  onPointerUp={onUsageRequestScrollbarPointerUp}
+                  onPointerCancel={onUsageRequestScrollbarPointerUp}
+                  onLostPointerCapture={
+                    onUsageRequestScrollbarLostPointerCapture
                   }
-                  scheduleUsageRequestScrollbarSync()
-                }}
-                onWheel={() => {
-                  scheduleUsageRequestScrollbarSync()
-                  activateUsageRequestScrollbarUi()
-                }}
-                onTouchMove={activateUsageRequestScrollbarUi}
+                >
+                  <div
+                    ref={usageRequestScrollbarThumbRef}
+                    className="aoUsageHistoryScrollbarThumb"
+                  />
+                </div>
+              </div>
+              <div
+                className="aoUsageRequestTableSummary"
+                role="status"
+                aria-live="polite"
               >
                 <table className="aoUsageHistoryTable aoUsageRequestsTable">
                   <colgroup>
@@ -4669,307 +6213,263 @@ export function UsageStatisticsPanel({
                     <col className="aoUsageReqColCacheRead" />
                   </colgroup>
                   <tbody>
-                    {!tableRowsForDisplay.length ? (
-                      <tr>
-                        <td colSpan={10} className="aoHint">
-                          {resolveUsageRequestEmptyStateLabel({
-                            usageRequestLoading,
-                            hasImpossibleRequestFilters,
-                            defaultTodayOnly,
-                            usageRequestHasMore,
-                            totalRequestRowsForDisplay,
-                          })}
-                        </td>
-                      </tr>
-                    ) : (
-                      <>
-                        {usageRequestTopSpacerPx > 0 ? (
-                          <tr aria-hidden="true">
-                            <td colSpan={10} style={{ padding: 0, borderBottom: 0, background: 'transparent', height: usageRequestTopSpacerPx }} />
-                          </tr>
-                        ) : null}
-                        {visibleUsageRequestRows.map((row) => (
-                        <tr key={usageRequestRowIdentity(row)}>
-                          <td>{fmtWhen(row.unix_ms)}</td>
-                          <td className="aoUsageRequestsMono">{row.node_name || 'Local'}</td>
-                          <td className="aoUsageRequestsMono">{resolveRequestProviderName(row.provider)}</td>
-                          <td className="aoUsageRequestsMono">{formatUsageModelDisplayName(row.model)}</td>
-                          <td className="aoUsageReqCellCenter">
-                            <div className="aoUsageReqCellCenterInner">
-                              {(() => {
-                                const normalizedOrigin = normalizeUsageOrigin(row.origin)
-                                if (normalizedOrigin === 'wsl2') {
-                                  return <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeWsl">WSL2</span>
-                                }
-                                if (normalizedOrigin === 'windows') {
-                                  return <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeWindows">WIN</span>
-                                }
-                                return <span className="aoUsageReqOriginBadge aoUsageReqOriginBadgeUnknown">UNK</span>
-                              })()}
-                            </div>
-                          </td>
-                          <td className="aoUsageReqCellCenter">
-                            <div className="aoUsageReqCellCenterInner">
-                              {(() => {
-                                const transport = normalizeUsageTransport(row.transport)
-                                if (transport === 'ws') {
-                                  return <span className="aoUsageReqOriginBadge aoUsageReqTransportBadgeWs">WS</span>
-                                }
-                                if (transport === 'sse') {
-                                  return <span className="aoUsageReqOriginBadge aoUsageReqTransportBadgeSse">SSE</span>
-                                }
-                                return <span className="aoUsageReqOriginBadge aoUsageReqTransportBadgeHttp">HTTP</span>
-                              })()}
-                            </div>
-                          </td>
-                          <td
-                            className={`aoUsageRequestsMono ${
-                              normalizeUsageOrigin(row.origin) === 'wsl2'
-                                ? 'aoUsageReqSessionWsl'
-                                : normalizeUsageOrigin(row.origin) === 'windows'
-                                  ? 'aoUsageReqSessionWindows'
-                                  : 'aoUsageReqSessionUnknown'
-                            }`}
-                          >
-                            {row.session_id}
-                          </td>
-                          <td>{row.input_tokens.toLocaleString()}</td>
-                          <td>{row.output_tokens.toLocaleString()}</td>
-                          <td>{row.cache_read_input_tokens.toLocaleString()}</td>
-                        </tr>
-                        ))}
-                        {usageRequestBottomSpacerPx > 0 ? (
-                          <tr aria-hidden="true">
-                            <td colSpan={10} style={{ padding: 0, borderBottom: 0, background: 'transparent', height: usageRequestBottomSpacerPx }} />
-                          </tr>
-                        ) : null}
-                      </>
-                    )}
+                    <tr>
+                      <td>
+                        {hasExplicitRequestFilters
+                          ? "Filtered"
+                          : defaultTodayOnly
+                            ? "Today"
+                            : "Window"}{" "}
+                        Summary
+                      </td>
+                      <td>
+                        Total{" "}
+                        {formatRequestSummaryValue(requestTableSummary?.total)}
+                      </td>
+                      <td>
+                        Requests{" "}
+                        {formatRequestSummaryValue(
+                          requestTableSummary?.requests,
+                        )}
+                      </td>
+                      <td />
+                      <td />
+                      <td />
+                      <td />
+                      <td>
+                        {formatRequestSummaryValue(requestTableSummary?.input)}
+                      </td>
+                      <td>
+                        {formatRequestSummaryValue(requestTableSummary?.output)}
+                      </td>
+                      <td>
+                        {formatRequestSummaryValue(
+                          requestTableSummary?.cacheRead,
+                        )}
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
               </div>
-              <div
-                ref={usageRequestScrollbarOverlayRef}
-                className="aoUsageHistoryScrollbarOverlay"
-                aria-hidden="true"
-                onPointerDown={onUsageRequestScrollbarPointerDown}
-                onPointerMove={onUsageRequestScrollbarPointerMove}
-                onPointerUp={onUsageRequestScrollbarPointerUp}
-                onPointerCancel={onUsageRequestScrollbarPointerUp}
-                onLostPointerCapture={onUsageRequestScrollbarLostPointerCapture}
-              >
-                <div ref={usageRequestScrollbarThumbRef} className="aoUsageHistoryScrollbarThumb" />
+            </div>
+            <UsageRequestDailyTotalsCard
+              rows={usageRequestDailyBars}
+              providers={dailyTotalsProviders}
+              colors={USAGE_REQUEST_GRAPH_COLORS}
+              formatMonthDay={formatMonthDay}
+              loading={usageRequestDailyTotalsLoading}
+            />
+            <div className="aoUsageRequestsFooter">
+              <span className="aoHint">
+                {resolveUsageRequestFooterStatusLabel({
+                  usageRequestLoading,
+                  hasImpossibleRequestFilters,
+                  usageRequestHasMore,
+                  hasExplicitRequestFilters,
+                })}
+              </span>
+              <span className="aoHint">
+                {tableRowsForDisplay.length.toLocaleString()} /{" "}
+                {requestFooterTotalRows.toLocaleString()} rows
+              </span>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {effectiveDetailsTab === "analytics" ? (
+        <div className="aoUsageDetailsPane aoUsageDetailsPaneAnalytics">
+          {visibleAnomalyEntries.length ? (
+            <div
+              className="aoUsageAnomalyBanner"
+              role="status"
+              aria-live="polite"
+            >
+              <div className="aoMiniLabel">Anomaly Watch</div>
+              {visibleAnomalyEntries.map((entry) => (
+                <div
+                  key={`usage-anomaly-${entry.id}`}
+                  className="aoUsageAnomalyItem"
+                >
+                  <div className="aoUsageAnomalyDot" aria-hidden="true" />
+                  <div className="aoUsageAnomalyText">{entry.message}</div>
+                  <button
+                    type="button"
+                    className="aoUsageAnomalyDismissIcon"
+                    onClick={() =>
+                      setDismissedAnomalyIds((prev) => {
+                        if (prev.has(entry.id)) return prev;
+                        const next = new Set(prev);
+                        next.add(entry.id);
+                        return next;
+                      })
+                    }
+                    aria-label="Dismiss anomaly notice"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="aoUsageKpiGrid">
+            <div className="aoUsageKpiCard">
+              <div className="aoMiniLabel">Total Requests</div>
+              <div className="aoUsageKpiValue">
+                {usageSummary?.total_requests?.toLocaleString() ?? "-"}
               </div>
             </div>
-            <div className="aoUsageRequestTableSummary" role="status" aria-live="polite">
-              <table className="aoUsageHistoryTable aoUsageRequestsTable">
-                <colgroup>
-                  <col className="aoUsageReqColTime" />
-                  <col className="aoUsageReqColNode" />
-                  <col className="aoUsageReqColProvider" />
-                  <col className="aoUsageReqColModel" />
-                  <col className="aoUsageReqColOrigin" />
-                  <col className="aoUsageReqColTransport" />
-                  <col className="aoUsageReqColSession" />
-                  <col className="aoUsageReqColInput" />
-                  <col className="aoUsageReqColOutput" />
-                  <col className="aoUsageReqColCacheRead" />
-                </colgroup>
-                <tbody>
-                  <tr>
-                    <td>
-                      {hasExplicitRequestFilters
-                        ? 'Filtered'
-                        : defaultTodayOnly
-                          ? 'Today'
-                          : 'Window'}{' '}
-                      Summary
-                    </td>
-                    <td>Total {formatRequestSummaryValue(requestTableSummary?.total)}</td>
-                    <td>Requests {formatRequestSummaryValue(requestTableSummary?.requests)}</td>
-                    <td />
-                    <td />
-                    <td />
-                    <td />
-                    <td>{formatRequestSummaryValue(requestTableSummary?.input)}</td>
-                    <td>{formatRequestSummaryValue(requestTableSummary?.output)}</td>
-                    <td>{formatRequestSummaryValue(requestTableSummary?.cacheRead)}</td>
-                  </tr>
-                </tbody>
-              </table>
+            <div className="aoUsageKpiCard">
+              <div className="aoMiniLabel">Total Tokens</div>
+              <div className="aoUsageKpiValue">
+                {formatKpiTokens(usageSummary?.total_tokens)}
+              </div>
+            </div>
+            <div className="aoUsageKpiCard">
+              <div className="aoMiniLabel">Top Model</div>
+              <div className="aoUsageKpiValue aoUsageKpiValueSmall">
+                {usageTopModel
+                  ? formatUsageModelDisplayName(usageTopModel.model)
+                  : "-"}
+              </div>
+            </div>
+            <div className="aoUsageKpiCard">
+              <div className="aoMiniLabel">Total $ Used</div>
+              <div className="aoUsageKpiValue">
+                {formatUsdMaybe(usageDedupedTotalUsedUsd)}
+              </div>
             </div>
           </div>
-          <UsageRequestDailyTotalsCard
-            rows={usageRequestDailyBars}
-            providers={dailyTotalsProviders}
-            colors={USAGE_REQUEST_GRAPH_COLORS}
-            formatMonthDay={formatMonthDay}
-            loading={usageRequestDailyTotalsLoading}
+          <div className="aoUsageFactsCard">
+            <div className="aoSwitchboardSectionHead">
+              <div className="aoMiniLabel">Window Details</div>
+              <div className="aoHint">
+                Top model share is request share. Priced coverage means
+                calculable-cost requests.
+              </div>
+            </div>
+            <table className="aoUsageFactsTable">
+              <tbody>
+                <tr>
+                  <th>Top Model Share</th>
+                  <td>
+                    {usageTopModel
+                      ? `${Math.round(usageTopModel.share_pct ?? 0)}% of requests`
+                      : "-"}
+                  </td>
+                  <th>Unique Models</th>
+                  <td>
+                    {usageSummary?.unique_models?.toLocaleString() ?? "-"}
+                  </td>
+                </tr>
+                <tr>
+                  <th>Input / Output Tokens</th>
+                  <td>
+                    {usageTotalInputTokens.toLocaleString()} /{" "}
+                    {usageTotalOutputTokens.toLocaleString()}
+                  </td>
+                  <th>Avg Tokens / Request</th>
+                  <td>
+                    {usageSummary?.total_requests
+                      ? usageAvgTokensPerRequest.toLocaleString()
+                      : "-"}
+                  </td>
+                </tr>
+                <tr>
+                  <th>Window Data</th>
+                  <td>
+                    {(usageSummary?.total_requests ?? 0).toLocaleString()}{" "}
+                    captured requests
+                    {usageActiveWindowHours > 0
+                      ? ` · ${usageActiveWindowHours.toFixed(1)} active h`
+                      : ""}
+                  </td>
+                  <th>Priced Coverage</th>
+                  <td>
+                    {usagePricedRequestCount.toLocaleString()} /{" "}
+                    {(usageSummary?.total_requests ?? 0).toLocaleString()} req (
+                    {usagePricedCoveragePct}%)
+                  </td>
+                </tr>
+                <tr>
+                  <th>Window Pace</th>
+                  <td>
+                    {usageAvgRequestsPerHour.toFixed(2)} req/h ·{" "}
+                    {Math.round(usageAvgTokensPerHour).toLocaleString()} tok/h
+                  </td>
+                  <th>Selected Window</th>
+                  <td>{usageWindowLabel}</td>
+                </tr>
+                <tr>
+                  <th>Data Freshness</th>
+                  <td>
+                    {usageStatistics?.generated_at_unix_ms
+                      ? fmtWhen(usageStatistics.generated_at_unix_ms)
+                      : "-"}
+                  </td>
+                  <th>Sample Coverage</th>
+                  <td>
+                    {(usageSummary?.total_requests ?? 0).toLocaleString()} req ·{" "}
+                    {usageActiveWindowHours.toFixed(1)} active h
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div className="aoUsageChartsGrid">
+            <div className="aoUsageChartCard">
+              <div className="aoSwitchboardSectionHead">
+                <div className="aoMiniLabel">Requests Timeline</div>
+                <div className="aoHint">
+                  {usageSummary?.total_requests
+                    ? `${usageSummary.total_requests.toLocaleString()} requests in window`
+                    : "No request data yet"}
+                </div>
+              </div>
+              <UsageTimelineChart
+                usageChart={usageChart}
+                usageChartHover={usageChartHover}
+                usageWindowHours={usageStatistics?.window_hours ?? 24}
+                formatUsageBucketLabel={formatUsageBucketLabel}
+                setUsageChartHover={setUsageChartHover}
+                showUsageChartHover={showUsageChartHover}
+              />
+            </div>
+          </div>
+
+          <UsageProviderStatisticsSection
+            config={config}
+            setUsageHistoryModalOpen={setUsageHistoryModalOpen}
+            setUsagePricingModalOpen={setUsagePricingModalOpen}
+            usageScheduleProviderOptions={usageScheduleProviderOptions}
+            usageByProvider={usageByProvider}
+            openUsageScheduleModal={openUsageScheduleModal}
+            providerPreferredCurrency={providerPreferredCurrency}
+            setUsageProviderShowDetails={setUsageProviderShowDetails}
+            usageProviderShowDetails={usageProviderShowDetails}
+            usageProviderShowDetailsStorageKey={
+              usageProviderShowDetailsStorageKey
+            }
+            usageProviderDisplayGroups={usageProviderDisplayGroups}
+            usageProviderRowKey={usageProviderRowKey}
+            usageAnomaliesHighCostRowKeys={usageAnomalies.highCostRowKeys}
+            formatUsdMaybe={formatUsdMaybe}
+            formatPricingSource={formatPricingSource}
+            usageProviderTotalsAndAverages={usageProviderTotalsAndAverages}
           />
-          <div className="aoUsageRequestsFooter">
-            <span className="aoHint">
-              {resolveUsageRequestFooterStatusLabel({
-                usageRequestLoading,
-                hasImpossibleRequestFilters,
-                usageRequestHasMore,
-                hasExplicitRequestFilters,
-              })}
-            </span>
-            <span className="aoHint">
-              {tableRowsForDisplay.length.toLocaleString()} / {requestFooterTotalRows.toLocaleString()} rows
-            </span>
-          </div>
-        </div>
-        </div>
-      ) : null}
-      {effectiveDetailsTab === 'analytics' ? (
-        <div className="aoUsageDetailsPane aoUsageDetailsPaneAnalytics">
-      {visibleAnomalyEntries.length ? (
-        <div className="aoUsageAnomalyBanner" role="status" aria-live="polite">
-          <div className="aoMiniLabel">Anomaly Watch</div>
-          {visibleAnomalyEntries.map((entry) => (
-            <div key={`usage-anomaly-${entry.id}`} className="aoUsageAnomalyItem">
-              <div className="aoUsageAnomalyDot" aria-hidden="true" />
-              <div className="aoUsageAnomalyText">{entry.message}</div>
-              <button
-                type="button"
-                className="aoUsageAnomalyDismissIcon"
-                onClick={() =>
-                  setDismissedAnomalyIds((prev) => {
-                    if (prev.has(entry.id)) return prev
-                    const next = new Set(prev)
-                    next.add(entry.id)
-                    return next
-                  })
-                }
-                aria-label="Dismiss anomaly notice"
-              >
-                ✕
-              </button>
-            </div>
-          ))}
-        </div>
-      ) : null}
-
-      <div className="aoUsageKpiGrid">
-        <div className="aoUsageKpiCard">
-          <div className="aoMiniLabel">Total Requests</div>
-          <div className="aoUsageKpiValue">{usageSummary?.total_requests?.toLocaleString() ?? '-'}</div>
-        </div>
-        <div className="aoUsageKpiCard">
-          <div className="aoMiniLabel">Total Tokens</div>
-          <div className="aoUsageKpiValue">{formatKpiTokens(usageSummary?.total_tokens)}</div>
-        </div>
-        <div className="aoUsageKpiCard">
-          <div className="aoMiniLabel">Top Model</div>
-          <div className="aoUsageKpiValue aoUsageKpiValueSmall">
-            {usageTopModel ? formatUsageModelDisplayName(usageTopModel.model) : '-'}
-          </div>
-        </div>
-        <div className="aoUsageKpiCard">
-          <div className="aoMiniLabel">Total $ Used</div>
-          <div className="aoUsageKpiValue">{formatUsdMaybe(usageDedupedTotalUsedUsd)}</div>
-        </div>
-      </div>
-      <div className="aoUsageFactsCard">
-        <div className="aoSwitchboardSectionHead">
-          <div className="aoMiniLabel">Window Details</div>
-          <div className="aoHint">Top model share is request share. Priced coverage means calculable-cost requests.</div>
-        </div>
-        <table className="aoUsageFactsTable">
-          <tbody>
-            <tr>
-              <th>Top Model Share</th>
-              <td>{usageTopModel ? `${Math.round(usageTopModel.share_pct ?? 0)}% of requests` : '-'}</td>
-              <th>Unique Models</th>
-              <td>{usageSummary?.unique_models?.toLocaleString() ?? '-'}</td>
-            </tr>
-            <tr>
-              <th>Input / Output Tokens</th>
-              <td>
-                {usageTotalInputTokens.toLocaleString()} / {usageTotalOutputTokens.toLocaleString()}
-              </td>
-              <th>Avg Tokens / Request</th>
-              <td>{usageSummary?.total_requests ? usageAvgTokensPerRequest.toLocaleString() : '-'}</td>
-            </tr>
-            <tr>
-              <th>Window Data</th>
-              <td>
-                {(usageSummary?.total_requests ?? 0).toLocaleString()} captured requests
-                {usageActiveWindowHours > 0 ? ` · ${usageActiveWindowHours.toFixed(1)} active h` : ''}
-              </td>
-              <th>Priced Coverage</th>
-              <td>
-                {usagePricedRequestCount.toLocaleString()} / {(usageSummary?.total_requests ?? 0).toLocaleString()} req ({usagePricedCoveragePct}%)
-              </td>
-            </tr>
-            <tr>
-              <th>Window Pace</th>
-              <td>
-                {usageAvgRequestsPerHour.toFixed(2)} req/h · {Math.round(usageAvgTokensPerHour).toLocaleString()} tok/h
-              </td>
-              <th>Selected Window</th>
-              <td>{usageWindowLabel}</td>
-            </tr>
-            <tr>
-              <th>Data Freshness</th>
-              <td>{usageStatistics?.generated_at_unix_ms ? fmtWhen(usageStatistics.generated_at_unix_ms) : '-'}</td>
-              <th>Sample Coverage</th>
-              <td>
-                {(usageSummary?.total_requests ?? 0).toLocaleString()} req · {usageActiveWindowHours.toFixed(1)} active h
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div className="aoUsageChartsGrid">
-        <div className="aoUsageChartCard">
-          <div className="aoSwitchboardSectionHead">
-            <div className="aoMiniLabel">Requests Timeline</div>
-            <div className="aoHint">
-              {usageSummary?.total_requests ? `${usageSummary.total_requests.toLocaleString()} requests in window` : 'No request data yet'}
-            </div>
-          </div>
-          <UsageTimelineChart
-            usageChart={usageChart}
-            usageChartHover={usageChartHover}
-            usageWindowHours={usageStatistics?.window_hours ?? 24}
-            formatUsageBucketLabel={formatUsageBucketLabel}
-            setUsageChartHover={setUsageChartHover}
-            showUsageChartHover={showUsageChartHover}
-          />
-        </div>
-      </div>
-
-      <UsageProviderStatisticsSection
-        config={config}
-        setUsageHistoryModalOpen={setUsageHistoryModalOpen}
-        setUsagePricingModalOpen={setUsagePricingModalOpen}
-        usageScheduleProviderOptions={usageScheduleProviderOptions}
-        usageByProvider={usageByProvider}
-        openUsageScheduleModal={openUsageScheduleModal}
-        providerPreferredCurrency={providerPreferredCurrency}
-        setUsageProviderShowDetails={setUsageProviderShowDetails}
-        usageProviderShowDetails={usageProviderShowDetails}
-        usageProviderShowDetailsStorageKey={usageProviderShowDetailsStorageKey}
-        usageProviderDisplayGroups={usageProviderDisplayGroups}
-        usageProviderRowKey={usageProviderRowKey}
-        usageAnomaliesHighCostRowKeys={usageAnomalies.highCostRowKeys}
-        formatUsdMaybe={formatUsdMaybe}
-        formatPricingSource={formatPricingSource}
-        usageProviderTotalsAndAverages={usageProviderTotalsAndAverages}
-      />
         </div>
       ) : null}
     </div>
-  )
+  );
 }
-const normalizeUsageTransport = (value: string | null | undefined): 'http' | 'sse' | 'ws' => {
-  const normalized = String(value ?? '')
+const normalizeUsageTransport = (
+  value: string | null | undefined,
+): "http" | "sse" | "ws" => {
+  const normalized = String(value ?? "")
     .trim()
-    .toLowerCase()
-  if (normalized === 'ws') return 'ws'
-  if (normalized === 'sse') return 'sse'
-  return 'http'
-}
+    .toLowerCase();
+  if (normalized === "ws") return "ws";
+  if (normalized === "sse") return "sse";
+  return "http";
+};
