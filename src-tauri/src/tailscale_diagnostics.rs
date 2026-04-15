@@ -6,6 +6,13 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 #[cfg(windows)]
+use std::collections::HashSet;
+#[cfg(windows)]
+use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+#[cfg(windows)]
+use winreg::RegKey;
+
+#[cfg(windows)]
 const TAILSCALE_CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const TAILSCALE_DIAGNOSTIC_CACHE_TTL_MS: u64 = 5_000;
@@ -30,7 +37,86 @@ pub struct TailscaleDiagnosticSnapshot {
     pub status_error: Option<String>,
     pub command_path: String,
     pub command_source: String,
+    pub probe: TailscaleProbeReport,
     pub bootstrap: Option<TailscaleBootstrapSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TailscaleCommandSource {
+    RegistryAppPath,
+    RegistryInstallLocation,
+    StandardInstallRoot,
+    Path,
+}
+
+impl std::fmt::Display for TailscaleCommandSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::RegistryAppPath => "registry_app_path",
+            Self::RegistryInstallLocation => "registry_install_location",
+            Self::StandardInstallRoot => "standard_install_root",
+            Self::Path => "path",
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TailscaleCliProbeError {
+    NotFound,
+    LaunchBlocked(String),
+    LaunchFailed(String),
+    NotConnected,
+    BadJson(String),
+}
+
+impl TailscaleCliProbeError {
+    fn outcome(&self) -> &'static str {
+        match self {
+            Self::NotFound => "not_found",
+            Self::LaunchBlocked(_) => "launch_blocked",
+            Self::LaunchFailed(_) => "launch_failed",
+            Self::NotConnected => "not_connected",
+            Self::BadJson(_) => "bad_json",
+        }
+    }
+
+    fn detail(&self) -> Option<String> {
+        match self {
+            Self::LaunchBlocked(detail) | Self::LaunchFailed(detail) | Self::BadJson(detail) => {
+                Some(detail.clone())
+            }
+            Self::NotFound | Self::NotConnected => None,
+        }
+    }
+
+    fn status_code(&self) -> String {
+        match self {
+            Self::NotFound => "tailscale_not_found".to_string(),
+            Self::LaunchBlocked(_) => "tailscale_launch_blocked".to_string(),
+            Self::LaunchFailed(_) => "tailscale_launch_failed".to_string(),
+            Self::NotConnected => "tailscale_not_connected".to_string(),
+            Self::BadJson(_) => "tailscale_bad_json".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TailscaleProbeAttempt {
+    pub command_path: String,
+    pub source: TailscaleCommandSource,
+    pub outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TailscaleProbeReport {
+    pub attempts: Vec<TailscaleProbeAttempt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_command_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_command_source: Option<TailscaleCommandSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,12 +129,13 @@ struct TailscaleBaseStatus {
     status_error: Option<String>,
     command_path: String,
     command_source: String,
+    probe: TailscaleProbeReport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TailscaleCommandResolution {
     path: PathBuf,
-    source: &'static str,
+    source: TailscaleCommandSource,
 }
 
 fn tailscale_hidden_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
@@ -63,6 +150,7 @@ fn tailscale_hidden_command(program: impl AsRef<std::ffi::OsStr>) -> std::proces
     cmd
 }
 
+#[cfg(test)]
 fn resolve_tailscale_command_resolution_from_roots<I>(
     roots: I,
 ) -> Option<TailscaleCommandResolution>
@@ -73,9 +161,166 @@ where
         let candidate = root.join("Tailscale").join("tailscale.exe");
         candidate.exists().then_some(TailscaleCommandResolution {
             path: candidate,
-            source: "standard_install_root",
+            source: TailscaleCommandSource::StandardInstallRoot,
         })
     })
+}
+
+#[cfg(windows)]
+fn registry_string_value(root: &RegKey, subkey: &str, value_name: &str) -> Option<String> {
+    let key = root.open_subkey(subkey).ok()?;
+    key.get_value::<String, _>(value_name)
+        .ok()
+        .map(|value| value.trim().trim_matches('"').to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(windows)]
+fn registry_path_from_text(value: &str) -> Option<PathBuf> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let raw = trimmed.trim_matches('"').trim_end_matches(',').trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if PathBuf::from(raw).exists() {
+        return Some(PathBuf::from(raw));
+    }
+    if let Some(rest) = trimmed.strip_prefix('"') {
+        let command = rest
+            .split('"')
+            .next()
+            .map(str::trim)?
+            .trim_end_matches(',')
+            .trim();
+        if !command.is_empty() {
+            return Some(PathBuf::from(command));
+        }
+    }
+    if let Some(exe_idx) = raw.to_ascii_lowercase().find(".exe") {
+        let command = raw[..exe_idx + 4].trim_end_matches(',').trim();
+        if !command.is_empty() {
+            return Some(PathBuf::from(command));
+        }
+    }
+    raw.split(|ch: char| ch.is_whitespace() || ch == ',')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+#[cfg(windows)]
+fn registry_install_dir_from_text(value: &str) -> Option<PathBuf> {
+    let path = registry_path_from_text(value)?;
+    if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+    {
+        path.parent().map(PathBuf::from)
+    } else if path.is_dir() {
+        Some(path)
+    } else {
+        path.parent().map(PathBuf::from)
+    }
+}
+
+#[cfg(windows)]
+fn registry_tailscale_command_resolutions() -> Vec<TailscaleCommandResolution> {
+    let roots = [
+        (
+            RegKey::predef(HKEY_LOCAL_MACHINE),
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\tailscale.exe",
+            TailscaleCommandSource::RegistryAppPath,
+        ),
+        (
+            RegKey::predef(HKEY_LOCAL_MACHINE),
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\tailscale.exe",
+            TailscaleCommandSource::RegistryAppPath,
+        ),
+        (
+            RegKey::predef(HKEY_CURRENT_USER),
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\tailscale.exe",
+            TailscaleCommandSource::RegistryAppPath,
+        ),
+    ];
+
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+    for (root, subkey, source) in roots {
+        if let Some(path) = registry_string_value(&root, subkey, "") {
+            let candidate = registry_path_from_text(&path).unwrap_or_else(|| PathBuf::from(path));
+            if candidate.exists() && seen.insert(candidate.clone()) {
+                candidates.push(TailscaleCommandResolution {
+                    path: candidate,
+                    source: source.clone(),
+                });
+            }
+        }
+    }
+
+    let uninstall_roots = [
+        (
+            RegKey::predef(HKEY_LOCAL_MACHINE),
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
+        (
+            RegKey::predef(HKEY_LOCAL_MACHINE),
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
+        (
+            RegKey::predef(HKEY_CURRENT_USER),
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
+    ];
+    for (root, subkey) in uninstall_roots {
+        let Ok(uninstall) = root.open_subkey(subkey) else {
+            continue;
+        };
+        for key_name in uninstall.enum_keys().flatten() {
+            let Ok(app) = uninstall.open_subkey(&key_name) else {
+                continue;
+            };
+            let Ok(display_name) = app.get_value::<String, _>("DisplayName") else {
+                continue;
+            };
+            if !display_name.to_ascii_lowercase().contains("tailscale") {
+                continue;
+            }
+            let install_location = app
+                .get_value::<String, _>("InstallLocation")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            let install_dir = install_location
+                .as_deref()
+                .and_then(registry_install_dir_from_text)
+                .or_else(|| {
+                    app.get_value::<String, _>("DisplayIcon")
+                        .ok()
+                        .and_then(|value| registry_install_dir_from_text(&value))
+                })
+                .or_else(|| {
+                    app.get_value::<String, _>("UninstallString")
+                        .ok()
+                        .and_then(|value| registry_install_dir_from_text(&value))
+                });
+            if let Some(install_dir) = install_dir {
+                let candidate = install_dir.join("tailscale.exe");
+                if candidate.exists() && seen.insert(candidate.clone()) {
+                    candidates.push(TailscaleCommandResolution {
+                        path: candidate,
+                        source: TailscaleCommandSource::RegistryInstallLocation,
+                    });
+                }
+            }
+        }
+    }
+
+    candidates
 }
 
 #[cfg(test)]
@@ -86,9 +331,18 @@ where
     resolve_tailscale_command_resolution_from_roots(roots).map(|resolution| resolution.path)
 }
 
-fn resolve_tailscale_command_resolution() -> TailscaleCommandResolution {
+fn enumerate_tailscale_command_resolutions() -> Vec<TailscaleCommandResolution> {
+    let mut candidates = Vec::new();
+
     #[cfg(windows)]
     {
+        let mut seen = HashSet::new();
+        for resolution in registry_tailscale_command_resolutions() {
+            if seen.insert(resolution.path.clone()) {
+                candidates.push(resolution);
+            }
+        }
+
         let roots = [
             std::env::var_os("ProgramFiles"),
             std::env::var_os("ProgramFiles(x86)"),
@@ -98,21 +352,43 @@ fn resolve_tailscale_command_resolution() -> TailscaleCommandResolution {
         .flatten()
         .map(PathBuf::from);
 
-        resolve_tailscale_command_resolution_from_roots(roots).unwrap_or(
-            TailscaleCommandResolution {
+        for root in roots {
+            let candidate = root.join("Tailscale").join("tailscale.exe");
+            if candidate.exists() && seen.insert(candidate.clone()) {
+                candidates.push(TailscaleCommandResolution {
+                    path: candidate,
+                    source: TailscaleCommandSource::StandardInstallRoot,
+                });
+            }
+        }
+
+        if seen.insert(PathBuf::from("tailscale")) {
+            candidates.push(TailscaleCommandResolution {
                 path: PathBuf::from("tailscale"),
-                source: "path",
-            },
-        )
+                source: TailscaleCommandSource::Path,
+            });
+        }
     }
 
     #[cfg(not(windows))]
     {
-        TailscaleCommandResolution {
+        candidates.push(TailscaleCommandResolution {
             path: PathBuf::from("tailscale"),
-            source: "path",
-        }
+            source: TailscaleCommandSource::Path,
+        });
     }
+
+    candidates
+}
+
+fn resolve_tailscale_command_resolution() -> TailscaleCommandResolution {
+    enumerate_tailscale_command_resolutions()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| TailscaleCommandResolution {
+            path: PathBuf::from("tailscale"),
+            source: TailscaleCommandSource::Path,
+        })
 }
 
 pub(crate) fn resolve_tailscale_command_path() -> PathBuf {
@@ -163,18 +439,42 @@ fn parse_tailscale_summary(parsed: &Value) -> TailscaleBaseStatus {
         status_error: None,
         command_path: String::new(),
         command_source: String::new(),
+        probe: TailscaleProbeReport {
+            attempts: Vec::new(),
+            selected_command_path: None,
+            selected_command_source: None,
+        },
     }
 }
 
-fn tailscale_status_json(command_path: &std::path::Path) -> Result<Value, String> {
+fn tailscale_status_json(command_path: &std::path::Path) -> Result<Value, TailscaleCliProbeError> {
     let output = tailscale_hidden_command(command_path)
         .args(["status", "--json"])
         .output()
-        .map_err(|_| "tailscale_not_found".to_string())?;
+        .map_err(|err| match err.kind() {
+            std::io::ErrorKind::NotFound => TailscaleCliProbeError::NotFound,
+            std::io::ErrorKind::PermissionDenied => {
+                TailscaleCliProbeError::LaunchBlocked(err.to_string())
+            }
+            _ => TailscaleCliProbeError::LaunchFailed(err.to_string()),
+        })?;
     if !output.status.success() {
-        return Err("tailscale_not_connected".to_string());
+        return Err(TailscaleCliProbeError::NotConnected);
     }
-    serde_json::from_slice(&output.stdout).map_err(|_| "tailscale_bad_json".to_string())
+    serde_json::from_slice(&output.stdout)
+        .map_err(|err| TailscaleCliProbeError::BadJson(err.to_string()))
+}
+
+fn attempt_from_probe_error(
+    resolution: &TailscaleCommandResolution,
+    error: &TailscaleCliProbeError,
+) -> TailscaleProbeAttempt {
+    TailscaleProbeAttempt {
+        command_path: resolution.path.display().to_string(),
+        source: resolution.source.clone(),
+        outcome: error.outcome().to_string(),
+        detail: error.detail(),
+    }
 }
 
 fn read_gateway_bootstrap_summary() -> Option<TailscaleBootstrapSummary> {
@@ -197,25 +497,76 @@ fn read_gateway_bootstrap_summary() -> Option<TailscaleBootstrapSummary> {
 }
 
 fn current_tailscale_base_status_uncached() -> TailscaleBaseStatus {
-    let resolution = resolve_tailscale_command_resolution();
-    let command_path = resolution.path.display().to_string();
-    let command_source = resolution.source.to_string();
-    match tailscale_status_json(&resolution.path) {
-        Ok(parsed) => {
-            let mut base = parse_tailscale_summary(&parsed);
-            base.command_path = command_path;
-            base.command_source = command_source;
-            base
+    let candidates = enumerate_tailscale_command_resolutions();
+    let mut attempts = Vec::new();
+    let mut last_probe_error: Option<TailscaleCliProbeError> = None;
+
+    for resolution in candidates {
+        match tailscale_status_json(&resolution.path) {
+            Ok(parsed) => {
+                let mut base = parse_tailscale_summary(&parsed);
+                base.command_path = resolution.path.display().to_string();
+                base.command_source = resolution.source.to_string();
+                base.probe = TailscaleProbeReport {
+                    attempts,
+                    selected_command_path: Some(base.command_path.clone()),
+                    selected_command_source: Some(resolution.source.clone()),
+                };
+                return base;
+            }
+            Err(err) => {
+                let err_clone = err.clone();
+                attempts.push(attempt_from_probe_error(&resolution, &err));
+                match err {
+                    TailscaleCliProbeError::NotFound => {
+                        if last_probe_error.is_none() {
+                            last_probe_error = Some(TailscaleCliProbeError::NotFound);
+                        }
+                    }
+                    TailscaleCliProbeError::LaunchBlocked(_)
+                    | TailscaleCliProbeError::LaunchFailed(_) => {
+                        last_probe_error = Some(err_clone);
+                    }
+                    TailscaleCliProbeError::NotConnected | TailscaleCliProbeError::BadJson(_) => {
+                        let command_path = resolution.path.display().to_string();
+                        let command_source = resolution.source.to_string();
+                        let selected_command_path = command_path.clone();
+                        let selected_command_source = resolution.source.clone();
+                        return TailscaleBaseStatus {
+                            installed: true,
+                            connected: false,
+                            backend_state: None,
+                            dns_name: None,
+                            ipv4: Vec::new(),
+                            status_error: Some(err_clone.status_code()),
+                            command_path,
+                            command_source,
+                            probe: TailscaleProbeReport {
+                                attempts,
+                                selected_command_path: Some(selected_command_path),
+                                selected_command_source: Some(selected_command_source),
+                            },
+                        };
+                    }
+                }
+            }
         }
-        Err(err) => TailscaleBaseStatus {
-            installed: err != "tailscale_not_found",
-            connected: false,
-            backend_state: None,
-            dns_name: None,
-            ipv4: Vec::new(),
-            status_error: Some(err),
-            command_path,
-            command_source,
+    }
+
+    let final_error = last_probe_error.unwrap_or(TailscaleCliProbeError::NotFound);
+    TailscaleBaseStatus {
+        installed: false,
+        connected: false,
+        backend_state: None,
+        dns_name: None,
+        ipv4: Vec::new(),
+        status_error: Some(final_error.status_code()),
+        command_path: String::new(),
+        command_source: String::new(),
+        probe: TailscaleProbeReport {
+            attempts,
+            selected_command_path: None,
+            selected_command_source: None,
         },
     }
 }
@@ -286,6 +637,7 @@ pub(crate) fn current_tailscale_diagnostic_snapshot_uncached(
         status_error: base.status_error,
         command_path: base.command_path,
         command_source: base.command_source,
+        probe: base.probe,
         bootstrap: read_gateway_bootstrap_summary(),
     }
 }
@@ -294,7 +646,7 @@ pub(crate) fn current_tailscale_diagnostic_snapshot_uncached(
 mod tests {
     use super::{
         parse_tailscale_summary, read_gateway_bootstrap_summary,
-        resolve_tailscale_command_path_from_roots, TailscaleBaseStatus,
+        resolve_tailscale_command_path_from_roots, TailscaleBaseStatus, TailscaleProbeReport,
     };
 
     #[test]
@@ -318,8 +670,28 @@ mod tests {
                 status_error: None,
                 command_path: String::new(),
                 command_source: String::new(),
+                probe: TailscaleProbeReport {
+                    attempts: Vec::new(),
+                    selected_command_path: None,
+                    selected_command_source: None,
+                },
             }
         );
+    }
+
+    #[test]
+    fn probe_errors_keep_launch_failures_distinct_from_missing_cli() {
+        let blocked = super::TailscaleCliProbeError::LaunchBlocked("access denied".to_string());
+        assert_eq!(blocked.outcome(), "launch_blocked");
+        assert_eq!(blocked.status_code(), "tailscale_launch_blocked");
+
+        let launch_failed = super::TailscaleCliProbeError::LaunchFailed("bad image".to_string());
+        assert_eq!(launch_failed.outcome(), "launch_failed");
+        assert_eq!(launch_failed.status_code(), "tailscale_launch_failed");
+
+        let bad_json = super::TailscaleCliProbeError::BadJson("unexpected token".to_string());
+        assert_eq!(bad_json.outcome(), "bad_json");
+        assert_eq!(bad_json.status_code(), "tailscale_bad_json");
     }
 
     #[test]
@@ -383,5 +755,25 @@ mod tests {
         let resolved = resolve_tailscale_command_path_from_roots([install_root]);
 
         assert_eq!(resolved.as_deref(), Some(tailscale_exe.as_path()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn registry_path_parser_handles_quoted_command_lines() {
+        let path =
+            super::registry_path_from_text(r#""C:\Program Files\Tailscale\Uninstall.exe",0 /S"#)
+                .expect("path");
+        assert_eq!(
+            path,
+            std::path::PathBuf::from(r"C:\Program Files\Tailscale\Uninstall.exe")
+        );
+        let install_dir = super::registry_install_dir_from_text(
+            r#""C:\Program Files\Tailscale\Uninstall.exe",0 /S"#,
+        )
+        .expect("install dir");
+        assert_eq!(
+            install_dir,
+            std::path::PathBuf::from(r"C:\Program Files\Tailscale")
+        );
     }
 }

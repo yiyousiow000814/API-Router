@@ -229,6 +229,17 @@ const DEV_PREVIEW_TAILSCALE_SUMMARY: TailscaleSummary = {
   status_error: null,
   command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
   command_source: 'standard_install_root',
+  probe: {
+    attempts: [
+      {
+        command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
+        source: 'standard_install_root',
+        outcome: 'found',
+      },
+    ],
+    selected_command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
+    selected_command_source: 'standard_install_root',
+  },
   bootstrap: {
     last_stage: 'listener-ready',
     last_detail: 'overlay listener bound to tailscale address',
@@ -255,6 +266,17 @@ const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
       status_error: null,
       command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
       command_source: 'standard_install_root',
+      probe: {
+        attempts: [
+          {
+            command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
+            source: 'standard_install_root',
+            outcome: 'found',
+          },
+        ],
+        selected_command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
+        selected_command_source: 'standard_install_root',
+      },
       bootstrap: {
         last_stage: 'gateway-bind-pending',
         last_detail: 'listener will bind after next app restart',
@@ -333,6 +355,22 @@ const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
       status_error: 'tailscale_not_found',
       command_path: 'tailscale',
       command_source: 'path',
+      probe: {
+        attempts: [
+          {
+            command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
+            source: 'standard_install_root',
+            outcome: 'not_found',
+          },
+          {
+            command_path: 'tailscale',
+            source: 'path',
+            outcome: 'not_found',
+          },
+        ],
+        selected_command_path: null,
+        selected_command_source: null,
+      },
       bootstrap: null,
     },
     watchdog: {
@@ -500,14 +538,14 @@ export function formatIncidentKind(kind: string | null | undefined): string {
 }
 
 export function peerSupportsLanDiagnostics(peer: LanPeerStatus): boolean {
-  return Boolean(peer.trusted && (peer.version_inventory ?? []).includes(LAN_DIAGNOSTICS_CAPABILITY))
+  return Boolean(peer.trusted && (peer.capabilities ?? []).includes(LAN_DIAGNOSTICS_CAPABILITY))
 }
 
 function lanDiagnosticsUnavailableReason(peer: LanPeerStatus): string {
   if (!peer.trusted) {
     return 'Peer is not trusted for LAN diagnostics.'
   }
-  if (!(peer.version_inventory ?? []).includes(LAN_DIAGNOSTICS_CAPABILITY)) {
+  if (!(peer.capabilities ?? []).includes(LAN_DIAGNOSTICS_CAPABILITY)) {
     return 'Peer does not advertise LAN diagnostics yet.'
   }
   return ''
@@ -515,7 +553,19 @@ function lanDiagnosticsUnavailableReason(peer: LanPeerStatus): string {
 
 function getTailscaleHeadline(summary: TailscaleSummary | null | undefined): string {
   if (!summary) return 'Unknown'
-  if (!summary.installed) return 'Not installed'
+  if (!summary.installed) {
+    switch (summary.status_error) {
+      case 'tailscale_launch_blocked':
+        return 'Launch blocked'
+      case 'tailscale_launch_failed':
+        return 'Launch failed'
+      case 'tailscale_bad_json':
+        return 'Bad status'
+      case 'tailscale_not_found':
+      default:
+        return 'Not installed'
+    }
+  }
   if (!summary.connected) return 'Not connected'
   if (summary.gateway_reachable) return 'Gateway reachable'
   if (summary.needs_gateway_restart) return 'Restart required'
@@ -525,15 +575,24 @@ function getTailscaleHeadline(summary: TailscaleSummary | null | undefined): str
 function getTailscaleDetail(summary: TailscaleSummary | null | undefined): string {
   if (!summary) return 'No tailscale diagnostics available.'
   const probeEvidence = formatTailscaleProbeEvidence(summary)
+  const probeTrail = formatTailscaleProbeTrail(summary)
+  const probeStatus = formatTailscaleProbeStatus(summary)
   if (!summary.installed) {
-    return probeEvidence ? `Install Tailscale on this device. Probe: ${probeEvidence}` : 'Install Tailscale on this device.'
+    const parts = ['Install Tailscale on this device.']
+    if (probeStatus) parts.push(probeStatus)
+    if (probeEvidence) parts.push(`Probe: ${probeEvidence}`)
+    if (probeTrail) parts.push(`Tried: ${probeTrail}`)
+    return parts.join(' ')
   }
   if (!summary.connected) return summary.status_error?.trim() || 'Connect this device to the tailnet.'
   const host = summary.dns_name?.trim() || summary.reachable_ipv4[0] || summary.ipv4[0] || 'No host'
   if (summary.gateway_reachable) return host
   if (summary.needs_gateway_restart) return `${host} · restart API Router`
   if (summary.status_error?.trim()) {
-    return probeEvidence ? `${host} · ${summary.status_error.trim()} · Probe: ${probeEvidence}` : `${host} · ${summary.status_error.trim()}`
+    const parts = [host, summary.status_error.trim()]
+    if (probeEvidence) parts.push(`Probe: ${probeEvidence}`)
+    if (probeTrail) parts.push(`Tried: ${probeTrail}`)
+    return parts.join(' · ')
   }
   return `${host} · gateway unreachable`
 }
@@ -541,17 +600,84 @@ function getTailscaleDetail(summary: TailscaleSummary | null | undefined): strin
 function getTailscaleStatusPresentation(summary: TailscaleSummary | null | undefined): StatusPresentation | null {
   if (!summary) return null
   if (summary.gateway_reachable) return { tone: 'healthy', label: 'healthy', pulse: true }
-  if (summary.installed === false) return { tone: 'unknown', label: 'not installed' }
+  if (summary.installed === false) {
+    switch (summary.status_error) {
+      case 'tailscale_launch_blocked':
+        return { tone: 'warn', label: 'Launch blocked' }
+      case 'tailscale_launch_failed':
+        return { tone: 'warn', label: 'Launch failed' }
+      case 'tailscale_bad_json':
+        return { tone: 'warn', label: 'Bad status' }
+      case 'tailscale_not_found':
+      default:
+        return { tone: 'unknown', label: 'not installed' }
+    }
+  }
   if (summary.connected === false) return { tone: 'degraded', label: 'offline' }
   return { tone: 'warn', label: 'Attention' }
+}
+
+type TailscaleProbeSource =
+  | 'registry_app_path'
+  | 'registry_install_location'
+  | 'standard_install_root'
+  | 'path'
+
+function formatTailscaleProbeSource(source: TailscaleProbeSource | string | null | undefined): string {
+  switch (source) {
+    case 'registry_app_path':
+    case 'registry app path':
+      return 'registry app path'
+    case 'registry_install_location':
+    case 'registry install location':
+      return 'registry install location'
+    case 'standard_install_root':
+    case 'standard install root':
+      return 'standard install root'
+    case 'path':
+    case 'PATH':
+      return 'PATH'
+    default:
+      return 'unknown'
+  }
 }
 
 export function formatTailscaleProbeEvidence(summary: TailscaleSummary | null | undefined): string | null {
   if (!summary) return null
   if (summary.installed) return null
-  const path = summary.command_path?.trim() || 'tailscale'
-  const source = summary.command_source === 'standard_install_root' ? 'standard install root' : 'PATH'
+  const path = summary.probe?.selected_command_path?.trim() || summary.command_path?.trim() || 'tailscale'
+  const source = formatTailscaleProbeSource(
+    summary.probe?.selected_command_source ?? summary.command_source ?? 'path',
+  )
   return `${path} (${source})`
+}
+
+function formatTailscaleProbeTrail(summary: TailscaleSummary | null | undefined): string | null {
+  const attempts = summary?.probe?.attempts ?? []
+  if (attempts.length <= 0) return null
+  return attempts
+    .map((attempt) => formatTailscaleProbeSource(attempt.source))
+    .filter((value) => value !== 'unknown')
+    .join(' → ')
+}
+
+function formatTailscaleProbeStatus(summary: TailscaleSummary | null | undefined): string | null {
+  const code = summary?.status_error?.trim()
+  if (!code) return null
+  switch (code) {
+    case 'tailscale_not_found':
+      return 'CLI not found'
+    case 'tailscale_launch_blocked':
+      return 'CLI launch blocked'
+    case 'tailscale_launch_failed':
+      return 'CLI launch failed'
+    case 'tailscale_not_connected':
+      return 'CLI not connected'
+    case 'tailscale_bad_json':
+      return 'CLI returned bad output'
+    default:
+      return code
+  }
 }
 
 type LocalDomain = 'tailscale' | 'webtransport' | 'watchdog'
@@ -1406,6 +1532,8 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
 function TailscaleDetailView({ summary }: { summary: TailscaleSummary | null }) {
   const host = summary?.dns_name?.trim() || summary?.reachable_ipv4[0] || summary?.ipv4[0] || '—'
   const probeEvidence = formatTailscaleProbeEvidence(summary)
+  const probeTrail = formatTailscaleProbeTrail(summary)
+  const probeStatus = formatTailscaleProbeStatus(summary)
   if (!summary) {
     return <p className="aoHint">No tailscale data available.</p>
   }
@@ -1435,6 +1563,18 @@ function TailscaleDetailView({ summary }: { summary: TailscaleSummary | null }) 
           <>
             <span className="aoKey">probe</span>
             <span className="aoVal aoValSmall">{probeEvidence}</span>
+          </>
+        ) : null}
+        {probeTrail ? (
+          <>
+            <span className="aoKey">checked</span>
+            <span className="aoVal aoValSmall">{probeTrail}</span>
+          </>
+        ) : null}
+        {probeStatus ? (
+          <>
+            <span className="aoKey">probe status</span>
+            <span className="aoVal aoValSmall">{probeStatus}</span>
           </>
         ) : null}
         {summary.status_error ? (
@@ -1864,11 +2004,18 @@ function ActiveAbnormalConditions({ watchdog, wtSnapshot, tailscale }: AbnormCon
   // Tailscale
   if (tailscale) {
     if (tailscale.installed === false) {
+      const probeTrail = formatTailscaleProbeTrail(tailscale)
+      const probeEvidence = formatTailscaleProbeEvidence(tailscale)
+      const probeStatus = formatTailscaleProbeStatus(tailscale)
+      const detailParts = ['Install Tailscale to enable remote access']
+      if (probeStatus) detailParts.push(probeStatus)
+      if (probeEvidence) detailParts.push(`Probe: ${probeEvidence}`)
+      if (probeTrail) detailParts.push(`Tried: ${probeTrail}`)
       conditions.push({
-        kind: 'Not installed',
+        kind: getTailscaleHeadline(tailscale),
         severity: 'warn',
         domain: 'ts',
-        detail: 'Install Tailscale to enable remote access',
+        detail: detailParts.join(' · '),
         age: undefined,
       })
     } else if (tailscale.connected === false) {

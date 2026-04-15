@@ -21,10 +21,18 @@ export function tailscaleSummary(status: Status): string {
   const tailscale = status.tailscale
   if (!tailscale) return 'Unknown'
   const host = tailscale.dns_name?.trim() || tailscale.reachable_ipv4[0] || tailscale.ipv4[0] || ''
-  if (!tailscale.installed) return 'Not installed'
+  if (!tailscale.installed) {
+    if (tailscale.status_error === 'tailscale_launch_blocked') return 'Launch blocked'
+    if (tailscale.status_error === 'tailscale_launch_failed') return 'Launch failed'
+    if (tailscale.status_error === 'tailscale_bad_json') return 'Bad status'
+    return 'Not installed'
+  }
   if (!tailscale.connected) {
     if (tailscale.status_error === 'tailscale_not_found') return 'CLI not found'
     if (tailscale.status_error === 'tailscale_not_connected') return 'Installed, not connected'
+    if (tailscale.status_error === 'tailscale_launch_blocked') return 'Launch blocked'
+    if (tailscale.status_error === 'tailscale_launch_failed') return 'Launch failed'
+    if (tailscale.status_error === 'tailscale_bad_json') return 'Bad status'
     return 'Disconnected'
   }
   if (tailscale.gateway_reachable) {
@@ -38,7 +46,12 @@ export function tailscaleSummary(status: Status): string {
 function peerTailscaleStateLabel(peer: NonNullable<Status['lan_sync']>['peers'][number]): string | null {
   const tailscale = peer.tailscale
   if (!tailscale) return null
-  if (!tailscale.installed) return 'not installed'
+  if (!tailscale.installed) {
+    if (tailscale.status_error === 'tailscale_launch_blocked') return 'launch blocked'
+    if (tailscale.status_error === 'tailscale_launch_failed') return 'launch failed'
+    if (tailscale.status_error === 'tailscale_bad_json') return 'bad status'
+    return 'not installed'
+  }
   if (!tailscale.connected) return 'not connected'
   if (tailscale.gateway_reachable) return null
   if (tailscale.needs_gateway_restart) return 'needs restart'

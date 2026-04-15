@@ -118,6 +118,7 @@ pub(crate) async fn tailscale_status(
         "statusError": snapshot.status_error,
         "commandPath": snapshot.command_path,
         "commandSource": snapshot.command_source,
+        "probe": snapshot.probe,
         "bootstrap": snapshot.bootstrap,
         "downloadUrl": "https://tailscale.com/download",
     }))

@@ -109,6 +109,16 @@ export type Status = {
     status_error?: string | null
     command_path?: string | null
     command_source?: string | null
+    probe?: {
+      attempts: Array<{
+        command_path: string
+        source: 'registry_app_path' | 'registry_install_location' | 'standard_install_root' | 'path'
+        outcome: string
+        detail?: string | null
+      }>
+      selected_command_path?: string | null
+      selected_command_source?: 'registry_app_path' | 'registry_install_location' | 'standard_install_root' | 'path' | null
+    } | null
     bootstrap?: {
       last_stage?: string | null
       last_detail?: string | null

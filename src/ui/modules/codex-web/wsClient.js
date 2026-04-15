@@ -535,8 +535,9 @@ export function createWsClientModule(deps) {
     ws.onclose = (event) => {
       if (state.ws !== ws || connectSeq !== state.wsConnectSeq) return;
       clearWsPingTimer();
-      const closeCode = String(Number(event?.code ?? 0) || 0);
-      recordWebTransportEvent("ws_close_observed", closeCode || null);
+      const rawCloseCode = Number(event?.code);
+      const closeCode = Number.isFinite(rawCloseCode) && rawCloseCode >= 1000 ? String(rawCloseCode) : null;
+      recordWebTransportEvent("ws_close_observed", closeCode);
       pushLiveDebugEvent("ws.close:client", {
         code: Number(event?.code ?? 0),
         reason: String(event?.reason || ""),

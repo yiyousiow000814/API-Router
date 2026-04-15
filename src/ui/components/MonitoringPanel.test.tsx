@@ -49,13 +49,15 @@ describe('MonitoringPanel', () => {
     expect(
       peerSupportsLanDiagnostics({
         trusted: true,
-        version_inventory: ['heartbeat_v1', 'lan_debug_v2'],
+        capabilities: ['heartbeat_v1', 'lan_debug_v2'],
+        version_inventory: ['heartbeat_v1'],
       } as any),
     ).toBe(true)
 
     expect(
       peerSupportsLanDiagnostics({
         trusted: false,
+        capabilities: ['heartbeat_v1', 'lan_debug_v2'],
         version_inventory: ['heartbeat_v1', 'lan_debug_v2'],
       } as any),
     ).toBe(false)
@@ -63,6 +65,7 @@ describe('MonitoringPanel', () => {
     expect(
       peerSupportsLanDiagnostics({
         trusted: true,
+        capabilities: ['heartbeat_v1'],
         version_inventory: ['heartbeat_v1'],
       } as any),
     ).toBe(false)
@@ -166,6 +169,22 @@ describe('MonitoringPanel', () => {
         status_error: 'tailscale_not_found',
         command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
         command_source: 'standard_install_root',
+        probe: {
+          attempts: [
+            {
+              command_path: 'C:\\Program Files\\Tailscale\\tailscale.exe',
+              source: 'standard_install_root',
+              outcome: 'not_found',
+            },
+            {
+              command_path: 'tailscale',
+              source: 'path',
+              outcome: 'not_found',
+            },
+          ],
+          selected_command_path: null,
+          selected_command_source: null,
+        },
         bootstrap: null,
       } as any),
     ).toBe('C:\\Program Files\\Tailscale\\tailscale.exe (standard install root)')
@@ -200,6 +219,8 @@ describe('MonitoringPanel', () => {
     expect(source).toContain('getWatchdogStatusPresentation')
     expect(source).toContain('getTailscaleStatusPresentation')
     expect(source).toContain('formatTailscaleProbeEvidence')
+    expect(source).toContain('formatTailscaleProbeTrail')
+    expect(source).toContain('formatTailscaleProbeStatus')
     expect(source).toContain('StatusDot')
     expect(source).toContain('label="healthy"')
     expect(source).not.toContain('label="ok"')
@@ -224,5 +245,6 @@ describe('MonitoringPanel', () => {
     expect(source).toContain('command_path')
     expect(source).toContain('command_source')
     expect(source).toContain('Probe:')
+    expect(source).toContain('Tried:')
   })
 })
