@@ -659,6 +659,10 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         .route("/codex/ws", get(codex_ws))
         .route("/codex/app-server/ws", get(codex_app_server_ws))
         .route("/codex/auth/verify", post(codex_auth_verify))
+        .route(
+            "/codex/transport/events",
+            post(codex_record_web_transport_event),
+        )
         .route("/codex/debug/live", get(codex_live_debug))
         .route("/codex/debug/live/client", post(codex_live_debug_client))
         .route(
@@ -795,7 +799,8 @@ use self::web_codex_thread_routes::{
     codex_thread_history, codex_thread_resume, codex_threads_create, codex_threads_list,
 };
 use self::web_codex_ws::{
-    codex_app_server_ws, codex_auth_verify, codex_live_debug, codex_live_debug_client, codex_ws,
+    codex_app_server_ws, codex_auth_verify, codex_live_debug, codex_live_debug_client,
+    codex_record_web_transport_event, codex_ws,
 };
 const SESSION_HISTORY_FLUSH_RETRY_DELAY_MS: u64 = 120;
 

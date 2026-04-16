@@ -52,6 +52,68 @@ async fn health_and_status_work_without_upstream() {
 }
 
 #[tokio::test]
+async fn codex_transport_events_route_records_web_transport_metrics() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+    secrets
+        .set_gateway_token("test-token")
+        .expect("set gateway token");
+
+    let cfg = AppConfig::default_config();
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let before_count =
+        crate::diagnostics::codex_web_transport::current_web_transport_snapshot()
+            .active_thread_poll_failed
+            .count;
+
+    let app = build_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/codex/transport/events")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer test-token")
+                .body(Body::from(
+                    json!({
+                        "eventType": "active_thread_poll_failed",
+                        "detail": "timeout"
+                    })
+                    .to_string(),
+                ))
+                .expect("transport event request"),
+        )
+        .await
+        .expect("transport event response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("transport event body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("transport event json");
+    assert_eq!(json.get("ok").and_then(|value| value.as_bool()), Some(true));
+
+    let after_count = crate::diagnostics::codex_web_transport::current_web_transport_snapshot()
+        .active_thread_poll_failed
+        .count;
+    assert!(after_count > before_count);
+}
+
+#[tokio::test]
 async fn models_probe_does_not_update_last_ok_or_activity() {
     use axum::routing::get;
     use axum::{Json, Router as AxumRouter};

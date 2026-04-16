@@ -5,6 +5,12 @@ import { describe, expect, it } from "vitest";
 describe("codex-web-dev wiring", () => {
   const source = fs.readFileSync(new URL("./codex-web-dev.js", import.meta.url), "utf8");
 
+  it("does not use Tauri-only bare module imports in browser entry", () => {
+    expect(source).not.toContain("@tauri-apps/api/core");
+    expect(source).toContain('fetch("/codex/transport/events"');
+    expect(source).not.toContain('invoke("record_web_transport_event"');
+  });
+
   it("passes bootstrap-critical UI hooks into composition", () => {
     expect(source).toMatch(
       /from "\.\/modules\/codex-web\/wsClient\.js";[\s\S]*?createCodexWebComposition/s
