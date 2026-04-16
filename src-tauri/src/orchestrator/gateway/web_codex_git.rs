@@ -65,6 +65,13 @@ fn read_cached_worktree_status(entry: WorktreeCacheEntry, now: Instant) -> Optio
     }
 }
 
+fn has_uncommitted_changes(status_output: &str) -> bool {
+    status_output
+        .lines()
+        .map(str::trim)
+        .any(|line| !line.is_empty())
+}
+
 pub(super) async fn run_git_command_for_workspace(
     workspace: Option<&str>,
     cwd: &str,
@@ -398,6 +405,25 @@ pub(super) async fn local_branches_for_workspace(
         .collect())
 }
 
+pub(super) async fn ensure_clean_worktree_for_workspace(
+    workspace: Option<&str>,
+    cwd: &str,
+) -> Result<(), String> {
+    let status_output = run_git_command_for_workspace(
+        workspace,
+        cwd,
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+    )
+    .await?;
+    if has_uncommitted_changes(&status_output) {
+        return Err(
+            "cannot switch branches with uncommitted changes; commit or stash them first"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 pub(super) async fn switch_branch_for_workspace(
     workspace: Option<&str>,
     cwd: &str,
@@ -407,6 +433,7 @@ pub(super) async fn switch_branch_for_workspace(
     if branch.is_empty() {
         return Err("branch is required".to_string());
     }
+    ensure_clean_worktree_for_workspace(workspace, cwd).await?;
     match run_git_command_for_workspace(workspace, cwd, &["switch", "--", branch]).await {
         Ok(_) => Ok(()),
         Err(_) => run_git_command_for_workspace(workspace, cwd, &["checkout", "--", branch])
@@ -585,5 +612,14 @@ mod tests {
 
         assert_eq!(read_cached_worktree_status(fresh_entry, now), Some(true));
         assert_eq!(read_cached_worktree_status(stale_entry, now), None);
+    }
+
+    #[test]
+    fn has_uncommitted_changes_treats_staged_unstaged_and_untracked_as_dirty() {
+        assert!(!has_uncommitted_changes(""));
+        assert!(!has_uncommitted_changes("   \n"));
+        assert!(has_uncommitted_changes(" M src/main.rs\n"));
+        assert!(has_uncommitted_changes("M  src/main.rs\n"));
+        assert!(has_uncommitted_changes("?? notes.txt\n"));
     }
 }
