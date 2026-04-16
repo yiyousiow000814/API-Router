@@ -1631,4 +1631,159 @@ describe("actionBindings", () => {
     expect(deps.__apiCall?.url).toBe("/codex/threads/thread-1/branch");
     expect(deps.__apiCall?.options?.body?.workspace).toBe("wsl2");
   });
+
+  it("closes picker menus when clicking the picker bar background", () => {
+    const handlers = new Map();
+    const OriginalNode = globalThis.Node;
+    class FakeNode {}
+    globalThis.Node = FakeNode;
+    try {
+      const pickerBar = {
+        addEventListener(eventName, handler) {
+          handlers.set(`composerPickerBar:${eventName}`, handler);
+        },
+        contains(target) {
+          return target === pickerBarTarget;
+        },
+      };
+      const pickerBarTarget = new FakeNode();
+      pickerBarTarget.closest = () => null;
+      const deps = {
+        state: {
+          folderPickerOpen: false,
+          modelOptionsLoading: false,
+          threadItems: [],
+          composerBranchMenuOpen: true,
+          composerPermissionMenuOpen: true,
+        },
+        byId(id) {
+          if (id === "composerPickerBar") return pickerBar;
+          return null;
+        },
+        bindClick() {},
+        bindResponsiveClick() {},
+        bindInput() {},
+        setStatus() {},
+        updateMobileComposerState() {},
+        updateNotificationState() {},
+        armSyntheticClickSuppression() {},
+        wireBlurBackdropShield() {},
+        closeFolderPicker() {},
+        refreshFolderPicker: async () => {},
+        renderFolderPicker() {},
+        confirmFolderPickerCurrentPath() {},
+        resetFolderPickerPath() {},
+        switchFolderPickerWorkspace: async () => {},
+        openFolderPicker: async () => {},
+        newThread: async () => {},
+        setMainTab() {},
+        setMobileTab() {},
+        refreshCodexVersions: async () => {},
+        setWorkspaceTarget: async () => {},
+        setHeaderModelMenuOpen() {},
+        closeInlineEffortOverlay() {},
+        shouldSuppressSyntheticClick() { return false; },
+        renderThreads() {},
+        wireThreadPullToRefresh() {},
+        addHost: async () => {},
+        resolveApproval: async () => {},
+        resolveUserInput: async () => {},
+        refreshPending: async () => {},
+        uploadAttachment: async () => {},
+        sendTurn: async () => {},
+        syncSlashCommandMenu() {},
+        syncSettingsControlsFromMain() {},
+        localStorageRef: { getItem() { return ""; }, setItem() {} },
+        windowRef: { addEventListener() {} },
+        documentRef: {
+          addEventListener(eventName, handler) {
+            handlers.set(`document:${eventName}`, handler);
+          },
+        },
+        NotificationRef: { requestPermission: async () => "default" },
+      };
+
+      createActionBindingsModule(deps).wireActions();
+      handlers.get("document:click")?.({ target: pickerBarTarget });
+
+      expect(deps.state.composerBranchMenuOpen).toBe(false);
+      expect(deps.state.composerPermissionMenuOpen).toBe(false);
+    } finally {
+      globalThis.Node = OriginalNode;
+    }
+  });
+
+  it("closes picker menus from the picker bar when clicking a non-interactive gap", () => {
+    const handlers = new Map();
+    const pickerBar = {
+      addEventListener(eventName, handler) {
+        handlers.set(`composerPickerBar:${eventName}`, handler);
+      },
+    };
+    const deps = {
+      state: {
+        folderPickerOpen: false,
+        modelOptionsLoading: false,
+        threadItems: [],
+        composerBranchMenuOpen: true,
+        composerPermissionMenuOpen: true,
+      },
+      byId(id) {
+        if (id === "composerPickerBar") return pickerBar;
+        return null;
+      },
+      bindClick() {},
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus() {},
+      updateMobileComposerState() {
+        deps.__updates = (deps.__updates || 0) + 1;
+      },
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSlashCommandMenu() {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+
+    createActionBindingsModule(deps).wireActions();
+    handlers.get("composerPickerBar:click")?.({
+      target: {
+        closest() {
+          return null;
+        },
+      },
+    });
+
+    expect(deps.state.composerBranchMenuOpen).toBe(false);
+    expect(deps.state.composerPermissionMenuOpen).toBe(false);
+    expect(deps.__updates).toBe(1);
+  });
 });

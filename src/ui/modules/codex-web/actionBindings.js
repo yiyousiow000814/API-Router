@@ -180,6 +180,14 @@ export function createActionBindingsModule(deps) {
     updateMobileComposerState();
   }
 
+  function isComposerPickerInteractiveTarget(target) {
+    return !!(
+      target?.closest?.("[data-composer-picker-toggle]") ||
+      target?.closest?.("[data-composer-branch-option]") ||
+      target?.closest?.("[data-composer-permission-option]")
+    );
+  }
+
   function wireActions() {
     bindClick("addHostBtn", () => addHost().catch((e) => setStatus(resolveActionErrorMessage(e), true)));
     bindClick("resolveApprovalBtn", () =>
@@ -692,6 +700,11 @@ export function createActionBindingsModule(deps) {
         pickerBar.__wiredComposerPickerActions = true;
         pickerBar.addEventListener("click", (event) => {
           if (shouldSuppressSyntheticClick(event)) return;
+          const target = event?.target;
+          if (!isComposerPickerInteractiveTarget(target)) {
+            closeComposerPickerMenus();
+            return;
+          }
           const toggleBtn = event?.target?.closest?.("[data-composer-picker-toggle]");
           if (toggleBtn) {
             event.preventDefault();
@@ -775,7 +788,7 @@ export function createActionBindingsModule(deps) {
       const target = event.target;
       const pickerBar = byId("composerPickerBar");
       if (!(target instanceof Node)) return;
-      if (pickerBar?.contains(target)) return;
+      if (pickerBar?.contains(target) && isComposerPickerInteractiveTarget(target)) return;
       closeComposerPickerMenus();
     });
     bindClick("quickPrompt1", () => {
