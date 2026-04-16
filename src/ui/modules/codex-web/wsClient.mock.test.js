@@ -375,6 +375,55 @@ describe("wsClient mock transport", () => {
     expect(fetchRef).toHaveBeenCalledTimes(4);
   });
 
+  it("returns mock git meta payloads in pure mock transport mode", async () => {
+    const state = createState();
+    const notifications = [];
+    const fetchRef = vi.fn(async () => {
+      throw new Error("fetch should not be called");
+    });
+    const module = createModule(state, notifications, fetchRef, "mock");
+
+    const created = await module.api("/codex/threads", {
+      method: "POST",
+      body: { workspace: "windows", cwd: "C:\\repo\\demo" },
+    });
+
+    await expect(
+      module.api("/codex/git?workspace=windows&cwd=C%3A%5Crepo%5Cdemo")
+    ).resolves.toEqual(
+      expect.objectContaining({
+        workspace: "windows",
+        cwd: "C:\\repo\\demo",
+        currentBranch: "feat/codex-web-branch-picker",
+        branches: expect.arrayContaining([expect.objectContaining({ name: "main" })]),
+      })
+    );
+    await expect(
+      module.api(`/codex/threads/${created.threadId}/git?workspace=windows`)
+    ).resolves.toEqual(
+      expect.objectContaining({
+        threadId: created.threadId,
+        cwd: "C:\\repo\\demo",
+      })
+    );
+    await expect(
+      module.api("/codex/git/branch", {
+        method: "POST",
+        body: { workspace: "windows", cwd: "C:\\repo\\demo", branch: "main" },
+      })
+    ).resolves.toEqual(expect.objectContaining({ currentBranch: "main" }));
+    await expect(
+      module.api(`/codex/threads/${created.threadId}/branch`, {
+        method: "POST",
+        body: { workspace: "windows", branch: "main" },
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({ threadId: created.threadId, currentBranch: "main" })
+    );
+
+    expect(fetchRef).not.toHaveBeenCalled();
+  });
+
   it("merges sandbox-created threads into safe thread list reads", async () => {
     const state = createState();
     const notifications = [];

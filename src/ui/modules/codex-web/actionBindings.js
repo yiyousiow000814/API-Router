@@ -1,4 +1,4 @@
-import { normalizeBranchOptions } from "./branchOptions.js";
+import { applyActiveThreadGitMetaState, activeComposerWorkspace } from "./threadGitMetaState.js";
 
 export function shouldSubmitPromptKey(event) {
   return (
@@ -170,30 +170,8 @@ export function createActionBindingsModule(deps) {
     }, PENDING_FREEFORM_EXIT_MS);
   }
 
-  function activeComposerWorkspace() {
-    return String(state.activeThreadWorkspace || state.workspaceTarget || "windows").trim().toLowerCase() === "wsl2"
-      ? "wsl2"
-      : "windows";
-  }
-
   function applyThreadGitMeta(payload) {
-    state.activeThreadCurrentBranch = String(payload?.currentBranch || "").trim();
-    state.activeThreadBranchOptions = normalizeBranchOptions(payload?.branches);
-    if (payload?.isWorktree != null) {
-      state.activeThreadIsWorktree = payload.isWorktree === true;
-    }
-    state.activeThreadGitMetaLoading = false;
-    state.activeThreadGitMetaLoaded = true;
-    const threadId = String(payload?.threadId || state.activeThreadId || "").trim();
-    const workspace = String(payload?.workspace || activeComposerWorkspace()).trim().toLowerCase();
-    const cwd = String(payload?.cwd || "").trim();
-    state.activeThreadGitMetaCwd = cwd;
-    state.activeThreadGitMetaSource = threadId ? "thread" : "cwd";
-    state.activeThreadGitMetaKey = threadId && (workspace === "windows" || workspace === "wsl2")
-      ? `thread:${workspace}:${threadId}`
-      : cwd && (workspace === "windows" || workspace === "wsl2")
-        ? `cwd:${workspace}:${cwd}`
-      : "";
+    return applyActiveThreadGitMetaState(state, payload);
   }
 
   function closeComposerPickerMenus() {

@@ -275,6 +275,26 @@ function buildFolderItems(workspace, cwd = "") {
   };
 }
 
+function buildMockGitMetaPayload({ workspace, cwd, threadId = "" }) {
+  const normalizedWorkspace = normalizeWorkspace(workspace);
+  const normalizedCwd = String(
+    cwd || (normalizedWorkspace === "wsl2" ? "/home/yiyou/project" : "C:\\Users\\yiyou\\API-Router")
+  ).trim();
+  const branchOptions = [
+    { name: "main" },
+    { name: "feat/codex-web-branch-picker", prNumber: 196 },
+  ];
+  const payload = {
+    workspace: normalizedWorkspace,
+    cwd: normalizedCwd,
+    currentBranch: "feat/codex-web-branch-picker",
+    branches: branchOptions,
+    isWorktree: /worktree/i.test(normalizedCwd),
+  };
+  if (threadId) payload.threadId = String(threadId).trim();
+  return payload;
+}
+
 export function createMockCodexTransport(deps) {
   const {
     state,
@@ -924,6 +944,44 @@ export function createMockCodexTransport(deps) {
     if (url === "/codex/hosts" && method === "GET") return { items: [] };
     if (url === "/codex/approvals/pending" && method === "GET") return { items: [] };
     if (url === "/codex/user-input/pending" && method === "GET") return { items: [] };
+    if (url.startsWith("/codex/git?") && method === "GET") {
+      return buildMockGitMetaPayload({
+        workspace: query.get("workspace") || state.workspaceTarget || "windows",
+        cwd: query.get("cwd") || "",
+      });
+    }
+    const threadGitMatch = url.match(/^\/codex\/threads\/([^/]+)\/git(?:\?|$)/);
+    if (threadGitMatch && method === "GET") {
+      const threadId = decodeURIComponent(threadGitMatch[1] || "");
+      const thread = getThread(threadId);
+      return buildMockGitMetaPayload({
+        workspace: query.get("workspace") || thread?.workspace || state.workspaceTarget || "windows",
+        cwd: thread?.cwd || "",
+        threadId,
+      });
+    }
+    if (url === "/codex/git/branch" && method === "POST") {
+      return {
+        ...buildMockGitMetaPayload({
+          workspace: options.body?.workspace || state.workspaceTarget || "windows",
+          cwd: options.body?.cwd || "",
+        }),
+        currentBranch: String(options.body?.branch || "main").trim() || "main",
+      };
+    }
+    const threadBranchMatch = url.match(/^\/codex\/threads\/([^/]+)\/branch(?:\?|$)/);
+    if (threadBranchMatch && method === "POST") {
+      const threadId = decodeURIComponent(threadBranchMatch[1] || "");
+      const thread = getThread(threadId);
+      return {
+        ...buildMockGitMetaPayload({
+          workspace: options.body?.workspace || thread?.workspace || state.workspaceTarget || "windows",
+          cwd: thread?.cwd || "",
+          threadId,
+        }),
+        currentBranch: String(options.body?.branch || "main").trim() || "main",
+      };
+    }
     if (url === "/codex/attachments/upload" && method === "POST") {
       return { ok: true, fileName: options.body?.fileName || "attachment.txt" };
     }

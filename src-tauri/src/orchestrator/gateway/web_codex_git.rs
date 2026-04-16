@@ -3,13 +3,22 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+const WORKTREE_CACHE_TTL: Duration = Duration::from_secs(300);
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
-fn worktree_cache() -> &'static Mutex<HashMap<String, bool>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WorktreeCacheEntry {
+    is_worktree: bool,
+    observed_at: Instant,
+}
+
+fn worktree_cache() -> &'static Mutex<HashMap<String, WorktreeCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, WorktreeCacheEntry>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -46,6 +55,14 @@ fn normalize_cache_key(workspace: Option<&str>, cwd: &str) -> Option<String> {
         cwd.replace('\\', "/").to_ascii_lowercase()
     };
     Some(format!("{workspace}:{normalized_cwd}"))
+}
+
+fn read_cached_worktree_status(entry: WorktreeCacheEntry, now: Instant) -> Option<bool> {
+    if now.duration_since(entry.observed_at) > WORKTREE_CACHE_TTL {
+        None
+    } else {
+        Some(entry.is_worktree)
+    }
 }
 
 pub(super) async fn run_git_command_for_workspace(
@@ -319,8 +336,10 @@ pub(super) async fn detect_git_worktree_for_workspace(
             Ok(guard) => guard,
             Err(err) => err.into_inner(),
         };
-        if let Some(value) = guard.get(&cache_key) {
-            return Ok(*value);
+        if let Some(entry) = guard.get(&cache_key).copied() {
+            if let Some(value) = read_cached_worktree_status(entry, Instant::now()) {
+                return Ok(value);
+            }
         }
     }
     let output = run_git_command_for_workspace(workspace, cwd, WORKTREE_DETECTION_GIT_ARGS).await?;
@@ -330,7 +349,13 @@ pub(super) async fn detect_git_worktree_for_workspace(
         Ok(guard) => guard,
         Err(err) => err.into_inner(),
     };
-    guard.insert(cache_key, is_worktree);
+    guard.insert(
+        cache_key,
+        WorktreeCacheEntry {
+            is_worktree,
+            observed_at: Instant::now(),
+        },
+    );
     Ok(is_worktree)
 }
 
@@ -530,5 +555,21 @@ mod tests {
 
         let worktree_output = "C:/repo/worktree\nC:/repo/.git/worktrees/feature\nC:/repo/.git\n";
         assert_eq!(parse_worktree_detection_output(worktree_output), Ok(true));
+    }
+
+    #[test]
+    fn read_cached_worktree_status_expires_stale_entries() {
+        let now = Instant::now();
+        let fresh_entry = WorktreeCacheEntry {
+            is_worktree: true,
+            observed_at: now - Duration::from_secs(30),
+        };
+        let stale_entry = WorktreeCacheEntry {
+            is_worktree: false,
+            observed_at: now - WORKTREE_CACHE_TTL - Duration::from_secs(1),
+        };
+
+        assert_eq!(read_cached_worktree_status(fresh_entry, now), Some(true));
+        assert_eq!(read_cached_worktree_status(stale_entry, now), None);
     }
 }

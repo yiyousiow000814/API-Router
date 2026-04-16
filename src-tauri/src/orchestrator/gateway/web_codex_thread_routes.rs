@@ -156,6 +156,17 @@ fn collect_worktree_probe_requests(
     requests
 }
 
+fn worktree_probe_result_key(workspace: Option<&str>, cwd: &str) -> (String, String) {
+    (
+        workspace
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_default()
+            .to_ascii_lowercase(),
+        cwd.trim().to_string(),
+    )
+}
+
 async fn apply_worktree_flag_to_item(
     item: &mut Value,
     workspace_hint: Option<&str>,
@@ -189,7 +200,10 @@ async fn apply_worktree_flags_to_items(
             continue;
         };
         if let Ok(is_worktree) = result {
-            results.insert((workspace, cwd), is_worktree);
+            results.insert(
+                worktree_probe_result_key(workspace.as_deref(), &cwd),
+                is_worktree,
+            );
         }
     }
 
@@ -197,7 +211,7 @@ async fn apply_worktree_flags_to_items(
         let Some((workspace, cwd)) = worktree_probe_request_for_item(item, workspace_hint) else {
             continue;
         };
-        let key = (workspace, cwd);
+        let key = worktree_probe_result_key(workspace.as_deref(), &cwd);
         if let Some(is_worktree) = results.get(&key).copied() {
             if let Some(obj) = item.as_object_mut() {
                 obj.insert("isWorktree".to_string(), Value::Bool(is_worktree));
@@ -1183,6 +1197,14 @@ mod tests {
         assert_eq!(
             requests,
             vec![(Some("wsl2".to_string()), "C:\\repo-a".to_string())]
+        );
+    }
+
+    #[test]
+    fn worktree_probe_result_key_normalizes_workspace_case() {
+        assert_eq!(
+            worktree_probe_result_key(Some("Windows"), "C:\\repo-a"),
+            worktree_probe_result_key(Some("windows"), "C:\\repo-a")
         );
     }
 }

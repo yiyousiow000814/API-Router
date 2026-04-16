@@ -9,6 +9,12 @@ import {
   readBranchOptionName,
   readBranchOptionPrNumber,
 } from "./branchOptions.js";
+import {
+  activeComposerWorkspace,
+  applyActiveThreadGitMetaState,
+  buildActiveThreadGitMetaKey,
+  normalizeGitMetaWorkspace,
+} from "./threadGitMetaState.js";
 
 export function createComposerUiModule(deps) {
   const {
@@ -1005,12 +1011,6 @@ export function createComposerUiModule(deps) {
     });
   }
 
-  function activeComposerWorkspace() {
-    return String(state.activeThreadWorkspace || state.workspaceTarget || "windows").trim().toLowerCase() === "wsl2"
-      ? "wsl2"
-      : "windows";
-  }
-
   function permissionLabelForPreset(value) {
     const preset = String(value || "").trim().toLowerCase();
     if (preset === "/permission full-access") return "Full access";
@@ -1030,30 +1030,13 @@ export function createComposerUiModule(deps) {
   }
 
   function applyActiveThreadGitMeta(payload) {
-    const threadId = String(payload?.threadId || state.activeThreadId || "").trim();
-    const workspace = String(payload?.workspace || activeComposerWorkspace()).trim().toLowerCase();
-    const cwd = String(payload?.cwd || "").trim();
-    state.activeThreadCurrentBranch = String(payload?.currentBranch || "").trim();
-    state.activeThreadBranchOptions = normalizeBranchOptions(payload?.branches);
-    if (payload?.isWorktree != null) {
-      state.activeThreadIsWorktree = payload.isWorktree === true;
-    }
-    state.activeThreadGitMetaLoading = false;
-    state.activeThreadGitMetaLoaded = true;
-    state.activeThreadGitMetaCwd = cwd;
-    state.activeThreadGitMetaSource = threadId ? "thread" : "cwd";
-    state.activeThreadGitMetaKey = threadId && (workspace === "windows" || workspace === "wsl2")
-      ? `thread:${workspace}:${threadId}`
-      : cwd && (workspace === "windows" || workspace === "wsl2")
-        ? `cwd:${workspace}:${cwd}`
-      : "";
-    return payload;
+    return applyActiveThreadGitMetaState(state, payload);
   }
 
   async function refreshActiveThreadGitMeta(options = {}) {
     if (typeof api !== "function") return null;
     const threadId = String(options.threadId || state.activeThreadId || "").trim();
-    const workspace = String(options.workspace || activeComposerWorkspace()).trim().toLowerCase();
+    const workspace = normalizeGitMetaWorkspace(options.workspace, state);
     const cwd = String(options.cwd || state.startCwdByWorkspace?.[workspace] || "").trim();
     if (workspace !== "windows" && workspace !== "wsl2") {
       clearActiveThreadGitMeta();
@@ -1064,7 +1047,11 @@ export function createComposerUiModule(deps) {
       clearActiveThreadGitMeta();
       return null;
     }
-    const key = useThread ? `thread:${workspace}:${threadId}` : `cwd:${workspace}:${cwd}`;
+    const key = buildActiveThreadGitMetaKey({
+      threadId: useThread ? threadId : "",
+      workspace,
+      cwd: useThread ? "" : cwd,
+    });
     if (options.force !== true) {
       if (state.activeThreadGitMetaLoading === true && state.activeThreadGitMetaKey === key) {
         return null;
