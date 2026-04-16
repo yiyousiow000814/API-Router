@@ -1164,25 +1164,23 @@ export function createComposerUiModule(deps) {
         : currentBranch
           ? [normalizeBranchOption({ name: currentBranch })]
           : [];
-      const menuBodyHtml = state.activeThreadGitMetaLoading === true
-        ? `<div class="composerPickerMenuState">Loading branches...</div>`
-        : visibleBranches.length
-          ? visibleBranches.map((branchOption) => {
-              const branchName = readBranchOptionName(branchOption);
-              const prNumber = readBranchOptionPrNumber(branchOption);
-              const active = branchName === currentBranch;
-              return (
-                `<button class="composerPickerMenuItem${active ? " is-active" : ""}" type="button" data-composer-branch-option="${escapeHtml(branchName)}">` +
-                  `<span class="composerPickerMenuItemRow">` +
-                    `<span class="composerPickerMenuItemName">${escapeHtml(branchName)}</span>` +
-                    (prNumber != null
-                      ? `<span class="composerPickerMenuItemMeta">#${escapeHtml(prNumber)}</span>`
-                      : "") +
-                  `</span>` +
-                `</button>`
-              );
-            }).join("")
-          : `<div class="composerPickerMenuState">No branches</div>`;
+      const menuBodyHtml = visibleBranches.length
+        ? visibleBranches.map((branchOption) => {
+            const branchName = readBranchOptionName(branchOption);
+            const prNumber = readBranchOptionPrNumber(branchOption);
+            const active = branchName === currentBranch;
+            return (
+              `<button class="composerPickerMenuItem${active ? " is-active" : ""}" type="button" data-composer-branch-option="${escapeHtml(branchName)}">` +
+                `<span class="composerPickerMenuItemRow">` +
+                  `<span class="composerPickerMenuItemName">${escapeHtml(branchName)}</span>` +
+                  (prNumber != null
+                    ? `<span class="composerPickerMenuItemMeta">#${escapeHtml(prNumber)}</span>`
+                    : "") +
+                `</span>` +
+              `</button>`
+            );
+          }).join("")
+        : `<div class="composerPickerMenuState">No branches</div>`;
       const nextMenuHtml = `<div class="composerPickerMenuScroll">${menuBodyHtml}</div>`;
       if (branchMenu.__pickerHtml !== nextMenuHtml) {
         branchMenu.innerHTML = nextMenuHtml;
