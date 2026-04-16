@@ -44,6 +44,23 @@ pub(crate) fn tailscale_overlay_listener_addrs(
 }
 
 #[cfg(windows)]
+pub(crate) fn wsl_overlay_listener_addr(
+    listen_host: &str,
+    listen_port: u16,
+    wsl_host: &str,
+) -> anyhow::Result<Option<SocketAddr>> {
+    let primary: SocketAddr = format!("{listen_host}:{listen_port}").parse()?;
+    if primary.ip().to_string() != crate::constants::GATEWAY_WINDOWS_HOST {
+        return Ok(None);
+    }
+    let parsed_wsl_ip: std::net::IpAddr = wsl_host.parse()?;
+    if parsed_wsl_ip == primary.ip() {
+        return Ok(None);
+    }
+    Ok(Some(SocketAddr::new(parsed_wsl_ip, listen_port)))
+}
+
+#[cfg(windows)]
 fn gateway_listen_addrs_with_overlays(
     listen_host: &str,
     listen_port: u16,
@@ -54,12 +71,10 @@ fn gateway_listen_addrs_with_overlays(
     let primary: SocketAddr = format!("{listen_host}:{listen_port}").parse()?;
     let mut addrs = vec![primary];
 
-    let primary_ip = primary.ip().to_string();
-    if primary_ip == crate::constants::GATEWAY_WINDOWS_HOST {
-        let parsed_wsl_ip: std::net::IpAddr = wsl_host.parse()?;
-        if parsed_wsl_ip != primary.ip() {
-            push_unique_addr(&mut addrs, SocketAddr::new(parsed_wsl_ip, listen_port));
-        }
+    if let Some(wsl_addr) = wsl_overlay_listener_addr(listen_host, listen_port, wsl_host)? {
+        push_unique_addr(&mut addrs, wsl_addr);
+    }
+    if primary.ip().to_string() == crate::constants::GATEWAY_WINDOWS_HOST {
         if let Some(lan_ip) = lan_ip {
             if lan_ip != primary.ip() {
                 push_unique_addr(&mut addrs, SocketAddr::new(lan_ip, listen_port));
@@ -370,7 +385,10 @@ mod tests {
         bind_listener_addrs_with_policy, gateway_listen_addrs, persist_gateway_runtime_port,
     };
     #[cfg(windows)]
-    use super::{gateway_listen_addrs_with_overlays, tailscale_overlay_listener_addrs};
+    use super::{
+        gateway_listen_addrs_with_overlays, tailscale_overlay_listener_addrs,
+        wsl_overlay_listener_addr,
+    };
     use crate::app_state::build_state;
     use std::io::ErrorKind;
     use std::net::SocketAddr;
@@ -403,6 +421,19 @@ mod tests {
         assert!(addrs
             .iter()
             .any(|addr| addr.to_string() == "100.64.208.117:4000"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wsl_overlay_listener_addr_only_exists_for_loopback_primary() {
+        assert_eq!(
+            wsl_overlay_listener_addr("127.0.0.1", 4000, "172.26.144.1").unwrap(),
+            Some("172.26.144.1:4000".parse().unwrap())
+        );
+        assert_eq!(
+            wsl_overlay_listener_addr("172.26.144.1", 4000, "172.26.144.1").unwrap(),
+            None
+        );
     }
 
     #[cfg(windows)]
