@@ -700,6 +700,11 @@ pub fn run() {
                     loop {
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                         let st = app_handle.state::<app_state::AppState>();
+                        st.ui_watchdog.check_backend_status_stall(
+                            &st.gateway.store,
+                            &st.diagnostics_dir,
+                            unix_ms(),
+                        );
                         st.ui_watchdog.check_unresponsive(
                             &st.gateway.store,
                             &st.diagnostics_dir,

@@ -254,14 +254,15 @@ impl RouterState {
 
     pub fn sync_with_config(&self, cfg: &AppConfig, now_ms: u64) {
         let mut health = self.health.write();
-        let original_len = health.len();
+        let original_provider_names = health.keys().cloned().collect::<BTreeSet<_>>();
         for name in cfg.providers.keys() {
             health
                 .entry(name.clone())
                 .or_insert_with(|| ProviderHealth::new(now_ms));
         }
         health.retain(|name, _| cfg.providers.contains_key(name));
-        let health_changed = health.len() != original_len;
+        let health_changed =
+            health.keys().cloned().collect::<BTreeSet<_>>() != original_provider_names;
         drop(health);
 
         let mut quota_closed = self.quota_closed_by_provider.write();
@@ -765,6 +766,50 @@ mod tests {
         assert_eq!(
             version_after, version_before,
             "status sync should not rewrite shared health meta when providers are unchanged"
+        );
+    }
+
+    #[test]
+    fn sync_with_config_persists_shared_health_meta_when_provider_set_changes_without_len_change() {
+        let mut cfg = AppConfig::default_config();
+        let (tmp, store) = build_test_store();
+        let router = RouterState::new_with_store(&cfg, 0, Some(store));
+        router.mark_failure("provider_1", &cfg, "boom", 1_000);
+        router.mark_failure("provider_2", &cfg, "gone", 1_100);
+
+        let db_path = tmp.path().join("data").join("events.sqlite3");
+        let conn = rusqlite::Connection::open(db_path).expect("open events sqlite");
+        let value_before: String = conn
+            .query_row(
+                "SELECT value FROM event_meta WHERE key = ?1",
+                [SHARED_HEALTH_STATE_META_KEY],
+                |row| row.get(0),
+            )
+            .expect("shared health meta before");
+
+        let replacement_provider = cfg
+            .providers
+            .get("provider_2")
+            .cloned()
+            .expect("provider_2 config");
+        cfg.providers.remove("provider_2");
+        cfg.providers
+            .insert("provider_x".to_string(), replacement_provider);
+        cfg.provider_order.retain(|name| name != "provider_2");
+        cfg.provider_order.push("provider_x".to_string());
+
+        router.sync_with_config(&cfg, 2_000);
+
+        let value_after: String = conn
+            .query_row(
+                "SELECT value FROM event_meta WHERE key = ?1",
+                [SHARED_HEALTH_STATE_META_KEY],
+                |row| row.get(0),
+            )
+            .expect("shared health meta after");
+        assert_ne!(
+            value_after, value_before,
+            "status sync should persist shared health meta when provider membership changes"
         );
     }
 

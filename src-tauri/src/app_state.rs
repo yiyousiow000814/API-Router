@@ -135,6 +135,8 @@ pub struct UiWatchdogLiveSnapshot {
 struct UiWatchdogDiagnosticsMeta {
     unresponsive_logged: bool,
     unresponsive_since_unix_ms: u64,
+    backend_status_stall_logged: bool,
+    backend_status_stalled_since_unix_ms: u64,
     last_status_slow_log_unix_ms: u64,
     last_config_slow_log_unix_ms: u64,
     last_provider_switch_slow_log_unix_ms: u64,
@@ -285,6 +287,14 @@ impl UiWatchdogState {
             "recent_traces": traces,
         });
         payload
+    }
+
+    fn backend_status_stall_anchor(backend_status: &UiWatchdogBackendStatusState) -> u64 {
+        if backend_status.status_command_last_progress_unix_ms > 0 {
+            backend_status.status_command_last_progress_unix_ms
+        } else {
+            backend_status.status_command_started_unix_ms
+        }
     }
 
     fn write_dump(
@@ -719,6 +729,76 @@ impl UiWatchdogState {
         );
     }
 
+    pub fn check_backend_status_stall(
+        &self,
+        store: &crate::orchestrator::store::Store,
+        diagnostics_dir: &std::path::Path,
+        now_unix_ms: u64,
+    ) {
+        let heartbeat = self.heartbeat_snapshot();
+        let backend_status = self.backend_status_snapshot();
+        let live_snapshot =
+            Self::live_snapshot_from_states(&heartbeat, &backend_status, now_unix_ms);
+        let mut diagnostics = self.diagnostics_meta.lock();
+        if live_snapshot.backend_status.stalled {
+            if diagnostics.backend_status_stall_logged {
+                return;
+            }
+            diagnostics.backend_status_stall_logged = true;
+            diagnostics.backend_status_stalled_since_unix_ms =
+                Self::backend_status_stall_anchor(&backend_status);
+            store.events().app().ui_unresponsive(
+                "gateway",
+                "backend status refresh stalled",
+                serde_json::json!({
+                    "lane": "backend_status",
+                    "detail_level": live_snapshot.backend_status.detail_level,
+                    "phase": live_snapshot.backend_status.phase,
+                    "progress_age_ms": live_snapshot.backend_status.progress_age_ms,
+                    "frontend_heartbeat_age_ms": live_snapshot.frontend.heartbeat_age_ms,
+                    "frontend_active_page": live_snapshot.frontend.active_page,
+                    "frontend_visible": live_snapshot.frontend.visible,
+                    "frontend_stalled": live_snapshot.frontend.stalled,
+                }),
+            );
+            let diagnostics_snapshot = diagnostics.clone();
+            drop(diagnostics);
+            let traces = self.trace_snapshot();
+            let payload = Self::build_dump_payload(
+                "backend-status-stall",
+                now_unix_ms,
+                &heartbeat,
+                &backend_status,
+                &diagnostics_snapshot,
+                &traces,
+            );
+            self.write_dump(
+                diagnostics_dir,
+                "backend-status-stall",
+                now_unix_ms,
+                &payload,
+            );
+            return;
+        }
+        if !diagnostics.backend_status_stall_logged {
+            return;
+        }
+        let stalled_for_ms =
+            now_unix_ms.saturating_sub(diagnostics.backend_status_stalled_since_unix_ms);
+        diagnostics.backend_status_stall_logged = false;
+        diagnostics.backend_status_stalled_since_unix_ms = 0;
+        store.events().app().ui_recovered(
+            "gateway",
+            "backend status refresh recovered",
+            serde_json::json!({
+                "lane": "backend_status",
+                "stalled_for_ms": stalled_for_ms,
+                "last_finished_unix_ms": live_snapshot.backend_status.last_finished_unix_ms,
+                "frontend_heartbeat_age_ms": live_snapshot.frontend.heartbeat_age_ms,
+            }),
+        );
+    }
+
     pub fn record_backend_status_started(&self, detail_level: &str, now_unix_ms: u64) {
         let detail_level_value = detail_level.trim().to_string();
         {
@@ -1055,6 +1135,7 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         local_network: crate::platform::local_network::LocalNetworkState::new(),
         ui_watchdog: UiWatchdogState::default(),
     };
+    crate::lan_sync::register_ui_watchdog_state(app_state.ui_watchdog.clone());
     app_state
         .gateway
         .store
@@ -1416,6 +1497,66 @@ mod tests {
         );
         assert_eq!(live_snapshot.backend_status.progress_age_ms, Some(7_000));
         assert!(live_snapshot.backend_status.stalled);
+    }
+
+    #[test]
+    fn ui_watchdog_backend_status_stall_logs_and_recovers_once() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+
+        let state = build_state(config_path, data_dir).expect("build state");
+        let watchdog = UiWatchdogState::default();
+
+        watchdog.record_backend_status_started("dashboard", 1_000);
+        watchdog.record_backend_status_progress("client_sessions", 1_100);
+        watchdog.check_backend_status_stall(&state.gateway.store, &state.diagnostics_dir, 8_000);
+        watchdog.check_backend_status_stall(&state.gateway.store, &state.diagnostics_dir, 8_500);
+        watchdog.record_backend_status_finished(9_000);
+        watchdog.check_backend_status_stall(&state.gateway.store, &state.diagnostics_dir, 9_100);
+
+        let events = state.gateway.store.list_events_range(None, None, Some(10));
+        let backend_unresponsive_events = events
+            .iter()
+            .filter(|entry| {
+                entry
+                    .get("code")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|code| code == "app.ui_unresponsive")
+                    && entry
+                        .get("message")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|message| message == "backend status refresh stalled")
+            })
+            .count();
+        let backend_recovered_events = events
+            .iter()
+            .filter(|entry| {
+                entry
+                    .get("code")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|code| code == "app.ui_recovered")
+                    && entry
+                        .get("message")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|message| message == "backend status refresh recovered")
+            })
+            .count();
+        assert_eq!(backend_unresponsive_events, 1);
+        assert_eq!(backend_recovered_events, 1);
+
+        let dump_count = std::fs::read_dir(&state.diagnostics_dir)
+            .expect("diagnostics dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.contains("backend-status-stall"))
+            })
+            .count();
+        assert_eq!(dump_count, 1);
     }
 
     #[test]

@@ -31,6 +31,29 @@ pub struct LanDiagnosticsResponsePacket {
     pub domains: serde_json::Value,
 }
 
+fn merge_live_watchdog_state(
+    snapshot: &mut serde_json::Value,
+    live_watchdog: &crate::app_state::UiWatchdogLiveSnapshot,
+) {
+    let Some(domains) = snapshot.as_object_mut() else {
+        return;
+    };
+    let Some(watchdog) = domains
+        .get_mut("watchdog")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    watchdog.insert(
+        "live_frontend".to_string(),
+        serde_json::to_value(&live_watchdog.frontend).unwrap_or(serde_json::Value::Null),
+    );
+    watchdog.insert(
+        "live_backend_status".to_string(),
+        serde_json::to_value(&live_watchdog.backend_status).unwrap_or(serde_json::Value::Null),
+    );
+}
+
 pub(crate) fn local_diagnostics_snapshot(
     listen_port: u16,
     requested_domains: &[String],
@@ -70,7 +93,13 @@ pub(crate) fn local_diagnostics_snapshot(
         );
     }
 
-    serde_json::Value::Object(domains)
+    let mut snapshot = serde_json::Value::Object(domains);
+    if let Some(live_watchdog) =
+        crate::lan_sync::current_ui_watchdog_live_snapshot(crate::orchestrator::store::unix_ms())
+    {
+        merge_live_watchdog_state(&mut snapshot, &live_watchdog);
+    }
+    snapshot
 }
 
 pub async fn lan_sync_diagnostics_http(
@@ -400,6 +429,22 @@ fn describe_watchdog_incident(prefix: &str, trigger: &str, payload: &Value) -> O
             }
             Some(detail)
         }
+        "backend-status-stall" => {
+            let snapshot = payload.get("snapshot");
+            let phase = snapshot
+                .and_then(|value| value.get("backend_status"))
+                .and_then(|value| value.get("phase"))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| humanize_watchdog_trigger("", value));
+            let mut detail = String::from("Backend status refresh stalled");
+            if let Some(phase) = phase {
+                detail.push_str(" at ");
+                detail.push_str(&phase);
+            }
+            Some(detail)
+        }
         _ => None,
     }
 }
@@ -450,6 +495,7 @@ mod tests {
     use super::describe_watchdog_incident;
     use super::local_diagnostics_snapshot;
     use super::watchdog_summary;
+    use crate::app_state::UiWatchdogState;
     use crate::orchestrator::store::unix_ms;
     use std::sync::{Mutex, OnceLock};
 
@@ -922,6 +968,7 @@ mod tests {
 
     #[test]
     fn local_diagnostics_snapshot_includes_requested_domains() {
+        crate::lan_sync::register_ui_watchdog_state(UiWatchdogState::default());
         let snapshot = local_diagnostics_snapshot(
             4000,
             &[
@@ -935,5 +982,54 @@ mod tests {
         assert!(domains.contains_key("watchdog"));
         assert!(domains.contains_key("webtransport"));
         assert!(domains.contains_key("tailscale"));
+    }
+
+    #[test]
+    fn local_diagnostics_snapshot_merges_live_watchdog_state() {
+        let watchdog = UiWatchdogState::default();
+        watchdog.record_heartbeat("dashboard", true, true, false, false, 1_000);
+        watchdog.record_backend_status_started("dashboard", 1_100);
+        watchdog.record_backend_status_progress("client_sessions", 1_200);
+        crate::lan_sync::register_ui_watchdog_state(watchdog);
+
+        let snapshot = local_diagnostics_snapshot(4000, &["watchdog".to_string()]);
+
+        let watchdog = snapshot
+            .get("watchdog")
+            .and_then(serde_json::Value::as_object)
+            .expect("watchdog object");
+        assert_eq!(
+            watchdog
+                .get("live_frontend")
+                .and_then(|value| value.get("active_page"))
+                .and_then(serde_json::Value::as_str),
+            Some("dashboard")
+        );
+        assert_eq!(
+            watchdog
+                .get("live_backend_status")
+                .and_then(|value| value.get("phase"))
+                .and_then(serde_json::Value::as_str),
+            Some("client_sessions")
+        );
+    }
+
+    #[test]
+    fn describe_watchdog_incident_reports_backend_status_stall_trigger() {
+        let payload = serde_json::json!({
+            "snapshot": {
+                "backend_status": {
+                    "phase": "router_snapshot"
+                }
+            },
+            "recent_traces": []
+        });
+
+        let detail = describe_watchdog_incident("ui-freeze", "backend-status-stall", &payload);
+
+        assert_eq!(
+            detail.as_deref(),
+            Some("Backend status refresh stalled at Router Snapshot")
+        );
     }
 }

@@ -627,6 +627,8 @@ export function formatIncidentKind(kind: string | null | undefined): string {
   switch (kind) {
     case 'heartbeat-stall':
       return 'UI heartbeat stalled'
+    case 'backend-status-stall':
+      return 'Backend status refresh stalled'
     case 'slow-refresh':
       return 'Remote diagnostics refresh too slow'
     case 'slow-invoke':

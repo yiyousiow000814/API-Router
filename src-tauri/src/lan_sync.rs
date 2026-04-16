@@ -114,9 +114,28 @@ const LAN_EDIT_ENTITY_TRACKED_SPEND_DAY: &str = "tracked_spend_day";
 const LAN_EDIT_ENTITY_TRACKED_SPEND_DAY_HISTORY_DELETE: &str = "tracked_spend_day_history_delete";
 
 static GATEWAY_STATUS_RUNTIME: OnceLock<RwLock<Option<LanSyncRuntime>>> = OnceLock::new();
+static UI_WATCHDOG_RUNTIME: OnceLock<RwLock<Option<crate::app_state::UiWatchdogState>>> =
+    OnceLock::new();
 
 fn gateway_status_runtime() -> &'static RwLock<Option<LanSyncRuntime>> {
     GATEWAY_STATUS_RUNTIME.get_or_init(|| RwLock::new(None))
+}
+
+fn ui_watchdog_runtime() -> &'static RwLock<Option<crate::app_state::UiWatchdogState>> {
+    UI_WATCHDOG_RUNTIME.get_or_init(|| RwLock::new(None))
+}
+
+pub(crate) fn register_ui_watchdog_state(watchdog: crate::app_state::UiWatchdogState) {
+    *ui_watchdog_runtime().write() = Some(watchdog);
+}
+
+pub(crate) fn current_ui_watchdog_live_snapshot(
+    now_unix_ms: u64,
+) -> Option<crate::app_state::UiWatchdogLiveSnapshot> {
+    ui_watchdog_runtime()
+        .read()
+        .as_ref()
+        .map(|watchdog| watchdog.live_snapshot(now_unix_ms))
 }
 
 fn lan_peer_diagnostics_log_path() -> Option<std::path::PathBuf> {
