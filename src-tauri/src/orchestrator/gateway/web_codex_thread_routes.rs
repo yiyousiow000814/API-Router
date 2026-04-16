@@ -283,9 +283,12 @@ async fn git_meta_payload_for_cwd(
         current_branch_for_workspace(Some(workspace), cwd),
         detect_git_worktree_for_workspace(Some(workspace), cwd)
     )?;
-    let branches =
-        visible_branch_options_for_workspace_with_current_branch(Some(workspace), cwd, &current_branch)
-            .await?;
+    let branches = visible_branch_options_for_workspace_with_current_branch(
+        Some(workspace),
+        cwd,
+        &current_branch,
+    )
+    .await?;
     let mut payload = json!({
         "workspace": workspace,
         "cwd": cwd,

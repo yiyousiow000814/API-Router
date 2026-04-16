@@ -72,6 +72,14 @@ fn has_uncommitted_changes(status_output: &str) -> bool {
         .any(|line| !line.is_empty())
 }
 
+fn branch_switch_args(branch: &str) -> [&str; 3] {
+    ["switch", "--", branch]
+}
+
+fn branch_checkout_fallback_args(branch: &str) -> [&str; 2] {
+    ["checkout", branch]
+}
+
 pub(super) async fn run_git_command_for_workspace(
     workspace: Option<&str>,
     cwd: &str,
@@ -434,11 +442,13 @@ pub(super) async fn switch_branch_for_workspace(
         return Err("branch is required".to_string());
     }
     ensure_clean_worktree_for_workspace(workspace, cwd).await?;
-    match run_git_command_for_workspace(workspace, cwd, &["switch", "--", branch]).await {
+    match run_git_command_for_workspace(workspace, cwd, &branch_switch_args(branch)).await {
         Ok(_) => Ok(()),
-        Err(_) => run_git_command_for_workspace(workspace, cwd, &["checkout", "--", branch])
-            .await
-            .map(|_| ()),
+        Err(_) => {
+            run_git_command_for_workspace(workspace, cwd, &branch_checkout_fallback_args(branch))
+                .await
+                .map(|_| ())
+        }
     }
 }
 
@@ -621,5 +631,17 @@ mod tests {
         assert!(has_uncommitted_changes(" M src/main.rs\n"));
         assert!(has_uncommitted_changes("M  src/main.rs\n"));
         assert!(has_uncommitted_changes("?? notes.txt\n"));
+    }
+
+    #[test]
+    fn branch_switch_and_checkout_fallback_use_correct_git_args() {
+        assert_eq!(
+            branch_switch_args("feature/demo"),
+            ["switch", "--", "feature/demo"]
+        );
+        assert_eq!(
+            branch_checkout_fallback_args("feature/demo"),
+            ["checkout", "feature/demo"]
+        );
     }
 }
