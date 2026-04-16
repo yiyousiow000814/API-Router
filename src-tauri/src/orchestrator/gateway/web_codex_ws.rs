@@ -1004,6 +1004,29 @@ pub(super) async fn codex_auth_verify(
     Json(json!({ "ok": true })).into_response()
 }
 
+#[derive(Debug, Deserialize)]
+pub(super) struct WebTransportEventRecordRequest {
+    #[serde(rename = "eventType")]
+    pub event_type: String,
+    pub detail: Option<String>,
+}
+
+pub(super) async fn codex_record_web_transport_event(
+    State(st): State<GatewayState>,
+    headers: HeaderMap,
+    Json(payload): Json<WebTransportEventRecordRequest>,
+) -> Response {
+    if let Some(resp) = require_codex_auth(&st, &headers) {
+        return resp;
+    }
+    let event_type = payload.event_type.trim();
+    if event_type.is_empty() {
+        return api_error(StatusCode::BAD_REQUEST, "eventType is required");
+    }
+    crate::diagnostics::codex_web_transport::record_web_transport_event(event_type, payload.detail);
+    Json(json!({ "ok": true })).into_response()
+}
+
 pub(super) async fn codex_live_debug(
     State(st): State<GatewayState>,
     headers: HeaderMap,
