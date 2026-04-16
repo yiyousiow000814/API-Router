@@ -2022,7 +2022,7 @@ fn spawn_remote_update_worker(
     if let Some(path) = status_path {
         command.env("API_ROUTER_REMOTE_UPDATE_STATUS_PATH", path);
     }
-    if let Some(path) = log_path.clone() {
+    if let Some(path) = log_path.as_ref() {
         command.env("API_ROUTER_REMOTE_UPDATE_LOG_PATH", path);
     }
     command.env("API_ROUTER_REMOTE_UPDATE_TARGET_REF", target_ref);
@@ -2046,22 +2046,11 @@ fn spawn_remote_update_worker(
         command.creation_flags(windows_remote_update_creation_flags());
     }
     command.stdin(Stdio::null());
-    if let Some(path) = log_path.as_ref() {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|err| format!("failed to create remote update log dir: {err}"))?;
-        }
-        let stdout = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .map_err(|err| format!("failed to open remote update log for stdout: {err}"))?;
-        let stderr = stdout
-            .try_clone()
-            .map_err(|err| format!("failed to clone remote update log handle: {err}"))?;
-        command.stdout(Stdio::from(stdout));
-        command.stderr(Stdio::from(stderr));
-    }
+    // Keep lan-remote-update.log as a script-owned diagnostics file only. When the launcher also
+    // keeps a long-lived stdout/stderr handle to the same file, nested build scripts can fail on
+    // Windows with "file is being used by another process" during Add-Content writes.
+    command.stdout(Stdio::null());
+    command.stderr(Stdio::null());
     append_remote_update_log_message(&format!(
         "Launcher spawning remote update worker for target {} with script {}. cwd={} args={} log_path={} status_path={}",
         display_target_ref(target_ref),
@@ -2801,6 +2790,34 @@ mod tests {
         assert_eq!(flags & 0x0000_0200, 0x0000_0200);
         assert_eq!(flags & 0x0800_0000, 0x0800_0000);
         assert_eq!(flags & 0x0000_0008, 0);
+    }
+
+    #[test]
+    fn launcher_keeps_worker_stdio_off_the_remote_update_log_file() {
+        let repo_root = resolve_repo_root_for_self_update().expect("resolve repo root");
+        let launcher_source = std::fs::read_to_string(
+            repo_root
+                .join("src-tauri")
+                .join("src")
+                .join("lan_sync")
+                .join("remote_update.rs"),
+        )
+        .expect("read remote_update.rs");
+        let spawn_fn_start = launcher_source
+            .find("fn spawn_remote_update_worker(")
+            .expect("spawn_remote_update_worker fn");
+        let spawn_fn_end = launcher_source[spawn_fn_start..]
+            .find("fn windows_remote_update_creation_flags() -> u32 {")
+            .map(|offset| spawn_fn_start + offset)
+            .expect("end of spawn_remote_update_worker fn");
+        let spawn_fn_source = &launcher_source[spawn_fn_start..spawn_fn_end];
+
+        assert!(spawn_fn_source.contains("command.stdout(Stdio::null());"));
+        assert!(spawn_fn_source.contains("command.stderr(Stdio::null());"));
+        assert!(!spawn_fn_source.contains("command.stdout(Stdio::from(stdout));"));
+        assert!(!spawn_fn_source.contains("command.stderr(Stdio::from(stderr));"));
+        assert!(!spawn_fn_source.contains("failed to open remote update log for stdout"));
+        assert!(!spawn_fn_source.contains("failed to clone remote update log handle"));
     }
 
     #[test]
