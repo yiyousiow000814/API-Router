@@ -1135,7 +1135,10 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         local_network: crate::platform::local_network::LocalNetworkState::new(),
         ui_watchdog: UiWatchdogState::default(),
     };
-    crate::lan_sync::register_ui_watchdog_state(app_state.ui_watchdog.clone());
+    crate::lan_sync::register_ui_watchdog_state(
+        app_state.gateway.cfg.read().listen.port,
+        app_state.ui_watchdog.clone(),
+    );
     app_state
         .gateway
         .store

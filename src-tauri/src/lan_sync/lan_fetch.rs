@@ -94,9 +94,10 @@ pub(crate) fn local_diagnostics_snapshot(
     }
 
     let mut snapshot = serde_json::Value::Object(domains);
-    if let Some(live_watchdog) =
-        crate::lan_sync::current_ui_watchdog_live_snapshot(crate::orchestrator::store::unix_ms())
-    {
+    if let Some(live_watchdog) = crate::lan_sync::current_ui_watchdog_live_snapshot(
+        listen_port,
+        crate::orchestrator::store::unix_ms(),
+    ) {
         merge_live_watchdog_state(&mut snapshot, &live_watchdog);
     }
     snapshot
@@ -968,7 +969,7 @@ mod tests {
 
     #[test]
     fn local_diagnostics_snapshot_includes_requested_domains() {
-        crate::lan_sync::register_ui_watchdog_state(UiWatchdogState::default());
+        crate::lan_sync::register_ui_watchdog_state(4000, UiWatchdogState::default());
         let snapshot = local_diagnostics_snapshot(
             4000,
             &[
@@ -990,7 +991,7 @@ mod tests {
         watchdog.record_heartbeat("dashboard", true, true, false, false, 1_000);
         watchdog.record_backend_status_started("dashboard", 1_100);
         watchdog.record_backend_status_progress("client_sessions", 1_200);
-        crate::lan_sync::register_ui_watchdog_state(watchdog);
+        crate::lan_sync::register_ui_watchdog_state(4000, watchdog);
 
         let snapshot = local_diagnostics_snapshot(4000, &["watchdog".to_string()]);
 
@@ -1011,6 +1012,44 @@ mod tests {
                 .and_then(|value| value.get("phase"))
                 .and_then(serde_json::Value::as_str),
             Some("client_sessions")
+        );
+    }
+
+    #[test]
+    fn local_diagnostics_snapshot_uses_watchdog_for_requested_listen_port() {
+        let watchdog_4000 = UiWatchdogState::default();
+        watchdog_4000.record_heartbeat("dashboard", true, true, false, false, 1_000);
+        crate::lan_sync::register_ui_watchdog_state(4000, watchdog_4000);
+
+        let watchdog_5000 = UiWatchdogState::default();
+        watchdog_5000.record_heartbeat("requests", true, false, false, false, 2_000);
+        crate::lan_sync::register_ui_watchdog_state(5000, watchdog_5000);
+
+        let snapshot_4000 = local_diagnostics_snapshot(4000, &["watchdog".to_string()]);
+        let snapshot_5000 = local_diagnostics_snapshot(5000, &["watchdog".to_string()]);
+
+        let watchdog_4000 = snapshot_4000
+            .get("watchdog")
+            .and_then(serde_json::Value::as_object)
+            .expect("watchdog 4000 object");
+        let watchdog_5000 = snapshot_5000
+            .get("watchdog")
+            .and_then(serde_json::Value::as_object)
+            .expect("watchdog 5000 object");
+
+        assert_eq!(
+            watchdog_4000
+                .get("live_frontend")
+                .and_then(|value| value.get("active_page"))
+                .and_then(serde_json::Value::as_str),
+            Some("dashboard")
+        );
+        assert_eq!(
+            watchdog_5000
+                .get("live_frontend")
+                .and_then(|value| value.get("active_page"))
+                .and_then(serde_json::Value::as_str),
+            Some("requests")
         );
     }
 
