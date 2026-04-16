@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::orchestrator::gateway::web_codex_git::{
     current_branch_for_workspace, detect_git_worktree_for_workspace, switch_branch_for_workspace,
-    visible_branch_options_for_workspace,
+    visible_branch_options_for_workspace_with_current_branch,
 };
 use crate::orchestrator::gateway::web_codex_session_manager::{
     merge_runtime_thread_overlay, runtime_thread_path, runtime_thread_payload,
@@ -279,9 +279,13 @@ async fn git_meta_payload_for_cwd(
         return Err("cwd is required".to_string());
     }
     let workspace = workspace_label_for_target(workspace_target);
-    let current_branch = current_branch_for_workspace(Some(workspace), cwd).await?;
-    let branches = visible_branch_options_for_workspace(Some(workspace), cwd).await?;
-    let is_worktree = detect_git_worktree_for_workspace(Some(workspace), cwd).await?;
+    let (current_branch, is_worktree) = tokio::try_join!(
+        current_branch_for_workspace(Some(workspace), cwd),
+        detect_git_worktree_for_workspace(Some(workspace), cwd)
+    )?;
+    let branches =
+        visible_branch_options_for_workspace_with_current_branch(Some(workspace), cwd, &current_branch)
+            .await?;
     let mut payload = json!({
         "workspace": workspace,
         "cwd": cwd,

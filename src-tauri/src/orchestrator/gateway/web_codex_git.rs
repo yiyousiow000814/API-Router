@@ -279,17 +279,18 @@ async fn open_pull_requests_for_workspace(
     parse_open_pull_requests(&output)
 }
 
-pub(super) async fn visible_branch_options_for_workspace(
+pub(super) async fn visible_branch_options_for_workspace_with_current_branch(
     workspace: Option<&str>,
     cwd: &str,
+    current_branch: &str,
 ) -> Result<Vec<GitBranchOption>, String> {
-    let current_branch = current_branch_for_workspace(workspace, cwd).await?;
-    let default_branch = repo_default_branch_for_workspace(workspace, cwd).await;
-    let open_pull_requests = open_pull_requests_for_workspace(workspace, cwd)
-        .await
-        .unwrap_or_default();
+    let (default_branch, open_pull_requests_result) = tokio::join!(
+        repo_default_branch_for_workspace(workspace, cwd),
+        open_pull_requests_for_workspace(workspace, cwd)
+    );
+    let open_pull_requests = open_pull_requests_result.unwrap_or_default();
     Ok(build_visible_branch_options(
-        &current_branch,
+        current_branch,
         default_branch.as_deref(),
         &open_pull_requests,
     ))
@@ -406,9 +407,9 @@ pub(super) async fn switch_branch_for_workspace(
     if branch.is_empty() {
         return Err("branch is required".to_string());
     }
-    match run_git_command_for_workspace(workspace, cwd, &["switch", branch]).await {
+    match run_git_command_for_workspace(workspace, cwd, &["switch", "--", branch]).await {
         Ok(_) => Ok(()),
-        Err(_) => run_git_command_for_workspace(workspace, cwd, &["checkout", branch])
+        Err(_) => run_git_command_for_workspace(workspace, cwd, &["checkout", "--", branch])
             .await
             .map(|_| ()),
     }
@@ -531,6 +532,19 @@ mod tests {
                     pr_number: Some(168),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn build_visible_branch_options_deduplicates_current_and_default_branch() {
+        let visible = build_visible_branch_options("main", Some("main"), &[]);
+
+        assert_eq!(
+            visible,
+            vec![GitBranchOption {
+                name: "main".to_string(),
+                pr_number: None,
+            }]
         );
     }
 

@@ -1632,6 +1632,114 @@ describe("actionBindings", () => {
     expect(deps.__apiCall?.options?.body?.workspace).toBe("wsl2");
   });
 
+  it("ignores stale branch-switch responses after a newer git-meta request supersedes them", async () => {
+    const handlers = new Map();
+    const pickerBar = {
+      addEventListener(eventName, handler) {
+        handlers.set(`composerPickerBar:${eventName}`, handler);
+      },
+      contains() {
+        return false;
+      },
+    };
+    let resolveSwitch;
+    const deps = {
+      state: {
+        folderPickerOpen: false,
+        modelOptionsLoading: false,
+        threadItems: [],
+        activeThreadWorkspace: "windows",
+        workspaceTarget: "windows",
+        activeThreadId: "thread-1",
+        activeThreadGitMetaSource: "thread",
+        activeThreadGitMetaCwd: "C:\\repo\\demo",
+        activeThreadGitMetaLoading: false,
+        activeThreadGitMetaReqSeq: 4,
+        activeThreadCurrentBranch: "main",
+        activeThreadBranchOptions: [{ name: "main" }, { name: "feature/ui" }],
+        composerBranchMenuOpen: true,
+        composerPermissionMenuOpen: false,
+      },
+      byId(id) {
+        if (id === "composerPickerBar") return pickerBar;
+        return null;
+      },
+      bindClick() {},
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus() {},
+      updateMobileComposerState() {},
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      executeSlashCommand: async () => {},
+      sendTurn: async () => {},
+      api: () => new Promise((resolve) => {
+        resolveSwitch = resolve;
+      }),
+      syncSlashCommandMenu() {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+
+    createActionBindingsModule(deps).wireActions();
+    handlers.get("composerPickerBar:click")?.({
+      target: {
+        closest(selector) {
+          if (selector === "[data-composer-branch-option]") {
+            return {
+              getAttribute(name) {
+                if (name === "data-composer-branch-option") return "feature/ui";
+                return "";
+              },
+            };
+          }
+          return null;
+        },
+      },
+      preventDefault() {},
+      stopPropagation() {},
+    });
+
+    expect(deps.state.activeThreadGitMetaReqSeq).toBe(5);
+
+    deps.state.activeThreadGitMetaReqSeq = 6;
+    resolveSwitch?.({
+      currentBranch: "feature/ui",
+      branches: [{ name: "main" }, { name: "feature/ui" }],
+    });
+    await Promise.resolve();
+
+    expect(deps.state.activeThreadCurrentBranch).toBe("main");
+    expect(deps.state.composerBranchMenuOpen).toBe(true);
+    expect(deps.state.activeThreadGitMetaLoading).toBe(true);
+  });
+
   it("closes picker menus when clicking the picker bar background", () => {
     const handlers = new Map();
     const OriginalNode = globalThis.Node;

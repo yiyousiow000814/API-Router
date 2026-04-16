@@ -3509,4 +3509,160 @@ describe("composerUi", () => {
     expect(branchBtnWrites).toBe(1);
     expect(branchMenuWrites).toBe(1);
   });
+
+  it("does not trigger a git-meta refresh when the loaded key already matches", () => {
+    const nodes = new Map();
+    for (const id of [
+      "mobileComposerRow",
+      "mobilePromptWrap",
+      "mobilePromptInput",
+      "mobileSendBtn",
+      "composerActionMenuBtn",
+      "composerActionMenu",
+      "queuedTurnCard",
+      "queuedTurnCardTitle",
+      "queuedTurnCardCount",
+      "queuedTurnToggleBtn",
+      "queuedTurnCardStatus",
+      "queuedTurnCardList",
+      "queuedTurnCardSummary",
+      "composerPickerBar",
+      "composerBranchPickerBtn",
+      "composerBranchPickerMenu",
+      "composerPermissionPickerBtn",
+      "composerPermissionPickerMenu",
+    ]) {
+      nodes.set(id, makeNode());
+    }
+    nodes.get("mobilePromptInput").value = "hello";
+    nodes.get("mobilePromptInput").scrollHeight = 44;
+    let apiCalls = 0;
+    const module = createComposerUiModule({
+      state: {
+        activeMainTab: "chat",
+        activeThreadId: "thread-1",
+        activeThreadWorkspace: "windows",
+        workspaceTarget: "windows",
+        activeThreadPendingTurnRunning: false,
+        activeThreadQueuedTurns: [],
+        composerActionMenuOpen: false,
+        composerBranchMenuOpen: false,
+        composerPermissionMenuOpen: false,
+        activeThreadGitMetaLoading: false,
+        activeThreadGitMetaLoaded: true,
+        activeThreadGitMetaKey: "thread:windows:thread-1",
+        activeThreadCurrentBranch: "main",
+        activeThreadBranchOptions: [{ name: "main" }],
+        permissionPresetByWorkspace: {
+          windows: "/permission auto",
+          wsl2: "/permission auto",
+        },
+      },
+      byId(id) {
+        return nodes.get(id) || null;
+      },
+      api() {
+        apiCalls += 1;
+        return Promise.resolve(null);
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() {
+        return { heightPx: 44, overflowY: "hidden" };
+      },
+      renderComposerContextLeftInNode() {},
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; } },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.updateMobileComposerState();
+
+    expect(apiCalls).toBe(0);
+  });
+
+  it("clears the worktree flag when git meta is reset", async () => {
+    const nodes = new Map();
+    for (const id of [
+      "mobileComposerRow",
+      "mobilePromptWrap",
+      "mobilePromptInput",
+      "mobileSendBtn",
+      "composerActionMenuBtn",
+      "composerActionMenu",
+      "queuedTurnCard",
+      "queuedTurnCardTitle",
+      "queuedTurnCardCount",
+      "queuedTurnToggleBtn",
+      "queuedTurnCardStatus",
+      "queuedTurnCardList",
+      "queuedTurnCardSummary",
+      "composerPickerBar",
+      "composerBranchPickerBtn",
+      "composerBranchPickerMenu",
+      "composerPermissionPickerBtn",
+      "composerPermissionPickerMenu",
+    ]) {
+      nodes.set(id, makeNode());
+    }
+    nodes.get("mobilePromptInput").value = "";
+    nodes.get("mobilePromptInput").scrollHeight = 44;
+    const state = {
+      activeMainTab: "chat",
+      activeThreadId: "",
+      activeThreadWorkspace: "windows",
+      workspaceTarget: "windows",
+      startCwdByWorkspace: { windows: "", wsl2: "" },
+      activeThreadPendingTurnRunning: false,
+      activeThreadQueuedTurns: [],
+      composerActionMenuOpen: false,
+      composerBranchMenuOpen: false,
+      composerPermissionMenuOpen: false,
+      activeThreadGitMetaLoading: false,
+      activeThreadGitMetaLoaded: true,
+      activeThreadGitMetaKey: "thread:windows:thread-1",
+      activeThreadCurrentBranch: "main",
+      activeThreadBranchOptions: [{ name: "main" }],
+      activeThreadIsWorktree: true,
+      permissionPresetByWorkspace: {
+        windows: "/permission auto",
+        wsl2: "/permission auto",
+      },
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || null;
+      },
+      api() {
+        return Promise.resolve(null);
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() {
+        return { heightPx: 44, overflowY: "hidden" };
+      },
+      renderComposerContextLeftInNode() {},
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; } },
+      windowRef: { innerHeight: 900 },
+    });
+
+    await module.refreshActiveThreadGitMeta();
+
+    expect(state.activeThreadCurrentBranch).toBe("");
+    expect(state.activeThreadBranchOptions).toEqual([]);
+    expect(state.activeThreadIsWorktree).toBe(false);
+    expect(state.activeThreadGitMetaLoaded).toBe(false);
+  });
 });

@@ -1022,6 +1022,7 @@ export function createComposerUiModule(deps) {
   function clearActiveThreadGitMeta() {
     state.activeThreadCurrentBranch = "";
     state.activeThreadBranchOptions = [];
+    state.activeThreadIsWorktree = false;
     state.activeThreadGitMetaLoading = false;
     state.activeThreadGitMetaLoaded = false;
     state.activeThreadGitMetaKey = "";
@@ -1031,6 +1032,33 @@ export function createComposerUiModule(deps) {
 
   function applyActiveThreadGitMeta(payload) {
     return applyActiveThreadGitMetaState(state, payload);
+  }
+
+  function shouldRefreshActiveThreadGitMeta(options = {}) {
+    if (typeof api !== "function") return false;
+    const threadId = String(options.threadId || state.activeThreadId || "").trim();
+    const workspace = normalizeGitMetaWorkspace(options.workspace, state);
+    const cwd = String(options.cwd || state.startCwdByWorkspace?.[workspace] || "").trim();
+    if (workspace !== "windows" && workspace !== "wsl2") return false;
+    const useThread = !!threadId && options.preferCwd !== true;
+    if (!useThread && !cwd) return false;
+    const key = buildActiveThreadGitMetaKey({
+      threadId: useThread ? threadId : "",
+      workspace,
+      cwd: useThread ? "" : cwd,
+    });
+    if (options.force === true) return true;
+    if (state.activeThreadGitMetaLoading === true && state.activeThreadGitMetaKey === key) return false;
+    if (state.activeThreadGitMetaLoaded === true && state.activeThreadGitMetaKey === key) return false;
+    return true;
+  }
+
+  function shouldClearActiveThreadGitMeta(options = {}) {
+    const threadId = String(options.threadId || state.activeThreadId || "").trim();
+    const workspace = String(options.workspace || activeComposerWorkspace(state)).trim().toLowerCase();
+    const cwd = String(options.cwd || state.startCwdByWorkspace?.[normalizeGitMetaWorkspace(workspace, state)] || "").trim();
+    if (workspace !== "windows" && workspace !== "wsl2") return true;
+    return !threadId && !cwd;
   }
 
   async function refreshActiveThreadGitMeta(options = {}) {
@@ -1047,19 +1075,12 @@ export function createComposerUiModule(deps) {
       clearActiveThreadGitMeta();
       return null;
     }
+    if (!shouldRefreshActiveThreadGitMeta(options)) return null;
     const key = buildActiveThreadGitMetaKey({
       threadId: useThread ? threadId : "",
       workspace,
       cwd: useThread ? "" : cwd,
     });
-    if (options.force !== true) {
-      if (state.activeThreadGitMetaLoading === true && state.activeThreadGitMetaKey === key) {
-        return null;
-      }
-      if (state.activeThreadGitMetaLoaded === true && state.activeThreadGitMetaKey === key) {
-        return null;
-      }
-    }
     const reqSeq = (Number(state.activeThreadGitMetaReqSeq || 0) || 0) + 1;
     state.activeThreadGitMetaReqSeq = reqSeq;
     state.activeThreadGitMetaLoading = true;
@@ -1218,7 +1239,11 @@ export function createComposerUiModule(deps) {
       const queuedList = byId("queuedTurnCardList");
       const queuedSummary = byId("queuedTurnCardSummary");
       if (!wrap || !input) return;
-    refreshActiveThreadGitMeta().catch(() => null);
+    if (shouldClearActiveThreadGitMeta()) {
+      clearActiveThreadGitMeta();
+    } else if (shouldRefreshActiveThreadGitMeta()) {
+      refreshActiveThreadGitMeta().catch(() => null);
+    }
     const promptText = String(input.value || "").trim();
     const hasText = !!promptText;
     const running = state.activeThreadPendingTurnRunning === true;
