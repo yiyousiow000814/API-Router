@@ -1,11 +1,6 @@
-/// Aggregates all local diagnostic domains (watchdog, webtransport, tailscale) into a single JSON response.
-///
-/// # Arguments
-/// * `domains` - List of domain names to include. If empty or contains "all", all domains are returned.
-///   Supported domains: "watchdog", "webtransport", "tailscale". Unknown domains are silently ignored.
 #[tauri::command]
 pub(crate) async fn get_local_diagnostics(
-    state: tauri::State<'_, app_state::AppState>,
+    state: tauri::State<'_, crate::app_state::AppState>,
     domains: Vec<String>,
 ) -> Result<serde_json::Value, String> {
     let listen_port = state.gateway.cfg.read().listen.port;

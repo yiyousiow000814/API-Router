@@ -114,9 +114,44 @@ const LAN_EDIT_ENTITY_TRACKED_SPEND_DAY: &str = "tracked_spend_day";
 const LAN_EDIT_ENTITY_TRACKED_SPEND_DAY_HISTORY_DELETE: &str = "tracked_spend_day_history_delete";
 
 static GATEWAY_STATUS_RUNTIME: OnceLock<RwLock<Option<LanSyncRuntime>>> = OnceLock::new();
+static UI_WATCHDOG_RUNTIME: OnceLock<RwLock<HashMap<u16, crate::app_state::UiWatchdogState>>> =
+    OnceLock::new();
 
 fn gateway_status_runtime() -> &'static RwLock<Option<LanSyncRuntime>> {
     GATEWAY_STATUS_RUNTIME.get_or_init(|| RwLock::new(None))
+}
+
+fn ui_watchdog_runtime() -> &'static RwLock<HashMap<u16, crate::app_state::UiWatchdogState>> {
+    UI_WATCHDOG_RUNTIME.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+pub(crate) fn register_ui_watchdog_state(
+    listen_port: u16,
+    watchdog: crate::app_state::UiWatchdogState,
+) {
+    ui_watchdog_runtime().write().insert(listen_port, watchdog);
+}
+
+pub(crate) fn reassign_ui_watchdog_state(
+    previous_port: u16,
+    next_port: u16,
+    watchdog: crate::app_state::UiWatchdogState,
+) {
+    let mut runtime = ui_watchdog_runtime().write();
+    if previous_port != next_port {
+        runtime.remove(&previous_port);
+    }
+    runtime.insert(next_port, watchdog);
+}
+
+pub(crate) fn current_ui_watchdog_live_snapshot(
+    listen_port: u16,
+    now_unix_ms: u64,
+) -> Option<crate::app_state::UiWatchdogLiveSnapshot> {
+    ui_watchdog_runtime()
+        .read()
+        .get(&listen_port)
+        .map(|watchdog| watchdog.live_snapshot(now_unix_ms))
 }
 
 fn lan_peer_diagnostics_log_path() -> Option<std::path::PathBuf> {

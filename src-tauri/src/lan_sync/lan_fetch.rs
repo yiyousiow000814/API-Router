@@ -31,6 +31,29 @@ pub struct LanDiagnosticsResponsePacket {
     pub domains: serde_json::Value,
 }
 
+fn merge_live_watchdog_state(
+    snapshot: &mut serde_json::Value,
+    live_watchdog: &crate::app_state::UiWatchdogLiveSnapshot,
+) {
+    let Some(domains) = snapshot.as_object_mut() else {
+        return;
+    };
+    let Some(watchdog) = domains
+        .get_mut("watchdog")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    watchdog.insert(
+        "live_frontend".to_string(),
+        serde_json::to_value(&live_watchdog.frontend).unwrap_or(serde_json::Value::Null),
+    );
+    watchdog.insert(
+        "live_backend_status".to_string(),
+        serde_json::to_value(&live_watchdog.backend_status).unwrap_or(serde_json::Value::Null),
+    );
+}
+
 pub(crate) fn local_diagnostics_snapshot(
     listen_port: u16,
     requested_domains: &[String],
@@ -70,7 +93,14 @@ pub(crate) fn local_diagnostics_snapshot(
         );
     }
 
-    serde_json::Value::Object(domains)
+    let mut snapshot = serde_json::Value::Object(domains);
+    if let Some(live_watchdog) = crate::lan_sync::current_ui_watchdog_live_snapshot(
+        listen_port,
+        crate::orchestrator::store::unix_ms(),
+    ) {
+        merge_live_watchdog_state(&mut snapshot, &live_watchdog);
+    }
+    snapshot
 }
 
 pub async fn lan_sync_diagnostics_http(
@@ -354,12 +384,37 @@ fn describe_watchdog_incident(prefix: &str, trigger: &str, payload: &Value) -> O
         "heartbeat-stall" => {
             let snapshot = payload.get("snapshot");
             let mut detail = String::from("UI heartbeat stalled");
-            if snapshot
+            let backend_status = snapshot.and_then(|value| value.get("backend_status"));
+            let backend_in_flight = backend_status
+                .and_then(|value| value.get("in_flight"))
+                .and_then(|value| value.as_bool())
+                == Some(true);
+            let backend_stalled = backend_status
+                .and_then(|value| value.get("stalled"))
+                .and_then(|value| value.as_bool())
+                == Some(true);
+            let backend_phase = backend_status
+                .and_then(|value| value.get("phase"))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| humanize_watchdog_trigger("", value));
+            if backend_in_flight {
+                if backend_stalled {
+                    detail.push_str(" after backend status refresh stopped making progress");
+                } else {
+                    detail.push_str(" while backend status refresh was active");
+                }
+                if let Some(phase) = backend_phase {
+                    detail.push_str(" at ");
+                    detail.push_str(&phase);
+                }
+            } else if snapshot
                 .and_then(|value| value.get("status_in_flight"))
                 .and_then(|value| value.as_bool())
                 == Some(true)
             {
-                detail.push_str(" while status refresh was active");
+                detail.push_str(" while UI status refresh was active");
             } else if snapshot
                 .and_then(|value| value.get("config_in_flight"))
                 .and_then(|value| value.as_bool())
@@ -372,6 +427,22 @@ fn describe_watchdog_incident(prefix: &str, trigger: &str, payload: &Value) -> O
                 == Some(true)
             {
                 detail.push_str(" while provider switch was active");
+            }
+            Some(detail)
+        }
+        "backend-status-stall" => {
+            let snapshot = payload.get("snapshot");
+            let phase = snapshot
+                .and_then(|value| value.get("backend_status"))
+                .and_then(|value| value.get("phase"))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| humanize_watchdog_trigger("", value));
+            let mut detail = String::from("Backend status refresh stalled");
+            if let Some(phase) = phase {
+                detail.push_str(" at ");
+                detail.push_str(&phase);
             }
             Some(detail)
         }
@@ -422,8 +493,10 @@ fn humanize_watchdog_trigger(prefix: &str, trigger: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::describe_watchdog_incident;
     use super::local_diagnostics_snapshot;
     use super::watchdog_summary;
+    use crate::app_state::UiWatchdogState;
     use crate::orchestrator::store::unix_ms;
     use std::sync::{Mutex, OnceLock};
 
@@ -622,6 +695,28 @@ mod tests {
                     .unwrap_or(0))
                 .sum::<u64>(),
             3
+        );
+    }
+
+    #[test]
+    fn describe_watchdog_incident_distinguishes_backend_status_stall() {
+        let payload = serde_json::json!({
+            "snapshot": {
+                "status_in_flight": true,
+                "backend_status": {
+                    "in_flight": true,
+                    "stalled": true,
+                    "phase": "client_sessions"
+                }
+            },
+            "recent_traces": []
+        });
+
+        let detail = describe_watchdog_incident("ui-freeze", "heartbeat-stall", &payload);
+
+        assert_eq!(
+            detail.as_deref(),
+            Some("UI heartbeat stalled after backend status refresh stopped making progress at Client Sessions")
         );
     }
 
@@ -874,6 +969,7 @@ mod tests {
 
     #[test]
     fn local_diagnostics_snapshot_includes_requested_domains() {
+        crate::lan_sync::register_ui_watchdog_state(4000, UiWatchdogState::default());
         let snapshot = local_diagnostics_snapshot(
             4000,
             &[
@@ -887,5 +983,92 @@ mod tests {
         assert!(domains.contains_key("watchdog"));
         assert!(domains.contains_key("webtransport"));
         assert!(domains.contains_key("tailscale"));
+    }
+
+    #[test]
+    fn local_diagnostics_snapshot_merges_live_watchdog_state() {
+        let watchdog = UiWatchdogState::default();
+        watchdog.record_heartbeat("dashboard", true, true, false, false, 1_000);
+        watchdog.record_backend_status_started("dashboard", 1_100);
+        watchdog.record_backend_status_progress("client_sessions", 1_200);
+        crate::lan_sync::register_ui_watchdog_state(4000, watchdog);
+
+        let snapshot = local_diagnostics_snapshot(4000, &["watchdog".to_string()]);
+
+        let watchdog = snapshot
+            .get("watchdog")
+            .and_then(serde_json::Value::as_object)
+            .expect("watchdog object");
+        assert_eq!(
+            watchdog
+                .get("live_frontend")
+                .and_then(|value| value.get("active_page"))
+                .and_then(serde_json::Value::as_str),
+            Some("dashboard")
+        );
+        assert_eq!(
+            watchdog
+                .get("live_backend_status")
+                .and_then(|value| value.get("phase"))
+                .and_then(serde_json::Value::as_str),
+            Some("client_sessions")
+        );
+    }
+
+    #[test]
+    fn local_diagnostics_snapshot_uses_watchdog_for_requested_listen_port() {
+        let watchdog_4000 = UiWatchdogState::default();
+        watchdog_4000.record_heartbeat("dashboard", true, true, false, false, 1_000);
+        crate::lan_sync::register_ui_watchdog_state(4000, watchdog_4000);
+
+        let watchdog_5000 = UiWatchdogState::default();
+        watchdog_5000.record_heartbeat("requests", true, false, false, false, 2_000);
+        crate::lan_sync::register_ui_watchdog_state(5000, watchdog_5000);
+
+        let snapshot_4000 = local_diagnostics_snapshot(4000, &["watchdog".to_string()]);
+        let snapshot_5000 = local_diagnostics_snapshot(5000, &["watchdog".to_string()]);
+
+        let watchdog_4000 = snapshot_4000
+            .get("watchdog")
+            .and_then(serde_json::Value::as_object)
+            .expect("watchdog 4000 object");
+        let watchdog_5000 = snapshot_5000
+            .get("watchdog")
+            .and_then(serde_json::Value::as_object)
+            .expect("watchdog 5000 object");
+
+        assert_eq!(
+            watchdog_4000
+                .get("live_frontend")
+                .and_then(|value| value.get("active_page"))
+                .and_then(serde_json::Value::as_str),
+            Some("dashboard")
+        );
+        assert_eq!(
+            watchdog_5000
+                .get("live_frontend")
+                .and_then(|value| value.get("active_page"))
+                .and_then(serde_json::Value::as_str),
+            Some("requests")
+        );
+    }
+
+    #[test]
+    fn describe_watchdog_incident_reports_backend_status_stall_trigger() {
+        let payload = serde_json::json!({
+            "snapshot": {
+                "backend_status": {
+                    "phase": "router_snapshot"
+                }
+            },
+            "recent_traces": []
+        });
+
+        let detail = describe_watchdog_incident("ui-freeze", "backend-status-stall", &payload);
+
+        assert_eq!(
+            detail.as_deref(),
+            Some("Backend status refresh stalled at Router Snapshot")
+        );
     }
 }

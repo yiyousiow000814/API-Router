@@ -246,14 +246,20 @@ fn persist_gateway_runtime_port(
     state: &crate::app_state::AppState,
     next_port: u16,
 ) -> anyhow::Result<()> {
-    let cfg_to_write = {
+    let (previous_port, cfg_to_write) = {
         let mut cfg = state.gateway.cfg.write();
         if cfg.listen.port == next_port {
             return Ok(());
         }
+        let previous_port = cfg.listen.port;
         cfg.listen.port = next_port;
-        cfg.clone()
+        (previous_port, cfg.clone())
     };
+    crate::lan_sync::reassign_ui_watchdog_state(
+        previous_port,
+        next_port,
+        state.ui_watchdog.clone(),
+    );
     std::fs::write(&state.config_path, toml::to_string_pretty(&cfg_to_write)?)?;
     state.gateway.store.events().emit(
         "gateway",
@@ -360,9 +366,12 @@ pub(crate) fn prepare_gateway_listeners(
 
 #[cfg(test)]
 mod tests {
-    use super::{bind_listener_addrs_with_policy, gateway_listen_addrs};
+    use super::{
+        bind_listener_addrs_with_policy, gateway_listen_addrs, persist_gateway_runtime_port,
+    };
     #[cfg(windows)]
     use super::{gateway_listen_addrs_with_overlays, tailscale_overlay_listener_addrs};
+    use crate::app_state::build_state;
     use std::io::ErrorKind;
     use std::net::SocketAddr;
 
@@ -465,5 +474,36 @@ mod tests {
             ))
         });
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn persist_gateway_runtime_port_rekeys_ui_watchdog_state() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+
+        let state = build_state(config_path, data_dir).expect("build state");
+        state
+            .ui_watchdog
+            .record_heartbeat("dashboard", true, true, false, false, 1_000);
+
+        let original_port = state.gateway.cfg.read().listen.port;
+        let reassigned_port = original_port + 1;
+        persist_gateway_runtime_port(&state, reassigned_port).expect("persist reassigned port");
+
+        let original_snapshot =
+            crate::lan_sync::current_ui_watchdog_live_snapshot(original_port, 2_000);
+        let reassigned_snapshot =
+            crate::lan_sync::current_ui_watchdog_live_snapshot(reassigned_port, 2_000);
+
+        assert!(original_snapshot.is_none());
+        assert_eq!(
+            reassigned_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.frontend.active_page.as_str()),
+            Some("dashboard")
+        );
+        assert_eq!(state.gateway.cfg.read().listen.port, reassigned_port);
     }
 }
