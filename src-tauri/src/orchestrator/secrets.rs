@@ -766,7 +766,7 @@ impl SecretStore {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        periods.sort_by(|a, b| a.started_at_unix_ms.cmp(&b.started_at_unix_ms));
+        periods.sort_by_key(|period| period.started_at_unix_ms);
         periods
     }
 
@@ -784,7 +784,7 @@ impl SecretStore {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        periods.sort_by(|a, b| a.started_at_unix_ms.cmp(&b.started_at_unix_ms));
+        periods.sort_by_key(|period| period.started_at_unix_ms);
         periods
     }
 
@@ -828,7 +828,7 @@ impl SecretStore {
         provider: &str,
         mut periods: Vec<ProviderPricingPeriod>,
     ) -> Result<(), String> {
-        periods.sort_by(|a, b| a.started_at_unix_ms.cmp(&b.started_at_unix_ms));
+        periods.sort_by_key(|period| period.started_at_unix_ms);
         for period in periods.iter_mut() {
             if period.id.trim().is_empty() {
                 period.id = Uuid::new_v4().to_string();

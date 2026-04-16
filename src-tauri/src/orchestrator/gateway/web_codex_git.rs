@@ -200,14 +200,14 @@ fn build_visible_branch_options(
         })
         .collect();
     let mut branch_names = Vec::new();
-    if !current_branch.is_empty() {
-        branch_names.push(current_branch.to_string());
-    }
     if let Some(default_branch) = default_branch.as_deref() {
         let default_branch = default_branch.trim();
         if !default_branch.is_empty() {
             branch_names.push(default_branch.to_string());
         }
+    }
+    if !current_branch.is_empty() {
+        branch_names.push(current_branch.to_string());
     }
     let mut pull_request_branch_names: Vec<String> = pr_numbers_by_branch.keys().cloned().collect();
     pull_request_branch_names.sort();
@@ -429,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn build_visible_branch_options_prefers_current_then_default_then_open_pr_heads() {
+    fn build_visible_branch_options_keeps_default_branch_first() {
         let pull_requests = parse_open_pull_requests(
             r#"[{"number":168,"headRefName":"docs/repo-refactor-blueprint","baseRefName":"main"},{"number":150,"headRefName":"chore/web-codex-terminal-communication","baseRefName":"main"}]"#,
         )
@@ -445,16 +445,44 @@ mod tests {
             visible,
             vec![
                 GitBranchOption {
+                    name: "main".to_string(),
+                    pr_number: None,
+                },
+                GitBranchOption {
                     name: "docs/repo-refactor-blueprint".to_string(),
                     pr_number: Some(168),
                 },
+                GitBranchOption {
+                    name: "chore/web-codex-terminal-communication".to_string(),
+                    pr_number: Some(150),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn build_visible_branch_options_preserves_pr_number_for_current_branch() {
+        let pull_requests = parse_open_pull_requests(
+            r#"[{"number":196,"headRefName":"feat/codex-web-branch-picker","baseRefName":"main"}]"#,
+        )
+        .expect("pull request payload");
+
+        let visible = build_visible_branch_options(
+            "feat/codex-web-branch-picker",
+            Some("main"),
+            &pull_requests,
+        );
+
+        assert_eq!(
+            visible,
+            vec![
                 GitBranchOption {
                     name: "main".to_string(),
                     pr_number: None,
                 },
                 GitBranchOption {
-                    name: "chore/web-codex-terminal-communication".to_string(),
-                    pr_number: Some(150),
+                    name: "feat/codex-web-branch-picker".to_string(),
+                    pr_number: Some(196),
                 },
             ]
         );
