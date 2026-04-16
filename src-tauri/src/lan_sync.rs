@@ -132,6 +132,18 @@ pub(crate) fn register_ui_watchdog_state(
     ui_watchdog_runtime().write().insert(listen_port, watchdog);
 }
 
+pub(crate) fn reassign_ui_watchdog_state(
+    previous_port: u16,
+    next_port: u16,
+    watchdog: crate::app_state::UiWatchdogState,
+) {
+    let mut runtime = ui_watchdog_runtime().write();
+    if previous_port != next_port {
+        runtime.remove(&previous_port);
+    }
+    runtime.insert(next_port, watchdog);
+}
+
 pub(crate) fn current_ui_watchdog_live_snapshot(
     listen_port: u16,
     now_unix_ms: u64,
