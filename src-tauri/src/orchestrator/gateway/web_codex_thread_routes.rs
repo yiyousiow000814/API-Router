@@ -1,6 +1,7 @@
 use super::*;
 use axum::extract::{Path as AxumPath, Query};
 use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
 
 use crate::orchestrator::gateway::web_codex_git::{
     current_branch_for_workspace, detect_git_worktree_for_workspace, switch_branch_for_workspace,
@@ -109,10 +110,10 @@ fn workspace_option_for_item(item: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-async fn apply_worktree_flag_to_item(
-    item: &mut Value,
+fn worktree_probe_request_for_item(
+    item: &Value,
     workspace_hint: Option<&str>,
-) -> Result<(), String> {
+) -> Option<(Option<String>, String)> {
     let cwd = item
         .get("cwd")
         .and_then(Value::as_str)
@@ -121,12 +122,47 @@ async fn apply_worktree_flag_to_item(
         .unwrap_or_default()
         .to_string();
     if cwd.is_empty() {
-        return Ok(());
+        return None;
     }
     let workspace = workspace_hint
         .filter(|value| !value.trim().is_empty())
         .map(str::to_string)
         .or_else(|| workspace_option_for_item(item));
+    Some((workspace, cwd))
+}
+
+fn collect_worktree_probe_requests(
+    items: &[Value],
+    workspace_hint: Option<&str>,
+) -> Vec<(Option<String>, String)> {
+    let mut seen = HashSet::new();
+    let mut requests = Vec::new();
+    for item in items {
+        let Some((workspace, cwd)) = worktree_probe_request_for_item(item, workspace_hint) else {
+            continue;
+        };
+        let key = (
+            workspace
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            cwd.clone(),
+        );
+        if seen.insert(key) {
+            requests.push((workspace, cwd));
+        }
+    }
+    requests
+}
+
+async fn apply_worktree_flag_to_item(
+    item: &mut Value,
+    workspace_hint: Option<&str>,
+) -> Result<(), String> {
+    let Some((workspace, cwd)) = worktree_probe_request_for_item(item, workspace_hint) else {
+        return Ok(());
+    };
     let is_worktree = detect_git_worktree_for_workspace(workspace.as_deref(), &cwd).await?;
     if let Some(obj) = item.as_object_mut() {
         obj.insert("isWorktree".to_string(), Value::Bool(is_worktree));
@@ -138,8 +174,35 @@ async fn apply_worktree_flags_to_items(
     items: &mut Vec<Value>,
     workspace_hint: Option<&str>,
 ) -> Result<(), String> {
+    let requests = collect_worktree_probe_requests(items, workspace_hint);
+    let mut probes = tokio::task::JoinSet::new();
+    for (workspace, cwd) in requests {
+        probes.spawn(async move {
+            let result = detect_git_worktree_for_workspace(workspace.as_deref(), &cwd).await;
+            (workspace, cwd, result)
+        });
+    }
+
+    let mut results = HashMap::new();
+    while let Some(joined) = probes.join_next().await {
+        let Ok((workspace, cwd, result)) = joined else {
+            continue;
+        };
+        if let Ok(is_worktree) = result {
+            results.insert((workspace, cwd), is_worktree);
+        }
+    }
+
     for item in items {
-        let _ = apply_worktree_flag_to_item(item, workspace_hint).await;
+        let Some((workspace, cwd)) = worktree_probe_request_for_item(item, workspace_hint) else {
+            continue;
+        };
+        let key = (workspace, cwd);
+        if let Some(is_worktree) = results.get(&key).copied() {
+            if let Some(obj) = item.as_object_mut() {
+                obj.insert("isWorktree".to_string(), Value::Bool(is_worktree));
+            }
+        }
     }
     Ok(())
 }
@@ -1085,5 +1148,41 @@ mod tests {
         assert_eq!(item["cwd"].as_str(), Some("C:\\repo"));
         assert_eq!(item["preview"].as_str(), Some("Plan next step"));
         assert_eq!(item["status"]["type"].as_str(), Some("running"));
+    }
+
+    #[test]
+    fn collect_worktree_probe_requests_deduplicates_workspace_and_cwd() {
+        let items = vec![
+            json!({ "workspace": "windows", "cwd": "C:\\repo-a" }),
+            json!({ "workspace": "windows", "cwd": "C:\\repo-a" }),
+            json!({ "workspace": "wsl2", "cwd": "/repo-b" }),
+            json!({ "workspace": "wsl2", "cwd": "/repo-b" }),
+            json!({ "workspace": "windows", "cwd": "   " }),
+        ];
+
+        let requests = collect_worktree_probe_requests(&items, None);
+
+        assert_eq!(
+            requests,
+            vec![
+                (Some("windows".to_string()), "C:\\repo-a".to_string()),
+                (Some("wsl2".to_string()), "/repo-b".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn collect_worktree_probe_requests_prefers_workspace_hint() {
+        let items = vec![
+            json!({ "workspace": "windows", "cwd": "C:\\repo-a" }),
+            json!({ "workspace": "wsl2", "cwd": "C:\\repo-a" }),
+        ];
+
+        let requests = collect_worktree_probe_requests(&items, Some("wsl2"));
+
+        assert_eq!(
+            requests,
+            vec![(Some("wsl2".to_string()), "C:\\repo-a".to_string())]
+        );
     }
 }

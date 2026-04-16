@@ -1,7 +1,7 @@
 use super::web_codex_home::{parse_workspace_target, WorkspaceTarget};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 fn shell_quote(value: &str) -> String {
@@ -278,13 +278,32 @@ pub(super) async fn visible_branch_options_for_workspace(
     ))
 }
 
-fn normalize_git_path(root: &Path, value: &str) -> PathBuf {
-    let path = PathBuf::from(value.trim());
-    if path.is_absolute() {
-        path
-    } else {
-        root.join(path)
-    }
+const WORKTREE_DETECTION_GIT_ARGS: &[&str] = &[
+    "rev-parse",
+    "--path-format=absolute",
+    "--show-toplevel",
+    "--git-dir",
+    "--git-common-dir",
+];
+
+fn parse_worktree_detection_output(output: &str) -> Result<bool, String> {
+    let mut lines = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let _root = lines
+        .next()
+        .map(PathBuf::from)
+        .ok_or_else(|| "git rev-parse missing repo root".to_string())?;
+    let git_dir = lines
+        .next()
+        .map(PathBuf::from)
+        .ok_or_else(|| "git rev-parse missing git dir".to_string())?;
+    let git_common_dir = lines
+        .next()
+        .map(PathBuf::from)
+        .ok_or_else(|| "git rev-parse missing git common dir".to_string())?;
+    Ok(git_dir != git_common_dir)
 }
 
 pub(super) async fn detect_git_worktree_for_workspace(
@@ -304,34 +323,8 @@ pub(super) async fn detect_git_worktree_for_workspace(
             return Ok(*value);
         }
     }
-    let output = run_git_command_for_workspace(
-        workspace,
-        cwd,
-        &[
-            "rev-parse",
-            "--show-toplevel",
-            "--absolute-git-dir",
-            "--git-common-dir",
-        ],
-    )
-    .await?;
-    let mut lines = output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty());
-    let root = lines
-        .next()
-        .map(PathBuf::from)
-        .ok_or_else(|| "git rev-parse missing repo root".to_string())?;
-    let git_dir = lines
-        .next()
-        .map(PathBuf::from)
-        .ok_or_else(|| "git rev-parse missing git dir".to_string())?;
-    let git_common_dir = lines
-        .next()
-        .map(|value| normalize_git_path(&root, value))
-        .ok_or_else(|| "git rev-parse missing git common dir".to_string())?;
-    let is_worktree = git_dir != git_common_dir;
+    let output = run_git_command_for_workspace(workspace, cwd, WORKTREE_DETECTION_GIT_ARGS).await?;
+    let is_worktree = parse_worktree_detection_output(&output)?;
     let cache = worktree_cache();
     let mut guard = match cache.lock() {
         Ok(guard) => guard,
@@ -514,5 +507,28 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn worktree_detection_uses_absolute_git_paths() {
+        assert_eq!(
+            WORKTREE_DETECTION_GIT_ARGS,
+            &[
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+                "--git-dir",
+                "--git-common-dir",
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_worktree_detection_output_reads_absolute_git_paths() {
+        let output = "C:/repo\nC:/repo/.git\nC:/repo/.git\n";
+        assert_eq!(parse_worktree_detection_output(output), Ok(false));
+
+        let worktree_output = "C:/repo/worktree\nC:/repo/.git/worktrees/feature\nC:/repo/.git\n";
+        assert_eq!(parse_worktree_detection_output(worktree_output), Ok(true));
     }
 }
