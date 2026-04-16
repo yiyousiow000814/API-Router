@@ -185,6 +185,38 @@ fn current_dashboard_tailscale_snapshot(
     cache.read_or_refresh(DASHBOARD_STATUS_SNAPSHOT_CACHE_TTL_MS, compute)
 }
 
+#[cfg(windows)]
+fn should_refresh_runtime_wsl_listener(listen_host: &str, wsl_gateway_host: &str) -> bool {
+    listen_host == crate::constants::GATEWAY_WINDOWS_HOST
+        && !wsl_gateway_host.trim().is_empty()
+        && !wsl_gateway_host.eq_ignore_ascii_case(crate::constants::GATEWAY_WINDOWS_HOST)
+}
+
+#[cfg(windows)]
+fn maybe_refresh_runtime_wsl_listener(
+    state: &crate::app_state::AppState,
+    listen_host: &str,
+    listen_port: u16,
+    wsl_gateway_host: &str,
+) -> usize {
+    if !should_refresh_runtime_wsl_listener(listen_host, wsl_gateway_host) {
+        return 0;
+    }
+    let Ok(Some(addr)) = crate::orchestrator::gateway_bootstrap::wsl_overlay_listener_addr(
+        listen_host,
+        listen_port,
+        wsl_gateway_host,
+    ) else {
+        return 0;
+    };
+    crate::orchestrator::gateway::ensure_runtime_gateway_listener_bindings(
+        state.gateway.clone(),
+        &[addr],
+    )
+    .map(|newly_bound| newly_bound.len())
+    .unwrap_or(0)
+}
+
 fn current_dashboard_lan_sync_snapshot(
     listen_port: u16,
     cfg: &crate::orchestrator::config::AppConfig,
@@ -341,6 +373,13 @@ pub(crate) fn get_status(
     let config_revision = config_revision(&state, &cfg);
     let wsl_gateway_host =
         crate::platform::wsl_gateway_host::cached_or_default_wsl_gateway_host(Some(&state.config_path));
+    #[cfg(windows)]
+    maybe_refresh_runtime_wsl_listener(
+        &state,
+        cfg.listen.host.as_str(),
+        cfg.listen.port,
+        &wsl_gateway_host,
+    );
     let local_network = state.local_network.snapshot_for_status_poll();
     phase_timings_ms.insert(
         "config_and_revision".to_string(),
@@ -1765,6 +1804,8 @@ mod tests {
         normalize_event_query_limit, EVENT_LOG_DASHBOARD_VISIBLE_LIMIT,
         should_keep_runtime_session,
     };
+    #[cfg(windows)]
+    use super::should_refresh_runtime_wsl_listener;
     use crate::orchestrator::config::{AppConfig, ListenConfig, ProviderConfig, RoutingConfig};
     use crate::orchestrator::gateway::{decide_provider, open_store_dir, GatewayState, LastUsedRoute};
     use crate::orchestrator::router::{ProviderHealthSnapshot, RouterState};
@@ -1778,6 +1819,33 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_wsl_listener_refreshes_for_windows_loopback_gateway() {
+        assert!(should_refresh_runtime_wsl_listener(
+            crate::constants::GATEWAY_WINDOWS_HOST,
+            "172.26.144.1",
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_wsl_listener_skips_when_gateway_already_listens_on_wsl_host() {
+        assert!(!should_refresh_runtime_wsl_listener(
+            "172.26.144.1",
+            "172.26.144.1",
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_wsl_listener_skips_blank_wsl_gateway_host() {
+        assert!(!should_refresh_runtime_wsl_listener(
+            crate::constants::GATEWAY_WINDOWS_HOST,
+            "   ",
+        ));
+    }
 
     #[test]
     fn discovered_provider_does_not_override_confirmed_gateway_session() {

@@ -142,7 +142,7 @@ pub(crate) fn set_provider_timeline(
         })
         .collect::<Result<Vec<_>, String>>()?;
 
-    normalized.sort_by(|a, b| a.started_at_unix_ms.cmp(&b.started_at_unix_ms));
+    normalized.sort_by_key(|period| period.started_at_unix_ms);
     for pair in normalized.windows(2) {
         let left = &pair[0];
         let right = &pair[1];
@@ -217,7 +217,7 @@ pub(crate) fn set_provider_schedule(
         })
         .collect::<Result<Vec<_>, String>>()?;
 
-    normalized.sort_by(|a, b| a.started_at_unix_ms.cmp(&b.started_at_unix_ms));
+    normalized.sort_by_key(|period| period.started_at_unix_ms);
     for pair in normalized.windows(2) {
         let left = &pair[0];
         let right = &pair[1];
