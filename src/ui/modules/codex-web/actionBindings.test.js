@@ -276,10 +276,8 @@ describe("actionBindings", () => {
     }
   });
 
-  it("opens a managed terminal from the header workspace badge", async () => {
+  it("keeps the header workspace badge as status-only", async () => {
     const handlers = new Map();
-    const statusCalls = [];
-    let opened = 0;
     const deps = {
       state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
       byId() { return null; },
@@ -288,9 +286,7 @@ describe("actionBindings", () => {
       },
       bindResponsiveClick() {},
       bindInput() {},
-      setStatus(message, isError = false) {
-        statusCalls.push({ message, isError });
-      },
+      setStatus() {},
       updateMobileComposerState() {},
       updateNotificationState() {},
       armSyntheticClickSuppression() {},
@@ -317,9 +313,6 @@ describe("actionBindings", () => {
       resolveUserInput: async () => {},
       refreshPending: async () => {},
       uploadAttachment: async () => {},
-      openManagedTerminalSurface: async () => {
-        opened += 1;
-      },
       sendTurn: async () => {},
       syncSettingsControlsFromMain() {},
       localStorageRef: { getItem() { return ""; }, setItem() {} },
@@ -336,10 +329,7 @@ describe("actionBindings", () => {
 
     try {
       createActionBindingsModule(deps).wireActions();
-      await handlers.get("headerWorkspaceBadge")?.();
-
-      expect(opened).toBe(1);
-      expect(statusCalls).toEqual([]);
+      expect(handlers.has("headerWorkspaceBadge")).toBe(false);
     } finally {
       globalThis.document = previousDocument;
       globalThis.window = previousWindow;

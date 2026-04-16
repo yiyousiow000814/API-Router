@@ -22,6 +22,48 @@ describe("codex-web runtime layout", () => {
     expect(dockMatch?.[1] || "").toMatch(/margin-right:\s*4px/i);
   });
 
+  it("adds a separate picker bar below the composer meta row", () => {
+    const metaIndex = source.indexOf('<div class="mobileComposerMetaRow">');
+    const surfaceIndex = source.indexOf('<div class="composerInputSurface">');
+    const pickerIndex = source.indexOf('<div id="composerPickerBar" class="composerPickerBar" style="display:none;">');
+    expect(surfaceIndex).toBeGreaterThanOrEqual(0);
+    expect(metaIndex).toBeGreaterThanOrEqual(0);
+    expect(pickerIndex).toBeGreaterThan(metaIndex);
+    expect(pickerIndex).toBeGreaterThan(surfaceIndex);
+    expect(source).toContain('id="composerBranchPickerBtn"');
+    expect(source).toContain('id="composerPermissionPickerBtn"');
+    expect(source).toContain('id="composerPickerBar" class="composerPickerBar" style="display:none;"');
+    expect(source).toContain(".composerInputSurface");
+    expect(source).toContain(".composerPickerBar");
+    expect(source).toContain(".composerPickerMenu");
+  });
+
+  it("opens picker menus upward from the bottom picker bar", () => {
+    const menuMatch = source.match(/\.composerPickerMenu\s*\{([^}]+)\}/s);
+    const scrollMatch = source.match(/\.composerPickerMenuScroll\s*\{([^}]+)\}/s);
+    expect(menuMatch).toBeTruthy();
+    expect(scrollMatch).toBeTruthy();
+    const block = menuMatch?.[1] || "";
+    const scrollBlock = scrollMatch?.[1] || "";
+    expect(block).toMatch(/bottom:\s*calc\(100% \+ 8px\)/i);
+    expect(block).not.toMatch(/top:\s*calc\(100% \+ 8px\)/i);
+    expect(block).toMatch(/max-height:\s*min\(52vh,\s*360px\)/i);
+    expect(block).toMatch(/overflow:\s*hidden/i);
+    expect(scrollBlock).toMatch(/overflow-y:\s*auto/i);
+    expect(source).toContain(".composerPickerMenuScroll");
+  });
+
+  it("animates picker menu open and option entry", () => {
+    const menuMatch = source.match(/\.composerPickerMenu\s*\{([^}]+)\}/s);
+    const openMatch = source.match(/\.composerPickerMenu\.open\s*\{([^}]+)\}/s);
+    expect(menuMatch).toBeTruthy();
+    expect(openMatch).toBeTruthy();
+    expect(menuMatch?.[1] || "").toMatch(/transition:/i);
+    expect(menuMatch?.[1] || "").toMatch(/transform:\s*translate3d\(0,\s*8px,\s*0\)\s*scale\(0\.96\)/i);
+    expect(openMatch?.[1] || "").toMatch(/transform:\s*translate3d\(0,\s*0,\s*0\)\s*scale\(1\)/i);
+    expect(source).toContain("@keyframes composer-picker-item-in");
+  });
+
   it("renders thinking cards at full chat width instead of a narrow bubble width", () => {
     const blockMatch = source.match(/\.msg\.system\.kind-thinking\s*\{([^}]+)\}/s);
     expect(blockMatch).toBeTruthy();

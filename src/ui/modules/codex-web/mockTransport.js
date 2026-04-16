@@ -20,6 +20,45 @@ function readQuery(path) {
   return new URLSearchParams(search);
 }
 
+function isSafeModePassthroughRoute(method, url) {
+  const normalizedMethod = String(method || "").trim().toUpperCase();
+  const normalizedUrl = String(url || "").trim();
+  if (!normalizedUrl) return false;
+  if (
+    normalizedMethod === "GET" &&
+    (
+      normalizedUrl === "/codex/models" ||
+      normalizedUrl === "/codex/version-info" ||
+      normalizedUrl === "/codex/hosts" ||
+      normalizedUrl === "/codex/approvals/pending" ||
+      normalizedUrl === "/codex/user-input/pending" ||
+      normalizedUrl.startsWith("/codex/threads?") ||
+      normalizedUrl.startsWith("/codex/slash/commands?") ||
+      normalizedUrl.startsWith("/codex/slash/review/branches?") ||
+      normalizedUrl.startsWith("/codex/slash/review/commits?") ||
+      normalizedUrl.startsWith("/codex/folders?") ||
+      normalizedUrl.startsWith("/codex/git?") ||
+      /^\/codex\/threads\/[^/]+\/history(?:\?|$)/.test(normalizedUrl) ||
+      /^\/codex\/threads\/[^/]+\/transport(?:\?|$)/.test(normalizedUrl) ||
+      /^\/codex\/threads\/[^/]+\/git(?:\?|$)/.test(normalizedUrl)
+    )
+  ) {
+    return true;
+  }
+  if (
+    normalizedMethod === "POST" &&
+    (
+      normalizedUrl === "/codex/auth/verify" ||
+      normalizedUrl === "/codex/git/branch" ||
+      /^\/codex\/threads\/[^/]+\/resume(?:\?|$)/.test(normalizedUrl) ||
+      /^\/codex\/threads\/[^/]+\/branch(?:\?|$)/.test(normalizedUrl)
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function normalizeWorkspace(value, fallback = "windows") {
   const text = String(value || "").trim().toLowerCase();
   if (text === "windows" || text === "wsl2") return text;
@@ -374,11 +413,7 @@ export function createMockCodexTransport(deps) {
     if (!safeModeEnabled) return null;
     const method = String(options.method || "GET").trim().toUpperCase();
     const url = String(path || "");
-    const isRead =
-      method === "GET" ||
-      (method === "POST" && /^\/codex\/threads\/[^/]+\/resume(?:\?|$)/.test(url)) ||
-      (method === "POST" && url === "/codex/auth/verify");
-    if (!isRead) return null;
+    if (!isSafeModePassthroughRoute(method, url)) return null;
     return liveApi(path, options);
   }
 
@@ -734,8 +769,12 @@ export function createMockCodexTransport(deps) {
     if (liveRead && url === "/codex/hosts" && method === "GET") return liveRead;
     if (liveRead && url === "/codex/approvals/pending" && method === "GET") return liveRead;
     if (liveRead && url === "/codex/user-input/pending" && method === "GET") return liveRead;
+    if (liveRead && url.startsWith("/codex/git?") && method === "GET") return liveRead;
     if (liveRead && /^\/codex\/threads\/[^/]+\/resume(?:\?|$)/.test(url) && method === "POST") return liveRead;
     if (liveRead && /^\/codex\/threads\/[^/]+\/transport(?:\?|$)/.test(url) && method === "GET") return liveRead;
+    if (liveRead && /^\/codex\/threads\/[^/]+\/git(?:\?|$)/.test(url) && method === "GET") return liveRead;
+    if (liveRead && url === "/codex/git/branch" && method === "POST") return liveRead;
+    if (liveRead && /^\/codex\/threads\/[^/]+\/branch(?:\?|$)/.test(url) && method === "POST") return liveRead;
 
     if (liveRead && url === "/codex/auth/verify" && method === "POST") {
       return { ...liveRead, mode: "safe" };

@@ -204,7 +204,7 @@ describe("composerUi", () => {
     expect(getPromptValue()).toBe("hello");
   });
 
-  it("passes the combined status annotation into the context-left renderer", () => {
+  it("keeps permission out of the context-left annotation because it lives in the picker bar", () => {
     const calls = [];
     const deps = {
       state: {
@@ -236,7 +236,7 @@ describe("composerUi", () => {
     renderComposerContextLeft();
 
     expect(calls).toHaveLength(1);
-    expect(calls[0][3]).toEqual({ annotation: "full access · fast · plan mode" });
+    expect(calls[0][3]).toEqual({ annotation: "fast · plan mode" });
   });
 
   it("syncs settings default toggles from workspace state", () => {
@@ -3168,5 +3168,273 @@ describe("composerUi", () => {
     });
 
     expect(chatBox.querySelector("#runtimePlanInline").innerHTML).not.toContain("runtimePlanCardEnter");
+  });
+
+  it("renders the separate branch and permission picker bar below the composer meta row", () => {
+    const nodes = new Map();
+    for (const id of [
+      "mobileComposerRow",
+      "mobilePromptWrap",
+      "mobilePromptInput",
+      "mobileSendBtn",
+      "composerActionMenuBtn",
+      "composerActionMenu",
+      "queuedTurnCard",
+      "queuedTurnCardTitle",
+      "queuedTurnCardCount",
+      "queuedTurnToggleBtn",
+      "queuedTurnCardStatus",
+      "queuedTurnCardList",
+      "queuedTurnCardSummary",
+      "composerPickerBar",
+      "composerBranchPickerBtn",
+      "composerBranchPickerMenu",
+      "composerPermissionPickerBtn",
+      "composerPermissionPickerMenu",
+    ]) {
+      nodes.set(id, makeNode());
+    }
+    nodes.get("mobilePromptInput").value = "";
+    nodes.get("mobilePromptInput").scrollHeight = 44;
+    const state = {
+      activeMainTab: "chat",
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      workspaceTarget: "windows",
+      activeThreadPendingTurnRunning: false,
+      activeThreadQueuedTurns: [],
+      composerActionMenuOpen: false,
+      composerBranchMenuOpen: true,
+      composerPermissionMenuOpen: false,
+      activeThreadGitMetaLoading: false,
+      activeThreadGitMetaLoaded: true,
+      activeThreadGitMetaKey: "windows:thread-1",
+      activeThreadCurrentBranch: "main",
+      activeThreadBranchOptions: [{ name: "main" }, { name: "feature/ui", prNumber: 182 }],
+      permissionPresetByWorkspace: {
+        windows: "/permission full-access",
+        wsl2: "/permission auto",
+      },
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || null;
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() {
+        return { heightPx: 44, overflowY: "hidden" };
+      },
+      renderComposerContextLeftInNode() {},
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; } },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.updateMobileComposerState();
+
+    expect(nodes.get("composerPickerBar")?.style.display || "").toBe("");
+    expect(nodes.get("composerBranchPickerBtn")?.innerHTML || "").toContain("main");
+    expect(nodes.get("composerPermissionPickerBtn")?.innerHTML || "").toContain("Full access");
+    expect(nodes.get("composerBranchPickerMenu")?.innerHTML || "").toContain("composerPickerMenuScroll");
+    expect(nodes.get("composerBranchPickerMenu")?.innerHTML || "").toContain("feature/ui");
+    expect(nodes.get("composerBranchPickerMenu")?.innerHTML || "").toContain("#182");
+    expect(nodes.get("composerBranchPickerMenu")?.classList.contains("open")).toBe(true);
+  });
+
+  it("loads branch picker state from the selected project folder before a thread exists", async () => {
+    const nodes = new Map();
+    for (const id of [
+      "mobileComposerRow",
+      "mobilePromptWrap",
+      "mobilePromptInput",
+      "mobileSendBtn",
+      "composerActionMenuBtn",
+      "composerActionMenu",
+      "queuedTurnCard",
+      "queuedTurnCardTitle",
+      "queuedTurnCardCount",
+      "queuedTurnToggleBtn",
+      "queuedTurnCardStatus",
+      "queuedTurnCardList",
+      "queuedTurnCardSummary",
+      "composerPickerBar",
+      "composerBranchPickerBtn",
+      "composerBranchPickerMenu",
+      "composerPermissionPickerBtn",
+      "composerPermissionPickerMenu",
+    ]) {
+      nodes.set(id, makeNode());
+    }
+    nodes.get("mobilePromptInput").value = "";
+    nodes.get("mobilePromptInput").scrollHeight = 44;
+    const apiCalls = [];
+    const state = {
+      activeMainTab: "chat",
+      activeThreadId: "",
+      activeThreadWorkspace: "windows",
+      workspaceTarget: "windows",
+      startCwdByWorkspace: { windows: "C:\\repo\\demo", wsl2: "" },
+      activeThreadPendingTurnRunning: false,
+      activeThreadQueuedTurns: [],
+      composerActionMenuOpen: false,
+      composerBranchMenuOpen: false,
+      composerPermissionMenuOpen: false,
+      activeThreadGitMetaLoading: false,
+      activeThreadGitMetaLoaded: false,
+      activeThreadGitMetaKey: "",
+      activeThreadCurrentBranch: "",
+      activeThreadBranchOptions: [],
+      permissionPresetByWorkspace: {
+        windows: "/permission auto",
+        wsl2: "/permission auto",
+      },
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || null;
+      },
+      api(url) {
+        apiCalls.push(url);
+        return Promise.resolve({
+          workspace: "windows",
+          cwd: "C:\\repo\\demo",
+          currentBranch: "main",
+          branches: [{ name: "main" }, { name: "feature/ui", prNumber: 182 }],
+          isWorktree: false,
+        });
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() {
+        return { heightPx: 44, overflowY: "hidden" };
+      },
+      renderComposerContextLeftInNode() {},
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; } },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.updateMobileComposerState();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(apiCalls[0]).toContain("/codex/git?workspace=windows");
+    expect(apiCalls[0]).toContain("cwd=C%3A%5Crepo%5Cdemo");
+    expect(nodes.get("composerBranchPickerBtn")?.disabled).toBe(false);
+    expect(nodes.get("composerBranchPickerBtn")?.innerHTML || "").toContain("main");
+    expect(state.activeThreadGitMetaSource).toBe("cwd");
+  });
+
+  it("does not rewrite the open branch menu when branch state is unchanged", () => {
+    const nodes = new Map();
+    for (const id of [
+      "mobileComposerRow",
+      "mobilePromptWrap",
+      "mobilePromptInput",
+      "mobileSendBtn",
+      "composerActionMenuBtn",
+      "composerActionMenu",
+      "queuedTurnCard",
+      "queuedTurnCardTitle",
+      "queuedTurnCardCount",
+      "queuedTurnToggleBtn",
+      "queuedTurnCardStatus",
+      "queuedTurnCardList",
+      "queuedTurnCardSummary",
+      "composerPickerBar",
+      "composerBranchPickerBtn",
+      "composerBranchPickerMenu",
+      "composerPermissionPickerBtn",
+      "composerPermissionPickerMenu",
+    ]) {
+      nodes.set(id, makeNode());
+    }
+    nodes.get("mobilePromptInput").value = "";
+    nodes.get("mobilePromptInput").scrollHeight = 44;
+    const branchMenu = nodes.get("composerBranchPickerMenu");
+    const branchBtn = nodes.get("composerBranchPickerBtn");
+    let branchMenuWrites = 0;
+    let branchBtnWrites = 0;
+    let branchMenuHtml = "";
+    let branchBtnHtml = "";
+    Object.defineProperty(branchMenu, "innerHTML", {
+      get() {
+        return branchMenuHtml;
+      },
+      set(value) {
+        branchMenuWrites += 1;
+        branchMenuHtml = String(value || "");
+      },
+      configurable: true,
+    });
+    Object.defineProperty(branchBtn, "innerHTML", {
+      get() {
+        return branchBtnHtml;
+      },
+      set(value) {
+        branchBtnWrites += 1;
+        branchBtnHtml = String(value || "");
+      },
+      configurable: true,
+    });
+    const state = {
+      activeMainTab: "chat",
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      workspaceTarget: "windows",
+      activeThreadPendingTurnRunning: false,
+      activeThreadQueuedTurns: [],
+      composerActionMenuOpen: false,
+      composerBranchMenuOpen: true,
+      composerPermissionMenuOpen: false,
+      activeThreadGitMetaLoading: false,
+      activeThreadGitMetaLoaded: true,
+      activeThreadGitMetaKey: "thread:windows:thread-1",
+      activeThreadCurrentBranch: "main",
+      activeThreadBranchOptions: [{ name: "main" }, { name: "feature/ui", prNumber: 182 }],
+      permissionPresetByWorkspace: {
+        windows: "/permission full-access",
+        wsl2: "/permission auto",
+      },
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || null;
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() {
+        return { heightPx: 44, overflowY: "hidden" };
+      },
+      renderComposerContextLeftInNode() {},
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; } },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.updateMobileComposerState();
+    module.updateMobileComposerState();
+
+    expect(branchBtnWrites).toBe(1);
+    expect(branchMenuWrites).toBe(1);
   });
 });

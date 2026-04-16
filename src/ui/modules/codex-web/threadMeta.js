@@ -171,7 +171,8 @@ export function buildThreadRenderSig(items) {
       const ts = item?.updatedAt ?? item?.createdAt ?? "";
       const status = String(item?.status?.type || item?.status || item?.state || "").trim();
       const preview = String(item?.preview || item?.title || item?.name || "").trim();
-      return `${id}:${ts}:${status}:${preview}`;
+      const isWorktree = item?.isWorktree === true ? "wt" : "repo";
+      return `${id}:${ts}:${status}:${preview}:${isWorktree}`;
     })
     .join("|");
 }

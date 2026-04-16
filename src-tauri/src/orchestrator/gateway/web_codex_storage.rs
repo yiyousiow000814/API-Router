@@ -3,10 +3,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{mpsc, Mutex, OnceLock};
 
 const CODEX_LIVE_TRACE_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const UNSUPPORTED_RPC_CACHE_SCHEMA_VERSION: u32 = 1;
 const UNSUPPORTED_RPC_CACHE_TTL_MS: u64 = 6 * 60 * 60 * 1000;
+
+#[derive(Debug)]
+struct CodexLiveTraceWriteJob {
+    path: PathBuf,
+    line: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UnsupportedRpcCacheFile {
@@ -69,17 +76,70 @@ fn rotate_live_trace_file_if_needed(path: &Path) -> Result<(), String> {
     std::fs::rename(path, rotated).map_err(|err| err.to_string())
 }
 
-pub(crate) fn append_codex_live_trace_entry(entry: &Value) -> Result<(), String> {
-    let path = codex_live_trace_file_path()?;
-    append_codex_live_trace_entry_to_path(&path, entry)
+fn codex_live_trace_writer_sender() -> &'static Mutex<Option<mpsc::Sender<CodexLiveTraceWriteJob>>>
+{
+    static SENDER: OnceLock<Mutex<Option<mpsc::Sender<CodexLiveTraceWriteJob>>>> = OnceLock::new();
+    SENDER.get_or_init(|| Mutex::new(None))
 }
 
+fn run_codex_live_trace_writer(rx: mpsc::Receiver<CodexLiveTraceWriteJob>) {
+    for job in rx {
+        let _ = append_codex_live_trace_line_to_path(&job.path, &job.line);
+    }
+}
+
+fn codex_live_trace_writer() -> Result<mpsc::Sender<CodexLiveTraceWriteJob>, String> {
+    let sender_cell = codex_live_trace_writer_sender();
+    let mut sender_guard = match sender_cell.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    if let Some(sender) = sender_guard.as_ref() {
+        return Ok(sender.clone());
+    }
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("codex-live-trace-writer".to_string())
+        .spawn(move || run_codex_live_trace_writer(rx))
+        .map_err(|err| err.to_string())?;
+    *sender_guard = Some(tx.clone());
+    Ok(tx)
+}
+
+fn enqueue_codex_live_trace_line(path: PathBuf, line: String) -> Result<(), String> {
+    let sender = codex_live_trace_writer()?;
+    match sender.send(CodexLiveTraceWriteJob { path, line }) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let sender_cell = codex_live_trace_writer_sender();
+            let mut sender_guard = match sender_cell.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            *sender_guard = None;
+            let job = err.0;
+            append_codex_live_trace_line_to_path(&job.path, &job.line)
+        }
+    }
+}
+
+pub(crate) fn append_codex_live_trace_entry(entry: &Value) -> Result<(), String> {
+    let path = codex_live_trace_file_path()?;
+    let line = serde_json::to_string(entry).map_err(|err| err.to_string())?;
+    enqueue_codex_live_trace_line(path, line)
+}
+
+#[cfg(test)]
 fn append_codex_live_trace_entry_to_path(path: &Path, entry: &Value) -> Result<(), String> {
+    let line = serde_json::to_string(entry).map_err(|err| err.to_string())?;
+    append_codex_live_trace_line_to_path(path, &line)
+}
+
+fn append_codex_live_trace_line_to_path(path: &Path, line: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
     rotate_live_trace_file_if_needed(path)?;
-    let line = serde_json::to_string(entry).map_err(|err| err.to_string())?;
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -260,6 +320,34 @@ mod tests {
         append_codex_live_trace_entry_to_path(&path, &entry).unwrap();
         let text = std::fs::read_to_string(path).unwrap();
         assert!(text.contains("\"kind\":\"trace.test\""));
+    }
+
+    #[test]
+    fn live_trace_enqueue_writes_ndjson_line_async() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("logs").join("codex-web-live.ndjson");
+        let line = serde_json::to_string(&serde_json::json!({
+            "source": "test",
+            "kind": "trace.async",
+            "at": 2,
+        }))
+        .unwrap();
+
+        enqueue_codex_live_trace_line(path.clone(), line).unwrap();
+
+        let started = std::time::Instant::now();
+        loop {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                if text.contains("\"kind\":\"trace.async\"") {
+                    break;
+                }
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(2),
+                "async live trace writer did not flush within timeout"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]

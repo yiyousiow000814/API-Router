@@ -618,6 +618,7 @@ const renderPendingInline = (...args) => renderPendingInlineFromComposition(...a
   toolItemToMessage,
   normalizeType,
   escapeHtml,
+  api,
   updateHeaderUi: (...args) => updateHeaderUi(...args),
   setSyntheticPendingUserInputs: (...args) => setSyntheticPendingUserInputs(...args),
   upsertSyntheticPendingUserInput: (...args) => upsertSyntheticPendingUserInput(...args),

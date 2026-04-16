@@ -12,6 +12,8 @@ const WEB_CODEX_APP_STATE_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/appState.js");
 const WEB_CODEX_BOOTSTRAP_APP_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/bootstrapApp.js");
+const WEB_CODEX_BRANCH_OPTIONS_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/branchOptions.js");
 const WEB_CODEX_PENDING_THREAD_RESUME_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/pendingThreadResume.js");
 const WEB_CODEX_CONTEXT_LEFT_JS: &str =
@@ -115,6 +117,7 @@ fn resolve_web_codex_module_body(module_path: &str) -> Option<&'static str> {
         "codex-web/appPersistence.js" => Some(WEB_CODEX_APP_PERSISTENCE_JS),
         "codex-web/appState.js" => Some(WEB_CODEX_APP_STATE_JS),
         "codex-web/bootstrapApp.js" => Some(WEB_CODEX_BOOTSTRAP_APP_JS),
+        "codex-web/branchOptions.js" => Some(WEB_CODEX_BRANCH_OPTIONS_JS),
         "codex-web/chatTimeline.js" => Some(WEB_CODEX_CHAT_TIMELINE_JS),
         "codex-web/chatViewport.js" => Some(WEB_CODEX_CHAT_VIEWPORT_JS),
         "codex-web/composerUi.js" => Some(WEB_CODEX_COMPOSER_UI_JS),
@@ -255,6 +258,7 @@ mod tests {
         assert!(resolve_web_codex_module_body("codex-web/appPersistence.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/appState.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/bootstrapApp.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/branchOptions.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/chatTimeline.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/chatViewport.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/composerUi.js").is_some());

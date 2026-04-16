@@ -174,6 +174,7 @@ export function createWorkspaceUiModule(deps) {
     if (target !== "unknown") state.activeThreadWorkspace = target;
     const rolloutPath = String(thread?.path || "").trim();
     if (rolloutPath) state.activeThreadRolloutPath = rolloutPath;
+    state.activeThreadIsWorktree = thread?.isWorktree === true;
     const attachTransport = String(state.threadAttachTransportById?.get?.(String(threadId || "")) || "").trim();
     state.activeThreadAttachTransport = attachTransport;
   }

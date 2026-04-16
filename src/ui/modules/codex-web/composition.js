@@ -193,6 +193,7 @@ export function createCodexWebComposition(deps) {
     setMainTab: deps.setMainTab,
     setMobileTab: deps.setMobileTab,
     setActiveThread: deps.setActiveThread,
+    onActiveThreadOpened: () => deps.updateMobileComposerState(),
     setChatOpening: chatTimeline.setChatOpening,
     detectThreadWorkspaceTarget: deps.detectThreadWorkspaceTarget,
     loadThreadMessages: historyLoader.loadThreadMessages,
@@ -313,6 +314,7 @@ export function createCodexWebComposition(deps) {
   const actionBindings = deps.createActionBindingsModule({
     state: deps.state,
     byId: deps.byId,
+    api,
     bindClick: deps.bindClick,
     bindResponsiveClick: deps.bindResponsiveClick,
     bindInput: deps.bindInput,

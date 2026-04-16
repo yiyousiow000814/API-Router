@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -164,7 +165,7 @@ describe("threadListView", () => {
         threadListChevronCloseAnimateKeys: new Set(),
         threadListSkipScrollRestoreOnce: false,
         collapsedWorkspaceKeys: new Set(),
-        threadGroupCollapseInitializedByWorkspace: {},
+        threadGroupCollapseInitializedByWorkspace: { windows: true, wsl2: true },
         favoriteThreadIds: new Set(),
       },
       byId(id) {
@@ -233,6 +234,14 @@ describe("threadListView", () => {
       ])
     ).not.toThrow();
     expect(list.childElementCount).toBeGreaterThan(0);
+  });
+
+  it("renders a worktree icon between the title and age when the thread is a git worktree", () => {
+    const source = fs.readFileSync(new URL("./threadListView.js", import.meta.url), "utf8");
+    expect(source).toContain("thread?.isWorktree === true");
+    expect(source).toContain("threadWorktreeIcon");
+    expect(source).toContain('<div class="itemTitle">${escapeHtml(title)}</div>');
+    expect(source).toContain('<div class="itemSub mono">${escapeHtml(age)}</div>');
   });
 
   it("loads history before subscribing live state when opening an existing chat", async () => {
@@ -788,6 +797,9 @@ describe("threadListView", () => {
       setActiveThread(threadId) {
         state.activeThreadId = threadId;
       },
+      onActiveThreadOpened() {
+        events.push("composer:update");
+      },
       setChatOpening() {},
       detectThreadWorkspaceTarget(thread) {
         return thread.workspace;
@@ -846,6 +858,8 @@ describe("threadListView", () => {
     card.onclick();
     await flushAsyncWork();
 
+    expect(events).toContain("composer:update");
+    expect(events.indexOf("composer:update")).toBeLessThan(events.indexOf("history:thread-2"));
     expect(events.indexOf("ws:connect")).toBeGreaterThan(events.indexOf("history:thread-2"));
     expect(events.indexOf("ws:sync")).toBeGreaterThan(events.indexOf("history:thread-2"));
     expect(events.indexOf("POST:/codex/threads/thread-2/resume?workspace=windows")).toBeGreaterThan(
