@@ -713,7 +713,7 @@ export function createActionBindingsModule(deps) {
             event.stopPropagation();
             const threadId = String(state.activeThreadId || "").trim();
             const branch = String(branchBtn.getAttribute("data-composer-branch-option") || "").trim();
-            const workspace = activeComposerWorkspace();
+            const workspace = activeComposerWorkspace(state);
             const cwd = String(state.activeThreadGitMetaCwd || state.startCwdByWorkspace?.[workspace] || "").trim();
             const useCwdSwitch = state.activeThreadGitMetaSource === "cwd" || !threadId;
             if (

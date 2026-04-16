@@ -1170,7 +1170,7 @@ export function createComposerUiModule(deps) {
       branchMenu.classList.toggle("open", state.composerBranchMenuOpen === true && canPickBranch);
     }
 
-    const permissionPreset = String(state.permissionPresetByWorkspace?.[activeComposerWorkspace()] || "").trim();
+    const permissionPreset = String(state.permissionPresetByWorkspace?.[activeComposerWorkspace(state)] || "").trim();
     const permissionOptions = [
       { command: "/permission auto", label: "Auto" },
       { command: "/permission read-only", label: "Read only" },
