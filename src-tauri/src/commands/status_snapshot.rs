@@ -195,15 +195,16 @@ fn should_refresh_runtime_wsl_listener(listen_host: &str, wsl_gateway_host: &str
 #[cfg(windows)]
 fn maybe_refresh_runtime_wsl_listener(
     state: &crate::app_state::AppState,
+    listen_host: &str,
+    listen_port: u16,
     wsl_gateway_host: &str,
 ) -> usize {
-    let listen = state.gateway.cfg.read().listen.clone();
-    if !should_refresh_runtime_wsl_listener(&listen.host, wsl_gateway_host) {
+    if !should_refresh_runtime_wsl_listener(listen_host, wsl_gateway_host) {
         return 0;
     }
     let Ok(Some(addr)) = crate::orchestrator::gateway_bootstrap::wsl_overlay_listener_addr(
-        &listen.host,
-        listen.port,
+        listen_host,
+        listen_port,
         wsl_gateway_host,
     ) else {
         return 0;
@@ -373,10 +374,12 @@ pub(crate) fn get_status(
     let wsl_gateway_host =
         crate::platform::wsl_gateway_host::cached_or_default_wsl_gateway_host(Some(&state.config_path));
     #[cfg(windows)]
-    let _runtime_wsl_binding_in_progress =
-        maybe_refresh_runtime_wsl_listener(&state, &wsl_gateway_host) > 0;
-    #[cfg(not(windows))]
-    let _runtime_wsl_binding_in_progress = false;
+    maybe_refresh_runtime_wsl_listener(
+        &state,
+        cfg.listen.host.as_str(),
+        cfg.listen.port,
+        &wsl_gateway_host,
+    );
     let local_network = state.local_network.snapshot_for_status_poll();
     phase_timings_ms.insert(
         "config_and_revision".to_string(),
@@ -1832,6 +1835,15 @@ mod tests {
         assert!(!should_refresh_runtime_wsl_listener(
             "172.26.144.1",
             "172.26.144.1",
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_wsl_listener_skips_blank_wsl_gateway_host() {
+        assert!(!should_refresh_runtime_wsl_listener(
+            crate::constants::GATEWAY_WINDOWS_HOST,
+            "   ",
         ));
     }
 
