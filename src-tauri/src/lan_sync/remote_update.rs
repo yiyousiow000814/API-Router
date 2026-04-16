@@ -2022,7 +2022,7 @@ fn spawn_remote_update_worker(
     if let Some(path) = status_path {
         command.env("API_ROUTER_REMOTE_UPDATE_STATUS_PATH", path);
     }
-    if let Some(path) = log_path.clone() {
+    if let Some(path) = log_path.as_ref() {
         command.env("API_ROUTER_REMOTE_UPDATE_LOG_PATH", path);
     }
     command.env("API_ROUTER_REMOTE_UPDATE_TARGET_REF", target_ref);
@@ -2807,7 +2807,7 @@ mod tests {
             .find("fn spawn_remote_update_worker(")
             .expect("spawn_remote_update_worker fn");
         let spawn_fn_end = launcher_source[spawn_fn_start..]
-            .find("\n#[cfg(target_os = \"windows\")]")
+            .find("fn windows_remote_update_creation_flags() -> u32 {")
             .map(|offset| spawn_fn_start + offset)
             .expect("end of spawn_remote_update_worker fn");
         let spawn_fn_source = &launcher_source[spawn_fn_start..spawn_fn_end];
