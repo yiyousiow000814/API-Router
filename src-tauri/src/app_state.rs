@@ -848,6 +848,7 @@ impl UiWatchdogState {
             let detail_level = backend_status.status_command_detail_level.clone();
             let phase = backend_status.status_command_phase.clone();
             backend_status.status_command_in_flight = false;
+            backend_status.status_command_started_unix_ms = 0;
             backend_status.status_command_last_progress_unix_ms = now_unix_ms;
             backend_status.status_command_last_finished_unix_ms = now_unix_ms;
             backend_status.status_command_detail_level.clear();
@@ -1500,6 +1501,24 @@ mod tests {
         );
         assert_eq!(live_snapshot.backend_status.progress_age_ms, Some(7_000));
         assert!(live_snapshot.backend_status.stalled);
+    }
+
+    #[test]
+    fn ui_watchdog_live_snapshot_clears_started_time_after_backend_status_finishes() {
+        let watchdog = UiWatchdogState::default();
+
+        watchdog.record_backend_status_started("dashboard", 1_500);
+        watchdog.record_backend_status_progress("router_snapshot", 2_000);
+        watchdog.record_backend_status_finished(2_500);
+
+        let live_snapshot = watchdog.live_snapshot(3_000);
+
+        assert!(!live_snapshot.backend_status.in_flight);
+        assert_eq!(live_snapshot.backend_status.started_unix_ms, None);
+        assert_eq!(
+            live_snapshot.backend_status.last_finished_unix_ms,
+            Some(2_500)
+        );
     }
 
     #[test]
