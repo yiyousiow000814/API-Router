@@ -591,14 +591,6 @@ export function createThreadListViewModule(deps) {
         id ||
         "(unnamed)";
       const age = relativeTimeLabel(pickThreadTimestamp(thread)) || "";
-      const worktreeBadge = thread?.isWorktree === true
-        ? `<span class="threadWorktreeIcon" aria-label="Worktree" title="Worktree">` +
-            `<svg viewBox="0 0 16 16" focusable="false" aria-hidden="true">` +
-              `<path d="M3.5 5.5h6v6h-6z"></path>` +
-              `<path d="M6.5 2.5h6v6h-2"></path>` +
-            `</svg>` +
-          `</span>`
-        : "";
       const isFavorite = !!(id && favoriteSet.has(id));
       const card = documentRef.createElement("div");
       card.className = `itemCard${id && id === state.activeThreadId ? " active" : ""}`;
@@ -611,7 +603,6 @@ export function createThreadListViewModule(deps) {
       card.innerHTML =
         `<div class="row"><button class="threadFavBtn${isFavorite ? " active" : ""}" data-thread-fav="${escapeHtml(id)}" aria-label="${isFavorite ? "Unfavorite" : "Favorite"}"><span class="starGlyph" aria-hidden="true">${isFavorite ? "★" : "☆"}</span></button>` +
         `<div class="itemTitle">${escapeHtml(title)}</div>` +
-        worktreeBadge +
         `<div class="itemSub mono">${escapeHtml(age)}</div></div>`;
       const favBtn = card.querySelector(".threadFavBtn");
       if (favBtn) {

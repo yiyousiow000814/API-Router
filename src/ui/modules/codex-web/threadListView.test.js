@@ -236,14 +236,6 @@ describe("threadListView", () => {
     expect(list.childElementCount).toBeGreaterThan(0);
   });
 
-  it("renders a worktree icon between the title and age when the thread is a git worktree", () => {
-    const source = fs.readFileSync(new URL("./threadListView.js", import.meta.url), "utf8");
-    expect(source).toContain("thread?.isWorktree === true");
-    expect(source).toContain("threadWorktreeIcon");
-    expect(source).toContain('<div class="itemTitle">${escapeHtml(title)}</div>');
-    expect(source).toContain('<div class="itemSub mono">${escapeHtml(age)}</div>');
-  });
-
   it("loads history before subscribing live state when opening an existing chat", async () => {
     const list = createFakeElement("div");
     const body = createFakeElement("body");
