@@ -10,7 +10,38 @@ import {
 
 describe("liveNotifications", () => {
   it("extracts workspace key and label from thread cwd", () => {
-    expect(workspaceKeyOfThread({ cwd: "src/ui" })).toEqual({ key: "src/ui", label: "ui" });
+    expect(workspaceKeyOfThread({ cwd: "src/ui" })).toEqual({ key: "ui", label: "ui" });
+  });
+
+  it("groups all API-Router variants by folder name regardless of path differences", () => {
+    const cases = [
+      { cwd: "C:\\Users\\yiyou\\API-Router" },
+      { cwd: "C:\\Users\\yiyou\\API-router" },
+      { cwd: "\\\\?\\C:\\Users\\yiyou\\API-Router" },
+      { cwd: "C:\\Users\\yiyou\\.codex\\worktrees\\4002\\API-Router" },
+      { cwd: "C:/Users/yiyou/API-Router" },
+    ];
+    for (const thread of cases) {
+      const result = workspaceKeyOfThread(thread);
+      expect(result.key).toEqual("api-router");
+      // Label matches the actual folder name from the cwd (case preserved)
+      expect(result.label).toMatch(/^API-?[Rr]outer$/);
+    }
+  });
+
+  it("uses 'default-folder' for empty or missing cwd", () => {
+    expect(workspaceKeyOfThread({})).toEqual({ key: "default-folder", label: "Default folder" });
+    expect(workspaceKeyOfThread({ cwd: "" })).toEqual({ key: "default-folder", label: "Default folder" });
+  });
+
+  it("falls back to workspace, project, directory, path when cwd is missing", () => {
+    expect(workspaceKeyOfThread({ workspace: "my-workspace" })).toEqual({ key: "my-workspace", label: "my-workspace" });
+    expect(workspaceKeyOfThread({ project: "my-project" })).toEqual({ key: "my-project", label: "my-project" });
+  });
+
+  it("groups worktrees with distinct folder names separately", () => {
+    expect(workspaceKeyOfThread({ cwd: "C:\\Users\\yiyou\\API-Router" })).toEqual({ key: "api-router", label: "API-Router" });
+    expect(workspaceKeyOfThread({ cwd: "C:\\Users\\yiyou\\API-Router-wt-main" })).toEqual({ key: "api-router-wt-main", label: "API-Router-wt-main" });
   });
 
   it("formats command execution items", () => {

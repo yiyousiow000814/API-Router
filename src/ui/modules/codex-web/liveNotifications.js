@@ -25,9 +25,10 @@ export function workspaceKeyOfThread(thread) {
     .replace(/^\\\\\?\\UNC\\/, "\\\\")
     .replace(/[\\/]+$/, "");
   const parts = normalized.split(/[\\/]+/).filter(Boolean);
+  const folder = parts[parts.length - 1] || "Default folder";
   return {
-    key: normalized.toLowerCase(),
-    label: parts[parts.length - 1] || "Default folder",
+    key: folder.toLowerCase(),
+    label: folder,
   };
 }
 
