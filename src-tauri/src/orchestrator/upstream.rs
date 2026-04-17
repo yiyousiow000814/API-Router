@@ -26,7 +26,7 @@ pub struct UpstreamClient {
 fn build_upstream_url(base_url: &str, path: &str) -> String {
     let base = base_url.trim_end_matches('/');
     let mut rel = path.trim_start_matches('/');
-    if base.ends_with("/v1") && rel.starts_with("v1/") {
+    if rel.starts_with("v1/") {
         rel = rel.trim_start_matches("v1/");
     }
     format!("{}/{}", base, rel)
@@ -521,6 +521,30 @@ mod tests {
                 "id": "resp_ws_ok"
             })),
             None
+        );
+    }
+
+    #[test]
+    fn build_upstream_url_does_not_add_v1_after_openai_proxy_prefix() {
+        assert_eq!(
+            build_upstream_url("https://capi.quan2go.com/openai", "/v1/responses"),
+            "https://capi.quan2go.com/openai/responses"
+        );
+    }
+
+    #[test]
+    fn build_upstream_url_uses_responses_for_non_v1_base_url() {
+        assert_eq!(
+            build_upstream_url("https://yunyi.rdzhvip.com/codex", "/v1/responses"),
+            "https://yunyi.rdzhvip.com/codex/responses"
+        );
+    }
+
+    #[test]
+    fn build_upstream_url_keeps_v1_when_base_url_already_has_v1() {
+        assert_eq!(
+            build_upstream_url("https://api-vip.codex-for.me/v1", "/v1/responses"),
+            "https://api-vip.codex-for.me/v1/responses"
         );
     }
 }
