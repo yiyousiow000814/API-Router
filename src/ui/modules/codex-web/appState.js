@@ -235,6 +235,7 @@ export function createInitialState() {
     activeThreadCurrentBranch: "",
     activeThreadBranchOptions: [],
     activeThreadIsWorktree: false,
+    activeThreadUncommittedFileCount: 0,
     activeThreadGitMetaLoading: false,
     activeThreadGitMetaLoaded: false,
     activeThreadGitMetaKey: "",

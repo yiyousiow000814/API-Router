@@ -1,5 +1,31 @@
 import { syncPendingTurnRuntime } from "./runtimeState.js";
 
+function splitWorkspaceKeySegments(key) {
+  return String(key || "")
+    .split("/")
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+}
+
+function buildDisambiguatedWorkspaceLabels(groupEntries) {
+  const entries = Array.isArray(groupEntries) ? groupEntries : [];
+  const labelCounts = new Map();
+  for (const entry of entries) {
+    const label = String(entry?.label || "").trim() || String(entry?.key || "").trim();
+    labelCounts.set(label, (labelCounts.get(label) || 0) + 1);
+  }
+  return entries.map((entry) => {
+    const key = String(entry?.key || "").trim();
+    const label = String(entry?.label || "").trim() || key;
+    if ((labelCounts.get(label) || 0) <= 1) return label;
+    const segments = splitWorkspaceKeySegments(key);
+    if (segments.length <= 1) return label;
+    const suffix = segments[segments.length - 2];
+    if (!suffix || suffix === label.toLowerCase()) return label;
+    return `${label} (${suffix})`;
+  });
+}
+
 export function buildWorkspaceEntries(sourceItems, workspaceKeyOfThread) {
   const groups = new Map();
   const groupLabels = new Map();
@@ -17,7 +43,13 @@ export function buildWorkspaceEntries(sourceItems, workspaceKeyOfThread) {
     if (!groupLabels.has(key)) groupLabels.set(key, keyLabel);
     groups.get(key).push(thread);
   }
-  return Array.from(groups.entries()).map(([key, items]) => [groupLabels.get(key) || key, items, key]);
+  const orderedGroups = Array.from(groups.entries()).map(([key, items]) => ({
+    key,
+    label: groupLabels.get(key) || key,
+    items,
+  }));
+  const labels = buildDisambiguatedWorkspaceLabels(orderedGroups);
+  return orderedGroups.map((group, index) => [labels[index] || group.label, group.items, group.key]);
 }
 
 export function filterWorkspaceSectionThreads(threads, favoriteSet, query, workspaceLabel) {

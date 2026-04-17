@@ -4,11 +4,9 @@ import { clearProposedPlanConfirmation } from "./proposedPlan.js";
 import { extractRequestUserInput } from "./runtimeUserInput.js";
 import { isTerminalInterruptedHistory } from "./historyLiveCommentaryState.js";
 import {
-  normalizeBranchOption,
-  normalizeBranchOptions,
-  readBranchOptionName,
-  readBranchOptionPrNumber,
-} from "./branchOptions.js";
+  buildBranchPickerItemState,
+  buildBranchPickerState,
+} from "./branchPickerState.js";
 import {
   activeComposerWorkspace,
   applyActiveThreadGitMetaState,
@@ -1139,18 +1137,14 @@ export function createComposerUiModule(deps) {
       return;
     }
     bar.style.display = "";
-    const branchOptions = normalizeBranchOptions(state.activeThreadBranchOptions);
-    const currentBranch = String(state.activeThreadCurrentBranch || "").trim();
-    const uncommittedFileCount = Math.max(0, Number(state.activeThreadUncommittedFileCount || 0) || 0);
-    const branchSwitchLocked = uncommittedFileCount > 0;
-    const branchMetaReady =
-      state.activeThreadGitMetaLoading !== true &&
-      state.activeThreadGitMetaLoaded === true;
-    const branchLabel = state.activeThreadGitMetaLoading === true
-      ? "Loading..."
-      : currentBranch || "Branch";
-    const canPickBranch =
-      branchMetaReady && (branchOptions.length > 0 || !!currentBranch);
+    const branchPickerState = buildBranchPickerState(state);
+    const {
+      branchLabel,
+      canPickBranch,
+      visibleBranches,
+      branchSwitchLocked,
+      uncommittedFileCount,
+    } = branchPickerState;
     if (!canPickBranch) state.composerBranchMenuOpen = false;
     if (branchBtn) {
       branchBtn.disabled = !canPickBranch;
@@ -1166,17 +1160,10 @@ export function createComposerUiModule(deps) {
       }
     }
     if (branchMenu) {
-      const visibleBranches = branchOptions.length
-        ? branchOptions
-        : currentBranch
-          ? [normalizeBranchOption({ name: currentBranch })]
-          : [];
       const branchItemsHtml = visibleBranches.length
         ? visibleBranches.map((branchOption) => {
-            const branchName = readBranchOptionName(branchOption);
-            const prNumber = readBranchOptionPrNumber(branchOption);
-            const active = branchName === currentBranch;
-            const disabled = branchSwitchLocked && !active;
+            const { branchName, prNumber, active, disabled } =
+              buildBranchPickerItemState(branchPickerState, branchOption);
             return (
               `<button class="composerPickerMenuItem${active ? " is-active" : ""}${disabled ? " is-disabled" : ""}" type="button" data-composer-branch-option="${escapeHtml(branchName)}"${disabled ? " disabled" : ""}>` +
                 `<span class="composerPickerMenuItemRow">` +

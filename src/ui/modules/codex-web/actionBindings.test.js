@@ -1560,6 +1560,9 @@ describe("actionBindings", () => {
         activeThreadGitMetaSource: "thread",
         activeThreadGitMetaCwd: "/repo/demo",
         activeThreadGitMetaLoading: false,
+        activeThreadGitMetaLoaded: true,
+        activeThreadCurrentBranch: "feature/ui",
+        activeThreadBranchOptions: [{ name: "main" }, { name: "feature/ui" }],
         composerBranchMenuOpen: true,
         composerPermissionMenuOpen: false,
       },
@@ -1668,6 +1671,7 @@ describe("actionBindings", () => {
         activeThreadGitMetaSource: "thread",
         activeThreadGitMetaCwd: "C:\\repo\\demo",
         activeThreadGitMetaLoading: false,
+        activeThreadGitMetaLoaded: true,
         activeThreadGitMetaReqSeq: 4,
         activeThreadCurrentBranch: "main",
         activeThreadBranchOptions: [{ name: "main" }, { name: "feature/ui" }],
@@ -1754,7 +1758,7 @@ describe("actionBindings", () => {
     expect(deps.state.activeThreadGitMetaLoading).toBe(true);
   });
 
-  it("shows a visible branch-switch error after closing the menu immediately", async () => {
+  it("blocks dirty branch switches before calling the backend", async () => {
     const handlers = new Map();
     const statusCalls = [];
     const pickerBar = {
@@ -1776,6 +1780,9 @@ describe("actionBindings", () => {
         activeThreadGitMetaSource: "thread",
         activeThreadGitMetaCwd: "C:\\repo\\demo",
         activeThreadGitMetaLoading: false,
+        activeThreadGitMetaLoaded: true,
+        activeThreadCurrentBranch: "main",
+        activeThreadBranchOptions: [{ name: "main" }, { name: "feature/ui" }],
         activeThreadUncommittedFileCount: 3,
         composerBranchMenuOpen: true,
         composerPermissionMenuOpen: false,
@@ -1820,9 +1827,7 @@ describe("actionBindings", () => {
       uploadAttachment: async () => {},
       executeSlashCommand: async () => {},
       sendTurn: async () => {},
-      api: async () => {
-        throw new Error("cannot switch branches with uncommitted changes; commit or stash them first");
-      },
+      api: vi.fn(),
       syncSlashCommandMenu() {},
       syncSettingsControlsFromMain() {},
       localStorageRef: { getItem() { return ""; }, setItem() {} },
@@ -1853,11 +1858,223 @@ describe("actionBindings", () => {
 
     expect(deps.state.composerBranchMenuOpen).toBe(false);
     expect(deps.state.activeThreadGitMetaLoading).toBe(false);
+    expect(deps.api).not.toHaveBeenCalled();
     expect(statusCalls).toEqual([{
-      message: "cannot switch branches with uncommitted changes; commit or stash them first",
+      message: "Cannot switch branches with uncommitted files: 3",
       isError: true,
     }]);
-    expect(deps.__updates).toBeGreaterThanOrEqual(2);
+    expect(deps.__updates).toBe(1);
+  });
+
+  it("closes the branch menu without switching when clicking the active branch", async () => {
+    const handlers = new Map();
+    const pickerBar = {
+      addEventListener(eventName, handler) {
+        handlers.set(`composerPickerBar:${eventName}`, handler);
+      },
+      contains() {
+        return false;
+      },
+    };
+    const api = vi.fn();
+    const deps = {
+      state: {
+        folderPickerOpen: false,
+        modelOptionsLoading: false,
+        threadItems: [],
+        activeThreadWorkspace: "windows",
+        workspaceTarget: "windows",
+        activeThreadId: "thread-1",
+        activeThreadGitMetaSource: "thread",
+        activeThreadGitMetaCwd: "C:\\repo\\demo",
+        activeThreadGitMetaLoading: false,
+        activeThreadGitMetaLoaded: true,
+        activeThreadCurrentBranch: "feat/codex-web-branch-picker",
+        activeThreadUncommittedFileCount: 3,
+        activeThreadBranchOptions: [
+          { name: "main" },
+          { name: "feat/codex-web-branch-picker", prNumber: 196 },
+          { name: "chore/web-codex-terminal-communication", prNumber: 150 },
+        ],
+        composerBranchMenuOpen: true,
+        composerPermissionMenuOpen: false,
+      },
+      byId(id) {
+        if (id === "composerPickerBar") return pickerBar;
+        return null;
+      },
+      bindClick() {},
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus() {},
+      updateMobileComposerState() {
+        deps.__updates = (deps.__updates || 0) + 1;
+      },
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      executeSlashCommand: async () => {},
+      sendTurn: async () => {},
+      api,
+      syncSlashCommandMenu() {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+
+    createActionBindingsModule(deps).wireActions();
+    await handlers.get("composerPickerBar:click")?.({
+      target: {
+        closest(selector) {
+          if (selector === "[data-composer-branch-option]") {
+            return {
+              getAttribute(name) {
+                if (name === "data-composer-branch-option") return "feat/codex-web-branch-picker";
+                return "";
+              },
+            };
+          }
+          return null;
+        },
+      },
+      preventDefault() {},
+      stopPropagation() {},
+    });
+
+    expect(api).not.toHaveBeenCalled();
+    expect(deps.state.composerBranchMenuOpen).toBe(false);
+    expect(deps.state.activeThreadGitMetaLoading).toBe(false);
+    expect(deps.state.activeThreadUncommittedFileCount).toBe(3);
+    expect(deps.state.activeThreadBranchOptions).toEqual([
+      { name: "main" },
+      { name: "feat/codex-web-branch-picker", prNumber: 196 },
+      { name: "chore/web-codex-terminal-communication", prNumber: 150 },
+    ]);
+    expect(deps.__updates).toBe(1);
+  });
+
+  it("opens the branch picker immediately without refetching git metadata", async () => {
+    const handlers = new Map();
+    const pickerBar = {
+      addEventListener(eventName, handler) {
+        handlers.set(`composerPickerBar:${eventName}`, handler);
+      },
+    };
+    const deps = {
+      state: {
+        folderPickerOpen: false,
+        modelOptionsLoading: false,
+        threadItems: [],
+        activeThreadWorkspace: "windows",
+        workspaceTarget: "windows",
+        activeThreadId: "thread-1",
+        activeThreadGitMetaSource: "thread",
+        activeThreadGitMetaCwd: "C:\\repo\\demo",
+        activeThreadGitMetaLoading: false,
+        activeThreadGitMetaLoaded: true,
+        activeThreadCurrentBranch: "feat/codex-web-branch-picker",
+        activeThreadUncommittedFileCount: 0,
+        activeThreadBranchOptions: [
+          { name: "main" },
+          { name: "feat/codex-web-branch-picker", prNumber: 196 },
+        ],
+        composerBranchMenuOpen: false,
+        composerPermissionMenuOpen: false,
+      },
+      byId(id) {
+        if (id === "composerPickerBar") return pickerBar;
+        return null;
+      },
+      bindClick() {},
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus() {},
+      updateMobileComposerState() {
+        deps.__updates = (deps.__updates || 0) + 1;
+      },
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      executeSlashCommand: async () => {},
+      sendTurn: async () => {},
+      api: vi.fn(),
+      syncSlashCommandMenu() {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+
+    createActionBindingsModule(deps).wireActions();
+    handlers.get("composerPickerBar:click")?.({
+      target: {
+        closest(selector) {
+          if (selector === "[data-composer-picker-toggle]") {
+            return {
+              disabled: false,
+              getAttribute(name) {
+                if (name === "data-composer-picker-toggle") return "branch";
+                return "";
+              },
+            };
+          }
+          return null;
+        },
+      },
+      preventDefault() {},
+      stopPropagation() {},
+    });
+
+    expect(deps.state.composerBranchMenuOpen).toBe(true);
+    expect(deps.state.activeThreadGitMetaLoading).toBe(false);
+    expect(deps.api).not.toHaveBeenCalled();
   });
 
   it("closes picker menus when clicking the picker bar background", () => {

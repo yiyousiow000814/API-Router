@@ -26,8 +26,22 @@ export function workspaceKeyOfThread(thread) {
     .replace(/[\\/]+$/, "");
   const parts = normalized.split(/[\\/]+/).filter(Boolean);
   const folder = parts[parts.length - 1] || "Default folder";
+  let key = /[\\/]/.test(normalized)
+    ? normalized.replace(/\\/g, "/").toLowerCase()
+    : folder.toLowerCase();
+  const normalizedKeyParts = key.split("/").filter(Boolean);
+  const worktreeIndex = normalizedKeyParts.findIndex((part, index, items) =>
+    part === ".codex" && items[index + 1] === "worktrees"
+  );
+  if (worktreeIndex >= 0 && normalizedKeyParts.length > worktreeIndex + 3) {
+    const projectName = normalizedKeyParts[normalizedKeyParts.length - 1];
+    const rootParts = normalizedKeyParts.slice(0, worktreeIndex);
+    if (projectName && rootParts.length > 0) {
+      key = `${rootParts.join("/")}/${projectName}`;
+    }
+  }
   return {
-    key: folder.toLowerCase(),
+    key,
     label: folder,
   };
 }

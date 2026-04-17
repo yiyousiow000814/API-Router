@@ -1,4 +1,5 @@
 import { applyActiveThreadGitMetaState, activeComposerWorkspace } from "./threadGitMetaState.js";
+import { resolveBranchPickerSelection } from "./branchPickerState.js";
 
 export function shouldSubmitPromptKey(event) {
   return (
@@ -711,8 +712,9 @@ export function createActionBindingsModule(deps) {
             event.stopPropagation();
             const picker = String(toggleBtn.getAttribute("data-composer-picker-toggle") || "").trim();
             if (picker === "branch") {
-              state.composerBranchMenuOpen = toggleBtn.disabled ? false : state.composerBranchMenuOpen !== true;
+              const wantsOpen = toggleBtn.disabled ? false : state.composerBranchMenuOpen !== true;
               state.composerPermissionMenuOpen = false;
+              state.composerBranchMenuOpen = wantsOpen;
             } else if (picker === "permission") {
               state.composerPermissionMenuOpen = state.composerPermissionMenuOpen !== true;
               state.composerBranchMenuOpen = false;
@@ -726,11 +728,23 @@ export function createActionBindingsModule(deps) {
             event.stopPropagation();
             const threadId = String(state.activeThreadId || "").trim();
             const branch = String(branchBtn.getAttribute("data-composer-branch-option") || "").trim();
+            const selection = resolveBranchPickerSelection(state, branch);
+            if (selection.action === "ignore") return;
+            if (selection.action !== "switch") {
+              state.composerBranchMenuOpen = false;
+              updateMobileComposerState();
+              if (selection.action === "blocked") {
+                setStatus(
+                  `Cannot switch branches with uncommitted files: ${selection.uncommittedFileCount}`,
+                  true
+                );
+              }
+              return;
+            }
             const workspace = activeComposerWorkspace(state);
             const cwd = String(state.activeThreadGitMetaCwd || state.startCwdByWorkspace?.[workspace] || "").trim();
             const useCwdSwitch = state.activeThreadGitMetaSource === "cwd" || !threadId;
             if (
-              !branch ||
               typeof api !== "function" ||
               (useCwdSwitch && !cwd) ||
               (!useCwdSwitch && !threadId)
@@ -745,18 +759,18 @@ export function createActionBindingsModule(deps) {
             const branchSwitch = useCwdSwitch
               ? api("/codex/git/branch", {
                   method: "POST",
-                  body: { workspace, cwd, branch },
+                  body: { workspace, cwd, branch: selection.branch },
                 })
               : api(`/codex/threads/${encodeURIComponent(threadId)}/branch`, {
                   method: "POST",
-                  body: { workspace, branch },
+                  body: { workspace, branch: selection.branch },
                 });
             branchSwitch
               .then((payload) => {
                 if (state.activeThreadGitMetaReqSeq !== reqSeq) return;
                 applyThreadGitMeta(payload);
                 updateMobileComposerState();
-                setStatus(`Switched to ${branch}`);
+                setStatus(`Switched to ${selection.branch}`);
               })
               .catch((e) => {
                 if (state.activeThreadGitMetaReqSeq !== reqSeq) return;

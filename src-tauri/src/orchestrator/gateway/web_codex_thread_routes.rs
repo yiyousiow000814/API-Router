@@ -13,6 +13,9 @@ use crate::orchestrator::gateway::web_codex_session_manager::{
 };
 use crate::orchestrator::gateway::web_codex_thread_options::build_thread_resume_params;
 
+const MAX_CONCURRENT_WORKTREE_PROBES: usize = 4;
+type WorktreeProbeOutcome = (Option<String>, String, Result<bool, String>);
+
 #[derive(Deserialize)]
 pub(super) struct ThreadsQuery {
     #[serde(default)]
@@ -167,6 +170,21 @@ fn worktree_probe_result_key(workspace: Option<&str>, cwd: &str) -> (String, Str
     )
 }
 
+fn drain_completed_worktree_probe(
+    results: &mut HashMap<(String, String), bool>,
+    joined: Result<WorktreeProbeOutcome, tokio::task::JoinError>,
+) {
+    let Ok((workspace, cwd, result)) = joined else {
+        return;
+    };
+    if let Ok(is_worktree) = result {
+        results.insert(
+            worktree_probe_result_key(workspace.as_deref(), &cwd),
+            is_worktree,
+        );
+    }
+}
+
 async fn apply_worktree_flag_to_item(
     item: &mut Value,
     workspace_hint: Option<&str>,
@@ -187,24 +205,21 @@ async fn apply_worktree_flags_to_items(
 ) -> Result<(), String> {
     let requests = collect_worktree_probe_requests(items, workspace_hint);
     let mut probes = tokio::task::JoinSet::new();
+    let mut results = HashMap::new();
     for (workspace, cwd) in requests {
         probes.spawn(async move {
             let result = detect_git_worktree_for_workspace(workspace.as_deref(), &cwd).await;
             (workspace, cwd, result)
         });
+        if probes.len() >= MAX_CONCURRENT_WORKTREE_PROBES {
+            if let Some(joined) = probes.join_next().await {
+                drain_completed_worktree_probe(&mut results, joined);
+            }
+        }
     }
 
-    let mut results = HashMap::new();
     while let Some(joined) = probes.join_next().await {
-        let Ok((workspace, cwd, result)) = joined else {
-            continue;
-        };
-        if let Ok(is_worktree) = result {
-            results.insert(
-                worktree_probe_result_key(workspace.as_deref(), &cwd),
-                is_worktree,
-            );
-        }
+        drain_completed_worktree_probe(&mut results, joined);
     }
 
     for item in items {
@@ -1207,6 +1222,11 @@ mod tests {
             requests,
             vec![(Some("wsl2".to_string()), "C:\\repo-a".to_string())]
         );
+    }
+
+    #[test]
+    fn worktree_probe_concurrency_limit_prevents_subprocess_bursts() {
+        assert_eq!(MAX_CONCURRENT_WORKTREE_PROBES, 4);
     }
 
     #[test]

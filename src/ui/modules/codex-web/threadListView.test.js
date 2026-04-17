@@ -109,8 +109,8 @@ describe("threadListView", () => {
       })
     );
     expect(entries.map(([label, items, key]) => [label, items.map((item) => item.id), key])).toEqual([
-      ["api-router", ["1"], "c:/work/api-router"],
-      ["api-router", ["2"], "d:/sandbox/api-router"],
+      ["api-router (work)", ["1"], "c:/work/api-router"],
+      ["api-router (sandbox)", ["2"], "d:/sandbox/api-router"],
     ]);
   });
 

@@ -10,23 +10,34 @@ import {
 
 describe("liveNotifications", () => {
   it("extracts workspace key and label from thread cwd", () => {
-    expect(workspaceKeyOfThread({ cwd: "src/ui" })).toEqual({ key: "ui", label: "ui" });
+    expect(workspaceKeyOfThread({ cwd: "src/ui" })).toEqual({ key: "src/ui", label: "ui" });
   });
 
-  it("groups all API-Router variants by folder name regardless of path differences", () => {
+  it("uses canonical paths as keys while preserving folder labels", () => {
     const cases = [
-      { cwd: "C:\\Users\\yiyou\\API-Router" },
-      { cwd: "C:\\Users\\yiyou\\API-router" },
-      { cwd: "\\\\?\\C:\\Users\\yiyou\\API-Router" },
-      { cwd: "C:\\Users\\yiyou\\.codex\\worktrees\\4002\\API-Router" },
-      { cwd: "C:/Users/yiyou/API-Router" },
+      { cwd: "C:\\Users\\yiyou\\API-Router", key: "c:/users/yiyou/api-router" },
+      { cwd: "C:\\Users\\yiyou\\API-router", key: "c:/users/yiyou/api-router" },
+      { cwd: "\\\\?\\C:\\Users\\yiyou\\API-Router", key: "c:/users/yiyou/api-router" },
+      { cwd: "C:\\Users\\yiyou\\.codex\\worktrees\\4002\\API-Router", key: "c:/users/yiyou/api-router" },
+      { cwd: "C:/Users/yiyou/API-Router", key: "c:/users/yiyou/api-router" },
     ];
     for (const thread of cases) {
       const result = workspaceKeyOfThread(thread);
-      expect(result.key).toEqual("api-router");
+      expect(result.key).toEqual(thread.key);
       // Label matches the actual folder name from the cwd (case preserved)
       expect(result.label).toMatch(/^API-?[Rr]outer$/);
     }
+  });
+
+  it("does not merge distinct projects with the same folder name", () => {
+    expect(workspaceKeyOfThread({ cwd: "C:\\work\\myproject" })).toEqual({
+      key: "c:/work/myproject",
+      label: "myproject",
+    });
+    expect(workspaceKeyOfThread({ cwd: "D:\\personal\\myproject" })).toEqual({
+      key: "d:/personal/myproject",
+      label: "myproject",
+    });
   });
 
   it("uses 'default-folder' for empty or missing cwd", () => {
@@ -39,9 +50,14 @@ describe("liveNotifications", () => {
     expect(workspaceKeyOfThread({ project: "my-project" })).toEqual({ key: "my-project", label: "my-project" });
   });
 
-  it("groups worktrees with distinct folder names separately", () => {
-    expect(workspaceKeyOfThread({ cwd: "C:\\Users\\yiyou\\API-Router" })).toEqual({ key: "api-router", label: "API-Router" });
-    expect(workspaceKeyOfThread({ cwd: "C:\\Users\\yiyou\\API-Router-wt-main" })).toEqual({ key: "api-router-wt-main", label: "API-Router-wt-main" });
+  it("merges codex worktree paths back into the root project key", () => {
+    expect(workspaceKeyOfThread({ cwd: "C:\\Users\\yiyou\\API-Router" })).toEqual({ key: "c:/users/yiyou/api-router", label: "API-Router" });
+    expect(workspaceKeyOfThread({ cwd: "C:\\Users\\yiyou\\.codex\\worktrees\\4002\\API-Router" })).toEqual({ key: "c:/users/yiyou/api-router", label: "API-Router" });
+  });
+
+  it("keeps truly distinct folder names separate", () => {
+    expect(workspaceKeyOfThread({ cwd: "C:\\Users\\yiyou\\API-Router" })).toEqual({ key: "c:/users/yiyou/api-router", label: "API-Router" });
+    expect(workspaceKeyOfThread({ cwd: "C:\\Users\\yiyou\\API-Router-wt-main" })).toEqual({ key: "c:/users/yiyou/api-router-wt-main", label: "API-Router-wt-main" });
   });
 
   it("formats command execution items", () => {
