@@ -1086,7 +1086,6 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
     changed |= normalize_provider_order(&mut cfg);
 
     // Migration note: quota endpoints are intentionally not auto-detected to keep the app generic.
-    changed |= migrate_official_openai_base_url(&mut cfg);
 
     // Migration: if a provider api_key is present in config.toml, move it into user-data/secrets.json
     // and blank it. This avoids committing or leaving plaintext keys in config.toml.
@@ -1187,18 +1186,6 @@ pub(crate) fn migrate_provider_name(cfg: &mut AppConfig, old: &str, new: &str) -
     true
 }
 
-pub(crate) fn migrate_official_openai_base_url(cfg: &mut AppConfig) -> bool {
-    let Some(provider) = cfg.providers.get_mut("official") else {
-        return false;
-    };
-    let normalized = provider.base_url.trim().trim_end_matches('/');
-    if normalized != "https://api.openai.com" {
-        return false;
-    }
-    provider.base_url = "https://api.openai.com/v1".to_string();
-    true
-}
-
 fn should_prune_placeholder_provider(cfg: &AppConfig, secrets: &SecretStore, name: &str) -> bool {
     let Some(p) = cfg.providers.get(name) else {
         return false;
@@ -1220,67 +1207,10 @@ fn should_prune_placeholder_provider(cfg: &AppConfig, secrets: &SecretStore, nam
 mod tests {
     use super::{
         build_state, disable_expired_package_providers, load_or_init_config,
-        migrate_official_openai_base_url, run_startup_gateway_token_sync, UiWatchdogPageState,
-        UiWatchdogRuntime, UiWatchdogState,
+        run_startup_gateway_token_sync, UiWatchdogPageState, UiWatchdogRuntime, UiWatchdogState,
     };
     use crate::orchestrator::config::AppConfig;
     use serde_json::json;
-
-    #[test]
-    fn migrate_official_openai_base_url_only_upgrades_bare_official_base() {
-        let mut cfg = AppConfig::default_config();
-        cfg.providers.get_mut("official").unwrap().base_url = "https://api.openai.com".to_string();
-        assert!(migrate_official_openai_base_url(&mut cfg));
-        assert_eq!(
-            cfg.providers.get("official").unwrap().base_url,
-            "https://api.openai.com/v1"
-        );
-
-        cfg.providers.get_mut("official").unwrap().base_url =
-            "https://proxy.example.com/openai".to_string();
-        assert!(!migrate_official_openai_base_url(&mut cfg));
-        assert_eq!(
-            cfg.providers.get("official").unwrap().base_url,
-            "https://proxy.example.com/openai"
-        );
-    }
-
-    #[test]
-    fn build_state_migrates_legacy_official_base_url_and_persists_it() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_path = tmp.path().join("user-data").join("config.toml");
-        let data_dir = tmp.path().join("data");
-        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
-
-        let mut cfg = AppConfig::default_config();
-        cfg.providers.get_mut("official").unwrap().base_url = "https://api.openai.com".to_string();
-        std::fs::write(
-            &config_path,
-            toml::to_string_pretty(&cfg).expect("cfg toml"),
-        )
-        .expect("write cfg");
-
-        let state = build_state(config_path.clone(), data_dir).expect("build state");
-        assert_eq!(
-            state
-                .gateway
-                .cfg
-                .read()
-                .providers
-                .get("official")
-                .map(|provider| provider.base_url.as_str()),
-            Some("https://api.openai.com/v1")
-        );
-
-        let persisted = load_or_init_config(&config_path).expect("load config");
-        assert_eq!(
-            persisted
-                .providers
-                .get("official")
-                .map(|provider| provider.base_url.as_str()),
-            Some("https://api.openai.com/v1")
-        );
-    }
 
     #[test]
     fn build_state_syncs_gateway_token_to_gateway_targets() {
