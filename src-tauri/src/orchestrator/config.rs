@@ -98,7 +98,7 @@ impl AppConfig {
             "official".to_string(),
             ProviderConfig {
                 display_name: "Official (OAuth passthrough)".to_string(),
-                base_url: "https://api.openai.com".to_string(),
+                base_url: "https://api.openai.com/v1".to_string(),
                 group: None,
                 disabled: false,
                 supports_websockets: false,
@@ -148,5 +148,21 @@ impl AppConfig {
                 "provider_2".to_string(),
             ],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppConfig;
+
+    #[test]
+    fn default_official_provider_uses_v1_base_url() {
+        let cfg = AppConfig::default_config();
+        assert_eq!(
+            cfg.providers
+                .get("official")
+                .map(|provider| provider.base_url.as_str()),
+            Some("https://api.openai.com/v1")
+        );
     }
 }
