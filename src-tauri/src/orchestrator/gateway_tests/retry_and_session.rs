@@ -1008,6 +1008,202 @@ async fn unsupported_model_does_not_trip_provider_health_or_record_error_event()
 }
 
 #[tokio::test]
+async fn unsupported_model_switches_session_to_next_provider_without_failure() {
+    let captured = Arc::new(Mutex::new(None));
+    let captured2 = captured.clone();
+
+    let app_ok = Router::new().route(
+        "/v1/responses",
+        post(move |Json(body): Json<serde_json::Value>| {
+            *captured2.lock() = Some(body);
+            async move {
+                Json(json!({
+                    "id": "resp_ok",
+                    "output": [{"content": [{"type": "output_text", "text": "ok"}]}]
+                }))
+            }
+        }),
+    );
+    let ok_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ok_addr = ok_listener.local_addr().unwrap();
+    let ok_base = format!("http://{}:{}/v1", ok_addr.ip(), ok_addr.port());
+    tokio::spawn(async move {
+        let _ = axum::serve(ok_listener, app_ok).await;
+    });
+
+    let app_bad_model = Router::new().route(
+        "/v1/responses",
+        post(|| async move {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": {
+                        "message": "Unsupported model: gpt-5.4-mini",
+                        "type": "invalid_request_error"
+                    }
+                })),
+            )
+        }),
+    );
+    let bad_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let bad_addr = bad_listener.local_addr().unwrap();
+    let bad_base = format!("http://{}:{}/v1", bad_addr.ip(), bad_addr.port());
+    tokio::spawn(async move {
+        let _ = axum::serve(bad_listener, app_bad_model).await;
+    });
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
+            auto_return_to_preferred: false,
+            preferred_stable_seconds: 1,
+            failure_threshold: 1,
+            cooldown_seconds: 1,
+            request_timeout_seconds: 5,
+        },
+        providers: std::collections::BTreeMap::from([
+            (
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "P1".to_string(),
+                    base_url: bad_base,
+                    group: None,
+                    disabled: false,
+                    supports_websockets: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            ),
+            (
+                "p2".to_string(),
+                ProviderConfig {
+                    display_name: "P2".to_string(),
+                    base_url: ok_base,
+                    group: None,
+                    disabled: false,
+                    supports_websockets: false,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            ),
+        ]),
+        provider_order: vec!["p1".to_string(), "p2".to_string()],
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+    let session_id = "session-bad-model-switch";
+    let lines = [
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "first"}]
+            }
+        }),
+        json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "reply"}]
+            }
+        }),
+    ];
+    let _guard = setup_codex_session(&tmp, session_id, &lines);
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg.clone())),
+        router: router.clone(),
+        store: store.clone(),
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let app = build_router(state);
+    let body = json!({
+        "model": "gpt-5.4-mini",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "second"}]
+        }],
+        "previous_response_id": "resp_prev",
+        "stream": false
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("session_id", session_id)
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let captured = captured.lock().clone().expect("captured body");
+    assert!(captured.get("previous_response_id").is_none());
+    let expected_input = json!([
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "first"}]
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "reply"}]
+        },
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "second"}]
+        }
+    ]);
+    assert_eq!(captured.get("input").unwrap(), &expected_input);
+
+    let health = router.snapshot(unix_ms());
+    let p1 = health.get("p1").expect("provider p1 health");
+    assert_eq!(p1.status, "unknown");
+    assert_eq!(p1.consecutive_failures, 0);
+    assert!(p1.last_error.is_empty());
+
+    let p2 = health.get("p2").expect("provider p2 health");
+    assert_eq!(p2.status, "healthy");
+
+    let events = store.list_events_range(None, None, Some(20));
+    assert!(!events.iter().any(|event| {
+        event.get("provider").and_then(|value| value.as_str()) == Some("p1")
+            && event.get("code").and_then(|value| value.as_str()) == Some("upstream.http_error")
+    }));
+    assert!(events.iter().any(|event| {
+        event.get("provider").and_then(|value| value.as_str()) == Some("p1")
+            && event.get("code").and_then(|value| value.as_str())
+                == Some("upstream.invalid_request")
+    }));
+}
+
+#[tokio::test]
 async fn allows_request_without_prev_id_even_if_session_history_missing() {
     let captured = Arc::new(Mutex::new(None));
     let captured2 = captured.clone();

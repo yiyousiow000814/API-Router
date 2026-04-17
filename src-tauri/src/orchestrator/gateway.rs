@@ -1286,7 +1286,7 @@ async fn responses(
     // Try providers in order: chosen, then fallbacks.
     let mut tried = Vec::new();
     let mut last_err = String::new();
-    let mut terminal_response: Option<Response> = None;
+    let mut invalid_request_response: Option<Response> = None;
     let mut usage_refreshed_after_first_failure = false;
 
     let mut session_messages: Option<Vec<Value>> = None;
@@ -1299,7 +1299,33 @@ async fn responses(
             .filter(|p| cfg.providers.contains_key(*p))
             .map(|s| s.as_str())
             .unwrap_or(cfg.routing.preferred_provider.as_str());
-        let (provider_name, reason) = decide_provider(&st, &cfg, preferred, &session_key);
+        let (mut provider_name, mut reason) = decide_provider(&st, &cfg, preferred, &session_key);
+        if tried.contains(&provider_name) {
+            let quota_snapshots = st.store.list_quota_snapshots();
+            let clear_usage_confirmation_requirement = true;
+            let picked = select_fallback_provider(&cfg, preferred, |name| {
+                !tried.iter().any(|tried_name| tried_name == name)
+                    && provider_is_routable_for_selection(
+                        &st,
+                        &cfg,
+                        &quota_snapshots,
+                        name,
+                        clear_usage_confirmation_requirement,
+                    )
+            });
+            if !tried.iter().any(|tried_name| tried_name == &picked)
+                && provider_is_routable_for_selection(
+                    &st,
+                    &cfg,
+                    &quota_snapshots,
+                    &picked,
+                    clear_usage_confirmation_requirement,
+                )
+            {
+                provider_name = picked;
+                reason = "session_invalid_request_fallback";
+            }
+        }
         if reason == "no_routable_provider" {
             last_err = format!(
                 "no routable providers available; preferred={preferred}; tried={}",
@@ -1674,7 +1700,7 @@ async fn responses(
                                         "stream": true
                                     }),
                                 );
-                                terminal_response =
+                                invalid_request_response =
                                     Some(upstream_invalid_request_response(code, &txt));
                                 break;
                             }
@@ -1953,7 +1979,8 @@ async fn responses(
                                 "stream": false
                             }),
                         );
-                        terminal_response = Some(upstream_invalid_request_response(code, &msg));
+                        invalid_request_response =
+                            Some(upstream_invalid_request_response(code, &msg));
                         break;
                     }
                     st.router
@@ -1994,12 +2021,9 @@ async fn responses(
                 }
             }
         }
-        if terminal_response.is_some() {
-            break;
-        }
     }
 
-    if let Some(response) = terminal_response {
+    if let Some(response) = invalid_request_response {
         return response;
     }
 
