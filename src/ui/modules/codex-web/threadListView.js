@@ -7,22 +7,39 @@ function splitWorkspaceKeySegments(key) {
     .filter(Boolean);
 }
 
+function buildWorkspaceLabelSuffix(segments, depth) {
+  const normalizedDepth = Math.max(1, Number(depth) || 1);
+  if (!Array.isArray(segments) || segments.length <= 1) return "";
+  const parentSegments = segments.slice(0, -1);
+  return parentSegments.slice(-normalizedDepth).join("/");
+}
+
 function buildDisambiguatedWorkspaceLabels(groupEntries) {
   const entries = Array.isArray(groupEntries) ? groupEntries : [];
-  const labelCounts = new Map();
+  const labelGroups = new Map();
   for (const entry of entries) {
     const label = String(entry?.label || "").trim() || String(entry?.key || "").trim();
-    labelCounts.set(label, (labelCounts.get(label) || 0) + 1);
+    if (!labelGroups.has(label)) labelGroups.set(label, []);
+    labelGroups.get(label).push(entry);
   }
   return entries.map((entry) => {
     const key = String(entry?.key || "").trim();
     const label = String(entry?.label || "").trim() || key;
-    if ((labelCounts.get(label) || 0) <= 1) return label;
+    const matchingEntries = labelGroups.get(label) || [];
+    if (matchingEntries.length <= 1) return label;
     const segments = splitWorkspaceKeySegments(key);
     if (segments.length <= 1) return label;
-    const suffix = segments[segments.length - 2];
-    if (!suffix || suffix === label.toLowerCase()) return label;
-    return `${label} (${suffix})`;
+    const maxDepth = Math.max(...matchingEntries.map((item) => splitWorkspaceKeySegments(item?.key).length - 1), 1);
+    for (let depth = 1; depth <= maxDepth; depth += 1) {
+      const suffix = buildWorkspaceLabelSuffix(segments, depth);
+      if (!suffix || suffix === label.toLowerCase()) continue;
+      const collisions = matchingEntries.filter((item) => {
+        const itemSuffix = buildWorkspaceLabelSuffix(splitWorkspaceKeySegments(item?.key), depth);
+        return itemSuffix === suffix;
+      });
+      if (collisions.length === 1) return `${label} (${suffix})`;
+    }
+    return `${label} (${key})`;
   });
 }
 

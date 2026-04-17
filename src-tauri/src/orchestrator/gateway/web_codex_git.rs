@@ -68,16 +68,19 @@ fn read_cached_worktree_status(entry: WorktreeCacheEntry, now: Instant) -> Optio
 fn has_uncommitted_changes(status_output: &str) -> bool {
     status_output
         .lines()
-        .map(str::trim)
-        .any(|line| !line.is_empty() && !line.starts_with("??") && !line.starts_with("!!"))
+        .any(status_line_counts_as_tracked_change)
 }
 
 pub(super) fn count_uncommitted_changes(status_output: &str) -> usize {
     status_output
         .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with("??") && !line.starts_with("!!"))
+        .filter(|line| status_line_counts_as_tracked_change(line))
         .count()
+}
+
+fn status_line_counts_as_tracked_change(line: &str) -> bool {
+    let normalized = line.trim_end();
+    !normalized.trim().is_empty() && !normalized.starts_with("??") && !normalized.starts_with("!!")
 }
 
 fn branch_switch_args(branch: &str) -> [&str; 3] {
@@ -86,6 +89,14 @@ fn branch_switch_args(branch: &str) -> [&str; 3] {
 
 fn branch_checkout_fallback_args(branch: &str) -> [&str; 2] {
     ["checkout", branch]
+}
+
+fn format_branch_switch_fallback_error(switch_error: &str, checkout_error: &str) -> String {
+    format!(
+        "git switch failed: {}; git checkout fallback failed: {}",
+        switch_error.trim(),
+        checkout_error.trim()
+    )
 }
 
 pub(super) async fn run_git_command_for_workspace(
@@ -465,10 +476,13 @@ pub(super) async fn switch_branch_for_workspace(
     ensure_clean_worktree_for_workspace(workspace, cwd).await?;
     match run_git_command_for_workspace(workspace, cwd, &branch_switch_args(branch)).await {
         Ok(_) => Ok(()),
-        Err(_) => {
+        Err(switch_error) => {
             run_git_command_for_workspace(workspace, cwd, &branch_checkout_fallback_args(branch))
                 .await
                 .map(|_| ())
+                .map_err(|checkout_error| {
+                    format_branch_switch_fallback_error(&switch_error, &checkout_error)
+                })
         }
     }
 }
@@ -668,6 +682,14 @@ mod tests {
     }
 
     #[test]
+    fn status_line_counts_as_tracked_change_preserves_porcelain_prefixes() {
+        assert!(status_line_counts_as_tracked_change(" M src/main.rs"));
+        assert!(status_line_counts_as_tracked_change("M  src/lib.rs   "));
+        assert!(!status_line_counts_as_tracked_change("?? notes.txt"));
+        assert!(!status_line_counts_as_tracked_change("!! target/"));
+    }
+
+    #[test]
     fn branch_switch_and_checkout_fallback_use_correct_git_args() {
         assert_eq!(
             branch_switch_args("feature/demo"),
@@ -676,6 +698,14 @@ mod tests {
         assert_eq!(
             branch_checkout_fallback_args("feature/demo"),
             ["checkout", "feature/demo"]
+        );
+    }
+
+    #[test]
+    fn branch_switch_fallback_error_keeps_both_git_failures() {
+        assert_eq!(
+            format_branch_switch_fallback_error("fatal: bad switch target", "error: pathspec not found"),
+            "git switch failed: fatal: bad switch target; git checkout fallback failed: error: pathspec not found"
         );
     }
 }

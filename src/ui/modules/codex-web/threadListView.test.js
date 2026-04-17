@@ -114,6 +114,23 @@ describe("threadListView", () => {
     ]);
   });
 
+  it("extends the disambiguation suffix until duplicate labels become unique", () => {
+    const entries = buildWorkspaceEntries(
+      [
+        { id: "1", cwd: "C:/repos/api-router" },
+        { id: "2", cwd: "D:/repos/api-router" },
+      ],
+      (thread) => ({
+        key: String(thread.cwd || "").toLowerCase(),
+        label: "api-router",
+      })
+    );
+    expect(entries.map(([label, items, key]) => [label, items.map((item) => item.id), key])).toEqual([
+      ["api-router (c:/repos)", ["1"], "c:/repos/api-router"],
+      ["api-router (d:/repos)", ["2"], "d:/repos/api-router"],
+    ]);
+  });
+
   it("filters section threads by favorites and query", () => {
     const items = [
       { id: "fav-1", title: "Alpha" },
