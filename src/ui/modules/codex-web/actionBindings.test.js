@@ -1539,6 +1539,8 @@ describe("actionBindings", () => {
 
   it("switches branches against the active WSL2 workspace", async () => {
     const handlers = new Map();
+    const statusCalls = [];
+    let apiResolve;
     const pickerBar = {
       addEventListener(eventName, handler) {
         handlers.set(`composerPickerBar:${eventName}`, handler);
@@ -1568,8 +1570,12 @@ describe("actionBindings", () => {
       bindClick() {},
       bindResponsiveClick() {},
       bindInput() {},
-      setStatus() {},
-      updateMobileComposerState() {},
+      setStatus(message, isError = false) {
+        statusCalls.push({ message, isError });
+      },
+      updateMobileComposerState() {
+        deps.__updates = (deps.__updates || 0) + 1;
+      },
       updateNotificationState() {},
       armSyntheticClickSuppression() {},
       wireBlurBackdropShield() {},
@@ -1597,9 +1603,11 @@ describe("actionBindings", () => {
       uploadAttachment: async () => {},
       executeSlashCommand: async () => {},
       sendTurn: async () => {},
-      api: async (url, options) => {
+      api: (url, options) => {
         deps.__apiCall = { url, options };
-        return { currentBranch: "main", branches: [{ name: "main" }] };
+        return new Promise((resolve) => {
+          apiResolve = resolve;
+        });
       },
       syncSlashCommandMenu() {},
       syncSettingsControlsFromMain() {},
@@ -1628,8 +1636,14 @@ describe("actionBindings", () => {
       stopPropagation() {},
     });
 
+    expect(deps.state.composerBranchMenuOpen).toBe(false);
+    expect(deps.state.activeThreadGitMetaLoading).toBe(true);
     expect(deps.__apiCall?.url).toBe("/codex/threads/thread-1/branch");
     expect(deps.__apiCall?.options?.body?.workspace).toBe("wsl2");
+    expect(statusCalls).toEqual([]);
+
+    apiResolve?.({ currentBranch: "main", branches: [{ name: "main" }] });
+    await Promise.resolve();
   });
 
   it("ignores stale branch-switch responses after a newer git-meta request supersedes them", async () => {
@@ -1736,8 +1750,114 @@ describe("actionBindings", () => {
     await Promise.resolve();
 
     expect(deps.state.activeThreadCurrentBranch).toBe("main");
-    expect(deps.state.composerBranchMenuOpen).toBe(true);
+    expect(deps.state.composerBranchMenuOpen).toBe(false);
     expect(deps.state.activeThreadGitMetaLoading).toBe(true);
+  });
+
+  it("shows a visible branch-switch error after closing the menu immediately", async () => {
+    const handlers = new Map();
+    const statusCalls = [];
+    const pickerBar = {
+      addEventListener(eventName, handler) {
+        handlers.set(`composerPickerBar:${eventName}`, handler);
+      },
+      contains() {
+        return false;
+      },
+    };
+    const deps = {
+      state: {
+        folderPickerOpen: false,
+        modelOptionsLoading: false,
+        threadItems: [],
+        activeThreadWorkspace: "windows",
+        workspaceTarget: "windows",
+        activeThreadId: "thread-1",
+        activeThreadGitMetaSource: "thread",
+        activeThreadGitMetaCwd: "C:\\repo\\demo",
+        activeThreadGitMetaLoading: false,
+        activeThreadUncommittedFileCount: 3,
+        composerBranchMenuOpen: true,
+        composerPermissionMenuOpen: false,
+      },
+      byId(id) {
+        if (id === "composerPickerBar") return pickerBar;
+        return null;
+      },
+      bindClick() {},
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus(message, isError = false) {
+        statusCalls.push({ message, isError });
+      },
+      updateMobileComposerState() {
+        deps.__updates = (deps.__updates || 0) + 1;
+      },
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      executeSlashCommand: async () => {},
+      sendTurn: async () => {},
+      api: async () => {
+        throw new Error("cannot switch branches with uncommitted changes; commit or stash them first");
+      },
+      syncSlashCommandMenu() {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+
+    createActionBindingsModule(deps).wireActions();
+    await handlers.get("composerPickerBar:click")?.({
+      target: {
+        closest(selector) {
+          if (selector === "[data-composer-branch-option]") {
+            return {
+              getAttribute(name) {
+                if (name === "data-composer-branch-option") return "feature/ui";
+                return "";
+              },
+            };
+          }
+          return null;
+        },
+      },
+      preventDefault() {},
+      stopPropagation() {},
+    });
+    await Promise.resolve();
+
+    expect(deps.state.composerBranchMenuOpen).toBe(false);
+    expect(deps.state.activeThreadGitMetaLoading).toBe(false);
+    expect(statusCalls).toEqual([{
+      message: "cannot switch branches with uncommitted changes; commit or stash them first",
+      isError: true,
+    }]);
+    expect(deps.__updates).toBeGreaterThanOrEqual(2);
   });
 
   it("closes picker menus when clicking the picker bar background", () => {

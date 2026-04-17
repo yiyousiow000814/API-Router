@@ -24,8 +24,11 @@ export function applyActiveThreadGitMetaState(state, payload) {
   const threadId = String(payload?.threadId || state?.activeThreadId || "").trim();
   const workspace = normalizeGitMetaWorkspace(payload?.workspace, state);
   const cwd = String(payload?.cwd || "").trim();
+  const uncommittedFileCount = Number(payload?.uncommittedFileCount);
   state.activeThreadCurrentBranch = String(payload?.currentBranch || "").trim();
   state.activeThreadBranchOptions = normalizeBranchOptions(payload?.branches);
+  state.activeThreadUncommittedFileCount =
+    Number.isInteger(uncommittedFileCount) && uncommittedFileCount > 0 ? uncommittedFileCount : 0;
   if (payload?.isWorktree != null) {
     state.activeThreadIsWorktree = payload.isWorktree === true;
   }
@@ -36,4 +39,3 @@ export function applyActiveThreadGitMetaState(state, payload) {
   state.activeThreadGitMetaKey = buildActiveThreadGitMetaKey({ threadId, workspace, cwd });
   return payload;
 }
-

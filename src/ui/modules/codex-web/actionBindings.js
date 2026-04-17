@@ -739,6 +739,7 @@ export function createActionBindingsModule(deps) {
             }
             const reqSeq = (Number(state.activeThreadGitMetaReqSeq || 0) || 0) + 1;
             state.activeThreadGitMetaReqSeq = reqSeq;
+            state.composerBranchMenuOpen = false;
             state.activeThreadGitMetaLoading = true;
             updateMobileComposerState();
             const branchSwitch = useCwdSwitch
@@ -754,7 +755,6 @@ export function createActionBindingsModule(deps) {
               .then((payload) => {
                 if (state.activeThreadGitMetaReqSeq !== reqSeq) return;
                 applyThreadGitMeta(payload);
-                state.composerBranchMenuOpen = false;
                 updateMobileComposerState();
                 setStatus(`Switched to ${branch}`);
               })

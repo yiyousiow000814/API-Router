@@ -3004,6 +3004,17 @@
     .composerPickerMenuState {
       color: #6d7b8f;
     }
+    .composerPickerMenuStateWarning {
+      color: #8a5a00;
+      font-weight: 700;
+      background: rgba(255, 203, 102, 0.14);
+    }
+    .composerPickerMenuItem.is-disabled,
+    .composerPickerMenuItem:disabled {
+      opacity: 0.5;
+      cursor: default;
+      pointer-events: none;
+    }
     .composerPickerMenu.open .composerPickerMenuItem,
     .composerPickerMenu.open .composerPickerMenuState {
       animation: composer-picker-item-in 190ms cubic-bezier(.22, 1, .36, 1);

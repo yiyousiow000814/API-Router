@@ -1022,6 +1022,7 @@ export function createComposerUiModule(deps) {
   function clearActiveThreadGitMeta() {
     state.activeThreadCurrentBranch = "";
     state.activeThreadBranchOptions = [];
+    state.activeThreadUncommittedFileCount = 0;
     state.activeThreadIsWorktree = false;
     state.activeThreadGitMetaLoading = false;
     state.activeThreadGitMetaLoaded = false;
@@ -1112,6 +1113,7 @@ export function createComposerUiModule(deps) {
       if (state.activeThreadGitMetaReqSeq !== reqSeq) return null;
       state.activeThreadCurrentBranch = "";
       state.activeThreadBranchOptions = [];
+      state.activeThreadUncommittedFileCount = 0;
       state.activeThreadGitMetaLoading = false;
       state.activeThreadGitMetaLoaded = true;
       state.activeThreadGitMetaKey = key;
@@ -1139,11 +1141,16 @@ export function createComposerUiModule(deps) {
     bar.style.display = "";
     const branchOptions = normalizeBranchOptions(state.activeThreadBranchOptions);
     const currentBranch = String(state.activeThreadCurrentBranch || "").trim();
+    const uncommittedFileCount = Math.max(0, Number(state.activeThreadUncommittedFileCount || 0) || 0);
+    const branchSwitchLocked = uncommittedFileCount > 0;
+    const branchMetaReady =
+      state.activeThreadGitMetaLoading !== true &&
+      state.activeThreadGitMetaLoaded === true;
     const branchLabel = state.activeThreadGitMetaLoading === true
       ? "Loading..."
       : currentBranch || "Branch";
     const canPickBranch =
-      state.activeThreadGitMetaLoading === true || branchOptions.length > 0 || !!currentBranch;
+      branchMetaReady && (branchOptions.length > 0 || !!currentBranch);
     if (!canPickBranch) state.composerBranchMenuOpen = false;
     if (branchBtn) {
       branchBtn.disabled = !canPickBranch;
@@ -1164,13 +1171,14 @@ export function createComposerUiModule(deps) {
         : currentBranch
           ? [normalizeBranchOption({ name: currentBranch })]
           : [];
-      const menuBodyHtml = visibleBranches.length
+      const branchItemsHtml = visibleBranches.length
         ? visibleBranches.map((branchOption) => {
             const branchName = readBranchOptionName(branchOption);
             const prNumber = readBranchOptionPrNumber(branchOption);
             const active = branchName === currentBranch;
+            const disabled = branchSwitchLocked && !active;
             return (
-              `<button class="composerPickerMenuItem${active ? " is-active" : ""}" type="button" data-composer-branch-option="${escapeHtml(branchName)}">` +
+              `<button class="composerPickerMenuItem${active ? " is-active" : ""}${disabled ? " is-disabled" : ""}" type="button" data-composer-branch-option="${escapeHtml(branchName)}"${disabled ? " disabled" : ""}>` +
                 `<span class="composerPickerMenuItemRow">` +
                   `<span class="composerPickerMenuItemName">${escapeHtml(branchName)}</span>` +
                   (prNumber != null
@@ -1181,7 +1189,10 @@ export function createComposerUiModule(deps) {
             );
           }).join("")
         : `<div class="composerPickerMenuState">No branches</div>`;
-      const nextMenuHtml = `<div class="composerPickerMenuScroll">${menuBodyHtml}</div>`;
+      const lockStateHtml = branchSwitchLocked
+        ? `<div class="composerPickerMenuState composerPickerMenuStateWarning">uncommitted files: ${escapeHtml(uncommittedFileCount)}</div>`
+        : "";
+      const nextMenuHtml = `<div class="composerPickerMenuScroll">${lockStateHtml}${branchItemsHtml}</div>`;
       if (branchMenu.__pickerHtml !== nextMenuHtml) {
         branchMenu.innerHTML = nextMenuHtml;
         branchMenu.__pickerHtml = nextMenuHtml;
