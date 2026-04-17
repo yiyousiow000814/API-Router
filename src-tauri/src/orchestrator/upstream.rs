@@ -8,6 +8,10 @@ use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
 use super::config::ProviderConfig;
 
+pub(crate) const RESPONSES_ENDPOINT: &str = "/responses";
+pub(crate) const MODELS_ENDPOINT: &str = "/models";
+pub(crate) const REALTIME_ENDPOINT: &str = "/realtime";
+
 const WEBSOCKET_CONNECT_TIMEOUT_SECONDS: u64 = 10;
 
 pub struct WebSocketResponseResult {
@@ -25,10 +29,7 @@ pub struct UpstreamClient {
 
 fn build_upstream_url(base_url: &str, path: &str) -> String {
     let base = base_url.trim_end_matches('/');
-    let mut rel = path.trim_start_matches('/');
-    if base.ends_with("/v1") && rel.starts_with("v1/") {
-        rel = rel.trim_start_matches("v1/");
-    }
+    let rel = path.trim_start_matches('/');
     format!("{}/{}", base, rel)
 }
 
@@ -44,7 +45,7 @@ fn apply_auth_headers(headers: &mut HeaderMap, api_key: Option<&str>, client_aut
 }
 
 fn build_realtime_ws_url(payload: &Value, provider: &ProviderConfig) -> Result<String, String> {
-    let http_url = build_upstream_url(&provider.base_url, "/v1/realtime");
+    let http_url = build_upstream_url(&provider.base_url, REALTIME_ENDPOINT);
     let mut url = reqwest::Url::parse(&http_url).map_err(|e| e.to_string())?;
     match url.scheme() {
         "https" => {
@@ -435,7 +436,7 @@ mod tests {
 
     #[tokio::test]
     async fn post_json_via_websocket_returns_response_done_payload() {
-        let app = Router::new().route("/v1/realtime", get(ws_done_handler));
+        let app = Router::new().route(REALTIME_ENDPOINT, get(ws_done_handler));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind listener");
@@ -447,7 +448,7 @@ mod tests {
         let client = UpstreamClient::new();
         let provider = ProviderConfig {
             display_name: "WS Provider".to_string(),
-            base_url: format!("http://{addr}/v1"),
+            base_url: format!("http://{addr}"),
             group: None,
             disabled: false,
             supports_websockets: true,
@@ -521,6 +522,38 @@ mod tests {
                 "id": "resp_ws_ok"
             })),
             None
+        );
+    }
+
+    #[test]
+    fn build_upstream_url_appends_responses_to_openai_proxy_prefix() {
+        assert_eq!(
+            build_upstream_url("https://capi.quan2go.com/openai", RESPONSES_ENDPOINT),
+            "https://capi.quan2go.com/openai/responses"
+        );
+    }
+
+    #[test]
+    fn build_upstream_url_appends_responses_to_non_v1_base_url() {
+        assert_eq!(
+            build_upstream_url("https://yunyi.rdzhvip.com/codex", RESPONSES_ENDPOINT),
+            "https://yunyi.rdzhvip.com/codex/responses"
+        );
+    }
+
+    #[test]
+    fn build_upstream_url_preserves_base_url_owned_v1_segment() {
+        assert_eq!(
+            build_upstream_url("https://api-vip.codex-for.me/v1", RESPONSES_ENDPOINT),
+            "https://api-vip.codex-for.me/v1/responses"
+        );
+    }
+
+    #[test]
+    fn build_upstream_url_preserves_base_url_owned_v1_for_official_models() {
+        assert_eq!(
+            build_upstream_url("https://api.openai.com/v1", MODELS_ENDPOINT),
+            "https://api.openai.com/v1/models"
         );
     }
 }

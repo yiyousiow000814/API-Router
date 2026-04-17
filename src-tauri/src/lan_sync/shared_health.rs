@@ -1,5 +1,9 @@
 use super::*;
 
+fn recovery_probe_endpoint() -> &'static str {
+    crate::orchestrator::upstream::MODELS_ENDPOINT
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct LanSharedErrorEventPacket {
     pub(crate) event_id: String,
@@ -181,7 +185,7 @@ fn run_single_owner_recovery_probe(
     let now = unix_ms();
     let result = tauri::async_runtime::block_on(gateway.upstream.get_json(
         &provider,
-        "/v1/models",
+        recovery_probe_endpoint(),
         api_key.as_deref(),
         None,
         cfg.routing.request_timeout_seconds,
@@ -374,5 +378,16 @@ pub(crate) fn run_shared_health_loop(
         }
 
         std::thread::sleep(Duration::from_millis(LAN_SHARED_HEALTH_LOOP_INTERVAL_MS));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn recovery_probe_uses_models_endpoint_constant() {
+        assert_eq!(
+            super::recovery_probe_endpoint(),
+            crate::orchestrator::upstream::MODELS_ENDPOINT
+        );
     }
 }
