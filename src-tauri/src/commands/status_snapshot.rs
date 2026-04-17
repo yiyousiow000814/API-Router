@@ -530,15 +530,28 @@ pub(crate) fn get_status(
 
     let phase_started_at = std::time::Instant::now();
     let client_sessions = {
+        let subphase_started_at = std::time::Instant::now();
         let thread_index_snapshot =
             crate::orchestrator::gateway::web_codex_threads::cached_threads_snapshot_stale_while_revalidate();
+        phase_timings_ms.insert(
+            "client_sessions_thread_index_snapshot".to_string(),
+            serde_json::json!(elapsed_ms_since(subphase_started_at)),
+        );
+        status_watchdog.phase("client_sessions_thread_index_snapshot");
         let gateway_token = state.secrets.get_gateway_token().unwrap_or_default();
         let expected_gateway_token = (!gateway_token.is_empty()).then_some(gateway_token.as_str());
+        let subphase_started_at = std::time::Instant::now();
         let terminal_discovery =
             crate::platform::windows_terminal::discover_sessions_using_router_snapshot(
                 cfg.listen.port,
                 expected_gateway_token,
             );
+        phase_timings_ms.insert(
+            "client_sessions_terminal_discovery".to_string(),
+            serde_json::json!(elapsed_ms_since(subphase_started_at)),
+        );
+        status_watchdog.phase("client_sessions_terminal_discovery");
+        let subphase_started_at = std::time::Instant::now();
         let items = {
             let mut map = state.gateway.client_sessions.write();
             merge_discovered_terminal_sessions(&mut map, now, &terminal_discovery);
@@ -566,7 +579,13 @@ pub(crate) fn get_status(
             rebalance_balanced_assignments_on_main_session_change(&state.gateway, &cfg, &map);
             visible_client_session_items(&map, 20)
         };
+        phase_timings_ms.insert(
+            "client_sessions_runtime_snapshot".to_string(),
+            serde_json::json!(elapsed_ms_since(subphase_started_at)),
+        );
+        status_watchdog.phase("client_sessions_runtime_snapshot");
         let last_used_by_session = state.gateway.last_used_by_session.read();
+        let subphase_started_at = std::time::Instant::now();
         let sessions = items
             .into_iter()
             .map(|(_codex_session_id, v)| {
@@ -615,7 +634,18 @@ pub(crate) fn get_status(
                 })
             })
             .collect::<Vec<_>>();
+        phase_timings_ms.insert(
+            "client_sessions_display_routes".to_string(),
+            serde_json::json!(elapsed_ms_since(subphase_started_at)),
+        );
+        status_watchdog.phase("client_sessions_display_routes");
+        let subphase_started_at = std::time::Instant::now();
         trace_client_sessions_snapshot(&sessions);
+        phase_timings_ms.insert(
+            "client_sessions_trace_snapshot".to_string(),
+            serde_json::json!(elapsed_ms_since(subphase_started_at)),
+        );
+        status_watchdog.phase("client_sessions_trace_snapshot");
         sessions
     };
     phase_timings_ms.insert(

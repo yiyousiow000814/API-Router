@@ -112,16 +112,6 @@ export function describeWorkspaceConnection(state, workspace = "windows") {
   };
 }
 
-function canLaunchManagedTerminalFromHeader(state, workspace, inSettings = false) {
-  if (inSettings) return false;
-  const threadId = String(state?.activeThreadId || "").trim();
-  if (!threadId || state?.activeThreadStarted !== true) return false;
-  const runtime = describeWorkspaceConnection(state, workspace);
-  if (runtime.connected !== true) return false;
-  if (Number(state?.activeThreadAttachPendingUntil || 0) > Date.now()) return false;
-  return String(state?.activeThreadAttachTransport || "").trim().toLowerCase() !== "terminal-session";
-}
-
 export function createHeaderUiModule(deps) {
   const {
     state,
@@ -326,23 +316,18 @@ export function createHeaderUiModule(deps) {
     headerBadge.classList.toggle("is-runtime-pending", !effectiveConnected);
     headerBadge.classList.toggle("is-linking", attachPending);
     const attachLinked = attachBadge.visible && !inSettings;
-    const canLaunchManagedTerminal = canLaunchManagedTerminalFromHeader(
-      state,
-      workspaceTarget,
-      inSettings
-    );
     headerBadge.classList.toggle("is-attached", attachLinked);
-    headerBadge.classList.toggle("is-actionable", canLaunchManagedTerminal);
-    headerBadge.setAttribute("role", canLaunchManagedTerminal ? "button" : "status");
-    headerBadge.setAttribute("tabindex", canLaunchManagedTerminal ? "0" : "-1");
-    headerBadge.setAttribute("aria-disabled", canLaunchManagedTerminal ? "false" : "true");
+    headerBadge.classList.remove("is-actionable");
+    headerBadge.setAttribute("role", "status");
+    headerBadge.setAttribute("tabindex", "-1");
+    if (typeof headerBadge.removeAttribute === "function") {
+      headerBadge.removeAttribute("aria-disabled");
+    }
     headerBadge.title = attachPending
       ? `${badgeLabel} - Opening linked terminal`
       : attachBadge.visible
         ? `${badgeLabel} - ${connection.title} - ${attachBadge.label}`
-        : canLaunchManagedTerminal
-          ? `${badgeLabel} - ${connection.title} - Open linked terminal`
-          : `${badgeLabel} - ${connection.title}`;
+        : `${badgeLabel} - ${connection.title}`;
     if (animateBadge) {
       headerBadge.classList.remove("enter");
       void headerBadge.offsetWidth;

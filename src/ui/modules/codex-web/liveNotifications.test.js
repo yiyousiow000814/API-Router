@@ -13,6 +13,54 @@ describe("liveNotifications", () => {
     expect(workspaceKeyOfThread({ cwd: "src/ui" })).toEqual({ key: "src/ui", label: "ui" });
   });
 
+  it("uses canonical paths as keys while preserving folder labels", () => {
+    const cases = [
+      { cwd: "C:\\Users\\yiyou\\API-Router", key: "c:/users/yiyou/api-router" },
+      { cwd: "C:\\Users\\yiyou\\API-router", key: "c:/users/yiyou/api-router" },
+      { cwd: "\\\\?\\C:\\Users\\yiyou\\API-Router", key: "c:/users/yiyou/api-router" },
+      { cwd: "C:\\Users\\yiyou\\.codex\\worktrees\\4002\\API-Router", key: "c:/users/yiyou/api-router" },
+      { cwd: "C:/Users/yiyou/API-Router", key: "c:/users/yiyou/api-router" },
+    ];
+    for (const thread of cases) {
+      const result = workspaceKeyOfThread(thread);
+      expect(result.key).toEqual(thread.key);
+      // Label matches the actual folder name from the cwd (case preserved)
+      expect(result.label).toMatch(/^API-?[Rr]outer$/);
+    }
+  });
+
+  it("does not merge distinct projects with the same folder name", () => {
+    expect(workspaceKeyOfThread({ cwd: "C:\\work\\myproject" })).toEqual({
+      key: "c:/work/myproject",
+      label: "myproject",
+    });
+    expect(workspaceKeyOfThread({ cwd: "D:\\personal\\myproject" })).toEqual({
+      key: "d:/personal/myproject",
+      label: "myproject",
+    });
+  });
+
+  it("uses 'default-folder' for empty or missing cwd", () => {
+    expect(workspaceKeyOfThread({})).toEqual({ key: "default-folder", label: "Default folder" });
+    expect(workspaceKeyOfThread({ cwd: "" })).toEqual({ key: "default-folder", label: "Default folder" });
+  });
+
+  it("falls back to workspace, project, directory, path when cwd is missing", () => {
+    expect(workspaceKeyOfThread({ workspace: "my-workspace" })).toEqual({ key: "my-workspace", label: "my-workspace" });
+    expect(workspaceKeyOfThread({ project: "my-project" })).toEqual({ key: "my-project", label: "my-project" });
+  });
+
+  it("merges codex worktree paths back into the root project key", () => {
+    expect(workspaceKeyOfThread({ cwd: "C:\\Users\\yiyou\\API-Router" })).toEqual({ key: "c:/users/yiyou/api-router", label: "API-Router" });
+    expect(workspaceKeyOfThread({ cwd: "C:\\Users\\yiyou\\.codex\\worktrees\\4002\\API-Router" })).toEqual({ key: "c:/users/yiyou/api-router", label: "API-Router" });
+    expect(workspaceKeyOfThread({ cwd: "C:\\Users\\yiyou\\.codex\\worktrees\\4002\\API-Router\\src" })).toEqual({ key: "c:/users/yiyou/api-router", label: "src" });
+  });
+
+  it("keeps truly distinct folder names separate", () => {
+    expect(workspaceKeyOfThread({ cwd: "C:\\Users\\yiyou\\API-Router" })).toEqual({ key: "c:/users/yiyou/api-router", label: "API-Router" });
+    expect(workspaceKeyOfThread({ cwd: "C:\\Users\\yiyou\\API-Router-wt-main" })).toEqual({ key: "c:/users/yiyou/api-router-wt-main", label: "API-Router-wt-main" });
+  });
+
   it("formats command execution items", () => {
     const { toToolLikeMessage } = createLiveNotificationsModule({
       state: { activeThreadId: "" },

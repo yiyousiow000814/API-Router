@@ -283,6 +283,147 @@ describe("wsClient mock transport", () => {
     expect(fetchRef).toHaveBeenCalledTimes(2);
   });
 
+  it("passes git meta reads and branch switches through to live routes in safe transport mode", async () => {
+    const state = createState();
+    const notifications = [];
+    const fetchRef = vi.fn(async (path, init = {}) => {
+      const method = String(init?.method || "GET").trim().toUpperCase();
+      if (method === "GET" && path === "/codex/git?workspace=windows&cwd=C%3A%5Crepo") {
+        return {
+          ok: true,
+          json: async () => ({
+            workspace: "windows",
+            cwd: "C:\\repo",
+            currentBranch: "main",
+            branches: [{ name: "main" }, { name: "feat/ui", prNumber: 182 }],
+            isWorktree: false,
+          }),
+        };
+      }
+      if (method === "GET" && path === "/codex/threads/thread-1/git?workspace=windows") {
+        return {
+          ok: true,
+          json: async () => ({
+            threadId: "thread-1",
+            workspace: "windows",
+            cwd: "C:\\repo",
+            currentBranch: "feat/ui",
+            branches: [{ name: "main" }, { name: "feat/ui", prNumber: 182 }],
+            isWorktree: true,
+          }),
+        };
+      }
+      if (method === "POST" && path === "/codex/git/branch") {
+        return {
+          ok: true,
+          json: async () => ({
+            workspace: "windows",
+            cwd: "C:\\repo",
+            currentBranch: "feat/ui",
+            branches: [{ name: "main" }, { name: "feat/ui", prNumber: 182 }],
+            isWorktree: false,
+          }),
+        };
+      }
+      if (method === "POST" && path === "/codex/threads/thread-1/branch") {
+        return {
+          ok: true,
+          json: async () => ({
+            threadId: "thread-1",
+            workspace: "windows",
+            cwd: "C:\\repo",
+            currentBranch: "main",
+            branches: [{ name: "main" }, { name: "feat/ui", prNumber: 182 }],
+            isWorktree: true,
+          }),
+        };
+      }
+      throw new Error(`unexpected fetch ${method} ${path}`);
+    });
+    const module = createModule(state, notifications, fetchRef, "safe");
+
+    await expect(
+      module.api("/codex/git?workspace=windows&cwd=C%3A%5Crepo")
+    ).resolves.toEqual(
+      expect.objectContaining({
+        currentBranch: "main",
+        branches: [{ name: "main" }, { name: "feat/ui", prNumber: 182 }],
+      })
+    );
+    await expect(
+      module.api("/codex/threads/thread-1/git?workspace=windows")
+    ).resolves.toEqual(
+      expect.objectContaining({
+        threadId: "thread-1",
+        currentBranch: "feat/ui",
+        isWorktree: true,
+      })
+    );
+    await expect(
+      module.api("/codex/git/branch", {
+        method: "POST",
+        body: { workspace: "windows", cwd: "C:\\repo", branch: "feat/ui" },
+      })
+    ).resolves.toEqual(expect.objectContaining({ currentBranch: "feat/ui" }));
+    await expect(
+      module.api("/codex/threads/thread-1/branch", {
+        method: "POST",
+        body: { workspace: "windows", branch: "main" },
+      })
+    ).resolves.toEqual(expect.objectContaining({ threadId: "thread-1", currentBranch: "main" }));
+
+    expect(fetchRef).toHaveBeenCalledTimes(4);
+  });
+
+  it("returns mock git meta payloads in pure mock transport mode", async () => {
+    const state = createState();
+    const notifications = [];
+    const fetchRef = vi.fn(async () => {
+      throw new Error("fetch should not be called");
+    });
+    const module = createModule(state, notifications, fetchRef, "mock");
+
+    const created = await module.api("/codex/threads", {
+      method: "POST",
+      body: { workspace: "windows", cwd: "C:\\repo\\demo" },
+    });
+
+    await expect(
+      module.api("/codex/git?workspace=windows&cwd=C%3A%5Crepo%5Cdemo")
+    ).resolves.toEqual(
+      expect.objectContaining({
+        workspace: "windows",
+        cwd: "C:\\repo\\demo",
+        currentBranch: "feat/codex-web-branch-picker",
+        branches: expect.arrayContaining([expect.objectContaining({ name: "main" })]),
+      })
+    );
+    await expect(
+      module.api(`/codex/threads/${created.threadId}/git?workspace=windows`)
+    ).resolves.toEqual(
+      expect.objectContaining({
+        threadId: created.threadId,
+        cwd: "C:\\repo\\demo",
+      })
+    );
+    await expect(
+      module.api("/codex/git/branch", {
+        method: "POST",
+        body: { workspace: "windows", cwd: "C:\\repo\\demo", branch: "main" },
+      })
+    ).resolves.toEqual(expect.objectContaining({ currentBranch: "main" }));
+    await expect(
+      module.api(`/codex/threads/${created.threadId}/branch`, {
+        method: "POST",
+        body: { workspace: "windows", branch: "main" },
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({ threadId: created.threadId, currentBranch: "main" })
+    );
+
+    expect(fetchRef).not.toHaveBeenCalled();
+  });
+
   it("merges sandbox-created threads into safe thread list reads", async () => {
     const state = createState();
     const notifications = [];

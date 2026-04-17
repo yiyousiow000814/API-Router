@@ -679,9 +679,16 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         .route("/codex/folders", get(codex_folders_list))
         .route("/codex/approvals/pending", get(codex_pending_approvals))
         .route("/codex/user-input/pending", get(codex_pending_user_inputs))
+        .route("/codex/git", get(codex_git_meta))
+        .route("/codex/git/branch", post(codex_git_branch_switch))
         .route(
             "/codex/threads",
             get(codex_threads_list).post(codex_threads_create),
+        )
+        .route("/codex/threads/:id/git", get(codex_thread_git_meta))
+        .route(
+            "/codex/threads/:id/branch",
+            post(codex_thread_branch_switch),
         )
         .route("/codex/threads/:id/history", get(codex_thread_history))
         .route("/codex/threads/:id/transport", get(codex_thread_transport))
@@ -760,6 +767,7 @@ include!("gateway/request_helpers.rs");
 mod web_codex_actions;
 mod web_codex_assets;
 mod web_codex_auth;
+mod web_codex_git;
 mod web_codex_history;
 pub(crate) mod web_codex_home;
 mod web_codex_hosts;
@@ -796,6 +804,7 @@ use self::web_codex_runtime::{codex_runtime_state, codex_terminal_exec, codex_ve
 #[cfg(test)]
 use self::web_codex_thread_routes::codex_test_block_history;
 use self::web_codex_thread_routes::{
+    codex_git_branch_switch, codex_git_meta, codex_thread_branch_switch, codex_thread_git_meta,
     codex_thread_history, codex_thread_resume, codex_threads_create, codex_threads_list,
 };
 use self::web_codex_ws::{

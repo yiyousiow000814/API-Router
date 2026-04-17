@@ -18,4 +18,21 @@ describe("appState", () => {
   it("creates disabled thread animation debug state", () => {
     expect(createThreadAnimDebugState()).toEqual({ enabled: false, events: [], seq: 0 });
   });
+
+  it("initializes git metadata state explicitly", () => {
+    expect(createInitialState()).toMatchObject({
+      activeThreadCurrentBranch: "",
+      activeThreadBranchOptions: [],
+      activeThreadIsWorktree: false,
+      activeThreadUncommittedFileCount: 0,
+      activeThreadGitMetaLoading: false,
+      activeThreadGitMetaLoaded: false,
+      activeThreadGitMetaError: "",
+      activeThreadGitMetaErrorKey: "",
+      activeThreadGitMetaKey: "",
+      activeThreadGitMetaCwd: "",
+      activeThreadGitMetaSource: "",
+      activeThreadGitMetaReqSeq: 0,
+    });
+  });
 });

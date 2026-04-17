@@ -20,6 +20,45 @@ function readQuery(path) {
   return new URLSearchParams(search);
 }
 
+function isSafeModePassthroughRoute(method, url) {
+  const normalizedMethod = String(method || "").trim().toUpperCase();
+  const normalizedUrl = String(url || "").trim();
+  if (!normalizedUrl) return false;
+  if (
+    normalizedMethod === "GET" &&
+    (
+      normalizedUrl === "/codex/models" ||
+      normalizedUrl === "/codex/version-info" ||
+      normalizedUrl === "/codex/hosts" ||
+      normalizedUrl === "/codex/approvals/pending" ||
+      normalizedUrl === "/codex/user-input/pending" ||
+      normalizedUrl.startsWith("/codex/threads?") ||
+      normalizedUrl.startsWith("/codex/slash/commands?") ||
+      normalizedUrl.startsWith("/codex/slash/review/branches?") ||
+      normalizedUrl.startsWith("/codex/slash/review/commits?") ||
+      normalizedUrl.startsWith("/codex/folders?") ||
+      normalizedUrl.startsWith("/codex/git?") ||
+      /^\/codex\/threads\/[^/]+\/history(?:\?|$)/.test(normalizedUrl) ||
+      /^\/codex\/threads\/[^/]+\/transport(?:\?|$)/.test(normalizedUrl) ||
+      /^\/codex\/threads\/[^/]+\/git(?:\?|$)/.test(normalizedUrl)
+    )
+  ) {
+    return true;
+  }
+  if (
+    normalizedMethod === "POST" &&
+    (
+      normalizedUrl === "/codex/auth/verify" ||
+      normalizedUrl === "/codex/git/branch" ||
+      /^\/codex\/threads\/[^/]+\/resume(?:\?|$)/.test(normalizedUrl) ||
+      /^\/codex\/threads\/[^/]+\/branch(?:\?|$)/.test(normalizedUrl)
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function normalizeWorkspace(value, fallback = "windows") {
   const text = String(value || "").trim().toLowerCase();
   if (text === "windows" || text === "wsl2") return text;
@@ -236,6 +275,26 @@ function buildFolderItems(workspace, cwd = "") {
   };
 }
 
+function buildMockGitMetaPayload({ workspace, cwd, threadId = "" }) {
+  const normalizedWorkspace = normalizeWorkspace(workspace);
+  const normalizedCwd = String(
+    cwd || (normalizedWorkspace === "wsl2" ? "/home/yiyou/project" : "C:\\Users\\yiyou\\API-Router")
+  ).trim();
+  const branchOptions = [
+    { name: "main" },
+    { name: "feat/codex-web-branch-picker", prNumber: 196 },
+  ];
+  const payload = {
+    workspace: normalizedWorkspace,
+    cwd: normalizedCwd,
+    currentBranch: "feat/codex-web-branch-picker",
+    branches: branchOptions,
+    isWorktree: /worktree/i.test(normalizedCwd),
+  };
+  if (threadId) payload.threadId = String(threadId).trim();
+  return payload;
+}
+
 export function createMockCodexTransport(deps) {
   const {
     state,
@@ -374,11 +433,7 @@ export function createMockCodexTransport(deps) {
     if (!safeModeEnabled) return null;
     const method = String(options.method || "GET").trim().toUpperCase();
     const url = String(path || "");
-    const isRead =
-      method === "GET" ||
-      (method === "POST" && /^\/codex\/threads\/[^/]+\/resume(?:\?|$)/.test(url)) ||
-      (method === "POST" && url === "/codex/auth/verify");
-    if (!isRead) return null;
+    if (!isSafeModePassthroughRoute(method, url)) return null;
     return liveApi(path, options);
   }
 
@@ -734,8 +789,12 @@ export function createMockCodexTransport(deps) {
     if (liveRead && url === "/codex/hosts" && method === "GET") return liveRead;
     if (liveRead && url === "/codex/approvals/pending" && method === "GET") return liveRead;
     if (liveRead && url === "/codex/user-input/pending" && method === "GET") return liveRead;
+    if (liveRead && url.startsWith("/codex/git?") && method === "GET") return liveRead;
     if (liveRead && /^\/codex\/threads\/[^/]+\/resume(?:\?|$)/.test(url) && method === "POST") return liveRead;
     if (liveRead && /^\/codex\/threads\/[^/]+\/transport(?:\?|$)/.test(url) && method === "GET") return liveRead;
+    if (liveRead && /^\/codex\/threads\/[^/]+\/git(?:\?|$)/.test(url) && method === "GET") return liveRead;
+    if (liveRead && url === "/codex/git/branch" && method === "POST") return liveRead;
+    if (liveRead && /^\/codex\/threads\/[^/]+\/branch(?:\?|$)/.test(url) && method === "POST") return liveRead;
 
     if (liveRead && url === "/codex/auth/verify" && method === "POST") {
       return { ...liveRead, mode: "safe" };
@@ -885,6 +944,44 @@ export function createMockCodexTransport(deps) {
     if (url === "/codex/hosts" && method === "GET") return { items: [] };
     if (url === "/codex/approvals/pending" && method === "GET") return { items: [] };
     if (url === "/codex/user-input/pending" && method === "GET") return { items: [] };
+    if (url.startsWith("/codex/git?") && method === "GET") {
+      return buildMockGitMetaPayload({
+        workspace: query.get("workspace") || state.workspaceTarget || "windows",
+        cwd: query.get("cwd") || "",
+      });
+    }
+    const threadGitMatch = url.match(/^\/codex\/threads\/([^/]+)\/git(?:\?|$)/);
+    if (threadGitMatch && method === "GET") {
+      const threadId = decodeURIComponent(threadGitMatch[1] || "");
+      const thread = getThread(threadId);
+      return buildMockGitMetaPayload({
+        workspace: query.get("workspace") || thread?.workspace || state.workspaceTarget || "windows",
+        cwd: thread?.cwd || "",
+        threadId,
+      });
+    }
+    if (url === "/codex/git/branch" && method === "POST") {
+      return {
+        ...buildMockGitMetaPayload({
+          workspace: options.body?.workspace || state.workspaceTarget || "windows",
+          cwd: options.body?.cwd || "",
+        }),
+        currentBranch: String(options.body?.branch || "main").trim() || "main",
+      };
+    }
+    const threadBranchMatch = url.match(/^\/codex\/threads\/([^/]+)\/branch(?:\?|$)/);
+    if (threadBranchMatch && method === "POST") {
+      const threadId = decodeURIComponent(threadBranchMatch[1] || "");
+      const thread = getThread(threadId);
+      return {
+        ...buildMockGitMetaPayload({
+          workspace: options.body?.workspace || thread?.workspace || state.workspaceTarget || "windows",
+          cwd: thread?.cwd || "",
+          threadId,
+        }),
+        currentBranch: String(options.body?.branch || "main").trim() || "main",
+      };
+    }
     if (url === "/codex/attachments/upload" && method === "POST") {
       return { ok: true, fileName: options.body?.fileName || "attachment.txt" };
     }

@@ -3,6 +3,16 @@ import { extractPlanUpdate, renderPlanCardHtml } from "./runtimePlan.js";
 import { clearProposedPlanConfirmation } from "./proposedPlan.js";
 import { extractRequestUserInput } from "./runtimeUserInput.js";
 import { isTerminalInterruptedHistory } from "./historyLiveCommentaryState.js";
+import {
+  buildBranchPickerItemState,
+  buildBranchPickerState,
+} from "./branchPickerState.js";
+import {
+  activeComposerWorkspace,
+  applyActiveThreadGitMetaState,
+  buildActiveThreadGitMetaKey,
+  normalizeGitMetaWorkspace,
+} from "./threadGitMetaState.js";
 
 export function createComposerUiModule(deps) {
   const {
@@ -23,6 +33,7 @@ export function createComposerUiModule(deps) {
     localStorageRef,
     documentRef,
     windowRef,
+    api,
   } = deps;
   const storage = localStorageRef ?? globalThis.localStorage ?? { getItem() { return ""; } };
   const doc = documentRef ?? globalThis.document;
@@ -991,19 +1002,234 @@ export function createComposerUiModule(deps) {
     const node = byId("mobileContextLeft");
     if (!node) return;
     const annotations = [];
-    const permissionPreset = String(
-      state.permissionPresetByWorkspace?.[String(state.activeThreadWorkspace || state.workspaceTarget || "windows").trim().toLowerCase() === "wsl2"
-        ? "wsl2"
-        : "windows"] || ""
-    ).trim().toLowerCase();
-    if (permissionPreset === "/permission full-access") annotations.push("full access");
-    else if (permissionPreset === "/permission auto") annotations.push("auto");
-    else if (permissionPreset === "/permission read-only") annotations.push("read only");
     if (state.fastModeEnabled === true) annotations.push("fast");
     if (state.planModeEnabled === true) annotations.push("plan mode");
     renderComposerContextLeftInNode(node, state.activeThreadTokenUsage, doc, {
       annotation: annotations.join(" · "),
     });
+  }
+
+  function permissionLabelForPreset(value) {
+    const preset = String(value || "").trim().toLowerCase();
+    if (preset === "/permission full-access") return "Full access";
+    if (preset === "/permission read-only") return "Read only";
+    if (preset === "/permission auto") return "Auto";
+    return "Permission";
+  }
+
+  function clearActiveThreadGitMeta() {
+    state.activeThreadCurrentBranch = "";
+    state.activeThreadBranchOptions = [];
+    state.activeThreadUncommittedFileCount = 0;
+    state.activeThreadIsWorktree = false;
+    state.activeThreadGitMetaLoading = false;
+    state.activeThreadGitMetaLoaded = false;
+    state.activeThreadGitMetaError = "";
+    state.activeThreadGitMetaErrorKey = "";
+    state.activeThreadGitMetaKey = "";
+    state.activeThreadGitMetaCwd = "";
+    state.activeThreadGitMetaSource = "";
+  }
+
+  function applyActiveThreadGitMeta(payload) {
+    return applyActiveThreadGitMetaState(state, payload);
+  }
+
+  function shouldRefreshActiveThreadGitMeta(options = {}) {
+    if (typeof api !== "function") return false;
+    const threadId = String(options.threadId || state.activeThreadId || "").trim();
+    const workspace = normalizeGitMetaWorkspace(options.workspace, state);
+    const cwd = String(options.cwd || state.startCwdByWorkspace?.[workspace] || "").trim();
+    if (workspace !== "windows" && workspace !== "wsl2") return false;
+    const useThread = !!threadId && options.preferCwd !== true;
+    if (!useThread && !cwd) return false;
+    const key = buildActiveThreadGitMetaKey({
+      threadId: useThread ? threadId : "",
+      workspace,
+      cwd: useThread ? "" : cwd,
+    });
+    if (options.force === true) return true;
+    if (state.activeThreadGitMetaLoading === true && state.activeThreadGitMetaKey === key) return false;
+    if (state.activeThreadGitMetaLoaded === true && state.activeThreadGitMetaKey === key) return false;
+    if (String(state.activeThreadGitMetaErrorKey || "").trim() === key) return false;
+    return true;
+  }
+
+  function shouldClearActiveThreadGitMeta(options = {}) {
+    const threadId = String(options.threadId || state.activeThreadId || "").trim();
+    const workspace = String(options.workspace || activeComposerWorkspace(state)).trim().toLowerCase();
+    const cwd = String(options.cwd || state.startCwdByWorkspace?.[normalizeGitMetaWorkspace(workspace, state)] || "").trim();
+    if (workspace !== "windows" && workspace !== "wsl2") return true;
+    return !threadId && !cwd;
+  }
+
+  async function refreshActiveThreadGitMeta(options = {}) {
+    if (typeof api !== "function") return null;
+    const threadId = String(options.threadId || state.activeThreadId || "").trim();
+    const workspace = normalizeGitMetaWorkspace(options.workspace, state);
+    const cwd = String(options.cwd || state.startCwdByWorkspace?.[workspace] || "").trim();
+    if (workspace !== "windows" && workspace !== "wsl2") {
+      clearActiveThreadGitMeta();
+      return null;
+    }
+    const useThread = !!threadId && options.preferCwd !== true;
+    if (!useThread && !cwd) {
+      clearActiveThreadGitMeta();
+      return null;
+    }
+    if (!shouldRefreshActiveThreadGitMeta(options)) return null;
+    const key = buildActiveThreadGitMetaKey({
+      threadId: useThread ? threadId : "",
+      workspace,
+      cwd: useThread ? "" : cwd,
+    });
+    const reqSeq = (Number(state.activeThreadGitMetaReqSeq || 0) || 0) + 1;
+    state.activeThreadGitMetaReqSeq = reqSeq;
+    state.activeThreadGitMetaLoading = true;
+    state.activeThreadGitMetaError = "";
+    state.activeThreadGitMetaErrorKey = "";
+    state.activeThreadGitMetaKey = key;
+    try {
+      const payload = useThread
+        ? await api(
+            `/codex/threads/${encodeURIComponent(threadId)}/git?workspace=${encodeURIComponent(workspace)}`
+          )
+        : await api(
+            `/codex/git?workspace=${encodeURIComponent(workspace)}&cwd=${encodeURIComponent(cwd)}`
+          );
+      if (state.activeThreadGitMetaReqSeq !== reqSeq) return null;
+      applyActiveThreadGitMeta(payload);
+      updateMobileComposerState();
+      return payload;
+    } catch {
+      if (useThread && cwd) {
+        try {
+          const payload = await api(
+            `/codex/git?workspace=${encodeURIComponent(workspace)}&cwd=${encodeURIComponent(cwd)}`
+          );
+          if (state.activeThreadGitMetaReqSeq !== reqSeq) return null;
+          applyActiveThreadGitMeta(payload);
+          updateMobileComposerState();
+          return payload;
+        } catch {}
+      }
+      if (state.activeThreadGitMetaReqSeq !== reqSeq) return null;
+      state.activeThreadGitMetaLoading = false;
+      state.activeThreadGitMetaLoaded = false;
+      state.activeThreadGitMetaError = "git metadata unavailable";
+      state.activeThreadGitMetaErrorKey = key;
+      updateMobileComposerState();
+      return null;
+    }
+  }
+
+  function renderComposerPickerBar() {
+    const bar = byId("composerPickerBar");
+    const branchBtn = byId("composerBranchPickerBtn");
+    const branchMenu = byId("composerBranchPickerMenu");
+    const permissionBtn = byId("composerPermissionPickerBtn");
+    const permissionMenu = byId("composerPermissionPickerMenu");
+    if (!bar) return;
+    const inChat = state.activeMainTab !== "settings";
+    if (!inChat) {
+      bar.style.display = "none";
+      state.composerBranchMenuOpen = false;
+      state.composerPermissionMenuOpen = false;
+      return;
+    }
+    bar.style.display = "";
+    const branchPickerState = buildBranchPickerState(state);
+    const {
+      branchLabel,
+      canPickBranch,
+      visibleBranches,
+      branchSwitchLocked,
+      uncommittedFileCount,
+    } = branchPickerState;
+    if (!canPickBranch) state.composerBranchMenuOpen = false;
+    if (branchBtn) {
+      branchBtn.disabled = !canPickBranch;
+      branchBtn.setAttribute("aria-expanded", state.composerBranchMenuOpen === true && canPickBranch ? "true" : "false");
+      const animateBranchLabel =
+        typeof branchBtn.__pickerLabel === "string" &&
+        branchBtn.__pickerLabel.length > 0 &&
+        branchBtn.__pickerLabel !== branchLabel;
+      const nextButtonHtml =
+        `<span class="composerPickerBtnLabel${animateBranchLabel ? " is-animating" : ""}">${escapeHtml(branchLabel)}</span>` +
+        `<span class="composerPickerBtnChevron" aria-hidden="true">` +
+          `<svg viewBox="0 0 16 16" focusable="false"><path d="M4.5 6.5 8 10l3.5-3.5"></path></svg>` +
+        `</span>`;
+      if (branchBtn.__pickerHtml !== nextButtonHtml) {
+        branchBtn.innerHTML = nextButtonHtml;
+        branchBtn.__pickerHtml = nextButtonHtml;
+      }
+      branchBtn.__pickerLabel = branchLabel;
+    }
+    if (branchMenu) {
+      const branchItemsHtml = visibleBranches.length
+        ? visibleBranches.map((branchOption) => {
+            const { branchName, prNumber, active, disabled } =
+              buildBranchPickerItemState(branchPickerState, branchOption);
+            return (
+              `<button class="composerPickerMenuItem${active ? " is-active" : ""}${disabled ? " is-disabled" : ""}" type="button" data-composer-branch-option="${escapeHtml(branchName)}"${disabled ? " disabled" : ""}>` +
+                `<span class="composerPickerMenuItemRow">` +
+                  `<span class="composerPickerMenuItemName">${escapeHtml(branchName)}</span>` +
+                  (prNumber != null
+                    ? `<span class="composerPickerMenuItemMeta">#${escapeHtml(prNumber)}</span>`
+                    : "") +
+                `</span>` +
+              `</button>`
+            );
+          }).join("")
+        : `<div class="composerPickerMenuState">No branches</div>`;
+      const lockStateHtml = branchSwitchLocked
+        ? `<div class="composerPickerMenuState composerPickerMenuStateWarning">uncommitted files: ${escapeHtml(uncommittedFileCount)}</div>`
+        : "";
+      const nextMenuHtml = `<div class="composerPickerMenuScroll">${lockStateHtml}${branchItemsHtml}</div>`;
+      if (branchMenu.__pickerHtml !== nextMenuHtml) {
+        branchMenu.innerHTML = nextMenuHtml;
+        branchMenu.__pickerHtml = nextMenuHtml;
+      }
+      branchMenu.classList.toggle("open", state.composerBranchMenuOpen === true && canPickBranch);
+    }
+
+    const permissionPreset = String(state.permissionPresetByWorkspace?.[activeComposerWorkspace(state)] || "").trim();
+    const permissionOptions = [
+      { command: "/permission auto", label: "Auto" },
+      { command: "/permission read-only", label: "Read only" },
+      { command: "/permission full-access", label: "Full access" },
+    ];
+    if (permissionBtn) {
+      permissionBtn.disabled = false;
+      permissionBtn.setAttribute("aria-expanded", state.composerPermissionMenuOpen === true ? "true" : "false");
+      const permissionLabel = permissionLabelForPreset(permissionPreset);
+      const animatePermissionLabel =
+        typeof permissionBtn.__pickerLabel === "string" &&
+        permissionBtn.__pickerLabel.length > 0 &&
+        permissionBtn.__pickerLabel !== permissionLabel;
+      const nextButtonHtml =
+        `<span class="composerPickerBtnLabel${animatePermissionLabel ? " is-animating" : ""}">${escapeHtml(permissionLabel)}</span>` +
+        `<span class="composerPickerBtnChevron" aria-hidden="true">` +
+          `<svg viewBox="0 0 16 16" focusable="false"><path d="M4.5 6.5 8 10l3.5-3.5"></path></svg>` +
+        `</span>`;
+      if (permissionBtn.__pickerHtml !== nextButtonHtml) {
+        permissionBtn.innerHTML = nextButtonHtml;
+        permissionBtn.__pickerHtml = nextButtonHtml;
+      }
+      permissionBtn.__pickerLabel = permissionLabel;
+    }
+    if (permissionMenu) {
+      const menuBodyHtml = permissionOptions.map((option) => {
+        const active = option.command === permissionPreset;
+        return `<button class="composerPickerMenuItem${active ? " is-active" : ""}" type="button" data-composer-permission-option="${escapeHtml(option.command)}">${escapeHtml(option.label)}</button>`;
+      }).join("");
+      const nextMenuHtml = `<div class="composerPickerMenuScroll">${menuBodyHtml}</div>`;
+      if (permissionMenu.__pickerHtml !== nextMenuHtml) {
+        permissionMenu.innerHTML = nextMenuHtml;
+        permissionMenu.__pickerHtml = nextMenuHtml;
+      }
+      permissionMenu.classList.toggle("open", state.composerPermissionMenuOpen === true);
+    }
   }
 
   function updateMobileComposerState() {
@@ -1021,6 +1247,11 @@ export function createComposerUiModule(deps) {
       const queuedList = byId("queuedTurnCardList");
       const queuedSummary = byId("queuedTurnCardSummary");
       if (!wrap || !input) return;
+    if (shouldClearActiveThreadGitMeta()) {
+      clearActiveThreadGitMeta();
+    } else if (shouldRefreshActiveThreadGitMeta()) {
+      refreshActiveThreadGitMeta().catch(() => null);
+    }
     const promptText = String(input.value || "").trim();
     const hasText = !!promptText;
     const running = state.activeThreadPendingTurnRunning === true;
@@ -1173,12 +1404,29 @@ export function createComposerUiModule(deps) {
           scheduleFrame(focusEditor);
           if (typeof setTimeout === "function") setTimeout(focusEditor, 0);
         }
-      }
+    }
+    renderComposerPickerBar();
     scheduleFrame(syncFloatingComposerMetrics);
   }
 
   function setComposerActionMenuOpen(open) {
     state.composerActionMenuOpen = open === true;
+    updateMobileComposerState();
+  }
+
+  function setComposerBranchMenuOpen(open) {
+    state.composerBranchMenuOpen = open === true;
+    if (state.composerBranchMenuOpen === true) {
+      state.composerPermissionMenuOpen = false;
+    }
+    updateMobileComposerState();
+  }
+
+  function setComposerPermissionMenuOpen(open) {
+    state.composerPermissionMenuOpen = open === true;
+    if (state.composerPermissionMenuOpen === true) {
+      state.composerBranchMenuOpen = false;
+    }
     updateMobileComposerState();
   }
 
@@ -1276,12 +1524,16 @@ export function createComposerUiModule(deps) {
     hideWelcomeCard,
     renderRuntimePanels,
     renderComposerContextLeft,
+    applyActiveThreadGitMeta,
     setActiveCommands,
     setActivePlan,
     setComposerActionMenuOpen,
+    setComposerBranchMenuOpen,
+    setComposerPermissionMenuOpen,
     setRuntimeActivity,
     setMainTab,
     showWelcomeCard,
+    refreshActiveThreadGitMeta,
     syncRuntimeStateFromHistory,
     syncSettingsControlsFromMain,
     updateMobileComposerState,

@@ -8,6 +8,7 @@ function stubFactory(result) {
 
 describe("composition", () => {
   it("wires module outputs into one composition object", () => {
+    const createActionBindingsModule = vi.fn(() => ({ wireActions: () => {} }));
     const composition = createCodexWebComposition({
       state: {},
       byId: () => null,
@@ -68,6 +69,7 @@ describe("composition", () => {
       normalizeTextPayload: (v) => v,
       maybeNotifyTurnDone: () => {},
       updateNotificationState: () => {},
+      refreshActiveThreadGitMeta: async () => {},
       armSyntheticClickSuppression: () => {},
       wireBlurBackdropShield: () => {},
       bindClick: () => {},
@@ -120,7 +122,7 @@ describe("composition", () => {
       createFolderPickerModule: stubFactory({ closeFolderPicker: () => {}, confirmFolderPickerCurrentPath: () => {}, openFolderPicker: () => {}, refreshFolderPicker: () => {}, renderFolderPicker: () => {}, resetFolderPickerPath: () => {}, switchFolderPickerWorkspace: () => {} }),
       createConnectionFlowsModule: stubFactory({ applyPendingPayloads: () => {}, connect: () => {}, refreshAll: () => {}, refreshHosts: () => {}, refreshPending: () => {}, refreshPendingFromHttp: () => {}, renderHosts: () => {}, renderPendingLists: () => {}, setActiveHost: () => {} }),
       createTurnActionsModule: stubFactory({ addHost: () => {}, newThread: () => {}, resolveApproval: () => {}, resolveUserInput: () => {}, sendTurn: () => {}, uploadAttachment: () => {} }),
-      createActionBindingsModule: stubFactory({ wireActions: () => {} }),
+      createActionBindingsModule,
       createDebugToolsModule: stubFactory({ installDebugAndE2E: () => {} }),
       createThreadLiveModule: stubFactory({ wireThreadPullToRefresh: () => {}, startThreadAutoRefreshLoop: () => {}, startActiveThreadLivePollLoop: () => {} }),
       createBootstrapModule: stubFactory({ bootstrap: () => {} }),
@@ -129,5 +131,10 @@ describe("composition", () => {
     expect(typeof composition.bootstrap).toBe("function");
     expect(typeof composition.refreshThreads).toBe("function");
     expect(typeof composition.setHeaderModelMenuOpen).toBe("function");
+    expect(createActionBindingsModule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        refreshActiveThreadGitMeta: expect.any(Function),
+      })
+    );
   });
 });
