@@ -53,6 +53,7 @@ describe("liveNotifications", () => {
   it("merges codex worktree paths back into the root project key", () => {
     expect(workspaceKeyOfThread({ cwd: "C:\\Users\\yiyou\\API-Router" })).toEqual({ key: "c:/users/yiyou/api-router", label: "API-Router" });
     expect(workspaceKeyOfThread({ cwd: "C:\\Users\\yiyou\\.codex\\worktrees\\4002\\API-Router" })).toEqual({ key: "c:/users/yiyou/api-router", label: "API-Router" });
+    expect(workspaceKeyOfThread({ cwd: "C:\\Users\\yiyou\\.codex\\worktrees\\4002\\API-Router\\src" })).toEqual({ key: "c:/users/yiyou/api-router", label: "src" });
   });
 
   it("keeps truly distinct folder names separate", () => {

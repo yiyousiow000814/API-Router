@@ -34,7 +34,7 @@ export function workspaceKeyOfThread(thread) {
     part === ".codex" && items[index + 1] === "worktrees"
   );
   if (worktreeIndex >= 0 && normalizedKeyParts.length > worktreeIndex + 3) {
-    const projectName = normalizedKeyParts[normalizedKeyParts.length - 1];
+    const projectName = normalizedKeyParts[worktreeIndex + 3];
     const rootParts = normalizedKeyParts.slice(0, worktreeIndex);
     if (projectName && rootParts.length > 0) {
       key = `${rootParts.join("/")}/${projectName}`;
