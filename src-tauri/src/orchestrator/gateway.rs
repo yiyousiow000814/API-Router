@@ -465,6 +465,61 @@ fn upstream_error_code_from_body(body: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn upstream_error_type_from_body(body: &str) -> Option<String> {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|json| {
+            json.get("error")
+                .and_then(|value| value.get("type"))
+                .and_then(Value::as_str)
+                .map(|value| value.trim().to_ascii_lowercase())
+        })
+        .filter(|value| !value.is_empty())
+}
+
+fn upstream_error_message_from_body(body: &str) -> Option<String> {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|json| {
+            json.get("error")
+                .and_then(|value| value.get("message"))
+                .and_then(Value::as_str)
+                .map(|value| value.trim().to_string())
+        })
+        .filter(|value| !value.is_empty())
+}
+
+fn is_unsupported_model_invalid_request(code: u16, body: &str) -> bool {
+    if code != 400 {
+        return false;
+    }
+    if upstream_error_type_from_body(body).as_deref() != Some("invalid_request_error") {
+        return false;
+    }
+    let Some(message) = upstream_error_message_from_body(body) else {
+        return false;
+    };
+    let message_lc = message.to_ascii_lowercase();
+    message_lc.contains("unsupported model")
+        || (message_lc.contains("model")
+            && (message_lc.contains("not found")
+                || message_lc.contains("does not exist")
+                || message_lc.contains("unknown")))
+}
+
+fn upstream_invalid_request_response(code: u16, body: &str) -> Response {
+    let status = StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_REQUEST);
+    let payload = serde_json::from_str::<Value>(body).unwrap_or_else(|_| {
+        json!({
+            "error": {
+                "message": body,
+                "type": "invalid_request_error"
+            }
+        })
+    });
+    (status, Json(payload)).into_response()
+}
+
 fn is_retryable_upstream_status(code: u16) -> bool {
     matches!(code, 408 | 409 | 425 | 429) || (500..=599).contains(&code)
 }
@@ -588,8 +643,8 @@ async fn post_non_stream_with_http_retry(
 #[cfg(test)]
 mod upstream_retry_tests {
     use super::{
-        is_retryable_upstream_status, should_fallback_stream_response_to_non_stream,
-        upstream_error_code_from_body,
+        is_retryable_upstream_status, is_unsupported_model_invalid_request,
+        should_fallback_stream_response_to_non_stream, upstream_error_code_from_body,
     };
     use crate::orchestrator::quota::is_quota_refresh_config_gap;
 
@@ -608,6 +663,19 @@ mod upstream_retry_tests {
             Some("token_invalidated")
         );
         assert!(should_fallback_stream_response_to_non_stream(401, body));
+    }
+
+    #[test]
+    fn unsupported_model_invalid_request_is_classified_as_session_scoped() {
+        let body = r#"{"error":{"message":"Unsupported model: gpt-5.4-mini","type":"invalid_request_error"}}"#;
+        assert!(is_unsupported_model_invalid_request(400, body));
+        assert!(!is_unsupported_model_invalid_request(500, body));
+    }
+
+    #[test]
+    fn unrelated_invalid_request_does_not_match_unsupported_model_classifier() {
+        let body = r#"{"error":{"message":"Unsupported parameter: previous_response_id","type":"invalid_request_error"}}"#;
+        assert!(!is_unsupported_model_invalid_request(400, body));
     }
 
     #[test]
@@ -1218,6 +1286,7 @@ async fn responses(
     // Try providers in order: chosen, then fallbacks.
     let mut tried = Vec::new();
     let mut last_err = String::new();
+    let mut terminal_response: Option<Response> = None;
     let mut usage_refreshed_after_first_failure = false;
 
     let mut session_messages: Option<Vec<Value>> = None;
@@ -1594,6 +1663,21 @@ async fn responses(
                             last_err = format!(
                                 "upstream {provider_name} returned {code} (responses stream): {txt}"
                             );
+                            if is_unsupported_model_invalid_request(code, &txt) {
+                                st.store.events().emit(
+                                    &provider_name,
+                                    crate::orchestrator::store::EventCode::UPSTREAM_INVALID_REQUEST,
+                                    &last_err,
+                                    json!({
+                                        "http_status": code,
+                                        "endpoint": "/v1/responses",
+                                        "stream": true
+                                    }),
+                                );
+                                terminal_response =
+                                    Some(upstream_invalid_request_response(code, &txt));
+                                break;
+                            }
                             st.router
                                 .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
                             st.store.events().emit(
@@ -1858,6 +1942,20 @@ async fn responses(
                         continue;
                     }
                     last_err = format!("upstream {provider_name} returned {code}: {msg}");
+                    if is_unsupported_model_invalid_request(code, &msg) {
+                        st.store.events().emit(
+                            &provider_name,
+                            crate::orchestrator::store::EventCode::UPSTREAM_INVALID_REQUEST,
+                            &last_err,
+                            json!({
+                                "http_status": code,
+                                "endpoint": "/v1/responses",
+                                "stream": false
+                            }),
+                        );
+                        terminal_response = Some(upstream_invalid_request_response(code, &msg));
+                        break;
+                    }
                     st.router
                         .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
                     st.store.record_failure(&provider_name);
@@ -1896,6 +1994,13 @@ async fn responses(
                 }
             }
         }
+        if terminal_response.is_some() {
+            break;
+        }
+    }
+
+    if let Some(response) = terminal_response {
+        return response;
     }
 
     (
