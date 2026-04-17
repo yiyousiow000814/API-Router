@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { fmtWhen } from '../utils/format'
 import { GATEWAY_WINDOWS_HOST, GATEWAY_WSL2_HOST } from '../constants'
 import { recordUiTrace } from '../tauriCore'
@@ -85,6 +85,68 @@ export function compareSessionRowsByOriginThenLastSeen(
 type DisplaySessionRow = {
   row: SessionRow
   parentMainSessionId?: string
+}
+
+export type SessionsTableRenderTraceSummary = {
+  input_count: number
+  always_visible_count: number
+  verified_row_count: number
+  unverified_row_count: number
+  active_count: number
+  agent_count: number
+  review_count: number
+  verified_row_ids_preview: string[]
+  unverified_row_ids_preview: string[]
+}
+
+export function summarizeSessionsTableRender(
+  sessions: SessionRow[],
+  alwaysVisibleIds: Set<string>,
+  verifiedRows: DisplaySessionRow[],
+  unverifiedRows: DisplaySessionRow[],
+): SessionsTableRenderTraceSummary {
+  return {
+    input_count: sessions.length,
+    always_visible_count: alwaysVisibleIds.size,
+    verified_row_count: verifiedRows.length,
+    unverified_row_count: unverifiedRows.length,
+    active_count: sessions.filter((session) => session.active).length,
+    agent_count: sessions.filter((session) => session.is_agent === true).length,
+    review_count: sessions.filter((session) => session.is_review === true).length,
+    verified_row_ids_preview: verifiedRows.slice(0, 12).map((entry) => entry.row.id),
+    unverified_row_ids_preview: unverifiedRows.slice(0, 12).map((entry) => entry.row.id),
+  }
+}
+
+export function sessionsTableRenderTraceSignature(
+  sessions: SessionRow[],
+  alwaysVisibleIds: Set<string>,
+  verifiedRows: DisplaySessionRow[],
+  unverifiedRows: DisplaySessionRow[],
+): string {
+  const encodeRows = (rows: DisplaySessionRow[]) =>
+    rows
+      .map((entry) =>
+        [
+          entry.row.id,
+          entry.parentMainSessionId ?? '',
+          entry.row.current_provider ?? '',
+          entry.row.current_reason ?? '',
+          entry.row.preferred_provider ?? '',
+          entry.row.active ? '1' : '0',
+          entry.row.verified === false ? '0' : '1',
+          entry.row.is_agent === true ? '1' : '0',
+          entry.row.is_review === true ? '1' : '0',
+        ].join('|'),
+      )
+      .join('\n')
+
+  return [
+    `input:${sessions.length}`,
+    `always:${[...alwaysVisibleIds].sort().join(',')}`,
+    `verified:${encodeRows(verifiedRows)}`,
+    `unverified:${encodeRows(unverifiedRows)}`,
+  ].join('\n---\n')
 }
 
 function sessionIdsAlwaysVisible(rows: SessionRow[]): Set<string> {
@@ -194,31 +256,26 @@ export function SessionsTable({
   )
   const displayTrace = useMemo(
     () => ({
-      input_count: sessions.length,
-      always_visible_ids: [...alwaysVisibleIds],
-      verified_row_ids: verifiedRows.map((entry) => entry.row.id),
-      unverified_row_ids: unverifiedRows.map((entry) => entry.row.id),
-      verified_rows: verifiedRows.map((entry) => ({
-        id: entry.row.id,
-        parent: entry.parentMainSessionId ?? null,
-        verified: entry.row.verified ?? true,
-        is_agent: entry.row.is_agent ?? false,
-        is_review: entry.row.is_review ?? false,
-        current_provider: entry.row.current_provider ?? null,
-      })),
-      unverified_rows: unverifiedRows.map((entry) => ({
-        id: entry.row.id,
-        parent: entry.parentMainSessionId ?? null,
-        verified: entry.row.verified ?? true,
-        is_agent: entry.row.is_agent ?? false,
-        is_review: entry.row.is_review ?? false,
-        current_provider: entry.row.current_provider ?? null,
-      })),
+      summary: summarizeSessionsTableRender(
+        sessions,
+        alwaysVisibleIds,
+        verifiedRows,
+        unverifiedRows,
+      ),
+      signature: sessionsTableRenderTraceSignature(
+        sessions,
+        alwaysVisibleIds,
+        verifiedRows,
+        unverifiedRows,
+      ),
     }),
     [alwaysVisibleIds, sessions, unverifiedRows, verifiedRows],
   )
+  const lastDisplayTraceSignatureRef = useRef<string | null>(null)
   useEffect(() => {
-    recordUiTrace('sessions.table_render', displayTrace)
+    if (lastDisplayTraceSignatureRef.current === displayTrace.signature) return
+    lastDisplayTraceSignatureRef.current = displayTrace.signature
+    recordUiTrace('sessions.table_render', displayTrace.summary)
   }, [displayTrace])
   const [showUnverified, setShowUnverified] = useState(false)
 

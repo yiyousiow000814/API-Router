@@ -5,6 +5,7 @@ use crate::commands::status_snapshot_support::dashboard_snapshot_cache::Dashboar
 
 const DASHBOARD_STATUS_SNAPSHOT_CACHE_TTL_MS: u64 = 5_000;
 const DASHBOARD_LAST_ERROR_EVENT_MATCH_WINDOW_MS: u64 = 5 * 60 * 1000;
+const DISPLAYED_SESSION_ROUTE_CACHE_TTL_MS: u64 = 5_000;
 
 fn status_client_sessions_trace_cache() -> &'static Mutex<Option<String>> {
     static CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -25,6 +26,30 @@ fn visible_last_error_events_cache() -> &'static Mutex<Option<VisibleLastErrorEv
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
+#[derive(Clone)]
+struct DisplayedSessionRouteCacheEntry {
+    captured_at_unix_ms: u64,
+    provider: Option<String>,
+    reason: Option<String>,
+}
+
+fn displayed_session_route_cache(
+) -> &'static Mutex<std::collections::HashMap<String, DisplayedSessionRouteCacheEntry>> {
+    static CACHE: OnceLock<Mutex<std::collections::HashMap<String, DisplayedSessionRouteCacheEntry>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+#[cfg(test)]
+fn clear_displayed_session_route_cache() {
+    let cache = displayed_session_route_cache();
+    let mut guard = match cache.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    guard.clear();
+}
+
 #[cfg(test)]
 fn clear_visible_last_error_events_cache() {
     let cache = visible_last_error_events_cache();
@@ -33,6 +58,63 @@ fn clear_visible_last_error_events_cache() {
         Err(err) => err.into_inner(),
     };
     *guard = None;
+}
+
+fn displayed_session_route_cache_key(
+    config_revision: &str,
+    codex_session_id: &str,
+    preferred_provider: &str,
+) -> String {
+    format!("{config_revision}\n{codex_session_id}\n{preferred_provider}")
+}
+
+fn load_cached_displayed_session_route(
+    config_revision: &str,
+    codex_session_id: &str,
+    preferred_provider: &str,
+    now: u64,
+) -> Option<(Option<String>, Option<String>)> {
+    let cache = displayed_session_route_cache();
+    let mut guard = match cache.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    guard.retain(|_, entry| {
+        now.saturating_sub(entry.captured_at_unix_ms) < DISPLAYED_SESSION_ROUTE_CACHE_TTL_MS
+    });
+    guard
+        .get(&displayed_session_route_cache_key(
+            config_revision,
+            codex_session_id,
+            preferred_provider,
+        ))
+        .map(|entry| (entry.provider.clone(), entry.reason.clone()))
+}
+
+fn store_displayed_session_route_cache(
+    config_revision: &str,
+    codex_session_id: &str,
+    preferred_provider: &str,
+    provider: Option<String>,
+    reason: Option<String>,
+    now: u64,
+) {
+    let cache = displayed_session_route_cache();
+    let mut guard = match cache.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    guard.retain(|_, entry| {
+        now.saturating_sub(entry.captured_at_unix_ms) < DISPLAYED_SESSION_ROUTE_CACHE_TTL_MS
+    });
+    guard.insert(
+        displayed_session_route_cache_key(config_revision, codex_session_id, preferred_provider),
+        DisplayedSessionRouteCacheEntry {
+            captured_at_unix_ms: now,
+            provider,
+            reason,
+        },
+    );
 }
 
 fn summarize_client_sessions_for_trace(sessions: &[serde_json::Value]) -> serde_json::Value {
@@ -370,17 +452,17 @@ fn refresh_client_sessions_runtime(
     merge_thread_index_session_hints(
         map,
         now,
-        &thread_index_snapshot.items,
+        thread_index_snapshot.items.as_ref(),
         thread_index_snapshot.fresh,
     );
-    confirm_router_from_live_thread_base_url(map, &thread_index_snapshot.items, router_port);
+    confirm_router_from_live_thread_base_url(map, thread_index_snapshot.items.as_ref(), router_port);
     backfill_main_confirmation_from_verified_agent(map, now);
     let removed_main_session_ids = retain_live_app_server_sessions(
         map,
         now,
         &terminal_discovery.items,
         terminal_discovery.fresh,
-        &thread_index_snapshot.items,
+        thread_index_snapshot.items.as_ref(),
         thread_index_snapshot.fresh,
     );
     let snapshot = map.clone();
@@ -642,6 +724,7 @@ pub(crate) fn get_status(
                 let (display_provider, display_reason) = displayed_session_route(
                     &state.gateway,
                     &cfg,
+                    &config_revision,
                     &codex_id,
                     preferred_provider,
                     v.confirmed_router,
@@ -1175,6 +1258,7 @@ fn confirm_router_from_live_thread_base_url(
 fn displayed_session_route(
     gateway: &crate::orchestrator::gateway::GatewayState,
     cfg: &crate::orchestrator::config::AppConfig,
+    config_revision: &str,
     codex_session_id: &str,
     preferred_provider: &str,
     verified: bool,
@@ -1186,13 +1270,32 @@ fn displayed_session_route(
         return (Some(route.provider.clone()), Some(route.reason.clone()));
     }
     if verified {
+        let now = unix_ms();
+        if let Some(cached) = load_cached_displayed_session_route(
+            config_revision,
+            codex_session_id,
+            preferred_provider,
+            now,
+        ) {
+            return cached;
+        }
         let (provider, reason) = crate::orchestrator::gateway::decide_provider_for_display(
             gateway,
             cfg,
             preferred_provider,
             codex_session_id,
         );
-        return (Some(provider), Some(reason.to_string()));
+        let provider = Some(provider);
+        let reason = Some(reason.to_string());
+        store_displayed_session_route_cache(
+            config_revision,
+            codex_session_id,
+            preferred_provider,
+            provider.clone(),
+            reason.clone(),
+            now,
+        );
+        return (provider, reason);
     }
     (None, None)
 }
@@ -1853,6 +1956,7 @@ mod tests {
     use crate::commands::{
         attach_visible_last_error_event_ids,
         backfill_main_confirmation_from_verified_agent,
+        clear_displayed_session_route_cache,
         clear_visible_last_error_events_cache,
         clear_removed_main_session_routes_and_assignments,
         append_backup_event_daily_stats, day_start_unix_ms_from_day_key, event_query_key,
@@ -1982,7 +2086,7 @@ mod tests {
         };
         let thread_index_snapshot =
             crate::orchestrator::gateway::web_codex_threads::CachedThreadIndexSnapshot {
-                items: Vec::new(),
+                items: Arc::new(Vec::new()),
                 fresh: false,
             };
 
@@ -2497,6 +2601,7 @@ mod tests {
 
     #[test]
     fn displayed_session_route_bootstraps_balanced_assignment_before_first_request() {
+        clear_displayed_session_route_cache();
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = open_store_dir(tmp.path().join("data")).expect("store");
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
@@ -2584,6 +2689,7 @@ mod tests {
         let (provider, reason) = displayed_session_route(
             &state,
             &cfg,
+            "test-config-revision-bootstrap",
             "main-session",
             "p1",
             true,
@@ -2606,6 +2712,7 @@ mod tests {
 
     #[test]
     fn displayed_session_route_keeps_provider_when_other_session_becomes_active() {
+        clear_displayed_session_route_cache();
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = open_store_dir(tmp.path().join("data")).expect("store");
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
@@ -2708,6 +2815,7 @@ mod tests {
         let (before_provider, before_reason) = displayed_session_route(
             &state,
             &cfg,
+            "test-config-revision-keep-provider",
             "session-b",
             "p1",
             true,
@@ -2720,6 +2828,7 @@ mod tests {
         let (after_provider, after_reason) = displayed_session_route(
             &state,
             &cfg,
+            "test-config-revision-keep-provider",
             "session-b",
             "p1",
             true,
@@ -3027,6 +3136,7 @@ mod tests {
 
     #[test]
     fn displayed_session_route_reuses_observed_route_for_verified_session() {
+        clear_displayed_session_route_cache();
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = open_store_dir(tmp.path().join("data")).expect("store");
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
@@ -3110,6 +3220,7 @@ mod tests {
         let (provider, reason) = displayed_session_route(
             &state,
             &cfg,
+            "test-config-revision-observed-route",
             "main-session",
             "p1",
             true,
@@ -3121,6 +3232,116 @@ mod tests {
             state.router.is_waiting_usage_confirmation("p1"),
             "using observed route should not trigger display routing side effects"
         );
+    }
+
+    #[test]
+    fn displayed_session_route_reuses_recent_cached_decision_within_ttl() {
+        clear_displayed_session_route_cache();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = open_store_dir(tmp.path().join("data")).expect("store");
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let mut providers = std::collections::BTreeMap::new();
+        providers.insert(
+            "p1".to_string(),
+            ProviderConfig {
+                display_name: "P1".to_string(),
+                base_url: "https://p1.example.com".to_string(),
+                group: None,
+                disabled: false,
+                supports_websockets: false,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+        providers.insert(
+            "p2".to_string(),
+            ProviderConfig {
+                display_name: "P2".to_string(),
+                base_url: "https://p2.example.com".to_string(),
+                group: None,
+                disabled: false,
+                supports_websockets: false,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+        let cfg = AppConfig {
+            listen: ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 4000,
+            },
+            routing: RoutingConfig {
+                preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: crate::orchestrator::config::RouteMode::BalancedAuto,
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 30,
+                failure_threshold: 2,
+                cooldown_seconds: 30,
+                request_timeout_seconds: 300,
+            },
+            providers,
+            provider_order: vec!["p1".to_string(), "p2".to_string()],
+        };
+        let now = unix_ms();
+        let state = GatewayState {
+            cfg: Arc::new(RwLock::new(cfg.clone())),
+            router: Arc::new(RouterState::new(&cfg, now)),
+            store,
+            upstream: UpstreamClient::new(),
+            secrets,
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::from([(
+                "main-session".to_string(),
+                ClientSessionRuntime {
+                    codex_session_id: "main-session".to_string(),
+                    pid: 1,
+                    wt_session: Some("wt-main".to_string()),
+                    last_request_unix_ms: now,
+                    last_discovered_unix_ms: now,
+                    last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                    last_reported_model: None,
+                    last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                    rollout_path: None,
+                    agent_parent_session_id: None,
+                    is_agent: false,
+                    is_review: false,
+                    confirmed_router: true,
+                },
+            )]))),
+        };
+
+        let (before_provider, before_reason) = displayed_session_route(
+            &state,
+            &cfg,
+            "test-config-revision-ttl-cache",
+            "main-session",
+            "p1",
+            true,
+            None::<&LastUsedRoute>,
+        );
+        assert_eq!(before_provider.as_deref(), Some("p1"));
+        assert_eq!(before_reason.as_deref(), Some("balanced_auto"));
+
+        *state.router.manual_override.write() = Some("p2".to_string());
+
+        let (after_provider, after_reason) = displayed_session_route(
+            &state,
+            &cfg,
+            "test-config-revision-ttl-cache",
+            "main-session",
+            "p1",
+            true,
+            None::<&LastUsedRoute>,
+        );
+
+        assert_eq!(after_provider, before_provider);
+        assert_eq!(after_reason, before_reason);
     }
 
     #[test]
