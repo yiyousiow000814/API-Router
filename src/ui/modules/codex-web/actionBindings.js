@@ -196,9 +196,13 @@ export function createActionBindingsModule(deps) {
   }
 
   function closeComposerPickerMenus() {
+    if (state.composerBranchMenuOpen !== true && state.composerPermissionMenuOpen !== true) {
+      return false;
+    }
     state.composerBranchMenuOpen = false;
     state.composerPermissionMenuOpen = false;
     updateMobileComposerState();
+    return true;
   }
 
   function isComposerPickerInteractiveTarget(target) {

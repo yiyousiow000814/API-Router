@@ -2344,4 +2344,86 @@ describe("actionBindings", () => {
     expect(deps.state.composerPermissionMenuOpen).toBe(false);
     expect(deps.__updates).toBe(1);
   });
+
+  it("does not re-render when document click closes already-closed picker menus", () => {
+    const handlers = new Map();
+    const OriginalNode = globalThis.Node;
+    class FakeNode {}
+    globalThis.Node = FakeNode;
+    try {
+      const pickerBar = {
+        addEventListener() {},
+        contains() {
+          return false;
+        },
+      };
+      const outsideTarget = new FakeNode();
+      outsideTarget.closest = () => null;
+      const deps = {
+        state: {
+          folderPickerOpen: false,
+          modelOptionsLoading: false,
+          threadItems: [],
+          composerBranchMenuOpen: false,
+          composerPermissionMenuOpen: false,
+        },
+        byId(id) {
+          if (id === "composerPickerBar") return pickerBar;
+          return null;
+        },
+        bindClick() {},
+        bindResponsiveClick() {},
+        bindInput() {},
+        setStatus() {},
+        updateMobileComposerState() {
+          deps.__updates = (deps.__updates || 0) + 1;
+        },
+        updateNotificationState() {},
+        armSyntheticClickSuppression() {},
+        wireBlurBackdropShield() {},
+        closeFolderPicker() {},
+        refreshFolderPicker: async () => {},
+        renderFolderPicker() {},
+        confirmFolderPickerCurrentPath() {},
+        resetFolderPickerPath() {},
+        switchFolderPickerWorkspace: async () => {},
+        openFolderPicker: async () => {},
+        newThread: async () => {},
+        setMainTab() {},
+        setMobileTab() {},
+        refreshCodexVersions: async () => {},
+        setWorkspaceTarget: async () => {},
+        setHeaderModelMenuOpen() {},
+        closeInlineEffortOverlay() {},
+        shouldSuppressSyntheticClick() { return false; },
+        renderThreads() {},
+        wireThreadPullToRefresh() {},
+        addHost: async () => {},
+        resolveApproval: async () => {},
+        resolveUserInput: async () => {},
+        refreshPending: async () => {},
+        uploadAttachment: async () => {},
+        sendTurn: async () => {},
+        syncSlashCommandMenu() {},
+        syncSettingsControlsFromMain() {},
+        localStorageRef: { getItem() { return ""; }, setItem() {} },
+        windowRef: { addEventListener() {} },
+        documentRef: {
+          addEventListener(eventName, handler) {
+            handlers.set(`document:${eventName}`, handler);
+          },
+        },
+        NotificationRef: { requestPermission: async () => "default" },
+      };
+
+      createActionBindingsModule(deps).wireActions();
+      handlers.get("document:click")?.({ target: outsideTarget });
+
+      expect(deps.state.composerBranchMenuOpen).toBe(false);
+      expect(deps.state.composerPermissionMenuOpen).toBe(false);
+      expect(deps.__updates || 0).toBe(0);
+    } finally {
+      globalThis.Node = OriginalNode;
+    }
+  });
 });
