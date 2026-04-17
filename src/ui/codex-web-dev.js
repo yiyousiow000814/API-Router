@@ -455,6 +455,7 @@ const composition = createCodexWebComposition({
   restoreThreadsCache: (...args) => restoreThreadsCache(...args),
   applyManagedTokenUi: (...args) => applyManagedTokenUi(...args),
   updateMobileComposerState: (...args) => updateMobileComposerState(...args),
+  refreshActiveThreadGitMeta: (...args) => refreshActiveThreadGitMeta(...args),
   setComposerActionMenuOpen: (...args) => setComposerActionMenuOpen(...args),
   refreshSlashCommandsState: (...args) => refreshSlashCommandsState(...args),
   syncSettingsControlsFromMain: (...args) => syncSettingsControlsFromMain(...args),

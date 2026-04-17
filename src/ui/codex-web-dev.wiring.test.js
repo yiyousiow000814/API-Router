@@ -22,6 +22,9 @@ describe("codex-web-dev wiring", () => {
       "updateMobileComposerState: (...args) => updateMobileComposerState(...args),"
     );
     expect(source).toContain(
+      "refreshActiveThreadGitMeta: (...args) => refreshActiveThreadGitMeta(...args),"
+    );
+    expect(source).toContain(
       "syncSettingsControlsFromMain: (...args) => syncSettingsControlsFromMain(...args),"
     );
     expect(source).toContain(

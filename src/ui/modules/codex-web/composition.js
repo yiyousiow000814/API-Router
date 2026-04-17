@@ -320,6 +320,7 @@ export function createCodexWebComposition(deps) {
     bindInput: deps.bindInput,
     setStatus: deps.setStatus,
     updateMobileComposerState: deps.updateMobileComposerState,
+    refreshActiveThreadGitMeta: deps.refreshActiveThreadGitMeta,
     updateNotificationState: deps.updateNotificationState,
     armSyntheticClickSuppression: deps.armSyntheticClickSuppression,
     wireBlurBackdropShield: deps.wireBlurBackdropShield,
