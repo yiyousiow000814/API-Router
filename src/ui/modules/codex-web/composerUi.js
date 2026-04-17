@@ -1149,8 +1149,12 @@ export function createComposerUiModule(deps) {
     if (branchBtn) {
       branchBtn.disabled = !canPickBranch;
       branchBtn.setAttribute("aria-expanded", state.composerBranchMenuOpen === true && canPickBranch ? "true" : "false");
+      const animateBranchLabel =
+        typeof branchBtn.__pickerLabel === "string" &&
+        branchBtn.__pickerLabel.length > 0 &&
+        branchBtn.__pickerLabel !== branchLabel;
       const nextButtonHtml =
-        `<span class="composerPickerBtnLabel">${escapeHtml(branchLabel)}</span>` +
+        `<span class="composerPickerBtnLabel${animateBranchLabel ? " is-animating" : ""}">${escapeHtml(branchLabel)}</span>` +
         `<span class="composerPickerBtnChevron" aria-hidden="true">` +
           `<svg viewBox="0 0 16 16" focusable="false"><path d="M4.5 6.5 8 10l3.5-3.5"></path></svg>` +
         `</span>`;
@@ -1158,6 +1162,7 @@ export function createComposerUiModule(deps) {
         branchBtn.innerHTML = nextButtonHtml;
         branchBtn.__pickerHtml = nextButtonHtml;
       }
+      branchBtn.__pickerLabel = branchLabel;
     }
     if (branchMenu) {
       const branchItemsHtml = visibleBranches.length
@@ -1196,8 +1201,13 @@ export function createComposerUiModule(deps) {
     if (permissionBtn) {
       permissionBtn.disabled = false;
       permissionBtn.setAttribute("aria-expanded", state.composerPermissionMenuOpen === true ? "true" : "false");
+      const permissionLabel = permissionLabelForPreset(permissionPreset);
+      const animatePermissionLabel =
+        typeof permissionBtn.__pickerLabel === "string" &&
+        permissionBtn.__pickerLabel.length > 0 &&
+        permissionBtn.__pickerLabel !== permissionLabel;
       const nextButtonHtml =
-        `<span class="composerPickerBtnLabel">${escapeHtml(permissionLabelForPreset(permissionPreset))}</span>` +
+        `<span class="composerPickerBtnLabel${animatePermissionLabel ? " is-animating" : ""}">${escapeHtml(permissionLabel)}</span>` +
         `<span class="composerPickerBtnChevron" aria-hidden="true">` +
           `<svg viewBox="0 0 16 16" focusable="false"><path d="M4.5 6.5 8 10l3.5-3.5"></path></svg>` +
         `</span>`;
@@ -1205,6 +1215,7 @@ export function createComposerUiModule(deps) {
         permissionBtn.innerHTML = nextButtonHtml;
         permissionBtn.__pickerHtml = nextButtonHtml;
       }
+      permissionBtn.__pickerLabel = permissionLabel;
     }
     if (permissionMenu) {
       const menuBodyHtml = permissionOptions.map((option) => {

@@ -37,6 +37,7 @@ export function createActionBindingsModule(deps) {
     bindInput,
     setStatus,
     updateMobileComposerState,
+    refreshActiveThreadGitMeta,
     updateNotificationState,
     armSyntheticClickSuppression,
     wireBlurBackdropShield,
@@ -101,6 +102,26 @@ export function createActionBindingsModule(deps) {
         ? globalThis.setTimeout.bind(globalThis)
         : (callback) => callback();
     const PENDING_FREEFORM_EXIT_MS = 180;
+
+  let pendingBlockedBranchSwitch = null;
+
+  function showBranchSwitchBlockedDialog(uncommittedFileCount, branch) {
+    pendingBlockedBranchSwitch = branch;
+    const backdrop = byId("branchSwitchBlockedBackdrop");
+    const fileCountSpan = byId("branchSwitchBlockedFileCount");
+    if (!backdrop) return;
+    if (fileCountSpan) fileCountSpan.textContent = String(uncommittedFileCount || 0);
+    backdrop.classList.add("show");
+    backdrop.setAttribute("aria-hidden", "false");
+  }
+
+  function hideBranchSwitchBlockedDialog() {
+    pendingBlockedBranchSwitch = null;
+    const backdrop = byId("branchSwitchBlockedBackdrop");
+    if (!backdrop) return;
+    backdrop.classList.remove("show");
+    backdrop.setAttribute("aria-hidden", "true");
+  }
 
   function advanceOrResolvePendingUserInput(id) {
     const submission = getPendingUserInputSubmissionState(id);
@@ -562,6 +583,7 @@ export function createActionBindingsModule(deps) {
         suppressMs: 420,
       });
     }
+    bindClick("branchSwitchBlockedCancelBtn", () => hideBranchSwitchBlockedDialog());
     bindClick("folderPickerCloseBtn", () => closeFolderPicker());
     bindClick("folderPickerUpBtn", () => {
       if (state.folderPickerLoading) return;
@@ -699,6 +721,13 @@ export function createActionBindingsModule(deps) {
       const pickerBar = byId("composerPickerBar");
       if (pickerBar && !pickerBar.__wiredComposerPickerActions) {
         pickerBar.__wiredComposerPickerActions = true;
+        pickerBar.addEventListener("mouseover", () => {
+          const branchToggle = pickerBar.querySelector("[data-composer-picker-toggle='branch']");
+          if (branchToggle && !branchToggle.__branchHoverPrefetched) {
+            branchToggle.__branchHoverPrefetched = true;
+            refreshActiveThreadGitMeta().catch(() => null);
+          }
+        });
         pickerBar.addEventListener("click", (event) => {
           if (shouldSuppressSyntheticClick(event)) return;
           const target = event?.target;
@@ -734,10 +763,7 @@ export function createActionBindingsModule(deps) {
               state.composerBranchMenuOpen = false;
               updateMobileComposerState();
               if (selection.action === "blocked") {
-                setStatus(
-                  `Cannot switch branches with uncommitted files: ${selection.uncommittedFileCount}`,
-                  true
-                );
+                showBranchSwitchBlockedDialog(selection.uncommittedFileCount, branch);
               }
               return;
             }

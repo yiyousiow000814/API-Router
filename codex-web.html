@@ -2877,6 +2877,9 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .composerPickerBtnLabel.is-animating {
+      animation: composer-picker-label-swap 180ms cubic-bezier(.22, 1, .36, 1);
+    }
     .composerPickerBtnChevron {
       width: 12px;
       height: 12px;
@@ -2899,6 +2902,16 @@
     }
     .composerPickerBtn[aria-expanded="true"] .composerPickerBtnChevron svg {
       transform: rotate(180deg);
+    }
+    @keyframes composer-picker-label-swap {
+      from {
+        opacity: 0;
+        transform: translateY(3px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
     .composerPickerMenu {
       position: absolute;
@@ -4589,6 +4602,93 @@
       cursor: default;
     }
 
+    .branchSwitchBlockedBackdrop {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(13, 18, 32, 0.32);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 140ms ease;
+      z-index: var(--z-folder-picker-backdrop);
+    }
+    .branchSwitchBlockedBackdrop.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .branchSwitchBlockedModal {
+      width: min(420px, 92vw);
+      border-radius: 14px;
+      border: 1px solid rgba(13, 18, 32, 0.16);
+      background: rgba(255, 255, 255, 0.98);
+      box-shadow: 0 20px 48px rgba(13, 18, 32, 0.26);
+      color: #18253d;
+      padding: 20px 22px 18px;
+      overflow: hidden;
+      opacity: 0;
+      transform: translateY(8px) scale(0.99);
+      transition:
+        opacity 160ms ease,
+        transform 180ms cubic-bezier(.22, 1, .36, 1);
+      z-index: var(--z-folder-picker);
+      will-change: opacity, transform;
+    }
+    .branchSwitchBlockedBackdrop.show .branchSwitchBlockedModal {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+    .branchSwitchBlockedTitle {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 10px;
+      color: #18253d;
+    }
+    .branchSwitchBlockedMessage {
+      font-size: 13px;
+      color: rgba(13, 18, 32, 0.75);
+      margin-bottom: 6px;
+      line-height: 1.4;
+    }
+    .branchSwitchBlockedHint {
+      font-size: 12px;
+      color: rgba(13, 18, 32, 0.55);
+      margin-bottom: 18px;
+    }
+    .branchSwitchBlockedActions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .branchSwitchBlockedBtn {
+      border-radius: 8px;
+      font-size: 12px;
+      padding: 8px 14px;
+      line-height: 1.2;
+      border: 1px solid transparent;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    .branchSwitchBlockedBtn.secondary {
+      background: rgba(13, 18, 32, 0.06);
+      color: rgba(13, 18, 32, 0.7);
+      border-color: rgba(13, 18, 32, 0.12);
+    }
+    .branchSwitchBlockedBtn.secondary:hover {
+      background: rgba(13, 18, 32, 0.1);
+    }
+    .branchSwitchBlockedBtn.primary {
+      background: #0a84ff;
+      color: #fff;
+    }
+    .branchSwitchBlockedBtn.primary:hover {
+      background: #0070e0;
+    }
+
     .term {
       max-height: 140px;
       overflow: auto;
@@ -5254,6 +5354,18 @@
       <div class="folderPickerActions">
         <button id="folderPickerUseDefaultBtn" class="folderPickerActionBtn">Use default</button>
         <button id="folderPickerUseCurrentBtn" class="folderPickerActionBtn primary">Use this folder</button>
+      </div>
+    </div>
+  </div>
+  <div id="branchSwitchBlockedBackdrop" class="branchSwitchBlockedBackdrop" aria-hidden="true">
+    <div class="branchSwitchBlockedModal" role="dialog" aria-modal="true" aria-labelledby="branchSwitchBlockedTitle">
+      <div id="branchSwitchBlockedTitle" class="branchSwitchBlockedTitle">Commit changes to switch branch</div>
+      <div class="branchSwitchBlockedMessage">
+        Your changes to <span id="branchSwitchBlockedFileCount">0</span> file(s) would be overwritten by checkout.
+      </div>
+      <div class="branchSwitchBlockedHint">Please commit your changes to continue.</div>
+      <div class="branchSwitchBlockedActions">
+        <button id="branchSwitchBlockedCancelBtn" class="branchSwitchBlockedBtn secondary">Okay</button>
       </div>
     </div>
   </div>

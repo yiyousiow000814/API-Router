@@ -29,7 +29,8 @@ describe("branchPickerState", () => {
       "feat/ui",
       "fix/other",
     ]);
-    expect(buildBranchPickerItemState(picker, { name: "main" }).disabled).toBe(true);
+    // disabled is no longer set at render time - blocking happens at click time via resolveBranchPickerSelection
+    expect(buildBranchPickerItemState(picker, { name: "main" }).disabled).toBe(false);
     expect(buildBranchPickerItemState(picker, { name: "feat/ui" }).disabled).toBe(false);
   });
 

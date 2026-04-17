@@ -1760,7 +1760,6 @@ describe("actionBindings", () => {
 
   it("blocks dirty branch switches before calling the backend", async () => {
     const handlers = new Map();
-    const statusCalls = [];
     const pickerBar = {
       addEventListener(eventName, handler) {
         handlers.set(`composerPickerBar:${eventName}`, handler);
@@ -1789,14 +1788,16 @@ describe("actionBindings", () => {
       },
       byId(id) {
         if (id === "composerPickerBar") return pickerBar;
+        if (id === "branchSwitchBlockedBackdrop") return {
+          classList: { add() {}, remove() {} },
+          setAttribute() {},
+        };
         return null;
       },
       bindClick() {},
       bindResponsiveClick() {},
       bindInput() {},
-      setStatus(message, isError = false) {
-        statusCalls.push({ message, isError });
-      },
+      setStatus() {},
       updateMobileComposerState() {
         deps.__updates = (deps.__updates || 0) + 1;
       },
@@ -1859,11 +1860,60 @@ describe("actionBindings", () => {
     expect(deps.state.composerBranchMenuOpen).toBe(false);
     expect(deps.state.activeThreadGitMetaLoading).toBe(false);
     expect(deps.api).not.toHaveBeenCalled();
-    expect(statusCalls).toEqual([{
-      message: "Cannot switch branches with uncommitted files: 3",
-      isError: true,
-    }]);
-    expect(deps.__updates).toBe(1);
+  });
+
+  it("keeps only the branch-switch blocked dismiss action wired", () => {
+    const handlers = new Map();
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId() { return null; },
+      bindClick(id, handler) {
+        handlers.set(id, handler);
+      },
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus() {},
+      updateMobileComposerState() {},
+      refreshActiveThreadGitMeta: async () => null,
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      executeSlashCommand: async () => {},
+      sendTurn: async () => {},
+      syncSlashCommandMenu() {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+
+    createActionBindingsModule(deps).wireActions();
+
+    expect(handlers.has("branchSwitchBlockedCancelBtn")).toBe(true);
+    expect(handlers.has("branchSwitchBlockedCommitBtn")).toBe(false);
   });
 
   it("closes the branch menu without switching when clicking the active branch", async () => {

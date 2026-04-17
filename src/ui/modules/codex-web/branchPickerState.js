@@ -42,15 +42,11 @@ export function buildBranchPickerState(state) {
 export function buildBranchPickerItemState(pickerState, branchOption) {
   const branchName = readBranchOptionName(branchOption);
   const active = branchName === pickerState.currentBranch;
-  const disabled =
-    !pickerState.canPickBranch ||
-    pickerState.gitMetaLoading ||
-    (pickerState.branchSwitchLocked && !active);
   return {
     branchName,
     prNumber: readBranchOptionPrNumber(branchOption),
     active,
-    disabled,
+    disabled: false,
   };
 }
 
@@ -58,18 +54,18 @@ export function resolveBranchPickerSelection(state, branch) {
   const pickerState = buildBranchPickerState(state);
   const branchName = String(branch || "").trim();
   if (!branchName) return { action: "ignore" };
-  if (!pickerState.canPickBranch) return { action: "close" };
   const item = pickerState.visibleBranches
     .map((branchOption) => buildBranchPickerItemState(pickerState, branchOption))
     .find((branchOption) => branchOption.branchName === branchName);
   if (!item) return { action: "close" };
   if (item.active) return { action: "close" };
-  if (item.disabled) {
+  if (pickerState.uncommittedFileCount > 0) {
     return {
       action: "blocked",
       reason: "uncommitted",
       uncommittedFileCount: pickerState.uncommittedFileCount,
     };
   }
+  if (!pickerState.canPickBranch) return { action: "close" };
   return { action: "switch", branch: branchName };
 }
