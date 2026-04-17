@@ -25,10 +25,7 @@ pub struct UpstreamClient {
 
 fn build_upstream_url(base_url: &str, path: &str) -> String {
     let base = base_url.trim_end_matches('/');
-    let mut rel = path.trim_start_matches('/');
-    if rel.starts_with("v1/") {
-        rel = rel.trim_start_matches("v1/");
-    }
+    let rel = path.trim_start_matches('/');
     format!("{}/{}", base, rel)
 }
 
@@ -44,7 +41,7 @@ fn apply_auth_headers(headers: &mut HeaderMap, api_key: Option<&str>, client_aut
 }
 
 fn build_realtime_ws_url(payload: &Value, provider: &ProviderConfig) -> Result<String, String> {
-    let http_url = build_upstream_url(&provider.base_url, "/v1/realtime");
+    let http_url = build_upstream_url(&provider.base_url, "/realtime");
     let mut url = reqwest::Url::parse(&http_url).map_err(|e| e.to_string())?;
     match url.scheme() {
         "https" => {
@@ -435,7 +432,7 @@ mod tests {
 
     #[tokio::test]
     async fn post_json_via_websocket_returns_response_done_payload() {
-        let app = Router::new().route("/v1/realtime", get(ws_done_handler));
+        let app = Router::new().route("/realtime", get(ws_done_handler));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind listener");
@@ -447,7 +444,7 @@ mod tests {
         let client = UpstreamClient::new();
         let provider = ProviderConfig {
             display_name: "WS Provider".to_string(),
-            base_url: format!("http://{addr}/v1"),
+            base_url: format!("http://{addr}"),
             group: None,
             disabled: false,
             supports_websockets: true,
@@ -525,26 +522,34 @@ mod tests {
     }
 
     #[test]
-    fn build_upstream_url_does_not_add_v1_after_openai_proxy_prefix() {
+    fn build_upstream_url_appends_responses_to_openai_proxy_prefix() {
         assert_eq!(
-            build_upstream_url("https://capi.quan2go.com/openai", "/v1/responses"),
+            build_upstream_url("https://capi.quan2go.com/openai", "/responses"),
             "https://capi.quan2go.com/openai/responses"
         );
     }
 
     #[test]
-    fn build_upstream_url_uses_responses_for_non_v1_base_url() {
+    fn build_upstream_url_appends_responses_to_non_v1_base_url() {
         assert_eq!(
-            build_upstream_url("https://yunyi.rdzhvip.com/codex", "/v1/responses"),
+            build_upstream_url("https://yunyi.rdzhvip.com/codex", "/responses"),
             "https://yunyi.rdzhvip.com/codex/responses"
         );
     }
 
     #[test]
-    fn build_upstream_url_keeps_v1_when_base_url_already_has_v1() {
+    fn build_upstream_url_preserves_base_url_owned_v1_segment() {
         assert_eq!(
-            build_upstream_url("https://api-vip.codex-for.me/v1", "/v1/responses"),
+            build_upstream_url("https://api-vip.codex-for.me/v1", "/responses"),
             "https://api-vip.codex-for.me/v1/responses"
+        );
+    }
+
+    #[test]
+    fn build_upstream_url_preserves_base_url_owned_v1_for_official_models() {
+        assert_eq!(
+            build_upstream_url("https://api.openai.com/v1", "/models"),
+            "https://api.openai.com/v1/models"
         );
     }
 }

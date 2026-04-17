@@ -1262,7 +1262,7 @@ async fn models(
     let timeout = cfg.routing.request_timeout_seconds;
     match st
         .upstream
-        .get_json(&p, "/v1/models", api_key.as_deref(), client_auth, timeout)
+        .get_json(&p, "/models", api_key.as_deref(), client_auth, timeout)
         .await
     {
         Ok((code, j)) if (200..300).contains(&code) => {
