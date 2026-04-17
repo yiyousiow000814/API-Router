@@ -116,6 +116,110 @@ pub struct ClientSessionRuntime {
     pub confirmed_router: bool,
 }
 
+const SESSION_UNSUPPORTED_MODEL_CACHE_TTL_MS: u64 = 5 * 60 * 1000;
+
+#[derive(Clone, Debug)]
+struct SessionUnsupportedModelCacheEntry {
+    unsupported_providers: HashSet<String>,
+    updated_at_unix_ms: u64,
+}
+
+static SESSION_UNSUPPORTED_MODEL_CACHE: OnceLock<
+    Mutex<HashMap<String, SessionUnsupportedModelCacheEntry>>,
+> = OnceLock::new();
+
+fn session_unsupported_model_cache(
+) -> &'static Mutex<HashMap<String, SessionUnsupportedModelCacheEntry>> {
+    SESSION_UNSUPPORTED_MODEL_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn normalize_requested_model_key(requested_model: Option<&str>) -> Option<String> {
+    requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(|model| model.to_ascii_lowercase())
+}
+
+fn session_unsupported_model_cache_key(
+    session_key: &str,
+    requested_model: Option<&str>,
+) -> Option<String> {
+    let model_key = normalize_requested_model_key(requested_model)?;
+    Some(format!(
+        "{}|{}",
+        session_key.trim().to_ascii_lowercase(),
+        model_key
+    ))
+}
+
+fn load_session_unsupported_model_providers(
+    session_key: &str,
+    requested_model: Option<&str>,
+    now_ms: u64,
+) -> HashSet<String> {
+    let Some(cache_key) = session_unsupported_model_cache_key(session_key, requested_model) else {
+        return HashSet::new();
+    };
+    let mut cache = session_unsupported_model_cache().lock();
+    cache.retain(|_, entry| {
+        now_ms.saturating_sub(entry.updated_at_unix_ms) < SESSION_UNSUPPORTED_MODEL_CACHE_TTL_MS
+    });
+    cache
+        .get(&cache_key)
+        .map(|entry| entry.unsupported_providers.clone())
+        .unwrap_or_default()
+}
+
+fn remember_session_unsupported_model_provider(
+    session_key: &str,
+    requested_model: Option<&str>,
+    provider_name: &str,
+    now_ms: u64,
+) {
+    let Some(cache_key) = session_unsupported_model_cache_key(session_key, requested_model) else {
+        return;
+    };
+    let mut cache = session_unsupported_model_cache().lock();
+    cache.retain(|_, entry| {
+        now_ms.saturating_sub(entry.updated_at_unix_ms) < SESSION_UNSUPPORTED_MODEL_CACHE_TTL_MS
+    });
+    let entry = cache
+        .entry(cache_key)
+        .or_insert_with(|| SessionUnsupportedModelCacheEntry {
+            unsupported_providers: HashSet::new(),
+            updated_at_unix_ms: now_ms,
+        });
+    entry
+        .unsupported_providers
+        .insert(provider_name.trim().to_string());
+    entry.updated_at_unix_ms = now_ms;
+}
+
+fn clear_session_unsupported_model_provider(
+    session_key: &str,
+    requested_model: Option<&str>,
+    provider_name: &str,
+    now_ms: u64,
+) {
+    let Some(cache_key) = session_unsupported_model_cache_key(session_key, requested_model) else {
+        return;
+    };
+    let mut cache = session_unsupported_model_cache().lock();
+    cache.retain(|_, entry| {
+        now_ms.saturating_sub(entry.updated_at_unix_ms) < SESSION_UNSUPPORTED_MODEL_CACHE_TTL_MS
+    });
+    let remove_model_entry = if let Some(entry) = cache.get_mut(&cache_key) {
+        entry.unsupported_providers.remove(provider_name.trim());
+        entry.updated_at_unix_ms = now_ms;
+        entry.unsupported_providers.is_empty()
+    } else {
+        false
+    };
+    if remove_model_entry {
+        cache.remove(&cache_key);
+    }
+}
+
 fn trace_client_session_request_update(
     session_key: &str,
     peer: SocketAddr,
@@ -1291,6 +1395,11 @@ async fn responses(
 
     let mut session_messages: Option<Vec<Value>> = None;
     for _ in 0..cfg.providers.len().max(1) {
+        let request_unsupported_providers = load_session_unsupported_model_providers(
+            &session_key,
+            requested_model.as_deref(),
+            unix_ms(),
+        );
         let is_first_attempt = tried.is_empty();
         let preferred = cfg
             .routing
@@ -1300,11 +1409,13 @@ async fn responses(
             .map(|s| s.as_str())
             .unwrap_or(cfg.routing.preferred_provider.as_str());
         let (mut provider_name, mut reason) = decide_provider(&st, &cfg, preferred, &session_key);
-        if tried.contains(&provider_name) {
+        if tried.contains(&provider_name) || request_unsupported_providers.contains(&provider_name)
+        {
             let quota_snapshots = st.store.list_quota_snapshots();
             let clear_usage_confirmation_requirement = true;
             let picked = select_fallback_provider(&cfg, preferred, |name| {
                 !tried.iter().any(|tried_name| tried_name == name)
+                    && !request_unsupported_providers.contains(name)
                     && provider_is_routable_for_selection(
                         &st,
                         &cfg,
@@ -1314,6 +1425,7 @@ async fn responses(
                     )
             });
             if !tried.iter().any(|tried_name| tried_name == &picked)
+                && !request_unsupported_providers.contains(&picked)
                 && provider_is_routable_for_selection(
                     &st,
                     &cfg,
@@ -1467,7 +1579,14 @@ async fn responses(
                                         unix_ms: unix_ms(),
                                     },
                                 );
-                                st.router.mark_success(&provider_name, unix_ms());
+                                let now_ms = unix_ms();
+                                st.router.mark_success(&provider_name, now_ms);
+                                clear_session_unsupported_model_provider(
+                                    &session_key,
+                                    requested_model.as_deref(),
+                                    &provider_name,
+                                    now_ms,
+                                );
                                 if should_log_routing_path_event(
                                     prev.as_ref(),
                                     &provider_name,
@@ -1563,7 +1682,14 @@ async fn responses(
                                     unix_ms: unix_ms(),
                                 },
                             );
-                            st.router.mark_success(&provider_name, unix_ms());
+                            let now_ms = unix_ms();
+                            st.router.mark_success(&provider_name, now_ms);
+                            clear_session_unsupported_model_provider(
+                                &session_key,
+                                requested_model.as_deref(),
+                                &provider_name,
+                                now_ms,
+                            );
                             if should_log_routing_path_event(
                                 prev.as_ref(),
                                 &provider_name,
@@ -1699,6 +1825,12 @@ async fn responses(
                                         "endpoint": "/v1/responses",
                                         "stream": true
                                     }),
+                                );
+                                remember_session_unsupported_model_provider(
+                                    &session_key,
+                                    requested_model.as_deref(),
+                                    &provider_name,
+                                    unix_ms(),
                                 );
                                 invalid_request_response =
                                     Some(upstream_invalid_request_response(code, &txt));
@@ -1858,7 +1990,14 @@ async fn responses(
                             unix_ms: unix_ms(),
                         },
                     );
-                    st.router.mark_success(&provider_name, unix_ms());
+                    let now_ms = unix_ms();
+                    st.router.mark_success(&provider_name, now_ms);
+                    clear_session_unsupported_model_provider(
+                        &session_key,
+                        requested_model.as_deref(),
+                        &provider_name,
+                        now_ms,
+                    );
 
                     // Keep the upstream response object (and id) so the client can continue the chain.
                     let response_id = upstream_json
@@ -1978,6 +2117,12 @@ async fn responses(
                                 "endpoint": "/v1/responses",
                                 "stream": false
                             }),
+                        );
+                        remember_session_unsupported_model_provider(
+                            &session_key,
+                            requested_model.as_deref(),
+                            &provider_name,
+                            unix_ms(),
                         );
                         invalid_request_response =
                             Some(upstream_invalid_request_response(code, &msg));
