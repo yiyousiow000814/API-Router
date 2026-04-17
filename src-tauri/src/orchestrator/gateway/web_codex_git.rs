@@ -69,14 +69,14 @@ fn has_uncommitted_changes(status_output: &str) -> bool {
     status_output
         .lines()
         .map(str::trim)
-        .any(|line| !line.is_empty())
+        .any(|line| !line.is_empty() && !line.starts_with("??") && !line.starts_with("!!"))
 }
 
 pub(super) fn count_uncommitted_changes(status_output: &str) -> usize {
     status_output
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
+        .filter(|line| !line.is_empty() && !line.starts_with("??") && !line.starts_with("!!"))
         .count()
 }
 
@@ -428,7 +428,7 @@ pub(super) async fn ensure_clean_worktree_for_workspace(
     let status_output = run_git_command_for_workspace(
         workspace,
         cwd,
-        &["status", "--porcelain=v1", "--untracked-files=all"],
+        &["status", "--porcelain=v1", "--untracked-files=no"],
     )
     .await?;
     if has_uncommitted_changes(&status_output) {
@@ -447,7 +447,7 @@ pub(super) async fn uncommitted_file_count_for_workspace(
     let status_output = run_git_command_for_workspace(
         workspace,
         cwd,
-        &["status", "--porcelain=v1", "--untracked-files=all"],
+        &["status", "--porcelain=v1", "--untracked-files=no"],
     )
     .await?;
     Ok(count_uncommitted_changes(&status_output))
@@ -646,22 +646,24 @@ mod tests {
     }
 
     #[test]
-    fn has_uncommitted_changes_treats_staged_unstaged_and_untracked_as_dirty() {
+    fn has_uncommitted_changes_ignores_untracked_files() {
         assert!(!has_uncommitted_changes(""));
         assert!(!has_uncommitted_changes("   \n"));
         assert!(has_uncommitted_changes(" M src/main.rs\n"));
         assert!(has_uncommitted_changes("M  src/main.rs\n"));
-        assert!(has_uncommitted_changes("?? notes.txt\n"));
+        assert!(!has_uncommitted_changes("?? notes.txt\n"));
+        assert!(!has_uncommitted_changes("?? notes.txt\n!! target/\n"));
     }
 
     #[test]
-    fn count_uncommitted_changes_counts_each_non_empty_porcelain_line() {
+    fn count_uncommitted_changes_counts_only_tracked_changes() {
         assert_eq!(count_uncommitted_changes(""), 0);
         assert_eq!(count_uncommitted_changes("   \n"), 0);
         assert_eq!(count_uncommitted_changes(" M src/main.rs\n"), 1);
+        assert_eq!(count_uncommitted_changes("?? notes.txt\n"), 0);
         assert_eq!(
             count_uncommitted_changes(" M src/main.rs\nM  src/lib.rs\n?? notes.txt\n"),
-            3
+            2
         );
     }
 
