@@ -209,8 +209,10 @@ fn clear_session_unsupported_model_provider(
         now_ms.saturating_sub(entry.updated_at_unix_ms) < SESSION_UNSUPPORTED_MODEL_CACHE_TTL_MS
     });
     let remove_model_entry = if let Some(entry) = cache.get_mut(&cache_key) {
-        entry.unsupported_providers.remove(provider_name.trim());
-        entry.updated_at_unix_ms = now_ms;
+        let was_removed = entry.unsupported_providers.remove(provider_name.trim());
+        if was_removed {
+            entry.updated_at_unix_ms = now_ms;
+        }
         entry.unsupported_providers.is_empty()
     } else {
         false
