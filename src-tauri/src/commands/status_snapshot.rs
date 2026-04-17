@@ -61,15 +61,15 @@ fn clear_visible_last_error_events_cache() {
 }
 
 fn displayed_session_route_cache_key(
-    config_revision: &str,
+    cache_scope: &str,
     codex_session_id: &str,
     preferred_provider: &str,
 ) -> String {
-    format!("{config_revision}\n{codex_session_id}\n{preferred_provider}")
+    format!("{cache_scope}\n{codex_session_id}\n{preferred_provider}")
 }
 
 fn load_cached_displayed_session_route(
-    config_revision: &str,
+    cache_scope: &str,
     codex_session_id: &str,
     preferred_provider: &str,
     now: u64,
@@ -84,7 +84,7 @@ fn load_cached_displayed_session_route(
     });
     guard
         .get(&displayed_session_route_cache_key(
-            config_revision,
+            cache_scope,
             codex_session_id,
             preferred_provider,
         ))
@@ -92,7 +92,7 @@ fn load_cached_displayed_session_route(
 }
 
 fn store_displayed_session_route_cache(
-    config_revision: &str,
+    cache_scope: &str,
     codex_session_id: &str,
     preferred_provider: &str,
     provider: Option<String>,
@@ -108,13 +108,56 @@ fn store_displayed_session_route_cache(
         now.saturating_sub(entry.captured_at_unix_ms) < DISPLAYED_SESSION_ROUTE_CACHE_TTL_MS
     });
     guard.insert(
-        displayed_session_route_cache_key(config_revision, codex_session_id, preferred_provider),
+        displayed_session_route_cache_key(cache_scope, codex_session_id, preferred_provider),
         DisplayedSessionRouteCacheEntry {
             captured_at_unix_ms: now,
             provider,
             reason,
         },
     );
+}
+
+fn displayed_session_route_cache_scope(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    cfg: &crate::orchestrator::config::AppConfig,
+    config_revision: &str,
+    providers: &std::collections::HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
+    quota: &serde_json::Value,
+) -> String {
+    let mut assignments = gateway.store.list_session_route_assignments_since(0);
+    assignments.sort_by(|left, right| {
+        left.session_id
+            .cmp(&right.session_id)
+            .then_with(|| left.provider.cmp(&right.provider))
+            .then_with(|| left.assigned_at_unix_ms.cmp(&right.assigned_at_unix_ms))
+    });
+    let provider_runtime = crate::orchestrator::router::provider_iteration_order(cfg)
+        .into_iter()
+        .map(|provider_name| {
+            let snapshot = providers.get(&provider_name);
+            serde_json::json!({
+                "provider": provider_name,
+                "status": snapshot.as_ref().map(|entry| entry.status.as_str()),
+                "cooldown_until_unix_ms": snapshot.as_ref().map(|entry| entry.cooldown_until_unix_ms),
+                "consecutive_failures": snapshot.as_ref().map(|entry| entry.consecutive_failures),
+                "waiting_usage_confirmation": gateway.router.is_waiting_usage_confirmation(&provider_name),
+                "quota": quota.get(&provider_name).cloned().unwrap_or(serde_json::Value::Null),
+            })
+        })
+        .collect::<Vec<_>>();
+    let payload = serde_json::json!({
+        "config_revision": config_revision,
+        "manual_override": gateway.router.manual_override.read().clone(),
+        "provider_runtime": provider_runtime,
+        "assignments": assignments.into_iter().map(|row| serde_json::json!({
+            "session_id": row.session_id,
+            "provider": row.provider,
+            "assigned_at_unix_ms": row.assigned_at_unix_ms,
+        })).collect::<Vec<_>>(),
+    });
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(serde_json::to_vec(&payload).unwrap_or_default());
+    format!("{:x}", hasher.finalize())
 }
 
 fn summarize_client_sessions_for_trace(sessions: &[serde_json::Value]) -> serde_json::Value {
@@ -693,6 +736,13 @@ pub(crate) fn get_status(
             &cfg,
             &refreshed.snapshot,
         );
+        let display_route_cache_scope = displayed_session_route_cache_scope(
+            &state.gateway,
+            &cfg,
+            &config_revision,
+            &providers,
+            &quota,
+        );
         phase_timings_ms.insert(
             "client_sessions_runtime_snapshot".to_string(),
             serde_json::json!(elapsed_ms_since(subphase_started_at)),
@@ -724,7 +774,7 @@ pub(crate) fn get_status(
                 let (display_provider, display_reason) = displayed_session_route(
                     &state.gateway,
                     &cfg,
-                    &config_revision,
+                    &display_route_cache_scope,
                     &codex_id,
                     preferred_provider,
                     v.confirmed_router,
@@ -1258,7 +1308,7 @@ fn confirm_router_from_live_thread_base_url(
 fn displayed_session_route(
     gateway: &crate::orchestrator::gateway::GatewayState,
     cfg: &crate::orchestrator::config::AppConfig,
-    config_revision: &str,
+    cache_scope: &str,
     codex_session_id: &str,
     preferred_provider: &str,
     verified: bool,
@@ -1272,7 +1322,7 @@ fn displayed_session_route(
     if verified {
         let now = unix_ms();
         if let Some(cached) = load_cached_displayed_session_route(
-            config_revision,
+            cache_scope,
             codex_session_id,
             preferred_provider,
             now,
@@ -1288,7 +1338,7 @@ fn displayed_session_route(
         let provider = Some(provider);
         let reason = Some(reason.to_string());
         store_displayed_session_route_cache(
-            config_revision,
+            cache_scope,
             codex_session_id,
             preferred_provider,
             provider.clone(),
@@ -1961,6 +2011,7 @@ mod tests {
         clear_removed_main_session_routes_and_assignments,
         append_backup_event_daily_stats, day_start_unix_ms_from_day_key, event_query_key,
         config_revision,
+        displayed_session_route_cache_scope,
         load_visible_last_error_events_with_cache,
         load_event_log_entries_for_display,
         main_session_ids_excluding_agents_and_reviews,
@@ -3235,7 +3286,7 @@ mod tests {
     }
 
     #[test]
-    fn displayed_session_route_reuses_recent_cached_decision_within_ttl() {
+    fn displayed_session_route_invalidates_cache_when_runtime_routing_changes() {
         clear_displayed_session_route_cache();
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = open_store_dir(tmp.path().join("data")).expect("store");
@@ -3315,11 +3366,18 @@ mod tests {
                 },
             )]))),
         };
+        let before_scope = displayed_session_route_cache_scope(
+            &state,
+            &cfg,
+            "test-config-revision-ttl-cache",
+            &state.router.snapshot(now),
+            &state.store.list_quota_snapshots(),
+        );
 
         let (before_provider, before_reason) = displayed_session_route(
             &state,
             &cfg,
-            "test-config-revision-ttl-cache",
+            &before_scope,
             "main-session",
             "p1",
             true,
@@ -3329,19 +3387,30 @@ mod tests {
         assert_eq!(before_reason.as_deref(), Some("balanced_auto"));
 
         *state.router.manual_override.write() = Some("p2".to_string());
+        let after_scope = displayed_session_route_cache_scope(
+            &state,
+            &cfg,
+            "test-config-revision-ttl-cache",
+            &state.router.snapshot(now),
+            &state.store.list_quota_snapshots(),
+        );
+        assert_ne!(
+            after_scope, before_scope,
+            "routing runtime changes must invalidate display-route cache scope"
+        );
 
         let (after_provider, after_reason) = displayed_session_route(
             &state,
             &cfg,
-            "test-config-revision-ttl-cache",
+            &after_scope,
             "main-session",
             "p1",
             true,
             None::<&LastUsedRoute>,
         );
 
-        assert_eq!(after_provider, before_provider);
-        assert_eq!(after_reason, before_reason);
+        assert_eq!(after_provider.as_deref(), Some("p2"));
+        assert_eq!(after_reason.as_deref(), Some("manual_override"));
     }
 
     #[test]
