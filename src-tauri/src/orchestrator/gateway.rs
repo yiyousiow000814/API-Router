@@ -626,6 +626,39 @@ fn upstream_invalid_request_response(code: u16, body: &str) -> Response {
     (status, Json(payload)).into_response()
 }
 
+fn cached_unsupported_model_response(
+    requested_model: Option<&str>,
+    unsupported_providers: &HashSet<String>,
+) -> Response {
+    let model = requested_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("requested model");
+    let mut providers = unsupported_providers
+        .iter()
+        .map(|provider| provider.as_str())
+        .collect::<Vec<_>>();
+    providers.sort_unstable();
+    let message = if providers.is_empty() {
+        format!("Unsupported model: {model}")
+    } else {
+        format!(
+            "Unsupported model: {model}; unsupported by providers: {}",
+            providers.join(", ")
+        )
+    };
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "error": {
+                "message": message,
+                "type": "invalid_request_error"
+            }
+        })),
+    )
+        .into_response()
+}
+
 fn is_retryable_upstream_status(code: u16) -> bool {
     matches!(code, 408 | 409 | 425 | 429) || (500..=599).contains(&code)
 }
@@ -1438,6 +1471,12 @@ async fn responses(
             {
                 provider_name = picked;
                 reason = "session_invalid_request_fallback";
+            } else if request_unsupported_providers.contains(&provider_name) {
+                invalid_request_response = Some(cached_unsupported_model_response(
+                    requested_model.as_deref(),
+                    &request_unsupported_providers,
+                ));
+                break;
             }
         }
         if reason == "no_routable_provider" {
