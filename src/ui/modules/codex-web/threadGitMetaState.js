@@ -34,6 +34,8 @@ export function applyActiveThreadGitMetaState(state, payload) {
   }
   state.activeThreadGitMetaLoading = false;
   state.activeThreadGitMetaLoaded = true;
+  state.activeThreadGitMetaError = "";
+  state.activeThreadGitMetaErrorKey = "";
   state.activeThreadGitMetaCwd = cwd;
   state.activeThreadGitMetaSource = threadId ? "thread" : "cwd";
   state.activeThreadGitMetaKey = buildActiveThreadGitMetaKey({ threadId, workspace, cwd });

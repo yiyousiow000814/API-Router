@@ -2208,6 +2208,69 @@ describe("actionBindings", () => {
     }
   });
 
+  it("does not prefetch git metadata on branch-picker hover", () => {
+    const handlers = new Map();
+    const pickerBar = {
+      addEventListener(eventName, handler) {
+        handlers.set(`composerPickerBar:${eventName}`, handler);
+      },
+      contains() {
+        return false;
+      },
+      querySelector() {
+        return { __branchHoverPrefetched: false };
+      },
+    };
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId(id) {
+        return id === "composerPickerBar" ? pickerBar : null;
+      },
+      bindClick() {},
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus() {},
+      updateMobileComposerState() {},
+      refreshActiveThreadGitMeta: vi.fn(async () => null),
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+
+    createActionBindingsModule(deps).wireActions();
+
+    expect(handlers.has("composerPickerBar:mouseover")).toBe(false);
+    expect(deps.refreshActiveThreadGitMeta).not.toHaveBeenCalled();
+  });
+
   it("closes picker menus from the picker bar when clicking a non-interactive gap", () => {
     const handlers = new Map();
     const pickerBar = {

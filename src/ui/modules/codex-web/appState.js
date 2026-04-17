@@ -238,6 +238,8 @@ export function createInitialState() {
     activeThreadUncommittedFileCount: 0,
     activeThreadGitMetaLoading: false,
     activeThreadGitMetaLoaded: false,
+    activeThreadGitMetaError: "",
+    activeThreadGitMetaErrorKey: "",
     activeThreadGitMetaKey: "",
     activeThreadGitMetaCwd: "",
     activeThreadGitMetaSource: "",

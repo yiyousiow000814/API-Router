@@ -1024,6 +1024,8 @@ export function createComposerUiModule(deps) {
     state.activeThreadIsWorktree = false;
     state.activeThreadGitMetaLoading = false;
     state.activeThreadGitMetaLoaded = false;
+    state.activeThreadGitMetaError = "";
+    state.activeThreadGitMetaErrorKey = "";
     state.activeThreadGitMetaKey = "";
     state.activeThreadGitMetaCwd = "";
     state.activeThreadGitMetaSource = "";
@@ -1049,6 +1051,7 @@ export function createComposerUiModule(deps) {
     if (options.force === true) return true;
     if (state.activeThreadGitMetaLoading === true && state.activeThreadGitMetaKey === key) return false;
     if (state.activeThreadGitMetaLoaded === true && state.activeThreadGitMetaKey === key) return false;
+    if (String(state.activeThreadGitMetaErrorKey || "").trim() === key) return false;
     return true;
   }
 
@@ -1083,6 +1086,8 @@ export function createComposerUiModule(deps) {
     const reqSeq = (Number(state.activeThreadGitMetaReqSeq || 0) || 0) + 1;
     state.activeThreadGitMetaReqSeq = reqSeq;
     state.activeThreadGitMetaLoading = true;
+    state.activeThreadGitMetaError = "";
+    state.activeThreadGitMetaErrorKey = "";
     state.activeThreadGitMetaKey = key;
     try {
       const payload = useThread
@@ -1109,14 +1114,10 @@ export function createComposerUiModule(deps) {
         } catch {}
       }
       if (state.activeThreadGitMetaReqSeq !== reqSeq) return null;
-      state.activeThreadCurrentBranch = "";
-      state.activeThreadBranchOptions = [];
-      state.activeThreadUncommittedFileCount = 0;
       state.activeThreadGitMetaLoading = false;
-      state.activeThreadGitMetaLoaded = true;
-      state.activeThreadGitMetaKey = key;
-      state.activeThreadGitMetaCwd = "";
-      state.activeThreadGitMetaSource = "";
+      state.activeThreadGitMetaLoaded = false;
+      state.activeThreadGitMetaError = "git metadata unavailable";
+      state.activeThreadGitMetaErrorKey = key;
       updateMobileComposerState();
       return null;
     }

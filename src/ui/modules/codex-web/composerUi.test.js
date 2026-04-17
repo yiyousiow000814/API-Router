@@ -3852,10 +3852,13 @@ describe("composerUi", () => {
       composerPermissionMenuOpen: false,
       activeThreadGitMetaLoading: false,
       activeThreadGitMetaLoaded: true,
+      activeThreadGitMetaError: "",
+      activeThreadGitMetaErrorKey: "",
       activeThreadGitMetaKey: "thread:windows:thread-1",
       activeThreadCurrentBranch: "main",
       activeThreadBranchOptions: [{ name: "main" }],
       activeThreadIsWorktree: true,
+      activeThreadUncommittedFileCount: 2,
       permissionPresetByWorkspace: {
         windows: "/permission auto",
         wsl2: "/permission auto",
@@ -3885,11 +3888,179 @@ describe("composerUi", () => {
       windowRef: { innerHeight: 900 },
     });
 
-    await module.refreshActiveThreadGitMeta();
+    await module.refreshActiveThreadGitMeta({ force: true });
 
     expect(state.activeThreadCurrentBranch).toBe("");
     expect(state.activeThreadBranchOptions).toEqual([]);
     expect(state.activeThreadIsWorktree).toBe(false);
+    expect(state.activeThreadUncommittedFileCount).toBe(0);
     expect(state.activeThreadGitMetaLoaded).toBe(false);
+    expect(state.activeThreadGitMetaError).toBe("");
+    expect(state.activeThreadGitMetaErrorKey).toBe("");
+  });
+
+  it("preserves the last good git metadata when refresh fails", async () => {
+    const nodes = new Map();
+    for (const id of [
+      "mobileComposerRow",
+      "mobilePromptWrap",
+      "mobilePromptInput",
+      "mobileSendBtn",
+      "composerActionMenuBtn",
+      "composerActionMenu",
+      "queuedTurnCard",
+      "queuedTurnCardTitle",
+      "queuedTurnCardCount",
+      "queuedTurnToggleBtn",
+      "queuedTurnCardStatus",
+      "queuedTurnCardList",
+      "queuedTurnCardSummary",
+      "composerPickerBar",
+      "composerBranchPickerBtn",
+      "composerBranchPickerMenu",
+      "composerPermissionPickerBtn",
+      "composerPermissionPickerMenu",
+    ]) {
+      nodes.set(id, makeNode());
+    }
+    nodes.get("mobilePromptInput").value = "";
+    nodes.get("mobilePromptInput").scrollHeight = 44;
+    const state = {
+      activeMainTab: "chat",
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      workspaceTarget: "windows",
+      startCwdByWorkspace: { windows: "C:\\repo", wsl2: "" },
+      activeThreadPendingTurnRunning: false,
+      activeThreadQueuedTurns: [],
+      composerActionMenuOpen: false,
+      composerBranchMenuOpen: false,
+      composerPermissionMenuOpen: false,
+      activeThreadGitMetaLoading: false,
+      activeThreadGitMetaLoaded: true,
+      activeThreadGitMetaError: "",
+      activeThreadGitMetaErrorKey: "",
+      activeThreadGitMetaKey: "thread:windows:thread-1",
+      activeThreadCurrentBranch: "main",
+      activeThreadBranchOptions: [{ name: "main" }],
+      activeThreadIsWorktree: true,
+      activeThreadUncommittedFileCount: 2,
+      permissionPresetByWorkspace: {
+        windows: "/permission auto",
+        wsl2: "/permission auto",
+      },
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || null;
+      },
+      api() {
+        return Promise.reject(new Error("boom"));
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() {
+        return { heightPx: 44, overflowY: "hidden" };
+      },
+      renderComposerContextLeftInNode() {},
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; } },
+      windowRef: { innerHeight: 900 },
+    });
+
+    await module.refreshActiveThreadGitMeta({ force: true });
+
+    expect(state.activeThreadCurrentBranch).toBe("main");
+    expect(state.activeThreadBranchOptions).toEqual([{ name: "main" }]);
+    expect(state.activeThreadIsWorktree).toBe(true);
+    expect(state.activeThreadUncommittedFileCount).toBe(2);
+    expect(state.activeThreadGitMetaLoaded).toBe(false);
+    expect(state.activeThreadGitMetaError).toBe("git metadata unavailable");
+    expect(state.activeThreadGitMetaErrorKey).toBe("thread:windows:thread-1");
+  });
+
+  it("does not auto-retry git metadata after a same-key failure", async () => {
+    const nodes = new Map();
+    for (const id of [
+      "mobilePromptWrap",
+      "mobilePromptInput",
+      "mobileSendBtn",
+      "composerActionMenuBtn",
+      "composerActionMenu",
+      "queuedTurnCard",
+      "queuedTurnCardTitle",
+      "queuedTurnCardCount",
+      "queuedTurnToggleBtn",
+      "queuedTurnCardStatus",
+      "queuedTurnCardList",
+      "queuedTurnCardSummary",
+      "composerPickerBar",
+      "composerBranchPickerBtn",
+      "composerBranchPickerMenu",
+      "composerPermissionPickerBtn",
+      "composerPermissionPickerMenu",
+    ]) {
+      nodes.set(id, makeNode());
+    }
+    nodes.get("mobilePromptInput").value = "";
+    nodes.get("mobilePromptInput").scrollHeight = 44;
+    let apiCalls = 0;
+    const state = {
+      activeMainTab: "chat",
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      workspaceTarget: "windows",
+      startCwdByWorkspace: { windows: "C:\\repo", wsl2: "" },
+      activeThreadPendingTurnRunning: false,
+      activeThreadQueuedTurns: [],
+      composerActionMenuOpen: false,
+      composerBranchMenuOpen: false,
+      composerPermissionMenuOpen: false,
+      activeThreadGitMetaLoading: false,
+      activeThreadGitMetaLoaded: false,
+      activeThreadGitMetaError: "git metadata unavailable",
+      activeThreadGitMetaErrorKey: "thread:windows:thread-1",
+      activeThreadGitMetaKey: "thread:windows:thread-1",
+      activeThreadCurrentBranch: "main",
+      activeThreadBranchOptions: [{ name: "main" }],
+      permissionPresetByWorkspace: {
+        windows: "/permission auto",
+        wsl2: "/permission auto",
+      },
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || null;
+      },
+      api() {
+        apiCalls += 1;
+        return Promise.reject(new Error("boom"));
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() {
+        return { heightPx: 44, overflowY: "hidden" };
+      },
+      renderComposerContextLeftInNode() {},
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; } },
+      windowRef: { innerHeight: 900 },
+    });
+
+    await module.refreshActiveThreadGitMeta();
+
+    expect(apiCalls).toBe(0);
   });
 });

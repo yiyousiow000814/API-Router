@@ -1,5 +1,5 @@
 use super::web_codex_home::{parse_workspace_target, WorkspaceTarget};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -28,15 +28,6 @@ pub(super) struct GitBranchOption {
     pub(super) name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) pr_number: Option<u64>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GithubPullRequestSummary {
-    number: u64,
-    head_ref_name: String,
-    #[serde(default)]
-    base_ref_name: String,
 }
 
 fn normalize_cache_key(workspace: Option<&str>, cwd: &str) -> Option<String> {
@@ -143,191 +134,23 @@ pub(super) async fn run_git_command_for_workspace(
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-async fn run_gh_command_for_workspace(
-    workspace: Option<&str>,
-    cwd: &str,
-    args: &[&str],
-) -> Result<String, String> {
-    let target = workspace.and_then(parse_workspace_target);
-    let mut command = if matches!(target, Some(WorkspaceTarget::Wsl2)) {
-        let mut script = format!("cd {} && gh", shell_quote(cwd));
-        for arg in args {
-            script.push(' ');
-            script.push_str(&shell_quote(arg));
-        }
-        let mut cmd = tokio::process::Command::new("wsl.exe");
-        cmd.arg("-e").arg("bash").arg("-lc").arg(script);
-        cmd
-    } else {
-        let mut cmd = tokio::process::Command::new("gh");
-        cmd.current_dir(cwd);
-        for arg in args {
-            cmd.arg(arg);
-        }
-        cmd
-    };
-    command.stdout(std::process::Stdio::piped());
-    command.stderr(std::process::Stdio::piped());
-    #[cfg(target_os = "windows")]
-    command.creation_flags(0x08000000);
-    let output = tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
-        .await
-        .map_err(|_| "gh command timed out".to_string())?
-        .map_err(|err| err.to_string())?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let detail = if !stderr.is_empty() { stderr } else { stdout };
-        return Err(if detail.is_empty() {
-            "gh command failed".to_string()
-        } else {
-            detail
-        });
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-fn normalize_origin_head_branch(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if let Some(stripped) = trimmed.strip_prefix("refs/remotes/origin/") {
-        let branch = stripped.trim();
-        return (!branch.is_empty()).then(|| branch.to_string());
-    }
-    if let Some(stripped) = trimmed.strip_prefix("origin/") {
-        let branch = stripped.trim();
-        return (!branch.is_empty()).then(|| branch.to_string());
-    }
-    Some(trimmed.to_string())
-}
-
-fn parse_open_pull_requests(payload: &str) -> Result<Vec<GithubPullRequestSummary>, String> {
-    serde_json::from_str::<Vec<GithubPullRequestSummary>>(payload).map_err(|err| err.to_string())
-}
-
-fn preferred_default_branch_name(
-    explicit_default_branch: Option<&str>,
-    open_pull_requests: &[GithubPullRequestSummary],
-) -> Option<String> {
-    let explicit = explicit_default_branch
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    if explicit.is_some() {
-        return explicit;
-    }
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    for pull_request in open_pull_requests {
-        let base_branch = pull_request.base_ref_name.trim();
-        if base_branch.is_empty() {
-            continue;
-        }
-        *counts.entry(base_branch.to_string()).or_insert(0) += 1;
-    }
-    counts
-        .into_iter()
-        .max_by(|(left_branch, left_count), (right_branch, right_count)| {
-            left_count
-                .cmp(right_count)
-                .then_with(|| right_branch.cmp(left_branch))
-        })
-        .map(|(branch, _)| branch)
-}
-
-fn build_visible_branch_options(
-    current_branch: &str,
-    default_branch: Option<&str>,
-    open_pull_requests: &[GithubPullRequestSummary],
-) -> Vec<GitBranchOption> {
+fn build_visible_branch_options(current_branch: &str) -> Vec<GitBranchOption> {
     let current_branch = current_branch.trim();
-    let default_branch = preferred_default_branch_name(default_branch, open_pull_requests);
-    let pr_numbers_by_branch: HashMap<String, u64> = open_pull_requests
-        .iter()
-        .filter_map(|pull_request| {
-            let branch = pull_request.head_ref_name.trim();
-            (!branch.is_empty()).then(|| (branch.to_string(), pull_request.number))
-        })
-        .collect();
-    let mut branch_names = Vec::new();
-    if let Some(default_branch) = default_branch.as_deref() {
-        let default_branch = default_branch.trim();
-        if !default_branch.is_empty() {
-            branch_names.push(default_branch.to_string());
-        }
+    if current_branch.is_empty() {
+        return Vec::new();
     }
-    if !current_branch.is_empty() {
-        branch_names.push(current_branch.to_string());
-    }
-    let mut pull_request_branch_names: Vec<String> = pr_numbers_by_branch.keys().cloned().collect();
-    pull_request_branch_names.sort();
-    branch_names.extend(pull_request_branch_names);
-
-    let mut seen = std::collections::HashSet::new();
-    branch_names
-        .into_iter()
-        .filter(|branch| seen.insert(branch.to_string()))
-        .map(|branch| GitBranchOption {
-            pr_number: pr_numbers_by_branch.get(&branch).copied(),
-            name: branch,
-        })
-        .collect()
-}
-
-async fn repo_default_branch_for_workspace(workspace: Option<&str>, cwd: &str) -> Option<String> {
-    run_git_command_for_workspace(
-        workspace,
-        cwd,
-        &[
-            "symbolic-ref",
-            "--quiet",
-            "--short",
-            "refs/remotes/origin/HEAD",
-        ],
-    )
-    .await
-    .ok()
-    .and_then(|output| normalize_origin_head_branch(&output))
-}
-
-async fn open_pull_requests_for_workspace(
-    workspace: Option<&str>,
-    cwd: &str,
-) -> Result<Vec<GithubPullRequestSummary>, String> {
-    let output = run_gh_command_for_workspace(
-        workspace,
-        cwd,
-        &[
-            "pr",
-            "list",
-            "--state",
-            "open",
-            "--limit",
-            "100",
-            "--json",
-            "number,headRefName,baseRefName",
-        ],
-    )
-    .await?;
-    parse_open_pull_requests(&output)
+    vec![GitBranchOption {
+        name: current_branch.to_string(),
+        pr_number: None,
+    }]
 }
 
 pub(super) async fn visible_branch_options_for_workspace_with_current_branch(
-    workspace: Option<&str>,
-    cwd: &str,
+    _workspace: Option<&str>,
+    _cwd: &str,
     current_branch: &str,
 ) -> Result<Vec<GitBranchOption>, String> {
-    let (default_branch, open_pull_requests_result) = tokio::join!(
-        repo_default_branch_for_workspace(workspace, cwd),
-        open_pull_requests_for_workspace(workspace, cwd)
-    );
-    let open_pull_requests = open_pull_requests_result.unwrap_or_default();
-    Ok(build_visible_branch_options(
-        current_branch,
-        default_branch.as_deref(),
-        &open_pull_requests,
-    ))
+    Ok(build_visible_branch_options(current_branch))
 }
 
 const WORKTREE_DETECTION_GIT_ARGS: &[&str] = &[
@@ -492,132 +315,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalize_origin_head_branch_removes_origin_prefix() {
-        assert_eq!(
-            normalize_origin_head_branch("origin/main"),
-            Some("main".to_string())
-        );
-        assert_eq!(
-            normalize_origin_head_branch("refs/remotes/origin/release/web"),
-            Some("release/web".to_string())
-        );
-        assert_eq!(normalize_origin_head_branch("   "), None);
-    }
-
-    #[test]
-    fn parse_open_pull_requests_reads_head_branch_and_number() {
-        let pull_requests = parse_open_pull_requests(
-            r#"[{"number":150,"headRefName":"chore/web-codex-terminal-communication","baseRefName":"main"},{"number":168,"headRefName":"docs/repo-refactor-blueprint","baseRefName":"main"}]"#,
-        )
-        .expect("pull request payload");
-
-        assert_eq!(pull_requests.len(), 2);
-        assert_eq!(pull_requests[0].number, 150);
-        assert_eq!(
-            pull_requests[1].head_ref_name,
-            "docs/repo-refactor-blueprint".to_string()
-        );
-    }
-
-    #[test]
-    fn build_visible_branch_options_keeps_default_branch_first() {
-        let pull_requests = parse_open_pull_requests(
-            r#"[{"number":168,"headRefName":"docs/repo-refactor-blueprint","baseRefName":"main"},{"number":150,"headRefName":"chore/web-codex-terminal-communication","baseRefName":"main"}]"#,
-        )
-        .expect("pull request payload");
-
-        let visible = build_visible_branch_options(
-            "docs/repo-refactor-blueprint",
-            Some("main"),
-            &pull_requests,
-        );
-
-        assert_eq!(
-            visible,
-            vec![
-                GitBranchOption {
-                    name: "main".to_string(),
-                    pr_number: None,
-                },
-                GitBranchOption {
-                    name: "docs/repo-refactor-blueprint".to_string(),
-                    pr_number: Some(168),
-                },
-                GitBranchOption {
-                    name: "chore/web-codex-terminal-communication".to_string(),
-                    pr_number: Some(150),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn build_visible_branch_options_preserves_pr_number_for_current_branch() {
-        let pull_requests = parse_open_pull_requests(
-            r#"[{"number":196,"headRefName":"feat/codex-web-branch-picker","baseRefName":"main"}]"#,
-        )
-        .expect("pull request payload");
-
-        let visible = build_visible_branch_options(
-            "feat/codex-web-branch-picker",
-            Some("main"),
-            &pull_requests,
-        );
-
-        assert_eq!(
-            visible,
-            vec![
-                GitBranchOption {
-                    name: "main".to_string(),
-                    pr_number: None,
-                },
-                GitBranchOption {
-                    name: "feat/codex-web-branch-picker".to_string(),
-                    pr_number: Some(196),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn build_visible_branch_options_uses_open_pr_base_when_origin_head_is_missing() {
-        let pull_requests = parse_open_pull_requests(
-            r#"[{"number":168,"headRefName":"docs/repo-refactor-blueprint","baseRefName":"main"},{"number":150,"headRefName":"chore/web-codex-terminal-communication","baseRefName":"main"}]"#,
-        )
-        .expect("pull request payload");
-
-        let visible = build_visible_branch_options("", None, &pull_requests);
-
-        assert_eq!(
-            visible,
-            vec![
-                GitBranchOption {
-                    name: "main".to_string(),
-                    pr_number: None,
-                },
-                GitBranchOption {
-                    name: "chore/web-codex-terminal-communication".to_string(),
-                    pr_number: Some(150),
-                },
-                GitBranchOption {
-                    name: "docs/repo-refactor-blueprint".to_string(),
-                    pr_number: Some(168),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn build_visible_branch_options_deduplicates_current_and_default_branch() {
-        let visible = build_visible_branch_options("main", Some("main"), &[]);
-
+    fn build_visible_branch_options_keeps_only_current_branch() {
+        let visible = build_visible_branch_options("feat/codex-web-branch-picker");
         assert_eq!(
             visible,
             vec![GitBranchOption {
-                name: "main".to_string(),
+                name: "feat/codex-web-branch-picker".to_string(),
                 pr_number: None,
             }]
         );
+    }
+
+    #[test]
+    fn build_visible_branch_options_omits_empty_current_branch() {
+        assert!(build_visible_branch_options("").is_empty());
     }
 
     #[test]

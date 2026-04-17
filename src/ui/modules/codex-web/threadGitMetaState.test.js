@@ -22,6 +22,8 @@ describe("threadGitMetaState", () => {
       activeThreadBranchOptions: [],
       activeThreadGitMetaLoading: true,
       activeThreadGitMetaLoaded: false,
+      activeThreadGitMetaError: "git metadata unavailable",
+      activeThreadGitMetaErrorKey: "thread:windows:thread-1",
       activeThreadGitMetaCwd: "",
       activeThreadGitMetaSource: "",
       activeThreadGitMetaKey: "",
@@ -46,6 +48,8 @@ describe("threadGitMetaState", () => {
     ]);
     expect(state.activeThreadGitMetaLoading).toBe(false);
     expect(state.activeThreadGitMetaLoaded).toBe(true);
+    expect(state.activeThreadGitMetaError).toBe("");
+    expect(state.activeThreadGitMetaErrorKey).toBe("");
     expect(state.activeThreadGitMetaCwd).toBe("C:\\repo");
     expect(state.activeThreadGitMetaSource).toBe("thread");
     expect(state.activeThreadGitMetaKey).toBe("thread:windows:thread-1");
@@ -58,4 +62,3 @@ describe("threadGitMetaState", () => {
     ).toBe("cwd:wsl2:/repo/demo");
   });
 });
-

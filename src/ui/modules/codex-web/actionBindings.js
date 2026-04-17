@@ -37,7 +37,6 @@ export function createActionBindingsModule(deps) {
     bindInput,
     setStatus,
     updateMobileComposerState,
-    refreshActiveThreadGitMeta,
     updateNotificationState,
     armSyntheticClickSuppression,
     wireBlurBackdropShield,
@@ -721,13 +720,6 @@ export function createActionBindingsModule(deps) {
       const pickerBar = byId("composerPickerBar");
       if (pickerBar && !pickerBar.__wiredComposerPickerActions) {
         pickerBar.__wiredComposerPickerActions = true;
-        pickerBar.addEventListener("mouseover", () => {
-          const branchToggle = pickerBar.querySelector("[data-composer-picker-toggle='branch']");
-          if (branchToggle && !branchToggle.__branchHoverPrefetched) {
-            branchToggle.__branchHoverPrefetched = true;
-            refreshActiveThreadGitMeta().catch(() => null);
-          }
-        });
         pickerBar.addEventListener("click", (event) => {
           if (shouldSuppressSyntheticClick(event)) return;
           const target = event?.target;
