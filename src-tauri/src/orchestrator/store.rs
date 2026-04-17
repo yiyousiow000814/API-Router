@@ -359,6 +359,7 @@ define_event_codes! {
     TEST_PROFILE_BULK_EVENT => ("info", "test_profile.bulk_event"),
     TEST_PROFILE_MOCK_SEEDED => ("info", "test_profile.mock_seeded"),
     UPSTREAM_HTTP_ERROR => ("error", "upstream.http_error"),
+    UPSTREAM_INVALID_REQUEST => ("warning", "upstream.invalid_request"),
     UPSTREAM_REQUEST_ERROR => ("error", "upstream.request_error"),
     USAGE_REFRESH_FAILED => ("error", "usage.refresh_failed"),
     USAGE_REFRESH_FORWARDED => ("info", "usage.refresh_forwarded"),

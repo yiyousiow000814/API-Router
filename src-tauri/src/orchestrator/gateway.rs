@@ -116,6 +116,112 @@ pub struct ClientSessionRuntime {
     pub confirmed_router: bool,
 }
 
+const SESSION_UNSUPPORTED_MODEL_CACHE_TTL_MS: u64 = 5 * 60 * 1000;
+
+#[derive(Clone, Debug)]
+struct SessionUnsupportedModelCacheEntry {
+    unsupported_providers: HashSet<String>,
+    updated_at_unix_ms: u64,
+}
+
+static SESSION_UNSUPPORTED_MODEL_CACHE: OnceLock<
+    Mutex<HashMap<String, SessionUnsupportedModelCacheEntry>>,
+> = OnceLock::new();
+
+fn session_unsupported_model_cache(
+) -> &'static Mutex<HashMap<String, SessionUnsupportedModelCacheEntry>> {
+    SESSION_UNSUPPORTED_MODEL_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn normalize_requested_model_key(requested_model: Option<&str>) -> Option<String> {
+    requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(|model| model.to_ascii_lowercase())
+}
+
+fn session_unsupported_model_cache_key(
+    session_key: &str,
+    requested_model: Option<&str>,
+) -> Option<String> {
+    let model_key = normalize_requested_model_key(requested_model)?;
+    Some(format!(
+        "{}|{}",
+        session_key.trim().to_ascii_lowercase(),
+        model_key
+    ))
+}
+
+fn load_session_unsupported_model_providers(
+    session_key: &str,
+    requested_model: Option<&str>,
+    now_ms: u64,
+) -> HashSet<String> {
+    let Some(cache_key) = session_unsupported_model_cache_key(session_key, requested_model) else {
+        return HashSet::new();
+    };
+    let mut cache = session_unsupported_model_cache().lock();
+    cache.retain(|_, entry| {
+        now_ms.saturating_sub(entry.updated_at_unix_ms) < SESSION_UNSUPPORTED_MODEL_CACHE_TTL_MS
+    });
+    cache
+        .get(&cache_key)
+        .map(|entry| entry.unsupported_providers.clone())
+        .unwrap_or_default()
+}
+
+fn remember_session_unsupported_model_provider(
+    session_key: &str,
+    requested_model: Option<&str>,
+    provider_name: &str,
+    now_ms: u64,
+) {
+    let Some(cache_key) = session_unsupported_model_cache_key(session_key, requested_model) else {
+        return;
+    };
+    let mut cache = session_unsupported_model_cache().lock();
+    cache.retain(|_, entry| {
+        now_ms.saturating_sub(entry.updated_at_unix_ms) < SESSION_UNSUPPORTED_MODEL_CACHE_TTL_MS
+    });
+    let entry = cache
+        .entry(cache_key)
+        .or_insert_with(|| SessionUnsupportedModelCacheEntry {
+            unsupported_providers: HashSet::new(),
+            updated_at_unix_ms: now_ms,
+        });
+    entry
+        .unsupported_providers
+        .insert(provider_name.trim().to_string());
+    entry.updated_at_unix_ms = now_ms;
+}
+
+fn clear_session_unsupported_model_provider(
+    session_key: &str,
+    requested_model: Option<&str>,
+    provider_name: &str,
+    now_ms: u64,
+) {
+    let Some(cache_key) = session_unsupported_model_cache_key(session_key, requested_model) else {
+        return;
+    };
+    let mut cache = session_unsupported_model_cache().lock();
+    cache.retain(|_, entry| {
+        now_ms.saturating_sub(entry.updated_at_unix_ms) < SESSION_UNSUPPORTED_MODEL_CACHE_TTL_MS
+    });
+    let remove_model_entry = if let Some(entry) = cache.get_mut(&cache_key) {
+        let was_removed = entry.unsupported_providers.remove(provider_name.trim());
+        if was_removed {
+            entry.updated_at_unix_ms = now_ms;
+        }
+        entry.unsupported_providers.is_empty()
+    } else {
+        false
+    };
+    if remove_model_entry {
+        cache.remove(&cache_key);
+    }
+}
+
 fn trace_client_session_request_update(
     session_key: &str,
     peer: SocketAddr,
@@ -465,6 +571,94 @@ fn upstream_error_code_from_body(body: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn upstream_error_type_from_body(body: &str) -> Option<String> {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|json| {
+            json.get("error")
+                .and_then(|value| value.get("type"))
+                .and_then(Value::as_str)
+                .map(|value| value.trim().to_ascii_lowercase())
+        })
+        .filter(|value| !value.is_empty())
+}
+
+fn upstream_error_message_from_body(body: &str) -> Option<String> {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|json| {
+            json.get("error")
+                .and_then(|value| value.get("message"))
+                .and_then(Value::as_str)
+                .map(|value| value.trim().to_string())
+        })
+        .filter(|value| !value.is_empty())
+}
+
+fn is_unsupported_model_invalid_request(code: u16, body: &str) -> bool {
+    if code != 400 {
+        return false;
+    }
+    if upstream_error_type_from_body(body).as_deref() != Some("invalid_request_error") {
+        return false;
+    }
+    let Some(message) = upstream_error_message_from_body(body) else {
+        return false;
+    };
+    let message_lc = message.to_ascii_lowercase();
+    message_lc.contains("unsupported model")
+        || (message_lc.contains("model")
+            && (message_lc.contains("not found")
+                || message_lc.contains("does not exist")
+                || message_lc.contains("unknown")))
+}
+
+fn upstream_invalid_request_response(code: u16, body: &str) -> Response {
+    let status = StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_REQUEST);
+    let payload = serde_json::from_str::<Value>(body).unwrap_or_else(|_| {
+        json!({
+            "error": {
+                "message": body,
+                "type": "invalid_request_error"
+            }
+        })
+    });
+    (status, Json(payload)).into_response()
+}
+
+fn cached_unsupported_model_response(
+    requested_model: Option<&str>,
+    unsupported_providers: &HashSet<String>,
+) -> Response {
+    let model = requested_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("requested model");
+    let mut providers = unsupported_providers
+        .iter()
+        .map(|provider| provider.as_str())
+        .collect::<Vec<_>>();
+    providers.sort_unstable();
+    let message = if providers.is_empty() {
+        format!("Unsupported model: {model}")
+    } else {
+        format!(
+            "Unsupported model: {model}; unsupported by providers: {}",
+            providers.join(", ")
+        )
+    };
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "error": {
+                "message": message,
+                "type": "invalid_request_error"
+            }
+        })),
+    )
+        .into_response()
+}
+
 fn is_retryable_upstream_status(code: u16) -> bool {
     matches!(code, 408 | 409 | 425 | 429) || (500..=599).contains(&code)
 }
@@ -588,8 +782,8 @@ async fn post_non_stream_with_http_retry(
 #[cfg(test)]
 mod upstream_retry_tests {
     use super::{
-        is_retryable_upstream_status, should_fallback_stream_response_to_non_stream,
-        upstream_error_code_from_body,
+        is_retryable_upstream_status, is_unsupported_model_invalid_request,
+        should_fallback_stream_response_to_non_stream, upstream_error_code_from_body,
     };
     use crate::orchestrator::quota::is_quota_refresh_config_gap;
 
@@ -608,6 +802,19 @@ mod upstream_retry_tests {
             Some("token_invalidated")
         );
         assert!(should_fallback_stream_response_to_non_stream(401, body));
+    }
+
+    #[test]
+    fn unsupported_model_invalid_request_is_classified_as_session_scoped() {
+        let body = r#"{"error":{"message":"Unsupported model: gpt-5.4-mini","type":"invalid_request_error"}}"#;
+        assert!(is_unsupported_model_invalid_request(400, body));
+        assert!(!is_unsupported_model_invalid_request(500, body));
+    }
+
+    #[test]
+    fn unrelated_invalid_request_does_not_match_unsupported_model_classifier() {
+        let body = r#"{"error":{"message":"Unsupported parameter: previous_response_id","type":"invalid_request_error"}}"#;
+        assert!(!is_unsupported_model_invalid_request(400, body));
     }
 
     #[test]
@@ -1218,10 +1425,16 @@ async fn responses(
     // Try providers in order: chosen, then fallbacks.
     let mut tried = Vec::new();
     let mut last_err = String::new();
+    let mut invalid_request_response: Option<Response> = None;
     let mut usage_refreshed_after_first_failure = false;
 
     let mut session_messages: Option<Vec<Value>> = None;
     for _ in 0..cfg.providers.len().max(1) {
+        let request_unsupported_providers = load_session_unsupported_model_providers(
+            &session_key,
+            requested_model.as_deref(),
+            unix_ms(),
+        );
         let is_first_attempt = tried.is_empty();
         let preferred = cfg
             .routing
@@ -1230,7 +1443,42 @@ async fn responses(
             .filter(|p| cfg.providers.contains_key(*p))
             .map(|s| s.as_str())
             .unwrap_or(cfg.routing.preferred_provider.as_str());
-        let (provider_name, reason) = decide_provider(&st, &cfg, preferred, &session_key);
+        let (mut provider_name, mut reason) = decide_provider(&st, &cfg, preferred, &session_key);
+        if tried.contains(&provider_name) || request_unsupported_providers.contains(&provider_name)
+        {
+            let quota_snapshots = st.store.list_quota_snapshots();
+            let clear_usage_confirmation_requirement = true;
+            let picked = select_fallback_provider(&cfg, preferred, |name| {
+                !tried.iter().any(|tried_name| tried_name == name)
+                    && !request_unsupported_providers.contains(name)
+                    && provider_is_routable_for_selection(
+                        &st,
+                        &cfg,
+                        &quota_snapshots,
+                        name,
+                        clear_usage_confirmation_requirement,
+                    )
+            });
+            if !tried.iter().any(|tried_name| tried_name == &picked)
+                && !request_unsupported_providers.contains(&picked)
+                && provider_is_routable_for_selection(
+                    &st,
+                    &cfg,
+                    &quota_snapshots,
+                    &picked,
+                    clear_usage_confirmation_requirement,
+                )
+            {
+                provider_name = picked;
+                reason = "session_invalid_request_fallback";
+            } else if request_unsupported_providers.contains(&provider_name) {
+                invalid_request_response = Some(cached_unsupported_model_response(
+                    requested_model.as_deref(),
+                    &request_unsupported_providers,
+                ));
+                break;
+            }
+        }
         if reason == "no_routable_provider" {
             last_err = format!(
                 "no routable providers available; preferred={preferred}; tried={}",
@@ -1372,7 +1620,14 @@ async fn responses(
                                         unix_ms: unix_ms(),
                                     },
                                 );
-                                st.router.mark_success(&provider_name, unix_ms());
+                                let now_ms = unix_ms();
+                                st.router.mark_success(&provider_name, now_ms);
+                                clear_session_unsupported_model_provider(
+                                    &session_key,
+                                    requested_model.as_deref(),
+                                    &provider_name,
+                                    now_ms,
+                                );
                                 if should_log_routing_path_event(
                                     prev.as_ref(),
                                     &provider_name,
@@ -1468,7 +1723,14 @@ async fn responses(
                                     unix_ms: unix_ms(),
                                 },
                             );
-                            st.router.mark_success(&provider_name, unix_ms());
+                            let now_ms = unix_ms();
+                            st.router.mark_success(&provider_name, now_ms);
+                            clear_session_unsupported_model_provider(
+                                &session_key,
+                                requested_model.as_deref(),
+                                &provider_name,
+                                now_ms,
+                            );
                             if should_log_routing_path_event(
                                 prev.as_ref(),
                                 &provider_name,
@@ -1594,6 +1856,27 @@ async fn responses(
                             last_err = format!(
                                 "upstream {provider_name} returned {code} (responses stream): {txt}"
                             );
+                            if is_unsupported_model_invalid_request(code, &txt) {
+                                st.store.events().emit(
+                                    &provider_name,
+                                    crate::orchestrator::store::EventCode::UPSTREAM_INVALID_REQUEST,
+                                    &last_err,
+                                    json!({
+                                        "http_status": code,
+                                        "endpoint": "/v1/responses",
+                                        "stream": true
+                                    }),
+                                );
+                                remember_session_unsupported_model_provider(
+                                    &session_key,
+                                    requested_model.as_deref(),
+                                    &provider_name,
+                                    unix_ms(),
+                                );
+                                invalid_request_response =
+                                    Some(upstream_invalid_request_response(code, &txt));
+                                break;
+                            }
                             st.router
                                 .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
                             st.store.events().emit(
@@ -1748,7 +2031,14 @@ async fn responses(
                             unix_ms: unix_ms(),
                         },
                     );
-                    st.router.mark_success(&provider_name, unix_ms());
+                    let now_ms = unix_ms();
+                    st.router.mark_success(&provider_name, now_ms);
+                    clear_session_unsupported_model_provider(
+                        &session_key,
+                        requested_model.as_deref(),
+                        &provider_name,
+                        now_ms,
+                    );
 
                     // Keep the upstream response object (and id) so the client can continue the chain.
                     let response_id = upstream_json
@@ -1858,6 +2148,27 @@ async fn responses(
                         continue;
                     }
                     last_err = format!("upstream {provider_name} returned {code}: {msg}");
+                    if is_unsupported_model_invalid_request(code, &msg) {
+                        st.store.events().emit(
+                            &provider_name,
+                            crate::orchestrator::store::EventCode::UPSTREAM_INVALID_REQUEST,
+                            &last_err,
+                            json!({
+                                "http_status": code,
+                                "endpoint": "/v1/responses",
+                                "stream": false
+                            }),
+                        );
+                        remember_session_unsupported_model_provider(
+                            &session_key,
+                            requested_model.as_deref(),
+                            &provider_name,
+                            unix_ms(),
+                        );
+                        invalid_request_response =
+                            Some(upstream_invalid_request_response(code, &msg));
+                        break;
+                    }
                     st.router
                         .mark_failure(&provider_name, &cfg, &last_err, unix_ms());
                     st.store.record_failure(&provider_name);
@@ -1896,6 +2207,10 @@ async fn responses(
                 }
             }
         }
+    }
+
+    if let Some(response) = invalid_request_response {
+        return response;
     }
 
     (
