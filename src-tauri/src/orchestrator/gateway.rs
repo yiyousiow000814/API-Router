@@ -29,7 +29,7 @@ use super::quota::is_quota_refresh_config_gap;
 use super::router::{provider_iteration_order, select_fallback_provider, RouterState};
 use super::secrets::SecretStore;
 use super::store::{extract_response_model_option, unix_ms, Store};
-use super::upstream::UpstreamClient;
+use super::upstream::{UpstreamClient, RESPONSES_ENDPOINT};
 use crate::constants::GATEWAY_MODEL_PROVIDER_ID;
 use crate::platform::windows_terminal;
 use parking_lot::Mutex;
@@ -728,7 +728,7 @@ async fn post_non_stream_with_http_retry(
             .upstream
             .post_json(
                 provider,
-                "/v1/responses",
+                RESPONSES_ENDPOINT,
                 payload,
                 api_key,
                 client_auth,
@@ -1704,7 +1704,7 @@ async fn responses(
                         .upstream
                         .post_sse(
                             &p,
-                            "/v1/responses",
+                            RESPONSES_ENDPOINT,
                             &body_for_provider,
                             api_key.as_deref(),
                             client_auth,
@@ -1841,7 +1841,7 @@ async fn responses(
                                     "streaming failed; retrying once with non-stream responses",
                                     json!({
                                         "http_status": code,
-                                        "endpoint": "/v1/responses",
+                                        "endpoint": RESPONSES_ENDPOINT,
                                         "stream": true
                                     }),
                                 );
@@ -1863,7 +1863,7 @@ async fn responses(
                                     &last_err,
                                     json!({
                                         "http_status": code,
-                                        "endpoint": "/v1/responses",
+                                        "endpoint": RESPONSES_ENDPOINT,
                                         "stream": true
                                     }),
                                 );
@@ -1885,7 +1885,7 @@ async fn responses(
                                 &last_err,
                                 json!({
                                     "http_status": code,
-                                    "endpoint": "/v1/responses",
+                                    "endpoint": RESPONSES_ENDPOINT,
                                     "stream": true
                                 }),
                             );
@@ -1927,7 +1927,7 @@ async fn responses(
                                     &provider_name,
                                     crate::orchestrator::store::EventCode::GATEWAY_STREAM_FALLBACK_TO_NON_STREAM,
                                     "streaming request failed; retrying once with non-stream responses",
-                                    json!({ "endpoint": "/v1/responses", "stream": true }),
+                                    json!({ "endpoint": RESPONSES_ENDPOINT, "stream": true }),
                                 );
                                 st.router.mark_transient_warning(
                                     &provider_name,
@@ -1945,7 +1945,7 @@ async fn responses(
                                 &provider_name,
                                 crate::orchestrator::store::EventCode::UPSTREAM_REQUEST_ERROR,
                                 &last_err,
-                                json!({ "endpoint": "/v1/responses", "stream": true }),
+                                json!({ "endpoint": RESPONSES_ENDPOINT, "stream": true }),
                             );
                             refresh_usage_once_after_first_failure(
                                 &st,
@@ -2155,7 +2155,7 @@ async fn responses(
                             &last_err,
                             json!({
                                 "http_status": code,
-                                "endpoint": "/v1/responses",
+                                "endpoint": RESPONSES_ENDPOINT,
                                 "stream": false
                             }),
                         );
@@ -2176,7 +2176,7 @@ async fn responses(
                         &provider_name,
                         crate::orchestrator::store::EventCode::UPSTREAM_HTTP_ERROR,
                         &last_err,
-                        json!({ "http_status": code, "endpoint": "/v1/responses", "stream": false }),
+                        json!({ "http_status": code, "endpoint": RESPONSES_ENDPOINT, "stream": false }),
                     );
                     refresh_usage_once_after_first_failure(
                         &st,
@@ -2195,7 +2195,7 @@ async fn responses(
                         &provider_name,
                         crate::orchestrator::store::EventCode::UPSTREAM_REQUEST_ERROR,
                         &last_err,
-                        json!({ "endpoint": "/v1/responses", "stream": false }),
+                        json!({ "endpoint": RESPONSES_ENDPOINT, "stream": false }),
                     );
                     refresh_usage_once_after_first_failure(
                         &st,
