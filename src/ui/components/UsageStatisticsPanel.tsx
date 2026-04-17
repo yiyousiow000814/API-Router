@@ -20,7 +20,6 @@ import {
 } from "./UsageProviderStatisticsSection";
 import {
   UsageTimelineChart,
-  type UsageChartHover,
   type UsageChartModel,
 } from "./UsageTimelineChart";
 import { UsageRequestDailyTotalsCard } from "./UsageRequestDailyTotalsCard";
@@ -1585,18 +1584,6 @@ type Props = {
   usageStatistics: UsageStatistics | null;
   fmtWhen: (unixMs: number) => string;
   usageChart: UsageChartModel | null;
-  setUsageChartHover: (hover: UsageChartHover | null) => void;
-  showUsageChartHover: (
-    event: {
-      clientX: number;
-      clientY: number;
-      currentTarget: { ownerSVGElement?: SVGSVGElement | null };
-    },
-    bucketUnixMs: number,
-    requests: number,
-    totalTokens: number,
-  ) => void;
-  usageChartHover: UsageChartHover | null;
   formatUsageBucketLabel: (bucketUnixMs: number, windowHours: number) => string;
   setUsageHistoryModalOpen: (open: boolean) => void;
   setUsagePricingModalOpen: (open: boolean) => void;
@@ -1659,9 +1646,6 @@ export function UsageStatisticsPanel({
   usageStatistics,
   fmtWhen,
   usageChart,
-  setUsageChartHover,
-  showUsageChartHover,
-  usageChartHover,
   formatUsageBucketLabel,
   setUsageHistoryModalOpen,
   setUsagePricingModalOpen,
@@ -6426,11 +6410,8 @@ export function UsageStatisticsPanel({
               </div>
               <UsageTimelineChart
                 usageChart={usageChart}
-                usageChartHover={usageChartHover}
                 usageWindowHours={usageStatistics?.window_hours ?? 24}
                 formatUsageBucketLabel={formatUsageBucketLabel}
-                setUsageChartHover={setUsageChartHover}
-                showUsageChartHover={showUsageChartHover}
               />
             </div>
           </div>

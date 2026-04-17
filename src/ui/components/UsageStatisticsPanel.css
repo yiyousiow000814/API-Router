@@ -1268,12 +1268,15 @@
   position: absolute;
   z-index: var(--z-local-tooltip);
   pointer-events: none;
+  left: 0;
+  top: 0;
   border: 1px solid rgba(13, 18, 32, 0.14);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 12px 28px rgba(13, 18, 32, 0.16);
   padding: 6px 8px;
   min-width: 144px;
+  will-change: transform;
 }
 
 .aoUsageTooltipTitle {

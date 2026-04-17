@@ -324,6 +324,12 @@ struct StatusWatchdogGuard<'a> {
     finished: bool,
 }
 
+struct RefreshedClientSessionsRuntime {
+    visible_items: Vec<(String, crate::orchestrator::gateway::ClientSessionRuntime)>,
+    snapshot: std::collections::HashMap<String, crate::orchestrator::gateway::ClientSessionRuntime>,
+    removed_main_session_ids: Vec<String>,
+}
+
 impl<'a> StatusWatchdogGuard<'a> {
     fn start(watchdog: &'a app_state::UiWatchdogState, detail_level: &str) -> Self {
         watchdog.record_backend_status_started(detail_level, unix_ms());
@@ -349,6 +355,40 @@ impl<'a> StatusWatchdogGuard<'a> {
 impl Drop for StatusWatchdogGuard<'_> {
     fn drop(&mut self) {
         self.finish();
+    }
+}
+
+fn refresh_client_sessions_runtime(
+    map: &mut std::collections::HashMap<String, crate::orchestrator::gateway::ClientSessionRuntime>,
+    now: u64,
+    terminal_discovery: &crate::platform::windows_terminal::SessionDiscoverySnapshot,
+    thread_index_snapshot:
+        &crate::orchestrator::gateway::web_codex_threads::CachedThreadIndexSnapshot,
+    router_port: u16,
+) -> RefreshedClientSessionsRuntime {
+    merge_discovered_terminal_sessions(map, now, terminal_discovery);
+    merge_thread_index_session_hints(
+        map,
+        now,
+        &thread_index_snapshot.items,
+        thread_index_snapshot.fresh,
+    );
+    confirm_router_from_live_thread_base_url(map, &thread_index_snapshot.items, router_port);
+    backfill_main_confirmation_from_verified_agent(map, now);
+    let removed_main_session_ids = retain_live_app_server_sessions(
+        map,
+        now,
+        &terminal_discovery.items,
+        terminal_discovery.fresh,
+        &thread_index_snapshot.items,
+        thread_index_snapshot.fresh,
+    );
+    let snapshot = map.clone();
+    let visible_items = visible_client_session_items(&snapshot, 20);
+    RefreshedClientSessionsRuntime {
+        visible_items,
+        snapshot,
+        removed_main_session_ids,
     }
 }
 
@@ -552,33 +592,25 @@ pub(crate) fn get_status(
         );
         status_watchdog.phase("client_sessions_terminal_discovery");
         let subphase_started_at = std::time::Instant::now();
-        let items = {
+        let refreshed = {
             let mut map = state.gateway.client_sessions.write();
-            merge_discovered_terminal_sessions(&mut map, now, &terminal_discovery);
-            merge_thread_index_session_hints(
+            refresh_client_sessions_runtime(
                 &mut map,
                 now,
-                &thread_index_snapshot.items,
-                thread_index_snapshot.fresh,
-            );
-            confirm_router_from_live_thread_base_url(
-                &mut map,
-                &thread_index_snapshot.items,
+                &terminal_discovery,
+                &thread_index_snapshot,
                 cfg.listen.port,
-            );
-            backfill_main_confirmation_from_verified_agent(&mut map, now);
-            let removed_main_sessions = retain_live_app_server_sessions(
-                &mut map,
-                now,
-                &terminal_discovery.items,
-                terminal_discovery.fresh,
-                &thread_index_snapshot.items,
-                thread_index_snapshot.fresh,
-            );
-            clear_removed_main_session_routes_and_assignments(&state.gateway, &removed_main_sessions);
-            rebalance_balanced_assignments_on_main_session_change(&state.gateway, &cfg, &map);
-            visible_client_session_items(&map, 20)
+            )
         };
+        clear_removed_main_session_routes_and_assignments(
+            &state.gateway,
+            &refreshed.removed_main_session_ids,
+        );
+        rebalance_balanced_assignments_on_main_session_change(
+            &state.gateway,
+            &cfg,
+            &refreshed.snapshot,
+        );
         phase_timings_ms.insert(
             "client_sessions_runtime_snapshot".to_string(),
             serde_json::json!(elapsed_ms_since(subphase_started_at)),
@@ -586,7 +618,8 @@ pub(crate) fn get_status(
         status_watchdog.phase("client_sessions_runtime_snapshot");
         let last_used_by_session = state.gateway.last_used_by_session.read();
         let subphase_started_at = std::time::Instant::now();
-        let sessions = items
+        let sessions = refreshed
+            .visible_items
             .into_iter()
             .map(|(_codex_session_id, v)| {
                 // Consider a session "active" only if it has recently made requests through the router.
@@ -1829,6 +1862,7 @@ mod tests {
         main_session_ids_excluding_agents_and_reviews,
         merge_thread_index_session_hints,
         rebalance_balanced_assignments_on_main_session_change,
+        refresh_client_sessions_runtime,
         retain_live_app_server_sessions,
         displayed_session_route, merge_discovered_model_provider, next_last_discovered_unix_ms,
         normalize_event_query_limit, EVENT_LOG_DASHBOARD_VISIBLE_LIMIT,
@@ -1898,6 +1932,77 @@ mod tests {
         assert_eq!(
             entry.last_reported_model_provider.as_deref(),
             Some(GATEWAY_MODEL_PROVIDER_ID)
+        );
+    }
+
+    #[test]
+    fn refresh_client_sessions_runtime_keeps_lock_scope_pure_and_returns_snapshot() {
+        let now = unix_ms();
+        let mut map = HashMap::from([
+            (
+                "main".to_string(),
+                ClientSessionRuntime {
+                    codex_session_id: "main".to_string(),
+                    pid: 0,
+                    wt_session: Some("wt-main".to_string()),
+                    last_request_unix_ms: now,
+                    last_discovered_unix_ms: now,
+                    last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                    last_reported_model: None,
+                    last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                    rollout_path: Some("C:/rollouts/main".to_string()),
+                    agent_parent_session_id: None,
+                    is_agent: false,
+                    is_review: false,
+                    confirmed_router: true,
+                },
+            ),
+            (
+                "agent".to_string(),
+                ClientSessionRuntime {
+                    codex_session_id: "agent".to_string(),
+                    pid: 0,
+                    wt_session: Some("wt-main".to_string()),
+                    last_request_unix_ms: now,
+                    last_discovered_unix_ms: now,
+                    last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
+                    last_reported_model: None,
+                    last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                    rollout_path: Some("C:/rollouts/agent".to_string()),
+                    agent_parent_session_id: Some("main".to_string()),
+                    is_agent: true,
+                    is_review: false,
+                    confirmed_router: true,
+                },
+            ),
+        ]);
+        let terminal_discovery = crate::platform::windows_terminal::SessionDiscoverySnapshot {
+            items: Vec::new(),
+            fresh: false,
+        };
+        let thread_index_snapshot =
+            crate::orchestrator::gateway::web_codex_threads::CachedThreadIndexSnapshot {
+                items: Vec::new(),
+                fresh: false,
+            };
+
+        let refreshed = refresh_client_sessions_runtime(
+            &mut map,
+            now,
+            &terminal_discovery,
+            &thread_index_snapshot,
+            4000,
+        );
+
+        assert!(refreshed.removed_main_session_ids.is_empty());
+        assert_eq!(refreshed.snapshot.len(), 2);
+        assert_eq!(refreshed.visible_items.len(), 2);
+        assert!(
+            refreshed
+                .visible_items
+                .iter()
+                .any(|(sid, _)| sid == "main"),
+            "agent visibility expansion should still include the parent main session"
         );
     }
 

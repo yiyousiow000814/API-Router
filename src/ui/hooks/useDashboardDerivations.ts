@@ -10,7 +10,6 @@ import type {
 import { computeUsageAnomalies } from "../utils/usageAnomalies";
 import {
   buildUsageChartModel,
-  fmtUsageBucketLabel,
 } from "../utils/usageDisplay";
 import {
   buildManagedProviderNames,
@@ -55,14 +54,6 @@ type Params = {
   setUsageFilterProviders: Dispatch<SetStateAction<string[]>>;
   setUsageFilterOrigins: Dispatch<SetStateAction<string[]>>;
   usageWindowHours: number;
-  setUsageChartHover: Dispatch<
-    SetStateAction<{
-      x: number;
-      y: number;
-      title: string;
-      subtitle: string;
-    } | null>
-  >;
   formatUsdMaybe: (value: number | null | undefined) => string;
 };
 
@@ -83,7 +74,6 @@ export function useDashboardDerivations(params: Params) {
     setUsageFilterProviders,
     setUsageFilterOrigins,
     usageWindowHours,
-    setUsageChartHover,
     formatUsdMaybe,
   } = params;
 
@@ -382,36 +372,6 @@ export function useDashboardDerivations(params: Params) {
     [usageTimeline, usageMaxTimelineRequests, usageMaxTimelineTokens],
   );
 
-  const showUsageChartHover = useCallback(
-    (
-      event: {
-        clientX: number;
-        clientY: number;
-        currentTarget: { ownerSVGElement?: SVGSVGElement | null };
-      },
-      bucketUnixMs: number,
-      requests: number,
-      totalTokens: number,
-    ) => {
-      const rect = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
-      if (!rect) return;
-      const rawX = event.clientX - rect.left;
-      const rawY = event.clientY - rect.top;
-      const maxX = Math.max(8, rect.width - 176);
-      const maxY = Math.max(8, rect.height - 54);
-      setUsageChartHover({
-        x: Math.min(Math.max(rawX + 10, 8), maxX),
-        y: Math.min(Math.max(rawY - 42, 8), maxY),
-        title: fmtUsageBucketLabel(
-          bucketUnixMs,
-          usageOverview?.window_hours ?? 24,
-        ),
-        subtitle: `Requests ${requests} | Tokens ${totalTokens.toLocaleString()}`,
-      });
-    },
-    [setUsageChartHover, usageOverview?.window_hours],
-  );
-
   return {
     managedProviderNames,
     providerGroupLabelByName,
@@ -451,6 +411,5 @@ export function useDashboardDerivations(params: Params) {
     toggleUsageNodeFilter,
     toggleUsageOriginFilter,
     usageChart,
-    showUsageChartHover,
   };
 }
