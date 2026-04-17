@@ -451,6 +451,7 @@ pub(super) fn invalidate_thread_list_cache_all() {
     let mut index = lock_threads_workspace_index();
     index.windows = WorkspaceThreadsBucket::default();
     index.wsl2 = WorkspaceThreadsBucket::default();
+    index.merged_snapshot_cache = MergedThreadSnapshotCache::default();
 }
 
 pub(super) fn upsert_thread_item_hint(workspace: WorkspaceTarget, item: Value) {
@@ -1391,6 +1392,73 @@ mod tests {
         assert!(
             std::ptr::eq(first.items.as_ptr(), second.items.as_ptr()),
             "unchanged thread index should reuse merged snapshot backing storage"
+        );
+    }
+
+    #[test]
+    fn invalidate_thread_list_cache_all_drops_stale_merged_snapshot_cache() {
+        let _test_guard = codex_app_server::lock_test_globals();
+        invalidate_thread_list_cache_all();
+        upsert_thread_item_hint(
+            WorkspaceTarget::Windows,
+            serde_json::json!({
+                "id": "old-thread-win",
+                "workspace": "windows",
+                "preview": "old-windows",
+                "path": "C:\\temp\\old-thread-win.jsonl",
+                "updatedAt": 1742330000
+            }),
+        );
+        upsert_thread_item_hint(
+            WorkspaceTarget::Wsl2,
+            serde_json::json!({
+                "id": "old-thread-wsl",
+                "workspace": "wsl2",
+                "preview": "old-wsl2",
+                "path": "/tmp/old-thread-wsl.jsonl",
+                "updatedAt": 1742331000
+            }),
+        );
+        let old_snapshot = super::cached_threads_snapshot_stale_while_revalidate();
+        assert_eq!(old_snapshot.items.len(), 2);
+        assert!(old_snapshot
+            .items
+            .iter()
+            .any(|item| item.get("id").and_then(Value::as_str) == Some("old-thread-win")));
+
+        invalidate_thread_list_cache_all();
+        upsert_thread_item_hint(
+            WorkspaceTarget::Windows,
+            serde_json::json!({
+                "id": "new-thread-win",
+                "workspace": "windows",
+                "preview": "new-windows",
+                "path": "C:\\temp\\new-thread-win.jsonl",
+                "updatedAt": 1742332000
+            }),
+        );
+        upsert_thread_item_hint(
+            WorkspaceTarget::Wsl2,
+            serde_json::json!({
+                "id": "new-thread-wsl",
+                "workspace": "wsl2",
+                "preview": "new-wsl2",
+                "path": "/tmp/new-thread-wsl.jsonl",
+                "updatedAt": 1742333000
+            }),
+        );
+
+        let new_snapshot = super::cached_threads_snapshot_stale_while_revalidate();
+        let ids = new_snapshot
+            .items
+            .iter()
+            .filter_map(|item| item.get("id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            ids,
+            vec!["new-thread-wsl", "new-thread-win"],
+            "invalidation must drop stale merged snapshot cache before new hints reuse the same revisions"
         );
     }
 
