@@ -226,7 +226,6 @@ fn preferred_default_branch_name(
 }
 
 fn build_visible_branch_options(
-    local_branches: &[String],
     current_branch: &str,
     default_branch: Option<&str>,
     open_pull_requests: &[GithubPullRequestSummary],
@@ -250,13 +249,6 @@ fn build_visible_branch_options(
     if !current_branch.is_empty() {
         branch_names.push(current_branch.to_string());
     }
-    branch_names.extend(
-        local_branches
-            .iter()
-            .map(|branch| branch.trim())
-            .filter(|branch| !branch.is_empty())
-            .map(str::to_string),
-    );
     let mut pull_request_branch_names: Vec<String> = pr_numbers_by_branch.keys().cloned().collect();
     pull_request_branch_names.sort();
     branch_names.extend(pull_request_branch_names);
@@ -315,15 +307,12 @@ pub(super) async fn visible_branch_options_for_workspace_with_current_branch(
     cwd: &str,
     current_branch: &str,
 ) -> Result<Vec<GitBranchOption>, String> {
-    let (default_branch, open_pull_requests_result, local_branches_result) = tokio::join!(
+    let (default_branch, open_pull_requests_result) = tokio::join!(
         repo_default_branch_for_workspace(workspace, cwd),
-        open_pull_requests_for_workspace(workspace, cwd),
-        local_branches_for_workspace(workspace, cwd)
+        open_pull_requests_for_workspace(workspace, cwd)
     );
     let open_pull_requests = open_pull_requests_result.unwrap_or_default();
-    let local_branches = local_branches_result?;
     Ok(build_visible_branch_options(
-        &local_branches,
         current_branch,
         default_branch.as_deref(),
         &open_pull_requests,
@@ -524,10 +513,6 @@ mod tests {
         .expect("pull request payload");
 
         let visible = build_visible_branch_options(
-            &[
-                "docs/repo-refactor-blueprint".to_string(),
-                "chore/web-codex-terminal-communication".to_string(),
-            ],
             "docs/repo-refactor-blueprint",
             Some("main"),
             &pull_requests,
@@ -560,7 +545,6 @@ mod tests {
         .expect("pull request payload");
 
         let visible = build_visible_branch_options(
-            &["feat/codex-web-branch-picker".to_string()],
             "feat/codex-web-branch-picker",
             Some("main"),
             &pull_requests,
@@ -588,7 +572,7 @@ mod tests {
         )
         .expect("pull request payload");
 
-        let visible = build_visible_branch_options(&[], "", None, &pull_requests);
+        let visible = build_visible_branch_options("", None, &pull_requests);
 
         assert_eq!(
             visible,
@@ -611,8 +595,7 @@ mod tests {
 
     #[test]
     fn build_visible_branch_options_deduplicates_current_and_default_branch() {
-        let visible =
-            build_visible_branch_options(&["main".to_string()], "main", Some("main"), &[]);
+        let visible = build_visible_branch_options("main", Some("main"), &[]);
 
         assert_eq!(
             visible,
@@ -620,42 +603,6 @@ mod tests {
                 name: "main".to_string(),
                 pr_number: None,
             }]
-        );
-    }
-
-    #[test]
-    fn build_visible_branch_options_keeps_all_local_branches_visible() {
-        let visible = build_visible_branch_options(
-            &[
-                "feat/codex-web-branch-picker".to_string(),
-                "chore/web-codex-terminal-communication".to_string(),
-                "docs/repo-refactor-blueprint".to_string(),
-            ],
-            "feat/codex-web-branch-picker",
-            Some("main"),
-            &[],
-        );
-
-        assert_eq!(
-            visible,
-            vec![
-                GitBranchOption {
-                    name: "main".to_string(),
-                    pr_number: None,
-                },
-                GitBranchOption {
-                    name: "feat/codex-web-branch-picker".to_string(),
-                    pr_number: None,
-                },
-                GitBranchOption {
-                    name: "chore/web-codex-terminal-communication".to_string(),
-                    pr_number: None,
-                },
-                GitBranchOption {
-                    name: "docs/repo-refactor-blueprint".to_string(),
-                    pr_number: None,
-                },
-            ]
         );
     }
 
