@@ -854,7 +854,7 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         )
         .route("/v1/models", get(models))
         .route("/v1/responses", post(responses))
-        .route(RESPONSES_ENDPOINT, post(responses))
+        .route("/responses", post(responses))
         .route("/", get(codex_app_server_ws))
         .route("/codex-web", get(codex_web_index))
         .route("/codex-web/app.js", get(codex_web_app_js))
