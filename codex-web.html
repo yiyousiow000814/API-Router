@@ -51,6 +51,7 @@
       box-sizing: border-box;
       scrollbar-width: thin;
       scrollbar-color: var(--scrollbar-thumb) transparent;
+      -webkit-tap-highlight-color: transparent;
     }
     *::-webkit-scrollbar { width: var(--scrollbar-size); height: var(--scrollbar-size); }
     *::-webkit-scrollbar-track { background: transparent; }
@@ -78,6 +79,14 @@
       font: 14px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
       -webkit-font-smoothing: antialiased;
       text-rendering: optimizeLegibility;
+    }
+    button,
+    [role="button"],
+    [role="menuitem"],
+    [data-composer-picker-toggle] {
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
     }
     body.mobile-keyboard-open.floating-composer-layout {
       position: fixed;
