@@ -1374,9 +1374,27 @@ explicit_endpoint_url = "{explicit_endpoint_url}"
 
         let profile = resolve_quota_profile(&provider);
         assert_eq!(profile.refresh_flow, RefreshFlow::Auto);
+        assert!(profile.candidate_bases.is_empty());
+        assert_eq!(profile.explicit_usage_endpoint, None);
+    }
+
+    #[test]
+    fn file_registry_routeai_uses_explicit_usage_base_when_provided() {
+        let provider = ProviderConfig {
+            display_name: "routeai".to_string(),
+            base_url: "https://api.routeai.cc".to_string(),
+            supports_websockets: false,
+            group: None,
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: Some("https://usage.routeai.cc/custom".to_string()),
+            api_key: String::new(),
+        };
+
+        let profile = resolve_quota_profile(&provider);
         assert_eq!(
             profile.candidate_bases,
-            vec!["https://api.routeai.cc".to_string()]
+            vec!["https://usage.routeai.cc/custom".to_string()]
         );
         assert_eq!(profile.explicit_usage_endpoint, None);
     }
