@@ -245,14 +245,22 @@ export function SessionsTable({
     return s.reported_model_provider ?? '-'
   }
 
-  const alwaysVisibleIds = sessionIdsAlwaysVisible(sessions)
-  const verifiedRows = arrangeSessionRowsByMainParent(
-    sessions.filter((s) => s.verified !== false || alwaysVisibleIds.has(s.id)),
-    wslGatewayHost,
+  const alwaysVisibleIds = useMemo(() => sessionIdsAlwaysVisible(sessions), [sessions])
+  const verifiedRows = useMemo(
+    () =>
+      arrangeSessionRowsByMainParent(
+        sessions.filter((s) => s.verified !== false || alwaysVisibleIds.has(s.id)),
+        wslGatewayHost,
+      ),
+    [alwaysVisibleIds, sessions, wslGatewayHost],
   )
-  const unverifiedRows = arrangeSessionRowsByMainParent(
-    sessions.filter((s) => s.verified === false && !alwaysVisibleIds.has(s.id)),
-    wslGatewayHost,
+  const unverifiedRows = useMemo(
+    () =>
+      arrangeSessionRowsByMainParent(
+        sessions.filter((s) => s.verified === false && !alwaysVisibleIds.has(s.id)),
+        wslGatewayHost,
+      ),
+    [alwaysVisibleIds, sessions, wslGatewayHost],
   )
   const displayTrace = useMemo(
     () => ({

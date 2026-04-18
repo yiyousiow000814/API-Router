@@ -117,12 +117,93 @@ fn store_displayed_session_route_cache(
     );
 }
 
+fn update_displayed_route_scope_hash_str(hasher: &mut sha2::Sha256, value: &str) {
+    hasher.update((value.len() as u64).to_le_bytes());
+    hasher.update(value.as_bytes());
+}
+
+fn update_displayed_route_scope_hash_opt_str(
+    hasher: &mut sha2::Sha256,
+    value: Option<&str>,
+) {
+    match value {
+        Some(value) => {
+            hasher.update([1]);
+            update_displayed_route_scope_hash_str(hasher, value);
+        }
+        None => hasher.update([0]),
+    }
+}
+
+fn update_displayed_route_scope_hash_bool(hasher: &mut sha2::Sha256, value: bool) {
+    hasher.update([u8::from(value)]);
+}
+
+fn update_displayed_route_scope_hash_u32(hasher: &mut sha2::Sha256, value: u32) {
+    hasher.update(value.to_le_bytes());
+}
+
+fn update_displayed_route_scope_hash_u64(hasher: &mut sha2::Sha256, value: u64) {
+    hasher.update(value.to_le_bytes());
+}
+
+fn update_displayed_route_scope_hash_opt_u64(
+    hasher: &mut sha2::Sha256,
+    value: Option<u64>,
+) {
+    match value {
+        Some(value) => {
+            hasher.update([1]);
+            update_displayed_route_scope_hash_u64(hasher, value);
+        }
+        None => hasher.update([0]),
+    }
+}
+
+fn update_displayed_route_scope_hash_opt_f64(
+    hasher: &mut sha2::Sha256,
+    value: Option<f64>,
+) {
+    match value {
+        Some(value) => {
+            hasher.update([1]);
+            hasher.update(value.to_bits().to_le_bytes());
+        }
+        None => hasher.update([0]),
+    }
+}
+
+fn hash_displayed_session_route_quota_scope(
+    hasher: &mut sha2::Sha256,
+    snapshot: Option<&serde_json::Value>,
+) {
+    let get_number = |field: &str| snapshot.and_then(|value| value.get(field)).and_then(|value| value.as_f64());
+    let get_u64 = |field: &str| snapshot.and_then(|value| value.get(field)).and_then(|value| value.as_u64());
+    let get_str = |field: &str| snapshot.and_then(|value| value.get(field)).and_then(|value| value.as_str());
+
+    update_displayed_route_scope_hash_opt_f64(hasher, get_number("remaining"));
+    update_displayed_route_scope_hash_opt_f64(hasher, get_number("today_used"));
+    update_displayed_route_scope_hash_opt_f64(hasher, get_number("today_added"));
+    update_displayed_route_scope_hash_opt_f64(hasher, get_number("daily_spent_usd"));
+    update_displayed_route_scope_hash_opt_f64(hasher, get_number("daily_budget_usd"));
+    update_displayed_route_scope_hash_opt_f64(hasher, get_number("weekly_spent_usd"));
+    update_displayed_route_scope_hash_opt_f64(hasher, get_number("weekly_budget_usd"));
+    update_displayed_route_scope_hash_opt_f64(hasher, get_number("monthly_spent_usd"));
+    update_displayed_route_scope_hash_opt_f64(hasher, get_number("monthly_budget_usd"));
+    update_displayed_route_scope_hash_opt_u64(hasher, get_u64("updated_at_unix_ms"));
+    update_displayed_route_scope_hash_opt_str(hasher, get_str("last_error"));
+}
+
 fn displayed_session_route_cache_scope(
     gateway: &crate::orchestrator::gateway::GatewayState,
     cfg: &crate::orchestrator::config::AppConfig,
     config_revision: &str,
     providers: &std::collections::HashMap<String, crate::orchestrator::router::ProviderHealthSnapshot>,
     quota: &serde_json::Value,
+    provider_quota_hard_caps: &std::collections::BTreeMap<
+        String,
+        crate::orchestrator::secrets::ProviderQuotaHardCapConfig,
+    >,
 ) -> String {
     let mut assignments = gateway.store.list_session_route_assignments_since(0);
     assignments.sort_by(|left, right| {
@@ -131,32 +212,62 @@ fn displayed_session_route_cache_scope(
             .then_with(|| left.provider.cmp(&right.provider))
             .then_with(|| left.assigned_at_unix_ms.cmp(&right.assigned_at_unix_ms))
     });
-    let provider_runtime = crate::orchestrator::router::provider_iteration_order(cfg)
-        .into_iter()
-        .map(|provider_name| {
-            let snapshot = providers.get(&provider_name);
-            serde_json::json!({
-                "provider": provider_name,
-                "status": snapshot.as_ref().map(|entry| entry.status.as_str()),
-                "cooldown_until_unix_ms": snapshot.as_ref().map(|entry| entry.cooldown_until_unix_ms),
-                "consecutive_failures": snapshot.as_ref().map(|entry| entry.consecutive_failures),
-                "waiting_usage_confirmation": gateway.router.is_waiting_usage_confirmation(&provider_name),
-                "quota": quota.get(&provider_name).cloned().unwrap_or(serde_json::Value::Null),
-            })
-        })
-        .collect::<Vec<_>>();
-    let payload = serde_json::json!({
-        "config_revision": config_revision,
-        "manual_override": gateway.router.manual_override.read().clone(),
-        "provider_runtime": provider_runtime,
-        "assignments": assignments.into_iter().map(|row| serde_json::json!({
-            "session_id": row.session_id,
-            "provider": row.provider,
-            "assigned_at_unix_ms": row.assigned_at_unix_ms,
-        })).collect::<Vec<_>>(),
-    });
     let mut hasher = sha2::Sha256::new();
-    hasher.update(serde_json::to_vec(&payload).unwrap_or_default());
+    update_displayed_route_scope_hash_str(&mut hasher, config_revision);
+    update_displayed_route_scope_hash_opt_str(
+        &mut hasher,
+        gateway.router.manual_override.read().as_deref(),
+    );
+
+    for provider_name in crate::orchestrator::router::provider_iteration_order(cfg) {
+        let snapshot = providers.get(&provider_name);
+        let hard_cap = provider_quota_hard_caps
+            .get(&provider_name)
+            .copied()
+            .unwrap_or_default();
+        update_displayed_route_scope_hash_str(&mut hasher, &provider_name);
+        update_displayed_route_scope_hash_opt_str(
+            &mut hasher,
+            snapshot.as_ref().map(|entry| entry.status.as_str()),
+        );
+        update_displayed_route_scope_hash_opt_u64(
+            &mut hasher,
+            snapshot.as_ref().map(|entry| entry.cooldown_until_unix_ms),
+        );
+        update_displayed_route_scope_hash_opt_u64(
+            &mut hasher,
+            snapshot.as_ref().map(|entry| entry.last_fail_at_unix_ms),
+        );
+        update_displayed_route_scope_hash_opt_u64(
+            &mut hasher,
+            snapshot.as_ref().map(|entry| entry.last_ok_at_unix_ms),
+        );
+        update_displayed_route_scope_hash_u32(
+            &mut hasher,
+            snapshot
+                .as_ref()
+                .map(|entry| entry.consecutive_failures)
+                .unwrap_or(0),
+        );
+        update_displayed_route_scope_hash_bool(
+            &mut hasher,
+            gateway.router.is_waiting_usage_confirmation(&provider_name),
+        );
+        update_displayed_route_scope_hash_bool(&mut hasher, hard_cap.daily);
+        update_displayed_route_scope_hash_bool(&mut hasher, hard_cap.weekly);
+        update_displayed_route_scope_hash_bool(&mut hasher, hard_cap.monthly);
+        hash_displayed_session_route_quota_scope(
+            &mut hasher,
+            quota.get(&provider_name),
+        );
+    }
+
+    for row in assignments {
+        update_displayed_route_scope_hash_str(&mut hasher, &row.session_id);
+        update_displayed_route_scope_hash_str(&mut hasher, &row.provider);
+        update_displayed_route_scope_hash_u64(&mut hasher, row.assigned_at_unix_ms);
+    }
+
     format!("{:x}", hasher.finalize())
 }
 
@@ -591,6 +702,7 @@ pub(crate) fn get_status(
     let phase_started_at = std::time::Instant::now();
     let metrics = state.gateway.store.get_metrics();
     let quota = state.gateway.store.list_quota_snapshots();
+    let provider_quota_hard_caps = state.secrets.list_provider_quota_hard_cap();
     for (provider_name, snapshot) in providers.iter_mut() {
         let hard_cap = state.secrets.get_provider_quota_hard_cap(provider_name);
         if !crate::orchestrator::gateway::provider_has_remaining_quota_with_hard_cap(
@@ -742,6 +854,7 @@ pub(crate) fn get_status(
             &config_revision,
             &providers,
             &quota,
+            &provider_quota_hard_caps,
         );
         phase_timings_ms.insert(
             "client_sessions_runtime_snapshot".to_string(),
@@ -2029,7 +2142,7 @@ mod tests {
     use crate::orchestrator::gateway::{decide_provider, open_store_dir, GatewayState, LastUsedRoute};
     use crate::orchestrator::router::{ProviderHealthSnapshot, RouterState};
     use crate::orchestrator::secrets::SecretStore;
-    use crate::orchestrator::store::{unix_ms, StoredEventRow, UsageRequestSyncRow};
+    use crate::orchestrator::store::{unix_ms, Store, StoredEventRow, UsageRequestSyncRow};
     use crate::orchestrator::upstream::UpstreamClient;
     use crate::orchestrator::gateway::ClientSessionRuntime;
     use chrono::TimeZone;
@@ -2038,6 +2151,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
+    use tempfile::tempdir;
 
     #[cfg(windows)]
     #[test]
@@ -3372,6 +3486,7 @@ mod tests {
             "test-config-revision-ttl-cache",
             &state.router.snapshot(now),
             &state.store.list_quota_snapshots(),
+            &state.secrets.list_provider_quota_hard_cap(),
         );
 
         let (before_provider, before_reason) = displayed_session_route(
@@ -3393,6 +3508,7 @@ mod tests {
             "test-config-revision-ttl-cache",
             &state.router.snapshot(now),
             &state.store.list_quota_snapshots(),
+            &state.secrets.list_provider_quota_hard_cap(),
         );
         assert_ne!(
             after_scope, before_scope,
@@ -3411,6 +3527,155 @@ mod tests {
 
         assert_eq!(after_provider.as_deref(), Some("p2"));
         assert_eq!(after_reason.as_deref(), Some("manual_override"));
+    }
+
+    #[test]
+    fn displayed_session_route_cache_scope_changes_when_quota_hard_cap_changes() {
+        clear_displayed_session_route_cache();
+        let store_dir = tempdir().expect("store dir");
+        let secrets_dir = tempdir().expect("secrets dir");
+        let store = Store::open(store_dir.path()).expect("store");
+        let secrets = SecretStore::new(secrets_dir.path().join("secrets.json"));
+        let providers = std::collections::BTreeMap::from([
+            (
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "p1".to_string(),
+                    base_url: "https://p1.example/v1".to_string(),
+                    api_key: String::new(),
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    supports_websockets: false,
+                    group: None,
+                    disabled: false,
+                },
+            ),
+            (
+                "p2".to_string(),
+                ProviderConfig {
+                    display_name: "p2".to_string(),
+                    base_url: "https://p2.example/v1".to_string(),
+                    api_key: String::new(),
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    supports_websockets: false,
+                    group: None,
+                    disabled: false,
+                },
+            ),
+        ]);
+        let cfg = AppConfig {
+            listen: ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 4000,
+            },
+            routing: RoutingConfig {
+                preferred_provider: "p1".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: crate::orchestrator::config::RouteMode::BalancedAuto,
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 30,
+                failure_threshold: 2,
+                cooldown_seconds: 30,
+                request_timeout_seconds: 300,
+            },
+            providers,
+            provider_order: vec!["p1".to_string(), "p2".to_string()],
+        };
+        let now = unix_ms();
+        let state = GatewayState {
+            cfg: Arc::new(RwLock::new(cfg.clone())),
+            router: Arc::new(RouterState::new(&cfg, now)),
+            store,
+            upstream: UpstreamClient::new(),
+            secrets,
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
+        };
+        state
+            .store
+            .put_quota_snapshot(
+                "p1",
+                &serde_json::json!({
+                    "daily_spent_usd": 100.0,
+                    "daily_budget_usd": 100.0,
+                    "updated_at_unix_ms": now,
+                    "last_error": "",
+                }),
+            )
+            .expect("quota p1");
+        state
+            .store
+            .put_quota_snapshot(
+                "p2",
+                &serde_json::json!({
+                    "daily_spent_usd": 10.0,
+                    "daily_budget_usd": 100.0,
+                    "updated_at_unix_ms": now,
+                    "last_error": "",
+                }),
+            )
+            .expect("quota p2");
+
+        let before_scope = displayed_session_route_cache_scope(
+            &state,
+            &cfg,
+            "test-config-revision-hard-cap",
+            &state.router.snapshot(now),
+            &state.store.list_quota_snapshots(),
+            &state.secrets.list_provider_quota_hard_cap(),
+        );
+        let (before_provider, before_reason) = displayed_session_route(
+            &state,
+            &cfg,
+            &before_scope,
+            "main-session",
+            "p1",
+            true,
+            None::<&LastUsedRoute>,
+        );
+        assert_eq!(before_provider.as_deref(), Some("p2"));
+        assert_eq!(before_reason.as_deref(), Some("preferred_unhealthy"));
+
+        state
+            .secrets
+            .set_provider_quota_hard_cap(
+                "p1",
+                crate::orchestrator::secrets::ProviderQuotaHardCapConfig {
+                    daily: false,
+                    weekly: true,
+                    monthly: true,
+                },
+            )
+            .expect("set hard cap");
+
+        let after_scope = displayed_session_route_cache_scope(
+            &state,
+            &cfg,
+            "test-config-revision-hard-cap",
+            &state.router.snapshot(now),
+            &state.store.list_quota_snapshots(),
+            &state.secrets.list_provider_quota_hard_cap(),
+        );
+        assert_ne!(
+            after_scope, before_scope,
+            "quota hard-cap changes must invalidate display-route cache scope"
+        );
+
+        let (after_provider, after_reason) = displayed_session_route(
+            &state,
+            &cfg,
+            &after_scope,
+            "main-session",
+            "p1",
+            true,
+            None::<&LastUsedRoute>,
+        );
+        assert_eq!(after_provider.as_deref(), Some("p1"));
+        assert_eq!(after_reason.as_deref(), Some("preferred_healthy"));
     }
 
     #[test]
