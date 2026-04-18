@@ -17,6 +17,10 @@ pub struct ManagedTerminalLaunchSpec {
     pub env: Vec<(String, String)>,
 }
 
+#[cfg(test)]
+type TestLaunchHandler =
+    std::sync::Arc<dyn Fn(&ManagedTerminalLaunchSpec) -> Result<(), String> + Send + Sync>;
+
 fn normalize_optional_text(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -33,18 +37,9 @@ fn powershell_single_quote(value: &str) -> String {
 }
 
 #[cfg(test)]
-fn test_launch_handler_store() -> &'static std::sync::Mutex<
-    Option<std::sync::Arc<dyn Fn(&ManagedTerminalLaunchSpec) -> Result<(), String> + Send + Sync>>,
-> {
-    static STORE: std::sync::OnceLock<
-        std::sync::Mutex<
-            Option<
-                std::sync::Arc<
-                    dyn Fn(&ManagedTerminalLaunchSpec) -> Result<(), String> + Send + Sync,
-                >,
-            >,
-        >,
-    > = std::sync::OnceLock::new();
+fn test_launch_handler_store() -> &'static std::sync::Mutex<Option<TestLaunchHandler>> {
+    static STORE: std::sync::OnceLock<std::sync::Mutex<Option<TestLaunchHandler>>> =
+        std::sync::OnceLock::new();
     STORE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
@@ -63,11 +58,7 @@ fn test_wsl_identity_store() -> &'static std::sync::Mutex<Option<(String, String
 }
 
 #[cfg(test)]
-pub fn _set_test_launch_handler(
-    handler: Option<
-        std::sync::Arc<dyn Fn(&ManagedTerminalLaunchSpec) -> Result<(), String> + Send + Sync>,
-    >,
-) {
+pub fn _set_test_launch_handler(handler: Option<TestLaunchHandler>) {
     if let Ok(mut guard) = test_launch_handler_store().lock() {
         *guard = handler;
     }

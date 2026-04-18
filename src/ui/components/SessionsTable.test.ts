@@ -3,6 +3,8 @@ import {
   arrangeSessionRowsByMainParent,
   compareSessionRowsByOriginThenLastSeen,
   isWslSessionRow,
+  sessionsTableRenderTraceSignature,
+  summarizeSessionsTableRender,
 } from './SessionsTable'
 
 describe('isWslSessionRow', () => {
@@ -195,5 +197,103 @@ describe('arrangeSessionRowsByMainParent', () => {
 
     const arranged = arrangeSessionRowsByMainParent(rows)
     expect(arranged.map((entry) => entry.row.id)).toEqual(['child-review', 'main-1'])
+  })
+})
+
+describe('sessionsTableRenderTraceSignature', () => {
+  it('ignores non-structural fields that should not retrigger render trace', () => {
+    const baseRows = [
+      {
+        id: 'main-1',
+        codex_session_id: 'main-1',
+        wt_session: 'abc',
+        reported_base_url: 'http://127.0.0.1:4000/v1',
+        reported_model_provider: 'api_router',
+        reported_model: 'gpt-5.4',
+        last_seen_unix_ms: 200,
+        active: true,
+        preferred_provider: 'provider_1',
+        current_provider: 'provider_1',
+        current_reason: 'balanced_auto',
+        verified: true,
+        is_agent: false,
+        is_review: false,
+      },
+      {
+        id: 'agent-1',
+        codex_session_id: 'agent-1',
+        agent_parent_session_id: 'main-1',
+        wt_session: 'abc',
+        reported_base_url: 'http://127.0.0.1:4000/v1',
+        reported_model_provider: 'api_router',
+        reported_model: 'gpt-5.4',
+        last_seen_unix_ms: 190,
+        active: false,
+        preferred_provider: null,
+        current_provider: 'provider_2',
+        current_reason: 'manual_override',
+        verified: true,
+        is_agent: true,
+        is_review: false,
+      },
+    ]
+    const nextRows = baseRows.map((row) => ({
+      ...row,
+      reported_model: `${row.reported_model}-mini`,
+      last_seen_unix_ms: row.last_seen_unix_ms + 60_000,
+    }))
+
+    const baseVisibleIds = new Set(['main-1', 'agent-1'])
+    const nextVisibleIds = new Set(['main-1', 'agent-1'])
+    const baseVerifiedRows = arrangeSessionRowsByMainParent(baseRows)
+    const nextVerifiedRows = arrangeSessionRowsByMainParent(nextRows)
+
+    const before = sessionsTableRenderTraceSignature(
+      baseRows,
+      baseVisibleIds,
+      baseVerifiedRows,
+      [],
+    )
+    const after = sessionsTableRenderTraceSignature(
+      nextRows,
+      nextVisibleIds,
+      nextVerifiedRows,
+      [],
+    )
+
+    expect(after).toBe(before)
+  })
+})
+
+describe('summarizeSessionsTableRender', () => {
+  it('keeps trace payload compact with counts and preview ids only', () => {
+    const sessions = Array.from({ length: 14 }, (_, index) => ({
+      id: `session-${index + 1}`,
+      codex_session_id: `session-${index + 1}`,
+      last_seen_unix_ms: index + 1,
+      active: index % 2 === 0,
+      preferred_provider: null,
+      current_provider: index % 3 === 0 ? 'provider_1' : null,
+      current_reason: null,
+      verified: true,
+      is_agent: index % 4 === 0,
+      is_review: index % 7 === 0,
+    }))
+
+    const verifiedRows = arrangeSessionRowsByMainParent(sessions)
+    const summary = summarizeSessionsTableRender(
+      sessions,
+      new Set(['session-1']),
+      verifiedRows,
+      [],
+    )
+
+    expect(summary.input_count).toBe(14)
+    expect(summary.always_visible_count).toBe(1)
+    expect(summary.verified_row_count).toBe(14)
+    expect(summary.unverified_row_count).toBe(0)
+    expect(summary.verified_row_ids_preview).toHaveLength(12)
+    expect(summary.verified_row_ids_preview[0]).toBe('session-1')
+    expect('verified_rows' in (summary as Record<string, unknown>)).toBe(false)
   })
 })

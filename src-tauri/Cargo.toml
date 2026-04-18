@@ -66,6 +66,7 @@ windows = { version = "0.61.3", features = [
   "Win32_Networking_NetworkListManager",
   "Win32_System_Com",
 ] }
+winreg = "0.52"
 windows-sys = { version = "0.52", features = [
   "Win32_Foundation",
   "Win32_NetworkManagement_IpHelper",

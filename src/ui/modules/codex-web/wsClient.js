@@ -131,6 +131,7 @@ export function createWsClientModule(deps) {
     applyPendingPayloads,
     addChat,
     upsertProvisionalThreadItem = () => false,
+    recordWebTransportEvent = () => {},
     LAST_EVENT_ID_KEY,
     windowRef = window,
     WebSocketRef = WebSocket,
@@ -198,6 +199,7 @@ export function createWsClientModule(deps) {
       WS_RECONNECT_BASE_MS * Math.max(1, 2 ** attempt)
     );
     state.wsReconnectAttempt = attempt + 1;
+    recordWebTransportEvent("ws_reconnect_scheduled", String(reason));
     pushLiveDebugEvent("ws.reconnect:scheduled", {
       attempt: state.wsReconnectAttempt,
       delay,
@@ -205,6 +207,7 @@ export function createWsClientModule(deps) {
     });
     state.wsReconnectTimer = setTimeoutRef(() => {
       state.wsReconnectTimer = null;
+      recordWebTransportEvent("ws_reconnect_attempted", null);
       pushLiveDebugEvent("ws.reconnect:attempt", {
         attempt: Number(state.wsReconnectAttempt || 0),
         reason,
@@ -507,6 +510,7 @@ export function createWsClientModule(deps) {
     state.wsSubscribedEvents = false;
     ws.onopen = () => {
       if (state.ws !== ws || connectSeq !== state.wsConnectSeq) return;
+      recordWebTransportEvent("ws_open_observed", null);
       pushLiveDebugEvent("ws.open", {
         url: wsUrl,
       });
@@ -521,6 +525,7 @@ export function createWsClientModule(deps) {
     };
     ws.onerror = () => {
       if (state.ws !== ws || connectSeq !== state.wsConnectSeq) return;
+      recordWebTransportEvent("ws_error_observed", null);
       pushLiveDebugEvent("ws.error", {});
       state.wsSubscribedEvents = false;
       state.wsSubscribedWorkspaceTarget = "";
@@ -530,6 +535,9 @@ export function createWsClientModule(deps) {
     ws.onclose = (event) => {
       if (state.ws !== ws || connectSeq !== state.wsConnectSeq) return;
       clearWsPingTimer();
+      const rawCloseCode = Number(event?.code);
+      const closeCode = Number.isFinite(rawCloseCode) && rawCloseCode >= 1000 ? String(rawCloseCode) : null;
+      recordWebTransportEvent("ws_close_observed", closeCode);
       pushLiveDebugEvent("ws.close:client", {
         code: Number(event?.code ?? 0),
         reason: String(event?.reason || ""),

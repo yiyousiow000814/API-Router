@@ -50,6 +50,8 @@ pub struct ProviderConfig {
     pub group: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disabled: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub supports_websockets: bool,
     /// Optional usage/quota source type for this provider.
     ///
     /// Empty disables usage fetching; otherwise the orchestrator may use it as a hint.
@@ -96,9 +98,10 @@ impl AppConfig {
             "official".to_string(),
             ProviderConfig {
                 display_name: "Official (OAuth passthrough)".to_string(),
-                base_url: "https://api.openai.com".to_string(),
+                base_url: "https://api.openai.com/v1".to_string(),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: "".to_string(),
@@ -113,6 +116,7 @@ impl AppConfig {
                     base_url: String::new(),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     usage_adapter: String::new(),
                     usage_base_url: None,
                     api_key: String::new(),
@@ -144,5 +148,21 @@ impl AppConfig {
                 "provider_2".to_string(),
             ],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppConfig;
+
+    #[test]
+    fn default_official_provider_uses_v1_base_url() {
+        let cfg = AppConfig::default_config();
+        assert_eq!(
+            cfg.providers
+                .get("official")
+                .map(|provider| provider.base_url.as_str()),
+            Some("https://api.openai.com/v1")
+        );
     }
 }

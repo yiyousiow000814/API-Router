@@ -162,6 +162,7 @@ async fn refresh_codex_account_snapshot(
     let mut remaining: Option<String> = None;
     let mut unlimited: Option<bool> = None;
     let mut limit_5h_remaining: Option<String> = None;
+    let mut limit_5h_reset_at: Option<String> = None;
     let mut limit_weekly_remaining: Option<String> = None;
     let mut limit_weekly_reset_at: Option<String> = None;
     let mut code_review_remaining: Option<String> = None;
@@ -197,6 +198,7 @@ async fn refresh_codex_account_snapshot(
                             let window_mins = get_window_minutes(node);
                             if window_mins == Some(300) {
                                 limit_5h_remaining = Some(format_percent(100.0 - used));
+                                limit_5h_reset_at = get_reset_time_str(node);
                             } else if window_mins == Some(10080) || target == "secondary" {
                                 // Keep weekly remaining/reset paired from the same node.
                                 // Prefer the explicit weekly window; otherwise fall back to the first "secondary".
@@ -285,6 +287,7 @@ async fn refresh_codex_account_snapshot(
       "signed_in": signed_in,
       "remaining": remaining,
       "limit_5h_remaining": limit_5h_remaining,
+      "limit_5h_reset_at": limit_5h_reset_at,
       "limit_weekly_remaining": limit_weekly_remaining,
       "limit_weekly_reset_at": limit_weekly_reset_at,
       "code_review_remaining": code_review_remaining,

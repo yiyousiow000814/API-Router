@@ -22,6 +22,7 @@ type CreateProviderCardRendererOptions = {
   setProviderDisabled: (name: string, disabled: boolean) => Promise<void>
   openProviderGroupManager: (provider: string) => void
   openProviderBaseUrlModal: (provider: string, current: string) => void
+  setProviderSupportsWebsockets: (provider: string, enabled: boolean) => Promise<void>
   openKeyModal: (provider: string) => Promise<void>
   clearKey: (provider: string) => Promise<void>
   deleteProvider: (provider: string) => Promise<void>
@@ -35,6 +36,10 @@ type CreateProviderCardRendererOptions = {
     field: 'daily' | 'weekly' | 'monthly',
     enabled: boolean,
   ) => Promise<void>
+  showProviderWsTooltip: (text: string, anchor: HTMLButtonElement) => void
+  hideProviderWsTooltip: () => void
+  openProviderCapsMenu: string | null
+  toggleProviderCapsMenu: (provider: string, anchor: HTMLButtonElement) => void
 }
 
 export function createProviderCardRenderer(options: CreateProviderCardRendererOptions) {
@@ -56,6 +61,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
     const canDeactivate = p.disabled || activeProviderCount > 1
     const editable = p.editable !== false
     const canCopyBorrowed = Boolean(p.borrowed && p.source_node_id && p.shared_provider_id)
+    const capsMenuOpen = options.openProviderCapsMenu === name
     const localCopyState = p.local_copy_state ?? null
     const copyButtonLabel = localCopyState === 'linked' ? 'Linked' : localCopyState === 'copied' ? 'Copied' : 'Copy'
     const copyButtonTitle =
@@ -144,8 +150,30 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
               </div>
               <div className="aoProviderHeadActions">
                 <button
+                  className={`aoTinyBtn aoProviderWsBtn${p.supports_websockets ? ' is-active' : ''}`}
+                  aria-label={p.supports_websockets ? 'Disable WebSocket' : 'Enable WebSocket'}
+                  aria-pressed={Boolean(p.supports_websockets)}
+                  disabled={!editable}
+                  onMouseEnter={(event) =>
+                    options.showProviderWsTooltip(
+                      p.supports_websockets ? 'Disable WebSocket' : 'Enable WebSocket',
+                      event.currentTarget,
+                    )
+                  }
+                  onMouseLeave={() => options.hideProviderWsTooltip()}
+                  onFocus={(event) =>
+                    options.showProviderWsTooltip(
+                      p.supports_websockets ? 'Disable WebSocket' : 'Enable WebSocket',
+                      event.currentTarget,
+                    )
+                  }
+                  onBlur={() => options.hideProviderWsTooltip()}
+                  onClick={() => void options.setProviderSupportsWebsockets(name, !Boolean(p.supports_websockets))}
+                >
+                  WS
+                </button>
+                <button
                   className="aoActionBtn aoProviderHeadBtn"
-                  title="Set base URL"
                   disabled={!editable}
                   onClick={() => options.openProviderBaseUrlModal(name, p.base_url)}
                 >
@@ -153,7 +181,6 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 </button>
                 <button
                   className="aoActionBtn aoProviderHeadBtn"
-                  title="Set key"
                   disabled={!editable}
                   onClick={() => void options.openKeyModal(name)}
                 >
@@ -170,13 +197,6 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                 </button>
                 <button
                   className={`aoStatusSwitch aoProviderHeadSwitch ${p.disabled ? 'aoStatusSwitchOff' : 'aoStatusSwitchOn'}`}
-                  title={
-                    p.disabled
-                      ? 'Click to activate provider'
-                      : canDeactivate
-                        ? 'Click to deactivate provider'
-                        : 'At least one provider must stay active'
-                  }
                   aria-label={p.disabled ? 'Activate provider' : 'Deactivate provider'}
                   aria-pressed={!p.disabled}
                   aria-disabled={!editable || (!p.disabled && !canDeactivate)}
@@ -236,24 +256,23 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                       Usage URL
                     </button>
                   ) : null}
+                  {hasBudgetInfo ? (
+                    <div className="aoActionsMenuWrap aoProviderCapsMenuWrap">
+                      <button
+                        type="button"
+                        className="aoTinyBtn aoProviderCapsTrigger"
+                        aria-haspopup="menu"
+                        aria-expanded={capsMenuOpen}
+                        onClick={(event) => options.toggleProviderCapsMenu(name, event.currentTarget)}
+                      >
+                        Caps
+                        <span className="aoProviderCapsSummary">
+                          {hardCapPeriods.filter((period) => quotaHardCap[period]).length}/{hardCapPeriods.length}
+                        </span>
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
-                {hasBudgetInfo ? (
-                  <div className="aoUsageHardCapInline">
-                    {hardCapPeriods.map((period) => (
-                      <label key={period} className="aoUsageHardCapItem">
-                        <input
-                          type="checkbox"
-                          checked={quotaHardCap[period]}
-                          disabled={!editable}
-                          onChange={(event) =>
-                            void options.setProviderQuotaHardCap(name, period, event.target.checked)
-                          }
-                        />
-                        <span>{period} cap</span>
-                      </label>
-                    ))}
-                  </div>
-                ) : null}
               </div>
             )}
           </div>

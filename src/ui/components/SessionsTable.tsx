@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { fmtWhen } from '../utils/format'
 import { GATEWAY_WINDOWS_HOST, GATEWAY_WSL2_HOST } from '../constants'
+import { recordUiTrace } from '../tauriCore'
 import './SessionsTable.css'
 
 type SessionRow = {
@@ -86,6 +87,82 @@ type DisplaySessionRow = {
   parentMainSessionId?: string
 }
 
+export type SessionsTableRenderTraceSummary = {
+  input_count: number
+  always_visible_count: number
+  verified_row_count: number
+  unverified_row_count: number
+  active_count: number
+  agent_count: number
+  review_count: number
+  verified_row_ids_preview: string[]
+  unverified_row_ids_preview: string[]
+}
+
+export function summarizeSessionsTableRender(
+  sessions: SessionRow[],
+  alwaysVisibleIds: Set<string>,
+  verifiedRows: DisplaySessionRow[],
+  unverifiedRows: DisplaySessionRow[],
+): SessionsTableRenderTraceSummary {
+  return {
+    input_count: sessions.length,
+    always_visible_count: alwaysVisibleIds.size,
+    verified_row_count: verifiedRows.length,
+    unverified_row_count: unverifiedRows.length,
+    active_count: sessions.filter((session) => session.active).length,
+    agent_count: sessions.filter((session) => session.is_agent === true).length,
+    review_count: sessions.filter((session) => session.is_review === true).length,
+    verified_row_ids_preview: verifiedRows.slice(0, 12).map((entry) => entry.row.id),
+    unverified_row_ids_preview: unverifiedRows.slice(0, 12).map((entry) => entry.row.id),
+  }
+}
+
+export function sessionsTableRenderTraceSignature(
+  sessions: SessionRow[],
+  alwaysVisibleIds: Set<string>,
+  verifiedRows: DisplaySessionRow[],
+  unverifiedRows: DisplaySessionRow[],
+): string {
+  const encodeRows = (rows: DisplaySessionRow[]) =>
+    rows
+      .map((entry) =>
+        [
+          entry.row.id,
+          entry.parentMainSessionId ?? '',
+          entry.row.current_provider ?? '',
+          entry.row.current_reason ?? '',
+          entry.row.preferred_provider ?? '',
+          entry.row.active ? '1' : '0',
+          entry.row.verified === false ? '0' : '1',
+          entry.row.is_agent === true ? '1' : '0',
+          entry.row.is_review === true ? '1' : '0',
+        ].join('|'),
+      )
+      .join('\n')
+
+  return [
+    `input:${sessions.length}`,
+    `always:${[...alwaysVisibleIds].sort().join(',')}`,
+    `verified:${encodeRows(verifiedRows)}`,
+    `unverified:${encodeRows(unverifiedRows)}`,
+  ].join('\n---\n')
+}
+
+function sessionIdsAlwaysVisible(rows: SessionRow[]): Set<string> {
+  const ids = new Set<string>()
+  for (const row of rows) {
+    const isAgentOrReview = row.is_agent === true || row.is_review === true
+    if (!isAgentOrReview) continue
+    ids.add(row.id)
+    const parentMainSessionId = (row.agent_parent_session_id ?? '').trim()
+    if (parentMainSessionId) {
+      ids.add(parentMainSessionId)
+    }
+  }
+  return ids
+}
+
 export function arrangeSessionRowsByMainParent(
   rows: SessionRow[],
   wslGatewayHost: string = GATEWAY_WSL2_HOST,
@@ -156,10 +233,6 @@ export function SessionsTable({
     return isWslSessionRow(s, wslGatewayHost)
   }
 
-  function sessionOriginClass(s: SessionRow): string {
-    return isWslSession(s) ? 'aoSessionsIdWsl2' : 'aoSessionsIdWindows'
-  }
-
   function codexProviderLabel(s: SessionRow): string {
     const verified = s.verified !== false
     const isAgent = s.is_agent === true
@@ -172,14 +245,46 @@ export function SessionsTable({
     return s.reported_model_provider ?? '-'
   }
 
-  const verifiedRows = arrangeSessionRowsByMainParent(
-    sessions.filter((s) => s.verified !== false),
-    wslGatewayHost,
+  const alwaysVisibleIds = useMemo(() => sessionIdsAlwaysVisible(sessions), [sessions])
+  const verifiedRows = useMemo(
+    () =>
+      arrangeSessionRowsByMainParent(
+        sessions.filter((s) => s.verified !== false || alwaysVisibleIds.has(s.id)),
+        wslGatewayHost,
+      ),
+    [alwaysVisibleIds, sessions, wslGatewayHost],
   )
-  const unverifiedRows = arrangeSessionRowsByMainParent(
-    sessions.filter((s) => s.verified === false),
-    wslGatewayHost,
+  const unverifiedRows = useMemo(
+    () =>
+      arrangeSessionRowsByMainParent(
+        sessions.filter((s) => s.verified === false && !alwaysVisibleIds.has(s.id)),
+        wslGatewayHost,
+      ),
+    [alwaysVisibleIds, sessions, wslGatewayHost],
   )
+  const displayTrace = useMemo(
+    () => ({
+      summary: summarizeSessionsTableRender(
+        sessions,
+        alwaysVisibleIds,
+        verifiedRows,
+        unverifiedRows,
+      ),
+      signature: sessionsTableRenderTraceSignature(
+        sessions,
+        alwaysVisibleIds,
+        verifiedRows,
+        unverifiedRows,
+      ),
+    }),
+    [alwaysVisibleIds, sessions, unverifiedRows, verifiedRows],
+  )
+  const lastDisplayTraceSignatureRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (lastDisplayTraceSignatureRef.current === displayTrace.signature) return
+    lastDisplayTraceSignatureRef.current = displayTrace.signature
+    recordUiTrace('sessions.table_render', displayTrace.summary)
+  }, [displayTrace])
   const [showUnverified, setShowUnverified] = useState(false)
 
   const renderSessionRows = (rows: DisplaySessionRow[]) => {
@@ -197,6 +302,11 @@ export function SessionsTable({
       rows
         .filter((entry) => !entry.parentMainSessionId)
         .map((entry) => [entry.row.id, codexProviderLabel(entry.row)]),
+    )
+    const mainIsWslBySessionId = new Map(
+      rows
+        .filter((entry) => !entry.parentMainSessionId)
+        .map((entry) => [entry.row.id, isWslSession(entry.row)]),
     )
     return rows.map((entry) => {
       const s = entry.row
@@ -220,9 +330,11 @@ export function SessionsTable({
         ? (mainCodexProviderBySessionId.get(parentMainSessionId) ?? codexProviderLabel(s))
         : codexProviderLabel(s)
       const modelName = s.reported_model ?? '-'
-      const originClass = sessionOriginClass(s)
+      const wsl = isChildRow
+        ? (mainIsWslBySessionId.get(parentMainSessionId) ?? isWslSession(s))
+        : isWslSession(s)
+      const originClass = wsl ? 'aoSessionsIdWsl2' : 'aoSessionsIdWindows'
       const sessionIdClass = isChildRow ? `${originClass} aoSessionsIdChild` : originClass
-      const wsl = isWslSession(s)
       const originBadgeClass = wsl
         ? 'aoSessionOriginBadge aoSessionOriginBadgeWsl'
         : 'aoSessionOriginBadge aoSessionOriginBadgeWindows'

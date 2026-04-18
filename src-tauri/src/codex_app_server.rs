@@ -38,15 +38,11 @@ static DEBUG_EVENTS: OnceLock<Mutex<VecDeque<Value>>> = OnceLock::new();
 static ROLLOUT_LIVE_SYNC: OnceLock<Mutex<HashMap<String, RolloutLiveSyncState>>> = OnceLock::new();
 
 #[cfg(test)]
-static TEST_REQUEST_HANDLER: OnceLock<
-    Mutex<
-        Option<
-            std::sync::Arc<
-                dyn Fn(Option<&str>, &str, Value) -> Result<Value, String> + Send + Sync,
-            >,
-        >,
-    >,
-> = OnceLock::new();
+type TestRequestHandler =
+    std::sync::Arc<dyn Fn(Option<&str>, &str, Value) -> Result<Value, String> + Send + Sync>;
+
+#[cfg(test)]
+static TEST_REQUEST_HANDLER: OnceLock<Mutex<Option<TestRequestHandler>>> = OnceLock::new();
 
 #[cfg(test)]
 static TEST_GLOBAL_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
@@ -63,11 +59,7 @@ pub(crate) fn lock_test_globals() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[cfg(test)]
-pub async fn _set_test_request_handler(
-    handler: Option<
-        std::sync::Arc<dyn Fn(Option<&str>, &str, Value) -> Result<Value, String> + Send + Sync>,
-    >,
-) {
+pub async fn _set_test_request_handler(handler: Option<TestRequestHandler>) {
     let lock = TEST_REQUEST_HANDLER.get_or_init(|| Mutex::new(None));
     let mut guard = lock.lock().await;
     *guard = handler;
@@ -81,9 +73,7 @@ async fn maybe_handle_test_request(
 ) -> Option<Result<Value, String>> {
     let lock = TEST_REQUEST_HANDLER.get_or_init(|| Mutex::new(None));
     let guard = lock.lock().await;
-    let Some(handler) = guard.as_ref() else {
-        return None;
-    };
+    let handler = guard.as_ref()?;
     Some(handler(codex_home, method, params.clone()))
 }
 
@@ -1967,6 +1957,7 @@ impl AppServer {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock, clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
@@ -2596,10 +2587,12 @@ mod tests {
                 .open(&rollout)
                 .expect("append rollout");
             use std::io::Write;
-            writeln!(
-                file,
-                "{}",
-                r#"{"type":"event_msg","payload":{"type":"turn_started","thread_id":"thread-seq","turn_id":"turn-1"}}"#
+            file.write_all(
+                concat!(
+                    r#"{"type":"event_msg","payload":{"type":"turn_started","thread_id":"thread-seq","turn_id":"turn-1"}}"#,
+                    "\n"
+                )
+                .as_bytes(),
             )
             .expect("append turn started");
         }
@@ -2631,18 +2624,16 @@ mod tests {
                 .open(&rollout)
                 .expect("append rollout");
             use std::io::Write;
-            writeln!(
-                file,
-                "{}",
-                r#"{"type":"event_msg","payload":{"type":"agent_reasoning","thread_id":"thread-seq","text":"thinking step"}}"#
+            file.write_all(
+                concat!(
+                    r#"{"type":"event_msg","payload":{"type":"agent_reasoning","thread_id":"thread-seq","text":"thinking step"}}"#,
+                    "\n",
+                    r#"{"type":"response_item","payload":{"type":"function_call","thread_id":"thread-seq","name":"exec_command","call_id":"call-1","arguments":"{\"cmd\":\"npm test\"}"}}"#,
+                    "\n"
+                )
+                .as_bytes(),
             )
-            .expect("append reasoning");
-            writeln!(
-                file,
-                "{}",
-                r#"{"type":"response_item","payload":{"type":"function_call","thread_id":"thread-seq","name":"exec_command","call_id":"call-1","arguments":"{\"cmd\":\"npm test\"}"}}"#
-            )
-            .expect("append command start");
+            .expect("append reasoning and command start");
         }
         let (batch2, _, _, _) = replay_notifications_since_in_home(
             Some(codex_home.to_string_lossy().as_ref()),
@@ -2672,24 +2663,18 @@ mod tests {
                 .open(&rollout)
                 .expect("append rollout");
             use std::io::Write;
-            writeln!(
-                file,
-                "{}",
-                r#"{"type":"response_item","payload":{"type":"message","role":"assistant","thread_id":"thread-seq","phase":"final_answer","content":[{"type":"output_text","text":"final from terminal"}]}}"#
+            file.write_all(
+                concat!(
+                    r#"{"type":"response_item","payload":{"type":"message","role":"assistant","thread_id":"thread-seq","phase":"final_answer","content":[{"type":"output_text","text":"final from terminal"}]}}"#,
+                    "\n",
+                    r#"{"type":"response_item","payload":{"type":"function_call_output","thread_id":"thread-seq","call_id":"call-1","output":"{\"output\":\"ok\",\"metadata\":{\"exit_code\":0}}"}}"#,
+                    "\n",
+                    r#"{"type":"event_msg","payload":{"type":"turn_complete","thread_id":"thread-seq","turn_id":"turn-1"}}"#,
+                    "\n"
+                )
+                .as_bytes(),
             )
-            .expect("append final");
-            writeln!(
-                file,
-                "{}",
-                r#"{"type":"response_item","payload":{"type":"function_call_output","thread_id":"thread-seq","call_id":"call-1","output":"{\"output\":\"ok\",\"metadata\":{\"exit_code\":0}}"}}"#
-            )
-            .expect("append command end");
-            writeln!(
-                file,
-                "{}",
-                r#"{"type":"event_msg","payload":{"type":"turn_complete","thread_id":"thread-seq","turn_id":"turn-1"}}"#
-            )
-            .expect("append turn complete");
+            .expect("append final, command end, and turn complete");
         }
         let (batch3, _, _, _) = replay_notifications_since_in_home(
             Some(codex_home.to_string_lossy().as_ref()),

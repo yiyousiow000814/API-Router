@@ -44,6 +44,23 @@ pub(crate) fn tailscale_overlay_listener_addrs(
 }
 
 #[cfg(windows)]
+pub(crate) fn wsl_overlay_listener_addr(
+    listen_host: &str,
+    listen_port: u16,
+    wsl_host: &str,
+) -> anyhow::Result<Option<SocketAddr>> {
+    let primary: SocketAddr = format!("{listen_host}:{listen_port}").parse()?;
+    if primary.ip().to_string() != crate::constants::GATEWAY_WINDOWS_HOST {
+        return Ok(None);
+    }
+    let parsed_wsl_ip: std::net::IpAddr = wsl_host.parse()?;
+    if parsed_wsl_ip == primary.ip() {
+        return Ok(None);
+    }
+    Ok(Some(SocketAddr::new(parsed_wsl_ip, listen_port)))
+}
+
+#[cfg(windows)]
 fn gateway_listen_addrs_with_overlays(
     listen_host: &str,
     listen_port: u16,
@@ -54,12 +71,10 @@ fn gateway_listen_addrs_with_overlays(
     let primary: SocketAddr = format!("{listen_host}:{listen_port}").parse()?;
     let mut addrs = vec![primary];
 
-    let primary_ip = primary.ip().to_string();
-    if primary_ip == crate::constants::GATEWAY_WINDOWS_HOST {
-        let parsed_wsl_ip: std::net::IpAddr = wsl_host.parse()?;
-        if parsed_wsl_ip != primary.ip() {
-            push_unique_addr(&mut addrs, SocketAddr::new(parsed_wsl_ip, listen_port));
-        }
+    if let Some(wsl_addr) = wsl_overlay_listener_addr(listen_host, listen_port, wsl_host)? {
+        push_unique_addr(&mut addrs, wsl_addr);
+    }
+    if primary.ip().to_string() == crate::constants::GATEWAY_WINDOWS_HOST {
         if let Some(lan_ip) = lan_ip {
             if lan_ip != primary.ip() {
                 push_unique_addr(&mut addrs, SocketAddr::new(lan_ip, listen_port));
@@ -76,7 +91,7 @@ fn gateway_listen_addrs_with_overlays(
 }
 
 #[cfg(windows)]
-fn tailscale_hidden_command(program: &str) -> Command {
+fn tailscale_hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut cmd = Command::new(program);
     std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x08000000);
     cmd
@@ -121,9 +136,10 @@ fn write_gateway_bootstrap_diag(stage: &str, detail: Option<&str>) {
 #[cfg(windows)]
 fn detected_tailscale_ipv4_addrs() -> Vec<IpAddr> {
     write_gateway_bootstrap_diag("tailscale_ipv4_detect_start", None);
-    let output = tailscale_hidden_command("tailscale")
-        .args(["ip", "-4"])
-        .output();
+    let output =
+        tailscale_hidden_command(crate::tailscale_diagnostics::resolve_tailscale_command_path())
+            .args(["ip", "-4"])
+            .output();
     let Ok(output) = output else {
         write_gateway_bootstrap_diag("tailscale_ipv4_detect_unavailable", None);
         return Vec::new();
@@ -245,14 +261,20 @@ fn persist_gateway_runtime_port(
     state: &crate::app_state::AppState,
     next_port: u16,
 ) -> anyhow::Result<()> {
-    let cfg_to_write = {
+    let (previous_port, cfg_to_write) = {
         let mut cfg = state.gateway.cfg.write();
         if cfg.listen.port == next_port {
             return Ok(());
         }
+        let previous_port = cfg.listen.port;
         cfg.listen.port = next_port;
-        cfg.clone()
+        (previous_port, cfg.clone())
     };
+    crate::lan_sync::reassign_ui_watchdog_state(
+        previous_port,
+        next_port,
+        state.ui_watchdog.clone(),
+    );
     std::fs::write(&state.config_path, toml::to_string_pretty(&cfg_to_write)?)?;
     state.gateway.store.events().emit(
         "gateway",
@@ -359,9 +381,15 @@ pub(crate) fn prepare_gateway_listeners(
 
 #[cfg(test)]
 mod tests {
-    use super::{bind_listener_addrs_with_policy, gateway_listen_addrs};
+    use super::{
+        bind_listener_addrs_with_policy, gateway_listen_addrs, persist_gateway_runtime_port,
+    };
     #[cfg(windows)]
-    use super::{gateway_listen_addrs_with_overlays, tailscale_overlay_listener_addrs};
+    use super::{
+        gateway_listen_addrs_with_overlays, tailscale_overlay_listener_addrs,
+        wsl_overlay_listener_addr,
+    };
+    use crate::app_state::build_state;
     use std::io::ErrorKind;
     use std::net::SocketAddr;
 
@@ -393,6 +421,19 @@ mod tests {
         assert!(addrs
             .iter()
             .any(|addr| addr.to_string() == "100.64.208.117:4000"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wsl_overlay_listener_addr_only_exists_for_loopback_primary() {
+        assert_eq!(
+            wsl_overlay_listener_addr("127.0.0.1", 4000, "172.26.144.1").unwrap(),
+            Some("172.26.144.1:4000".parse().unwrap())
+        );
+        assert_eq!(
+            wsl_overlay_listener_addr("172.26.144.1", 4000, "172.26.144.1").unwrap(),
+            None
+        );
     }
 
     #[cfg(windows)]
@@ -464,5 +505,36 @@ mod tests {
             ))
         });
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn persist_gateway_runtime_port_rekeys_ui_watchdog_state() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+
+        let state = build_state(config_path, data_dir).expect("build state");
+        state
+            .ui_watchdog
+            .record_heartbeat("dashboard", true, true, false, false, 1_000);
+
+        let original_port = state.gateway.cfg.read().listen.port;
+        let reassigned_port = original_port + 1;
+        persist_gateway_runtime_port(&state, reassigned_port).expect("persist reassigned port");
+
+        let original_snapshot =
+            crate::lan_sync::current_ui_watchdog_live_snapshot(original_port, 2_000);
+        let reassigned_snapshot =
+            crate::lan_sync::current_ui_watchdog_live_snapshot(reassigned_port, 2_000);
+
+        assert!(original_snapshot.is_none());
+        assert_eq!(
+            reassigned_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.frontend.active_page.as_str()),
+            Some("dashboard")
+        );
+        assert_eq!(state.gateway.cfg.read().listen.port, reassigned_port);
     }
 }

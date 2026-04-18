@@ -1,12 +1,20 @@
 use super::*;
 use axum::extract::{Path as AxumPath, Query};
 use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
 
+use crate::orchestrator::gateway::web_codex_git::{
+    current_branch_for_workspace, detect_git_worktree_for_workspace, switch_branch_for_workspace,
+    uncommitted_file_count_for_workspace, visible_branch_options_for_workspace_with_current_branch,
+};
 use crate::orchestrator::gateway::web_codex_session_manager::{
     merge_runtime_thread_overlay, runtime_thread_path, runtime_thread_payload,
     thread_id_from_response, CodexSessionManager,
 };
 use crate::orchestrator::gateway::web_codex_thread_options::build_thread_resume_params;
+
+const MAX_CONCURRENT_WORKTREE_PROBES: usize = 4;
+type WorktreeProbeOutcome = (Option<String>, String, Result<bool, String>);
 
 #[derive(Deserialize)]
 pub(super) struct ThreadsQuery {
@@ -50,6 +58,37 @@ pub(super) struct ThreadResumeQuery {
     sandbox: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub(super) struct ThreadGitQuery {
+    #[serde(default)]
+    workspace: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct GitMetaQuery {
+    #[serde(default)]
+    workspace: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ThreadBranchSwitchRequest {
+    #[serde(default)]
+    workspace: Option<String>,
+    branch: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct GitBranchSwitchRequest {
+    #[serde(default)]
+    workspace: Option<String>,
+    cwd: String,
+    branch: String,
+}
+
 fn normalize_requested_workspace_label(value: Option<&str>) -> String {
     let requested_workspace = value.unwrap_or_default();
     if requested_workspace.trim().is_empty() {
@@ -57,6 +96,229 @@ fn normalize_requested_workspace_label(value: Option<&str>) -> String {
     } else {
         requested_workspace.trim().to_ascii_lowercase()
     }
+}
+
+fn workspace_label_for_target(target: WorkspaceTarget) -> &'static str {
+    match target {
+        WorkspaceTarget::Windows => "windows",
+        WorkspaceTarget::Wsl2 => "wsl2",
+    }
+}
+
+fn workspace_option_for_item(item: &Value) -> Option<String> {
+    item.get("workspace")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn worktree_probe_request_for_item(
+    item: &Value,
+    workspace_hint: Option<&str>,
+) -> Option<(Option<String>, String)> {
+    let cwd = item
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    if cwd.is_empty() {
+        return None;
+    }
+    let workspace = workspace_hint
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| workspace_option_for_item(item));
+    Some((workspace, cwd))
+}
+
+fn collect_worktree_probe_requests(
+    items: &[Value],
+    workspace_hint: Option<&str>,
+) -> Vec<(Option<String>, String)> {
+    let mut seen = HashSet::new();
+    let mut requests = Vec::new();
+    for item in items {
+        let Some((workspace, cwd)) = worktree_probe_request_for_item(item, workspace_hint) else {
+            continue;
+        };
+        let key = (
+            workspace
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            cwd.clone(),
+        );
+        if seen.insert(key) {
+            requests.push((workspace, cwd));
+        }
+    }
+    requests
+}
+
+fn worktree_probe_result_key(workspace: Option<&str>, cwd: &str) -> (String, String) {
+    (
+        workspace
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_default()
+            .to_ascii_lowercase(),
+        cwd.trim().to_string(),
+    )
+}
+
+fn drain_completed_worktree_probe(
+    results: &mut HashMap<(String, String), bool>,
+    joined: Result<WorktreeProbeOutcome, tokio::task::JoinError>,
+) {
+    let Ok((workspace, cwd, result)) = joined else {
+        return;
+    };
+    if let Ok(is_worktree) = result {
+        results.insert(
+            worktree_probe_result_key(workspace.as_deref(), &cwd),
+            is_worktree,
+        );
+    }
+}
+
+async fn apply_worktree_flag_to_item(
+    item: &mut Value,
+    workspace_hint: Option<&str>,
+) -> Result<(), String> {
+    let Some((workspace, cwd)) = worktree_probe_request_for_item(item, workspace_hint) else {
+        return Ok(());
+    };
+    let is_worktree = detect_git_worktree_for_workspace(workspace.as_deref(), &cwd).await?;
+    if let Some(obj) = item.as_object_mut() {
+        obj.insert("isWorktree".to_string(), Value::Bool(is_worktree));
+    }
+    Ok(())
+}
+
+async fn apply_worktree_flags_to_items(
+    items: &mut Vec<Value>,
+    workspace_hint: Option<&str>,
+) -> Result<(), String> {
+    let requests = collect_worktree_probe_requests(items, workspace_hint);
+    let mut probes = tokio::task::JoinSet::new();
+    let mut results = HashMap::new();
+    for (workspace, cwd) in requests {
+        probes.spawn(async move {
+            let result = detect_git_worktree_for_workspace(workspace.as_deref(), &cwd).await;
+            (workspace, cwd, result)
+        });
+        if probes.len() >= MAX_CONCURRENT_WORKTREE_PROBES {
+            if let Some(joined) = probes.join_next().await {
+                drain_completed_worktree_probe(&mut results, joined);
+            }
+        }
+    }
+
+    while let Some(joined) = probes.join_next().await {
+        drain_completed_worktree_probe(&mut results, joined);
+    }
+
+    for item in items {
+        let Some((workspace, cwd)) = worktree_probe_request_for_item(item, workspace_hint) else {
+            continue;
+        };
+        let key = worktree_probe_result_key(workspace.as_deref(), &cwd);
+        if let Some(is_worktree) = results.get(&key).copied() {
+            if let Some(obj) = item.as_object_mut() {
+                obj.insert("isWorktree".to_string(), Value::Bool(is_worktree));
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn resolve_thread_cwd(
+    workspace_target: WorkspaceTarget,
+    thread_id: &str,
+) -> Result<String, String> {
+    let manager = CodexSessionManager::new(Some(workspace_target));
+    if let Ok(runtime) = manager.read_thread(thread_id, false).await {
+        if let Some(cwd) = runtime_thread_payload(&runtime)
+            .and_then(Value::as_object)
+            .and_then(|thread| thread.get("cwd"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Ok(cwd.to_string());
+        }
+    }
+    let snapshot = crate::orchestrator::gateway::web_codex_threads::list_threads_snapshot(
+        Some(workspace_target),
+        false,
+    )
+    .await;
+    snapshot
+        .items
+        .into_iter()
+        .find(|item| {
+            item.get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .is_some_and(|value| value == thread_id)
+        })
+        .and_then(|item| {
+            item.get("cwd")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .ok_or_else(|| "thread cwd not found".to_string())
+}
+
+async fn thread_git_meta_payload(
+    workspace_target: WorkspaceTarget,
+    thread_id: &str,
+) -> Result<Value, String> {
+    let cwd = resolve_thread_cwd(workspace_target, thread_id).await?;
+    git_meta_payload_for_cwd(workspace_target, Some(thread_id), &cwd).await
+}
+
+async fn git_meta_payload_for_cwd(
+    workspace_target: WorkspaceTarget,
+    thread_id: Option<&str>,
+    cwd: &str,
+) -> Result<Value, String> {
+    let cwd = cwd.trim();
+    if cwd.is_empty() {
+        return Err("cwd is required".to_string());
+    }
+    let workspace = workspace_label_for_target(workspace_target);
+    let (current_branch, is_worktree, uncommitted_file_count) = tokio::try_join!(
+        current_branch_for_workspace(Some(workspace), cwd),
+        detect_git_worktree_for_workspace(Some(workspace), cwd),
+        uncommitted_file_count_for_workspace(Some(workspace), cwd)
+    )?;
+    let branches = visible_branch_options_for_workspace_with_current_branch(
+        Some(workspace),
+        cwd,
+        &current_branch,
+    )
+    .await?;
+    let mut payload = json!({
+        "workspace": workspace,
+        "cwd": cwd,
+        "currentBranch": current_branch,
+        "branches": branches,
+        "isWorktree": is_worktree,
+        "uncommittedFileCount": uncommitted_file_count,
+    });
+    if let Some(thread_id) = thread_id {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("threadId".to_string(), Value::String(thread_id.to_string()));
+        }
+    }
+    Ok(payload)
 }
 
 fn normalize_rollout_query_path(value: Option<&str>) -> Option<String> {
@@ -292,18 +554,20 @@ pub(super) async fn codex_threads_list(
         return resp;
     }
     let started = std::time::Instant::now();
-    let requested_workspace = query.workspace.unwrap_or_default();
+    let requested_workspace = query.workspace.clone().unwrap_or_default();
     let workspace_meta = normalize_requested_workspace_label(Some(&requested_workspace));
     let force = query.force.unwrap_or(false);
     let target = parse_workspace_target(&requested_workspace);
     let snapshot =
         crate::orchestrator::gateway::web_codex_threads::list_threads_snapshot(target, force).await;
+    let mut items = snapshot.items;
+    let _ = apply_worktree_flags_to_items(&mut items, query.workspace.as_deref()).await;
     if matches!(target, Some(WorkspaceTarget::Wsl2) | None) {
-        crate::orchestrator::gateway::web_codex_history::spawn_wsl_history_prewarm(&snapshot.items);
+        crate::orchestrator::gateway::web_codex_history::spawn_wsl_history_prewarm(&items);
     }
     let total_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
     build_threads_response_with_meta(
-        snapshot.items,
+        items,
         json!({
             "workspace": workspace_meta,
             "cacheHit": snapshot.cache_hit,
@@ -333,15 +597,19 @@ pub(super) async fn codex_threads_create(
         Ok(outcome) => {
             crate::orchestrator::gateway::web_codex_threads::invalidate_thread_list_cache_all();
             let runtime_response = outcome.runtime_response;
-            if let (Some(target), Some(item)) = (
-                workspace_target,
-                workspace_target.and_then(|target| {
+            if let Some(target) = workspace_target {
+                if let Some(mut item) =
                     synthesize_thread_list_item(target, &outcome.result, runtime_response.as_ref())
-                }),
-            ) {
-                crate::orchestrator::gateway::web_codex_threads::upsert_thread_item_hint(
-                    target, item,
-                );
+                {
+                    let _ = apply_worktree_flag_to_item(
+                        &mut item,
+                        Some(workspace_label_for_target(target)),
+                    )
+                    .await;
+                    crate::orchestrator::gateway::web_codex_threads::upsert_thread_item_hint(
+                        target, item,
+                    );
+                }
             }
             Json(attach_rollout_path_to_create_response(
                 outcome.result,
@@ -354,6 +622,122 @@ pub(super) async fn codex_threads_create(
             "codex app-server request failed",
             error,
         ),
+    }
+}
+
+pub(super) async fn codex_thread_git_meta(
+    State(st): State<GatewayState>,
+    headers: HeaderMap,
+    Query(query): Query<ThreadGitQuery>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if let Some(resp) = require_codex_auth(&st, &headers) {
+        return resp;
+    }
+    let Some(workspace_target) = query.workspace.as_deref().and_then(parse_workspace_target) else {
+        return api_error(StatusCode::BAD_REQUEST, "workspace is required");
+    };
+    match thread_git_meta_payload(workspace_target, &id).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error_detail(
+            StatusCode::BAD_REQUEST,
+            "failed to read thread git metadata",
+            error,
+        ),
+    }
+}
+
+pub(super) async fn codex_git_meta(
+    State(st): State<GatewayState>,
+    headers: HeaderMap,
+    Query(query): Query<GitMetaQuery>,
+) -> Response {
+    if let Some(resp) = require_codex_auth(&st, &headers) {
+        return resp;
+    }
+    let Some(workspace_target) = query.workspace.as_deref().and_then(parse_workspace_target) else {
+        return api_error(StatusCode::BAD_REQUEST, "workspace is required");
+    };
+    let Some(cwd) = query
+        .cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return api_error(StatusCode::BAD_REQUEST, "cwd is required");
+    };
+    match git_meta_payload_for_cwd(workspace_target, None, cwd).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error_detail(
+            StatusCode::BAD_REQUEST,
+            "failed to read git metadata",
+            error,
+        ),
+    }
+}
+
+pub(super) async fn codex_thread_branch_switch(
+    State(st): State<GatewayState>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+    LoggedJson(req): LoggedJson<ThreadBranchSwitchRequest>,
+) -> Response {
+    if let Some(resp) = require_codex_auth(&st, &headers) {
+        return resp;
+    }
+    let Some(workspace_target) = req.workspace.as_deref().and_then(parse_workspace_target) else {
+        return api_error(StatusCode::BAD_REQUEST, "workspace is required");
+    };
+    let workspace = workspace_label_for_target(workspace_target);
+    let cwd = match resolve_thread_cwd(workspace_target, &id).await {
+        Ok(cwd) => cwd,
+        Err(error) => {
+            return api_error_detail(
+                StatusCode::BAD_REQUEST,
+                "failed to resolve thread cwd",
+                error,
+            )
+        }
+    };
+    match switch_branch_for_workspace(Some(workspace), &cwd, &req.branch).await {
+        Ok(_) => match thread_git_meta_payload(workspace_target, &id).await {
+            Ok(value) => Json(value).into_response(),
+            Err(error) => api_error_detail(
+                StatusCode::BAD_REQUEST,
+                "branch switched but failed to reload thread git metadata",
+                error,
+            ),
+        },
+        Err(error) => api_error_detail(StatusCode::BAD_REQUEST, "failed to switch branch", error),
+    }
+}
+
+pub(super) async fn codex_git_branch_switch(
+    State(st): State<GatewayState>,
+    headers: HeaderMap,
+    LoggedJson(req): LoggedJson<GitBranchSwitchRequest>,
+) -> Response {
+    if let Some(resp) = require_codex_auth(&st, &headers) {
+        return resp;
+    }
+    let Some(workspace_target) = req.workspace.as_deref().and_then(parse_workspace_target) else {
+        return api_error(StatusCode::BAD_REQUEST, "workspace is required");
+    };
+    let cwd = req.cwd.trim();
+    if cwd.is_empty() {
+        return api_error(StatusCode::BAD_REQUEST, "cwd is required");
+    }
+    let workspace = workspace_label_for_target(workspace_target);
+    match switch_branch_for_workspace(Some(workspace), cwd, &req.branch).await {
+        Ok(_) => match git_meta_payload_for_cwd(workspace_target, None, cwd).await {
+            Ok(value) => Json(value).into_response(),
+            Err(error) => api_error_detail(
+                StatusCode::BAD_REQUEST,
+                "branch switched but failed to reload git metadata",
+                error,
+            ),
+        },
+        Err(error) => api_error_detail(StatusCode::BAD_REQUEST, "failed to switch branch", error),
     }
 }
 
@@ -802,5 +1186,54 @@ mod tests {
         assert_eq!(item["cwd"].as_str(), Some("C:\\repo"));
         assert_eq!(item["preview"].as_str(), Some("Plan next step"));
         assert_eq!(item["status"]["type"].as_str(), Some("running"));
+    }
+
+    #[test]
+    fn collect_worktree_probe_requests_deduplicates_workspace_and_cwd() {
+        let items = vec![
+            json!({ "workspace": "windows", "cwd": "C:\\repo-a" }),
+            json!({ "workspace": "windows", "cwd": "C:\\repo-a" }),
+            json!({ "workspace": "wsl2", "cwd": "/repo-b" }),
+            json!({ "workspace": "wsl2", "cwd": "/repo-b" }),
+            json!({ "workspace": "windows", "cwd": "   " }),
+        ];
+
+        let requests = collect_worktree_probe_requests(&items, None);
+
+        assert_eq!(
+            requests,
+            vec![
+                (Some("windows".to_string()), "C:\\repo-a".to_string()),
+                (Some("wsl2".to_string()), "/repo-b".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn collect_worktree_probe_requests_prefers_workspace_hint() {
+        let items = vec![
+            json!({ "workspace": "windows", "cwd": "C:\\repo-a" }),
+            json!({ "workspace": "wsl2", "cwd": "C:\\repo-a" }),
+        ];
+
+        let requests = collect_worktree_probe_requests(&items, Some("wsl2"));
+
+        assert_eq!(
+            requests,
+            vec![(Some("wsl2".to_string()), "C:\\repo-a".to_string())]
+        );
+    }
+
+    #[test]
+    fn worktree_probe_concurrency_limit_prevents_subprocess_bursts() {
+        assert_eq!(MAX_CONCURRENT_WORKTREE_PROBES, 4);
+    }
+
+    #[test]
+    fn worktree_probe_result_key_normalizes_workspace_case() {
+        assert_eq!(
+            worktree_probe_result_key(Some("Windows"), "C:\\repo-a"),
+            worktree_probe_result_key(Some("windows"), "C:\\repo-a")
+        );
     }
 }

@@ -1,5 +1,48 @@
 import { syncPendingTurnRuntime } from "./runtimeState.js";
 
+function splitWorkspaceKeySegments(key) {
+  return String(key || "")
+    .split("/")
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+}
+
+function buildWorkspaceLabelSuffix(segments, depth) {
+  const normalizedDepth = Math.max(1, Number(depth) || 1);
+  if (!Array.isArray(segments) || segments.length <= 1) return "";
+  const parentSegments = segments.slice(0, -1);
+  return parentSegments.slice(-normalizedDepth).join("/");
+}
+
+function buildDisambiguatedWorkspaceLabels(groupEntries) {
+  const entries = Array.isArray(groupEntries) ? groupEntries : [];
+  const labelGroups = new Map();
+  for (const entry of entries) {
+    const label = String(entry?.label || "").trim() || String(entry?.key || "").trim();
+    if (!labelGroups.has(label)) labelGroups.set(label, []);
+    labelGroups.get(label).push(entry);
+  }
+  return entries.map((entry) => {
+    const key = String(entry?.key || "").trim();
+    const label = String(entry?.label || "").trim() || key;
+    const matchingEntries = labelGroups.get(label) || [];
+    if (matchingEntries.length <= 1) return label;
+    const segments = splitWorkspaceKeySegments(key);
+    if (segments.length <= 1) return label;
+    const maxDepth = Math.max(...matchingEntries.map((item) => splitWorkspaceKeySegments(item?.key).length - 1), 1);
+    for (let depth = 1; depth <= maxDepth; depth += 1) {
+      const suffix = buildWorkspaceLabelSuffix(segments, depth);
+      if (!suffix || suffix === label.toLowerCase()) continue;
+      const collisions = matchingEntries.filter((item) => {
+        const itemSuffix = buildWorkspaceLabelSuffix(splitWorkspaceKeySegments(item?.key), depth);
+        return itemSuffix === suffix;
+      });
+      if (collisions.length === 1) return `${label} (${suffix})`;
+    }
+    return `${label} (${key})`;
+  });
+}
+
 export function buildWorkspaceEntries(sourceItems, workspaceKeyOfThread) {
   const groups = new Map();
   const groupLabels = new Map();
@@ -17,7 +60,13 @@ export function buildWorkspaceEntries(sourceItems, workspaceKeyOfThread) {
     if (!groupLabels.has(key)) groupLabels.set(key, keyLabel);
     groups.get(key).push(thread);
   }
-  return Array.from(groups.entries()).map(([key, items]) => [groupLabels.get(key) || key, items, key]);
+  const orderedGroups = Array.from(groups.entries()).map(([key, items]) => ({
+    key,
+    label: groupLabels.get(key) || key,
+    items,
+  }));
+  const labels = buildDisambiguatedWorkspaceLabels(orderedGroups);
+  return orderedGroups.map((group, index) => [labels[index] || group.label, group.items, group.key]);
 }
 
 export function filterWorkspaceSectionThreads(threads, favoriteSet, query, workspaceLabel) {
@@ -286,6 +335,7 @@ export function createThreadListViewModule(deps) {
     setMainTab,
     setMobileTab,
     setActiveThread,
+    onActiveThreadOpened = () => {},
     setChatOpening,
     detectThreadWorkspaceTarget,
     loadThreadMessages,
@@ -635,6 +685,7 @@ export function createThreadListViewModule(deps) {
           setActiveThread,
           detectThreadWorkspaceTarget,
         });
+        onActiveThreadOpened(selection);
         const workspaceHint = selection.workspace;
         const rolloutPath = selection.rolloutPath;
         setChatOpening(true);

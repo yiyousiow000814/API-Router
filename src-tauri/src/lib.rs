@@ -10,6 +10,7 @@ mod lan_sync;
 mod orchestrator;
 mod platform;
 mod provider_switchboard;
+mod tailscale_diagnostics;
 
 use tauri::Manager;
 #[cfg(target_os = "windows")]
@@ -345,6 +346,7 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
                     crate::orchestrator::store::UsageRequestContext {
                         api_key_ref: Some("test"),
                         origin,
+                        transport: "http",
                         session_id: Some(session_id.as_str()),
                         node_id: Some(local_node_id.as_str()),
                         node_name: Some(local_node_name.as_str()),
@@ -545,7 +547,15 @@ pub fn run() {
             app.manage(state);
             {
                 let st = app.state::<app_state::AppState>();
+                let cfg = st.gateway.cfg.read().clone();
+                let listen_port = cfg.listen.port;
                 crate::lan_sync::register_gateway_status_runtime(st.lan_sync.clone());
+                crate::commands::spawn_dashboard_snapshot_warmup(
+                    listen_port,
+                    st.lan_sync.clone(),
+                    cfg,
+                    st.secrets.clone(),
+                );
                 crate::platform::local_network::spawn_monitor(
                     app.handle(),
                     st.local_network.clone(),
@@ -690,6 +700,11 @@ pub fn run() {
                     loop {
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                         let st = app_handle.state::<app_state::AppState>();
+                        st.ui_watchdog.check_backend_status_stall(
+                            &st.gateway.store,
+                            &st.diagnostics_dir,
+                            unix_ms(),
+                        );
                         st.ui_watchdog.check_unresponsive(
                             &st.gateway.store,
                             &st.diagnostics_dir,
@@ -762,6 +777,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::record_app_startup_stage,
+            commands::record_web_transport_event,
             commands::record_ui_watchdog_heartbeat,
             commands::record_ui_trace,
             commands::record_ui_diagnostics_batch,
@@ -771,7 +787,9 @@ pub fn run() {
             commands::record_ui_frontend_error,
             commands::record_ui_invoke_result,
             commands::open_external_url,
+            commands::get_local_diagnostics,
             commands::get_event_log_entries,
+            commands::get_event_log_entry_by_id,
             commands::get_event_log_years,
             commands::get_event_log_daily_stats,
             commands::set_manual_override,
@@ -782,6 +800,7 @@ pub fn run() {
             commands::request_lan_remote_update,
             commands::request_lan_remote_update_same_version,
             commands::fetch_lan_peer_remote_update_debug,
+            commands::get_remote_peer_diagnostics,
             commands::set_followed_config_source,
             commands::clear_followed_config_source,
             commands::copy_provider_from_config_source,
@@ -793,6 +812,7 @@ pub fn run() {
             commands::set_session_preferred_provider,
             commands::clear_session_preferred_provider,
             commands::upsert_provider,
+            commands::set_provider_supports_websockets,
             commands::set_provider_disabled,
             commands::set_provider_group,
             commands::set_providers_group,

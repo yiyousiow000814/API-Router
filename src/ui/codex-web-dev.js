@@ -276,6 +276,27 @@ function normalizeWorkspaceTarget(value) {
   return normalizeWorkspaceTargetInModule(value);
 }
 
+async function recordWebTransportEventToGateway(eventType, detail) {
+  const normalizedEventType = String(eventType || "").trim();
+  if (!normalizedEventType) return;
+  const headers = {
+    "Content-Type": "application/json",
+  };
+  const token = String(state.token || "").trim();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const body = {
+    eventType: normalizedEventType,
+    detail: detail == null ? null : String(detail),
+  };
+  try {
+    await fetch("/codex/transport/events", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  } catch {}
+}
+
 function setActiveThread(id) {
   const prev = state.activeThreadId || "";
   state.activeThreadId = id || "";
@@ -434,6 +455,7 @@ const composition = createCodexWebComposition({
   restoreThreadsCache: (...args) => restoreThreadsCache(...args),
   applyManagedTokenUi: (...args) => applyManagedTokenUi(...args),
   updateMobileComposerState: (...args) => updateMobileComposerState(...args),
+  refreshActiveThreadGitMeta: (...args) => refreshActiveThreadGitMeta(...args),
   setComposerActionMenuOpen: (...args) => setComposerActionMenuOpen(...args),
   refreshSlashCommandsState: (...args) => refreshSlashCommandsState(...args),
   syncSettingsControlsFromMain: (...args) => syncSettingsControlsFromMain(...args),
@@ -483,6 +505,7 @@ const composition = createCodexWebComposition({
   createDebugToolsModule,
   createThreadLiveModule,
   createBootstrapModule,
+  recordWebTransportEvent: (...args) => recordWebTransportEventToGateway(...args),
   installMobileViewportSync: () => installMobileViewportSync({
     windowRef: window,
     documentRef: document,
@@ -596,6 +619,7 @@ const renderPendingInline = (...args) => renderPendingInlineFromComposition(...a
   toolItemToMessage,
   normalizeType,
   escapeHtml,
+  api,
   updateHeaderUi: (...args) => updateHeaderUi(...args),
   setSyntheticPendingUserInputs: (...args) => setSyntheticPendingUserInputs(...args),
   upsertSyntheticPendingUserInput: (...args) => upsertSyntheticPendingUserInput(...args),

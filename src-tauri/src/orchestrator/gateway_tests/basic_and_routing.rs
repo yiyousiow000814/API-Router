@@ -52,6 +52,68 @@ async fn health_and_status_work_without_upstream() {
 }
 
 #[tokio::test]
+async fn codex_transport_events_route_records_web_transport_metrics() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+    secrets
+        .set_gateway_token("test-token")
+        .expect("set gateway token");
+
+    let cfg = AppConfig::default_config();
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let before_count =
+        crate::diagnostics::codex_web_transport::current_web_transport_snapshot()
+            .active_thread_poll_failed
+            .count;
+
+    let app = build_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/codex/transport/events")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer test-token")
+                .body(Body::from(
+                    json!({
+                        "eventType": "active_thread_poll_failed",
+                        "detail": "timeout"
+                    })
+                    .to_string(),
+                ))
+                .expect("transport event request"),
+        )
+        .await
+        .expect("transport event response");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("transport event body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("transport event json");
+    assert_eq!(json.get("ok").and_then(|value| value.as_bool()), Some(true));
+
+    let after_count = crate::diagnostics::codex_web_transport::current_web_transport_snapshot()
+        .active_thread_poll_failed
+        .count;
+    assert!(after_count > before_count);
+}
+
+#[tokio::test]
 async fn models_probe_does_not_update_last_ok_or_activity() {
     use axum::routing::get;
     use axum::{Json, Router as AxumRouter};
@@ -114,6 +176,640 @@ async fn models_probe_does_not_update_last_ok_or_activity() {
     let health = snapshot.get("official").expect("provider snapshot");
     assert_eq!(health.last_ok_at_unix_ms, 0);
     assert_eq!(health.status, "unknown");
+}
+
+#[tokio::test]
+async fn responses_fallback_from_ws_to_http_records_http_transport_and_event() {
+    use axum::routing::post;
+    use axum::{Json, Router as AxumRouter};
+    use tower::ServiceExt;
+
+    let app = AxumRouter::new().route(
+        "/v1/responses",
+        post(|| async move {
+            Json(serde_json::json!({
+                "id": "resp_http_fallback",
+                "model": "gpt-5.4",
+                "output": [],
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 2,
+                    "total_tokens": 12
+                }
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let mut cfg = AppConfig::default_config();
+    let provider = cfg
+        .providers
+        .get_mut("official")
+        .expect("official provider");
+    provider.base_url = format!("http://{}:{}/v1", addr.ip(), addr.port());
+    provider.supports_websockets = true;
+
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .header("x-codex-session-id", "session-ws-fallback")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "gpt-5.4",
+                        "input": "hello",
+                        "stream": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("responses request");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("responses body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("responses json");
+    assert_eq!(
+        json.get("id").and_then(|value| value.as_str()),
+        Some("resp_http_fallback")
+    );
+
+    let (rows, has_more) =
+        state
+            .store
+            .list_usage_requests_page(0, None, None, &[], &[], &[], &[], &[], &[], 20, 0);
+    assert!(!has_more);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get("transport").and_then(|value| value.as_str()),
+        Some("http")
+    );
+
+    let events = state.store.list_events_range(None, None, Some(20));
+    assert!(events.iter().any(|event| {
+        event.get("code").and_then(|value| value.as_str())
+            == Some("gateway.websocket_fallback_to_http")
+    }));
+}
+
+#[tokio::test]
+async fn responses_with_previous_response_id_skip_ws_attempts() {
+    use axum::routing::post;
+    use axum::{Json, Router as AxumRouter};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tower::ServiceExt;
+
+    let http_requests = Arc::new(AtomicUsize::new(0));
+    let http_requests_for_route = http_requests.clone();
+    let app = AxumRouter::new().route(
+        "/v1/responses",
+        post(move |Json(body): Json<serde_json::Value>| {
+            let http_requests_for_route = http_requests_for_route.clone();
+            async move {
+                http_requests_for_route.fetch_add(1, Ordering::Relaxed);
+                assert_eq!(
+                    body.get("previous_response_id").and_then(|value| value.as_str()),
+                    Some("resp_prev")
+                );
+                Json(serde_json::json!({
+                    "id": "resp_http_prev",
+                    "model": "gpt-5.4",
+                    "output": [],
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 2,
+                        "total_tokens": 12
+                    }
+                }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let mut cfg = AppConfig::default_config();
+    let provider = cfg
+        .providers
+        .get_mut("official")
+        .expect("official provider");
+    provider.base_url = format!("http://{}:{}/v1", addr.ip(), addr.port());
+    provider.supports_websockets = true;
+
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .header("x-codex-session-id", "session-prev-id")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "gpt-5.4",
+                        "input": "hello",
+                        "previous_response_id": "resp_prev",
+                        "stream": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("responses request");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("responses body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("responses json");
+    assert_eq!(
+        json.get("id").and_then(|value| value.as_str()),
+        Some("resp_http_prev")
+    );
+    assert_eq!(http_requests.load(Ordering::Relaxed), 1);
+
+    let events = state.store.list_events_range(None, None, Some(20));
+    assert!(!events.iter().any(|event| {
+        event.get("code").and_then(|value| value.as_str())
+            == Some("gateway.websocket_fallback_to_http")
+    }));
+}
+
+#[tokio::test]
+async fn responses_fallback_from_failed_ws_response_done_to_http() {
+    use axum::extract::ws::{Message, WebSocketUpgrade};
+    use axum::response::IntoResponse;
+    use axum::routing::{get, post};
+    use axum::{Json, Router as AxumRouter};
+    use futures_util::StreamExt;
+    use tower::ServiceExt;
+
+    async fn ws_failed_done_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
+        ws.on_upgrade(|mut socket| async move {
+            while let Some(Ok(message)) = socket.next().await {
+                let Message::Text(_) = message else {
+                    continue;
+                };
+                socket
+                    .send(Message::Text(
+                        serde_json::json!({
+                            "type": "response.done",
+                            "response": {
+                                "id": "resp_ws_failed",
+                                "model": "gpt-5.4",
+                                "status": "failed",
+                                "error": {
+                                    "message": "upstream failed"
+                                }
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .await
+                    .expect("send failed response.done");
+                break;
+            }
+        })
+    }
+
+    let app = AxumRouter::new()
+        .route("/v1/realtime", get(ws_failed_done_handler))
+        .route(
+            "/v1/responses",
+            post(|| async move {
+                Json(serde_json::json!({
+                    "id": "resp_http_after_ws_failed",
+                    "model": "gpt-5.4",
+                    "output": [],
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 2,
+                        "total_tokens": 12
+                    }
+                }))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let mut cfg = AppConfig::default_config();
+    let provider = cfg
+        .providers
+        .get_mut("official")
+        .expect("official provider");
+    provider.base_url = format!("http://{}:{}/v1", addr.ip(), addr.port());
+    provider.supports_websockets = true;
+
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .header("x-codex-session-id", "session-ws-failed-done")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "gpt-5.4",
+                        "input": "hello",
+                        "stream": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("responses request");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("responses body");
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("responses json");
+    assert_eq!(
+        json.get("id").and_then(|value| value.as_str()),
+        Some("resp_http_after_ws_failed")
+    );
+
+    let (rows, has_more) =
+        state
+            .store
+            .list_usage_requests_page(0, None, None, &[], &[], &[], &[], &[], &[], 20, 0);
+    assert!(!has_more);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get("transport").and_then(|value| value.as_str()),
+        Some("http")
+    );
+
+    let events = state.store.list_events_range(None, None, Some(20));
+    assert!(events.iter().any(|event| {
+        event.get("code").and_then(|value| value.as_str())
+            == Some("gateway.websocket_fallback_to_http")
+    }));
+}
+
+#[tokio::test]
+async fn responses_stream_via_websocket_records_ws_transport() {
+    use axum::extract::ws::{Message, WebSocketUpgrade};
+    use axum::response::IntoResponse;
+    use axum::routing::get;
+    use axum::Router as AxumRouter;
+    use futures_util::StreamExt;
+    use tower::ServiceExt;
+
+    async fn ws_stream_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
+        ws.on_upgrade(|mut socket| async move {
+            while let Some(Ok(message)) = socket.next().await {
+                let Message::Text(_) = message else {
+                    continue;
+                };
+                socket
+                    .send(Message::Text(
+                        serde_json::json!({
+                            "type": "response.created",
+                            "response": {
+                                "id": "resp_ws_stream",
+                                "model": "gpt-5.4"
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .await
+                    .expect("send response.created");
+                socket
+                    .send(Message::Text(
+                        serde_json::json!({
+                            "type": "response.output_text.delta",
+                            "delta": "hello from ws"
+                        })
+                        .to_string(),
+                    ))
+                    .await
+                    .expect("send text delta");
+                socket
+                    .send(Message::Text(
+                        serde_json::json!({
+                            "type": "response.done",
+                            "response": {
+                                "id": "resp_ws_stream",
+                                "model": "gpt-5.4",
+                                "status": "completed",
+                                "output": [],
+                                "usage": {
+                                    "input_tokens": 10,
+                                    "output_tokens": 2,
+                                    "total_tokens": 12
+                                }
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .await
+                    .expect("send response.done");
+                break;
+            }
+        })
+    }
+
+    let app = AxumRouter::new().route("/v1/realtime", get(ws_stream_handler));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let mut cfg = AppConfig::default_config();
+    let provider = cfg
+        .providers
+        .get_mut("official")
+        .expect("official provider");
+    provider.base_url = format!("http://{}:{}/v1", addr.ip(), addr.port());
+    provider.supports_websockets = true;
+
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .header("x-codex-session-id", "session-ws-stream")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "gpt-5.4",
+                        "input": "hello",
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("responses request");
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream")
+    );
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("responses body");
+    let body_text = String::from_utf8(body.to_vec()).expect("utf8 body");
+    assert!(body_text.contains("response.created"));
+    assert!(body_text.contains("response.done"));
+
+    let (rows, has_more) =
+        state
+            .store
+            .list_usage_requests_page(0, None, None, &[], &[], &[], &[], &[], &[], 20, 0);
+    assert!(!has_more);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get("transport").and_then(|value| value.as_str()),
+        Some("ws")
+    );
+
+    let events = state.store.list_events_range(None, None, Some(20));
+    assert!(!events.iter().any(|event| {
+        event.get("code").and_then(|value| value.as_str())
+            == Some("gateway.websocket_fallback_to_http")
+    }));
+}
+
+#[tokio::test]
+async fn responses_stream_http_retry_does_not_repeat_failed_ws_attempt() {
+    use axum::response::IntoResponse;
+    use axum::response::sse::{Event, Sse};
+    use axum::routing::post;
+    use axum::Router as AxumRouter;
+    use std::convert::Infallible;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tower::ServiceExt;
+
+    let http_requests = Arc::new(AtomicUsize::new(0));
+    let http_requests_for_route = http_requests.clone();
+    let app = AxumRouter::new().route(
+        "/v1/responses",
+        post(move || {
+            let http_requests_for_route = http_requests_for_route.clone();
+            async move {
+                let call = http_requests_for_route.fetch_add(1, Ordering::Relaxed) + 1;
+                if call == 1 {
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        [("content-type", "application/json")],
+                        r#"{"error":{"message":"rate limited"}}"#.to_string(),
+                    )
+                        .into_response();
+                }
+
+                let stream = futures_util::stream::iter(vec![
+                    Ok::<Event, Infallible>(
+                        Event::default().data(
+                            serde_json::json!({
+                                "type": "response.created",
+                                "response": {
+                                    "id": "resp_http_stream_retry",
+                                    "model": "gpt-5.4"
+                                }
+                            })
+                            .to_string(),
+                        ),
+                    ),
+                    Ok::<Event, Infallible>(
+                        Event::default().data(
+                            serde_json::json!({
+                                "type": "response.completed",
+                                "response": {
+                                    "id": "resp_http_stream_retry",
+                                    "model": "gpt-5.4",
+                                    "status": "completed",
+                                    "output": [],
+                                    "usage": {
+                                        "input_tokens": 10,
+                                        "output_tokens": 2,
+                                        "total_tokens": 12
+                                    }
+                                }
+                            })
+                            .to_string(),
+                        ),
+                    ),
+                ]);
+                Sse::new(stream).into_response()
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let mut cfg = AppConfig::default_config();
+    let provider = cfg
+        .providers
+        .get_mut("official")
+        .expect("official provider");
+    provider.base_url = format!("http://{}:{}/v1", addr.ip(), addr.port());
+    provider.supports_websockets = true;
+
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header("content-type", "application/json")
+                .header("x-codex-session-id", "session-ws-once")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "gpt-5.4",
+                        "input": "hello",
+                        "stream": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .expect("responses request");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("responses body");
+    let body_text = String::from_utf8(body.to_vec()).expect("utf8 body");
+    assert!(body_text.contains("resp_http_stream_retry"));
+    assert_eq!(http_requests.load(Ordering::Relaxed), 2);
+
+    let events = state.store.list_events_range(None, None, Some(50));
+    let ws_fallback_count = events
+        .iter()
+        .filter(|event| {
+            event.get("code").and_then(|value| value.as_str())
+                == Some("gateway.websocket_fallback_to_http")
+        })
+        .count();
+    assert_eq!(ws_fallback_count, 1);
+
+    let stream_retry_count = events
+        .iter()
+        .filter(|event| {
+            event.get("code").and_then(|value| value.as_str())
+                == Some("gateway.upstream_retry")
+        })
+        .count();
+    assert_eq!(stream_retry_count, 1);
 }
 
 #[tokio::test]
@@ -289,6 +985,7 @@ fn decide_provider_holds_fallback_during_preferred_stabilizing_window() {
             base_url: "https://example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -301,6 +998,7 @@ fn decide_provider_holds_fallback_during_preferred_stabilizing_window() {
             base_url: "https://example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -370,6 +1068,7 @@ fn decide_provider_keeps_fallback_when_last_reason_already_preferred_stabilizing
             base_url: "https://example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -382,6 +1081,7 @@ fn decide_provider_keeps_fallback_when_last_reason_already_preferred_stabilizing
             base_url: "https://example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -451,6 +1151,7 @@ fn decide_provider_balanced_auto_spreads_multi_sessions_deterministically() {
                 base_url: "https://example.com".to_string(),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -487,6 +1188,7 @@ fn decide_provider_balanced_auto_spreads_multi_sessions_deterministically() {
         last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
         last_reported_model: None,
         last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+        rollout_path: None,
         agent_parent_session_id: None,
         is_agent: false,
         is_review: false,
@@ -565,6 +1267,7 @@ fn decide_provider_balanced_auto_single_session_follows_preferred() {
                 base_url: "https://example.com".to_string(),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -624,6 +1327,7 @@ fn decide_provider_balanced_auto_sticks_to_verified_session_assignment_even_if_p
                 base_url: format!("https://{name}.example.com"),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -670,6 +1374,7 @@ fn decide_provider_balanced_auto_sticks_to_verified_session_assignment_even_if_p
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -701,6 +1406,7 @@ fn decide_provider_balanced_auto_agent_session_follows_parent_assignment() {
                 base_url: format!("https://{name}.example.com"),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -749,6 +1455,7 @@ fn decide_provider_balanced_auto_agent_session_follows_parent_assignment() {
                     last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                     last_reported_model: None,
                     last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                    rollout_path: None,
                     agent_parent_session_id: None,
                     is_agent: false,
                     is_review: false,
@@ -766,6 +1473,7 @@ fn decide_provider_balanced_auto_agent_session_follows_parent_assignment() {
                     last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                     last_reported_model: None,
                     last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                    rollout_path: None,
                     agent_parent_session_id: Some("main-session".to_string()),
                     is_agent: true,
                     is_review: false,
@@ -797,6 +1505,7 @@ fn decide_provider_balanced_auto_persists_assignment_across_restart() {
                 base_url: format!("https://{name}.example.com"),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -832,6 +1541,7 @@ fn decide_provider_balanced_auto_persists_assignment_across_restart() {
         last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
         last_reported_model: None,
         last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+        rollout_path: None,
         agent_parent_session_id: None,
         is_agent: false,
         is_review: false,
@@ -897,6 +1607,7 @@ fn decide_provider_balanced_auto_keeps_provider_when_alternative_shares_same_api
                 base_url: format!("https://{name}.example.com"),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -944,6 +1655,7 @@ fn decide_provider_balanced_auto_keeps_provider_when_alternative_shares_same_api
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -979,6 +1691,7 @@ fn decide_provider_balanced_auto_rebalances_after_sticky_window_when_assignment_
                 base_url: format!("https://{name}.example.com"),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -1026,6 +1739,7 @@ fn decide_provider_balanced_auto_rebalances_after_sticky_window_when_assignment_
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -1072,6 +1786,7 @@ fn decide_provider_balanced_auto_retries_unhealthy_provider_when_load_is_skewed(
                 base_url: format!("https://{name}.example.com"),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -1119,6 +1834,7 @@ fn decide_provider_balanced_auto_retries_unhealthy_provider_when_load_is_skewed(
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -1166,6 +1882,7 @@ fn decide_provider_balanced_auto_retries_unhealthy_provider_even_with_fresh_assi
                 base_url: format!("https://{name}.example.com"),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -1213,6 +1930,7 @@ fn decide_provider_balanced_auto_retries_unhealthy_provider_even_with_fresh_assi
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -1253,6 +1971,7 @@ fn decide_provider_balanced_auto_fallback_keeps_primary_assignment_when_unhealth
                 base_url: format!("https://{name}.example.com"),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -1300,6 +2019,7 @@ fn decide_provider_balanced_auto_fallback_keeps_primary_assignment_when_unhealth
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -1341,6 +2061,7 @@ fn decide_provider_balanced_auto_fallback_keeps_primary_assignment_during_cooldo
                 base_url: format!("https://{name}.example.com"),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -1388,6 +2109,7 @@ fn decide_provider_balanced_auto_fallback_keeps_primary_assignment_during_cooldo
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -1427,6 +2149,7 @@ fn decide_provider_balanced_auto_reassigns_immediately_after_closed_provider_reo
                 base_url: format!("https://{name}.example.com"),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -1475,6 +2198,7 @@ fn decide_provider_balanced_auto_reassigns_immediately_after_closed_provider_reo
                     last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                     last_reported_model: None,
                     last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                    rollout_path: None,
                     agent_parent_session_id: None,
                     is_agent: false,
                     is_review: false,
@@ -1492,6 +2216,7 @@ fn decide_provider_balanced_auto_reassigns_immediately_after_closed_provider_reo
                     last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                     last_reported_model: None,
                     last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                    rollout_path: None,
                     agent_parent_session_id: None,
                     is_agent: false,
                     is_review: false,
@@ -1570,6 +2295,7 @@ fn decide_provider_balanced_auto_reassigns_after_unhealthy_provider_recovers() {
                 base_url: format!("https://{name}.example.com"),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -1618,6 +2344,7 @@ fn decide_provider_balanced_auto_reassigns_after_unhealthy_provider_recovers() {
                     last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                     last_reported_model: None,
                     last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                    rollout_path: None,
                     agent_parent_session_id: None,
                     is_agent: false,
                     is_review: false,
@@ -1635,6 +2362,7 @@ fn decide_provider_balanced_auto_reassigns_after_unhealthy_provider_recovers() {
                     last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                     last_reported_model: None,
                     last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                    rollout_path: None,
                     agent_parent_session_id: None,
                     is_agent: false,
                     is_review: false,
@@ -1705,6 +2433,7 @@ fn decide_provider_balanced_auto_prefers_healthy_when_load_gap_is_small() {
                 base_url: format!("https://{name}.example.com"),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -1752,6 +2481,7 @@ fn decide_provider_balanced_auto_prefers_healthy_when_load_gap_is_small() {
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -1785,6 +2515,7 @@ fn decide_provider_balanced_auto_suppresses_preferred_during_stabilizing_window(
                 base_url: format!("https://{name}.example.com"),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -1840,6 +2571,7 @@ fn decide_provider_balanced_auto_suppresses_preferred_during_stabilizing_window(
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -1876,6 +2608,7 @@ fn decide_provider_balanced_auto_keeps_healthy_when_unhealthy_gain_is_within_mar
                 base_url: format!("https://{name}.example.com"),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -1923,6 +2656,7 @@ fn decide_provider_balanced_auto_keeps_healthy_when_unhealthy_gain_is_within_mar
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -1961,6 +2695,7 @@ fn decide_provider_balanced_auto_weights_daily_remaining_with_other_signals() {
                 base_url: format!("https://{name}.example.com"),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -2008,6 +2743,7 @@ fn decide_provider_balanced_auto_weights_daily_remaining_with_other_signals() {
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -2070,6 +2806,7 @@ fn decide_provider_balanced_auto_prefers_higher_quota_for_heavy_session_when_loa
                 base_url: format!("https://{name}.example.com"),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -2117,6 +2854,7 @@ fn decide_provider_balanced_auto_prefers_higher_quota_for_heavy_session_when_loa
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -2171,6 +2909,7 @@ fn decide_provider_balanced_auto_prefers_higher_quota_for_heavy_session_when_loa
             crate::orchestrator::store::UsageRequestContext {
                 api_key_ref: Some("-"),
                 origin: crate::constants::USAGE_ORIGIN_WINDOWS,
+                transport: "http",
                 session_id: Some("session-heavy-headroom"),
                 node_id: Some("node-test"),
                 node_name: Some("Desk Test"),
@@ -2184,6 +2923,7 @@ fn decide_provider_balanced_auto_prefers_higher_quota_for_heavy_session_when_loa
         usage_since,
         Some(usage_since),
         None,
+        &[],
         &[],
         &[],
         &[],
@@ -2234,6 +2974,7 @@ fn decide_provider_balanced_auto_heavy_session_prefers_lower_per_request_cost() 
                 base_url: format!("https://{name}.example.com"),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -2281,6 +3022,7 @@ fn decide_provider_balanced_auto_heavy_session_prefers_lower_per_request_cost() 
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -2334,6 +3076,7 @@ fn decide_provider_balanced_auto_heavy_session_prefers_lower_per_request_cost() 
             crate::orchestrator::store::UsageRequestContext {
                 api_key_ref: Some("-"),
                 origin: crate::constants::USAGE_ORIGIN_WINDOWS,
+                transport: "http",
                 session_id: Some("session-heavy-cost"),
                 node_id: Some("node-test"),
                 node_name: Some("Desk Test"),
@@ -2368,6 +3111,7 @@ fn decide_provider_balanced_auto_no_longer_hard_prioritizes_load_pressure() {
                 base_url: format!("https://{name}.example.com"),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -2415,6 +3159,7 @@ fn decide_provider_balanced_auto_no_longer_hard_prioritizes_load_pressure() {
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -2468,6 +3213,7 @@ fn decide_provider_balanced_auto_no_longer_hard_prioritizes_load_pressure() {
             crate::orchestrator::store::UsageRequestContext {
                 api_key_ref: Some("-"),
                 origin: crate::constants::USAGE_ORIGIN_WINDOWS,
+                transport: "http",
                 session_id: Some("session-heavy-pressure"),
                 node_id: Some("node-test"),
                 node_name: Some("Desk Test"),
@@ -2498,6 +3244,7 @@ fn decide_provider_for_display_keeps_usage_confirmation_requirement() {
             base_url: "https://p1.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -2510,6 +3257,7 @@ fn decide_provider_for_display_keeps_usage_confirmation_requirement() {
             base_url: "https://p2.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -2592,6 +3340,7 @@ fn decide_provider_for_display_balanced_bootstrap_keeps_usage_confirmation_requi
             base_url: "https://p1.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -2638,6 +3387,7 @@ fn decide_provider_for_display_balanced_bootstrap_keeps_usage_confirmation_requi
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -2694,6 +3444,7 @@ fn decide_provider_for_display_balanced_bootstrap_persists_rebalanced_stale_assi
             base_url: "https://p1.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -2706,6 +3457,7 @@ fn decide_provider_for_display_balanced_bootstrap_persists_rebalanced_stale_assi
             base_url: "https://p2.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -2753,6 +3505,7 @@ fn decide_provider_for_display_balanced_bootstrap_persists_rebalanced_stale_assi
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -2804,6 +3557,7 @@ fn decide_provider_balanced_auto_ignores_explicit_session_lock_assignments() {
             base_url: "https://p1.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -2816,6 +3570,7 @@ fn decide_provider_balanced_auto_ignores_explicit_session_lock_assignments() {
             base_url: "https://p2.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -2865,6 +3620,7 @@ fn decide_provider_balanced_auto_ignores_explicit_session_lock_assignments() {
                 last_reported_model_provider: Some(GATEWAY_MODEL_PROVIDER_ID.to_string()),
                 last_reported_model: None,
                 last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: None,
                 agent_parent_session_id: None,
                 is_agent: false,
                 is_review: false,
@@ -2899,6 +3655,7 @@ fn decide_provider_skips_fallback_with_no_remaining_quota() {
             base_url: "https://p1.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -2911,6 +3668,7 @@ fn decide_provider_skips_fallback_with_no_remaining_quota() {
             base_url: "https://p2.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -2923,6 +3681,7 @@ fn decide_provider_skips_fallback_with_no_remaining_quota() {
             base_url: "https://p3.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -2996,6 +3755,7 @@ fn decide_provider_skips_fallback_when_daily_budget_exhausted() {
             base_url: "https://p1.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -3008,6 +3768,7 @@ fn decide_provider_skips_fallback_when_daily_budget_exhausted() {
             base_url: "https://p2.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -3020,6 +3781,7 @@ fn decide_provider_skips_fallback_when_daily_budget_exhausted() {
             base_url: "https://p3.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -3093,6 +3855,7 @@ fn decide_with_budget_snapshot_for_p2(snapshot: serde_json::Value) -> (String, &
             base_url: "https://p1.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -3105,6 +3868,7 @@ fn decide_with_budget_snapshot_for_p2(snapshot: serde_json::Value) -> (String, &
             base_url: "https://p2.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -3117,6 +3881,7 @@ fn decide_with_budget_snapshot_for_p2(snapshot: serde_json::Value) -> (String, &
             base_url: "https://p3.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -3246,6 +4011,81 @@ fn decide_provider_with_budget_fields_still_closes_when_remaining_is_zero() {
 }
 
 #[test]
+fn decide_provider_reports_no_routable_provider_when_all_candidates_are_unavailable() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+
+    let mut providers = std::collections::BTreeMap::new();
+    providers.insert(
+        "p1".to_string(),
+        ProviderConfig {
+            display_name: "P1".to_string(),
+            base_url: "https://p1.example.com".to_string(),
+            group: None,
+            disabled: false,
+            supports_websockets: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        },
+    );
+    providers.insert(
+        "p2".to_string(),
+        ProviderConfig {
+            display_name: "P2".to_string(),
+            base_url: "https://p2.example.com".to_string(),
+            group: None,
+            disabled: false,
+            supports_websockets: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        },
+    );
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 4000,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
+            auto_return_to_preferred: true,
+            preferred_stable_seconds: 3600,
+            failure_threshold: 1,
+            cooldown_seconds: 30,
+            request_timeout_seconds: 300,
+        },
+        providers,
+        provider_order: vec!["p1".to_string(), "p2".to_string()],
+    };
+
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    router.mark_failure("p1", &cfg, "boom", unix_ms());
+    router.mark_failure("p2", &cfg, "also boom", unix_ms());
+
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg.clone())),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let (picked, reason) = decide_provider(&state, &cfg, "p1", "s1");
+    assert_eq!(picked, "p1");
+    assert_eq!(reason, "no_routable_provider");
+}
+
+#[test]
 fn decide_provider_manual_override_falls_back_when_daily_budget_exhausted() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let store = open_store_dir(tmp.path().join("data")).expect("store");
@@ -3259,6 +4099,7 @@ fn decide_provider_manual_override_falls_back_when_daily_budget_exhausted() {
             base_url: "https://p1.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -3271,6 +4112,7 @@ fn decide_provider_manual_override_falls_back_when_daily_budget_exhausted() {
             base_url: "https://p2.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -3345,6 +4187,7 @@ fn decide_provider_stabilizing_skips_last_provider_with_no_remaining_quota() {
             base_url: "https://p1.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -3357,6 +4200,7 @@ fn decide_provider_stabilizing_skips_last_provider_with_no_remaining_quota() {
             base_url: "https://p2.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -3369,6 +4213,7 @@ fn decide_provider_stabilizing_skips_last_provider_with_no_remaining_quota() {
             base_url: "https://p3.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -3450,6 +4295,7 @@ fn decide_provider_respects_provider_order_for_fallback() {
             base_url: "https://alpha.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -3462,6 +4308,7 @@ fn decide_provider_respects_provider_order_for_fallback() {
             base_url: "https://beta.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -3474,6 +4321,7 @@ fn decide_provider_respects_provider_order_for_fallback() {
             base_url: "https://zeta.example.com".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),

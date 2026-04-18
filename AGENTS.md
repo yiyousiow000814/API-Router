@@ -17,10 +17,19 @@
 - **PR title prefix**: PR titles must start with one of `feat:`, `fix:`, `docs:`, `chore:`.
 - **PR title length**: Keep PR titles at 8 words or fewer. Avoid symbols like `+` in titles.
 - **Readable PR writing**: Do not reduce important points, but aggressively summarize each sentence so PR descriptions stay short, simple, and easy to skim; add a brief example when it improves clarity.
-- **PR body format**: Prefer a Devin-style readable summary instead of a rigid checklist. Start with a short overview paragraph, then use concise bold section titles `**Before:**` / `**After:**` when helpful, followed by a numbered `**Key architectural changes:**` list that names the concrete modules, types, functions, or config surfaces that changed. End with a short `**Verification:**` section listing the checks that were run. If the PR is long, add `## TL;DR` at the very top.
+- **PR body format (required)**:
+  - Prefer a short, readable summary instead of a rigid checklist.
+  - If `## TL;DR` is used, keep it to one short paragraph or sentence. Do not use bullet points in `TL;DR`.
+  - Use concise `**Before:**` / `**After:**` sections in bullet form for reviewer-visible behavior changes.
+  - Avoid folder paths and file-path-heavy prose unless a specific path is essential for reviewer understanding.
+  - Prefer reviewer-visible behavior, system responsibilities, or module boundaries over file inventories.
+  - Keep `**Key architectural changes:**` focused on 1-3 architecture-level points, not a file-by-file changelog.
+  - End with a short `**Verification:**` section listing the checks that were run.
 - **PR summary scope**: Titles and bodies must describe the overall changes relative to `main`, not just the latest commit.
+- **PR body viewpoint (required)**: Write PR bodies as a natural summary of the final diff itself. Describe what the PR delivers after merge, not the internal steps taken during the branch, not features that were added and later removed inside the same PR, and not comparisons against intermediate branch states. Avoid phrases that narrate branch history such as "removed the old X" unless that removal is part of the final merged diff that matters on its own.
 - **Resolve review threads**: After addressing review comments, resolve the corresponding review conversations (click "Resolve conversation").
 - **Efficiency review rule (required)**: If a PR/review comment calls out `efficiency`, `inefficiency`, redundant work, repeated allocation, unnecessary polling/rendering, or similar performance waste, treat it as actionable work by default and fix it before resolving the thread unless you can show clear evidence that the comment is incorrect.
+- **Review scope rule (required)**: When Codex performs any code review or pull request review, it must explicitly check three dimensions: correctness, maintainability, and efficiency. Maintainability and efficiency findings are first-class review output, not optional commentary.
 - **Format before commit**: Ensure formatting checks pass before committing.
 - **Pre-commit/push gate (required)**: Before every `git commit` and `git push`, run `npm run check:ci-local` (or at minimum run `cargo fmt --manifest-path src-tauri/Cargo.toml --check` and `cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings`). Do not commit/push when these fail.
 - **Conflict-resolution rule (required)**: Never resolve merge conflicts by dropping one side wholesale. Preserve both branch intent and incoming `main` functionality unless there is a documented reason to change behavior. After conflict resolution, run targeted checks/tests for the touched behavior before committing.
@@ -34,7 +43,7 @@
 - **Auth JSON encoding**: `.codex/auth.json` must be UTF-8 without BOM; BOM causes JSON parse errors like "expected value at line 1 column 1".
 
 ## Engineering Constraints
-- **Cross-platform**: Keep the gateway and tooling compatible with Windows + Linux (WSL2) at minimum.
+- **Windows runtime + WSL2 compatibility**: Keep `API Router.exe` as a Windows-native runtime, while preserving compatibility for Windows-hosted WSL2 workflows and tooling integration. Do not describe the app as Linux-native unless that support is actually implemented.
 - **Evidence requirement**: Back conclusions with reproducible commands or steps (state A → change → state B).
 - **Test-first fix flow**: When adding tests or fixing bugs, always follow this sequence: (1) create a reproducible test, (2) verify it fails on current code, (3) implement the fix, (4) verify the test passes.
 - **EXE build workflow**: For local Windows EXE output, prefer `npm run build:root-exe:checked`. Use `npm run build:root-exe` only when UI check is intentionally skipped.

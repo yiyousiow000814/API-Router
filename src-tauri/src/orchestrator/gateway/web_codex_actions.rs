@@ -2,6 +2,9 @@ use super::*;
 use crate::orchestrator::gateway::web_codex_auth::{
     api_error, api_error_detail, require_codex_auth,
 };
+use crate::orchestrator::gateway::web_codex_git::{
+    current_branch_for_workspace, local_branches_for_workspace, run_git_command_for_workspace,
+};
 use crate::orchestrator::gateway::web_codex_home::parse_workspace_target;
 use crate::orchestrator::gateway::web_codex_session_manager::CodexSessionManager;
 use crate::orchestrator::gateway::web_codex_storage::{codex_attachments_dir, sanitize_name};
@@ -716,86 +719,21 @@ pub(super) struct ParsedSlash {
     params: Value,
 }
 
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', r"'\''"))
-}
-
-async fn run_git_command_for_workspace(
-    workspace: Option<&str>,
-    cwd: &str,
-    args: &[&str],
-) -> Result<String, String> {
-    let target = workspace.and_then(parse_workspace_target);
-    let mut command = if matches!(
-        target,
-        Some(crate::orchestrator::gateway::web_codex_home::WorkspaceTarget::Wsl2)
-    ) {
-        let mut script = format!("git -C {}", shell_quote(cwd));
-        for arg in args {
-            script.push(' ');
-            script.push_str(&shell_quote(arg));
-        }
-        let mut cmd = tokio::process::Command::new("wsl.exe");
-        cmd.arg("-e").arg("bash").arg("-lc").arg(script);
-        cmd
-    } else {
-        let mut cmd = tokio::process::Command::new("git");
-        cmd.arg("-C").arg(cwd);
-        for arg in args {
-            cmd.arg(arg);
-        }
-        cmd
-    };
-    command.stdout(std::process::Stdio::piped());
-    command.stderr(std::process::Stdio::piped());
-    #[cfg(target_os = "windows")]
-    command.creation_flags(0x08000000);
-    let output = tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
-        .await
-        .map_err(|_| "git command timed out".to_string())?
-        .map_err(|err| err.to_string())?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let detail = if !stderr.is_empty() { stderr } else { stdout };
-        return Err(if detail.is_empty() {
-            "git command failed".to_string()
-        } else {
-            detail
-        });
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
 async fn review_branch_options(
     workspace: Option<&str>,
     cwd: &str,
 ) -> Result<Vec<SlashReviewOption>, String> {
-    let current_branch =
-        run_git_command_for_workspace(workspace, cwd, &["branch", "--show-current"])
-            .await
-            .unwrap_or_default()
-            .lines()
-            .next()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("(detached HEAD)")
-            .to_string();
-    let branches = run_git_command_for_workspace(
-        workspace,
-        cwd,
-        &[
-            "for-each-ref",
-            "--format=%(refname:short)",
-            "--sort=-committerdate",
-            "refs/heads",
-        ],
-    )
-    .await?;
-    let mut items: Vec<SlashReviewOption> = branches
-        .lines()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+    let current_branch = current_branch_for_workspace(workspace, cwd)
+        .await
+        .unwrap_or_default();
+    let current_branch = if current_branch.trim().is_empty() {
+        "(detached HEAD)".to_string()
+    } else {
+        current_branch
+    };
+    let mut items: Vec<SlashReviewOption> = local_branches_for_workspace(workspace, cwd)
+        .await?
+        .into_iter()
         .map(|branch| SlashReviewOption {
             value: branch.to_string(),
             label: format!("{current_branch} -> {branch}"),
@@ -1445,6 +1383,7 @@ pub(super) async fn codex_rpc_proxy(
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::{
         build_turn_start_params, build_turn_start_response, parse_slash_command,
@@ -1727,7 +1666,7 @@ mod tests {
             .iter()
             .find(|entry| entry.command == "/fast")
             .expect("fast command");
-        assert!(fast.children.iter().all(|child| child.active == false));
+        assert!(fast.children.iter().all(|child| !child.active));
     }
 
     #[test]

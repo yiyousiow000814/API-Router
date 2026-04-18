@@ -27,6 +27,8 @@ API Router [[]TEST[]].exe
 packycode-cost/
 .tmp/
 artifacts/
+.claude/
+docs/superpowers/
 
 # MCP build artifacts
 mcp/target/

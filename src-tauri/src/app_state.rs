@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -51,9 +52,13 @@ pub struct AppState {
     pub ui_watchdog: UiWatchdogState,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct UiWatchdogState {
-    inner: Arc<Mutex<UiWatchdogSnapshot>>,
+    heartbeat: Arc<RwLock<UiWatchdogHeartbeatState>>,
+    backend_status: Arc<RwLock<UiWatchdogBackendStatusState>>,
+    traces: Arc<Mutex<VecDeque<serde_json::Value>>>,
+    diagnostics_meta: Arc<Mutex<UiWatchdogDiagnosticsMeta>>,
+    dump_writer: Arc<UiWatchdogDumpWriter>,
 }
 
 pub struct UiWatchdogRuntime<'a> {
@@ -73,17 +78,65 @@ pub struct UiWatchdogInvokeResult<'a> {
     pub error_message: Option<&'a str>,
 }
 
+type UiWatchdogDumpWriter =
+    dyn Fn(&std::path::Path, &serde_json::Value) -> io::Result<()> + Send + Sync + 'static;
+
 #[derive(Clone, Default)]
-struct UiWatchdogSnapshot {
-    recent_traces: VecDeque<serde_json::Value>,
+struct UiWatchdogHeartbeatState {
     last_heartbeat_unix_ms: u64,
     active_page: String,
     visible: bool,
     status_in_flight: bool,
     config_in_flight: bool,
     provider_switch_in_flight: bool,
+}
+
+#[derive(Clone, Default)]
+struct UiWatchdogBackendStatusState {
+    status_command_in_flight: bool,
+    status_command_detail_level: String,
+    status_command_started_unix_ms: u64,
+    status_command_last_progress_unix_ms: u64,
+    status_command_last_finished_unix_ms: u64,
+    status_command_phase: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct UiWatchdogFrontendSnapshot {
+    pub last_heartbeat_unix_ms: u64,
+    pub heartbeat_age_ms: u64,
+    pub active_page: String,
+    pub visible: bool,
+    pub status_in_flight: bool,
+    pub config_in_flight: bool,
+    pub provider_switch_in_flight: bool,
+    pub stalled: bool,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct UiWatchdogBackendStatusSnapshot {
+    pub in_flight: bool,
+    pub detail_level: Option<String>,
+    pub started_unix_ms: Option<u64>,
+    pub last_progress_unix_ms: Option<u64>,
+    pub last_finished_unix_ms: Option<u64>,
+    pub phase: Option<String>,
+    pub progress_age_ms: Option<u64>,
+    pub stalled: bool,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct UiWatchdogLiveSnapshot {
+    pub frontend: UiWatchdogFrontendSnapshot,
+    pub backend_status: UiWatchdogBackendStatusSnapshot,
+}
+
+#[derive(Clone, Default)]
+struct UiWatchdogDiagnosticsMeta {
     unresponsive_logged: bool,
     unresponsive_since_unix_ms: u64,
+    backend_status_stall_logged: bool,
+    backend_status_stalled_since_unix_ms: u64,
     last_status_slow_log_unix_ms: u64,
     last_config_slow_log_unix_ms: u64,
     last_provider_switch_slow_log_unix_ms: u64,
@@ -95,28 +148,152 @@ struct UiWatchdogSnapshot {
 }
 
 impl UiWatchdogState {
-    fn push_trace(
-        snapshot: &mut UiWatchdogSnapshot,
-        kind: &str,
-        now_unix_ms: u64,
-        fields: serde_json::Value,
-    ) {
-        snapshot.recent_traces.push_back(serde_json::json!({
+    #[cfg(test)]
+    fn with_dump_writer(dump_writer: Arc<UiWatchdogDumpWriter>) -> Self {
+        Self {
+            heartbeat: Arc::new(RwLock::new(UiWatchdogHeartbeatState::default())),
+            backend_status: Arc::new(RwLock::new(UiWatchdogBackendStatusState::default())),
+            traces: Arc::new(Mutex::new(VecDeque::new())),
+            diagnostics_meta: Arc::new(Mutex::new(UiWatchdogDiagnosticsMeta::default())),
+            dump_writer,
+        }
+    }
+
+    fn append_trace(&self, kind: &str, now_unix_ms: u64, fields: serde_json::Value) {
+        let mut traces = self.traces.lock();
+        traces.push_back(serde_json::json!({
             "unix_ms": now_unix_ms,
             "kind": kind,
             "fields": fields,
         }));
-        while snapshot.recent_traces.len() > UI_WATCHDOG_TRACE_CAPACITY {
-            snapshot.recent_traces.pop_front();
+        while traces.len() > UI_WATCHDOG_TRACE_CAPACITY {
+            traces.pop_front();
         }
         let cutoff = now_unix_ms.saturating_sub(UI_WATCHDOG_DUMP_WINDOW_MS);
-        while snapshot
-            .recent_traces
+        while traces
             .front()
             .and_then(|entry| entry.get("unix_ms").and_then(|value| value.as_u64()))
             .is_some_and(|unix_ms| unix_ms < cutoff)
         {
-            snapshot.recent_traces.pop_front();
+            traces.pop_front();
+        }
+    }
+
+    fn heartbeat_snapshot(&self) -> UiWatchdogHeartbeatState {
+        self.heartbeat.read().clone()
+    }
+
+    fn backend_status_snapshot(&self) -> UiWatchdogBackendStatusState {
+        self.backend_status.read().clone()
+    }
+
+    fn trace_snapshot(&self) -> Vec<serde_json::Value> {
+        self.traces.lock().iter().cloned().collect()
+    }
+
+    fn non_empty_string(value: &str) -> Option<String> {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    }
+
+    fn backend_progress_age_ms(
+        backend_status: &UiWatchdogBackendStatusState,
+        now_unix_ms: u64,
+    ) -> u64 {
+        let anchor = if backend_status.status_command_last_progress_unix_ms > 0 {
+            backend_status.status_command_last_progress_unix_ms
+        } else {
+            backend_status.status_command_started_unix_ms
+        };
+        now_unix_ms.saturating_sub(anchor)
+    }
+
+    fn backend_status_stalled(
+        backend_status: &UiWatchdogBackendStatusState,
+        now_unix_ms: u64,
+    ) -> bool {
+        backend_status.status_command_in_flight
+            && Self::backend_progress_age_ms(backend_status, now_unix_ms)
+                > UI_WATCHDOG_UNRESPONSIVE_AFTER_MS
+    }
+
+    fn live_snapshot_from_states(
+        heartbeat: &UiWatchdogHeartbeatState,
+        backend_status: &UiWatchdogBackendStatusState,
+        now_unix_ms: u64,
+    ) -> UiWatchdogLiveSnapshot {
+        let heartbeat_age_ms = now_unix_ms.saturating_sub(heartbeat.last_heartbeat_unix_ms);
+        let backend_progress_age_ms = backend_status
+            .status_command_in_flight
+            .then(|| Self::backend_progress_age_ms(backend_status, now_unix_ms));
+        UiWatchdogLiveSnapshot {
+            frontend: UiWatchdogFrontendSnapshot {
+                last_heartbeat_unix_ms: heartbeat.last_heartbeat_unix_ms,
+                heartbeat_age_ms,
+                active_page: heartbeat.active_page.clone(),
+                visible: heartbeat.visible,
+                status_in_flight: heartbeat.status_in_flight,
+                config_in_flight: heartbeat.config_in_flight,
+                provider_switch_in_flight: heartbeat.provider_switch_in_flight,
+                stalled: heartbeat.last_heartbeat_unix_ms > 0
+                    && heartbeat_age_ms > UI_WATCHDOG_UNRESPONSIVE_AFTER_MS,
+            },
+            backend_status: UiWatchdogBackendStatusSnapshot {
+                in_flight: backend_status.status_command_in_flight,
+                detail_level: Self::non_empty_string(&backend_status.status_command_detail_level),
+                started_unix_ms: (backend_status.status_command_started_unix_ms > 0)
+                    .then_some(backend_status.status_command_started_unix_ms),
+                last_progress_unix_ms: (backend_status.status_command_last_progress_unix_ms > 0)
+                    .then_some(backend_status.status_command_last_progress_unix_ms),
+                last_finished_unix_ms: (backend_status.status_command_last_finished_unix_ms > 0)
+                    .then_some(backend_status.status_command_last_finished_unix_ms),
+                phase: Self::non_empty_string(&backend_status.status_command_phase),
+                progress_age_ms: backend_progress_age_ms,
+                stalled: Self::backend_status_stalled(backend_status, now_unix_ms),
+            },
+        }
+    }
+
+    pub fn live_snapshot(&self, now_unix_ms: u64) -> UiWatchdogLiveSnapshot {
+        let heartbeat = self.heartbeat_snapshot();
+        let backend_status = self.backend_status_snapshot();
+        Self::live_snapshot_from_states(&heartbeat, &backend_status, now_unix_ms)
+    }
+
+    fn build_dump_payload(
+        trigger: &str,
+        now_unix_ms: u64,
+        heartbeat: &UiWatchdogHeartbeatState,
+        backend_status: &UiWatchdogBackendStatusState,
+        diagnostics: &UiWatchdogDiagnosticsMeta,
+        traces: &[serde_json::Value],
+    ) -> serde_json::Value {
+        let live_snapshot = Self::live_snapshot_from_states(heartbeat, backend_status, now_unix_ms);
+        let payload = serde_json::json!({
+            "trigger": trigger,
+            "captured_at_unix_ms": now_unix_ms,
+            "window_ms": UI_WATCHDOG_DUMP_WINDOW_MS,
+            "snapshot": {
+                "last_heartbeat_unix_ms": heartbeat.last_heartbeat_unix_ms,
+                "active_page": heartbeat.active_page,
+                "visible": heartbeat.visible,
+                "status_in_flight": heartbeat.status_in_flight,
+                "config_in_flight": heartbeat.config_in_flight,
+                "provider_switch_in_flight": heartbeat.provider_switch_in_flight,
+                "unresponsive_logged": diagnostics.unresponsive_logged,
+                "unresponsive_since_unix_ms": diagnostics.unresponsive_since_unix_ms,
+                "backend_status": live_snapshot.backend_status,
+            },
+            "recent_traces": traces,
+        });
+        payload
+    }
+
+    fn backend_status_stall_anchor(backend_status: &UiWatchdogBackendStatusState) -> u64 {
+        if backend_status.status_command_last_progress_unix_ms > 0 {
+            backend_status.status_command_last_progress_unix_ms
+        } else {
+            backend_status.status_command_started_unix_ms
         }
     }
 
@@ -125,28 +302,11 @@ impl UiWatchdogState {
         diagnostics_dir: &std::path::Path,
         trigger: &str,
         now_unix_ms: u64,
-        snapshot: &UiWatchdogSnapshot,
+        payload: &serde_json::Value,
     ) {
-        let _ = std::fs::create_dir_all(diagnostics_dir);
-        let payload = serde_json::json!({
-            "trigger": trigger,
-            "captured_at_unix_ms": now_unix_ms,
-            "window_ms": UI_WATCHDOG_DUMP_WINDOW_MS,
-            "snapshot": {
-                "last_heartbeat_unix_ms": snapshot.last_heartbeat_unix_ms,
-                "active_page": snapshot.active_page,
-                "visible": snapshot.visible,
-                "status_in_flight": snapshot.status_in_flight,
-                "config_in_flight": snapshot.config_in_flight,
-                "provider_switch_in_flight": snapshot.provider_switch_in_flight,
-                "unresponsive_logged": snapshot.unresponsive_logged,
-                "unresponsive_since_unix_ms": snapshot.unresponsive_since_unix_ms,
-            },
-            "recent_traces": snapshot.recent_traces.iter().cloned().collect::<Vec<_>>(),
-        });
         let filename = format!("ui-freeze-{now_unix_ms}-{trigger}.json");
         let path = diagnostics_dir.join(filename);
-        let _ = crate::diagnostics::write_pretty_json(&path, &payload);
+        let _ = (self.dump_writer)(&path, payload);
     }
 
     pub fn record_heartbeat(
@@ -158,16 +318,17 @@ impl UiWatchdogState {
         provider_switch_in_flight: bool,
         now_unix_ms: u64,
     ) {
-        let mut snapshot = self.inner.lock();
-        snapshot.last_heartbeat_unix_ms = now_unix_ms;
-        snapshot.active_page = active_page.trim().to_string();
-        snapshot.visible = visible;
-        snapshot.status_in_flight = status_in_flight;
-        snapshot.config_in_flight = config_in_flight;
-        snapshot.provider_switch_in_flight = provider_switch_in_flight;
-        let active_page_value = snapshot.active_page.clone();
-        Self::push_trace(
-            &mut snapshot,
+        let active_page_value = active_page.trim().to_string();
+        {
+            let mut heartbeat = self.heartbeat.write();
+            heartbeat.last_heartbeat_unix_ms = now_unix_ms;
+            heartbeat.active_page = active_page_value.clone();
+            heartbeat.visible = visible;
+            heartbeat.status_in_flight = status_in_flight;
+            heartbeat.config_in_flight = config_in_flight;
+            heartbeat.provider_switch_in_flight = provider_switch_in_flight;
+        }
+        self.append_trace(
             "heartbeat",
             now_unix_ms,
             serde_json::json!({
@@ -181,8 +342,7 @@ impl UiWatchdogState {
     }
 
     pub fn record_trace(&self, kind: &str, fields: serde_json::Value, now_unix_ms: u64) {
-        let mut snapshot = self.inner.lock();
-        Self::push_trace(&mut snapshot, kind.trim(), now_unix_ms, fields);
+        self.append_trace(kind.trim(), now_unix_ms, fields);
     }
 
     pub fn record_slow_refresh(
@@ -197,9 +357,9 @@ impl UiWatchdogState {
             return;
         }
         let kind_key = kind.trim().to_ascii_lowercase();
-        let mut snapshot = self.inner.lock();
-        Self::push_trace(
-            &mut snapshot,
+        let heartbeat = self.heartbeat_snapshot();
+        let backend_status = self.backend_status_snapshot();
+        self.append_trace(
             "slow_refresh",
             now_unix_ms,
             serde_json::json!({
@@ -209,10 +369,11 @@ impl UiWatchdogState {
                 "visible": page.visible,
             }),
         );
+        let mut diagnostics = self.diagnostics_meta.lock();
         let last_logged_at = match kind_key.as_str() {
-            "status" => &mut snapshot.last_status_slow_log_unix_ms,
-            "config" => &mut snapshot.last_config_slow_log_unix_ms,
-            "provider_switch" => &mut snapshot.last_provider_switch_slow_log_unix_ms,
+            "status" => &mut diagnostics.last_status_slow_log_unix_ms,
+            "config" => &mut diagnostics.last_config_slow_log_unix_ms,
+            "provider_switch" => &mut diagnostics.last_provider_switch_slow_log_unix_ms,
             _ => return,
         };
         if *last_logged_at > 0
@@ -222,11 +383,22 @@ impl UiWatchdogState {
             return;
         }
         *last_logged_at = now_unix_ms;
+        let diagnostics_snapshot = diagnostics.clone();
+        drop(diagnostics);
+        let traces = self.trace_snapshot();
+        let payload = Self::build_dump_payload(
+            "slow-refresh",
+            now_unix_ms,
+            &heartbeat,
+            &backend_status,
+            &diagnostics_snapshot,
+            &traces,
+        );
         self.write_dump(
             runtime.diagnostics_dir,
             "slow-refresh",
             now_unix_ms,
-            &snapshot,
+            &payload,
         );
     }
 
@@ -237,9 +409,9 @@ impl UiWatchdogState {
         page: UiWatchdogPageState<'_>,
         now_unix_ms: u64,
     ) {
-        let mut snapshot = self.inner.lock();
-        Self::push_trace(
-            &mut snapshot,
+        let heartbeat = self.heartbeat_snapshot();
+        let backend_status = self.backend_status_snapshot();
+        self.append_trace(
             "long_task",
             now_unix_ms,
             serde_json::json!({
@@ -251,14 +423,26 @@ impl UiWatchdogState {
         if elapsed_ms < UI_WATCHDOG_LONG_TASK_AFTER_MS {
             return;
         }
-        if snapshot.last_long_task_log_unix_ms > 0
-            && now_unix_ms.saturating_sub(snapshot.last_long_task_log_unix_ms)
+        let mut diagnostics = self.diagnostics_meta.lock();
+        if diagnostics.last_long_task_log_unix_ms > 0
+            && now_unix_ms.saturating_sub(diagnostics.last_long_task_log_unix_ms)
                 < UI_WATCHDOG_LONG_TASK_LOG_COOLDOWN_MS
         {
             return;
         }
-        snapshot.last_long_task_log_unix_ms = now_unix_ms;
-        self.write_dump(runtime.diagnostics_dir, "long-task", now_unix_ms, &snapshot);
+        diagnostics.last_long_task_log_unix_ms = now_unix_ms;
+        let diagnostics_snapshot = diagnostics.clone();
+        drop(diagnostics);
+        let traces = self.trace_snapshot();
+        let payload = Self::build_dump_payload(
+            "long-task",
+            now_unix_ms,
+            &heartbeat,
+            &backend_status,
+            &diagnostics_snapshot,
+            &traces,
+        );
+        self.write_dump(runtime.diagnostics_dir, "long-task", now_unix_ms, &payload);
     }
 
     pub fn record_frame_stall(
@@ -269,10 +453,10 @@ impl UiWatchdogState {
         page: UiWatchdogPageState<'_>,
         now_unix_ms: u64,
     ) {
-        let mut snapshot = self.inner.lock();
+        let heartbeat = self.heartbeat_snapshot();
+        let backend_status = self.backend_status_snapshot();
         let monitor_kind = monitor_kind.trim();
-        Self::push_trace(
-            &mut snapshot,
+        self.append_trace(
             "frame_stall",
             now_unix_ms,
             serde_json::json!({
@@ -293,18 +477,30 @@ impl UiWatchdogState {
             }),
             now_unix_ms,
         );
-        if snapshot.last_frame_stall_log_unix_ms > 0
-            && now_unix_ms.saturating_sub(snapshot.last_frame_stall_log_unix_ms)
+        let mut diagnostics = self.diagnostics_meta.lock();
+        if diagnostics.last_frame_stall_log_unix_ms > 0
+            && now_unix_ms.saturating_sub(diagnostics.last_frame_stall_log_unix_ms)
                 < UI_WATCHDOG_FRAME_STALL_LOG_COOLDOWN_MS
         {
             return;
         }
-        snapshot.last_frame_stall_log_unix_ms = now_unix_ms;
+        diagnostics.last_frame_stall_log_unix_ms = now_unix_ms;
+        let diagnostics_snapshot = diagnostics.clone();
+        drop(diagnostics);
+        let traces = self.trace_snapshot();
+        let payload = Self::build_dump_payload(
+            "frame-stall",
+            now_unix_ms,
+            &heartbeat,
+            &backend_status,
+            &diagnostics_snapshot,
+            &traces,
+        );
         self.write_dump(
             runtime.diagnostics_dir,
             "frame-stall",
             now_unix_ms,
-            &snapshot,
+            &payload,
         );
     }
 
@@ -316,9 +512,9 @@ impl UiWatchdogState {
         page: UiWatchdogPageState<'_>,
         now_unix_ms: u64,
     ) {
-        let mut snapshot = self.inner.lock();
-        Self::push_trace(
-            &mut snapshot,
+        let heartbeat = self.heartbeat_snapshot();
+        let backend_status = self.backend_status_snapshot();
+        self.append_trace(
             "frontend_error",
             now_unix_ms,
             serde_json::json!({
@@ -339,18 +535,30 @@ impl UiWatchdogState {
             }),
             now_unix_ms,
         );
-        if snapshot.last_frontend_error_log_unix_ms > 0
-            && now_unix_ms.saturating_sub(snapshot.last_frontend_error_log_unix_ms)
+        let mut diagnostics = self.diagnostics_meta.lock();
+        if diagnostics.last_frontend_error_log_unix_ms > 0
+            && now_unix_ms.saturating_sub(diagnostics.last_frontend_error_log_unix_ms)
                 < UI_WATCHDOG_LONG_TASK_LOG_COOLDOWN_MS
         {
             return;
         }
-        snapshot.last_frontend_error_log_unix_ms = now_unix_ms;
+        diagnostics.last_frontend_error_log_unix_ms = now_unix_ms;
+        let diagnostics_snapshot = diagnostics.clone();
+        drop(diagnostics);
+        let traces = self.trace_snapshot();
+        let payload = Self::build_dump_payload(
+            "frontend-error",
+            now_unix_ms,
+            &heartbeat,
+            &backend_status,
+            &diagnostics_snapshot,
+            &traces,
+        );
         self.write_dump(
             runtime.diagnostics_dir,
             "frontend-error",
             now_unix_ms,
-            &snapshot,
+            &payload,
         );
     }
 
@@ -361,13 +569,13 @@ impl UiWatchdogState {
         page: UiWatchdogPageState<'_>,
         now_unix_ms: u64,
     ) {
-        let mut snapshot = self.inner.lock();
+        let heartbeat = self.heartbeat_snapshot();
+        let backend_status = self.backend_status_snapshot();
         let command = invoke.command.trim();
         let elapsed_ms = invoke.elapsed_ms;
         let ok = invoke.ok;
         let error_message = invoke.error_message.unwrap_or("").trim();
-        Self::push_trace(
-            &mut snapshot,
+        self.append_trace(
             "invoke",
             now_unix_ms,
             serde_json::json!({
@@ -393,18 +601,30 @@ impl UiWatchdogState {
                 }),
                 now_unix_ms,
             );
-            if snapshot.last_invoke_error_log_unix_ms > 0
-                && now_unix_ms.saturating_sub(snapshot.last_invoke_error_log_unix_ms)
+            let mut diagnostics = self.diagnostics_meta.lock();
+            if diagnostics.last_invoke_error_log_unix_ms > 0
+                && now_unix_ms.saturating_sub(diagnostics.last_invoke_error_log_unix_ms)
                     < UI_WATCHDOG_INVOKE_LOG_COOLDOWN_MS
             {
                 return;
             }
-            snapshot.last_invoke_error_log_unix_ms = now_unix_ms;
+            diagnostics.last_invoke_error_log_unix_ms = now_unix_ms;
+            let diagnostics_snapshot = diagnostics.clone();
+            drop(diagnostics);
+            let traces = self.trace_snapshot();
+            let payload = Self::build_dump_payload(
+                "invoke-error",
+                now_unix_ms,
+                &heartbeat,
+                &backend_status,
+                &diagnostics_snapshot,
+                &traces,
+            );
             self.write_dump(
                 runtime.diagnostics_dir,
                 "invoke-error",
                 now_unix_ms,
-                &snapshot,
+                &payload,
             );
             return;
         }
@@ -412,18 +632,30 @@ impl UiWatchdogState {
         if elapsed_ms < UI_WATCHDOG_SLOW_REFRESH_AFTER_MS {
             return;
         }
-        if snapshot.last_invoke_slow_log_unix_ms > 0
-            && now_unix_ms.saturating_sub(snapshot.last_invoke_slow_log_unix_ms)
+        let mut diagnostics = self.diagnostics_meta.lock();
+        if diagnostics.last_invoke_slow_log_unix_ms > 0
+            && now_unix_ms.saturating_sub(diagnostics.last_invoke_slow_log_unix_ms)
                 < UI_WATCHDOG_INVOKE_LOG_COOLDOWN_MS
         {
             return;
         }
-        snapshot.last_invoke_slow_log_unix_ms = now_unix_ms;
+        diagnostics.last_invoke_slow_log_unix_ms = now_unix_ms;
+        let diagnostics_snapshot = diagnostics.clone();
+        drop(diagnostics);
+        let traces = self.trace_snapshot();
+        let payload = Self::build_dump_payload(
+            "slow-invoke",
+            now_unix_ms,
+            &heartbeat,
+            &backend_status,
+            &diagnostics_snapshot,
+            &traces,
+        );
         self.write_dump(
             runtime.diagnostics_dir,
             "slow-invoke",
             now_unix_ms,
-            &snapshot,
+            &payload,
         );
     }
 
@@ -433,48 +665,217 @@ impl UiWatchdogState {
         diagnostics_dir: &std::path::Path,
         now_unix_ms: u64,
     ) {
-        let mut snapshot = self.inner.lock();
-        let last_heartbeat = snapshot.last_heartbeat_unix_ms;
+        let heartbeat = self.heartbeat_snapshot();
+        let backend_status = self.backend_status_snapshot();
+        let live_snapshot =
+            Self::live_snapshot_from_states(&heartbeat, &backend_status, now_unix_ms);
+        let last_heartbeat = heartbeat.last_heartbeat_unix_ms;
         if last_heartbeat == 0 {
             return;
         }
         let heartbeat_age_ms = now_unix_ms.saturating_sub(last_heartbeat);
+        let mut diagnostics = self.diagnostics_meta.lock();
         if heartbeat_age_ms > UI_WATCHDOG_UNRESPONSIVE_AFTER_MS {
-            if snapshot.unresponsive_logged {
+            if diagnostics.unresponsive_logged {
                 return;
             }
-            snapshot.unresponsive_logged = true;
-            snapshot.unresponsive_since_unix_ms = last_heartbeat;
+            diagnostics.unresponsive_logged = true;
+            diagnostics.unresponsive_since_unix_ms = last_heartbeat;
             store.events().app().ui_unresponsive(
                 "gateway",
                 "ui heartbeat stalled",
                 serde_json::json!({
                     "heartbeat_age_ms": heartbeat_age_ms,
-                    "active_page": snapshot.active_page,
-                    "visible": snapshot.visible,
-                    "status_in_flight": snapshot.status_in_flight,
-                    "config_in_flight": snapshot.config_in_flight,
-                    "provider_switch_in_flight": snapshot.provider_switch_in_flight,
+                    "active_page": heartbeat.active_page,
+                    "visible": heartbeat.visible,
+                    "status_in_flight": heartbeat.status_in_flight,
+                    "config_in_flight": heartbeat.config_in_flight,
+                    "provider_switch_in_flight": heartbeat.provider_switch_in_flight,
+                    "backend_status_in_flight": live_snapshot.backend_status.in_flight,
+                    "backend_status_detail_level": live_snapshot.backend_status.detail_level,
+                    "backend_status_phase": live_snapshot.backend_status.phase,
+                    "backend_status_progress_age_ms": live_snapshot.backend_status.progress_age_ms,
+                    "backend_status_stalled": live_snapshot.backend_status.stalled,
                 }),
             );
-            self.write_dump(diagnostics_dir, "heartbeat-stall", now_unix_ms, &snapshot);
+            let diagnostics_snapshot = diagnostics.clone();
+            drop(diagnostics);
+            let traces = self.trace_snapshot();
+            let payload = Self::build_dump_payload(
+                "heartbeat-stall",
+                now_unix_ms,
+                &heartbeat,
+                &backend_status,
+                &diagnostics_snapshot,
+                &traces,
+            );
+            self.write_dump(diagnostics_dir, "heartbeat-stall", now_unix_ms, &payload);
             return;
         }
-        if !snapshot.unresponsive_logged {
+        if !diagnostics.unresponsive_logged {
             return;
         }
-        let stalled_for_ms = now_unix_ms.saturating_sub(snapshot.unresponsive_since_unix_ms);
-        snapshot.unresponsive_logged = false;
-        snapshot.unresponsive_since_unix_ms = 0;
+        let stalled_for_ms = now_unix_ms.saturating_sub(diagnostics.unresponsive_since_unix_ms);
+        diagnostics.unresponsive_logged = false;
+        diagnostics.unresponsive_since_unix_ms = 0;
         store.events().app().ui_recovered(
             "gateway",
             "ui heartbeat recovered",
             serde_json::json!({
                 "stalled_for_ms": stalled_for_ms,
-                "active_page": snapshot.active_page,
-                "visible": snapshot.visible,
+                "active_page": heartbeat.active_page,
+                "visible": heartbeat.visible,
             }),
         );
+    }
+
+    pub fn check_backend_status_stall(
+        &self,
+        store: &crate::orchestrator::store::Store,
+        diagnostics_dir: &std::path::Path,
+        now_unix_ms: u64,
+    ) {
+        let heartbeat = self.heartbeat_snapshot();
+        let backend_status = self.backend_status_snapshot();
+        let live_snapshot =
+            Self::live_snapshot_from_states(&heartbeat, &backend_status, now_unix_ms);
+        let mut diagnostics = self.diagnostics_meta.lock();
+        if live_snapshot.backend_status.stalled {
+            if diagnostics.backend_status_stall_logged {
+                return;
+            }
+            diagnostics.backend_status_stall_logged = true;
+            diagnostics.backend_status_stalled_since_unix_ms =
+                Self::backend_status_stall_anchor(&backend_status);
+            store.events().app().ui_unresponsive(
+                "gateway",
+                "backend status refresh stalled",
+                serde_json::json!({
+                    "lane": "backend_status",
+                    "detail_level": live_snapshot.backend_status.detail_level,
+                    "phase": live_snapshot.backend_status.phase,
+                    "progress_age_ms": live_snapshot.backend_status.progress_age_ms,
+                    "frontend_heartbeat_age_ms": live_snapshot.frontend.heartbeat_age_ms,
+                    "frontend_active_page": live_snapshot.frontend.active_page,
+                    "frontend_visible": live_snapshot.frontend.visible,
+                    "frontend_stalled": live_snapshot.frontend.stalled,
+                }),
+            );
+            let diagnostics_snapshot = diagnostics.clone();
+            drop(diagnostics);
+            let traces = self.trace_snapshot();
+            let payload = Self::build_dump_payload(
+                "backend-status-stall",
+                now_unix_ms,
+                &heartbeat,
+                &backend_status,
+                &diagnostics_snapshot,
+                &traces,
+            );
+            self.write_dump(
+                diagnostics_dir,
+                "backend-status-stall",
+                now_unix_ms,
+                &payload,
+            );
+            return;
+        }
+        if !diagnostics.backend_status_stall_logged {
+            return;
+        }
+        let stalled_for_ms =
+            now_unix_ms.saturating_sub(diagnostics.backend_status_stalled_since_unix_ms);
+        diagnostics.backend_status_stall_logged = false;
+        diagnostics.backend_status_stalled_since_unix_ms = 0;
+        store.events().app().ui_recovered(
+            "gateway",
+            "backend status refresh recovered",
+            serde_json::json!({
+                "lane": "backend_status",
+                "stalled_for_ms": stalled_for_ms,
+                "last_finished_unix_ms": live_snapshot.backend_status.last_finished_unix_ms,
+                "frontend_heartbeat_age_ms": live_snapshot.frontend.heartbeat_age_ms,
+            }),
+        );
+    }
+
+    pub fn record_backend_status_started(&self, detail_level: &str, now_unix_ms: u64) {
+        let detail_level_value = detail_level.trim().to_string();
+        {
+            let mut backend_status = self.backend_status.write();
+            backend_status.status_command_in_flight = true;
+            backend_status.status_command_detail_level = detail_level_value.clone();
+            backend_status.status_command_started_unix_ms = now_unix_ms;
+            backend_status.status_command_last_progress_unix_ms = now_unix_ms;
+            backend_status.status_command_phase = "started".to_string();
+        }
+        self.append_trace(
+            "backend_status",
+            now_unix_ms,
+            serde_json::json!({
+                "event": "started",
+                "detail_level": if detail_level_value.is_empty() { serde_json::Value::Null } else { serde_json::json!(detail_level_value) },
+            }),
+        );
+    }
+
+    pub fn record_backend_status_progress(&self, phase: &str, now_unix_ms: u64) {
+        let phase_value = phase.trim().to_string();
+        {
+            let mut backend_status = self.backend_status.write();
+            if !backend_status.status_command_in_flight {
+                backend_status.status_command_in_flight = true;
+                backend_status.status_command_started_unix_ms = now_unix_ms;
+            }
+            backend_status.status_command_last_progress_unix_ms = now_unix_ms;
+            if !phase_value.is_empty() {
+                backend_status.status_command_phase = phase_value.clone();
+            }
+        }
+        self.append_trace(
+            "backend_status",
+            now_unix_ms,
+            serde_json::json!({
+                "event": "progress",
+                "phase": if phase_value.is_empty() { serde_json::Value::Null } else { serde_json::json!(phase_value) },
+            }),
+        );
+    }
+
+    pub fn record_backend_status_finished(&self, now_unix_ms: u64) {
+        let (detail_level, phase) = {
+            let mut backend_status = self.backend_status.write();
+            let detail_level = backend_status.status_command_detail_level.clone();
+            let phase = backend_status.status_command_phase.clone();
+            backend_status.status_command_in_flight = false;
+            backend_status.status_command_started_unix_ms = 0;
+            backend_status.status_command_last_progress_unix_ms = now_unix_ms;
+            backend_status.status_command_last_finished_unix_ms = now_unix_ms;
+            backend_status.status_command_detail_level.clear();
+            backend_status.status_command_phase.clear();
+            (detail_level, phase)
+        };
+        self.append_trace(
+            "backend_status",
+            now_unix_ms,
+            serde_json::json!({
+                "event": "finished",
+                "detail_level": if detail_level.trim().is_empty() { serde_json::Value::Null } else { serde_json::json!(detail_level.trim()) },
+                "phase": if phase.trim().is_empty() { serde_json::Value::Null } else { serde_json::json!(phase.trim()) },
+            }),
+        );
+    }
+}
+
+impl Default for UiWatchdogState {
+    fn default() -> Self {
+        Self {
+            heartbeat: Arc::new(RwLock::new(UiWatchdogHeartbeatState::default())),
+            backend_status: Arc::new(RwLock::new(UiWatchdogBackendStatusState::default())),
+            traces: Arc::new(Mutex::new(VecDeque::new())),
+            diagnostics_meta: Arc::new(Mutex::new(UiWatchdogDiagnosticsMeta::default())),
+            dump_writer: Arc::new(crate::diagnostics::write_pretty_json),
+        }
     }
 }
 
@@ -735,10 +1136,15 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         local_network: crate::platform::local_network::LocalNetworkState::new(),
         ui_watchdog: UiWatchdogState::default(),
     };
+    crate::lan_sync::register_ui_watchdog_state(
+        app_state.gateway.cfg.read().listen.port,
+        app_state.ui_watchdog.clone(),
+    );
     app_state
         .gateway
         .store
         .sync_provider_pricing_configs(&app_state.secrets.list_provider_pricing());
+    let _ = crate::lan_sync::rebuild_shared_tracked_spend_views(&app_state);
     let _ = crate::lan_sync::ensure_local_edit_seed_state(&app_state);
 
     Ok(app_state)
@@ -1046,6 +1452,133 @@ mod tests {
             .filter_map(|entry| entry.ok())
             .count();
         assert!(dump_count >= 1);
+
+        let ui_unresponsive_event = events
+            .iter()
+            .find(|entry| {
+                entry
+                    .get("code")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|code| code == "app.ui_unresponsive")
+            })
+            .expect("ui unresponsive event");
+        let detail = ui_unresponsive_event
+            .get("fields")
+            .expect("fields payload on ui_unresponsive");
+        assert_eq!(
+            detail
+                .get("backend_status_in_flight")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            detail
+                .get("backend_status_stalled")
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn ui_watchdog_live_snapshot_marks_backend_status_stall() {
+        let watchdog = UiWatchdogState::default();
+
+        watchdog.record_heartbeat("dashboard", true, true, false, false, 1_000);
+        watchdog.record_backend_status_started("dashboard", 1_500);
+        watchdog.record_backend_status_progress("router_snapshot", 2_000);
+
+        let live_snapshot = watchdog.live_snapshot(9_000);
+
+        assert!(live_snapshot.frontend.stalled);
+        assert!(live_snapshot.backend_status.in_flight);
+        assert_eq!(
+            live_snapshot.backend_status.detail_level.as_deref(),
+            Some("dashboard")
+        );
+        assert_eq!(
+            live_snapshot.backend_status.phase.as_deref(),
+            Some("router_snapshot")
+        );
+        assert_eq!(live_snapshot.backend_status.progress_age_ms, Some(7_000));
+        assert!(live_snapshot.backend_status.stalled);
+    }
+
+    #[test]
+    fn ui_watchdog_live_snapshot_clears_started_time_after_backend_status_finishes() {
+        let watchdog = UiWatchdogState::default();
+
+        watchdog.record_backend_status_started("dashboard", 1_500);
+        watchdog.record_backend_status_progress("router_snapshot", 2_000);
+        watchdog.record_backend_status_finished(2_500);
+
+        let live_snapshot = watchdog.live_snapshot(3_000);
+
+        assert!(!live_snapshot.backend_status.in_flight);
+        assert_eq!(live_snapshot.backend_status.started_unix_ms, None);
+        assert_eq!(
+            live_snapshot.backend_status.last_finished_unix_ms,
+            Some(2_500)
+        );
+    }
+
+    #[test]
+    fn ui_watchdog_backend_status_stall_logs_and_recovers_once() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+
+        let state = build_state(config_path, data_dir).expect("build state");
+        let watchdog = UiWatchdogState::default();
+
+        watchdog.record_backend_status_started("dashboard", 1_000);
+        watchdog.record_backend_status_progress("client_sessions", 1_100);
+        watchdog.check_backend_status_stall(&state.gateway.store, &state.diagnostics_dir, 8_000);
+        watchdog.check_backend_status_stall(&state.gateway.store, &state.diagnostics_dir, 8_500);
+        watchdog.record_backend_status_finished(9_000);
+        watchdog.check_backend_status_stall(&state.gateway.store, &state.diagnostics_dir, 9_100);
+
+        let events = state.gateway.store.list_events_range(None, None, Some(10));
+        let backend_unresponsive_events = events
+            .iter()
+            .filter(|entry| {
+                entry
+                    .get("code")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|code| code == "app.ui_unresponsive")
+                    && entry
+                        .get("message")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|message| message == "backend status refresh stalled")
+            })
+            .count();
+        let backend_recovered_events = events
+            .iter()
+            .filter(|entry| {
+                entry
+                    .get("code")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|code| code == "app.ui_recovered")
+                    && entry
+                        .get("message")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|message| message == "backend status refresh recovered")
+            })
+            .count();
+        assert_eq!(backend_unresponsive_events, 1);
+        assert_eq!(backend_recovered_events, 1);
+
+        let dump_count = std::fs::read_dir(&state.diagnostics_dir)
+            .expect("diagnostics dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.contains("backend-status-stall"))
+            })
+            .count();
+        assert_eq!(dump_count, 1);
     }
 
     #[test]
@@ -1190,5 +1723,85 @@ mod tests {
             })
             .count();
         assert_eq!(dump_count, 2);
+    }
+
+    #[test]
+    fn ui_watchdog_heartbeat_is_not_blocked_by_slow_dump_writes() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+
+        let state = build_state(config_path, data_dir).expect("build state");
+        let dump_started = Arc::new(AtomicBool::new(false));
+        let release_dump = Arc::new(AtomicBool::new(false));
+        let dump_started_for_writer = dump_started.clone();
+        let release_dump_for_writer = release_dump.clone();
+        let watchdog = UiWatchdogState::with_dump_writer(Arc::new(move |path, payload| {
+            dump_started_for_writer.store(true, Ordering::SeqCst);
+            while !release_dump_for_writer.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            crate::diagnostics::write_pretty_json(path, payload)
+        }));
+
+        watchdog.record_heartbeat("dashboard", true, false, false, false, 1_000);
+
+        let watchdog_for_dump = watchdog.clone();
+        let store = state.gateway.store.clone();
+        let diagnostics_dir = state.diagnostics_dir.clone();
+        let dump_thread = std::thread::spawn(move || {
+            watchdog_for_dump.record_slow_refresh(
+                UiWatchdogRuntime {
+                    store: &store,
+                    diagnostics_dir: &diagnostics_dir,
+                },
+                "status",
+                2_500,
+                UiWatchdogPageState {
+                    active_page: "dashboard",
+                    visible: true,
+                },
+                10_000,
+            );
+        });
+
+        while !dump_started.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let (tx, rx) = mpsc::channel();
+        let watchdog_for_heartbeat = watchdog.clone();
+        let heartbeat_thread = std::thread::spawn(move || {
+            watchdog_for_heartbeat.record_heartbeat("dashboard", true, false, false, false, 11_000);
+            tx.send(()).expect("send heartbeat done");
+        });
+
+        rx.recv_timeout(Duration::from_millis(200))
+            .expect("heartbeat should not block on dump writing");
+        watchdog.check_unresponsive(&state.gateway.store, &state.diagnostics_dir, 15_000);
+
+        release_dump.store(true, Ordering::SeqCst);
+        heartbeat_thread.join().expect("join heartbeat thread");
+        dump_thread.join().expect("join dump thread");
+
+        let unresponsive_events = state
+            .gateway
+            .store
+            .list_events_range(None, None, Some(10))
+            .iter()
+            .filter(|entry| {
+                entry
+                    .get("code")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|code| code == "app.ui_unresponsive")
+            })
+            .count();
+        assert_eq!(unresponsive_events, 0);
     }
 }

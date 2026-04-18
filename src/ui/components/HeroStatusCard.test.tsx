@@ -1,5 +1,7 @@
+import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { lanPeersSummary } from './HeroStatusCard'
+import { lanPeerTailscaleSummary, lanPeersSummary, tailscaleSummary } from './HeroStatusCard'
+import { HeroStatusCard } from './HeroStatusCard'
 import type { Status } from '../types'
 
 function buildStatus(): Status {
@@ -15,6 +17,15 @@ function buildStatus(): Status {
     last_activity_unix_ms: 0,
     codex_account: {
       ok: true,
+    },
+    tailscale: {
+      installed: true,
+      connected: true,
+      dns_name: 'desk.tail.ts.net',
+      ipv4: ['100.64.0.8'],
+      reachable_ipv4: ['100.64.0.8'],
+      gateway_reachable: true,
+      needs_gateway_restart: false,
     },
     lan_sync: {
       enabled: true,
@@ -65,5 +76,61 @@ describe('HeroStatusCard', () => {
     ]
 
     expect(lanPeersSummary(status)).toBe('1 alive (update available)')
+  })
+
+  it('shows restart guidance when tailscale is connected but the gateway is not reachable yet', () => {
+    const status = buildStatus()
+    status.tailscale = {
+      installed: true,
+      connected: true,
+      dns_name: 'desk.tail.ts.net',
+      ipv4: ['100.64.0.8'],
+      reachable_ipv4: [],
+      gateway_reachable: false,
+      needs_gateway_restart: true,
+    }
+
+    expect(tailscaleSummary(status)).toBe('Connected, restart API Router')
+  })
+
+  it('summarizes peer tailscale issues for remote diagnosis', () => {
+    const status = buildStatus()
+    status.lan_sync!.peers = [
+      {
+        node_id: 'node-a',
+        node_name: 'Peer A',
+        listen_addr: '192.168.1.10:4000',
+        last_heartbeat_unix_ms: 1,
+        capabilities: [],
+        provider_fingerprints: [],
+        build_matches_local: true,
+        tailscale: {
+          installed: true,
+          connected: true,
+          dns_name: 'peer-a.tail.ts.net',
+          ipv4: ['100.64.0.10'],
+          reachable_ipv4: [],
+          gateway_reachable: false,
+          needs_gateway_restart: true,
+        },
+      },
+    ]
+
+    expect(lanPeerTailscaleSummary(status)).toBe('Peer A: needs restart')
+  })
+
+  it('keeps tailscale diagnostics out of the dashboard gateway card', () => {
+    const status = buildStatus()
+    const html = renderToStaticMarkup(
+      <HeroStatusCard
+        status={status}
+        gatewayTokenPreview="ao_test"
+        onCopyToken={() => {}}
+        onShowRotate={() => {}}
+      />,
+    )
+
+    expect(html).not.toContain('Tailscale')
+    expect(html).not.toContain('Peer Tailscale')
   })
 })

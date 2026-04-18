@@ -1004,6 +1004,29 @@ pub(super) async fn codex_auth_verify(
     Json(json!({ "ok": true })).into_response()
 }
 
+#[derive(Debug, Deserialize)]
+pub(super) struct WebTransportEventRecordRequest {
+    #[serde(rename = "eventType")]
+    pub event_type: String,
+    pub detail: Option<String>,
+}
+
+pub(super) async fn codex_record_web_transport_event(
+    State(st): State<GatewayState>,
+    headers: HeaderMap,
+    Json(payload): Json<WebTransportEventRecordRequest>,
+) -> Response {
+    if let Some(resp) = require_codex_auth(&st, &headers) {
+        return resp;
+    }
+    let event_type = payload.event_type.trim();
+    if event_type.is_empty() {
+        return api_error(StatusCode::BAD_REQUEST, "eventType is required");
+    }
+    crate::diagnostics::codex_web_transport::record_web_transport_event(event_type, payload.detail);
+    Json(json!({ "ok": true })).into_response()
+}
+
 pub(super) async fn codex_live_debug(
     State(st): State<GatewayState>,
     headers: HeaderMap,
@@ -1058,6 +1081,7 @@ pub(super) async fn codex_live_debug_client(
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use crate::codex_home_env::CodexHomeEnvGuard;
@@ -1275,9 +1299,7 @@ mod tests {
         let rollout_path = sessions_dir.join("rollout-2026-03-20T00-00-00-thread-dual.jsonl");
         std::fs::write(
             &rollout_path,
-            concat!(
-                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-win-dual\",\"cwd\":\"C:/repo\"}}\n"
-            ),
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-win-dual\",\"cwd\":\"C:/repo\"}}\n",
         )
         .expect("seed windows rollout");
         let prev_win_home = std::env::var("API_ROUTER_WEB_CODEX_CODEX_HOME").ok();
@@ -1518,9 +1540,7 @@ mod tests {
         let rollout_path = sessions_dir.join("rollout-2026-03-17T00-00-00-thread-seq.jsonl");
         std::fs::write(
             &rollout_path,
-            concat!(
-                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-seq\",\"cwd\":\"C:/repo\"}}\n"
-            ),
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-seq\",\"cwd\":\"C:/repo\"}}\n",
         )
         .expect("seed rollout");
 

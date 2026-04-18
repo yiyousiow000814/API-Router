@@ -66,6 +66,7 @@ describe('resolveEffectiveSummaryRequestFilters', () => {
       providers: ['official'],
       models: ['gpt-5.4'],
       origins: ['windows'],
+      transports: null,
       sessions: ['session-1'],
     })
   })
@@ -89,6 +90,7 @@ describe('resolveEffectiveSummaryRequestFilters', () => {
       providers: ['official'],
       models: null,
       origins: null,
+      transports: null,
       sessions: null,
     })
   })
@@ -112,6 +114,7 @@ describe('resolveEffectiveSummaryRequestFilters', () => {
       providers: [],
       models: null,
       origins: null,
+      transports: null,
       sessions: null,
     })
   })

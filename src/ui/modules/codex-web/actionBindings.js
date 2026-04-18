@@ -1,3 +1,6 @@
+import { applyActiveThreadGitMetaState, activeComposerWorkspace } from "./threadGitMetaState.js";
+import { resolveBranchPickerSelection } from "./branchPickerState.js";
+
 export function shouldSubmitPromptKey(event) {
   return (
     String(event?.key || "") === "Enter" &&
@@ -28,6 +31,7 @@ export function createActionBindingsModule(deps) {
   const {
     state,
     byId,
+    api,
     bindClick,
     bindResponsiveClick,
     bindInput,
@@ -68,7 +72,6 @@ export function createActionBindingsModule(deps) {
     clearQueuedTurn = () => {},
     editQueuedTurn = async () => false,
     maybeRestoreDeferredQueuedTurnEdit = () => false,
-    openManagedTerminalSurface = async () => null,
     queueFollowUpTurn = async () => null,
     saveQueuedTurnEdit = () => false,
     sendNowTurn = async () => null,
@@ -98,6 +101,26 @@ export function createActionBindingsModule(deps) {
         ? globalThis.setTimeout.bind(globalThis)
         : (callback) => callback();
     const PENDING_FREEFORM_EXIT_MS = 180;
+
+  let pendingBlockedBranchSwitch = null;
+
+  function showBranchSwitchBlockedDialog(uncommittedFileCount, branch) {
+    pendingBlockedBranchSwitch = branch;
+    const backdrop = byId("branchSwitchBlockedBackdrop");
+    const fileCountSpan = byId("branchSwitchBlockedFileCount");
+    if (!backdrop) return;
+    if (fileCountSpan) fileCountSpan.textContent = String(uncommittedFileCount || 0);
+    backdrop.classList.add("show");
+    backdrop.setAttribute("aria-hidden", "false");
+  }
+
+  function hideBranchSwitchBlockedDialog() {
+    pendingBlockedBranchSwitch = null;
+    const backdrop = byId("branchSwitchBlockedBackdrop");
+    if (!backdrop) return;
+    backdrop.classList.remove("show");
+    backdrop.setAttribute("aria-hidden", "true");
+  }
 
   function advanceOrResolvePendingUserInput(id) {
     const submission = getPendingUserInputSubmissionState(id);
@@ -166,6 +189,28 @@ export function createActionBindingsModule(deps) {
         false
       );
     }, PENDING_FREEFORM_EXIT_MS);
+  }
+
+  function applyThreadGitMeta(payload) {
+    return applyActiveThreadGitMetaState(state, payload);
+  }
+
+  function closeComposerPickerMenus() {
+    if (state.composerBranchMenuOpen !== true && state.composerPermissionMenuOpen !== true) {
+      return false;
+    }
+    state.composerBranchMenuOpen = false;
+    state.composerPermissionMenuOpen = false;
+    updateMobileComposerState();
+    return true;
+  }
+
+  function isComposerPickerInteractiveTarget(target) {
+    return !!(
+      target?.closest?.("[data-composer-picker-toggle]") ||
+      target?.closest?.("[data-composer-branch-option]") ||
+      target?.closest?.("[data-composer-permission-option]")
+    );
   }
 
   function wireActions() {
@@ -287,11 +332,6 @@ export function createActionBindingsModule(deps) {
       );
     });
     bindClick("mobileAttachBtn", () => byId("attachInput")?.click());
-    bindClick("headerWorkspaceBadge", () =>
-      openManagedTerminalSurface().catch((e) =>
-        setStatus(resolveActionErrorMessage(e, "Failed to open linked terminal."), true)
-      )
-    );
     bindResponsiveClick("mobileSendBtn", () => {
       const promptValue = String(byId("mobilePromptInput")?.value || "").trim();
       const running = state.activeThreadPendingTurnRunning === true;
@@ -546,6 +586,7 @@ export function createActionBindingsModule(deps) {
         suppressMs: 420,
       });
     }
+    bindClick("branchSwitchBlockedCancelBtn", () => hideBranchSwitchBlockedDialog());
     bindClick("folderPickerCloseBtn", () => closeFolderPicker());
     bindClick("folderPickerUpBtn", () => {
       if (state.folderPickerLoading) return;
@@ -678,6 +719,117 @@ export function createActionBindingsModule(deps) {
       if (!(target instanceof Node)) return;
       if (menu?.contains(target) || menuBtn?.contains(target)) return;
       setComposerActionMenuOpen(false);
+    });
+    {
+      const pickerBar = byId("composerPickerBar");
+      if (pickerBar && !pickerBar.__wiredComposerPickerActions) {
+        pickerBar.__wiredComposerPickerActions = true;
+        pickerBar.addEventListener("click", (event) => {
+          if (shouldSuppressSyntheticClick(event)) return;
+          const target = event?.target;
+          if (!isComposerPickerInteractiveTarget(target)) {
+            closeComposerPickerMenus();
+            return;
+          }
+          const toggleBtn = event?.target?.closest?.("[data-composer-picker-toggle]");
+          if (toggleBtn) {
+            event.preventDefault();
+            event.stopPropagation();
+            const picker = String(toggleBtn.getAttribute("data-composer-picker-toggle") || "").trim();
+            if (picker === "branch") {
+              const wantsOpen = toggleBtn.disabled ? false : state.composerBranchMenuOpen !== true;
+              state.composerPermissionMenuOpen = false;
+              state.composerBranchMenuOpen = wantsOpen;
+            } else if (picker === "permission") {
+              state.composerPermissionMenuOpen = state.composerPermissionMenuOpen !== true;
+              state.composerBranchMenuOpen = false;
+            }
+            updateMobileComposerState();
+            return;
+          }
+          const branchBtn = event?.target?.closest?.("[data-composer-branch-option]");
+          if (branchBtn) {
+            event.preventDefault();
+            event.stopPropagation();
+            const threadId = String(state.activeThreadId || "").trim();
+            const branch = String(branchBtn.getAttribute("data-composer-branch-option") || "").trim();
+            const selection = resolveBranchPickerSelection(state, branch);
+            if (selection.action === "ignore") return;
+            if (selection.action !== "switch") {
+              state.composerBranchMenuOpen = false;
+              updateMobileComposerState();
+              if (selection.action === "blocked") {
+                showBranchSwitchBlockedDialog(selection.uncommittedFileCount, branch);
+              }
+              return;
+            }
+            const workspace = activeComposerWorkspace(state);
+            const cwd = String(state.activeThreadGitMetaCwd || state.startCwdByWorkspace?.[workspace] || "").trim();
+            const useCwdSwitch = state.activeThreadGitMetaSource === "cwd" || !threadId;
+            if (
+              typeof api !== "function" ||
+              (useCwdSwitch && !cwd) ||
+              (!useCwdSwitch && !threadId)
+            ) {
+              return;
+            }
+            const reqSeq = (Number(state.activeThreadGitMetaReqSeq || 0) || 0) + 1;
+            state.activeThreadGitMetaReqSeq = reqSeq;
+            state.composerBranchMenuOpen = false;
+            state.activeThreadGitMetaLoading = true;
+            updateMobileComposerState();
+            const branchSwitch = useCwdSwitch
+              ? api("/codex/git/branch", {
+                  method: "POST",
+                  body: { workspace, cwd, branch: selection.branch },
+                })
+              : api(`/codex/threads/${encodeURIComponent(threadId)}/branch`, {
+                  method: "POST",
+                  body: { workspace, branch: selection.branch },
+                });
+            branchSwitch
+              .then((payload) => {
+                if (state.activeThreadGitMetaReqSeq !== reqSeq) return;
+                applyThreadGitMeta(payload);
+                updateMobileComposerState();
+                setStatus(`Switched to ${selection.branch}`);
+              })
+              .catch((e) => {
+                if (state.activeThreadGitMetaReqSeq !== reqSeq) return;
+                state.activeThreadGitMetaLoading = false;
+                updateMobileComposerState();
+                setStatus(resolveActionErrorMessage(e, "Failed to switch branch."), true);
+              });
+            return;
+          }
+          const permissionBtn = event?.target?.closest?.("[data-composer-permission-option]");
+          if (permissionBtn) {
+            event.preventDefault();
+            event.stopPropagation();
+            const command = String(permissionBtn.getAttribute("data-composer-permission-option") || "").trim();
+            if (!command) return;
+            executeSlashCommand(command, {
+              clearPrompt: false,
+              hideMenu: false,
+              switchToChat: false,
+              refreshThreads: false,
+            })
+              .then(() => {
+                state.composerPermissionMenuOpen = false;
+                updateMobileComposerState();
+                syncSettingsControlsFromMain();
+              })
+              .catch((e) => setStatus(resolveActionErrorMessage(e), true));
+          }
+        });
+      }
+    }
+    doc.addEventListener("click", (event) => {
+      const target = event.target;
+      const pickerBar = byId("composerPickerBar");
+      if (!(target instanceof Node)) return;
+      if (pickerBar?.contains(target) && isComposerPickerInteractiveTarget(target)) return;
+      closeComposerPickerMenus();
     });
     bindClick("quickPrompt1", () => {
       const text = "Explain the current codebase structure";

@@ -218,6 +218,80 @@ mod tests {
         (url, h)
     }
 
+    async fn start_quan2go_codexusage_mock_server() -> (String, tokio::task::JoinHandle<()>) {
+        use axum::http::{HeaderMap, StatusCode};
+        use axum::routing::{get, post};
+        use axum::{Json, Router};
+
+        let app = Router::new()
+            .route(
+                "/api/users/card-login",
+                post(|Json(payload): Json<Value>| async move {
+                    let card = payload
+                        .get("card")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let agent = payload
+                        .get("agent")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if card != "card-123" || agent != "main" {
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            Json(serde_json::json!({ "message": "bad credentials" })),
+                        );
+                    }
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "code": 0,
+                            "data": { "token": "user:81406/mock-token" }
+                        })),
+                    )
+                }),
+            )
+            .route(
+                "/api/users/whoami",
+                get(|headers: HeaderMap| async move {
+                    let auth = headers
+                        .get("x-auth-token")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default();
+                    if auth != "user:81406/mock-token" {
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            Json(serde_json::json!({ "message": "invalid token" })),
+                        );
+                    }
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "code": 0,
+                            "data": {
+                                "id": 81406,
+                                "score_used": 12.5,
+                                "day_score_used": 2.75,
+                                "vip": {
+                                    "product": "codex",
+                                    "score": 200.0,
+                                    "day_score": 45.0,
+                                    "expire_at": 1779036712763u64
+                                }
+                            }
+                        })),
+                    )
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}:{}", addr.ip(), addr.port());
+        let h = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (url, h)
+    }
+
     #[test]
     fn failed_refresh_preserves_previous_budget_snapshot_kind() {
         let provider_name = "codex-for.me";
@@ -245,6 +319,7 @@ mod tests {
                     usage_base_url: None,
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     api_key: String::new(),
                 },
             )]),
@@ -388,6 +463,7 @@ mod tests {
                     usage_base_url: explicit_usage_base,
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     api_key: String::new(),
                 },
             )]),
@@ -456,6 +532,7 @@ mod tests {
             base_url: "http://codex-api.example.com/v1".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -471,6 +548,7 @@ mod tests {
             base_url: "http://codex-api.example.com/v1".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: Some("https://explicit.example.com/".to_string()),
             api_key: String::new(),
@@ -486,6 +564,7 @@ mod tests {
             base_url: "https://codex-api.packycode.com/v1".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -501,6 +580,7 @@ mod tests {
             base_url: "https://codex-api.packycode.com/v1".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: Some("https://www.packycode.com".to_string()),
             api_key: String::new(),
@@ -531,7 +611,7 @@ mod tests {
         let snap = fetch_budget_info_any(
             &st,
             "p1",
-            &[base.clone()],
+            std::slice::from_ref(&base),
             Some("test-token"),
             "usage token",
             crate::orchestrator::providers::default_budget_info_mapping(),
@@ -554,6 +634,7 @@ mod tests {
             disabled: false,
             usage_adapter: String::new(),
             usage_base_url: None,
+            supports_websockets: false,
             api_key: String::new(),
         };
         let bases_a = vec![
@@ -591,6 +672,7 @@ mod tests {
             base_url: "https://code.ppchat.vip/v1".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -600,6 +682,7 @@ mod tests {
             base_url: "https://code.pumpkinai.vip/v1".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -635,6 +718,7 @@ mod tests {
             base_url: "https://api-vip.codex-for.me/v1".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -650,6 +734,7 @@ mod tests {
             base_url: "https://api-vip.codex-for.vip/v1".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -665,8 +750,9 @@ mod tests {
             base_url: "https://yunyi.rdzhvip.com/codex".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
-            usage_base_url: Some("https://yunyi.rdzhvip.com/user/api/v1/me".to_string()),
+            usage_base_url: None,
             api_key: String::new(),
         };
         assert_eq!(
@@ -674,8 +760,17 @@ mod tests {
             Some("https://yunyi.rdzhvip.com/user/api/v1/me")
         );
 
+        provider.usage_base_url = Some("https://yunyi.rdzhvip.com/user/api/v1/me".to_string());
+        assert_eq!(
+            explicit_usage_endpoint_url(&provider).as_deref(),
+            Some("https://yunyi.rdzhvip.com/user/api/v1/me")
+        );
+
         provider.usage_base_url = Some("https://yunyi.rdzhvip.com/user/api/v1".to_string());
-        assert_eq!(explicit_usage_endpoint_url(&provider), None);
+        assert_eq!(
+            explicit_usage_endpoint_url(&provider).as_deref(),
+            Some("https://yunyi.rdzhvip.com/user/api/v1/me")
+        );
     }
 
     #[test]
@@ -685,6 +780,7 @@ mod tests {
             base_url: "https://aigateway.chat/v1".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: None,
             api_key: String::new(),
@@ -703,6 +799,7 @@ mod tests {
             base_url: "https://aigateway.chat/v1".to_string(),
             group: None,
             disabled: false,
+            supports_websockets: false,
             usage_adapter: String::new(),
             usage_base_url: Some("not-a-url".to_string()),
             api_key: String::new(),
@@ -879,6 +976,64 @@ mod tests {
         assert_eq!(snap.monthly_budget_usd, Some(83.42));
         assert_eq!(snap.package_expires_at_unix_ms, Some(1_830_254_400_000));
         assert_eq!(snap.effective_usage_base.as_deref(), Some(base.as_str()));
+    }
+
+    #[tokio::test]
+    async fn quan2go_provider_definition_fetches_usage_via_card_login_summary() {
+        let (base, handle) = start_quan2go_codexusage_mock_server().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_provider_key("p1", "card-123").unwrap();
+        let st = mk_state_with_providers(
+            std::collections::BTreeMap::from([(
+                "p1".to_string(),
+                ProviderConfig {
+                    display_name: "Quan2go".to_string(),
+                    base_url: "https://capi.quan2go.com/openai".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: Some(base.clone()),
+                    group: None,
+                    disabled: false,
+                    supports_websockets: false,
+                    api_key: String::new(),
+                },
+            )]),
+            vec!["p1".to_string()],
+            secrets,
+        );
+        let mut profile = {
+            let cfg = st.cfg.read().clone();
+            resolve_quota_profile(cfg.providers.get("p1").unwrap())
+        };
+        profile.candidate_bases = vec![base.clone()];
+
+        let snap = compute_quota_snapshot(
+            &st,
+            "p1",
+            &profile,
+            &profile.candidate_bases,
+            QuotaCredentials {
+                provider_key: Some("card-123"),
+                usage_token: None,
+                usage_login: None,
+            },
+            profile.package_expiry_strategy,
+        )
+        .await;
+        handle.abort();
+
+        assert!(snap.last_error.is_empty(), "{}", snap.last_error);
+        assert_eq!(snap.kind, UsageKind::BudgetInfo);
+        assert_eq!(snap.daily_spent_usd, None);
+        assert_eq!(snap.daily_budget_usd, None);
+        assert_eq!(snap.monthly_spent_usd, Some(12.5));
+        assert_eq!(snap.monthly_budget_usd, Some(200.0));
+        assert_eq!(snap.package_expires_at_unix_ms, Some(1_779_036_712_763));
+        assert_eq!(snap.effective_usage_base.as_deref(), Some(base.as_str()));
+        assert_eq!(
+            snap.effective_usage_source.as_deref(),
+            Some("provider_key_card_login_summary")
+        );
     }
 
     #[tokio::test]
@@ -1482,6 +1637,7 @@ mod tests {
                     usage_base_url: Some(base.clone()),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     api_key: String::new(),
                 },
             ),
@@ -1494,6 +1650,7 @@ mod tests {
                     usage_base_url: Some(base.clone()),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     api_key: String::new(),
                 },
             ),
@@ -1648,6 +1805,7 @@ mod tests {
             api_key_ref: "-".to_string(),
             model: String::new(),
             origin: "windows".to_string(),
+            transport: "http".to_string(),
             session_id: String::new(),
             node_id: String::new(),
             node_name: String::new(),
@@ -1698,6 +1856,7 @@ mod tests {
                 api_key_ref: "-".to_string(),
                 model: String::new(),
                 origin: "windows".to_string(),
+                transport: "http".to_string(),
                 session_id: String::new(),
                 node_id: "node-a".to_string(),
                 node_name: "desk-a".to_string(),
@@ -1715,6 +1874,7 @@ mod tests {
                 api_key_ref: "-".to_string(),
                 model: String::new(),
                 origin: "windows".to_string(),
+                transport: "http".to_string(),
                 session_id: String::new(),
                 node_id: "node-b".to_string(),
                 node_name: "desk-b".to_string(),
@@ -1776,6 +1936,7 @@ mod tests {
             api_key_ref: "-".to_string(),
             model: String::new(),
             origin: "windows".to_string(),
+            transport: "http".to_string(),
             session_id: String::new(),
             node_id: "node-remote".to_string(),
             node_name: "remote-box".to_string(),
@@ -1895,6 +2056,7 @@ mod tests {
                     usage_base_url: Some("https://usage-router.example".to_string()),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     api_key: String::new(),
                 },
             ),
@@ -1907,6 +2069,7 @@ mod tests {
                     usage_base_url: Some("https://usage-router.example".to_string()),
                     group: None,
                     disabled: true,
+                    supports_websockets: false,
                     api_key: String::new(),
                 },
             ),
@@ -2136,6 +2299,7 @@ mod tests {
                     usage_base_url: Some("https://quota.example".to_string()),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     api_key: String::new(),
                 },
             )]),
@@ -2776,6 +2940,7 @@ mod tests {
                     usage_base_url: Some(base.clone()),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     api_key: String::new(),
                 },
             ),
@@ -2788,6 +2953,7 @@ mod tests {
                     usage_base_url: Some(base.clone()),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     api_key: String::new(),
                 },
             ),
@@ -2821,6 +2987,7 @@ mod tests {
                     usage_base_url: Some(base),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     api_key: String::new(),
                 },
             ),
@@ -2833,6 +3000,7 @@ mod tests {
                     usage_base_url: None,
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     api_key: String::new(),
                 },
             ),
@@ -2871,6 +3039,7 @@ mod tests {
                     usage_base_url: Some(base.clone()),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     api_key: String::new(),
                 },
             ),
@@ -2883,6 +3052,7 @@ mod tests {
                     usage_base_url: Some(base),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     api_key: String::new(),
                 },
             ),
@@ -2925,6 +3095,7 @@ mod tests {
                 usage_base_url: Some(base),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 api_key: String::new(),
             },
         )]);
@@ -2957,6 +3128,7 @@ mod tests {
                     usage_base_url: Some(base.clone()),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     api_key: String::new(),
                 },
             ),
@@ -2969,6 +3141,7 @@ mod tests {
                     usage_base_url: Some(base),
                     group: None,
                     disabled: true,
+                    supports_websockets: false,
                     api_key: String::new(),
                 },
             ),
@@ -3030,6 +3203,7 @@ mod tests {
             base_url: "https://codex.packycode.com/v1".to_string(),
             usage_adapter: String::new(),
             usage_base_url: None,
+            supports_websockets: false,
             group: None,
             disabled: false,
             api_key: String::new(),
@@ -3074,6 +3248,7 @@ mod tests {
             base_url: "https://api-vip.codex-for.me/v1".to_string(),
             usage_adapter: String::new(),
             usage_base_url: None,
+            supports_websockets: false,
             group: None,
             disabled: false,
             api_key: String::new(),
@@ -3084,11 +3259,23 @@ mod tests {
         let payload = serde_json::json!({
             "data": {
                 "card_balance": "42.5",
-                "card_expire_date": "2027-12-31",
+                "card_expire_date": "2026-04-13T14:42:44.143632+08:00",
                 "card_name": "VIP",
                 "card_daily_limit": "200",
                 "today_spent_amount": "26.03",
-                "card_total_spent_amount": "40.92"
+                "card_total_spent_amount": "40.92",
+                "plan_cards": [
+                    {
+                        "name": "Referral VIP Reward",
+                        "expiration_time": "2026-04-14T22:47:29.21256+08:00",
+                        "state": "active"
+                    },
+                    {
+                        "name": "codex-jfioejg",
+                        "expiration_time": "2026-05-14T22:47:29.21256+08:00",
+                        "state": "pending"
+                    }
+                ]
             }
         });
 
@@ -3109,7 +3296,102 @@ mod tests {
         assert_eq!(usage.daily_limit, Some(200.0));
         assert_eq!(usage.daily_used, Some(26.03));
         assert_eq!(usage.monthly_used, Some(40.92));
-        assert_eq!(usage.expires_at_unix_ms, Some(1_830_254_400_000));
+        assert_eq!(usage.expires_at_unix_ms, Some(1_778_770_049_212));
+    }
+
+    #[test]
+    fn quan2go_mapping_applies_daily_fallback_for_day_card_payloads() {
+        let provider = ProviderConfig {
+            display_name: "yangfangyu-old".to_string(),
+            base_url: "https://capi.quan2go.com/openai".to_string(),
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            supports_websockets: false,
+            group: None,
+            disabled: false,
+            api_key: String::new(),
+        };
+        let mapping = resolve_quota_profile(&provider)
+            .summary_mapping
+            .expect("summary mapping");
+        let payload = serde_json::json!({
+            "id": 81406,
+            "score": 0,
+            "score_used": 0,
+            "day_score": 0,
+            "day_score_used": 14.509279199999998,
+            "vip": {
+                "product": "codex",
+                "score": 0,
+                "day_score": 0,
+                "expire_at": 1779036712763_u64
+            }
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            mapping,
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://deepl.micosoft.icu".to_string()),
+                effective_usage_source: Some("provider_key_card_login_summary".to_string()),
+                updated_at_unix_ms: 789,
+            },
+        )
+        .expect("mapped usage");
+
+        assert_eq!(usage.usage_kind, UsageKind::BudgetInfo);
+        assert_eq!(usage.plan_name.as_deref(), Some("codex"));
+        assert_eq!(usage.daily_used, Some(14.509279199999998));
+        assert_eq!(usage.daily_limit, Some(90.0));
+        assert_eq!(usage.monthly_used, None);
+        assert_eq!(usage.monthly_limit, None);
+        assert_eq!(usage.expires_at_unix_ms, Some(1_779_036_712_763));
+    }
+
+    #[test]
+    fn quan2go_mapping_prefers_total_budget_when_total_score_exists() {
+        let provider = ProviderConfig {
+            display_name: "yangfangyu-old".to_string(),
+            base_url: "https://capi.quan2go.com/openai".to_string(),
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            supports_websockets: false,
+            group: None,
+            disabled: false,
+            api_key: String::new(),
+        };
+        let mapping = resolve_quota_profile(&provider)
+            .summary_mapping
+            .expect("summary mapping");
+        let payload = serde_json::json!({
+            "id": 81406,
+            "score": 300,
+            "score_used": 12.5,
+            "day_score": 0,
+            "day_score_used": 3.25,
+            "vip": {
+                "product": "codex",
+                "score": 300,
+                "day_score": 0,
+                "expire_at": 1779036712763_u64
+            }
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            mapping,
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://deepl.micosoft.icu".to_string()),
+                effective_usage_source: Some("provider_key_card_login_summary".to_string()),
+                updated_at_unix_ms: 789,
+            },
+        )
+        .expect("mapped usage");
+
+        assert_eq!(usage.daily_used, None);
+        assert_eq!(usage.daily_limit, None);
+        assert_eq!(usage.monthly_used, Some(12.5));
+        assert_eq!(usage.monthly_limit, Some(300.0));
     }
 
 }

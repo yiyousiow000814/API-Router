@@ -12,6 +12,10 @@ const WEB_CODEX_APP_STATE_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/appState.js");
 const WEB_CODEX_BOOTSTRAP_APP_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/bootstrapApp.js");
+const WEB_CODEX_BRANCH_OPTIONS_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/branchOptions.js");
+const WEB_CODEX_BRANCH_PICKER_STATE_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/branchPickerState.js");
 const WEB_CODEX_PENDING_THREAD_RESUME_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/pendingThreadResume.js");
 const WEB_CODEX_CONTEXT_LEFT_JS: &str =
@@ -94,6 +98,8 @@ const WEB_CODEX_THREAD_LIVE_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/threadLive.js");
 const WEB_CODEX_THREAD_META_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/threadMeta.js");
+const WEB_CODEX_THREAD_GIT_META_STATE_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/threadGitMetaState.js");
 const WEB_CODEX_THREAD_LIST_VIEW_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/threadListView.js");
 const WEB_CODEX_TRANSPORT_MODE_JS: &str =
@@ -115,6 +121,8 @@ fn resolve_web_codex_module_body(module_path: &str) -> Option<&'static str> {
         "codex-web/appPersistence.js" => Some(WEB_CODEX_APP_PERSISTENCE_JS),
         "codex-web/appState.js" => Some(WEB_CODEX_APP_STATE_JS),
         "codex-web/bootstrapApp.js" => Some(WEB_CODEX_BOOTSTRAP_APP_JS),
+        "codex-web/branchOptions.js" => Some(WEB_CODEX_BRANCH_OPTIONS_JS),
+        "codex-web/branchPickerState.js" => Some(WEB_CODEX_BRANCH_PICKER_STATE_JS),
         "codex-web/chatTimeline.js" => Some(WEB_CODEX_CHAT_TIMELINE_JS),
         "codex-web/chatViewport.js" => Some(WEB_CODEX_CHAT_VIEWPORT_JS),
         "codex-web/composerUi.js" => Some(WEB_CODEX_COMPOSER_UI_JS),
@@ -158,6 +166,7 @@ fn resolve_web_codex_module_body(module_path: &str) -> Option<&'static str> {
         "codex-web/threadListRefresh.js" => Some(WEB_CODEX_THREAD_LIST_REFRESH_JS),
         "codex-web/threadLive.js" => Some(WEB_CODEX_THREAD_LIVE_JS),
         "codex-web/threadMeta.js" => Some(WEB_CODEX_THREAD_META_JS),
+        "codex-web/threadGitMetaState.js" => Some(WEB_CODEX_THREAD_GIT_META_STATE_JS),
         "codex-web/threadListView.js" => Some(WEB_CODEX_THREAD_LIST_VIEW_JS),
         "codex-web/transportMode.js" => Some(WEB_CODEX_TRANSPORT_MODE_JS),
         "codex-web/turnActions.js" => Some(WEB_CODEX_TURN_ACTIONS_JS),
@@ -255,6 +264,8 @@ mod tests {
         assert!(resolve_web_codex_module_body("codex-web/appPersistence.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/appState.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/bootstrapApp.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/branchOptions.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/branchPickerState.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/chatTimeline.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/chatViewport.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/composerUi.js").is_some());
@@ -291,6 +302,7 @@ mod tests {
         assert!(resolve_web_codex_module_body("codex-web/threadListRefresh.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/threadLive.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/threadMeta.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/threadGitMetaState.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/threadListView.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/transportMode.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/turnActions.js").is_some());

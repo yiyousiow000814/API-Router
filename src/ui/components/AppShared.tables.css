@@ -1,6 +1,6 @@
 .aoTinyBtn:hover {
-  border-color: rgba(var(--ao-accent-rgb), 0.55);
-  background: rgba(var(--ao-accent-rgb), 0.06);
+  border-color: rgba(13, 18, 32, 0.24);
+  background: rgba(13, 18, 32, 0.04);
 }
 
 .aoTinyBtn.aoUsageWindowBtnActive {
@@ -168,12 +168,12 @@
   align-items: center;
   justify-content: center;
   padding: 40px;
-  z-index: 9999;
+  z-index: var(--z-modal-backdrop);
   overscroll-behavior: contain;
 }
 
 .aoModalBackdropTop {
-  z-index: 10050;
+  z-index: var(--z-modal-backdrop-top);
 }
 
 .aoModal {
@@ -438,7 +438,7 @@
   opacity: 0;
   pointer-events: none;
   transition: opacity 140ms ease;
-  z-index: 2;
+  z-index: var(--z-scroll-overlay);
 }
 
 .aoRawConfigScrollSurfaceCanScroll .aoRawConfigScrollbarOverlay {

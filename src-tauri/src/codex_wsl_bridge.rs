@@ -9,13 +9,13 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 #[cfg(target_os = "windows")]
 use std::process::Stdio;
-#[cfg(any(test, target_os = "windows"))]
+#[cfg(target_os = "windows")]
 use std::sync::OnceLock;
 #[cfg(target_os = "windows")]
 use std::time::Duration;
 #[cfg(target_os = "windows")]
 use tokio::process::Command;
-#[cfg(any(test, target_os = "windows"))]
+#[cfg(target_os = "windows")]
 use tokio::sync::Mutex;
 
 #[cfg(target_os = "windows")]
@@ -41,29 +41,20 @@ const BRIDGE_LOG_PATH: &str = "/tmp/api-router-wsl-codex-bridge.log";
 static BRIDGES: OnceLock<Mutex<HashMap<String, std::sync::Arc<Mutex<BridgeRuntime>>>>> =
     OnceLock::new();
 
-#[cfg(test)]
-static TEST_RPC_HANDLER: OnceLock<
-    Mutex<
-        Option<
-            std::sync::Arc<
-                dyn Fn(Option<&str>, &str, Value) -> Result<Value, String> + Send + Sync,
-            >,
-        >,
-    >,
-> = OnceLock::new();
+#[cfg(all(test, target_os = "windows"))]
+type TestRpcHandler =
+    std::sync::Arc<dyn Fn(Option<&str>, &str, Value) -> Result<Value, String> + Send + Sync>;
 
-#[cfg(test)]
-static TEST_REPLAY_HANDLER: OnceLock<
-    Mutex<
-        Option<
-            std::sync::Arc<
-                dyn Fn(Option<&str>, u64, usize) -> (Vec<Value>, Option<u64>, Option<u64>, bool)
-                    + Send
-                    + Sync,
-            >,
-        >,
-    >,
-> = OnceLock::new();
+#[cfg(all(test, target_os = "windows"))]
+static TEST_RPC_HANDLER: OnceLock<Mutex<Option<TestRpcHandler>>> = OnceLock::new();
+
+#[cfg(all(test, target_os = "windows"))]
+type TestReplayHandler = std::sync::Arc<
+    dyn Fn(Option<&str>, u64, usize) -> (Vec<Value>, Option<u64>, Option<u64>, bool) + Send + Sync,
+>;
+
+#[cfg(all(test, target_os = "windows"))]
+static TEST_REPLAY_HANDLER: OnceLock<Mutex<Option<TestReplayHandler>>> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg(any(test, target_os = "windows"))]
@@ -850,60 +841,6 @@ fn build_launch_command(target: &BridgeTarget, port: u16) -> Command {
     cmd
 }
 
-#[cfg(test)]
-pub async fn _set_test_rpc_handler(
-    handler: Option<
-        std::sync::Arc<dyn Fn(Option<&str>, &str, Value) -> Result<Value, String> + Send + Sync>,
-    >,
-) {
-    let lock = TEST_RPC_HANDLER.get_or_init(|| Mutex::new(None));
-    let mut guard = lock.lock().await;
-    *guard = handler;
-}
-
-#[cfg(test)]
-pub async fn _set_test_replay_handler(
-    handler: Option<
-        std::sync::Arc<
-            dyn Fn(Option<&str>, u64, usize) -> (Vec<Value>, Option<u64>, Option<u64>, bool)
-                + Send
-                + Sync,
-        >,
-    >,
-) {
-    let lock = TEST_REPLAY_HANDLER.get_or_init(|| Mutex::new(None));
-    let mut guard = lock.lock().await;
-    *guard = handler;
-}
-
-#[cfg(test)]
-async fn maybe_handle_test_rpc(
-    codex_home: Option<&str>,
-    method: &str,
-    params: &Value,
-) -> Option<Result<Value, String>> {
-    let lock = TEST_RPC_HANDLER.get_or_init(|| Mutex::new(None));
-    let guard = lock.lock().await;
-    let Some(handler) = guard.as_ref() else {
-        return None;
-    };
-    Some(handler(codex_home, method, params.clone()))
-}
-
-#[cfg(test)]
-async fn maybe_handle_test_replay(
-    codex_home: Option<&str>,
-    since_event_id: u64,
-    max: usize,
-) -> Option<(Vec<Value>, Option<u64>, Option<u64>, bool)> {
-    let lock = TEST_REPLAY_HANDLER.get_or_init(|| Mutex::new(None));
-    let guard = lock.lock().await;
-    let Some(handler) = guard.as_ref() else {
-        return None;
-    };
-    Some(handler(codex_home, since_event_id, max))
-}
-
 #[cfg(target_os = "windows")]
 async fn healthcheck(base_url: &str, client: &Client) -> Result<bool, String> {
     let response = client
@@ -916,6 +853,44 @@ async fn healthcheck(base_url: &str, client: &Client) -> Result<bool, String> {
     }
     let payload = response.json::<Value>().await.map_err(|e| e.to_string())?;
     Ok(bridge_health_payload_ok(&payload))
+}
+
+#[cfg(all(test, target_os = "windows"))]
+pub async fn _set_test_rpc_handler(handler: Option<TestRpcHandler>) {
+    let lock = TEST_RPC_HANDLER.get_or_init(|| Mutex::new(None));
+    let mut guard = lock.lock().await;
+    *guard = handler;
+}
+
+#[cfg(all(test, target_os = "windows"))]
+pub async fn _set_test_replay_handler(handler: Option<TestReplayHandler>) {
+    let lock = TEST_REPLAY_HANDLER.get_or_init(|| Mutex::new(None));
+    let mut guard = lock.lock().await;
+    *guard = handler;
+}
+
+#[cfg(all(test, target_os = "windows"))]
+async fn maybe_handle_test_rpc(
+    codex_home: Option<&str>,
+    method: &str,
+    params: &Value,
+) -> Option<Result<Value, String>> {
+    let lock = TEST_RPC_HANDLER.get_or_init(|| Mutex::new(None));
+    let guard = lock.lock().await;
+    let handler = guard.as_ref()?;
+    Some(handler(codex_home, method, params.clone()))
+}
+
+#[cfg(all(test, target_os = "windows"))]
+async fn maybe_handle_test_replay(
+    codex_home: Option<&str>,
+    since_event_id: u64,
+    max: usize,
+) -> Option<(Vec<Value>, Option<u64>, Option<u64>, bool)> {
+    let lock = TEST_REPLAY_HANDLER.get_or_init(|| Mutex::new(None));
+    let guard = lock.lock().await;
+    let handler = guard.as_ref()?;
+    Some(handler(codex_home, since_event_id, max))
 }
 
 #[cfg(target_os = "windows")]
@@ -1050,7 +1025,7 @@ pub async fn try_request_in_home(
     #[cfg(target_os = "windows")]
     {
         let target = parse_bridge_target(codex_home)?;
-        #[cfg(test)]
+        #[cfg(all(test, target_os = "windows"))]
         if let Some(result) =
             maybe_handle_test_rpc(target.codex_home_linux.as_deref(), method, &params).await
         {
@@ -1073,7 +1048,7 @@ pub async fn try_replay_notifications_since_in_home(
     #[cfg(target_os = "windows")]
     {
         let target = parse_bridge_target(codex_home)?;
-        #[cfg(test)]
+        #[cfg(all(test, target_os = "windows"))]
         if let Some(result) =
             maybe_handle_test_replay(target.codex_home_linux.as_deref(), since_event_id, max).await
         {

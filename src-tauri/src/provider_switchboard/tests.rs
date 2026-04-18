@@ -375,7 +375,13 @@ mod tests {
             provider = GATEWAY_MODEL_PROVIDER_ID
         );
 
-        let out = build_direct_provider_cfg(&cfg, "ppchat", "https://code.ppchat.vip/v1", None);
+        let out = build_direct_provider_cfg(
+            &cfg,
+            "ppchat",
+            "https://code.ppchat.vip/v1",
+            false,
+            None,
+        );
 
         // No extra blank line between model_provider and the next setting.
         assert!(out.contains("model_provider = \"ppchat\"\nmodel = \"gpt-5.2\""));
@@ -398,7 +404,13 @@ mod tests {
             "wire_api = \"responses\"\n",
             "requires_openai_auth = true\n",
         );
-        let out = build_direct_provider_cfg(cfg, "ppchat", "https://code.ppchat.vip/v1", None);
+        let out = build_direct_provider_cfg(
+            cfg,
+            "ppchat",
+            "https://code.ppchat.vip/v1",
+            false,
+            None,
+        );
         assert!(!out.contains("[model_providers.API_Router]"));
         assert!(!out.contains("[model_providers.api_router]"));
     }
@@ -410,10 +422,37 @@ mod tests {
             cfg,
             "ppchat",
             "https://code.ppchat.vip/v1",
+            false,
             Some("sk-config"),
         );
         assert!(out.contains("experimental_bearer_token = \"sk-config\""));
         assert!(out.contains("requires_openai_auth = true"));
+    }
+
+    #[test]
+    fn build_direct_provider_cfg_embeds_supports_websockets_when_enabled() {
+        let cfg = "model = \"gpt-5.2\"\n";
+        let out = build_direct_provider_cfg(
+            cfg,
+            "ppchat",
+            "https://code.ppchat.vip/v1",
+            true,
+            None,
+        );
+        assert!(out.contains("supports_websockets = true"));
+    }
+
+    #[test]
+    fn build_direct_provider_cfg_omits_supports_websockets_when_disabled() {
+        let cfg = "model = \"gpt-5.2\"\n";
+        let out = build_direct_provider_cfg(
+            cfg,
+            "ppchat",
+            "https://code.ppchat.vip/v1",
+            false,
+            None,
+        );
+        assert!(!out.contains("supports_websockets"));
     }
 
     #[test]
@@ -496,6 +535,7 @@ mod tests {
             "model = \"gpt-5.2\"\n",
             "provider_1",
             "https://example.com/v1",
+            false,
             None,
         );
         std::fs::write(cli_cfg_path(&cli_home), current_cfg).unwrap();
@@ -560,6 +600,7 @@ mod tests {
             "model = \"gpt-5.2\"\n",
             "provider_1",
             "https://example.com/v1",
+            false,
             None,
         );
         std::fs::write(cli_cfg_path(&cli_home), current_cfg).unwrap();
@@ -722,6 +763,7 @@ mod tests {
             "model = \"gpt-5.2\"\n",
             "provider_1",
             "https://example.com/v1",
+            false,
             None,
         );
         std::fs::write(cli_cfg_path(&cli_home), current_cfg).unwrap();
@@ -895,6 +937,7 @@ mod tests {
                 "model = \"gpt-5.2\"\n",
                 "provider_1",
                 "https://x.invalid",
+                false,
                 None,
             ),
         )

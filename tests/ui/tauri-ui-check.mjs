@@ -367,7 +367,13 @@ async function main() {
 
     // Subtest: Config modal action contracts (key / usage base modals).
     {
-      const setKeyBtn = await waitVisible(driver, By.css('.aoProviderConfigCard[data-provider] button[title="Set key"]'), 12000)
+      const setKeyBtn = await waitVisible(
+        driver,
+        By.xpath(
+          `(//div[contains(@class,'aoProviderConfigCard') and @data-provider]//button[contains(@class,'aoProviderHeadBtn')][.//span[normalize-space()='Key']])[1]`,
+        ),
+        12000,
+      )
       await setKeyBtn.click()
       await waitVisible(
         driver,

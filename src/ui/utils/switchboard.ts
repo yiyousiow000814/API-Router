@@ -3,12 +3,9 @@ import type {
   Config,
   ProviderSwitchboardStatus,
   Status,
-  UsageStatistics,
-  UsageStatisticsOverview,
 } from '../types'
 import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
 import { normalizePathForCompare } from './path'
-import { simulateQuotaForDisplay } from './quotaSimulation'
 
 export function resolveCliHomes(
   windowsDir: string,
@@ -217,7 +214,6 @@ export function buildSwitchboardProviderCards(
   managedProviderNames: string[],
   config: Config | null,
   status: Status | null,
-  usageStatistics: UsageStatistics | UsageStatisticsOverview | null,
   options: {
     fmtPct: (value: number | null) => string
     fmtAmount: (value: number | null) => string
@@ -227,12 +223,7 @@ export function buildSwitchboardProviderCards(
 ): SwitchboardCard[] {
   return managedProviderNames.map((name) => {
     const providerCfg = config?.providers?.[name]
-    const quota = simulateQuotaForDisplay(
-      name,
-      status?.quota?.[name],
-      status?.projected_ledgers?.[name] ?? status?.ledgers?.[name],
-      usageStatistics,
-    )
+    const quota = status?.quota?.[name]
     const kind = (quota?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info' | 'balance_info'
     let usageHeadline = 'No usage data'
     let usageDetail = 'Refresh after first request'

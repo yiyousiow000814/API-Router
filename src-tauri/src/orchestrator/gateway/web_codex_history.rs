@@ -877,6 +877,7 @@ mod tests {
         let raw_path = "/home/test/.codex/sessions/2026/03/07/rollout.jsonl";
         let path = resolve_rollout_path(Some(WorkspaceTarget::Wsl2), raw_path)
             .expect("resolve wsl rollout path");
+        #[cfg(target_os = "windows")]
         let text = path.local_path.to_string_lossy().replace('/', "\\");
         #[cfg(target_os = "windows")]
         assert!(
@@ -899,6 +900,7 @@ mod tests {
             r"\\wsl.localhost\Ubuntu\home\test\.codex\sessions\2026\03\07\rollout.jsonl",
         )
         .expect("resolve unc rollout path");
+        #[cfg(target_os = "windows")]
         let text = path.local_path.to_string_lossy().replace('/', "\\");
         #[cfg(target_os = "windows")]
         assert!(

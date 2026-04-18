@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -108,8 +109,25 @@ describe("threadListView", () => {
       })
     );
     expect(entries.map(([label, items, key]) => [label, items.map((item) => item.id), key])).toEqual([
-      ["api-router", ["1"], "c:/work/api-router"],
-      ["api-router", ["2"], "d:/sandbox/api-router"],
+      ["api-router (work)", ["1"], "c:/work/api-router"],
+      ["api-router (sandbox)", ["2"], "d:/sandbox/api-router"],
+    ]);
+  });
+
+  it("extends the disambiguation suffix until duplicate labels become unique", () => {
+    const entries = buildWorkspaceEntries(
+      [
+        { id: "1", cwd: "C:/repos/api-router" },
+        { id: "2", cwd: "D:/repos/api-router" },
+      ],
+      (thread) => ({
+        key: String(thread.cwd || "").toLowerCase(),
+        label: "api-router",
+      })
+    );
+    expect(entries.map(([label, items, key]) => [label, items.map((item) => item.id), key])).toEqual([
+      ["api-router (c:/repos)", ["1"], "c:/repos/api-router"],
+      ["api-router (d:/repos)", ["2"], "d:/repos/api-router"],
     ]);
   });
 
@@ -164,7 +182,7 @@ describe("threadListView", () => {
         threadListChevronCloseAnimateKeys: new Set(),
         threadListSkipScrollRestoreOnce: false,
         collapsedWorkspaceKeys: new Set(),
-        threadGroupCollapseInitializedByWorkspace: {},
+        threadGroupCollapseInitializedByWorkspace: { windows: true, wsl2: true },
         favoriteThreadIds: new Set(),
       },
       byId(id) {
@@ -788,6 +806,9 @@ describe("threadListView", () => {
       setActiveThread(threadId) {
         state.activeThreadId = threadId;
       },
+      onActiveThreadOpened() {
+        events.push("composer:update");
+      },
       setChatOpening() {},
       detectThreadWorkspaceTarget(thread) {
         return thread.workspace;
@@ -846,6 +867,8 @@ describe("threadListView", () => {
     card.onclick();
     await flushAsyncWork();
 
+    expect(events).toContain("composer:update");
+    expect(events.indexOf("composer:update")).toBeLessThan(events.indexOf("history:thread-2"));
     expect(events.indexOf("ws:connect")).toBeGreaterThan(events.indexOf("history:thread-2"));
     expect(events.indexOf("ws:sync")).toBeGreaterThan(events.indexOf("history:thread-2"));
     expect(events.indexOf("POST:/codex/threads/thread-2/resume?workspace=windows")).toBeGreaterThan(

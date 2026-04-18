@@ -67,6 +67,7 @@ export function useProviderActions({
   const {
     saveProvider,
     saveProviderBaseUrl,
+    setProviderSupportsWebsockets,
     setProviderGroup,
     setProvidersGroup,
     setProviderDisabled,
@@ -119,6 +120,7 @@ export function useProviderActions({
     saveProviderEmail,
     clearProviderEmail,
     saveProviderBaseUrl,
+    setProviderSupportsWebsockets,
     setUsageBaseUrl,
     clearUsageBaseUrl,
     setProviderQuotaHardCap,

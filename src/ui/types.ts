@@ -5,6 +5,7 @@ export type ProviderHealth = {
   last_error: string
   last_ok_at_unix_ms: number
   last_fail_at_unix_ms: number
+  last_error_event_id?: string | null
 }
 
 export type Status = {
@@ -20,6 +21,7 @@ export type Status = {
   metrics: Record<string, { ok_requests: number; error_requests: number; total_tokens: number }>
   // Dashboard snapshot window (small/recent only), not full Event Log history.
   recent_events: Array<{
+    id?: string
     provider: string
     level: string
     unix_ms: number
@@ -80,14 +82,6 @@ export type Status = {
       last_reset_unix_ms: number
     }
   >
-  projected_ledgers?: Record<
-    string,
-    {
-      since_last_quota_refresh_requests?: number
-      since_last_quota_refresh_total_tokens: number
-      last_reset_unix_ms: number
-    }
-  >
   last_activity_unix_ms: number
   codex_account: {
     ok: boolean
@@ -95,12 +89,52 @@ export type Status = {
     signed_in?: boolean
     remaining?: string | null
     limit_5h_remaining?: string | null
+    limit_5h_reset_at?: string | null
     limit_weekly_remaining?: string | null
     limit_weekly_reset_at?: string | null
     code_review_remaining?: string | null
     code_review_reset_at?: string | null
     unlimited?: boolean | null
     error?: string
+  }
+  tailscale?: {
+    installed: boolean
+    connected: boolean
+    backend_state?: string | null
+    dns_name?: string | null
+    ipv4: string[]
+    reachable_ipv4: string[]
+    gateway_reachable: boolean
+    needs_gateway_restart: boolean
+    status_error?: string | null
+    command_path?: string | null
+    command_source?: string | null
+    probe?: {
+      attempts: Array<{
+        command_path: string
+        source:
+          | 'service_image_path'
+          | 'registry_app_path'
+          | 'registry_install_location'
+          | 'standard_install_root'
+          | 'path'
+        outcome: string
+        detail?: string | null
+      }>
+      selected_command_path?: string | null
+      selected_command_source?:
+        | 'service_image_path'
+        | 'registry_app_path'
+        | 'registry_install_location'
+        | 'standard_install_root'
+        | 'path'
+        | null
+    } | null
+    bootstrap?: {
+      last_stage?: string | null
+      last_detail?: string | null
+      updated_at_unix_ms?: number | null
+    } | null
   }
   lan_sync?: {
     enabled: boolean
@@ -114,6 +148,8 @@ export type Status = {
       node_name: string
       listen_addr?: string | null
       capabilities: string[]
+      tailscale?: Status['tailscale']
+      version_inventory?: string[]
       build_identity?: {
         app_version: string
         build_git_sha: string
@@ -157,6 +193,8 @@ export type Status = {
       listen_addr: string
       last_heartbeat_unix_ms: number
       capabilities: string[]
+      tailscale?: Status['tailscale']
+      version_inventory?: string[]
       build_identity?: {
         app_version: string
         build_git_sha: string
@@ -318,6 +356,7 @@ export type Config = {
       display_name: string
       base_url: string
       group?: string | null
+      supports_websockets?: boolean
       usage_adapter?: string
       usage_base_url?: string | null
       quota_hard_cap?: {
@@ -360,12 +399,15 @@ export type Config = {
       follow_allowed: boolean
       follow_blocked_reason?: string | null
       using_count: number
+      capabilities?: string[]
+      version_inventory?: string[]
       build_identity?: {
         app_version: string
         build_git_sha: string
         build_git_short_sha: string
         build_git_commit_unix_ms?: number | null
       } | null
+      sync_contracts?: Record<string, number>
       build_matches_local?: boolean
       remote_update_status?: {
         state: 'accepted' | 'running' | 'failed' | 'succeeded' | string

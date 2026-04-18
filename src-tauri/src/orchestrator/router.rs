@@ -15,6 +15,7 @@ pub struct ProviderHealthSnapshot {
     pub last_error: String,
     pub last_ok_at_unix_ms: u64,
     pub last_fail_at_unix_ms: u64,
+    pub last_error_event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -253,12 +254,15 @@ impl RouterState {
 
     pub fn sync_with_config(&self, cfg: &AppConfig, now_ms: u64) {
         let mut health = self.health.write();
+        let original_provider_names = health.keys().cloned().collect::<BTreeSet<_>>();
         for name in cfg.providers.keys() {
             health
                 .entry(name.clone())
                 .or_insert_with(|| ProviderHealth::new(now_ms));
         }
         health.retain(|name, _| cfg.providers.contains_key(name));
+        let health_changed =
+            health.keys().cloned().collect::<BTreeSet<_>>() != original_provider_names;
         drop(health);
 
         let mut quota_closed = self.quota_closed_by_provider.write();
@@ -273,7 +277,9 @@ impl RouterState {
         }
         unhealthy.retain(|name, _| cfg.providers.contains_key(name));
 
-        self.persist_shared_health_state(now_ms);
+        if health_changed {
+            self.persist_shared_health_state(now_ms);
+        }
     }
 
     pub fn record_quota_closed_states(&self, states: &HashMap<String, bool>) -> Vec<String> {
@@ -355,6 +361,7 @@ impl RouterState {
             last_error: v.last_error.clone(),
             last_ok_at_unix_ms: v.last_ok_at_unix_ms,
             last_fail_at_unix_ms: v.last_fail_at_unix_ms,
+            last_error_event_id: None,
         }
     }
 
@@ -688,6 +695,7 @@ mod tests {
         assert_eq!(health.cooldown_until_unix_ms, 0);
         assert_eq!(health.last_error, "boom");
         assert_eq!(health.last_ok_at_unix_ms, 2_000);
+        assert_eq!(health.last_error_event_id, None);
     }
 
     #[test]
@@ -704,6 +712,105 @@ mod tests {
 
         assert_eq!(health.last_error.len(), 900);
         assert_eq!(health.last_error, long_error);
+        assert_eq!(health.last_error_event_id, None);
+    }
+
+    #[test]
+    fn snapshot_keeps_last_error_event_id_empty() {
+        let mut cfg = AppConfig::default_config();
+        cfg.routing.failure_threshold = 1;
+        let provider = "official";
+        let unix_ms = 1_717_171_709_000;
+        let (_tmp, store) = build_test_store();
+        let router = RouterState::new_with_store(&cfg, 0, Some(store.clone()));
+
+        assert!(
+            store.insert_event_row(crate::orchestrator::store::StoredEventRow {
+                id: "evt-official-shared-1".to_string(),
+                provider: provider.to_string(),
+                level: "error".to_string(),
+                code: "gateway.request_failed".to_string(),
+                message: "boom".to_string(),
+                fields: serde_json::Value::Null,
+                unix_ms,
+            })
+        );
+
+        router.mark_failure(provider, &cfg, "boom", unix_ms);
+        let snapshot = router.snapshot(unix_ms);
+        let health = snapshot.get(provider).expect("provider health snapshot");
+
+        assert_eq!(health.last_error_event_id, None);
+    }
+
+    #[test]
+    fn sync_with_config_skips_shared_health_meta_write_when_provider_set_is_unchanged() {
+        let mut cfg = AppConfig::default_config();
+        cfg.routing.failure_threshold = 1;
+        let provider = "official";
+        let (tmp, store) = build_test_store();
+        let router = RouterState::new_with_store(&cfg, 0, Some(store));
+        router.mark_failure(provider, &cfg, "boom", 1_000);
+
+        let db_path = tmp.path().join("data").join("events.sqlite3");
+        let conn = rusqlite::Connection::open(db_path).expect("open events sqlite");
+        let version_before: u64 = conn
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
+            .expect("data version before");
+
+        router.sync_with_config(&cfg, 2_000);
+
+        let version_after: u64 = conn
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
+            .expect("data version after");
+        assert_eq!(
+            version_after, version_before,
+            "status sync should not rewrite shared health meta when providers are unchanged"
+        );
+    }
+
+    #[test]
+    fn sync_with_config_persists_shared_health_meta_when_provider_set_changes_without_len_change() {
+        let mut cfg = AppConfig::default_config();
+        let (tmp, store) = build_test_store();
+        let router = RouterState::new_with_store(&cfg, 0, Some(store));
+        router.mark_failure("provider_1", &cfg, "boom", 1_000);
+        router.mark_failure("provider_2", &cfg, "gone", 1_100);
+
+        let db_path = tmp.path().join("data").join("events.sqlite3");
+        let conn = rusqlite::Connection::open(db_path).expect("open events sqlite");
+        let value_before: String = conn
+            .query_row(
+                "SELECT value FROM event_meta WHERE key = ?1",
+                [SHARED_HEALTH_STATE_META_KEY],
+                |row| row.get(0),
+            )
+            .expect("shared health meta before");
+
+        let replacement_provider = cfg
+            .providers
+            .get("provider_2")
+            .cloned()
+            .expect("provider_2 config");
+        cfg.providers.remove("provider_2");
+        cfg.providers
+            .insert("provider_x".to_string(), replacement_provider);
+        cfg.provider_order.retain(|name| name != "provider_2");
+        cfg.provider_order.push("provider_x".to_string());
+
+        router.sync_with_config(&cfg, 2_000);
+
+        let value_after: String = conn
+            .query_row(
+                "SELECT value FROM event_meta WHERE key = ?1",
+                [SHARED_HEALTH_STATE_META_KEY],
+                |row| row.get(0),
+            )
+            .expect("shared health meta after");
+        assert_ne!(
+            value_after, value_before,
+            "status sync should persist shared health meta when provider membership changes"
+        );
     }
 
     #[test]

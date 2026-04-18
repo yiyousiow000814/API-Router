@@ -403,8 +403,11 @@ pub(crate) fn get_spend_history(
                 "tracked_applied_from_node_id": tracked_day.as_ref().and_then(|day| day.get("applied_from_node_id")).and_then(|value| value.as_str()),
                 "tracked_applied_from_node_name": tracked_day.as_ref().and_then(|day| day.get("applied_from_node_name")).and_then(|value| value.as_str()),
                 "tracked_applied_at_unix_ms": tracked_day.as_ref().and_then(|day| day.get("applied_at_unix_ms")).and_then(|value| value.as_u64()),
-                "tracked_source_nodes": tracked_days
-                    .map(|days| {
+                "tracked_source_nodes": tracked_day
+                    .and_then(|day| day.get("tracked_source_nodes"))
+                    .and_then(|value| value.as_array().cloned())
+                    .unwrap_or_else(|| tracked_days
+                        .map(|days| {
                         let mut seen = std::collections::BTreeSet::new();
                         days.iter()
                             .filter_map(|day| {
@@ -423,7 +426,7 @@ pub(crate) fn get_spend_history(
                             })
                             .collect::<Vec<_>>()
                     })
-                    .unwrap_or_default()
+                    .unwrap_or_default())
             }));
         }
     }
@@ -827,6 +830,7 @@ mod spend_history_tests {
                     base_url: "https://official.example/v1".to_string(),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     usage_adapter: String::new(),
                     usage_base_url: None,
                     api_key: String::new(),
@@ -839,6 +843,7 @@ mod spend_history_tests {
                     base_url: "https://packycode.example/v1".to_string(),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     usage_adapter: String::new(),
                     usage_base_url: None,
                     api_key: String::new(),
@@ -851,6 +856,7 @@ mod spend_history_tests {
                     base_url: "https://aigateway.example/v1".to_string(),
                     group: None,
                     disabled: false,
+                    supports_websockets: false,
                     usage_adapter: String::new(),
                     usage_base_url: None,
                     api_key: String::new(),
@@ -887,6 +893,7 @@ mod spend_history_tests {
                 base_url: "https://official.example/v1".to_string(),
                 group: None,
                 disabled: false,
+                supports_websockets: false,
                 usage_adapter: String::new(),
                 usage_base_url: None,
                 api_key: String::new(),
@@ -961,7 +968,7 @@ mod spend_history_tests {
     fn tracked_spend_same_day_prefers_latest_snapshot() {
         let first_updated_at_unix_ms = local_unix_ms(2026, 4, 3, 0, 1, 3);
         let second_updated_at_unix_ms = local_unix_ms(2026, 4, 3, 15, 38, 3);
-        let days = vec![
+        let days = [
             serde_json::json!({
                 "provider": "codex-for.me",
                 "started_at_unix_ms": local_unix_ms(2026, 4, 2, 3, 58, 3),
@@ -992,7 +999,7 @@ mod spend_history_tests {
 
     #[test]
     fn tracked_source_nodes_are_unique_per_source_node() {
-        let days = vec![
+        let days = [
             serde_json::json!({
                 "producer_node_id": "node-local",
                 "producer_node_name": "Local Node",
@@ -1044,19 +1051,19 @@ mod spend_history_tests {
         let store = crate::orchestrator::gateway::open_store_dir(tmp.path().join("data"))
             .expect("store");
         let started_at_unix_ms = local_unix_ms(2026, 4, 7, 12, 0, 0);
-        store.put_remote_spend_day(
+        store.put_shared_tracked_spend_day(
             "aigateway2",
-            "node-remote",
-            "Remote Node",
-            started_at_unix_ms,
+            "shared-aigateway2",
+            "2026-04-07",
             &serde_json::json!({
                 "provider": "aigateway2",
-                "started_at_unix_ms": started_at_unix_ms,
+                "day_key": "2026-04-07",
                 "tracked_spend_usd": 42.0,
                 "updated_at_unix_ms": started_at_unix_ms,
                 "producer_node_id": "node-remote",
                 "producer_node_name": "Remote Node"
             }),
+            started_at_unix_ms,
         );
 
         let days = tracked_spend_days_with_remote_fallback(&store, "aigateway2");
@@ -1080,32 +1087,19 @@ mod spend_history_tests {
         let store = crate::orchestrator::gateway::open_store_dir(tmp.path().join("data"))
             .expect("store");
         let local_started_at_unix_ms = local_unix_ms(2026, 4, 7, 8, 0, 0);
-        let remote_started_at_unix_ms = local_unix_ms(2026, 4, 7, 9, 0, 0);
-        store.put_spend_day(
+        store.put_shared_tracked_spend_day(
             "aigateway2",
-            local_started_at_unix_ms,
+            "shared-aigateway2",
+            "2026-04-07",
             &serde_json::json!({
                 "provider": "aigateway2",
-                "started_at_unix_ms": local_started_at_unix_ms,
+                "day_key": "2026-04-07",
                 "tracked_spend_usd": 11.0,
                 "updated_at_unix_ms": local_started_at_unix_ms,
                 "producer_node_id": "node-local",
                 "producer_node_name": "Local Node"
             }),
-        );
-        store.put_remote_spend_day(
-            "aigateway2",
-            "node-remote",
-            "Remote Node",
-            remote_started_at_unix_ms,
-            &serde_json::json!({
-                "provider": "aigateway2",
-                "started_at_unix_ms": remote_started_at_unix_ms,
-                "tracked_spend_usd": 42.0,
-                "updated_at_unix_ms": remote_started_at_unix_ms,
-                "producer_node_id": "node-remote",
-                "producer_node_name": "Remote Node"
-            }),
+            local_started_at_unix_ms,
         );
 
         let days = tracked_spend_days_with_remote_fallback(&store, "aigateway2");
@@ -1128,33 +1122,20 @@ mod spend_history_tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = crate::orchestrator::gateway::open_store_dir(tmp.path().join("data"))
             .expect("store");
-        let local_started_at_unix_ms = local_unix_ms(2026, 4, 7, 8, 0, 0);
         let remote_started_at_unix_ms = local_unix_ms(2026, 4, 7, 9, 0, 0);
-        store.put_spend_day(
+        store.put_shared_tracked_spend_day(
             "aigateway2",
-            local_started_at_unix_ms,
+            "shared-aigateway2",
+            "2026-04-07",
             &serde_json::json!({
                 "provider": "aigateway2",
-                "started_at_unix_ms": local_started_at_unix_ms,
-                "tracked_spend_usd": 0.0,
-                "updated_at_unix_ms": local_started_at_unix_ms,
-                "producer_node_id": "node-local",
-                "producer_node_name": "Local Node"
-            }),
-        );
-        store.put_remote_spend_day(
-            "aigateway2",
-            "node-remote",
-            "Remote Node",
-            remote_started_at_unix_ms,
-            &serde_json::json!({
-                "provider": "aigateway2",
-                "started_at_unix_ms": remote_started_at_unix_ms,
+                "day_key": "2026-04-07",
                 "tracked_spend_usd": 42.0,
                 "updated_at_unix_ms": remote_started_at_unix_ms,
                 "producer_node_id": "node-remote",
                 "producer_node_name": "Remote Node"
             }),
+            remote_started_at_unix_ms,
         );
 
         let days = tracked_spend_days_with_remote_fallback(&store, "aigateway2");

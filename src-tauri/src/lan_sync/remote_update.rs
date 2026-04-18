@@ -182,7 +182,7 @@ fn remote_update_shell_window_log_path() -> Option<std::path::PathBuf> {
     crate::diagnostics::diagnostics_file_path("lan-remote-update-shell.log")
 }
 
-#[cfg(any(test, target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn append_remote_update_shell_window_log(message: &str) {
     let Some(path) = remote_update_shell_window_log_path() else {
         return;
@@ -1484,6 +1484,14 @@ pub(crate) fn peer_remote_update_blocked_reason(peer: &LanPeerSnapshot) -> Optio
     )
 }
 
+fn trust_peer_snapshot(
+    mut peer: LanPeerSnapshot,
+    trusted_node_ids: &std::collections::BTreeSet<String>,
+) -> LanPeerSnapshot {
+    peer.trusted = trusted_node_ids.contains(&peer.node_id);
+    peer
+}
+
 impl LanSyncRuntime {
     pub async fn request_peer_remote_update(
         &self,
@@ -1505,6 +1513,7 @@ impl LanSyncRuntime {
                 self.recent_peer_by_node_id(normalized_node_id, LAN_PEER_HTTP_GRACE_AFTER_MS)
             })
             .ok_or_else(|| format!("peer is not reachable on LAN: {normalized_node_id}"))?;
+        let peer = trust_peer_snapshot(peer, &gateway.secrets.trusted_lan_node_ids());
         if let Some(reason) = peer_remote_update_blocked_reason(&peer) {
             return Err(reason);
         }
@@ -1660,6 +1669,74 @@ impl LanSyncRuntime {
             self.note_http_sync_probe(&peer, "/lan-sync/debug/remote-update", "ok", "HTTP sync ok");
         Ok(packet)
     }
+
+    pub async fn fetch_peer_diagnostics(
+        &self,
+        gateway: &crate::orchestrator::gateway::GatewayState,
+        node_id: &str,
+        domains: Vec<String>,
+    ) -> Result<LanDiagnosticsResponsePacket, String> {
+        let normalized_node_id = node_id.trim();
+        if normalized_node_id.is_empty() {
+            return Err("node_id is required".to_string());
+        }
+        let peer = self
+            .live_peer_by_node_id(normalized_node_id)
+            .or_else(|| {
+                self.recent_peer_by_node_id(normalized_node_id, LAN_PEER_HTTP_GRACE_AFTER_MS)
+            })
+            .ok_or_else(|| format!("peer is not reachable on LAN: {normalized_node_id}"))?;
+        let peer = trust_peer_snapshot(peer, &gateway.secrets.trusted_lan_node_ids());
+        if !peer_supports_lan_diagnostics(&peer) {
+            return Err(format!(
+                "{} does not expose LAN diagnostics yet. Update and restart that machine first.",
+                peer.node_name
+            ));
+        }
+        let base_url = peer_http_base_url(&peer)
+            .ok_or_else(|| format!("peer has no valid LAN address: {normalized_node_id}"))?;
+        let trust_secret = current_lan_trust_secret(gateway)?;
+        let response = lan_sync_http_client()
+            .post(format!("{base_url}/lan-sync/diagnostics"))
+            .header(
+                LAN_SYNC_AUTH_NODE_ID_HEADER,
+                self.local_node.node_id.clone(),
+            )
+            .header(LAN_SYNC_AUTH_SECRET_HEADER, trust_secret)
+            .json(&LanDiagnosticsRequestPacket {
+                version: 1,
+                node_id: self.local_node.node_id.clone(),
+                domains,
+            })
+            .send()
+            .await
+            .map_err(|err| {
+                let detail = format_lan_sync_reqwest_error(&err);
+                self.note_http_sync_probe(&peer, "/lan-sync/diagnostics", "request_error", &detail);
+                format!("LAN diagnostics request failed: {detail}")
+            })?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            let detail = format!("LAN diagnostics http {status}: {body}");
+            self.note_http_sync_probe(&peer, "/lan-sync/diagnostics", "http_error", &detail);
+            return Err(detail);
+        }
+        let packet = response
+            .json::<LanDiagnosticsResponsePacket>()
+            .await
+            .map_err(|err| {
+                let detail = format_lan_sync_reqwest_error(&err);
+                self.note_http_sync_probe(&peer, "/lan-sync/diagnostics", "decode_error", &detail);
+                format!("LAN diagnostics response decode failed: {detail}")
+            })?;
+        let _ = self.note_http_sync_probe(&peer, "/lan-sync/diagnostics", "ok", "HTTP sync ok");
+        Ok(packet)
+    }
+}
+
+fn peer_supports_lan_diagnostics(peer: &LanPeerSnapshot) -> bool {
+    peer_supports_http_sync(peer, "lan_debug_v2")
 }
 
 pub(crate) async fn lan_sync_remote_update_http(
@@ -1945,7 +2022,7 @@ fn spawn_remote_update_worker(
     if let Some(path) = status_path {
         command.env("API_ROUTER_REMOTE_UPDATE_STATUS_PATH", path);
     }
-    if let Some(path) = log_path.clone() {
+    if let Some(path) = log_path.as_ref() {
         command.env("API_ROUTER_REMOTE_UPDATE_LOG_PATH", path);
     }
     command.env("API_ROUTER_REMOTE_UPDATE_TARGET_REF", target_ref);
@@ -1969,22 +2046,11 @@ fn spawn_remote_update_worker(
         command.creation_flags(windows_remote_update_creation_flags());
     }
     command.stdin(Stdio::null());
-    if let Some(path) = log_path.as_ref() {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|err| format!("failed to create remote update log dir: {err}"))?;
-        }
-        let stdout = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .map_err(|err| format!("failed to open remote update log for stdout: {err}"))?;
-        let stderr = stdout
-            .try_clone()
-            .map_err(|err| format!("failed to clone remote update log handle: {err}"))?;
-        command.stdout(Stdio::from(stdout));
-        command.stderr(Stdio::from(stderr));
-    }
+    // Keep lan-remote-update.log as a script-owned diagnostics file only. When the launcher also
+    // keeps a long-lived stdout/stderr handle to the same file, nested build scripts can fail on
+    // Windows with "file is being used by another process" during Add-Content writes.
+    command.stdout(Stdio::null());
+    command.stderr(Stdio::null());
     append_remote_update_log_message(&format!(
         "Launcher spawning remote update worker for target {} with script {}. cwd={} args={} log_path={} status_path={}",
         display_target_ref(target_ref),
@@ -2278,6 +2344,79 @@ mod tests {
         assert_eq!(failed_status.started_at_unix_ms, Some(25));
         assert_eq!(failed_status.finished_at_unix_ms, Some(40));
         assert_eq!(failed_status.updated_at_unix_ms, 40);
+    }
+
+    #[test]
+    fn peer_supports_lan_diagnostics_requires_trusted_peer_and_lan_debug_capability() {
+        let trusted_peer = super::LanPeerSnapshot {
+            node_id: "node-a".to_string(),
+            node_name: "Node A".to_string(),
+            listen_addr: "192.168.1.10:4000".to_string(),
+            last_heartbeat_unix_ms: 1,
+            capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::local_version_inventory(),
+            build_identity: super::current_build_identity(),
+            remote_update_readiness: None,
+            remote_update_status: None,
+            provider_fingerprints: Vec::new(),
+            provider_definitions_revision: String::new(),
+            sync_contracts: super::local_sync_contracts(),
+            followed_source_node_id: None,
+            trusted: true,
+            pair_state: None,
+            pair_request_id: None,
+            sync_blocked_domains: Vec::new(),
+            sync_diagnostics: Vec::new(),
+            build_matches_local: true,
+        };
+
+        assert!(peer_supports_lan_diagnostics(&trusted_peer));
+        assert!(super::peer_supports_http_sync(
+            &trusted_peer,
+            "lan_debug_v2"
+        ));
+
+        let mut untrusted_peer = trusted_peer.clone();
+        untrusted_peer.trusted = false;
+        assert!(!peer_supports_lan_diagnostics(&untrusted_peer));
+
+        let mut missing_capability_peer = trusted_peer.clone();
+        missing_capability_peer
+            .capabilities
+            .retain(|value| value != "lan_debug_v2");
+        assert!(!peer_supports_lan_diagnostics(&missing_capability_peer));
+    }
+
+    #[test]
+    fn trust_peer_snapshot_sets_trusted_for_known_nodes() {
+        let peer = super::LanPeerSnapshot {
+            node_id: "node-a".to_string(),
+            node_name: "Node A".to_string(),
+            listen_addr: "192.168.1.10:4000".to_string(),
+            last_heartbeat_unix_ms: 1,
+            capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::local_version_inventory(),
+            build_identity: super::current_build_identity(),
+            remote_update_readiness: None,
+            remote_update_status: None,
+            provider_fingerprints: Vec::new(),
+            provider_definitions_revision: String::new(),
+            sync_contracts: super::local_sync_contracts(),
+            followed_source_node_id: None,
+            trusted: false,
+            pair_state: None,
+            pair_request_id: None,
+            sync_blocked_domains: Vec::new(),
+            sync_diagnostics: Vec::new(),
+            build_matches_local: true,
+        };
+
+        let trusted_node_ids = std::collections::BTreeSet::from([String::from("node-a")]);
+        let trusted_peer = trust_peer_snapshot(peer.clone(), &trusted_node_ids);
+        assert!(trusted_peer.trusted);
+
+        let untrusted_peer = trust_peer_snapshot(peer, &std::collections::BTreeSet::new());
+        assert!(!untrusted_peer.trusted);
     }
 
     #[test]
@@ -2651,6 +2790,34 @@ mod tests {
         assert_eq!(flags & 0x0000_0200, 0x0000_0200);
         assert_eq!(flags & 0x0800_0000, 0x0800_0000);
         assert_eq!(flags & 0x0000_0008, 0);
+    }
+
+    #[test]
+    fn launcher_keeps_worker_stdio_off_the_remote_update_log_file() {
+        let repo_root = resolve_repo_root_for_self_update().expect("resolve repo root");
+        let launcher_source = std::fs::read_to_string(
+            repo_root
+                .join("src-tauri")
+                .join("src")
+                .join("lan_sync")
+                .join("remote_update.rs"),
+        )
+        .expect("read remote_update.rs");
+        let spawn_fn_start = launcher_source
+            .find("fn spawn_remote_update_worker(")
+            .expect("spawn_remote_update_worker fn");
+        let spawn_fn_end = launcher_source[spawn_fn_start..]
+            .find("fn windows_remote_update_creation_flags() -> u32 {")
+            .map(|offset| spawn_fn_start + offset)
+            .expect("end of spawn_remote_update_worker fn");
+        let spawn_fn_source = &launcher_source[spawn_fn_start..spawn_fn_end];
+
+        assert!(spawn_fn_source.contains("command.stdout(Stdio::null());"));
+        assert!(spawn_fn_source.contains("command.stderr(Stdio::null());"));
+        assert!(!spawn_fn_source.contains("command.stdout(Stdio::from(stdout));"));
+        assert!(!spawn_fn_source.contains("command.stderr(Stdio::from(stderr));"));
+        assert!(!spawn_fn_source.contains("failed to open remote update log for stdout"));
+        assert!(!spawn_fn_source.contains("failed to clone remote update log handle"));
     }
 
     #[test]

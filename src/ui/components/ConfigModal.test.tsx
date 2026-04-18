@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 import {
   compactUpdateStatusLabel,
   remoteUpdateMenuActionLabel,
+  diagnosticVersionEntries,
+  diagnosticVersionRows,
   diagnosticsRemoteUpdateDisplay,
   ConfigModal,
   diagnosticsWhyText,
@@ -79,6 +81,121 @@ describe('ConfigModal', () => {
     ])
   })
 
+  it('combines capability and contract versions into one diagnostics list', () => {
+    expect(
+      diagnosticVersionEntries({
+        capabilities: ['heartbeat_v1', 'status_v1', 'remote_update_v1'],
+        sync_contracts: {
+          usage_history: 4,
+          usage_requests: 2,
+          shared_health: 1,
+        },
+      }),
+    ).toEqual([
+      'heartbeat_v1',
+      'status_v1',
+      'remote_update_v1',
+      'shared_health_v1',
+      'usage_history_v4',
+      'usage_requests_v2',
+    ])
+  })
+
+  it('marks peer contract mismatches in diagnostic version rows', () => {
+    expect(
+      diagnosticVersionRows(
+        {
+          version_inventory: ['heartbeat_v1', 'usage_history_v1'],
+          sync_contracts: { usage_history: 1 },
+        },
+        {
+          version_inventory: ['heartbeat_v1', 'usage_history_v4'],
+          sync_contracts: { usage_history: 4 },
+        },
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        feature: 'usage_history',
+        localVersion: 4,
+        version: 1,
+        status: 'mismatch',
+      }),
+      expect.objectContaining({
+        feature: 'heartbeat',
+        localVersion: 1,
+        version: 1,
+        status: 'match',
+      }),
+    ])
+  })
+
+  it('marks peer-only version entries as peer_only', () => {
+    expect(
+      diagnosticVersionRows(
+        {
+          version_inventory: ['heartbeat_v1', 'usage_history_v4', 'shared_health_v1'],
+          sync_contracts: { usage_history: 4, shared_health: 1 },
+        },
+        {
+          version_inventory: ['heartbeat_v1', 'usage_history_v4'],
+          sync_contracts: { usage_history: 4 },
+        },
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        feature: 'shared_health',
+        localVersion: undefined,
+        peerVersion: 1,
+        version: 1,
+        status: 'peer_only',
+      }),
+      expect.objectContaining({
+        feature: 'heartbeat',
+        localVersion: 1,
+        peerVersion: 1,
+        version: 1,
+        status: 'match',
+      }),
+      expect.objectContaining({
+        feature: 'usage_history',
+        localVersion: 4,
+        peerVersion: 4,
+        version: 4,
+        status: 'match',
+      }),
+    ])
+  })
+
+  it('marks local-only version entries when the peer lacks a local feature', () => {
+    expect(
+      diagnosticVersionRows(
+        {
+          version_inventory: ['heartbeat_v1'],
+          sync_contracts: {},
+        },
+        {
+          version_inventory: ['heartbeat_v1', 'usage_history_v4'],
+          sync_contracts: { usage_history: 4 },
+        },
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        feature: 'usage_history',
+        localVersion: 4,
+        peerVersion: undefined,
+        version: 4,
+        status: 'local_only',
+      }),
+      expect.objectContaining({
+        feature: 'heartbeat',
+        localVersion: 1,
+        peerVersion: 1,
+        version: 1,
+        status: 'match',
+      }),
+    ])
+  })
+
   it('sanitizes debug log tail noise and ansi fragments', () => {
     const { recent, older } = splitRemoteDebugLogTail(
       [
@@ -127,6 +244,7 @@ describe('ConfigModal', () => {
       />,
     )
 
+    expect(html).toContain('Config')
     expect(html).toContain('provider1')
     expect(html).toContain('Base URL (e.g. https://api.openai.com/v1)')
     expect(html).toContain('placeholder="Key"')
