@@ -14,6 +14,10 @@ pub(crate) enum NumericTransform {
 pub(crate) struct NumericFieldSpec {
     pub aliases: &'static [&'static str],
     pub transform: NumericTransform,
+    pub treat_zero_as_missing: bool,
+    pub default_value: Option<f64>,
+    pub requires_any: &'static [&'static str],
+    pub skip_if_any: &'static [&'static str],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -146,12 +150,63 @@ fn has_canonical_values(usage: &CanonicalProviderUsage) -> bool {
 
 fn extract_number(root: &Value, spec: Option<NumericFieldSpec>) -> Option<f64> {
     let spec = spec?;
-    spec.aliases.iter().find_map(|pointer| {
-        json_value_as_f64(value_at_pointer(root, pointer)).map(|value| match spec.transform {
-            NumericTransform::None => value,
-            NumericTransform::DivideBy(divisor) => value / divisor,
+    if !spec.requires_any.is_empty()
+        && !spec
+            .requires_any
+            .iter()
+            .any(|pointer| pointer_has_mapping_value(root, pointer))
+    {
+        return None;
+    }
+    if spec
+        .skip_if_any
+        .iter()
+        .any(|pointer| pointer_has_mapping_value(root, pointer))
+    {
+        return None;
+    }
+    spec.aliases
+        .iter()
+        .find_map(|pointer| {
+            let value =
+                json_value_as_f64(value_at_pointer(root, pointer)).map(|value| {
+                    match spec.transform {
+                        NumericTransform::None => value,
+                        NumericTransform::DivideBy(divisor) => value / divisor,
+                    }
+                })?;
+            if spec.treat_zero_as_missing && value.abs() <= f64::EPSILON {
+                return None;
+            }
+            Some(value)
         })
-    })
+        .or(spec.default_value)
+}
+
+fn pointer_has_mapping_value(root: &Value, pointer: &str) -> bool {
+    let Some(value) = value_at_pointer(root, pointer) else {
+        return false;
+    };
+    match value {
+        Value::Null => false,
+        Value::Bool(flag) => *flag,
+        Value::Number(number) => number
+            .as_f64()
+            .map(|value| value.abs() > f64::EPSILON)
+            .unwrap_or(true),
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return false;
+            }
+            trimmed
+                .parse::<f64>()
+                .map(|value| value.abs() > f64::EPSILON)
+                .unwrap_or(true)
+        }
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(map) => !map.is_empty(),
+    }
 }
 
 fn extract_string(root: &Value, spec: Option<StringFieldSpec>) -> Option<String> {

@@ -1,0 +1,45 @@
+id = "quan2go-codexusage"
+
+[match]
+base_url_host_contains = ["quan2go"]
+
+[usage]
+kind = "balance_info"
+refresh_flow = "provider_key_card_login_then_summary"
+candidate_base_sources = []
+fixed_candidate_bases = ["https://deepl.micosoft.icu"]
+
+[usage.summary_mapping]
+usage_kind = "balance_info"
+requires_any = ["/id", "/vip/product", "/vip/expire_at"]
+
+[usage.summary_mapping.plan_name]
+aliases = ["/vip/product"]
+
+[usage.summary_mapping.daily_used]
+aliases = ["/day_score_used"]
+transform = "none"
+skip_if_any = ["/vip/score", "/score"]
+
+[usage.summary_mapping.daily_limit]
+aliases = ["/vip/day_score", "/day_score"]
+transform = "none"
+treat_zero_as_missing = true
+default_value = 90
+skip_if_any = ["/vip/score", "/score"]
+
+[usage.summary_mapping.monthly_used]
+aliases = ["/score_used"]
+transform = "none"
+requires_any = ["/vip/score", "/score"]
+
+[usage.summary_mapping.monthly_limit]
+aliases = ["/vip/score", "/score"]
+transform = "none"
+treat_zero_as_missing = true
+
+[usage.summary_mapping.expires_at_unix_ms]
+aliases = ["/vip/expire_at"]
+
+[package_expiry]
+strategy = "none"
