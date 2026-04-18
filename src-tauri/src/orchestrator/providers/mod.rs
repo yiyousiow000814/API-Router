@@ -24,6 +24,7 @@ pub(crate) enum PackageExpiryStrategy {
 pub(crate) enum RefreshFlow {
     Auto,
     LoginThenSummary,
+    ProviderKeyCardLoginThenSummary,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +51,10 @@ pub(crate) struct ProviderQuotaProfile {
 impl ProviderQuotaProfile {
     pub fn uses_login_summary_refresh(&self) -> bool {
         self.refresh_flow == RefreshFlow::LoginThenSummary
+    }
+
+    pub fn uses_provider_key_card_login_refresh(&self) -> bool {
+        self.refresh_flow == RefreshFlow::ProviderKeyCardLoginThenSummary
     }
 
     pub fn uses_backend_users_info_expiry(&self) -> bool {
@@ -221,6 +226,14 @@ struct NumericFieldSpecFile {
     aliases: Vec<String>,
     #[serde(default)]
     transform: Option<String>,
+    #[serde(default)]
+    treat_zero_as_missing: Option<bool>,
+    #[serde(default)]
+    default_value: Option<f64>,
+    #[serde(default)]
+    requires_any: Vec<String>,
+    #[serde(default)]
+    skip_if_any: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -266,6 +279,10 @@ const DEFAULT_DIRECT_USAGE_MAPPING: CanonicalUsageMapping = CanonicalUsageMappin
             "/quota/daily_remaining",
         ],
         transform: NumericTransform::None,
+        treat_zero_as_missing: false,
+        default_value: None,
+        requires_any: &[],
+        skip_if_any: &[],
     }),
     today_used: None,
     today_added: None,
@@ -282,6 +299,10 @@ const DEFAULT_DIRECT_USAGE_MAPPING: CanonicalUsageMapping = CanonicalUsageMappin
             "/subscription/daily_usage_usd",
         ],
         transform: NumericTransform::None,
+        treat_zero_as_missing: false,
+        default_value: None,
+        requires_any: &[],
+        skip_if_any: &[],
     }),
     daily_limit: Some(NumericFieldSpec {
         aliases: &[
@@ -292,6 +313,10 @@ const DEFAULT_DIRECT_USAGE_MAPPING: CanonicalUsageMapping = CanonicalUsageMappin
             "/subscription/daily_limit_usd",
         ],
         transform: NumericTransform::None,
+        treat_zero_as_missing: false,
+        default_value: None,
+        requires_any: &[],
+        skip_if_any: &[],
     }),
     weekly_used: None,
     weekly_limit: None,
@@ -326,32 +351,60 @@ const DEFAULT_BACKEND_BUDGET_MAPPING: CanonicalUsageMapping = CanonicalUsageMapp
     remaining: Some(NumericFieldSpec {
         aliases: &["/remaining_quota"],
         transform: NumericTransform::None,
+        treat_zero_as_missing: false,
+        default_value: None,
+        requires_any: &[],
+        skip_if_any: &[],
     }),
     today_used: None,
     today_added: None,
     daily_used: Some(NumericFieldSpec {
         aliases: &["/daily_spent_usd"],
         transform: NumericTransform::None,
+        treat_zero_as_missing: false,
+        default_value: None,
+        requires_any: &[],
+        skip_if_any: &[],
     }),
     daily_limit: Some(NumericFieldSpec {
         aliases: &["/daily_budget_usd"],
         transform: NumericTransform::None,
+        treat_zero_as_missing: false,
+        default_value: None,
+        requires_any: &[],
+        skip_if_any: &[],
     }),
     weekly_used: Some(NumericFieldSpec {
         aliases: &["/weekly_spent_usd", "/weekly_spent"],
         transform: NumericTransform::None,
+        treat_zero_as_missing: false,
+        default_value: None,
+        requires_any: &[],
+        skip_if_any: &[],
     }),
     weekly_limit: Some(NumericFieldSpec {
         aliases: &["/weekly_budget_usd", "/weekly_budget"],
         transform: NumericTransform::None,
+        treat_zero_as_missing: false,
+        default_value: None,
+        requires_any: &[],
+        skip_if_any: &[],
     }),
     monthly_used: Some(NumericFieldSpec {
         aliases: &["/monthly_spent_usd"],
         transform: NumericTransform::None,
+        treat_zero_as_missing: false,
+        default_value: None,
+        requires_any: &[],
+        skip_if_any: &[],
     }),
     monthly_limit: Some(NumericFieldSpec {
         aliases: &["/monthly_budget_usd"],
         transform: NumericTransform::None,
+        treat_zero_as_missing: false,
+        default_value: None,
+        requires_any: &[],
+        skip_if_any: &[],
     }),
     expires_at_unix_ms: None,
     requires_any: &[
@@ -563,6 +616,7 @@ fn parse_refresh_flow(value: &str) -> Result<RefreshFlow, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "auto" => Ok(RefreshFlow::Auto),
         "login_then_summary" => Ok(RefreshFlow::LoginThenSummary),
+        "provider_key_card_login_then_summary" => Ok(RefreshFlow::ProviderKeyCardLoginThenSummary),
         other => Err(format!("unknown refresh flow: {other}")),
     }
 }
@@ -654,6 +708,10 @@ fn build_numeric_field_spec(raw: NumericFieldSpecFile) -> Result<NumericFieldSpe
             "divide_by_100" => NumericTransform::DivideBy(100.0),
             other => return Err(format!("unknown numeric transform: {other}")),
         },
+        treat_zero_as_missing: raw.treat_zero_as_missing.unwrap_or(false),
+        default_value: raw.default_value,
+        requires_any: leak_aliases(raw.requires_any)?,
+        skip_if_any: leak_aliases(raw.skip_if_any)?,
     })
 }
 
@@ -1076,6 +1134,7 @@ pub(crate) fn prefers_simple_input_list(base_url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orchestrator::providers::{map_canonical_usage, CanonicalUsageContext};
 
     #[test]
     fn file_registry_resolves_yunyi_user_me_provider() {
@@ -1173,5 +1232,124 @@ mod tests {
         .expect_err("empty matcher should fail");
 
         assert!(err.contains("must declare at least one matcher"));
+    }
+
+    #[test]
+    fn dynamic_numeric_mapping_treats_zero_as_missing_and_can_fallback() {
+        let mapping = build_dynamic_mapping(CanonicalUsageMappingFile {
+            usage_kind: Some("balance_info".to_string()),
+            daily_limit: Some(NumericFieldSpecFile {
+                aliases: vec!["/vip/day_score".to_string(), "/day_score".to_string()],
+                transform: Some("none".to_string()),
+                treat_zero_as_missing: Some(true),
+                default_value: Some(90.0),
+                ..NumericFieldSpecFile::default()
+            }),
+            requires_any: vec!["/id".to_string()],
+            ..CanonicalUsageMappingFile::default()
+        })
+        .expect("dynamic mapping");
+
+        let payload = serde_json::json!({
+            "id": 81406,
+            "day_score": 45,
+            "vip": {
+                "day_score": 0
+            }
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            mapping,
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://usage.example".to_string()),
+                effective_usage_source: Some("test".to_string()),
+                updated_at_unix_ms: 123,
+            },
+        )
+        .expect("mapped usage");
+
+        assert_eq!(usage.daily_limit, Some(45.0));
+    }
+
+    #[test]
+    fn dynamic_numeric_mapping_uses_default_when_all_candidates_are_zero() {
+        let mapping = build_dynamic_mapping(CanonicalUsageMappingFile {
+            usage_kind: Some("balance_info".to_string()),
+            daily_limit: Some(NumericFieldSpecFile {
+                aliases: vec!["/vip/day_score".to_string(), "/day_score".to_string()],
+                transform: Some("none".to_string()),
+                treat_zero_as_missing: Some(true),
+                default_value: Some(90.0),
+                ..NumericFieldSpecFile::default()
+            }),
+            requires_any: vec!["/id".to_string()],
+            ..CanonicalUsageMappingFile::default()
+        })
+        .expect("dynamic mapping");
+
+        let payload = serde_json::json!({
+            "id": 81406,
+            "day_score": 0,
+            "vip": {
+                "day_score": 0
+            }
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            mapping,
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://usage.example".to_string()),
+                effective_usage_source: Some("test".to_string()),
+                updated_at_unix_ms: 123,
+            },
+        )
+        .expect("mapped usage");
+
+        assert_eq!(usage.daily_limit, Some(90.0));
+    }
+
+    #[test]
+    fn dynamic_numeric_mapping_can_skip_field_when_another_budget_signal_exists() {
+        let mapping = build_dynamic_mapping(CanonicalUsageMappingFile {
+            usage_kind: Some("balance_info".to_string()),
+            daily_limit: Some(NumericFieldSpecFile {
+                aliases: vec!["/vip/day_score".to_string(), "/day_score".to_string()],
+                transform: Some("none".to_string()),
+                treat_zero_as_missing: Some(true),
+                default_value: Some(90.0),
+                skip_if_any: vec!["/vip/score".to_string(), "/score".to_string()],
+                ..NumericFieldSpecFile::default()
+            }),
+            requires_any: vec!["/id".to_string()],
+            ..CanonicalUsageMappingFile::default()
+        })
+        .expect("dynamic mapping");
+
+        let payload = serde_json::json!({
+            "id": 81406,
+            "score": 300,
+            "day_score": 0,
+            "vip": {
+                "score": 300,
+                "day_score": 0
+            }
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            mapping,
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://usage.example".to_string()),
+                effective_usage_source: Some("test".to_string()),
+                updated_at_unix_ms: 123,
+            },
+        );
+
+        assert!(
+            usage.is_none(),
+            "field-level skip_if_any should prevent unrelated fallback budgets from appearing"
+        );
     }
 }

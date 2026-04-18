@@ -737,6 +737,27 @@ async fn compute_quota_snapshot(
         };
     }
 
+    if profile.uses_provider_key_card_login_refresh() {
+        return match canonicalize_snapshot_result(
+            fetch_provider_key_card_login_summary_any(
+                st,
+                provider_name,
+                bases,
+                credentials.provider_key,
+                profile.summary_mapping,
+            )
+            .await,
+            UsageKind::BalanceInfo,
+        ) {
+            Ok(usage) => QuotaSnapshot::from_canonical(usage),
+            Err(err) => {
+                let mut out = QuotaSnapshot::empty(UsageKind::BalanceInfo);
+                out.last_error = err;
+                out
+            }
+        };
+    }
+
     if profile.uses_login_summary_refresh() {
         return match canonicalize_snapshot_result(
             fetch_login_summary_any(
@@ -1401,6 +1422,7 @@ fn can_refresh_quota_for_provider(
     }
     let profile = resolve_quota_profile(provider);
     let allows_login_only_refresh = profile.uses_login_summary_refresh();
+    let allows_provider_key_card_login_refresh = profile.uses_provider_key_card_login_refresh();
     let bases = profile.candidate_bases;
     if bases.is_empty() {
         return false;
@@ -1408,6 +1430,9 @@ fn can_refresh_quota_for_provider(
     let provider_key = st.secrets.get_provider_key(provider_name);
     let usage_token = st.secrets.get_usage_token(provider_name);
     let usage_login = st.secrets.get_usage_login(provider_name);
+    if allows_provider_key_card_login_refresh {
+        return provider_key.is_some();
+    }
     if allows_login_only_refresh {
         return usage_token.is_some() || usage_login.is_some();
     }

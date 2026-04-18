@@ -482,12 +482,6 @@ export default function App() {
     Record<string, number>
   >({ USD: 1 });
   const [fxRatesDate, setFxRatesDate] = useState<string>("");
-  const [usageChartHover, setUsageChartHover] = useState<{
-    x: number;
-    y: number;
-    title: string;
-    subtitle: string;
-  } | null>(null);
   const [updatingSessionPref, setUpdatingSessionPref] = useState<
     Record<string, boolean>
   >({});
@@ -1338,7 +1332,6 @@ export default function App() {
     toggleUsageNodeFilter,
     toggleUsageOriginFilter,
     usageChart,
-    showUsageChartHover,
   } = useDashboardDerivations({
     config,
     orderedConfigProviders,
@@ -1355,7 +1348,6 @@ export default function App() {
     setUsageFilterProviders,
     setUsageFilterOrigins,
     usageWindowHours,
-    setUsageChartHover,
     formatUsdMaybe,
   });
   const { providerDisplayName, usageScheduleSaveStatusText } =
@@ -1965,9 +1957,6 @@ export default function App() {
       usageWindowLabel,
       usageStatistics,
       usageChart,
-      setUsageChartHover,
-      showUsageChartHover,
-      usageChartHover,
       formatUsageBucketLabel,
       setUsageHistoryModalOpen,
       setUsagePricingModalOpen,
@@ -2016,8 +2005,6 @@ export default function App() {
       usageWindowLabel,
       usageStatistics,
       usageChart,
-      showUsageChartHover,
-      usageChartHover,
       usageScheduleProviderOptions,
       usageByProvider,
       openUsageScheduleModal,

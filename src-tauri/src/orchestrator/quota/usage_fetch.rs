@@ -470,6 +470,178 @@ async fn fetch_login_summary_payload(
     Ok(payload)
 }
 
+fn build_provider_key_card_login_api_url(base: &str, endpoint: &str) -> Option<String> {
+    let trimmed = base.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let url = reqwest::Url::parse(&format!(
+        "{trimmed}/{}",
+        endpoint.trim_start_matches('/')
+    ))
+    .ok()?;
+    Some(url.to_string())
+}
+
+async fn fetch_provider_key_card_login_token(
+    client: &reqwest::Client,
+    base: &str,
+    provider_key: &str,
+) -> Result<String, String> {
+    let url = build_provider_key_card_login_api_url(base, "api/users/card-login")
+        .ok_or_else(|| format!("invalid usage base: {base}"))?;
+    wait_for_usage_base_refresh_slot(base).await?;
+    let resp = client
+        .post(url)
+        .json(&serde_json::json!({
+            "card": provider_key.trim(),
+            "agent": "main",
+        }))
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|err| format_reqwest_error_for_logs(&err))?;
+    let status = resp.status().as_u16();
+    let backoff_ms =
+        parse_rate_limit_backoff_ms(resp.headers(), unix_ms(), USAGE_BASE_429_BACKOFF_MS);
+    let payload = resp.json::<Value>().await.unwrap_or(Value::Null);
+    if !(200..300).contains(&status) {
+        if status == 429 {
+            note_usage_base_rate_limited(base, unix_ms(), backoff_ms);
+        }
+        return Err(format!("http {status} from {base}"));
+    }
+    payload
+        .pointer("/data/token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| format!("unexpected response from {base}"))
+}
+
+async fn fetch_provider_key_card_summary_payload(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+) -> Result<Value, String> {
+    let url = build_provider_key_card_login_api_url(base, "api/users/whoami")
+        .ok_or_else(|| format!("invalid usage base: {base}"))?;
+    wait_for_usage_base_refresh_slot(base).await?;
+    let resp = client
+        .get(url)
+        .header("x-auth-token", token.trim())
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|err| format_reqwest_error_for_logs(&err))?;
+    let status = resp.status().as_u16();
+    let backoff_ms =
+        parse_rate_limit_backoff_ms(resp.headers(), unix_ms(), USAGE_BASE_429_BACKOFF_MS);
+    let payload = resp.json::<Value>().await.unwrap_or(Value::Null);
+    if !(200..300).contains(&status) {
+        if status == 429 {
+            note_usage_base_rate_limited(base, unix_ms(), backoff_ms);
+        }
+        return Err(format!("http {status} from {base}"));
+    }
+    Ok(payload)
+}
+
+async fn fetch_provider_key_card_login_summary_any(
+    st: &GatewayState,
+    provider_name: &str,
+    bases: &[String],
+    provider_key: Option<&str>,
+    summary_mapping: Option<&'static CanonicalUsageMapping>,
+) -> QuotaSnapshot {
+    let mut out = QuotaSnapshot::empty(UsageKind::BalanceInfo);
+    let Some(provider_key) = provider_key
+        .map(str::trim)
+        .filter(|provider_key| !provider_key.is_empty())
+    else {
+        out.last_error = "missing provider key".to_string();
+        return out;
+    };
+    if bases.is_empty() {
+        out.last_error = "missing quota base".to_string();
+        return out;
+    }
+
+    let client = match build_usage_http_client(st, provider_name) {
+        Ok(client) => client,
+        Err(err) => {
+            out.last_error = err;
+            return out;
+        }
+    };
+
+    let mut last_err = String::new();
+    let mut saw_404 = false;
+    let mut non_404_err: Option<String> = None;
+    for base in bases {
+        let base = base.trim().trim_end_matches('/');
+        if base.is_empty() {
+            continue;
+        }
+
+        let token = match fetch_provider_key_card_login_token(&client, base, provider_key).await {
+            Ok(token) => token,
+            Err(err) => {
+                last_err = err.clone();
+                if !err.contains("http 404") {
+                    non_404_err.get_or_insert(err);
+                } else {
+                    saw_404 = true;
+                }
+                continue;
+            }
+        };
+
+        match fetch_provider_key_card_summary_payload(&client, base, &token).await {
+            Ok(payload) => {
+                let Some(mapping) = summary_mapping else {
+                    last_err = "missing summary mapping".to_string();
+                    non_404_err.get_or_insert_with(|| last_err.clone());
+                    continue;
+                };
+                let root = payload.get("data").unwrap_or(&payload);
+                let Some(usage) = map_canonical_usage(
+                    root,
+                    mapping,
+                    CanonicalUsageContext {
+                        effective_usage_base: Some(base.to_string()),
+                        effective_usage_source: Some("provider_key_card_login_summary".to_string()),
+                        updated_at_unix_ms: unix_ms(),
+                    },
+                ) else {
+                    last_err = format!("unexpected response from {base}");
+                    non_404_err.get_or_insert_with(|| last_err.clone());
+                    continue;
+                };
+                return snapshot_from_canonical_usage(usage);
+            }
+            Err(err) => {
+                if err.contains("http 404") {
+                    saw_404 = true;
+                } else {
+                    non_404_err.get_or_insert_with(|| err.clone());
+                }
+                last_err = err;
+            }
+        }
+    }
+
+    if let Some(err) = non_404_err {
+        out.last_error = err;
+    } else if saw_404 || last_err.is_empty() {
+        out.last_error = "usage endpoint not found (set Usage base URL)".to_string();
+    } else {
+        out.last_error = last_err;
+    }
+    out
+}
+
 async fn fetch_login_summary_any(
     st: &GatewayState,
     provider_name: &str,

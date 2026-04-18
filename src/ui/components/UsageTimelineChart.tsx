@@ -1,3 +1,5 @@
+import { memo, useCallback, useState } from "react"
+
 export type UsageChartPoint = {
   x: number
   barY: number
@@ -30,30 +32,44 @@ export type UsageChartHover = {
 
 type Props = {
   usageChart: UsageChartModel | null
-  usageChartHover: UsageChartHover | null
   usageWindowHours: number
   formatUsageBucketLabel: (bucketUnixMs: number, windowHours: number) => string
-  setUsageChartHover: (hover: UsageChartHover | null) => void
-  showUsageChartHover: (
-    event: {
-      clientX: number
-      clientY: number
-      currentTarget: { ownerSVGElement?: SVGSVGElement | null }
-    },
-    bucketUnixMs: number,
-    requests: number,
-    totalTokens: number,
-  ) => void
 }
 
-export function UsageTimelineChart({
+export const UsageTimelineChart = memo(function UsageTimelineChart({
   usageChart,
-  usageChartHover,
   usageWindowHours,
   formatUsageBucketLabel,
-  setUsageChartHover,
-  showUsageChartHover,
 }: Props) {
+  const [usageChartHover, setUsageChartHover] = useState<UsageChartHover | null>(null)
+
+  const showUsageChartHover = useCallback(
+    (
+      event: {
+        clientX: number
+        clientY: number
+        currentTarget: { ownerSVGElement?: SVGSVGElement | null }
+      },
+      bucketUnixMs: number,
+      requests: number,
+      totalTokens: number,
+    ) => {
+      const rect = event.currentTarget.ownerSVGElement?.getBoundingClientRect()
+      if (!rect) return
+      const rawX = event.clientX - rect.left
+      const rawY = event.clientY - rect.top
+      const maxX = Math.max(8, rect.width - 176)
+      const maxY = Math.max(8, rect.height - 54)
+      setUsageChartHover({
+        x: Math.min(Math.max(rawX + 10, 8), maxX),
+        y: Math.min(Math.max(rawY - 42, 8), maxY),
+        title: formatUsageBucketLabel(bucketUnixMs, usageWindowHours),
+        subtitle: `Requests ${requests} | Tokens ${totalTokens.toLocaleString()}`,
+      })
+    },
+    [formatUsageBucketLabel, usageWindowHours],
+  )
+
   if (!usageChart) {
     return <div className="aoHint">No requests have gone through the gateway in this time window.</div>
   }
@@ -95,7 +111,10 @@ export function UsageTimelineChart({
         ))}
       </svg>
       {usageChartHover ? (
-        <div className="aoUsageTooltip" style={{ left: `${usageChartHover.x}px`, top: `${usageChartHover.y}px` }}>
+        <div
+          className="aoUsageTooltip"
+          style={{ transform: `translate(${usageChartHover.x}px, ${usageChartHover.y}px)` }}
+        >
           <div className="aoUsageTooltipTitle">{usageChartHover.title}</div>
           <div className="aoUsageTooltipSub">{usageChartHover.subtitle}</div>
         </div>
@@ -116,4 +135,4 @@ export function UsageTimelineChart({
       </div>
     </div>
   )
-}
+})

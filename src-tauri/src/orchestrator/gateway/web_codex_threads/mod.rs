@@ -3,6 +3,7 @@ use crate::orchestrator::gateway::web_codex_session_runtime::workspace_thread_ru
 use chrono::DateTime;
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::sync::Arc;
 
 mod source;
 
@@ -25,12 +26,31 @@ struct WorkspaceThreadsBucket {
     refreshing: bool,
     refresh_started_at_unix_secs: i64,
     last_rebuild_ms: i64,
+    revision: u64,
+}
+
+#[derive(Clone)]
+struct MergedThreadSnapshotCache {
+    windows_revision: u64,
+    wsl2_revision: u64,
+    items: Arc<Vec<Value>>,
+}
+
+impl Default for MergedThreadSnapshotCache {
+    fn default() -> Self {
+        Self {
+            windows_revision: 0,
+            wsl2_revision: 0,
+            items: Arc::new(Vec::new()),
+        }
+    }
 }
 
 #[derive(Default)]
 struct ThreadsWorkspaceIndex {
     windows: WorkspaceThreadsBucket,
     wsl2: WorkspaceThreadsBucket,
+    merged_snapshot_cache: MergedThreadSnapshotCache,
 }
 
 #[derive(Clone)]
@@ -42,7 +62,7 @@ pub(super) struct ThreadListSnapshot {
 
 #[derive(Clone)]
 pub(crate) struct CachedThreadIndexSnapshot {
-    pub(crate) items: Vec<Value>,
+    pub(crate) items: Arc<Vec<Value>>,
     pub(crate) fresh: bool,
 }
 
@@ -336,6 +356,30 @@ fn clear_bucket_refreshing(bucket: &mut WorkspaceThreadsBucket) {
     bucket.refresh_started_at_unix_secs = 0;
 }
 
+fn mark_bucket_items_changed(bucket: &mut WorkspaceThreadsBucket) {
+    bucket.revision = bucket.revision.wrapping_add(1);
+}
+
+fn merged_thread_items_snapshot(index: &mut ThreadsWorkspaceIndex) -> Arc<Vec<Value>> {
+    let windows_revision = index.windows.revision;
+    let wsl2_revision = index.wsl2.revision;
+    let cache = &index.merged_snapshot_cache;
+    if cache.windows_revision == windows_revision && cache.wsl2_revision == wsl2_revision {
+        return cache.items.clone();
+    }
+
+    let mut merged =
+        merge_items_without_duplicates(index.windows.items.clone(), index.wsl2.items.clone());
+    sort_threads_by_updated_desc(&mut merged);
+    let merged = Arc::new(merged);
+    index.merged_snapshot_cache = MergedThreadSnapshotCache {
+        windows_revision,
+        wsl2_revision,
+        items: merged.clone(),
+    };
+    merged
+}
+
 fn log_thread_index_rebuild_delta(
     target: WorkspaceTarget,
     previous_items: &[Value],
@@ -407,6 +451,7 @@ pub(super) fn invalidate_thread_list_cache_all() {
     let mut index = lock_threads_workspace_index();
     index.windows = WorkspaceThreadsBucket::default();
     index.wsl2 = WorkspaceThreadsBucket::default();
+    index.merged_snapshot_cache = MergedThreadSnapshotCache::default();
 }
 
 pub(super) fn upsert_thread_item_hint(workspace: WorkspaceTarget, item: Value) {
@@ -455,6 +500,7 @@ pub(super) fn upsert_thread_item_hint(workspace: WorkspaceTarget, item: Value) {
     }
     sort_threads_by_updated_desc(&mut bucket.items);
     bucket.updated_at_unix_secs = current_unix_secs();
+    mark_bucket_items_changed(bucket);
 }
 
 fn notification_is_subagent(notification: &Value) -> bool {
@@ -593,11 +639,10 @@ pub(crate) fn cached_threads_snapshot_stale_while_revalidate() -> CachedThreadIn
         spawn_thread_index_refresh(target);
     }
 
-    let index = lock_threads_workspace_index();
+    let mut index = lock_threads_workspace_index();
+    let merged = merged_thread_items_snapshot(&mut index);
     let windows = workspace_bucket_ref(&index, WorkspaceTarget::Windows);
     let wsl2 = workspace_bucket_ref(&index, WorkspaceTarget::Wsl2);
-    let mut merged = merge_items_without_duplicates(windows.items.clone(), wsl2.items.clone());
-    sort_threads_by_updated_desc(&mut merged);
     let fresh = [windows, wsl2].into_iter().all(|bucket| {
         bucket.updated_at_unix_secs > 0
             && now.saturating_sub(bucket.updated_at_unix_secs) < THREADS_INDEX_STALE_SECS
@@ -679,8 +724,12 @@ async fn refresh_workspace_thread_index(target: WorkspaceTarget) {
         Ok(Ok(rebuilt_items)) => {
             let previous_items = bucket.items.clone();
             let retained_live_items = retained_live_notification_items(&bucket.items);
-            bucket.items = merge_items_without_duplicates(rebuilt_items, retained_live_items);
-            sort_threads_by_updated_desc(&mut bucket.items);
+            let mut next_items = merge_items_without_duplicates(rebuilt_items, retained_live_items);
+            sort_threads_by_updated_desc(&mut next_items);
+            if previous_items != next_items {
+                mark_bucket_items_changed(bucket);
+            }
+            bucket.items = next_items;
             bucket.updated_at_unix_secs = current_unix_secs();
             log_thread_index_rebuild_delta(target, &previous_items, &bucket.items, rebuild_ms);
         }
@@ -1301,12 +1350,116 @@ mod tests {
 
     #[test]
     fn cached_threads_snapshot_stale_while_revalidate_does_not_require_tokio_runtime() {
+        let _test_guard = codex_app_server::lock_test_globals();
         super::clear_threads_workspace_index_for_test();
 
         let snapshot = super::cached_threads_snapshot_stale_while_revalidate();
 
         assert!(snapshot.items.is_empty());
         assert!(!snapshot.fresh);
+    }
+
+    #[test]
+    fn cached_threads_snapshot_stale_while_revalidate_reuses_merged_items_when_unchanged() {
+        let _test_guard = codex_app_server::lock_test_globals();
+        invalidate_thread_list_cache_all();
+        upsert_thread_item_hint(
+            WorkspaceTarget::Windows,
+            serde_json::json!({
+                "id": "thread-win",
+                "workspace": "windows",
+                "preview": "windows",
+                "path": "C:\\temp\\thread-win.jsonl",
+                "updatedAt": 1742330000
+            }),
+        );
+        upsert_thread_item_hint(
+            WorkspaceTarget::Wsl2,
+            serde_json::json!({
+                "id": "thread-wsl",
+                "workspace": "wsl2",
+                "preview": "wsl2",
+                "path": "/tmp/thread-wsl.jsonl",
+                "updatedAt": 1742331000
+            }),
+        );
+
+        let first = super::cached_threads_snapshot_stale_while_revalidate();
+        let second = super::cached_threads_snapshot_stale_while_revalidate();
+
+        assert_eq!(first.items.len(), 2);
+        assert_eq!(second.items.len(), 2);
+        assert!(
+            std::ptr::eq(first.items.as_ptr(), second.items.as_ptr()),
+            "unchanged thread index should reuse merged snapshot backing storage"
+        );
+    }
+
+    #[test]
+    fn invalidate_thread_list_cache_all_drops_stale_merged_snapshot_cache() {
+        let _test_guard = codex_app_server::lock_test_globals();
+        invalidate_thread_list_cache_all();
+        upsert_thread_item_hint(
+            WorkspaceTarget::Windows,
+            serde_json::json!({
+                "id": "old-thread-win",
+                "workspace": "windows",
+                "preview": "old-windows",
+                "path": "C:\\temp\\old-thread-win.jsonl",
+                "updatedAt": 1742330000
+            }),
+        );
+        upsert_thread_item_hint(
+            WorkspaceTarget::Wsl2,
+            serde_json::json!({
+                "id": "old-thread-wsl",
+                "workspace": "wsl2",
+                "preview": "old-wsl2",
+                "path": "/tmp/old-thread-wsl.jsonl",
+                "updatedAt": 1742331000
+            }),
+        );
+        let old_snapshot = super::cached_threads_snapshot_stale_while_revalidate();
+        assert_eq!(old_snapshot.items.len(), 2);
+        assert!(old_snapshot
+            .items
+            .iter()
+            .any(|item| item.get("id").and_then(Value::as_str) == Some("old-thread-win")));
+
+        invalidate_thread_list_cache_all();
+        upsert_thread_item_hint(
+            WorkspaceTarget::Windows,
+            serde_json::json!({
+                "id": "new-thread-win",
+                "workspace": "windows",
+                "preview": "new-windows",
+                "path": "C:\\temp\\new-thread-win.jsonl",
+                "updatedAt": 1742332000
+            }),
+        );
+        upsert_thread_item_hint(
+            WorkspaceTarget::Wsl2,
+            serde_json::json!({
+                "id": "new-thread-wsl",
+                "workspace": "wsl2",
+                "preview": "new-wsl2",
+                "path": "/tmp/new-thread-wsl.jsonl",
+                "updatedAt": 1742333000
+            }),
+        );
+
+        let new_snapshot = super::cached_threads_snapshot_stale_while_revalidate();
+        let ids = new_snapshot
+            .items
+            .iter()
+            .filter_map(|item| item.get("id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            ids,
+            vec!["new-thread-wsl", "new-thread-win"],
+            "invalidation must drop stale merged snapshot cache before new hints reuse the same revisions"
+        );
     }
 
     #[tokio::test]
