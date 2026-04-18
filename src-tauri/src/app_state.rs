@@ -1373,6 +1373,7 @@ mod tests {
         drop(occupied);
     }
 
+    #[cfg(windows)]
     #[tokio::test]
     async fn prepared_gateway_listeners_are_registered_before_runtime_refresh() {
         let tmp = tempfile::tempdir().expect("tempdir");
