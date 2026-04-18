@@ -1102,6 +1102,43 @@ export function getWebTransportObservedErrorDetail(snapshot: WebTransportDomainS
   return closeDetail || 'No error detail'
 }
 
+export function getWebTransportHeroMetaRows(
+  snapshot: WebTransportDomainSnapshot,
+  nowMs: number,
+): Array<{ key: string; label: string; value: string }> {
+  const rows: Array<{ key: string; label: string; value: string }> = []
+
+  if (isRecentWebTransportSignal(snapshot.ws_error_observed.last_unix_ms, nowMs)) {
+    rows.push({
+      key: 'error',
+      label: 'Latest error',
+      value: getWebTransportObservedErrorDetail(snapshot),
+    })
+  }
+
+  if (isRecentWebTransportSignal(snapshot.ws_close_observed.last_unix_ms, nowMs) && snapshot.ws_close_observed.latest_close_code != null) {
+    rows.push({
+      key: 'close',
+      label: 'Latest close code',
+      value: String(snapshot.ws_close_observed.latest_close_code),
+    })
+  }
+
+  const closeDetail = formatWebTransportCloseDetail(snapshot)
+  if (isRecentWebTransportSignal(snapshot.ws_close_observed.last_unix_ms, nowMs) && closeDetail) {
+    const hasSameErrorValue = rows.some((row) => row.label === 'Latest error' && row.value === closeDetail)
+    if (!hasSameErrorValue) {
+      rows.push({
+        key: 'close-detail',
+        label: 'Latest close detail',
+        value: closeDetail,
+      })
+    }
+  }
+
+  return rows
+}
+
 function getWebTransportStatusDetail(snapshot: WebTransportDomainSnapshot, nowMs = Date.now()): string {
   if (isRecentWebTransportSignal(snapshot.ws_error_observed.last_unix_ms, nowMs)) {
     const detail = snapshot.ws_error_observed.latest_detail?.trim()
@@ -1239,26 +1276,7 @@ function WebTransportSection({ snapshot, loading }: WtSectionProps) {
   const status = getWebTransportStatusPresentation(snapshot, nowMs)
   const statusDetail = getWebTransportStatusDetail(snapshot, nowMs)
   const recentSignals = getWebTransportRecentSignals(snapshot, nowMs)
-  const heroMetaLines = [
-    isRecentWebTransportSignal(snapshot.ws_error_observed.last_unix_ms, nowMs) ? (
-      <div key="error" className="aoWebTransportHeroMetaLine">
-        <span className="aoHint">Latest error</span>
-        <span className="aoWebTransportHeroMetaValue">{getWebTransportObservedErrorDetail(snapshot)}</span>
-      </div>
-    ) : null,
-    isRecentWebTransportSignal(snapshot.ws_close_observed.last_unix_ms, nowMs) && snapshot.ws_close_observed.latest_close_code != null ? (
-      <div key="close" className="aoWebTransportHeroMetaLine">
-        <span className="aoHint">Latest close code</span>
-        <span className="aoWebTransportHeroMetaValue">{snapshot.ws_close_observed.latest_close_code}</span>
-      </div>
-    ) : null,
-    isRecentWebTransportSignal(snapshot.ws_close_observed.last_unix_ms, nowMs) && formatWebTransportCloseDetail(snapshot) ? (
-      <div key="close-detail" className="aoWebTransportHeroMetaLine">
-        <span className="aoHint">Latest close detail</span>
-        <span className="aoWebTransportHeroMetaValue">{formatWebTransportCloseDetail(snapshot)}</span>
-      </div>
-    ) : null,
-  ].filter(Boolean)
+  const heroMetaRows = getWebTransportHeroMetaRows(snapshot, nowMs)
   const latestActivity = getLatestUnixMs([
     snapshot.ws_open_observed.last_unix_ms,
     snapshot.ws_error_observed.last_unix_ms,
@@ -1282,7 +1300,16 @@ function WebTransportSection({ snapshot, loading }: WtSectionProps) {
           <div className="aoWebTransportHeroSubhead">Last activity {fmtTs(latestActivity)}</div>
           <div className="aoWebTransportHeroSubhead">Polled every 5s</div>
         </div>
-        {heroMetaLines.length > 0 ? <div className="aoWebTransportHeroMeta">{heroMetaLines}</div> : null}
+        {heroMetaRows.length > 0 ? (
+          <div className="aoWebTransportHeroMeta">
+            {heroMetaRows.map((row) => (
+              <div key={row.key} className="aoWebTransportHeroMetaLine">
+                <span className="aoHint">{row.label}</span>
+                <span className="aoWebTransportHeroMetaValue">{row.value}</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
       </div>
       <div className="aoWebTransportPanel">
         <div className="aoWebTransportSubsection">

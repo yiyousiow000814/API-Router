@@ -6,6 +6,7 @@ import {
   hasTauriInvokeAvailable,
   formatIncidentKind,
   formatTailscaleProbeEvidence,
+  getWebTransportHeroMetaRows,
   isMonitoringDevPreview,
   MonitoringPanel,
   getWebTransportHealth,
@@ -186,6 +187,39 @@ describe('MonitoringPanel', () => {
     expect(getWebTransportObservedErrorDetail(snapshot)).toBe(
       'Abnormal close (1006): the browser did not receive a normal close reason',
     )
+  })
+
+  it('deduplicates the close detail row when it matches the latest error detail', () => {
+    const snapshot: WebTransportDomainSnapshot = {
+      ws_open_observed: { count: 1, last_unix_ms: 1 },
+      ws_error_observed: { count: 1, last_unix_ms: 2, latest_detail: null },
+      ws_close_observed: {
+        count: 1,
+        last_unix_ms: 2,
+        latest_close_code: 1006,
+        latest_close_reason: null,
+        latest_close_was_clean: false,
+      },
+      ws_reconnect_scheduled: { count: 0, last_unix_ms: 0 },
+      ws_reconnect_attempted: { count: 0, last_unix_ms: 0 },
+      http_fallback_engaged: { count: 0, last_unix_ms: 0 },
+      thread_refresh_failed: { count: 0, last_unix_ms: 0 },
+      active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
+      live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
+    }
+
+    expect(getWebTransportHeroMetaRows(snapshot, 2)).toEqual([
+      {
+        key: 'error',
+        label: 'Latest error',
+        value: 'Abnormal close (1006): the browser did not receive a normal close reason',
+      },
+      {
+        key: 'close',
+        label: 'Latest close code',
+        value: '1006',
+      },
+    ])
   })
 
   it('treats watchdog health as the latest activity bucket only', () => {
