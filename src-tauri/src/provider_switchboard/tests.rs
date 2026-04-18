@@ -790,7 +790,40 @@ mod tests {
             .get("cli_homes")
             .and_then(|value| value.as_array())
             .expect("cli homes");
+        assert!(homes.len() >= 2);
+        let home_values = homes
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+        assert!(home_values.iter().any(|value| *value == win_home.to_string_lossy()));
+        assert!(home_values
+            .iter()
+            .any(|value| *value == second_home.to_string_lossy()));
+    }
+
+    #[test]
+    fn augment_gateway_sync_homes_with_candidates_adds_existing_missing_home() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let win_home = tmp.path().join("cli-home-win");
+        let wsl_home = tmp.path().join("cli-home-wsl");
+        for home in [&win_home, &wsl_home] {
+            std::fs::create_dir_all(home).unwrap();
+            std::fs::write(cli_auth_path(home), r#"{"OPENAI_API_KEY":"ao_old"}"#).unwrap();
+            std::fs::write(
+                cli_cfg_path(home),
+                "model_provider = \"api_router\"\nmodel = \"gpt-5.3-codex\"\n",
+            )
+            .unwrap();
+        }
+
+        let homes = augment_gateway_sync_homes_with_candidates(
+            vec![win_home.clone()],
+            vec![win_home.clone(), wsl_home.clone()],
+        );
+
         assert_eq!(homes.len(), 2);
+        assert!(homes.iter().any(|path| dedup_key(path) == dedup_key(&win_home)));
+        assert!(homes.iter().any(|path| dedup_key(path) == dedup_key(&wsl_home)));
     }
 
     #[test]
