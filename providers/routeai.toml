@@ -1,0 +1,14 @@
+id = "routeai"
+
+[match]
+base_url_host_suffixes = ["routeai.cc"]
+
+[usage]
+refresh_flow = "auto"
+budget_info_auth_source = "usage_token"
+candidate_base_sources = []
+fixed_candidate_bases = ["https://api.routeai.cc"]
+explicit_endpoint_mode = "none"
+
+[package_expiry]
+strategy = "none"
