@@ -13,8 +13,7 @@ $logPath = Join-Path $tempRoot 'diagnostics\lan-remote-update.log'
 $resultPath = Join-Path $tempRoot 'diagnostics\lan-remote-update-build-result.json'
 $stdoutPath = Join-Path $tempRoot 'stdout.log'
 $stderrPath = Join-Path $tempRoot 'stderr.log'
-$fakeTscPath = Join-Path $fakeBin 'tsc.cmd'
-$fakeVitePath = Join-Path $fakeBin 'vite.cmd'
+$fakeRunWithWinSdkPath = Join-Path $fakeBin 'run-with-win-sdk.mjs'
 
 Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $fakeBin, (Split-Path -Parent $statusPath) | Out-Null
@@ -30,17 +29,11 @@ echo unexpected fake npm invocation %*
 exit /b 9
 '@
 
-Set-Content -LiteralPath $fakeTscPath -Encoding Ascii -Value @'
-@echo off
-exit /b 0
-'@
-
-Set-Content -LiteralPath $fakeVitePath -Encoding Ascii -Value @'
-@echo off
-echo vite v7.3.1 building client environment for production...
-echo 210 modules transformed.
->&2 echo error during build: EPERM: operation not permitted, rename dist\assets\app.js
-exit /b 1
+Set-Content -LiteralPath $fakeRunWithWinSdkPath -Encoding Ascii -Value @'
+console.log('Info Looking up installed tauri packages to check mismatched versions...')
+console.log('Running beforeBuildCommand `npm run build`')
+console.error('error during build: EPERM: operation not permitted, rename dist\\assets\\app.js')
+process.exit(1)
 '@
 
 $initialStatus = @{
@@ -62,8 +55,7 @@ $env:API_ROUTER_REMOTE_UPDATE_LOG_PATH = $logPath
 $env:API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH = $resultPath
 $env:PATH = "$fakeBin;$env:PATH"
 $env:API_ROUTER_BUILD_NPM_PATH = $fakeNpmPath
-$env:API_ROUTER_BUILD_TSC_PATH = $fakeTscPath
-$env:API_ROUTER_BUILD_VITE_PATH = $fakeVitePath
+$env:API_ROUTER_BUILD_RUN_WITH_WIN_SDK_PATH = $fakeRunWithWinSdkPath
 
 $p = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
   '-NoProfile',
@@ -83,14 +75,14 @@ if (-not (Test-Path $logPath)) {
 }
 
 $log = Get-Content -LiteralPath $logPath -Raw
-if ($log -notmatch 'vite build stderr tail:') {
-  throw "Expected stderr tail marker in diagnostics log.`n$log"
-}
 if ($log -notmatch 'error during build: EPERM: operation not permitted, rename dist\\assets\\app\.js') {
   throw "Expected real stderr failure line in diagnostics log.`n$log"
 }
-if ($log -notmatch 'Building frontend assets: vite build failed: error during build: EPERM: operation not permitted, rename dist\\assets\\app\.js') {
-  throw "Expected cleaned failure summary in diagnostics log.`n$log"
+if ($log -notmatch 'Building release binary: Running direct Tauri build via Windows SDK wrapper') {
+  throw "Expected Tauri build step in diagnostics log.`n$log"
+}
+if ($log -notmatch 'Running beforeBuildCommand `npm run build`') {
+  throw "Expected beforeBuildCommand marker in diagnostics log.`n$log"
 }
 if ($log -notmatch 'Checking provider ids: Running npm run check:gateway-provider-id') {
   throw "Expected granular provider id step in diagnostics log.`n$log"
@@ -101,11 +93,8 @@ if ($log -notmatch 'Checking line endings: Running npm run check:line-endings') 
 if ($log -notmatch 'Checking web assets: Running npm run check:web-codex-assets') {
   throw "Expected granular web asset step in diagnostics log.`n$log"
 }
-if ($log -notmatch 'TypeScript compile: Running tsc') {
-  throw "Expected granular TypeScript step in diagnostics log.`n$log"
-}
-if ($log -notmatch 'Building frontend assets: Running vite build') {
-  throw "Expected granular vite step in diagnostics log.`n$log"
+if ($log -notmatch 'tauri build failed') {
+  throw "Expected cleaned Tauri failure summary in diagnostics log.`n$log"
 }
 if ($log -notmatch 'Build script final state: result=failed; had_failure=true;') {
   throw "Expected final failure diagnostics in diagnostics log.`n$log"

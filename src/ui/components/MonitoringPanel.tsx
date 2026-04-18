@@ -1087,7 +1087,10 @@ function formatWebTransportCloseDetail(snapshot: WebTransportDomainSnapshot): st
     return `Closed: ${reason}`
   }
   if (code != null) {
-    return wasClean === false && code === 1006 ? 'Closed abnormally (code 1006)' : `Closed with code ${code}`
+    if (wasClean === false && code === 1006) {
+      return 'Abnormal close (1006): the browser did not receive a normal close reason'
+    }
+    return `Closed with code ${code}`
   }
   return ''
 }

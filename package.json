@@ -39,7 +39,7 @@
     "check:rust": "node tools/checks/run-rust-gate.mjs clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings && node tools/checks/run-rust-gate.mjs test --manifest-path src-tauri/Cargo.toml --locked --no-run",
     "check:ci-local": "npm run build && node tools/windows/run-with-win-sdk.mjs cargo fmt --manifest-path src-tauri/Cargo.toml --check && npm run check:rust",
     "check:all": "npm run test && npm run check:line-endings && npm run backend:check && npm run ui:check",
-    "build:root-exe:checked": "node tests/ui/run-tauri-if-windows.mjs && npm run build:root-exe",
+    "build:root-exe:checked": "node tools/build/build-root-exe-checked.mjs",
     "build:root-exe:guarded": "npm run check:codex-gateway && npm run build:root-exe:checked",
     "ui:e2e:requests-reload": "node tests/ui/e2e/tauri/requests-reload.mjs",
     "ui:e2e:requests-graph-hydration": "node tests/ui/e2e/tauri/requests-graph-hydration.mjs",
