@@ -1374,12 +1374,19 @@ explicit_endpoint_url = "{explicit_endpoint_url}"
 
         let profile = resolve_quota_profile(&provider);
         assert_eq!(profile.refresh_flow, RefreshFlow::Auto);
-        assert!(profile.candidate_bases.is_empty());
-        assert_eq!(profile.explicit_usage_endpoint, None);
+        assert_eq!(
+            profile.explicit_usage_endpoint.as_deref(),
+            Some("https://api.routeai.cc/v1/usage")
+        );
+        assert_eq!(
+            profile.candidate_bases,
+            vec!["https://api.routeai.cc".to_string()]
+        );
+        assert!(profile.explicit_usage_mapping.is_some());
     }
 
     #[test]
-    fn file_registry_routeai_uses_explicit_usage_base_when_provided() {
+    fn file_registry_routeai_ignores_noncanonical_explicit_usage_base() {
         let provider = ProviderConfig {
             display_name: "routeai".to_string(),
             base_url: "https://api.routeai.cc".to_string(),
@@ -1394,9 +1401,12 @@ explicit_endpoint_url = "{explicit_endpoint_url}"
         let profile = resolve_quota_profile(&provider);
         assert_eq!(
             profile.candidate_bases,
-            vec!["https://usage.routeai.cc/custom".to_string()]
+            vec!["https://api.routeai.cc".to_string()]
         );
-        assert_eq!(profile.explicit_usage_endpoint, None);
+        assert_eq!(
+            profile.explicit_usage_endpoint.as_deref(),
+            Some("https://api.routeai.cc/v1/usage")
+        );
     }
 
     #[test]
