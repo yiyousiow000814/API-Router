@@ -58,6 +58,151 @@ describe("wsClient", () => {
     expect(resolveApiErrorMessage({}, 404)).toBe("HTTP 404");
   });
 
+  it("records codex api failures and missing-thread details", async () => {
+    const transportEvents = [];
+    const module = createWsClientModule({
+      state: {
+        token: "",
+        ws: null,
+        wsReqHandlers: new Map(),
+        pendingApprovals: [],
+        pendingUserInputs: [],
+        wsLastEventId: 0,
+        wsRecentEventIds: new Set(),
+        wsSubscribedEvents: false,
+      },
+      setStatus() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh() {},
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      recordWebTransportEvent(kind, detail) {
+        transportEvents.push({ kind, detail });
+      },
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "0"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: class {},
+      fetchRef: async () => ({
+        ok: false,
+        status: 502,
+        json: async () => ({
+          error: {
+            detail: "thread not found: thread-1",
+          },
+        }),
+      }),
+    });
+
+    await expect(
+      module.api("/codex/turns/start", {
+        method: "POST",
+        body: { threadId: "thread-1" },
+      })
+    ).rejects.toThrow("thread not found: thread-1");
+    expect(transportEvents).toEqual([
+      {
+        kind: "api_request_failed",
+        detail: "POST /codex/turns/start -> HTTP 502: thread not found: thread-1",
+      },
+      {
+        kind: "thread_missing_observed",
+        detail: "thread not found: thread-1",
+      },
+    ]);
+  });
+
+  it("records network-level codex api failures", async () => {
+    const transportEvents = [];
+    const module = createWsClientModule({
+      state: {
+        token: "",
+        ws: null,
+        wsReqHandlers: new Map(),
+        pendingApprovals: [],
+        pendingUserInputs: [],
+        wsLastEventId: 0,
+        wsRecentEventIds: new Set(),
+        wsSubscribedEvents: false,
+      },
+      setStatus() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh() {},
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      recordWebTransportEvent(kind, detail) {
+        transportEvents.push({ kind, detail });
+      },
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "0"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: class {},
+      fetchRef: async () => {
+        throw new Error("gateway offline");
+      },
+    });
+
+    await expect(module.api("/codex/threads")).rejects.toThrow("gateway offline");
+    expect(transportEvents).toEqual([
+      {
+        kind: "api_request_failed",
+        detail: "GET /codex/threads -> network error: gateway offline",
+      },
+    ]);
+  });
+
   it("preserves conversation id on ui assistant delta notifications", () => {
     const notifications = [];
     const statuses = [];

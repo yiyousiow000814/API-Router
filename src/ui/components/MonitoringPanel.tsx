@@ -76,6 +76,8 @@ export interface WebTransportDomainSnapshot {
   thread_refresh_failed: EventCount
   active_thread_poll_failed: EventCount
   live_notification_gap_observed: EventCount
+  api_request_failed: EventCountWithDetail
+  thread_missing_observed: EventCountWithDetail
 }
 
 export interface LanDiagnosticsResponsePacket {
@@ -267,6 +269,8 @@ const DEV_PREVIEW_WEBTRANSPORT_SNAPSHOT: WebTransportDomainSnapshot = {
   thread_refresh_failed: { count: 1, last_unix_ms: previewWebTransportMs(9 * 60_000) },
   active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
   live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
+  api_request_failed: { count: 1, last_unix_ms: previewWebTransportMs(2 * 60_000), latest_detail: 'POST /codex/turns/start -> HTTP 502: thread not found: thread-preview' },
+  thread_missing_observed: { count: 1, last_unix_ms: previewWebTransportMs(2 * 60_000), latest_detail: 'thread not found: thread-preview' },
 }
 
 const DEV_PREVIEW_TAILSCALE_SUMMARY: TailscaleSummary = {
@@ -409,10 +413,12 @@ const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
       ws_reconnect_scheduled: { count: 2, last_unix_ms: previewWebTransportMs(4 * 60_000 + 10_000) },
       ws_reconnect_attempted: { count: 2, last_unix_ms: previewWebTransportMs(4 * 60_000 + 5_000) },
       http_fallback_engaged: { count: 1, last_unix_ms: previewWebTransportMs(8 * 60_000) },
-      thread_refresh_failed: { count: 1, last_unix_ms: previewWebTransportMs(8 * 60_000 + 20_000) },
-      active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
-      live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
-    },
+    thread_refresh_failed: { count: 1, last_unix_ms: previewWebTransportMs(8 * 60_000 + 20_000) },
+    active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
+    live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
+    api_request_failed: { count: 1, last_unix_ms: previewWebTransportMs(3 * 60_000), latest_detail: 'GET /codex/threads -> HTTP 500: backend unavailable' },
+    thread_missing_observed: { count: 0, last_unix_ms: 0, latest_detail: null },
+  },
   },
   {
     node_id: 'node-laptop-c',
@@ -495,10 +501,12 @@ const DEV_PREVIEW_REMOTE_PEERS: PeerDiagEntry[] = [
       ws_reconnect_scheduled: { count: 0, last_unix_ms: 0 },
       ws_reconnect_attempted: { count: 0, last_unix_ms: 0 },
       http_fallback_engaged: { count: 0, last_unix_ms: 0 },
-      thread_refresh_failed: { count: 0, last_unix_ms: 0 },
-      active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
-      live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
-    },
+    thread_refresh_failed: { count: 0, last_unix_ms: 0 },
+    active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
+    live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
+    api_request_failed: { count: 0, last_unix_ms: 0, latest_detail: null },
+    thread_missing_observed: { count: 0, last_unix_ms: 0, latest_detail: null },
+  },
   },
 ]
 
@@ -1034,7 +1042,7 @@ function WatchdogSection({ summary, loading, showIncidents = true }: WatchdogSec
 }
 
 // ---------------------------------------------------------------------------
-// Section 2 — WebTransport
+// Section 2 — Web Codex
 // ---------------------------------------------------------------------------
 
 interface WtSectionProps {
@@ -1062,6 +1070,8 @@ export type WebTransportHealth = 'healthy' | 'noisy' | 'degraded'
 export function getWebTransportHealth(snapshot: WebTransportDomainSnapshot, nowMs = Date.now()): WebTransportHealth {
   if (
     isRecentWebTransportSignal(snapshot.ws_error_observed.last_unix_ms, nowMs) ||
+    isRecentWebTransportSignal(snapshot.api_request_failed.last_unix_ms, nowMs) ||
+    isRecentWebTransportSignal(snapshot.thread_missing_observed.last_unix_ms, nowMs) ||
     isRecentWebTransportSignal(snapshot.thread_refresh_failed.last_unix_ms, nowMs) ||
     isRecentWebTransportSignal(snapshot.active_thread_poll_failed.last_unix_ms, nowMs)
   ) {
@@ -1102,6 +1112,10 @@ export function getWebTransportObservedErrorDetail(snapshot: WebTransportDomainS
   return closeDetail || 'No error detail'
 }
 
+function getLatestApiFailureDetail(snapshot: WebTransportDomainSnapshot): string {
+  return snapshot.api_request_failed.latest_detail?.trim() || 'Codex API request failed'
+}
+
 export function getWebTransportHeroMetaRows(
   snapshot: WebTransportDomainSnapshot,
   nowMs: number,
@@ -1113,6 +1127,20 @@ export function getWebTransportHeroMetaRows(
       key: 'error',
       label: 'Latest error',
       value: getWebTransportObservedErrorDetail(snapshot),
+    })
+  }
+  if (isRecentWebTransportSignal(snapshot.api_request_failed.last_unix_ms, nowMs)) {
+    rows.push({
+      key: 'api-error',
+      label: 'Latest API error',
+      value: getLatestApiFailureDetail(snapshot),
+    })
+  }
+  if (isRecentWebTransportSignal(snapshot.thread_missing_observed.last_unix_ms, nowMs)) {
+    rows.push({
+      key: 'thread-missing',
+      label: 'Latest missing thread',
+      value: snapshot.thread_missing_observed.latest_detail?.trim() || 'thread not found',
     })
   }
 
@@ -1146,6 +1174,12 @@ function getWebTransportStatusDetail(snapshot: WebTransportDomainSnapshot, nowMs
     if (detail) return `Latest error: ${detail}`
     return closeDetail ? `WebSocket errors detected (${closeDetail})` : 'WebSocket errors detected'
   }
+  if (isRecentWebTransportSignal(snapshot.thread_missing_observed.last_unix_ms, nowMs)) {
+    return snapshot.thread_missing_observed.latest_detail?.trim() || 'Missing thread was observed'
+  }
+  if (isRecentWebTransportSignal(snapshot.api_request_failed.last_unix_ms, nowMs)) {
+    return `Latest API error: ${getLatestApiFailureDetail(snapshot)}`
+  }
   if (isRecentWebTransportSignal(snapshot.thread_refresh_failed.last_unix_ms, nowMs)) {
     return 'Thread refresh failures detected'
   }
@@ -1158,7 +1192,7 @@ function getWebTransportStatusDetail(snapshot: WebTransportDomainSnapshot, nowMs
   if (isRecentWebTransportSignal(snapshot.live_notification_gap_observed.last_unix_ms, nowMs)) {
     return 'Live notification gaps were observed'
   }
-  return 'No recent transport errors'
+  return 'No recent Web Codex errors'
 }
 
 function getWebTransportStatusPresentation(
@@ -1179,6 +1213,20 @@ function getWebTransportRecentSignals(snapshot: WebTransportDomainSnapshot, nowM
     rows.push({
       label: 'Thread refresh failures',
       value: `${formatObservedCount(snapshot.thread_refresh_failed.count, 'failure')} · last ${fmtTs(snapshot.thread_refresh_failed.last_unix_ms)}`,
+      tone: 'danger',
+    })
+  }
+  if (isRecentWebTransportSignal(snapshot.api_request_failed.last_unix_ms, nowMs) && snapshot.api_request_failed.count > 0) {
+    rows.push({
+      label: 'API failures',
+      value: `${formatObservedCount(snapshot.api_request_failed.count, 'failure')} · last ${fmtTs(snapshot.api_request_failed.last_unix_ms)}`,
+      tone: 'danger',
+    })
+  }
+  if (isRecentWebTransportSignal(snapshot.thread_missing_observed.last_unix_ms, nowMs) && snapshot.thread_missing_observed.count > 0) {
+    rows.push({
+      label: 'Missing threads',
+      value: `${formatObservedCount(snapshot.thread_missing_observed.count, 'missing thread')} · last ${fmtTs(snapshot.thread_missing_observed.last_unix_ms)}`,
       tone: 'danger',
     })
   }
@@ -1253,7 +1301,7 @@ function WebTransportSection({ snapshot, loading }: WtSectionProps) {
     return (
       <div className="aoCard" style={{ padding: '12px 14px' }}>
         <div className="aoCardHeader">
-          <div className="aoCardTitle">WebTransport</div>
+          <div className="aoCardTitle">Web Codex</div>
           <span className="aoHint">loading…</span>
         </div>
       </div>
@@ -1263,9 +1311,9 @@ function WebTransportSection({ snapshot, loading }: WtSectionProps) {
     return (
       <div className="aoCard" style={{ padding: '12px 14px' }}>
         <div className="aoCardHeader">
-          <div className="aoCardTitle">WebTransport</div>
+          <div className="aoCardTitle">Web Codex</div>
         </div>
-        <p className="aoHint">No WebTransport data available yet.</p>
+        <p className="aoHint">No Web Codex data available yet.</p>
         <p className="aoHint" style={{ marginTop: 8 }}>
           Open Web Codex from the desktop app and trigger a connection or reconnect cycle to populate this panel.
         </p>
@@ -1287,11 +1335,13 @@ function WebTransportSection({ snapshot, loading }: WtSectionProps) {
     snapshot.thread_refresh_failed.last_unix_ms,
     snapshot.active_thread_poll_failed.last_unix_ms,
     snapshot.live_notification_gap_observed.last_unix_ms,
+    snapshot.api_request_failed.last_unix_ms,
+    snapshot.thread_missing_observed.last_unix_ms,
   ])
   return (
     <div className="aoCard" style={{ padding: '12px 14px' }}>
       <div className="aoCardHeader">
-        <div className="aoCardTitle">WebTransport</div>
+        <div className="aoCardTitle">Web Codex</div>
         {status ? <StatusBadge tone={status.tone} label={status.label} pulse={status.pulse} /> : null}
       </div>
       <div className="aoWebTransportHero">
@@ -1332,22 +1382,22 @@ function WebTransportSection({ snapshot, loading }: WtSectionProps) {
               ]))}`}
             />
             <WebTransportMetricCard
-              label="Errors"
+              label="Transport errors"
               value={formatObservedCount(snapshot.ws_error_observed.count, 'error')}
               detail={getWebTransportObservedErrorDetail(snapshot)}
               tone={isRecentWebTransportSignal(snapshot.ws_error_observed.last_unix_ms, nowMs) ? 'danger' : 'neutral'}
             />
             <WebTransportMetricCard
-              label="Fallbacks"
-              value={`${formatObservedCount(snapshot.http_fallback_engaged.count, 'HTTP fallback')} · ${formatObservedCount(snapshot.live_notification_gap_observed.count, 'gap')}`}
+              label="API failures"
+              value={`${formatObservedCount(snapshot.api_request_failed.count, 'failure')} · ${formatObservedCount(snapshot.thread_missing_observed.count, 'missing thread')}`}
               detail={`Last seen ${fmtTs(getLatestUnixMs([
-                snapshot.http_fallback_engaged.last_unix_ms,
-                snapshot.live_notification_gap_observed.last_unix_ms,
+                snapshot.api_request_failed.last_unix_ms,
+                snapshot.thread_missing_observed.last_unix_ms,
               ]))}`}
               tone={
-                isRecentWebTransportSignal(snapshot.http_fallback_engaged.last_unix_ms, nowMs) ||
-                isRecentWebTransportSignal(snapshot.live_notification_gap_observed.last_unix_ms, nowMs)
-                  ? 'warn'
+                isRecentWebTransportSignal(snapshot.api_request_failed.last_unix_ms, nowMs) ||
+                isRecentWebTransportSignal(snapshot.thread_missing_observed.last_unix_ms, nowMs)
+                  ? 'danger'
                   : 'neutral'
               }
             />
@@ -1710,7 +1760,7 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
                         <StatusDot tone={watchdogStatus?.tone ?? 'unknown'} />
                         <span>WD</span>
                       </span>
-                      <span className="aoMonPeerDomainDot" title="WebTransport">
+                      <span className="aoMonPeerDomainDot" title="Web Codex">
                         <StatusDot tone={webtransportStatus?.tone ?? 'unknown'} />
                         <span>WS</span>
                       </span>
@@ -1766,9 +1816,9 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
                     ) : (
                       <div className="aoCard" style={{ padding: '12px 14px' }}>
                         <div className="aoCardHeader">
-                          <div className="aoCardTitle">WebTransport</div>
+                          <div className="aoCardTitle">Web Codex</div>
                         </div>
-                        <p className="aoHint">No WebTransport data from this peer.</p>
+                        <p className="aoHint">No Web Codex data from this peer.</p>
                       </div>
                     )}
                     {peer.watchdog ? (
@@ -1965,7 +2015,7 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: 'rgba(13,18,32,0.88)' }}>
                 {expandedLocalDomain === 'tailscale' ? 'Tailscale' :
-                 expandedLocalDomain === 'webtransport' ? 'WebTransport' :
+                 expandedLocalDomain === 'webtransport' ? 'Web Codex' :
                  'Watchdog'} — Details
               </div>
               <button
@@ -2077,7 +2127,7 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
               }}
             >
               <div className="aoMonLocalCardHeader">
-                <span className="aoMonLocalCardTitle">WebTransport</span>
+                <span className="aoMonLocalCardTitle">Web Codex</span>
                 {wtSnapshot ? (
                   <StatusBadge
                     tone={localWebTransportStatus?.tone ?? 'unknown'}
@@ -2103,11 +2153,13 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
                         wtSnapshot.thread_refresh_failed.last_unix_ms,
                         wtSnapshot.active_thread_poll_failed.last_unix_ms,
                         wtSnapshot.live_notification_gap_observed.last_unix_ms,
+                        wtSnapshot.api_request_failed.last_unix_ms,
+                        wtSnapshot.thread_missing_observed.last_unix_ms,
                       ]))}
                     </div>
                   </>
                 ) : (
-                  <div>No WebTransport data yet.</div>
+                  <div>No Web Codex data yet.</div>
                 )}
               </div>
               <button
@@ -2273,6 +2325,24 @@ function ActiveAbnormalConditions({ watchdog, wtSnapshot, tailscale }: AbnormCon
         age: wtSnapshot.ws_error_observed.last_unix_ms ? fmtAge(wtSnapshot.ws_error_observed.last_unix_ms) : undefined,
       })
     }
+    if (isRecentWebTransportSignal(wtSnapshot.api_request_failed.last_unix_ms, nowMs)) {
+      conditions.push({
+        kind: 'Web Codex API failure',
+        severity: 'error',
+        domain: 'wt',
+        detail: wtSnapshot.api_request_failed.latest_detail ?? '',
+        age: wtSnapshot.api_request_failed.last_unix_ms ? fmtAge(wtSnapshot.api_request_failed.last_unix_ms) : undefined,
+      })
+    }
+    if (isRecentWebTransportSignal(wtSnapshot.thread_missing_observed.last_unix_ms, nowMs)) {
+      conditions.push({
+        kind: 'Missing Web Codex thread',
+        severity: 'error',
+        domain: 'wt',
+        detail: wtSnapshot.thread_missing_observed.latest_detail ?? '',
+        age: wtSnapshot.thread_missing_observed.last_unix_ms ? fmtAge(wtSnapshot.thread_missing_observed.last_unix_ms) : undefined,
+      })
+    }
     if (isRecentWebTransportSignal(wtSnapshot.http_fallback_engaged.last_unix_ms, nowMs)) {
       conditions.push({
         kind: 'HTTP fallback',
@@ -2284,7 +2354,7 @@ function ActiveAbnormalConditions({ watchdog, wtSnapshot, tailscale }: AbnormCon
     }
     if (isRecentWebTransportSignal(wtSnapshot.thread_refresh_failed.last_unix_ms, nowMs)) {
       conditions.push({
-        kind: 'WebTransport thread refresh failed',
+        kind: 'Web Codex thread refresh failed',
         severity: 'error',
         domain: 'wt',
         detail: `${wtSnapshot.thread_refresh_failed.count} failure(s)`,

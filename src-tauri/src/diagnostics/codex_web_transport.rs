@@ -35,6 +35,8 @@ pub struct WebTransportDomainSnapshot {
     pub thread_refresh_failed: EventCount,
     pub active_thread_poll_failed: EventCount,
     pub live_notification_gap_observed: EventCount,
+    pub api_request_failed: EventCountWithDetail,
+    pub thread_missing_observed: EventCountWithDetail,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -158,6 +160,16 @@ fn apply_web_transport_event(
         "live_notification_gap_observed" => {
             snapshot.live_notification_gap_observed.last_unix_ms = now;
             snapshot.live_notification_gap_observed.count += 1;
+        }
+        "api_request_failed" => {
+            snapshot.api_request_failed.last_unix_ms = now;
+            snapshot.api_request_failed.count += 1;
+            snapshot.api_request_failed.latest_detail = detail;
+        }
+        "thread_missing_observed" => {
+            snapshot.thread_missing_observed.last_unix_ms = now;
+            snapshot.thread_missing_observed.count += 1;
+            snapshot.thread_missing_observed.latest_detail = detail;
         }
         _ => {
             log::warn!("unknown web transport event type: {event_type}");
@@ -314,6 +326,31 @@ mod tests {
     }
 
     #[test]
+    fn record_api_failure_and_missing_thread_store_details() {
+        with_test_dir(|| {
+            record_web_transport_event(
+                "api_request_failed",
+                Some("POST /codex/turns/start -> HTTP 502: thread not found".to_string()),
+            );
+            record_web_transport_event(
+                "thread_missing_observed",
+                Some("thread not found: thread-1".to_string()),
+            );
+            let snap = current_web_transport_snapshot();
+            assert_eq!(snap.api_request_failed.count, 1);
+            assert_eq!(
+                snap.api_request_failed.latest_detail.as_deref(),
+                Some("POST /codex/turns/start -> HTTP 502: thread not found")
+            );
+            assert_eq!(snap.thread_missing_observed.count, 1);
+            assert_eq!(
+                snap.thread_missing_observed.latest_detail.as_deref(),
+                Some("thread not found: thread-1")
+            );
+        });
+    }
+
+    #[test]
     fn apply_web_transport_event_updates_existing_snapshot() {
         let mut snap = default_snapshot();
         assert!(apply_web_transport_event(
@@ -349,6 +386,10 @@ mod tests {
         assert_eq!(snap.thread_refresh_failed.count, 0);
         assert_eq!(snap.active_thread_poll_failed.count, 0);
         assert_eq!(snap.live_notification_gap_observed.count, 0);
+        assert_eq!(snap.api_request_failed.count, 0);
+        assert_eq!(snap.api_request_failed.latest_detail, None);
+        assert_eq!(snap.thread_missing_observed.count, 0);
+        assert_eq!(snap.thread_missing_observed.latest_detail, None);
     }
 
     #[test]
@@ -365,6 +406,12 @@ mod tests {
             snap.ws_close_observed.latest_close_was_clean = Some(true);
             snap.http_fallback_engaged.count = 1;
             snap.http_fallback_engaged.latest_route = Some("/v1/models".to_string());
+            snap.api_request_failed.count = 2;
+            snap.api_request_failed.latest_detail =
+                Some("GET /codex/threads -> HTTP 500".to_string());
+            snap.thread_missing_observed.count = 1;
+            snap.thread_missing_observed.latest_detail =
+                Some("thread not found: thread-9".to_string());
 
             persist_web_transport_events(&snap);
 
@@ -386,6 +433,16 @@ mod tests {
             assert_eq!(
                 loaded.http_fallback_engaged.latest_route.as_deref(),
                 Some("/v1/models")
+            );
+            assert_eq!(loaded.api_request_failed.count, 2);
+            assert_eq!(
+                loaded.api_request_failed.latest_detail.as_deref(),
+                Some("GET /codex/threads -> HTTP 500")
+            );
+            assert_eq!(loaded.thread_missing_observed.count, 1);
+            assert_eq!(
+                loaded.thread_missing_observed.latest_detail.as_deref(),
+                Some("thread not found: thread-9")
             );
         });
     }

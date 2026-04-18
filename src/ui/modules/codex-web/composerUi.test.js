@@ -184,6 +184,13 @@ describe("composerUi", () => {
     expect(html).toContain("runtimeActivityDots");
   }
 
+  function expectLabeledActivityBarHtml(html, title, detail, tone) {
+    expect(String(html || "")).toContain(String(title || ""));
+    if (detail) expect(String(html || "")).toContain(String(detail));
+    expect(String(html || "")).toContain(`data-activity-tone="${String(tone || "")}"`);
+    expect(String(html || "")).toContain("runtimeActivityDots");
+  }
+
   it("reads prompt value through dependency", () => {
     const deps = {
       state: { activeThreadTokenUsage: null, activeMainTab: "chat" },
@@ -708,6 +715,74 @@ describe("composerUi", () => {
     expect(nodes.get("runtimeActivityBar").innerHTML).toContain("runtimeActivityDots");
     expect(nodes.get("runtimeActivityBar").innerHTML).not.toContain("npm test");
     expect(nodes.get("runtimeActivityBar").innerHTML).not.toContain("Updated Plan");
+  });
+
+  it("renders reconnecting and error activity labels when the state should be user-visible", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: {
+        threadId: "thread-1",
+        title: "Reconnecting",
+        detail: "Provider disconnected. Reconnecting...",
+        tone: "running",
+      },
+      activeThreadPlan: null,
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) {
+        return item?.text || "";
+      },
+      normalizeType(value) { return String(value || "").replace(/[^a-z]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      localStorageRef: { getItem() { return "0"; } },
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(runtimeDock) },
+      windowRef: { requestAnimationFrame(cb) { cb(); } },
+    });
+
+    module.renderRuntimePanels();
+    expectLabeledActivityBarHtml(
+      nodes.get("runtimeActivityBar").innerHTML,
+      "Reconnecting",
+      "Provider disconnected. Reconnecting...",
+      "running"
+    );
+
+    module.setRuntimeActivity({
+      threadId: "thread-1",
+      title: "Error",
+      detail: "Reconnecting failed.",
+      tone: "error",
+    });
+    expectLabeledActivityBarHtml(
+      nodes.get("runtimeActivityBar").innerHTML,
+      "Error",
+      "Reconnecting failed.",
+      "error"
+    );
   });
 
   it("keeps runtime chat panels above the pending inline card", () => {

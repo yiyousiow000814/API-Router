@@ -154,15 +154,28 @@ export function createWsClientModule(deps) {
       ...(options.headers || {}),
     };
     if (state.token.trim()) headers.Authorization = `Bearer ${state.token.trim()}`;
-    const res = await fetchRef(path, {
-      method: options.method || "GET",
-      headers,
-      body: options.body ? JSON.stringify(options.body) : undefined,
-      signal: options.signal,
-    });
+    const route = `${String(options.method || "GET").toUpperCase()} ${String(path || "")}`.trim();
+    let res;
+    try {
+      res = await fetchRef(path, {
+        method: options.method || "GET",
+        headers,
+        body: options.body ? JSON.stringify(options.body) : undefined,
+        signal: options.signal,
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error || "Network request failed");
+      recordWebTransportEvent("api_request_failed", `${route} -> network error: ${detail}`);
+      throw error;
+    }
     const payload = await res.json().catch(() => ({}));
     if (!res.ok) {
-      throw new Error(resolveApiErrorMessage(payload, res.status));
+      const detail = resolveApiErrorMessage(payload, res.status);
+      recordWebTransportEvent("api_request_failed", `${route} -> HTTP ${String(res.status)}: ${detail}`);
+      if (/thread not found/i.test(detail)) {
+        recordWebTransportEvent("thread_missing_observed", detail);
+      }
+      throw new Error(detail);
     }
     return payload;
   }

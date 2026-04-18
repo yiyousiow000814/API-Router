@@ -378,11 +378,21 @@ export function createComposerUiModule(deps) {
 
   function renderActivityHtml(activity) {
     if (!activity) return "";
+    const tone = normalizeRunningState(activity.tone, "running");
+    const title = readText(activity.title);
+    const detail = readText(activity.detail);
+    const shouldShowLabel =
+      tone === "error" || /^reconnecting$/i.test(title);
     const dots = '<span class="runtimeActivityDots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>';
     const enterClass = state.chatOpening === true ? "" : " runtimeActivityEnter";
+    const labelHtml = shouldShowLabel
+      ? `<span class="runtimeActivityText"><strong>${escapeHtml(title || (tone === "error" ? "Error" : "Reconnecting"))}</strong>${
+        detail ? ` <span>${escapeHtml(detail)}</span>` : ""
+      }</span>`
+      : `<span class="runtimeActivityText"><strong>working</strong></span>`;
     return (
-      `<div class="runtimeActivity${enterClass}" data-activity-tone="running">` +
-        `<span class="runtimeActivityText"><strong>working</strong></span>` +
+      `<div class="runtimeActivity${enterClass}" data-activity-tone="${escapeHtml(tone)}">` +
+        `${labelHtml}` +
         `${dots}` +
       `</div>`
     );

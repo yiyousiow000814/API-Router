@@ -367,13 +367,66 @@ impl CodexSessionManager {
         thread_id: &str,
         params: Value,
     ) -> Result<TurnStartOutcome, String> {
-        let result = match self.request("turn/start", params.clone()).await {
+        let result = match turn_start_once(self, &params).await {
             Ok(value) => value,
-            Err(error) if sandbox_schema_retryable_error(&error) => self
-                .request("turn/start", toggle_sandbox_schema(&params))
-                .await
-                .map_err(|retry_error| format!("{error}; retry failed: {retry_error}"))?,
-            Err(error) => return Err(error),
+            Err(first_error) => {
+                if !turn_start_error_looks_like_missing_thread(&first_error) {
+                    return Err(first_error);
+                }
+
+                let known_rollout_path = match self.workspace_target {
+                    Some(target) => {
+                        crate::orchestrator::gateway::web_codex_threads::known_rollout_path_for_thread(
+                            target, thread_id,
+                        )
+                        .await
+                    }
+                    None => None,
+                };
+                if let Some(rollout_path) = known_rollout_path.as_deref() {
+                    let imported = import_rollout_from_known_path(
+                        self.home_override(),
+                        thread_id,
+                        self.workspace_target,
+                        rollout_path,
+                    )
+                    .map_err(|import_error| {
+                        format!("{first_error}; import failed: {import_error}")
+                    })?;
+                    if imported {
+                        match turn_start_once(self, &params).await {
+                            Ok(value) => value,
+                            Err(retry_error) => {
+                                return Err(format!("{first_error}; retry failed: {retry_error}"));
+                            }
+                        }
+                    } else {
+                        match turn_start_retry_in_alternate_home(
+                            thread_id,
+                            &params,
+                            &first_error,
+                            self.workspace_target,
+                        )
+                        .await
+                        {
+                            Ok(value) => value,
+                            Err(error) => return Err(error),
+                        }
+                    }
+                } else {
+                    match turn_start_retry_in_alternate_home(
+                        thread_id,
+                        &params,
+                        &first_error,
+                        self.workspace_target,
+                    )
+                    .await
+                    {
+                        Ok(value) => value,
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
         };
         let rollout_path = match self.workspace_target {
             Some(target) => {
@@ -771,6 +824,17 @@ async fn resume_thread_once(
     let value = manager.request("thread/resume", params.clone()).await?;
     record_runtime_thread_state(manager.workspace_target, manager.home_override(), &value);
     Ok(value)
+}
+
+async fn turn_start_once(manager: &CodexSessionManager, params: &Value) -> Result<Value, String> {
+    match manager.request("turn/start", params.clone()).await {
+        Ok(value) => Ok(value),
+        Err(error) if sandbox_schema_retryable_error(&error) => manager
+            .request("turn/start", toggle_sandbox_schema(params))
+            .await
+            .map_err(|retry_error| format!("{error}; retry failed: {retry_error}")),
+        Err(error) => Err(error),
+    }
 }
 
 fn read_non_empty_str(value: Option<&Value>) -> Option<String> {
@@ -1215,9 +1279,36 @@ fn import_rollout_into_target_home(
     }
 }
 
+async fn turn_start_retry_in_alternate_home(
+    thread_id: &str,
+    params: &Value,
+    first_error: &str,
+    workspace_target: Option<WorkspaceTarget>,
+) -> Result<Value, String> {
+    for target in resume_import_order(workspace_target) {
+        let imported = import_rollout_into_target_home(target, thread_id)
+            .map_err(|import_error| format!("{first_error}; import failed: {import_error}"))?;
+        if !imported {
+            continue;
+        }
+        let retry_manager = CodexSessionManager::new(Some(target));
+        return turn_start_once(&retry_manager, params)
+            .await
+            .map_err(|retry_error| format!("{first_error}; retry failed: {retry_error}"));
+    }
+    Err(first_error.to_string())
+}
+
 fn resume_error_looks_like_missing_rollout(error: &str) -> bool {
     let lower = error.to_ascii_lowercase();
     lower.contains("no rollout found") || lower.contains("thread id")
+}
+
+fn turn_start_error_looks_like_missing_thread(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("thread not found")
+        || lower.contains("thread id")
+        || lower.contains("no rollout found")
 }
 
 fn runtime_include_turns_error_allows_empty_history(detail: &str) -> bool {
@@ -1359,6 +1450,79 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
         crate::codex_app_server::_set_test_request_handler(None).await;
+    }
+
+    #[tokio::test]
+    async fn turn_start_retries_after_import_when_thread_is_missing() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        let home = isolate_windows_web_codex_home();
+        _clear_workspace_runtime_registry_for_test();
+        clear_threads_workspace_index_for_test();
+        let source_root = std::env::temp_dir().join(format!(
+            "api-router-rollout-source-{}-{}",
+            std::process::id(),
+            crate::orchestrator::store::unix_ms()
+        ));
+        std::fs::create_dir_all(source_root.join("sessions")).expect("source sessions dir");
+        let source_rollout_path = source_root
+            .join("sessions")
+            .join("rollout-thread-missing.jsonl");
+        std::fs::write(&source_rollout_path, "{\"thread_id\":\"thread-missing\"}\n")
+            .expect("write rollout source");
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let request_count_ref = request_count.clone();
+        crate::orchestrator::gateway::web_codex_session_runtime::upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Windows),
+            web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows)).as_deref(),
+            crate::orchestrator::gateway::web_codex_session_runtime::WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-missing",
+                cwd: Some("C:\\repo"),
+                rollout_path: source_rollout_path.to_str(),
+                status: Some("running"),
+                last_event_id: None,
+                last_turn_id: None,
+            },
+        );
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
+            move |_home, method, params| {
+                assert_eq!(method, "turn/start");
+                assert_eq!(
+                    params.get("threadId").and_then(Value::as_str),
+                    Some("thread-missing")
+                );
+                let call = request_count_ref.fetch_add(1, Ordering::SeqCst);
+                if call == 0 {
+                    Err("thread not found: thread-missing".to_string())
+                } else {
+                    Ok(json!({ "turnId": "turn-retried" }))
+                }
+            },
+        )))
+        .await;
+
+        let manager = CodexSessionManager::new(parse_workspace_target("windows"));
+        let outcome = manager
+            .turn_start(
+                "thread-missing",
+                json!({ "threadId": "thread-missing", "workspace": "windows" }),
+            )
+            .await
+            .expect("turn/start should retry after importing rollout");
+
+        assert_eq!(
+            outcome.result.get("turnId").and_then(Value::as_str),
+            Some("turn-retried")
+        );
+        assert_eq!(request_count.load(Ordering::SeqCst), 2);
+        let imported_rollout = home
+            .path
+            .join("sessions")
+            .join("imported")
+            .join("thread-missing.jsonl");
+        assert!(imported_rollout.is_file(), "imported rollout should exist");
+
+        crate::codex_app_server::_set_test_request_handler(None).await;
+        let _ = std::fs::remove_dir_all(source_root);
     }
 
     #[test]

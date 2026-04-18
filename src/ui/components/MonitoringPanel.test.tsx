@@ -109,7 +109,7 @@ describe('MonitoringPanel', () => {
     expect(html).toContain('Gateway reachable')
     expect(html).toContain('desk-monitor.tail.ts.net')
     expect(html).toContain('Degraded')
-    expect(html).toContain('Thread refresh failures detected')
+    expect(html).toContain('Web Codex thread refresh failed')
     expect(html).toContain('Desk B')
     expect(html).toContain(
       'Tried: C:\\Program Files\\Tailscale\\tailscale.exe (not found) → C:\\Program Files\\Tailscale\\tailscale.exe (found)',
@@ -128,6 +128,8 @@ describe('MonitoringPanel', () => {
       thread_refresh_failed: { count: 0, last_unix_ms: 0 },
       active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
       live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
+      api_request_failed: { count: 0, last_unix_ms: 0, latest_detail: null },
+      thread_missing_observed: { count: 0, last_unix_ms: 0, latest_detail: null },
     }
 
     expect(getWebTransportHealth(baseSnapshot, now)).toBe('degraded')
@@ -160,6 +162,8 @@ describe('MonitoringPanel', () => {
       thread_refresh_failed: { count: 0, last_unix_ms: 0 },
       active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
       live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
+      api_request_failed: { count: 0, last_unix_ms: 0, latest_detail: null },
+      thread_missing_observed: { count: 0, last_unix_ms: 0, latest_detail: null },
     }
 
     expect(getWebTransportObservedErrorDetail(snapshot)).toBe('Closed: server restart (code 1006)')
@@ -182,6 +186,8 @@ describe('MonitoringPanel', () => {
       thread_refresh_failed: { count: 0, last_unix_ms: 0 },
       active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
       live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
+      api_request_failed: { count: 0, last_unix_ms: 0, latest_detail: null },
+      thread_missing_observed: { count: 0, last_unix_ms: 0, latest_detail: null },
     }
 
     expect(getWebTransportObservedErrorDetail(snapshot)).toBe(
@@ -206,6 +212,8 @@ describe('MonitoringPanel', () => {
       thread_refresh_failed: { count: 0, last_unix_ms: 0 },
       active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
       live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
+      api_request_failed: { count: 0, last_unix_ms: 0, latest_detail: null },
+      thread_missing_observed: { count: 0, last_unix_ms: 0, latest_detail: null },
     }
 
     expect(getWebTransportHeroMetaRows(snapshot, 2)).toEqual([
@@ -220,6 +228,45 @@ describe('MonitoringPanel', () => {
         value: '1006',
       },
     ])
+  })
+
+  it('treats recent codex api failures as degraded web codex health', () => {
+    const now = 1_700_000_000_000
+    const snapshot: WebTransportDomainSnapshot = {
+      ws_open_observed: { count: 1, last_unix_ms: now - 2 * 60_000 },
+      ws_error_observed: { count: 0, last_unix_ms: 0, latest_detail: null },
+      ws_close_observed: { count: 0, last_unix_ms: 0, latest_close_code: null },
+      ws_reconnect_scheduled: { count: 0, last_unix_ms: 0 },
+      ws_reconnect_attempted: { count: 0, last_unix_ms: 0 },
+      http_fallback_engaged: { count: 0, last_unix_ms: 0 },
+      thread_refresh_failed: { count: 0, last_unix_ms: 0 },
+      active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
+      live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
+      api_request_failed: {
+        count: 1,
+        last_unix_ms: now - 60_000,
+        latest_detail: 'POST /codex/turns/start -> HTTP 502: thread not found',
+      },
+      thread_missing_observed: {
+        count: 1,
+        last_unix_ms: now - 60_000,
+        latest_detail: 'thread not found: thread-1',
+      },
+    }
+
+    expect(getWebTransportHealth(snapshot, now)).toBe('degraded')
+    expect(getWebTransportHeroMetaRows(snapshot, now)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Latest API error',
+          value: 'POST /codex/turns/start -> HTTP 502: thread not found',
+        }),
+        expect.objectContaining({
+          label: 'Latest missing thread',
+          value: 'thread not found: thread-1',
+        }),
+      ]),
+    )
   })
 
   it('treats watchdog health as the latest activity bucket only', () => {
@@ -427,7 +474,7 @@ describe('MonitoringPanel', () => {
       source.indexOf('WatchdogSection summary={peer.watchdog} loading={false}'),
     )
     expect(source).toContain('Recent incidents')
-    expect(source).toContain('No WebTransport data available yet.')
+    expect(source).toContain('No Web Codex data available yet.')
     expect(source).toContain('command_path')
     expect(source).toContain('command_source')
     expect(source).toContain('Probe:')

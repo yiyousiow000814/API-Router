@@ -58,6 +58,12 @@ export function isFailedLiveStatus(value) {
   );
 }
 
+export function isReconnectLiveStatus(value) {
+  return /reconnect|retry|disconnected|connectionlost|connection_lost|resume/.test(
+    String(value || "").trim().toLowerCase()
+  );
+}
+
 export function normalizeLiveMethod(value) {
   const raw = String(value || "").trim().toLowerCase();
   if (!raw) return "";
@@ -157,6 +163,12 @@ export function deriveLiveStatusFromNotification(notification, helpers) {
     normalizeInline(params?.code, 180) ||
     "";
 
+  if (isReconnectLiveStatus(status || message)) {
+    return {
+      message: message || "Reconnecting...",
+      isWarn: false,
+    };
+  }
   if (message) {
     return { message, isWarn: isFailedLiveStatus(status || message) };
   }
@@ -1346,6 +1358,43 @@ export function createLiveNotificationsModule(deps) {
 
     const status =
       normalizeType(params?.status) || normalizeType(params?.turn?.status) || normalizeType(params?.thread?.status);
+    const statusMessage =
+      normalizeInline(params?.message, 180) ||
+      normalizeInline(params?.turn?.message, 180) ||
+      normalizeInline(params?.thread?.message, 180) ||
+      normalizeInline(params?.code, 180) ||
+      "";
+    const reconnectingStatus = method.includes("thread/status/changed") && isReconnectLiveStatus(status || statusMessage);
+    if (reconnectingStatus) {
+      setPendingTurnRunning(threadId, true);
+      setRuntimeActivity({
+        threadId,
+        title: "Reconnecting",
+        detail: statusMessage || "Trying to restore provider connection...",
+        tone: "running",
+      });
+      return;
+    }
+    const failedThreadStatus = method.includes("thread/status/changed") && isFailedLiveStatus(status || statusMessage);
+    if (failedThreadStatus) {
+      if (String(state.activeThreadLiveAssistantThreadId || "") === String(threadId || "").trim()) {
+        discardAssistantLive(threadId);
+      }
+      clearProposedPlanConfirmation(state, threadId);
+      finishPendingTurnRun(threadId);
+      resetPendingTurnRuntime();
+      syncPendingAssistantState(threadId, "");
+      clearTransientToolMessages();
+      clearTransientThinkingMessages();
+      finalizeRuntimeState(threadId);
+      setRuntimeActivity({
+        threadId,
+        title: "Error",
+        detail: statusMessage || "Turn failed.",
+        tone: "error",
+      });
+      return;
+    }
     const isRunning = /running|inprogress|working|queued/.test(status || "") || method.includes("turn/started");
     if (isRunning) {
       setPendingTurnRunning(threadId, true);
