@@ -22,6 +22,51 @@ fn runtime_trace_cache() -> &'static Mutex<HashMap<String, String>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn toggle_sandbox_variant(value: &str) -> Option<String> {
+    match value.trim() {
+        "dangerFullAccess" => Some("danger-full-access".to_string()),
+        "danger-full-access" => Some("dangerFullAccess".to_string()),
+        "readOnly" => Some("read-only".to_string()),
+        "read-only" => Some("readOnly".to_string()),
+        "workspaceWrite" => Some("workspace-write".to_string()),
+        "workspace-write" => Some("workspaceWrite".to_string()),
+        _ => None,
+    }
+}
+
+fn toggle_sandbox_schema(params: &Value) -> Value {
+    let mut next = params.clone();
+    let Some(obj) = next.as_object_mut() else {
+        return next;
+    };
+    if let Some(sandbox) = obj.get("sandbox").and_then(Value::as_str) {
+        if let Some(next_value) = toggle_sandbox_variant(sandbox) {
+            obj.insert("sandbox".to_string(), Value::String(next_value));
+        }
+    }
+    if let Some(policy_value) = obj.get_mut("sandboxPolicy") {
+        if let Some(policy) = policy_value.as_object_mut() {
+            if let Some(value) = policy.get("type").and_then(Value::as_str) {
+                if let Some(next_value) = toggle_sandbox_variant(value) {
+                    policy.insert("type".to_string(), Value::String(next_value));
+                }
+            }
+        }
+    }
+    next
+}
+
+fn sandbox_schema_retryable_error(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("unknown variant")
+        && (lower.contains("workspacewrite")
+            || lower.contains("workspace-write")
+            || lower.contains("readonly")
+            || lower.contains("read-only")
+            || lower.contains("dangerfullaccess")
+            || lower.contains("danger-full-access"))
+}
+
 fn workspace_target_label(workspace_target: Option<WorkspaceTarget>) -> &'static str {
     match workspace_target {
         Some(WorkspaceTarget::Windows) => "windows",
@@ -322,7 +367,14 @@ impl CodexSessionManager {
         thread_id: &str,
         params: Value,
     ) -> Result<TurnStartOutcome, String> {
-        let result = self.request("turn/start", params).await?;
+        let result = match self.request("turn/start", params.clone()).await {
+            Ok(value) => value,
+            Err(error) if sandbox_schema_retryable_error(&error) => self
+                .request("turn/start", toggle_sandbox_schema(&params))
+                .await
+                .map_err(|retry_error| format!("{error}; retry failed: {retry_error}"))?,
+            Err(error) => return Err(error),
+        };
         let rollout_path = match self.workspace_target {
             Some(target) => {
                 crate::orchestrator::gateway::web_codex_threads::known_rollout_path_for_thread(
@@ -404,7 +456,14 @@ impl CodexSessionManager {
             }
         }
 
-        let result = self.request("thread/start", params).await?;
+        let result = match self.request("thread/start", params.clone()).await {
+            Ok(value) => value,
+            Err(error) if sandbox_schema_retryable_error(&error) => self
+                .request("thread/start", toggle_sandbox_schema(&params))
+                .await
+                .map_err(|retry_error| format!("{error}; retry failed: {retry_error}"))?,
+            Err(error) => return Err(error),
+        };
         let thread_id = thread_id_from_response(&result);
         let runtime_response = match thread_id.as_deref() {
             Some(thread_id) if self.workspace_target.is_some() => {
@@ -651,6 +710,13 @@ impl CodexSessionManager {
         match resume_thread_once(self, &params).await {
             Ok(value) => Ok(value),
             Err(first_error) => {
+                if sandbox_schema_retryable_error(&first_error) {
+                    return resume_thread_once(self, &toggle_sandbox_schema(&params))
+                        .await
+                        .map_err(|retry_error| {
+                            format!("{first_error}; retry failed: {retry_error}")
+                        });
+                }
                 if !resume_error_looks_like_missing_rollout(&first_error) {
                     return Err(first_error);
                 }
@@ -1293,6 +1359,25 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
         crate::codex_app_server::_set_test_request_handler(None).await;
+    }
+
+    #[test]
+    fn sandbox_schema_toggle_flips_all_runtime_variants() {
+        let params = json!({
+            "sandbox": "workspaceWrite",
+            "sandboxPolicy": { "type": "dangerFullAccess" }
+        });
+        let toggled = toggle_sandbox_schema(&params);
+        assert_eq!(toggled["sandbox"], "workspace-write");
+        assert_eq!(toggled["sandboxPolicy"]["type"], "danger-full-access");
+    }
+
+    #[test]
+    fn sandbox_schema_retryable_error_detects_variant_mismatch() {
+        assert!(sandbox_schema_retryable_error(
+            "Invalid request: unknown variant `workspaceWrite`, expected one of `read-only`, `workspace-write`, `danger-full-access`"
+        ));
+        assert!(!sandbox_schema_retryable_error("something else entirely"));
     }
 
     #[tokio::test]

@@ -536,8 +536,15 @@ export function createWsClientModule(deps) {
       if (state.ws !== ws || connectSeq !== state.wsConnectSeq) return;
       clearWsPingTimer();
       const rawCloseCode = Number(event?.code);
-      const closeCode = Number.isFinite(rawCloseCode) && rawCloseCode >= 1000 ? String(rawCloseCode) : null;
-      recordWebTransportEvent("ws_close_observed", closeCode);
+      const closeCode = Number.isFinite(rawCloseCode) && rawCloseCode >= 1000 ? rawCloseCode : null;
+      recordWebTransportEvent(
+        "ws_close_observed",
+        JSON.stringify({
+          code: closeCode,
+          reason: String(event?.reason || ""),
+          wasClean: event?.wasClean === true,
+        }),
+      );
       pushLiveDebugEvent("ws.close:client", {
         code: Number(event?.code ?? 0),
         reason: String(event?.reason || ""),

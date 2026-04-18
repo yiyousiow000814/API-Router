@@ -185,6 +185,12 @@ fn discovered_sessions(
 }
 
 fn append_runtime_sync_commands(out: &mut Vec<String>, options: &TerminalSessionTurnOptions) {
+    fn matches_variant(value: &str, variants: &[&str]) -> bool {
+        variants
+            .iter()
+            .any(|variant| value.eq_ignore_ascii_case(variant))
+    }
+
     if let Some(model) = options
         .model
         .as_deref()
@@ -218,7 +224,9 @@ fn append_runtime_sync_commands(out: &mut Vec<String>, options: &TerminalSession
             if policy
                 .get("type")
                 .and_then(Value::as_str)
-                .is_some_and(|value| value.eq_ignore_ascii_case("dangerFullAccess")) =>
+                .is_some_and(|value| {
+                    matches_variant(value, &["dangerFullAccess", "danger-full-access"])
+                }) =>
         {
             Some("/permission full-access")
         }
@@ -226,7 +234,7 @@ fn append_runtime_sync_commands(out: &mut Vec<String>, options: &TerminalSession
             if policy
                 .get("type")
                 .and_then(Value::as_str)
-                .is_some_and(|value| value.eq_ignore_ascii_case("readOnly")) =>
+                .is_some_and(|value| matches_variant(value, &["readOnly", "read-only"])) =>
         {
             Some("/permission read-only")
         }
@@ -234,7 +242,9 @@ fn append_runtime_sync_commands(out: &mut Vec<String>, options: &TerminalSession
             if policy
                 .get("type")
                 .and_then(Value::as_str)
-                .is_some_and(|value| value.eq_ignore_ascii_case("workspaceWrite")) =>
+                .is_some_and(|value| {
+                    matches_variant(value, &["workspaceWrite", "workspace-write"])
+                }) =>
         {
             Some("/permission auto")
         }
@@ -593,6 +603,22 @@ mod tests {
                 "/permission full-access",
             ]
         );
+    }
+
+    #[test]
+    fn runtime_options_expand_to_terminal_sync_commands_accepts_legacy_sandbox_variants() {
+        let mut commands = Vec::new();
+        append_runtime_sync_commands(
+            &mut commands,
+            &TerminalSessionTurnOptions {
+                model: None,
+                plan_mode: TerminalToggleOverride::Missing,
+                fast_mode: TerminalToggleOverride::Missing,
+                approval_policy: Some("on-request".to_string()),
+                sandbox_policy: Some(json!({ "type": "workspace-write" })),
+            },
+        );
+        assert_eq!(commands, vec!["/permission auto"]);
     }
 
     #[test]

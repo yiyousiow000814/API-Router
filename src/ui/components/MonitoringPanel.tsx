@@ -63,7 +63,13 @@ export interface EventCountWithDetail {
 export interface WebTransportDomainSnapshot {
   ws_open_observed: EventCount
   ws_error_observed: EventCountWithDetail
-  ws_close_observed: { last_unix_ms: number; count: number; latest_close_code: number | null }
+  ws_close_observed: {
+    last_unix_ms: number
+    count: number
+    latest_close_code: number | null
+    latest_close_reason?: string | null
+    latest_close_was_clean?: boolean | null
+  }
   ws_reconnect_scheduled: EventCount
   ws_reconnect_attempted: EventCount
   http_fallback_engaged: EventCount
@@ -1070,10 +1076,35 @@ export function getWebTransportHealth(snapshot: WebTransportDomainSnapshot, nowM
   return 'healthy'
 }
 
+function formatWebTransportCloseDetail(snapshot: WebTransportDomainSnapshot): string {
+  const reason = snapshot.ws_close_observed.latest_close_reason?.trim()
+  const code = snapshot.ws_close_observed.latest_close_code
+  const wasClean = snapshot.ws_close_observed.latest_close_was_clean
+  if (reason && code != null) {
+    return `Closed: ${reason} (code ${code})`
+  }
+  if (reason) {
+    return `Closed: ${reason}`
+  }
+  if (code != null) {
+    return wasClean === false && code === 1006 ? 'Closed abnormally (code 1006)' : `Closed with code ${code}`
+  }
+  return ''
+}
+
+export function getWebTransportObservedErrorDetail(snapshot: WebTransportDomainSnapshot): string {
+  const detail = snapshot.ws_error_observed.latest_detail?.trim()
+  if (detail) return detail
+  const closeDetail = formatWebTransportCloseDetail(snapshot)
+  return closeDetail || 'No error detail'
+}
+
 function getWebTransportStatusDetail(snapshot: WebTransportDomainSnapshot, nowMs = Date.now()): string {
   if (isRecentWebTransportSignal(snapshot.ws_error_observed.last_unix_ms, nowMs)) {
     const detail = snapshot.ws_error_observed.latest_detail?.trim()
-    return detail ? `Latest error: ${detail}` : 'WebSocket errors detected'
+    const closeDetail = formatWebTransportCloseDetail(snapshot)
+    if (detail) return `Latest error: ${detail}`
+    return closeDetail ? `WebSocket errors detected (${closeDetail})` : 'WebSocket errors detected'
   }
   if (isRecentWebTransportSignal(snapshot.thread_refresh_failed.last_unix_ms, nowMs)) {
     return 'Thread refresh failures detected'
@@ -1088,11 +1119,6 @@ function getWebTransportStatusDetail(snapshot: WebTransportDomainSnapshot, nowMs
     return 'Live notification gaps were observed'
   }
   return 'No recent transport errors'
-}
-
-function formatWebTransportErrorDetail(detail: string | null | undefined): string {
-  const value = detail?.trim()
-  return value || 'No error detail'
 }
 
 function getWebTransportStatusPresentation(
@@ -1214,13 +1240,19 @@ function WebTransportSection({ snapshot, loading }: WtSectionProps) {
     isRecentWebTransportSignal(snapshot.ws_error_observed.last_unix_ms, nowMs) ? (
       <div key="error" className="aoWebTransportHeroMetaLine">
         <span className="aoHint">Latest error</span>
-        <span className="aoWebTransportHeroMetaValue">{formatWebTransportErrorDetail(snapshot.ws_error_observed.latest_detail)}</span>
+        <span className="aoWebTransportHeroMetaValue">{getWebTransportObservedErrorDetail(snapshot)}</span>
       </div>
     ) : null,
     isRecentWebTransportSignal(snapshot.ws_close_observed.last_unix_ms, nowMs) && snapshot.ws_close_observed.latest_close_code != null ? (
       <div key="close" className="aoWebTransportHeroMetaLine">
         <span className="aoHint">Latest close code</span>
         <span className="aoWebTransportHeroMetaValue">{snapshot.ws_close_observed.latest_close_code}</span>
+      </div>
+    ) : null,
+    isRecentWebTransportSignal(snapshot.ws_close_observed.last_unix_ms, nowMs) && formatWebTransportCloseDetail(snapshot) ? (
+      <div key="close-detail" className="aoWebTransportHeroMetaLine">
+        <span className="aoHint">Latest close detail</span>
+        <span className="aoWebTransportHeroMetaValue">{formatWebTransportCloseDetail(snapshot)}</span>
       </div>
     ) : null,
   ].filter(Boolean)
@@ -1272,7 +1304,7 @@ function WebTransportSection({ snapshot, loading }: WtSectionProps) {
             <WebTransportMetricCard
               label="Errors"
               value={formatObservedCount(snapshot.ws_error_observed.count, 'error')}
-              detail={formatWebTransportErrorDetail(snapshot.ws_error_observed.latest_detail)}
+              detail={getWebTransportObservedErrorDetail(snapshot)}
               tone={isRecentWebTransportSignal(snapshot.ws_error_observed.last_unix_ms, nowMs) ? 'danger' : 'neutral'}
             />
             <WebTransportMetricCard
