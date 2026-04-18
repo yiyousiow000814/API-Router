@@ -38,8 +38,8 @@ describe('useMainContentCallbacks', () => {
       setGatewayTokenPreview: vi.fn(),
       setCodexRefreshing: vi.fn(),
       refreshStatus: vi.fn(async () => {}),
-      codexSwapDir1: '',
-      codexSwapDir2: '',
+      codexSwapDir1: 'C:\\Users\\a\\.codex',
+      codexSwapDir2: '\\\\wsl.localhost\\Ubuntu\\home\\a\\.codex',
       codexSwapUseWindows: true,
       codexSwapUseWsl: true,
       codexSwapTarget: 'both',
@@ -60,6 +60,9 @@ describe('useMainContentCallbacks', () => {
       expect.stringContaining('Failed to sync'),
       'error',
     )
+    expect(invoke).toHaveBeenCalledWith('rotate_gateway_token', {
+      cliHomes: ['C:\\Users\\a\\.codex', '\\\\wsl.localhost\\Ubuntu\\home\\a\\.codex'],
+    })
   })
 
   it('blocks quick swap toggle while switchboard status is loading', async () => {

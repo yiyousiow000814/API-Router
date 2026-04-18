@@ -4,8 +4,9 @@ pub(crate) async fn get_local_diagnostics(
     domains: Vec<String>,
 ) -> Result<serde_json::Value, String> {
     let listen_port = state.gateway.cfg.read().listen.port;
+    let store = state.gateway.store.clone();
     let snapshot = tauri::async_runtime::spawn_blocking(move || {
-        crate::lan_sync::local_diagnostics_snapshot(listen_port, &domains)
+        crate::lan_sync::local_diagnostics_snapshot(listen_port, &domains, Some(&store))
     })
     .await
     .map_err(|err| format!("local_diagnostics_snapshot_failed: {err}"))?;
@@ -21,6 +22,7 @@ mod local_diagnostics_integration_tests {
         let snapshot = local_diagnostics_snapshot(
             4000,
             &["watchdog".to_string(), "webtransport".to_string(), "tailscale".to_string()],
+            None,
         );
 
         let domains = snapshot.as_object().expect("snapshot object");

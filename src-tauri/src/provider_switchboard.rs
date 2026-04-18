@@ -979,7 +979,10 @@ fn sync_active_provider_target_for_key_impl(
     Ok(())
 }
 
-fn sync_gateway_target_for_rotated_token_impl(state: &AppState) -> Result<Vec<String>, String> {
+fn sync_gateway_target_for_rotated_token_impl(
+    state: &AppState,
+    cli_homes_override: Option<Vec<String>>,
+) -> Result<Vec<String>, String> {
     let Some(sw) = load_switchboard_state_from_config_path(&state.config_path) else {
         return Ok(Vec::new());
     };
@@ -992,7 +995,7 @@ fn sync_gateway_target_for_rotated_token_impl(state: &AppState) -> Result<Vec<St
         return Ok(Vec::new());
     }
 
-    let homes = sw
+    let state_homes = sw
         .get("cli_homes")
         .and_then(|v| v.as_array())
         .map(|arr| {
@@ -1001,7 +1004,33 @@ fn sync_gateway_target_for_rotated_token_impl(state: &AppState) -> Result<Vec<St
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let homes = resolve_cli_homes(homes)?;
+    let homes = if let Some(cli_homes_override) = cli_homes_override {
+        let override_homes = resolve_cli_homes(cli_homes_override)?;
+        if !override_homes.is_empty() {
+            if let Err(e) = save_switchboard_state_to_config_path(
+                &state.config_path,
+                &override_homes,
+                "gateway",
+                None,
+            ) {
+                state.gateway.store.events().emit(
+                    "codex",
+                    crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_STATE_SAVE_FAILED,
+                    &format!("Provider switchboard state save failed during gateway token rotate: {e}"),
+                    json!({
+                      "target": "gateway",
+                      "cli_homes": override_homes.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
+                      "updated_at_unix_ms": unix_ms()
+                    }),
+                );
+            }
+            override_homes
+        } else {
+            resolve_cli_homes(state_homes)?
+        }
+    } else {
+        resolve_cli_homes(state_homes)?
+    };
 
     let mut failed_targets: Vec<String> = Vec::new();
 
@@ -1036,14 +1065,15 @@ pub fn sync_active_provider_target_for_key(
 
 pub fn sync_gateway_target_for_rotated_token_with_failures(
     state: &tauri::State<'_, AppState>,
+    cli_homes: Option<Vec<String>>,
 ) -> Result<Vec<String>, String> {
-    sync_gateway_target_for_rotated_token_impl(state)
+    sync_gateway_target_for_rotated_token_impl(state, cli_homes)
 }
 
 pub(crate) fn sync_gateway_target_for_current_token_on_startup(
     state: &AppState,
 ) -> Result<Vec<String>, String> {
-    sync_gateway_target_for_rotated_token_impl(state)
+    sync_gateway_target_for_rotated_token_impl(state, None)
 }
 
 include!("provider_switchboard/actions.rs");

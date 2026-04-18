@@ -359,6 +359,70 @@ mod tests {
     }
 
     #[test]
+    fn event_spam_diagnostics_snapshot_reports_exact_and_code_bursts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let base_ts = chrono::Local
+            .with_ymd_and_hms(2026, 4, 19, 10, 20, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        {
+            let conn = store.events_db.lock();
+            for idx in 0..25_i64 {
+                conn.execute(
+                    "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                     VALUES (?1, ?2, 'gateway', 'info', 'gateway.runtime_listener_skipped', ?3, ?4)",
+                    rusqlite::params![
+                        format!("burst-{idx}"),
+                        base_ts + idx * 500,
+                        "Skipped runtime gateway listener bind for 172.26.144.1:4000: os error 10048",
+                        r#"{"detail":"os error 10048"}"#
+                    ],
+                )
+                .unwrap();
+            }
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('burst-variant', ?1, 'gateway', 'info', 'gateway.runtime_listener_skipped', ?2, ?3)",
+                rusqlite::params![
+                    base_ts + 26_000,
+                    "Skipped runtime gateway listener bind for 172.26.144.1:4001: os error 10048",
+                    r#"{"detail":"os error 10048"}"#
+                ],
+            )
+            .unwrap();
+        }
+
+        let snapshot =
+            store.event_spam_diagnostics_snapshot(base_ts as u64 + 59_000, 10 * 60_000);
+        let exact = snapshot
+            .get("top_exact_per_minute")
+            .and_then(|value| value.as_array())
+            .expect("top exact array");
+        assert!(!exact.is_empty());
+        assert_eq!(exact[0].get("count").and_then(|value| value.as_u64()), Some(25));
+        assert_eq!(
+            exact[0].get("code").and_then(|value| value.as_str()),
+            Some("gateway.runtime_listener_skipped")
+        );
+
+        let codes = snapshot
+            .get("top_code_per_minute")
+            .and_then(|value| value.as_array())
+            .expect("top code array");
+        assert!(!codes.is_empty());
+        assert_eq!(codes[0].get("count").and_then(|value| value.as_u64()), Some(26));
+        assert_eq!(
+            codes[0]
+                .get("distinct_exact_signatures")
+                .and_then(|value| value.as_u64()),
+            Some(2)
+        );
+    }
+
+    #[test]
     fn list_session_route_assignments_since_filters_old_rows() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();

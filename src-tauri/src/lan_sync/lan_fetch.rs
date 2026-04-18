@@ -57,6 +57,7 @@ fn merge_live_watchdog_state(
 pub(crate) fn local_diagnostics_snapshot(
     listen_port: u16,
     requested_domains: &[String],
+    store: Option<&crate::orchestrator::store::Store>,
 ) -> serde_json::Value {
     let all_domains =
         requested_domains.is_empty() || requested_domains.iter().any(|domain| domain == "all");
@@ -93,6 +94,18 @@ pub(crate) fn local_diagnostics_snapshot(
         );
     }
 
+    if requested("events") {
+        let snapshot = store
+            .map(|store| {
+                store.event_spam_diagnostics_snapshot(
+                    crate::orchestrator::store::unix_ms(),
+                    6 * 60 * 60_000,
+                )
+            })
+            .unwrap_or_else(|| serde_json::json!({ "available": false }));
+        domains.insert("events".to_string(), snapshot);
+    }
+
     let mut snapshot = serde_json::Value::Object(domains);
     if let Some(live_watchdog) = crate::lan_sync::current_ui_watchdog_live_snapshot(
         listen_port,
@@ -119,8 +132,9 @@ pub async fn lan_sync_diagnostics_http(
         }
     });
     let domains = packet.domains.clone();
+    let store = gateway.store.clone();
     let domains_snapshot = tauri::async_runtime::spawn_blocking(move || {
-        local_diagnostics_snapshot(listen_port, &domains)
+        local_diagnostics_snapshot(listen_port, &domains, Some(&store))
     })
     .await
     .unwrap_or_else(|err| {
@@ -970,19 +984,24 @@ mod tests {
     #[test]
     fn local_diagnostics_snapshot_includes_requested_domains() {
         crate::lan_sync::register_ui_watchdog_state(4000, UiWatchdogState::default());
+        let store_dir = tempfile::tempdir().expect("tempdir");
+        let store = crate::orchestrator::store::Store::open(store_dir.path()).expect("store");
         let snapshot = local_diagnostics_snapshot(
             4000,
             &[
                 "watchdog".to_string(),
                 "webtransport".to_string(),
                 "tailscale".to_string(),
+                "events".to_string(),
             ],
+            Some(&store),
         );
 
         let domains = snapshot.as_object().expect("snapshot object");
         assert!(domains.contains_key("watchdog"));
         assert!(domains.contains_key("webtransport"));
         assert!(domains.contains_key("tailscale"));
+        assert!(domains.contains_key("events"));
     }
 
     #[test]
@@ -993,7 +1012,7 @@ mod tests {
         watchdog.record_backend_status_progress("client_sessions", 1_200);
         crate::lan_sync::register_ui_watchdog_state(4000, watchdog);
 
-        let snapshot = local_diagnostics_snapshot(4000, &["watchdog".to_string()]);
+        let snapshot = local_diagnostics_snapshot(4000, &["watchdog".to_string()], None);
 
         let watchdog = snapshot
             .get("watchdog")
@@ -1025,8 +1044,8 @@ mod tests {
         watchdog_5000.record_heartbeat("requests", true, false, false, false, 2_000);
         crate::lan_sync::register_ui_watchdog_state(5000, watchdog_5000);
 
-        let snapshot_4000 = local_diagnostics_snapshot(4000, &["watchdog".to_string()]);
-        let snapshot_5000 = local_diagnostics_snapshot(5000, &["watchdog".to_string()]);
+        let snapshot_4000 = local_diagnostics_snapshot(4000, &["watchdog".to_string()], None);
+        let snapshot_5000 = local_diagnostics_snapshot(5000, &["watchdog".to_string()], None);
 
         let watchdog_4000 = snapshot_4000
             .get("watchdog")
