@@ -87,7 +87,7 @@ pub(crate) fn register_prepared_gateway_listener_bindings(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 pub(crate) fn unregister_runtime_gateway_listener_bindings(addrs: &[SocketAddr]) {
     let mut bound_listener_addrs = runtime_bound_listener_addrs().lock();
     for addr in addrs {
