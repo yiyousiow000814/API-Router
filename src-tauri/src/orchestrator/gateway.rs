@@ -78,6 +78,23 @@ fn runtime_bound_listener_addrs() -> &'static Mutex<HashSet<SocketAddr>> {
     RUNTIME_BOUND_LISTENER_ADDRS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
+pub(crate) fn register_prepared_gateway_listener_bindings(
+    prepared: &crate::orchestrator::gateway_bootstrap::PreparedGatewayListeners,
+) {
+    let mut bound_listener_addrs = runtime_bound_listener_addrs().lock();
+    for (addr, _) in &prepared.listeners {
+        bound_listener_addrs.insert(*addr);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn unregister_runtime_gateway_listener_bindings(addrs: &[SocketAddr]) {
+    let mut bound_listener_addrs = runtime_bound_listener_addrs().lock();
+    for addr in addrs {
+        bound_listener_addrs.remove(addr);
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct LastUsedRoute {
     pub provider: String,
@@ -1049,10 +1066,7 @@ pub async fn serve_in_background(
         .join(", ");
     {
         state.cfg.write().listen.port = prepared.listen_port;
-        let mut bound_listener_addrs = runtime_bound_listener_addrs().lock();
-        for (addr, _) in &prepared.listeners {
-            bound_listener_addrs.insert(*addr);
-        }
+        register_prepared_gateway_listener_bindings(&prepared);
     }
     write_gateway_startup_diag("binding", diag_addr, Some(&diag_binding));
 

@@ -651,6 +651,9 @@ pub fn run() {
                             prepare_started.elapsed().as_millis(),
                             Some(&format!("listen_port={}", prepared_gateway.listen_port)),
                         );
+                        crate::orchestrator::gateway::register_prepared_gateway_listener_bindings(
+                            &prepared_gateway,
+                        );
 
                         let token_sync_started = Instant::now();
                         app_state::run_startup_gateway_token_sync(&st);
