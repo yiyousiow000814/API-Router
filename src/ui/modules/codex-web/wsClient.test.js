@@ -838,6 +838,137 @@ describe("wsClient", () => {
     });
   });
 
+  it("surfaces reconnecting activity and errors after reconnect retries are exhausted", () => {
+    const activities = [];
+    const statuses = [];
+    const timeouts = [];
+    class FakeWebSocket {
+      static OPEN = 1;
+      static CONNECTING = 0;
+      static instances = [];
+      constructor(url) {
+        this.url = url;
+        this.readyState = FakeWebSocket.CONNECTING;
+        FakeWebSocket.instances.push(this);
+      }
+      send() {}
+    }
+    const state = {
+      token: "",
+      ws: null,
+      wsPingTimer: null,
+      wsReconnectTimer: null,
+      wsReconnectAttempt: 0,
+      wsConnectSeq: 0,
+      wsReqHandlers: new Map(),
+      pendingApprovals: [],
+      pendingUserInputs: [],
+      wsLastEventId: 0,
+      wsRecentEventIds: new Set(),
+      wsSubscribedEvents: false,
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      workspaceTarget: "windows",
+      liveDebugEvents: [],
+    };
+    const module = createWsClientModule({
+      state,
+      setStatus(message, isWarn) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity(payload) {
+        activities.push(payload);
+      },
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh() {},
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "0"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: FakeWebSocket,
+      fetchRef: async () => ({ ok: true, json: async () => ({}) }),
+      setTimeoutRef(callback, delay) {
+        timeouts.push({ callback, delay });
+        return timeouts.length;
+      },
+      clearTimeoutRef() {},
+      setIntervalRef() {
+        return 1;
+      },
+      clearIntervalRef() {},
+      WS_RECONNECT_BASE_MS: 25,
+      WS_RECONNECT_MAX_MS: 25,
+      WS_RECONNECT_MAX_ATTEMPTS: 1,
+    });
+
+    module.connectWs();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    FakeWebSocket.instances[0].readyState = FakeWebSocket.OPEN;
+    FakeWebSocket.instances[0].readyState = 3;
+    FakeWebSocket.instances[0].onclose({ code: 1006, reason: "server restart", wasClean: false });
+
+    expect(statuses).toEqual(
+      expect.arrayContaining([
+        { message: "Reconnecting... 1/1", isWarn: true },
+      ])
+    );
+    expect(activities).toEqual(
+      expect.arrayContaining([
+        { threadId: "thread-1", title: "Reconnecting", detail: "1/1", tone: "running" },
+      ])
+    );
+
+    expect(timeouts).toHaveLength(1);
+    timeouts[0].callback();
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    FakeWebSocket.instances[1].readyState = FakeWebSocket.OPEN;
+    FakeWebSocket.instances[1].readyState = 3;
+    FakeWebSocket.instances[1].onclose({ code: 1006, reason: "server restart", wasClean: false });
+
+    expect(statuses).toEqual(
+      expect.arrayContaining([
+        { message: "Live updates disconnected after 1 retry.", isWarn: true },
+      ])
+    );
+    expect(activities).toEqual(
+      expect.arrayContaining([
+        {
+          threadId: "thread-1",
+          title: "Error",
+          detail: "Live updates disconnected after 1 retry.",
+          tone: "error",
+        },
+      ])
+    );
+  });
+
   it("records structured websocket close detail for diagnostics", () => {
     const recorded = [];
     class FakeWebSocket {

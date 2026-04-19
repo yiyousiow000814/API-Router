@@ -116,6 +116,7 @@ export function createWsClientModule(deps) {
   const {
     state,
     setStatus,
+    setRuntimeActivity = () => {},
     toRecord,
     readString,
     readNumber,
@@ -144,9 +145,46 @@ export function createWsClientModule(deps) {
     WS_PING_INTERVAL_MS = 15000,
     WS_RECONNECT_BASE_MS = 800,
     WS_RECONNECT_MAX_MS = 5000,
+    WS_RECONNECT_MAX_ATTEMPTS = 5,
     transportMode = "live",
     seedDefaultThreads = false,
   } = deps;
+
+  function getActiveThreadRuntimeActivityTitle() {
+    const threadId = String(state.activeThreadId || "").trim();
+    if (!threadId) return "";
+    return String(state.activeThreadActivity?.threadId || "").trim() === threadId
+      ? String(state.activeThreadActivity?.title || "").trim().toLowerCase()
+      : "";
+  }
+
+  function setReconnectRuntimeActivity(title, detail) {
+    const threadId = String(state.activeThreadId || "").trim();
+    if (!threadId) return;
+    setRuntimeActivity({
+      threadId,
+      title,
+      detail,
+      tone: title === "Error" ? "error" : "running",
+    });
+  }
+
+  function restoreRuntimeActivityAfterReconnect() {
+    const threadId = String(state.activeThreadId || "").trim();
+    if (!threadId) return;
+    const isWorkingThread =
+      state.activeThreadPendingTurnRunning === true ||
+      Boolean(String(state.activeThreadPendingAssistantMessage || "").trim()) ||
+      String(state.activeThreadLiveAssistantThreadId || "").trim() === threadId;
+    const currentActivityTitle = getActiveThreadRuntimeActivityTitle();
+    if (isWorkingThread) {
+      setRuntimeActivity({ threadId, title: "Working", detail: "", tone: "running" });
+      return;
+    }
+    if (currentActivityTitle === "reconnecting" || currentActivityTitle === "error") {
+      setRuntimeActivity(null);
+    }
+  }
 
   async function liveApi(path, options = {}) {
     const headers = {
@@ -207,6 +245,14 @@ export function createWsClientModule(deps) {
   function scheduleReconnect(reason = "unknown") {
     if (state.wsReconnectTimer) return;
     const attempt = Math.max(0, Number(state.wsReconnectAttempt || 0));
+    const maxAttempts = Math.max(1, Number(WS_RECONNECT_MAX_ATTEMPTS || 5));
+    if (attempt >= maxAttempts) {
+      recordWebTransportEvent("ws_reconnect_failed", String(reason));
+      const failureMessage = `Live updates disconnected after ${maxAttempts} ${maxAttempts === 1 ? "retry" : "retries"}.`;
+      setStatus(failureMessage, true);
+      setReconnectRuntimeActivity("Error", failureMessage);
+      return;
+    }
     const delay = Math.min(
       WS_RECONNECT_MAX_MS,
       WS_RECONNECT_BASE_MS * Math.max(1, 2 ** attempt)
@@ -218,6 +264,8 @@ export function createWsClientModule(deps) {
       delay,
       reason,
     });
+    setStatus(`Reconnecting... ${state.wsReconnectAttempt}/${maxAttempts}`, true);
+    setReconnectRuntimeActivity("Reconnecting", `${state.wsReconnectAttempt}/${maxAttempts}`);
     state.wsReconnectTimer = setTimeoutRef(() => {
       state.wsReconnectTimer = null;
       recordWebTransportEvent("ws_reconnect_attempted", null);
@@ -529,6 +577,7 @@ export function createWsClientModule(deps) {
       });
       state.wsReconnectAttempt = 0;
       setStatus("Connected (live updates syncing).");
+      restoreRuntimeActivityAfterReconnect();
       startWsHeartbeat(ws);
       let lastEventId = 0;
       try {
@@ -543,7 +592,7 @@ export function createWsClientModule(deps) {
       state.wsSubscribedEvents = false;
       state.wsSubscribedWorkspaceTarget = "";
       state.wsSubscribedWorkspaceTargets = [];
-      setStatus("WS error; fallback to HTTP.", true);
+      scheduleReconnect("ws error");
     };
     ws.onclose = (event) => {
       if (state.ws !== ws || connectSeq !== state.wsConnectSeq) return;
