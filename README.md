@@ -4,55 +4,53 @@
 
 # API Router
 
-**A local gateway for managing and switching between AI model providers.**
+**A local gateway for managing OpenAI-compatible endpoints for Codex.**
 
-API Router is a desktop application that provides a stable, local endpoint for various AI services. It allows you to switch between providers (such as OpenAI or Claude) without modifying your tool configurations or source code.
+API Router is a Windows desktop application that provides a stable local endpoint for your AI development workflow. It allows you to switch between different OpenAI-compatible backends without modifying your Codex configuration or source code.
 
 ---
 
 ### Key Features
 
-*   🔄 **Model Routing**: Change your active AI provider in the app interface; all connected clients update instantly.
-*   🛡️ **Automatic Failover**: If a primary provider is unavailable, the router can fallback to a secondary service.
-*   🔒 **Local Security**: API keys and credentials are stored exclusively on your local machine.
-*   💻 **System Integration**: Runs as a background application with a system tray icon for quick access.
+*   🔄 **Endpoint Routing**: Switch between active backends through the desktop interface; connected tools update instantly.
+*   🛡️ **Automatic Failover**: If a primary backend becomes unavailable, the router can fallback to a secondary service.
+*   🔒 **Local-Only Security**: API keys and credentials are stored exclusively on your local machine.
+*   💻 **Windows Integration**: Runs as a native background application with a system tray icon for quick access.
 
 ---
 
-### Quick Start
+### Quick Start Guide
 
-1.  **Download**: Get the latest `API Router.exe` from [GitHub Releases](https://github.com/yiyousiow000814/API-Router/releases).
-2.  **Setup**: Launch the app, select **Add Provider**, and enter your API key.
-3.  **Connect**: Point your AI tool (e.g., Codex) to: `http://127.0.0.1:4000/v1`
+1.  **Download**: Obtain the latest `API Router.exe` for Windows from [GitHub Releases](https://github.com/yiyousiow000814/API-Router/releases).
+2.  **Setup**: Launch the application, select **Add Provider**, and enter your OpenAI-compatible API key.
+3.  **Connect**: Point your Codex tool to the gateway:
+    *   **Windows native**: `http://127.0.0.1:4000/v1`
+    *   **WSL2 Environment**: `http://172.26.144.1:4000/v1` (Connect to the Windows Host IP)
 
 ---
 
-### Developer Information
+### For Developers
 
-To build from source or contribute, follow these steps:
+To build from source or contribute to the project:
 
 #### Prerequisites
+*   Windows OS (Native support only)
 *   Node.js & npm
 *   Rust & Tauri environment
 
-#### Local Build
+#### Build Locally
 ```powershell
 npm install
-# Performs pre-build checks and utilizes caching
+# Recommended: performs pre-build validation and utilizing smart caching
 npm run build:root-exe:checked
 ```
-The executable is generated at the repository root as `API Router.exe`.
-
-#### Project Layout
-*   `src-tauri/`: Core gateway logic (Rust).
-*   `src/`: Desktop management UI (React/TypeScript).
-*   `providers/`: Configuration templates for AI services.
+The compiled executable is generated in the repository root as `API Router.exe`.
 
 ---
 
-### Support & Troubleshooting
+### Troubleshooting
 
-*   **Connection**: Ensure the application is running and the port matches your tool's settings.
-*   **Authentication**: Verify that `.codex/auth.json` is UTF-8 encoded without BOM.
+*   **Connection issues**: Ensure the application is running and the port matches your client's settings.
+*   **Authentication errors**: Verify that your `.codex/auth.json` is encoded in UTF-8 without BOM.
 
-For technical details, debugging, and MCP integration, see [docs/debug-interfaces.md](docs/debug-interfaces.md).
+For technical documentation and MCP integration, see [docs/debug-interfaces.md](docs/debug-interfaces.md).
