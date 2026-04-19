@@ -1387,10 +1387,16 @@ export function createLiveNotificationsModule(deps) {
       clearTransientToolMessages();
       clearTransientThinkingMessages();
       finalizeRuntimeState(threadId);
+
+      // New: Add the actual provider/routing error message to the chat conversation
+      if (statusMessage) {
+        addChat("system", statusMessage, { kind: "error" });
+      }
+
       setRuntimeActivity({
         threadId,
         title: "Error",
-        detail: statusMessage || "Turn failed.",
+        detail: "", // Don't crowd the activity bar with long error messages
         tone: "error",
       });
       return;
@@ -1425,6 +1431,9 @@ export function createLiveNotificationsModule(deps) {
         suppressSyntheticPendingUserInputs(threadId, true);
         setSyntheticPendingUserInputs(threadId, []);
         resetPendingTurnRuntime();
+        if (method.includes("turn/failed") && statusMessage) {
+          addChat("system", statusMessage, { kind: "error" });
+        }
       }
       finishPendingTurnRun(threadId);
       if (
