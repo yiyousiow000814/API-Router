@@ -1206,7 +1206,6 @@ export function createTurnActionsModule(deps) {
     resetLiveTurnStateForNewTurn();
     updateHeaderUi(shouldAnimateWorkspaceBadge);
     hideWelcomeCard();
-    addChat("user", prompt);
     if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
     state.activeThreadMessages = state.activeThreadMessages.concat([{ role: "user", text: prompt, kind: "" }]);
     state.chatShouldStickToBottom = true;
