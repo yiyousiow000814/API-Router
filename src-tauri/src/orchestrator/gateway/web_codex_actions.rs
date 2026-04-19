@@ -358,12 +358,17 @@ pub(super) async fn codex_turn_interrupt(
     State(st): State<GatewayState>,
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
+    LoggedJson(req): LoggedJson<TurnInterruptRequest>,
 ) -> Response {
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
+    let thread_id = req.thread_id.trim();
+    if thread_id.is_empty() {
+        return api_error(StatusCode::BAD_REQUEST, "threadId is required");
+    }
     let manager = CodexSessionManager::new(None);
-    match manager.interrupt_turn(&id).await {
+    match manager.interrupt_turn(thread_id, &id).await {
         Ok(v) => Json(v).into_response(),
         Err(error) => api_error_detail(
             StatusCode::BAD_GATEWAY,
@@ -371,6 +376,13 @@ pub(super) async fn codex_turn_interrupt(
             error,
         ),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TurnInterruptRequest {
+    #[serde(default)]
+    pub(super) thread_id: String,
 }
 
 #[derive(Deserialize)]

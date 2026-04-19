@@ -578,7 +578,7 @@ describe("turnActions", () => {
       state,
       byId: () => ({ value: "" }),
       api: async (path, options = {}) => {
-        apiCalls.push({ path, method: options.method || "GET" });
+        apiCalls.push({ path, method: options.method || "GET", body: options.body || null });
         return { ok: true };
       },
       wsSend: () => false,
@@ -621,7 +621,11 @@ describe("turnActions", () => {
     await module.sendTurn();
 
     expect(apiCalls).toEqual([
-      { path: "/codex/turns/turn-1/interrupt", method: "POST" },
+      {
+        path: "/codex/turns/turn-1/interrupt",
+        method: "POST",
+        body: { threadId: "thread-1" },
+      },
     ]);
   });
 
@@ -647,7 +651,7 @@ describe("turnActions", () => {
       state,
       byId: () => ({ value: "" }),
       api: async (path, options = {}) => {
-        apiCalls.push({ path, method: options.method || "GET" });
+        apiCalls.push({ path, method: options.method || "GET", body: options.body || null });
         return { ok: true };
       },
       wsSend: () => false,
@@ -690,7 +694,11 @@ describe("turnActions", () => {
     await module.sendTurn();
 
     expect(apiCalls).toEqual([
-      { path: "/codex/threads/thread-1/interrupt?workspace=wsl2", method: "POST" },
+      {
+        path: "/codex/threads/thread-1/interrupt?workspace=wsl2",
+        method: "POST",
+        body: null,
+      },
     ]);
   });
 
@@ -717,7 +725,7 @@ describe("turnActions", () => {
       state,
       byId: (id) => (id === "mobilePromptInput" ? input : { value: "" }),
       api: async (path, options = {}) => {
-        apiCalls.push({ path, method: options.method || "GET" });
+        apiCalls.push({ path, method: options.method || "GET", body: options.body || null });
         return { ok: true };
       },
       wsSend: () => false,
@@ -760,7 +768,11 @@ describe("turnActions", () => {
     await module.steerTurn();
 
     expect(apiCalls).toEqual([
-      { path: "/codex/turns/turn-1/interrupt", method: "POST" },
+      {
+        path: "/codex/turns/turn-1/interrupt",
+        method: "POST",
+        body: { threadId: "thread-1" },
+      },
     ]);
     expect(state.activeThreadQueuedTurns).toEqual([
       {
@@ -2623,7 +2635,7 @@ describe("turnActions", () => {
       state,
       byId: () => ({ value: "" }),
       api: async (path, options = {}) => {
-        calls.push({ path, method: options.method || "GET" });
+        calls.push({ path, method: options.method || "GET", body: options.body || null });
         return { ok: true };
       },
       wsSend: () => false,
@@ -2668,7 +2680,13 @@ describe("turnActions", () => {
 
     await module.interruptTurn();
 
-    expect(calls).toEqual([{ path: "/codex/turns/turn-1/interrupt", method: "POST" }]);
+    expect(calls).toEqual([
+      {
+        path: "/codex/turns/turn-1/interrupt",
+        method: "POST",
+        body: { threadId: "thread-1" },
+      },
+    ]);
     expect(syntheticClears).toEqual([{ threadId: "thread-1", items: [] }]);
     expect(state.suppressedIncompleteHistoryRuntimeByThreadId).toEqual({ "thread-1": true });
   });

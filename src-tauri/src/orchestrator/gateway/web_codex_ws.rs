@@ -802,8 +802,22 @@ async fn codex_ws_loop(mut socket: WebSocket) {
                                     .and_then(|x| x.as_str())
                                     .unwrap_or_default()
                                     .to_string();
+                                let thread_id = v
+                                    .get("payload")
+                                    .and_then(|p| p.get("threadId").or_else(|| p.get("thread_id")))
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or_default()
+                                    .to_string();
+                                if thread_id.trim().is_empty() {
+                                    let _ = send_ws_json(
+                                        &mut socket,
+                                        &json!({ "type": "error", "reqId": req_id, "message": "missing threadId" }),
+                                    )
+                                    .await;
+                                    continue;
+                                }
                                 let manager = CodexSessionManager::new(None);
-                                let result = manager.interrupt_turn(&turn_id).await;
+                                let result = manager.interrupt_turn(&thread_id, &turn_id).await;
                                 match result {
                                     Ok(ok) => {
                                         let _ = send_ws_json(

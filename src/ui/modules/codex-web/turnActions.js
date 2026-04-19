@@ -676,6 +676,9 @@ export function createTurnActionsModule(deps) {
         )
       : await api(`/codex/turns/${encodeURIComponent(turnId)}/interrupt`, {
           method: "POST",
+          body: {
+            threadId,
+          },
         });
     clearPlanTurnArtifacts(threadId, { bumpLiveEpoch: true });
     await refreshPending().catch(() => {});

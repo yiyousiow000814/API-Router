@@ -563,9 +563,16 @@ impl CodexSessionManager {
         })
     }
 
-    pub(super) async fn interrupt_turn(&self, turn_id: &str) -> Result<Value, String> {
-        self.request("turn/interrupt", json!({ "turnId": turn_id }))
-            .await
+    pub(super) async fn interrupt_turn(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> Result<Value, String> {
+        self.request(
+            "turn/interrupt",
+            json!({ "threadId": thread_id, "turnId": turn_id }),
+        )
+        .await
     }
 
     pub(super) async fn open_managed_terminal_surface(
@@ -1650,7 +1657,10 @@ mod tests {
         crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
             move |_home, method, params| {
                 assert_eq!(method, "turn/interrupt");
-                assert_eq!(params, json!({ "turnId": "turn-9" }));
+                assert_eq!(
+                    params,
+                    json!({ "threadId": "thread-1", "turnId": "turn-9" })
+                );
                 Ok(json!({ "ok": true }))
             },
         )))
@@ -1658,7 +1668,7 @@ mod tests {
 
         let manager = CodexSessionManager::new(None);
         let result = manager
-            .interrupt_turn("turn-9")
+            .interrupt_turn("thread-1", "turn-9")
             .await
             .expect("turn/interrupt should succeed");
         assert_eq!(result, json!({ "ok": true }));

@@ -224,7 +224,10 @@ describe("wsClient mock transport", () => {
       },
     });
 
-    await module.api(`/codex/turns/${started.turnId}/interrupt`, { method: "POST" });
+    await module.api(`/codex/turns/${started.turnId}/interrupt`, {
+      method: "POST",
+      body: { threadId: started.threadId },
+    });
     await vi.advanceTimersByTimeAsync(1000);
     expect(notifications.some((item) => item?.method === "turn/cancelled")).toBe(false);
 
