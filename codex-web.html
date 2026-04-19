@@ -44,6 +44,7 @@
       --z-folder-picker-backdrop: 9; /* in-app folder picker backdrop */
       --z-folder-picker: 10;         /* in-app folder picker modal */
       --z-composer-overlay: 11;      /* composer-local slash command menu */
+      --z-composer-picker: 12;       /* composer branch/permission picker bar */
     }
 
     /* Keep scrollbar styling consistent across panels (Chromium/WebView2). */
@@ -2838,6 +2839,8 @@
       font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, sans-serif;
     }
     .composerPickerBar {
+      position: relative;
+      z-index: var(--z-composer-picker);
       display: flex;
       align-items: center;
       justify-content: space-between;

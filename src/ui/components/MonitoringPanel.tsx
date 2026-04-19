@@ -104,6 +104,92 @@ const previewWebTransportMs = (offsetMs: number) => DEV_PREVIEW_WEB_TRANSPORT_NO
 
 type WatchdogActivityBucket = NonNullable<WatchdogSummary['activity_buckets']>[number]
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  const numeric = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : Number.NaN
+  return Number.isFinite(numeric) ? numeric : null
+}
+
+function createEmptyEventCount(): EventCount {
+  return { count: 0, last_unix_ms: 0 }
+}
+
+function createEmptyEventCountWithDetail(): EventCountWithDetail {
+  return { count: 0, last_unix_ms: 0, latest_detail: null }
+}
+
+function createEmptyWebTransportSnapshot(): WebTransportDomainSnapshot {
+  return {
+    ws_open_observed: createEmptyEventCount(),
+    ws_error_observed: createEmptyEventCountWithDetail(),
+    ws_close_observed: {
+      ...createEmptyEventCount(),
+      latest_close_code: null,
+      latest_close_reason: null,
+      latest_close_was_clean: null,
+    },
+    ws_reconnect_scheduled: createEmptyEventCount(),
+    ws_reconnect_attempted: createEmptyEventCount(),
+    http_fallback_engaged: createEmptyEventCount(),
+    thread_refresh_failed: createEmptyEventCount(),
+    active_thread_poll_failed: createEmptyEventCount(),
+    live_notification_gap_observed: createEmptyEventCount(),
+    api_request_failed: createEmptyEventCountWithDetail(),
+    thread_missing_observed: createEmptyEventCountWithDetail(),
+  }
+}
+
+function normalizeEventCount(raw: unknown): EventCount {
+  if (!isRecord(raw)) return createEmptyEventCount()
+  return {
+    count: toFiniteNumber(raw.count) ?? 0,
+    last_unix_ms: toFiniteNumber(raw.last_unix_ms) ?? 0,
+  }
+}
+
+function normalizeEventCountWithDetail(raw: unknown): EventCountWithDetail {
+  if (!isRecord(raw)) return createEmptyEventCountWithDetail()
+  return {
+    count: toFiniteNumber(raw.count) ?? 0,
+    last_unix_ms: toFiniteNumber(raw.last_unix_ms) ?? 0,
+    latest_detail: typeof raw.latest_detail === 'string' ? raw.latest_detail : null,
+  }
+}
+
+function normalizeWebTransportCloseObserved(raw: unknown): WebTransportDomainSnapshot['ws_close_observed'] {
+  const base = createEmptyWebTransportSnapshot().ws_close_observed
+  if (!isRecord(raw)) return base
+  return {
+    ...base,
+    count: toFiniteNumber(raw.count) ?? 0,
+    last_unix_ms: toFiniteNumber(raw.last_unix_ms) ?? 0,
+    latest_close_code: toFiniteNumber(raw.latest_close_code),
+    latest_close_reason: typeof raw.latest_close_reason === 'string' ? raw.latest_close_reason : null,
+    latest_close_was_clean: typeof raw.latest_close_was_clean === 'boolean' ? raw.latest_close_was_clean : null,
+  }
+}
+
+export function normalizeWebTransportSnapshot(raw: unknown): WebTransportDomainSnapshot | null {
+  if (raw == null) return null
+  const snapshot = createEmptyWebTransportSnapshot()
+  if (!isRecord(raw)) return snapshot
+  snapshot.ws_open_observed = normalizeEventCount(raw.ws_open_observed)
+  snapshot.ws_error_observed = normalizeEventCountWithDetail(raw.ws_error_observed)
+  snapshot.ws_close_observed = normalizeWebTransportCloseObserved(raw.ws_close_observed)
+  snapshot.ws_reconnect_scheduled = normalizeEventCount(raw.ws_reconnect_scheduled)
+  snapshot.ws_reconnect_attempted = normalizeEventCount(raw.ws_reconnect_attempted)
+  snapshot.http_fallback_engaged = normalizeEventCount(raw.http_fallback_engaged)
+  snapshot.thread_refresh_failed = normalizeEventCount(raw.thread_refresh_failed)
+  snapshot.active_thread_poll_failed = normalizeEventCount(raw.active_thread_poll_failed)
+  snapshot.live_notification_gap_observed = normalizeEventCount(raw.live_notification_gap_observed)
+  snapshot.api_request_failed = normalizeEventCountWithDetail(raw.api_request_failed)
+  snapshot.thread_missing_observed = normalizeEventCountWithDetail(raw.thread_missing_observed)
+  return snapshot
+}
+
 function buildWatchdogActivityBuckets(baseUnixMs: number, counts: number[]): WatchdogActivityBucket[] {
   const now = baseUnixMs
   const windowStart = now - WATCHDOG_ACTIVITY_WINDOW_MINUTES * 60_000
@@ -1627,7 +1713,7 @@ function PeerDiagsSection({ status }: PeerDiagsSectionProps) {
           const wd = diag.domains?.watchdog as
             | { healthy: boolean; last_incident_kind: string | null; incident_count: number; last_incident_unix_ms?: number | null; last_incident_file?: string | null; recent_incidents?: Array<{ unix_ms: number; kind: string; file: string }> }
             | undefined
-          const wts = diag.domains?.webtransport as WebTransportDomainSnapshot | undefined
+          const wts = normalizeWebTransportSnapshot(diag.domains?.webtransport)
           const ts = diag.domains?.tailscale as TailscaleSummary | undefined
           const wdStatus = getWatchdogStatusPresentation(wd ?? null)
           entries.push({
@@ -1961,9 +2047,7 @@ export function MonitoringPanel({ status }: MonitoringPanelProps) {
         if (result.watchdog) {
           setWatchdog(result.watchdog as WatchdogSummary)
         }
-        if (result.webtransport) {
-          setWtSnapshot(result.webtransport as WebTransportDomainSnapshot)
-        }
+        setWtSnapshot(normalizeWebTransportSnapshot(result.webtransport))
         if (result.tailscale) {
           setTailscale(result.tailscale as TailscaleSummary)
         }

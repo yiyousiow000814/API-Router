@@ -11,6 +11,7 @@ import {
   MonitoringPanel,
   getWebTransportHealth,
   getWebTransportObservedErrorDetail,
+  normalizeWebTransportSnapshot,
   getWatchdogStatusPresentation,
   peerSupportsLanDiagnostics,
   type WatchdogSummary,
@@ -267,6 +268,22 @@ describe('MonitoringPanel', () => {
         }),
       ]),
     )
+  })
+
+  it('normalizes partial webtransport snapshots before the panel reads last_unix_ms', () => {
+    const snapshot = normalizeWebTransportSnapshot({
+      ws_error_observed: { count: 2 },
+      ws_close_observed: { latest_close_code: '1006' },
+      api_request_failed: { count: 1, last_unix_ms: 1_700_000_000_000, latest_detail: 'HTTP 502' },
+    })
+
+    expect(snapshot).not.toBeNull()
+    expect(snapshot?.ws_error_observed.last_unix_ms).toBe(0)
+    expect(snapshot?.ws_close_observed.last_unix_ms).toBe(0)
+    expect(snapshot?.ws_close_observed.latest_close_code).toBe(1006)
+    expect(snapshot?.thread_missing_observed.last_unix_ms).toBe(0)
+    expect(() => getWebTransportHealth(snapshot!)).not.toThrow()
+    expect(() => getWebTransportHeroMetaRows(snapshot!, 1_700_000_001_000)).not.toThrow()
   })
 
   it('treats watchdog health as the latest activity bucket only', () => {
