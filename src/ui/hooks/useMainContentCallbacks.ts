@@ -73,7 +73,15 @@ export function useMainContentCallbacks(params: Params) {
   const onShowGatewayRotate = () => {
     void (async () => {
       try {
-        const { failed_targets } = await invoke<RotateGatewayTokenResult>('rotate_gateway_token')
+        const cliHomes = resolveCliHomes(
+          codexSwapDir1,
+          codexSwapDir2,
+          codexSwapUseWindows,
+          codexSwapUseWsl,
+        )
+        const { failed_targets } = await invoke<RotateGatewayTokenResult>('rotate_gateway_token', {
+          cliHomes,
+        })
         const p = await invoke<string>('get_gateway_token_preview')
         setGatewayTokenPreview(p)
         setGatewayTokenReveal('')

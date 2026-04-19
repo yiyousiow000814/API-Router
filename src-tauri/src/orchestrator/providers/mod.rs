@@ -1,7 +1,9 @@
 mod generic;
 mod mapping;
 
-use std::sync::OnceLock;
+use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
+use std::time::SystemTime;
 
 use serde::Deserialize;
 
@@ -86,6 +88,7 @@ pub(crate) struct CanonicalProviderUsage {
 
 #[derive(Debug, Clone)]
 struct ProviderDefinition {
+    id: String,
     matcher: ProviderMatcher,
     refresh_flow: RefreshFlow,
     budget_info_auth_source: BudgetInfoAuthSource,
@@ -101,6 +104,25 @@ struct ProviderDefinition {
     summary_mapping: Option<&'static CanonicalUsageMapping>,
     package_expiry_strategy: PackageExpiryStrategy,
     request_prefers_simple_input_list: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderDefinitionFileFingerprint {
+    path: PathBuf,
+    modified_at_unix_ms: u128,
+    len: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderRegistrySnapshot {
+    files: Vec<ProviderDefinitionFileFingerprint>,
+}
+
+#[derive(Debug, Clone)]
+struct ProviderRegistryState {
+    registry: Vec<ProviderDefinition>,
+    snapshot: ProviderRegistrySnapshot,
+    last_checked_unix_ms: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -415,26 +437,26 @@ const DEFAULT_BACKEND_BUDGET_MAPPING: CanonicalUsageMapping = CanonicalUsageMapp
     ],
 };
 
-fn provider_registry() -> &'static Vec<ProviderDefinition> {
-    static REGISTRY: OnceLock<Vec<ProviderDefinition>> = OnceLock::new();
-    REGISTRY.get_or_init(load_provider_registry)
+const PROVIDER_REGISTRY_REFRESH_DEBOUNCE_MS: u64 = 1_000;
+
+fn provider_registry_state() -> &'static RwLock<ProviderRegistryState> {
+    static REGISTRY: OnceLock<RwLock<ProviderRegistryState>> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let dirs = candidate_provider_definition_dirs();
+        let snapshot = snapshot_provider_definition_dirs(&dirs);
+        let registry = load_provider_registry_from_dirs(&dirs);
+        RwLock::new(ProviderRegistryState {
+            registry,
+            snapshot,
+            last_checked_unix_ms: crate::orchestrator::store::unix_ms(),
+        })
+    })
 }
 
-fn load_provider_registry() -> Vec<ProviderDefinition> {
+fn load_provider_registry_from_dirs(dirs: &[PathBuf]) -> Vec<ProviderDefinition> {
     let mut out = Vec::new();
-    for dir in candidate_provider_definition_dirs() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        let mut paths = entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
-            })
-            .collect::<Vec<_>>();
+    for dir in dirs {
+        let mut paths = provider_definition_paths_in_dir(dir);
         paths.sort();
         for path in paths {
             match load_provider_definition_from_path(&path) {
@@ -452,7 +474,7 @@ fn load_provider_registry() -> Vec<ProviderDefinition> {
     out
 }
 
-fn candidate_provider_definition_dirs() -> Vec<std::path::PathBuf> {
+fn candidate_provider_definition_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(cwd) = std::env::current_dir() {
         dirs.push(cwd.join("providers"));
@@ -478,6 +500,87 @@ fn candidate_provider_definition_dirs() -> Vec<std::path::PathBuf> {
         }
     }
     deduped
+}
+
+fn provider_definition_paths_in_dir(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
+        })
+        .collect()
+}
+
+fn system_time_to_unix_ms(value: SystemTime) -> u128 {
+    value
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+fn snapshot_provider_definition_dirs(dirs: &[PathBuf]) -> ProviderRegistrySnapshot {
+    let mut files = Vec::new();
+    for dir in dirs {
+        for path in provider_definition_paths_in_dir(dir) {
+            let Ok(metadata) = std::fs::metadata(&path) else {
+                continue;
+            };
+            let modified_at_unix_ms = metadata.modified().map(system_time_to_unix_ms).unwrap_or(0);
+            files.push(ProviderDefinitionFileFingerprint {
+                path,
+                modified_at_unix_ms,
+                len: metadata.len(),
+            });
+        }
+    }
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    ProviderRegistrySnapshot { files }
+}
+
+fn refresh_provider_registry_if_needed() {
+    let now = crate::orchestrator::store::unix_ms();
+    let state = provider_registry_state();
+    {
+        let current = state
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if now.saturating_sub(current.last_checked_unix_ms) < PROVIDER_REGISTRY_REFRESH_DEBOUNCE_MS
+        {
+            return;
+        }
+    }
+
+    let dirs = candidate_provider_definition_dirs();
+    let snapshot = snapshot_provider_definition_dirs(&dirs);
+
+    let mut current = state
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if now.saturating_sub(current.last_checked_unix_ms) < PROVIDER_REGISTRY_REFRESH_DEBOUNCE_MS {
+        return;
+    }
+    refresh_provider_registry_state_for_dirs(&mut current, &dirs, now, Some(snapshot));
+}
+
+fn refresh_provider_registry_state_for_dirs(
+    state: &mut ProviderRegistryState,
+    dirs: &[PathBuf],
+    now_unix_ms: u64,
+    snapshot_override: Option<ProviderRegistrySnapshot>,
+) {
+    state.last_checked_unix_ms = now_unix_ms;
+    let snapshot = snapshot_override.unwrap_or_else(|| snapshot_provider_definition_dirs(dirs));
+    if state.snapshot == snapshot {
+        return;
+    }
+    state.registry = load_provider_registry_from_dirs(dirs);
+    state.snapshot = snapshot;
 }
 
 fn load_provider_definition_from_path(
@@ -543,6 +646,7 @@ impl TryFrom<ProviderDefinitionFile> for ProviderDefinition {
         }
 
         Ok(Self {
+            id: value.id.trim().to_string(),
             matcher: ProviderMatcher {
                 base_url_hosts: normalize_match_values(value.matcher.base_url_hosts),
                 base_url_host_suffixes: normalize_match_values(
@@ -806,13 +910,19 @@ fn leak_unix_ms_rules(values: Vec<UnixMsRule>) -> &'static [UnixMsRule] {
     Box::leak(values.into_boxed_slice())
 }
 
-fn matched_provider_definition(provider: &ProviderConfig) -> Option<&'static ProviderDefinition> {
-    provider_registry()
+fn matched_provider_definition(provider: &ProviderConfig) -> Option<ProviderDefinition> {
+    refresh_provider_registry_if_needed();
+    let state = provider_registry_state()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state
+        .registry
         .iter()
         .find(|definition| definition.matches(provider))
+        .cloned()
 }
 
-fn matched_definition_for_base_url(base_url: &str) -> Option<&'static ProviderDefinition> {
+fn matched_definition_for_base_url(base_url: &str) -> Option<ProviderDefinition> {
     let provider = ProviderConfig {
         display_name: String::new(),
         base_url: base_url.to_string(),
@@ -826,30 +936,38 @@ fn matched_definition_for_base_url(base_url: &str) -> Option<&'static ProviderDe
     matched_provider_definition(&provider)
 }
 
-fn definition_for_endpoint_url(endpoint_url: &str) -> Option<&'static ProviderDefinition> {
+fn definition_for_endpoint_url(endpoint_url: &str) -> Option<ProviderDefinition> {
     let endpoint_url = endpoint_url
         .trim()
         .trim_end_matches('/')
         .to_ascii_lowercase();
     let endpoint_path = parsed_path(&endpoint_url);
 
-    provider_registry().iter().find(|definition| {
-        let fixed_match = definition
-            .explicit_endpoint_url
-            .as_deref()
-            .is_some_and(|expected| expected.eq_ignore_ascii_case(&endpoint_url));
-        let suffix_match = endpoint_path.as_deref().is_some_and(|path| {
-            matches!(
-                definition.explicit_endpoint_mode,
-                ExplicitEndpointMode::ExplicitUsageBaseUrlIfDirectPath
-            ) && definition
-                .matcher
-                .usage_base_url_suffixes
-                .iter()
-                .any(|suffix| path.ends_with(suffix))
-        });
-        fixed_match || suffix_match
-    })
+    refresh_provider_registry_if_needed();
+    let state = provider_registry_state()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state
+        .registry
+        .iter()
+        .find(|definition| {
+            let fixed_match = definition
+                .explicit_endpoint_url
+                .as_deref()
+                .is_some_and(|expected| expected.eq_ignore_ascii_case(&endpoint_url));
+            let suffix_match = endpoint_path.as_deref().is_some_and(|path| {
+                matches!(
+                    definition.explicit_endpoint_mode,
+                    ExplicitEndpointMode::ExplicitUsageBaseUrlIfDirectPath
+                ) && definition
+                    .matcher
+                    .usage_base_url_suffixes
+                    .iter()
+                    .any(|suffix| path.ends_with(suffix))
+            });
+            fixed_match || suffix_match
+        })
+        .cloned()
 }
 
 impl ProviderDefinition {
@@ -949,10 +1067,11 @@ pub(crate) fn resolve_quota_profile(provider: &ProviderConfig) -> ProviderQuotaP
             budget_info_auth_source: definition.budget_info_auth_source,
             usage_kind: detect_usage_kind(provider),
             ignore_remaining_when_budget_present: definition.ignore_remaining_when_budget_present,
-            candidate_bases: candidate_quota_bases_from_definition(provider, definition),
+            candidate_bases: candidate_quota_bases_from_definition(provider, &definition),
             speed_probe_bases: definition.speed_probe_bases.clone(),
             explicit_usage_endpoint: explicit_usage_endpoint_url_from_definition(
-                provider, definition,
+                provider,
+                &definition,
             ),
             explicit_usage_mapping: definition.explicit_usage_mapping,
             budget_info_mapping: definition.budget_info_mapping,
@@ -1000,7 +1119,7 @@ fn explicit_usage_mapping_from_endpoint(
 #[cfg(test)]
 pub(crate) fn explicit_usage_endpoint_url(provider: &ProviderConfig) -> Option<String> {
     matched_provider_definition(provider)
-        .and_then(|definition| explicit_usage_endpoint_url_from_definition(provider, definition))
+        .and_then(|definition| explicit_usage_endpoint_url_from_definition(provider, &definition))
         .or_else(|| generic_explicit_usage_endpoint_url(provider))
 }
 
@@ -1116,7 +1235,7 @@ pub(crate) fn normalize_usage_base_url(
 
     let provider_definition = matched_definition_for_base_url(provider_base_url)?;
     let usage_definition = matched_definition_for_base_url(usage_base_url)?;
-    if !std::ptr::eq(provider_definition, usage_definition) {
+    if provider_definition.id != usage_definition.id {
         return None;
     }
     if provider_definition.fixed_candidate_bases.len() == 1 {
@@ -1135,6 +1254,25 @@ pub(crate) fn prefers_simple_input_list(base_url: &str) -> bool {
 mod tests {
     use super::*;
     use crate::orchestrator::providers::{map_canonical_usage, CanonicalUsageContext};
+    use std::fs;
+
+    fn write_test_provider_definition(path: &Path, explicit_endpoint_url: &str) {
+        let body = format!(
+            r#"
+id = "hot_reload_test"
+
+[match]
+base_url_hosts = ["reload.example.com"]
+
+[usage]
+kind = "budget_info"
+refresh_flow = "auto"
+explicit_endpoint_mode = "fixed"
+explicit_endpoint_url = "{explicit_endpoint_url}"
+"#
+        );
+        fs::write(path, body.trim_start()).expect("write provider definition");
+    }
 
     #[test]
     fn file_registry_resolves_yunyi_user_me_provider() {
@@ -1219,6 +1357,97 @@ mod tests {
             vec!["https://aigateway.chat".to_string()]
         );
         assert!(profile.explicit_usage_mapping.is_some());
+    }
+
+    #[test]
+    fn file_registry_resolves_routeai_provider() {
+        let provider = ProviderConfig {
+            display_name: "routeai".to_string(),
+            base_url: "https://api.routeai.cc".to_string(),
+            supports_websockets: false,
+            group: None,
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: None,
+            api_key: String::new(),
+        };
+
+        let profile = resolve_quota_profile(&provider);
+        assert_eq!(profile.refresh_flow, RefreshFlow::Auto);
+        assert_eq!(
+            profile.explicit_usage_endpoint.as_deref(),
+            Some("https://api.routeai.cc/v1/usage")
+        );
+        assert_eq!(
+            profile.candidate_bases,
+            vec!["https://api.routeai.cc".to_string()]
+        );
+        assert!(profile.explicit_usage_mapping.is_some());
+    }
+
+    #[test]
+    fn file_registry_routeai_ignores_noncanonical_explicit_usage_base() {
+        let provider = ProviderConfig {
+            display_name: "routeai".to_string(),
+            base_url: "https://api.routeai.cc".to_string(),
+            supports_websockets: false,
+            group: None,
+            disabled: false,
+            usage_adapter: String::new(),
+            usage_base_url: Some("https://usage.routeai.cc/custom".to_string()),
+            api_key: String::new(),
+        };
+
+        let profile = resolve_quota_profile(&provider);
+        assert_eq!(
+            profile.candidate_bases,
+            vec!["https://api.routeai.cc".to_string()]
+        );
+        assert_eq!(
+            profile.explicit_usage_endpoint.as_deref(),
+            Some("https://api.routeai.cc/v1/usage")
+        );
+    }
+
+    #[test]
+    fn provider_registry_refresh_picks_up_toml_updates() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let provider_dir = temp.path().join("providers");
+        fs::create_dir_all(&provider_dir).expect("create providers dir");
+        let provider_path = provider_dir.join("reload.toml");
+
+        write_test_provider_definition(&provider_path, "https://reload.example.com/v1/usage-a");
+
+        let dirs = vec![provider_dir.clone()];
+        let initial_snapshot = snapshot_provider_definition_dirs(&dirs);
+        let initial_registry = load_provider_registry_from_dirs(&dirs);
+        assert_eq!(initial_registry.len(), 1);
+        assert_eq!(
+            initial_registry[0].explicit_endpoint_url.as_deref(),
+            Some("https://reload.example.com/v1/usage-a")
+        );
+
+        let mut state = ProviderRegistryState {
+            registry: initial_registry,
+            snapshot: initial_snapshot,
+            last_checked_unix_ms: 0,
+        };
+
+        write_test_provider_definition(&provider_path, "https://reload.example.com/v1/usage-b");
+
+        let updated_snapshot = snapshot_provider_definition_dirs(&dirs);
+        refresh_provider_registry_state_for_dirs(
+            &mut state,
+            &dirs,
+            PROVIDER_REGISTRY_REFRESH_DEBOUNCE_MS + 1,
+            Some(updated_snapshot),
+        );
+
+        assert_eq!(state.registry.len(), 1);
+        assert_eq!(
+            state.registry[0].explicit_endpoint_url.as_deref(),
+            Some("https://reload.example.com/v1/usage-b")
+        );
     }
 
     #[test]

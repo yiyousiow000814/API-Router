@@ -25,6 +25,7 @@ export function createCodexWebComposition(deps) {
   const { api, connectWs, handleWsPayload, syncEventSubscription, wsCall, wsSend } = deps.createWsClientModule({
     state: deps.state,
     setStatus: deps.setStatus,
+    setRuntimeActivity: deps.setRuntimeActivity,
     toRecord: deps.toRecord,
     readString: deps.readString,
     readNumber: deps.readNumber,
@@ -305,6 +306,7 @@ export function createCodexWebComposition(deps) {
     clearTransientToolMessages: deps.clearTransientToolMessages,
     clearTransientThinkingMessages: deps.clearTransientThinkingMessages,
     hideSlashCommandMenu: deps.hideSlashCommandMenu,
+    setThreadStatusCard: deps.setThreadStatusCard,
     blockInSandbox: deps.blockInSandbox,
     localStorageRef,
     FAST_MODE_DEVICE_DEFAULT_KEY: deps.FAST_MODE_DEVICE_DEFAULT_KEY,
@@ -324,6 +326,7 @@ export function createCodexWebComposition(deps) {
     updateNotificationState: deps.updateNotificationState,
     armSyntheticClickSuppression: deps.armSyntheticClickSuppression,
     wireBlurBackdropShield: deps.wireBlurBackdropShield,
+    clearThreadStatusCard: deps.clearThreadStatusCard,
     closeFolderPicker: folderPicker.closeFolderPicker,
     refreshFolderPicker: folderPicker.refreshFolderPicker,
     renderFolderPicker: folderPicker.renderFolderPicker,

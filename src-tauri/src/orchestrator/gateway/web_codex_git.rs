@@ -1,6 +1,7 @@
 use super::web_codex_home::{parse_workspace_target, WorkspaceTarget};
-use serde::Serialize;
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use serde_json;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -134,23 +135,149 @@ pub(super) async fn run_git_command_for_workspace(
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn build_visible_branch_options(current_branch: &str) -> Vec<GitBranchOption> {
-    let current_branch = current_branch.trim();
-    if current_branch.is_empty() {
-        return Vec::new();
+pub(super) async fn run_gh_command_for_workspace(
+    workspace: Option<&str>,
+    cwd: &str,
+    args: &[&str],
+) -> Result<String, String> {
+    let target = workspace.and_then(parse_workspace_target);
+    let mut command = if matches!(target, Some(WorkspaceTarget::Wsl2)) {
+        let mut script = format!("cd {} && gh", shell_quote(cwd));
+        for arg in args {
+            script.push(' ');
+            script.push_str(&shell_quote(arg));
+        }
+        let mut cmd = tokio::process::Command::new("wsl.exe");
+        cmd.arg("-e").arg("bash").arg("-lc").arg(script);
+        cmd
+    } else {
+        let mut cmd = tokio::process::Command::new("gh");
+        cmd.current_dir(cwd);
+        for arg in args {
+            cmd.arg(arg);
+        }
+        cmd
+    };
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    #[cfg(target_os = "windows")]
+    command.creation_flags(0x08000000);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
+        .await
+        .map_err(|_| "gh command timed out".to_string())?
+        .map_err(|err| err.to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() { stderr } else { stdout };
+        return Err(if detail.is_empty() {
+            "gh command failed".to_string()
+        } else {
+            detail
+        });
     }
-    vec![GitBranchOption {
-        name: current_branch.to_string(),
-        pr_number: None,
-    }]
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[derive(Deserialize)]
+struct GhPrListItem {
+    #[serde(rename = "headRefName")]
+    head_ref_name: String,
+    number: u64,
+}
+
+async fn pr_numbers_for_workspace(
+    workspace: Option<&str>,
+    cwd: &str,
+) -> Result<HashMap<String, u64>, String> {
+    let output = run_gh_command_for_workspace(
+        workspace,
+        cwd,
+        &[
+            "pr",
+            "list",
+            "--limit",
+            "100",
+            "--state",
+            "open",
+            "--json",
+            "headRefName,number",
+        ],
+    )
+    .await?;
+    let items: Vec<GhPrListItem> = serde_json::from_str(&output).map_err(|e| e.to_string())?;
+    let mut map = HashMap::new();
+    for item in items {
+        map.insert(item.head_ref_name, item.number);
+    }
+    Ok(map)
+}
+
+fn build_visible_branch_options(
+    current_branch: &str,
+    local_branches: Vec<String>,
+    pr_numbers: HashMap<String, u64>,
+) -> Vec<GitBranchOption> {
+    let current_branch = current_branch.trim();
+    let mut seen = HashSet::new();
+
+    // Candidates for "active" branches:
+    // - Default branches (main/master) if they exist
+    // - The current branch
+    // - Any local branch with an open PR
+    let mut options: Vec<GitBranchOption> = local_branches
+        .into_iter()
+        .filter(|name| {
+            name == "main"
+                || name == "master"
+                || name == current_branch
+                || pr_numbers.contains_key(name)
+        })
+        .map(|name| {
+            seen.insert(name.clone());
+            let pr_number = pr_numbers.get(&name).copied();
+            GitBranchOption { name, pr_number }
+        })
+        .collect();
+
+    // Ensure current_branch is included even if not in local_branches (e.g. fresh clone)
+    if !current_branch.is_empty() && !seen.contains(current_branch) {
+        options.push(GitBranchOption {
+            name: current_branch.to_string(),
+            pr_number: pr_numbers.get(current_branch).copied(),
+        });
+    }
+
+    // Stable sort to keep main/master first while preserving committer-date order for others
+    options.sort_by(|a, b| {
+        let a_is_main = a.name == "main" || a.name == "master";
+        let b_is_main = b.name == "main" || b.name == "master";
+        if a_is_main && !b_is_main {
+            std::cmp::Ordering::Less
+        } else if !a_is_main && b_is_main {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    });
+
+    options
 }
 
 pub(super) async fn visible_branch_options_for_workspace_with_current_branch(
-    _workspace: Option<&str>,
-    _cwd: &str,
+    workspace: Option<&str>,
+    cwd: &str,
     current_branch: &str,
 ) -> Result<Vec<GitBranchOption>, String> {
-    Ok(build_visible_branch_options(current_branch))
+    let local_branches = local_branches_for_workspace(workspace, cwd).await?;
+    let pr_numbers = pr_numbers_for_workspace(workspace, cwd)
+        .await
+        .unwrap_or_default();
+    Ok(build_visible_branch_options(
+        current_branch,
+        local_branches,
+        pr_numbers,
+    ))
 }
 
 const WORKTREE_DETECTION_GIT_ARGS: &[&str] = &[
@@ -315,20 +442,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_visible_branch_options_keeps_only_current_branch() {
-        let visible = build_visible_branch_options("feat/codex-web-branch-picker");
-        assert_eq!(
-            visible,
-            vec![GitBranchOption {
-                name: "feat/codex-web-branch-picker".to_string(),
-                pr_number: None,
-            }]
+    fn build_visible_branch_options_filters_for_active_branches() {
+        let visible = build_visible_branch_options(
+            "current",
+            vec![
+                "main".to_string(),
+                "current".to_string(),
+                "with-pr".to_string(),
+                "inactive".to_string(),
+            ],
+            HashMap::from([("with-pr".to_string(), 123)]),
         );
+        // Should have: main, current, with-pr. Should NOT have: inactive.
+        assert_eq!(visible.len(), 3);
+        assert!(visible.iter().any(|o| o.name == "main"));
+        assert!(visible.iter().any(|o| o.name == "current"));
+        assert!(visible.iter().any(|o| o.name == "with-pr"));
+        assert!(!visible.iter().any(|o| o.name == "inactive"));
     }
 
     #[test]
-    fn build_visible_branch_options_omits_empty_current_branch() {
-        assert!(build_visible_branch_options("").is_empty());
+    fn build_visible_branch_options_keeps_current_even_if_not_local() {
+        let visible =
+            build_visible_branch_options("detached", vec!["main".to_string()], HashMap::new());
+        assert_eq!(visible.len(), 2);
+        assert!(visible.iter().any(|o| o.name == "detached"));
+    }
+
+    #[test]
+    fn build_visible_branch_options_omits_empty_current_branch_if_no_locals() {
+        assert!(build_visible_branch_options("", Vec::new(), HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn build_visible_branch_options_puts_main_first() {
+        let visible = build_visible_branch_options(
+            "feat/a",
+            vec![
+                "feat/b".to_string(),
+                "main".to_string(),
+                "feat/a".to_string(),
+            ],
+            HashMap::new(),
+        );
+        assert_eq!(visible[0].name, "main");
     }
 
     #[test]

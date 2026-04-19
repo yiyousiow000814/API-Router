@@ -1586,6 +1586,62 @@ impl Store {
         }
     }
 
+    fn canonicalize_event_fields_value(value: &Value) -> Value {
+        match value {
+            Value::Array(items) => Value::Array(
+                items
+                    .iter()
+                    .map(Self::canonicalize_event_fields_value)
+                    .collect(),
+            ),
+            Value::Object(map) => {
+                let mut keys = map.keys().cloned().collect::<Vec<_>>();
+                keys.sort();
+                let mut out = serde_json::Map::new();
+                for key in keys {
+                    if let Some(item) = map.get(&key) {
+                        out.insert(key, Self::canonicalize_event_fields_value(item));
+                    }
+                }
+                Value::Object(out)
+            }
+            other => other.clone(),
+        }
+    }
+
+    fn normalized_message_for_spam_signature(message: &str) -> String {
+        message
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim()
+            .to_ascii_lowercase()
+    }
+
+    fn spam_signature(
+        provider: &str,
+        level: &str,
+        code: &str,
+        message: &str,
+        fields: &Value,
+    ) -> String {
+        let canonical_fields = Self::canonicalize_event_fields_value(fields);
+        let canonical_fields_json =
+            serde_json::to_string(&canonical_fields).unwrap_or_else(|_| "null".to_string());
+        format!(
+            "{}|{}|{}|{}|{}",
+            provider.trim().to_ascii_lowercase(),
+            level.trim().to_ascii_lowercase(),
+            code.trim().to_ascii_lowercase(),
+            Self::normalized_message_for_spam_signature(message),
+            canonical_fields_json
+        )
+    }
+
+    fn spam_window_started_at_unix_ms(ts_i64: i64) -> i64 {
+        ts_i64.div_euclid(60_000) * 60_000
+    }
+
     fn has_recent_duplicate_event(
         tx: &rusqlite::Transaction<'_>,
         provider: &str,
@@ -2894,6 +2950,201 @@ impl Store {
             }
         }
         out
+    }
+
+    pub fn event_spam_diagnostics_snapshot(&self, now_unix_ms: u64, lookback_ms: u64) -> Value {
+        #[derive(Default)]
+        struct ExactAgg {
+            bucket_started_at_unix_ms: u64,
+            provider: String,
+            level: String,
+            code: String,
+            message: String,
+            fields: Value,
+            count: u64,
+            first_unix_ms: u64,
+            last_unix_ms: u64,
+        }
+
+        #[derive(Default)]
+        struct CodeAgg {
+            bucket_started_at_unix_ms: u64,
+            provider: String,
+            level: String,
+            code: String,
+            count: u64,
+            first_unix_ms: u64,
+            last_unix_ms: u64,
+            exact_counts: std::collections::HashMap<String, (u64, String)>,
+        }
+
+        let lookback_ms = lookback_ms.max(60_000);
+        let from_unix_ms = now_unix_ms.saturating_sub(lookback_ms);
+        let from_i64 = match i64::try_from(from_unix_ms) {
+            Ok(value) => value,
+            Err(_) => {
+                return serde_json::json!({ "available": false, "error": "invalid_from_unix_ms" })
+            }
+        };
+        let to_i64 = match i64::try_from(now_unix_ms) {
+            Ok(value) => value,
+            Err(_) => {
+                return serde_json::json!({ "available": false, "error": "invalid_to_unix_ms" })
+            }
+        };
+
+        let conn = self.events_db.lock();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT unix_ms, provider, level, code, message, fields_json
+             FROM events
+             WHERE unix_ms >= ?1 AND unix_ms <= ?2
+             ORDER BY unix_ms ASC, id ASC",
+        ) else {
+            return serde_json::json!({ "available": false, "error": "prepare_failed" });
+        };
+        let Ok(rows) = stmt.query_map(params![from_i64, to_i64], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        }) else {
+            return serde_json::json!({ "available": false, "error": "query_failed" });
+        };
+
+        let mut exact = std::collections::HashMap::<(u64, String), ExactAgg>::new();
+        let mut code = std::collections::HashMap::<(u64, String), CodeAgg>::new();
+        let mut total_events = 0_u64;
+
+        for row in rows.flatten() {
+            let (unix_ms_i64, provider, level, code_value, message, fields_json) = row;
+            let Ok(unix_ms) = u64::try_from(unix_ms_i64) else {
+                continue;
+            };
+            total_events = total_events.saturating_add(1);
+            let fields = serde_json::from_str::<Value>(&fields_json).unwrap_or(Value::Null);
+            let bucket_started_at_unix_ms =
+                u64::try_from(Self::spam_window_started_at_unix_ms(unix_ms_i64)).unwrap_or(0);
+            let exact_signature =
+                Self::spam_signature(&provider, &level, &code_value, &message, &fields);
+            let code_signature = format!(
+                "{}|{}|{}",
+                provider.trim().to_ascii_lowercase(),
+                level.trim().to_ascii_lowercase(),
+                code_value.trim().to_ascii_lowercase()
+            );
+
+            let exact_entry = exact
+                .entry((bucket_started_at_unix_ms, exact_signature.clone()))
+                .or_insert_with(|| ExactAgg {
+                    bucket_started_at_unix_ms,
+                    provider: provider.clone(),
+                    level: level.clone(),
+                    code: code_value.clone(),
+                    message: message.clone(),
+                    fields: fields.clone(),
+                    count: 0,
+                    first_unix_ms: unix_ms,
+                    last_unix_ms: unix_ms,
+                });
+            exact_entry.count = exact_entry.count.saturating_add(1);
+            exact_entry.last_unix_ms = unix_ms;
+
+            let code_entry = code
+                .entry((bucket_started_at_unix_ms, code_signature))
+                .or_insert_with(|| CodeAgg {
+                    bucket_started_at_unix_ms,
+                    provider: provider.clone(),
+                    level: level.clone(),
+                    code: code_value.clone(),
+                    count: 0,
+                    first_unix_ms: unix_ms,
+                    last_unix_ms: unix_ms,
+                    exact_counts: std::collections::HashMap::new(),
+                });
+            code_entry.count = code_entry.count.saturating_add(1);
+            code_entry.last_unix_ms = unix_ms;
+            let exact_count_entry = code_entry
+                .exact_counts
+                .entry(exact_signature)
+                .or_insert_with(|| (0, message.clone()));
+            exact_count_entry.0 = exact_count_entry.0.saturating_add(1);
+        }
+
+        let mut top_exact = exact.into_values().collect::<Vec<_>>();
+        top_exact.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| b.last_unix_ms.cmp(&a.last_unix_ms))
+        });
+        let top_exact = top_exact
+            .into_iter()
+            .take(20)
+            .map(|entry| {
+                serde_json::json!({
+                    "bucket_started_at_unix_ms": entry.bucket_started_at_unix_ms,
+                    "provider": entry.provider,
+                    "level": entry.level,
+                    "code": entry.code,
+                    "message": entry.message,
+                    "fields": entry.fields,
+                    "count": entry.count,
+                    "first_unix_ms": entry.first_unix_ms,
+                    "last_unix_ms": entry.last_unix_ms,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let mut top_code = code.into_values().collect::<Vec<_>>();
+        top_code.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| b.last_unix_ms.cmp(&a.last_unix_ms))
+        });
+        let top_code = top_code
+            .into_iter()
+            .take(20)
+            .map(|entry| {
+                let distinct_exact_signatures = entry.exact_counts.len();
+                let mut sample_messages = entry.exact_counts.into_values().collect::<Vec<_>>();
+                sample_messages.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+                let sample_messages = sample_messages
+                    .into_iter()
+                    .take(5)
+                    .map(|(count, message)| {
+                        serde_json::json!({
+                            "count": count,
+                            "message": message,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                serde_json::json!({
+                    "bucket_started_at_unix_ms": entry.bucket_started_at_unix_ms,
+                    "provider": entry.provider,
+                    "level": entry.level,
+                    "code": entry.code,
+                    "count": entry.count,
+                    "distinct_exact_signatures": distinct_exact_signatures,
+                    "first_unix_ms": entry.first_unix_ms,
+                    "last_unix_ms": entry.last_unix_ms,
+                    "sample_messages": sample_messages,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        serde_json::json!({
+            "available": true,
+            "window_kind": "per_minute",
+            "lookback_ms": lookback_ms,
+            "from_unix_ms": from_unix_ms,
+            "to_unix_ms": now_unix_ms,
+            "total_events_analyzed": total_events,
+            "top_exact_per_minute": top_exact,
+            "top_code_per_minute": top_code,
+        })
     }
 
     pub fn list_event_years(&self) -> std::collections::BTreeSet<i32> {

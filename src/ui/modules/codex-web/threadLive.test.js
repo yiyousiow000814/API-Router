@@ -46,7 +46,7 @@ describe("threadLive", () => {
         activeThreadPendingTurnRunning: false,
         activeThreadPendingUserMessage: "",
         activeThreadPendingAssistantMessage: "",
-        activeThreadNeedsResume: false,
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
       })
     ).toBe(true);
   });
@@ -61,7 +61,7 @@ describe("threadLive", () => {
         activeThreadPendingTurnRunning: false,
         activeThreadPendingUserMessage: "",
         activeThreadPendingAssistantMessage: "",
-        activeThreadNeedsResume: false,
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
       })
     ).toBe(true);
     expect(
@@ -73,7 +73,7 @@ describe("threadLive", () => {
         activeThreadPendingTurnRunning: false,
         activeThreadPendingUserMessage: "",
         activeThreadPendingAssistantMessage: "",
-        activeThreadNeedsResume: false,
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
       })
     ).toBe(false);
     expect(
@@ -85,7 +85,7 @@ describe("threadLive", () => {
         activeThreadPendingTurnRunning: false,
         activeThreadPendingUserMessage: "",
         activeThreadPendingAssistantMessage: "",
-        activeThreadNeedsResume: false,
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
       })
     ).toBe(false);
     expect(
@@ -97,7 +97,7 @@ describe("threadLive", () => {
         activeThreadPendingTurnRunning: false,
         activeThreadPendingUserMessage: "",
         activeThreadPendingAssistantMessage: "",
-        activeThreadNeedsResume: false,
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
       })
     ).toBe(true);
   });
@@ -127,7 +127,7 @@ describe("threadLive", () => {
         activeThreadPendingTurnRunning: false,
         activeThreadPendingUserMessage: "",
         activeThreadPendingAssistantMessage: "",
-        activeThreadNeedsResume: false,
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
         activeThreadLiveLastPollMs: 0,
         activeThreadLivePolling: false,
         activeThreadWorkspace: "windows",
@@ -171,6 +171,60 @@ describe("threadLive", () => {
     }
   });
 
+  it("polls an opened active thread from open-state when activeThreadId is blank", async () => {
+    const callbacks = [];
+    const loadCalls = [];
+    let now = 10_000;
+    const realNow = Date.now;
+    Date.now = () => now;
+    const module = createThreadLiveModule({
+      state: {
+        activeThreadId: "",
+        activeMainTab: "chat",
+        activeThreadStarted: true,
+        ws: { readyState: 1 },
+        wsSubscribedEvents: true,
+        activeThreadHistoryIncomplete: false,
+        activeThreadPendingTurnRunning: false,
+        activeThreadPendingUserMessage: "",
+        activeThreadPendingAssistantMessage: "",
+        activeThreadOpenState: { threadId: "thread-1", resumeRequired: false, loaded: false },
+        activeThreadLiveLastPollMs: 0,
+        activeThreadLivePolling: false,
+        activeThreadWorkspace: "windows",
+        activeThreadRolloutPath: "",
+      },
+      byId() { return null; },
+      waitMs: async () => {},
+      setStatus() {},
+      refreshThreads: async () => {},
+      getWorkspaceTarget() { return "windows"; },
+      loadThreadMessages: async (...args) => { loadCalls.push(args); },
+      THREAD_PULL_REFRESH_TRIGGER_PX: 44,
+      THREAD_PULL_REFRESH_MAX_PX: 84,
+      THREAD_PULL_REFRESH_MIN_MS: 520,
+      THREAD_PULL_HINT_CLEAR_DELAY_MS: 160,
+      THREAD_AUTO_REFRESH_CONNECTED_MS: 20000,
+      THREAD_AUTO_REFRESH_DISCONNECTED_MS: 3500,
+      ACTIVE_THREAD_LIVE_POLL_MS: 1500,
+      ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS: 3000,
+      WebSocketRef: { OPEN: 1 },
+      setIntervalRef(callback) {
+        callbacks.push(callback);
+        return 1;
+      },
+    });
+
+    try {
+      module.startActiveThreadLivePollLoop();
+      await callbacks[0]();
+      expect(loadCalls).toHaveLength(1);
+      expect(loadCalls[0][0]).toBe("thread-1");
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
   it("slows incomplete active-thread polling when ws is already subscribed", async () => {
     const callbacks = [];
     const loadCalls = [];
@@ -188,7 +242,7 @@ describe("threadLive", () => {
         activeThreadPendingTurnRunning: false,
         activeThreadPendingUserMessage: "",
         activeThreadPendingAssistantMessage: "",
-        activeThreadNeedsResume: false,
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
         activeThreadLiveLastPollMs: 0,
         activeThreadLivePolling: false,
         activeThreadWorkspace: "windows",
@@ -246,7 +300,7 @@ describe("threadLive", () => {
         activeThreadPendingTurnRunning: false,
         activeThreadPendingUserMessage: "",
         activeThreadPendingAssistantMessage: "",
-        activeThreadNeedsResume: false,
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
         activeThreadLiveLastPollMs: 0,
         activeThreadLivePolling: false,
         activeThreadWorkspace: "windows",

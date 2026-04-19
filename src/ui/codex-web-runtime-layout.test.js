@@ -38,6 +38,17 @@ describe("codex-web runtime layout", () => {
     expect(source).toContain(".composerPickerMenu");
   });
 
+  it("keeps the picker bar above the send action rail on desktop layouts", () => {
+    const pickerBarMatch = source.match(/\.composerPickerBar\s*\{([^}]+)\}/s);
+    const actionRailMatch = source.match(/\.composerActionRail\s*\{([^}]+)\}/s);
+    expect(pickerBarMatch).toBeTruthy();
+    expect(actionRailMatch).toBeTruthy();
+    expect(pickerBarMatch?.[1] || "").toMatch(/position:\s*relative/i);
+    expect(pickerBarMatch?.[1] || "").toMatch(/z-index:\s*var\(--z-composer-picker\)/i);
+    expect(actionRailMatch?.[1] || "").toMatch(/z-index:\s*var\(--z-composer-overlay\)/i);
+    expect(source).toContain("--z-composer-picker: 12;");
+  });
+
   it("opens picker menus upward from the bottom picker bar", () => {
     const menuMatch = source.match(/\.composerPickerMenu\s*\{([^}]+)\}/s);
     const scrollMatch = source.match(/\.composerPickerMenuScroll\s*\{([^}]+)\}/s);

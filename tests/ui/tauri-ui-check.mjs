@@ -159,22 +159,27 @@ async function main() {
 
   // Build debug binary (no bundles) for automation.
   const keepVisible = String(process.env.UI_TAURI_VISIBLE || '').trim() === '1'
+  const skipBuild = String(process.env.UI_TAURI_SKIP_BUILD || '').trim() === '1'
   // In "background" mode we build release to avoid console spew from the debug WebView2 process.
   const buildMode = keepVisible ? 'debug' : 'release'
-  console.log(`[ui:tauri] Building Tauri ${buildMode} binary (--no-bundle)...`)
-  // Windows: npm entrypoint is npm.cmd.
-  const tauriBuildArgs = [
-    'tools/windows/run-with-win-sdk.mjs',
-    'node',
-    'node_modules/@tauri-apps/cli/tauri.js',
-    'build',
-    ...(buildMode === 'debug' ? ['--debug'] : []),
-    '--no-bundle',
-  ]
-  if (keepVisible) {
-    runOrThrow('node', tauriBuildArgs, { cwd: repoRoot })
+  if (skipBuild) {
+    console.log(`[ui:tauri] Reusing existing Tauri ${buildMode} binary (skip build).`)
   } else {
-    runQuietOrThrow('node', tauriBuildArgs, { cwd: repoRoot })
+    console.log(`[ui:tauri] Building Tauri ${buildMode} binary (--no-bundle)...`)
+    // Windows: npm entrypoint is npm.cmd.
+    const tauriBuildArgs = [
+      'tools/windows/run-with-win-sdk.mjs',
+      'node',
+      'node_modules/@tauri-apps/cli/tauri.js',
+      'build',
+      ...(buildMode === 'debug' ? ['--debug'] : []),
+      '--no-bundle',
+    ]
+    if (keepVisible) {
+      runOrThrow('node', tauriBuildArgs, { cwd: repoRoot })
+    } else {
+      runQuietOrThrow('node', tauriBuildArgs, { cwd: repoRoot })
+    }
   }
 
   const appPath = resolveTauriAppPath(buildMode)

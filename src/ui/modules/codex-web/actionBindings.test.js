@@ -29,6 +29,73 @@ describe("actionBindings", () => {
     expect(resolveActionErrorMessage(null, "fallback")).toBe("fallback");
   });
 
+  it("wires the status tray close button", async () => {
+    const handlers = new Map();
+    const clearCalls = [];
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId() { return null; },
+      bindClick(id, handler) {
+        handlers.set(id, handler);
+      },
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus() {},
+      updateMobileComposerState() {},
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+      NotificationRef: { requestPermission: async () => "default" },
+      clearThreadStatusCard() {
+        clearCalls.push(true);
+      },
+    };
+    const previousDocument = globalThis.document;
+    const previousWindow = globalThis.window;
+    const previousNotification = globalThis.Notification;
+    globalThis.document = { addEventListener() {} };
+    globalThis.window = deps.windowRef;
+    globalThis.Notification = deps.NotificationRef;
+
+    try {
+      createActionBindingsModule(deps).wireActions();
+      expect(handlers.has("statusTrayCloseBtn")).toBe(true);
+      await handlers.get("statusTrayCloseBtn")();
+      expect(clearCalls).toEqual([true]);
+    } finally {
+      globalThis.document = previousDocument;
+      globalThis.window = previousWindow;
+      globalThis.Notification = previousNotification;
+    }
+  });
+
   it("toggles live inspector from settings and persists the preference", async () => {
     const handlers = new Map();
     const localStorageCalls = [];
@@ -1471,6 +1538,12 @@ describe("actionBindings", () => {
         modelOptionsLoading: false,
         threadItems: [],
         activeThreadPendingTurnRunning: true,
+        activeThreadId: "",
+        activeThreadOpenState: {
+          threadId: "thread-1",
+          loaded: true,
+          resumeRequired: false,
+        },
       },
       byId(id) {
         if (id === "mobilePromptInput") return promptNode;

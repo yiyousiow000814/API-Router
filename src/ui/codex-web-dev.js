@@ -142,6 +142,8 @@ let clearRuntimeState = () => {};
 let setRuntimeActivity = () => {};
 let setActiveCommands = () => {};
 let setActivePlan = () => {};
+let setThreadStatusCard = () => {};
+let clearThreadStatusCard = () => {};
 let syncRuntimeStateFromHistory = () => {};
 let applyToolItemRuntimeUpdate = () => {};
 let applyPlanDeltaUpdate = () => {};
@@ -383,6 +385,8 @@ const composition = createCodexWebComposition({
   setRuntimeActivity: (...args) => setRuntimeActivity(...args),
   setActiveCommands: (...args) => setActiveCommands(...args),
   setActivePlan: (...args) => setActivePlan(...args),
+  setThreadStatusCard: (...args) => setThreadStatusCard(...args),
+  clearThreadStatusCard: (...args) => clearThreadStatusCard(...args),
   syncRuntimeStateFromHistory: (...args) => syncRuntimeStateFromHistory(...args),
   applyToolItemRuntimeUpdate: (...args) => applyToolItemRuntimeUpdate(...args),
   applyPlanDeltaUpdate: (...args) => applyPlanDeltaUpdate(...args),
@@ -597,6 +601,8 @@ const renderPendingInline = (...args) => renderPendingInlineFromComposition(...a
   setRuntimeActivity,
   setActiveCommands,
   setActivePlan,
+  setThreadStatusCard,
+  clearThreadStatusCard,
   syncRuntimeStateFromHistory,
   applyToolItemRuntimeUpdate,
   applyPlanDeltaUpdate,

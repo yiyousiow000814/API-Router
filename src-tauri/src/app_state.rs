@@ -1373,6 +1373,45 @@ mod tests {
         drop(occupied);
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn prepared_gateway_listeners_are_registered_before_runtime_refresh() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+
+        let state = build_state(config_path, data_dir).expect("build state");
+        let prepared = crate::orchestrator::gateway_bootstrap::prepare_gateway_listeners(&state)
+            .expect("prepare");
+        crate::orchestrator::gateway::register_prepared_gateway_listener_bindings(&prepared);
+
+        let listen = state.gateway.cfg.read().listen.clone();
+        let wsl_host = crate::platform::wsl_gateway_host::cached_or_default_wsl_gateway_host(None);
+        let addr = crate::orchestrator::gateway_bootstrap::wsl_overlay_listener_addr(
+            &listen.host,
+            listen.port,
+            &wsl_host,
+        )
+        .expect("resolve wsl overlay")
+        .expect("wsl overlay addr");
+
+        let newly_bound = crate::orchestrator::gateway::ensure_runtime_gateway_listener_bindings(
+            state.gateway.clone(),
+            &[addr],
+        )
+        .expect("runtime refresh");
+        assert!(newly_bound.is_empty());
+
+        let registered = prepared
+            .listeners
+            .iter()
+            .map(|(addr, _)| *addr)
+            .collect::<Vec<_>>();
+        crate::orchestrator::gateway::unregister_runtime_gateway_listener_bindings(&registered);
+        drop(prepared);
+    }
+
     #[test]
     fn disable_expired_package_providers_disables_local_provider_after_expiry() {
         let tmp = tempfile::tempdir().expect("tempdir");

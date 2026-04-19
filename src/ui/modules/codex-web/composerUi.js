@@ -7,6 +7,7 @@ import {
   buildBranchPickerItemState,
   buildBranchPickerState,
 } from "./branchPickerState.js";
+import { resolveCurrentThreadId } from "./runtimeState.js";
 import {
   activeComposerWorkspace,
   applyActiveThreadGitMetaState,
@@ -319,7 +320,7 @@ export function createComposerUiModule(deps) {
   function normalizeActivity(activity, threadId) {
     if (!activity) return null;
     return {
-      threadId: String(activity.threadId || threadId || state.activeThreadId || ""),
+      threadId: String(activity.threadId || threadId || resolveCurrentThreadId(state) || ""),
       title: activity.title || "",
       detail: activity.detail || "",
       tone: activity.tone || "running",
@@ -327,7 +328,7 @@ export function createComposerUiModule(deps) {
   }
 
   function resolveRuntimeActivity(threadId, options = {}) {
-    const currentThreadId = String(threadId || state.activeThreadId || "").trim();
+    const currentThreadId = String(threadId || resolveCurrentThreadId(state) || "").trim();
     const commands = Array.isArray(options.commands) ? options.commands : [];
     const latestRunning = commands.length ? commands[commands.length - 1] : null;
     const plan = options.plan || null;
@@ -378,11 +379,21 @@ export function createComposerUiModule(deps) {
 
   function renderActivityHtml(activity) {
     if (!activity) return "";
+    const tone = normalizeRunningState(activity.tone, "running");
+    const title = readText(activity.title);
+    const detail = readText(activity.detail);
+    const shouldShowLabel =
+      tone === "error" || /^reconnecting$/i.test(title);
     const dots = '<span class="runtimeActivityDots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>';
     const enterClass = state.chatOpening === true ? "" : " runtimeActivityEnter";
+    const labelHtml = shouldShowLabel
+      ? `<span class="runtimeActivityText"><strong>${escapeHtml(title || (tone === "error" ? "Error" : "Reconnecting"))}</strong>${
+        detail ? ` <span>${escapeHtml(detail)}</span>` : ""
+      }</span>`
+      : `<span class="runtimeActivityText"><strong>working</strong></span>`;
     return (
-      `<div class="runtimeActivity${enterClass}" data-activity-tone="running">` +
-        `<span class="runtimeActivityText"><strong>working</strong></span>` +
+      `<div class="runtimeActivity${enterClass}" data-activity-tone="${escapeHtml(tone)}">` +
+        `${labelHtml}` +
         `${dots}` +
       `</div>`
     );
@@ -414,7 +425,7 @@ export function createComposerUiModule(deps) {
     const icon = escapeHtml(String(entry?.icon || "tool"));
     const stateName = escapeHtml(String(entry?.state || "complete"));
     const animationIdentity = buildRuntimeAnimationIdentity(entry) || String(entry?.key || "").trim();
-    const animationKey = `${String(state.activeThreadId || "")}::${animationIdentity}`;
+    const animationKey = `${String(resolveCurrentThreadId(state) || "")}::${animationIdentity}`;
     const shouldAnimateEnter = animationKey && !animatedRuntimeEntryKeys.has(animationKey);
     if (shouldAnimateEnter) animatedRuntimeEntryKeys.add(animationKey);
     const usesStructuredToolSummary = /^(?:Running|Ran|Read|Command failed|Read failed|Running tool|Called tool|Tool failed|Searching web|Searched web)\s+/i.test(summaryText);
@@ -499,7 +510,7 @@ export function createComposerUiModule(deps) {
 
   function renderPlanHtml(plan) {
     if (!plan) return "";
-    const planAnimationKey = `${String(state.activeThreadId || "")}::runtime-plan`;
+    const planAnimationKey = `${String(resolveCurrentThreadId(state) || "")}::runtime-plan`;
     const shouldAnimateEnter = planAnimationKey && !animatedRuntimePlanKeys.has(planAnimationKey);
     if (shouldAnimateEnter) animatedRuntimePlanKeys.add(planAnimationKey);
     return renderPlanCardHtml(plan, {
@@ -567,23 +578,31 @@ export function createComposerUiModule(deps) {
   function renderRuntimePanels() {
     const dock = byId("runtimeDock");
     const activityNode = byId("runtimeActivityBar");
+    const statusTrayMount = byId("statusTrayMount");
+    const statusTrayTitle = byId("statusTrayTitle");
+    const statusTraySessionValue = byId("statusTraySessionValue");
     if (!dock || !activityNode) return;
     const inChat = state.activeMainTab !== "settings";
+    const currentThreadId = resolveCurrentThreadId(state);
     const commands = Array.isArray(state.activeThreadActiveCommands)
       ? state.activeThreadActiveCommands.slice(-MAX_VISIBLE_ACTIVE_COMMANDS)
       : [];
-    const plan = state.activeThreadPlan && state.activeThreadPlan.threadId === state.activeThreadId
+    const plan = state.activeThreadPlan && state.activeThreadPlan.threadId === currentThreadId
       ? state.activeThreadPlan
       : null;
     const commentary = state.activeThreadCommentaryCurrent &&
-      String(state.activeThreadCommentaryCurrent.threadId || "").trim() === String(state.activeThreadId || "").trim()
+      String(state.activeThreadCommentaryCurrent.threadId || "").trim() === currentThreadId
       ? state.activeThreadCommentaryCurrent
       : null;
     const thinkingText = String(state.activeThreadTransientThinkingText || commentary?.text || "").trim();
-    const explicitActivity = state.activeThreadActivity && state.activeThreadActivity.threadId === state.activeThreadId
+    const explicitActivity = state.activeThreadActivity && state.activeThreadActivity.threadId === currentThreadId
       ? state.activeThreadActivity
       : null;
-    const activity = resolveRuntimeActivity(state.activeThreadId, {
+    const statusCard = state.activeThreadStatusCard &&
+      String(state.activeThreadStatusCard.threadId || "").trim() === currentThreadId
+      ? state.activeThreadStatusCard
+      : null;
+    const activity = resolveRuntimeActivity(currentThreadId, {
       commands,
       plan,
       commentary,
@@ -592,7 +611,7 @@ export function createComposerUiModule(deps) {
       pendingTurnRunning: state.activeThreadPendingTurnRunning === true,
     });
     const runtimeRenderSig = JSON.stringify({
-      threadId: String(state.activeThreadId || ""),
+      threadId: String(currentThreadId || ""),
       inChat,
       commands: commands.map((entry) => ({
         key: String(entry?.key || ""),
@@ -624,6 +643,13 @@ export function createComposerUiModule(deps) {
             title: String(activity.title || ""),
             detail: String(activity.detail || ""),
             tone: String(activity.tone || ""),
+          }
+        : null,
+      statusCard: statusCard
+        ? {
+            threadId: String(statusCard.threadId || ""),
+            title: String(statusCard.title || ""),
+            sessionId: String(statusCard.sessionId || ""),
           }
         : null,
       pendingThreadId: String(state.activeThreadPendingTurnThreadId || ""),
@@ -672,6 +698,13 @@ export function createComposerUiModule(deps) {
       node.__runtimeHtml = nextHtml;
       if (hadHtml && nextHtml) animateRuntimeSectionRefresh(node);
     };
+    const updateTextIfChanged = (node, text) => {
+      if (!node) return;
+      const nextText = String(text || "");
+      if (node.__runtimeText === nextText) return;
+      node.textContent = nextText;
+      node.__runtimeText = nextText;
+    };
 
     if (planNode) {
       updateHtmlIfChanged(planNode, plan ? renderPlanHtml(plan) : "");
@@ -684,6 +717,14 @@ export function createComposerUiModule(deps) {
     if (commandNode) {
       updateHtmlIfChanged(commandNode, commands.length ? commands.map(renderCommandEntryHtml).join("") : "");
       setRuntimeSectionVisible(commandNode, commands.length > 0);
+    }
+    if (statusTrayMount) {
+      updateTextIfChanged(statusTrayTitle, statusCard ? String(statusCard.title || "Status").trim() || "Status" : "");
+      updateTextIfChanged(statusTraySessionValue, statusCard ? String(statusCard.sessionId || "").trim() || "Unavailable" : "");
+      if (statusTraySessionValue?.classList?.toggle) {
+        statusTraySessionValue.classList.toggle("is-empty", !!statusCard && !String(statusCard.sessionId || "").trim());
+      }
+      setRuntimeSectionVisible(statusTrayMount, !!statusCard);
     }
     updateHtmlIfChanged(activityNode, activity ? renderActivityHtml(activity) : "");
     activityNode.style.display = activity ? "" : "none";
@@ -719,7 +760,7 @@ export function createComposerUiModule(deps) {
 
   function assignRuntimeActivity(activity) {
     state.activeThreadActivity = activity
-      ? { threadId: String(activity.threadId || state.activeThreadId || ""), title: activity.title || "", detail: activity.detail || "", tone: activity.tone || "running" }
+      ? { threadId: String(activity.threadId || resolveCurrentThreadId(state) || ""), title: activity.title || "", detail: activity.detail || "", tone: activity.tone || "running" }
       : null;
   }
 
@@ -728,13 +769,43 @@ export function createComposerUiModule(deps) {
     renderRuntimePanels();
   }
 
+  function assignThreadStatusCard(card) {
+    const threadId = String(card?.threadId || resolveCurrentThreadId(state) || card?.sessionId || "").trim();
+    const sessionId = String(card?.sessionId || card?.session_id || "").trim();
+    if (!threadId && !sessionId) {
+      state.activeThreadStatusCard = null;
+      return null;
+    }
+    state.activeThreadStatusCard = {
+      threadId,
+      title: String(card?.title || "Status").trim() || "Status",
+      sessionId,
+    };
+    return state.activeThreadStatusCard;
+  }
+
+  function setThreadStatusCard(card) {
+    assignThreadStatusCard(card);
+    renderRuntimePanels();
+  }
+
+  function clearThreadStatusCard(threadId = resolveCurrentThreadId(state)) {
+    const current = state.activeThreadStatusCard;
+    if (!current) return false;
+    const normalizedThreadId = String(threadId || "").trim();
+    if (normalizedThreadId && String(current.threadId || "").trim() !== normalizedThreadId) return false;
+    state.activeThreadStatusCard = null;
+    renderRuntimePanels();
+    return true;
+  }
+
   function upsertActiveCommand(entry) {
     if (!entry) return;
     const next = Array.isArray(state.activeThreadActiveCommands) ? [...state.activeThreadActiveCommands] : [];
     const hasRunning = next.some((item) => item && item.state === "running");
     const index = next.findIndex((item) => item && item.key === entry.key);
     const commentaryThreadId = String(state.activeThreadCommentaryCurrent?.threadId || "").trim();
-    const commentaryActive = !!commentaryThreadId && commentaryThreadId === String(state.activeThreadId || "").trim();
+    const commentaryActive = !!commentaryThreadId && commentaryThreadId === resolveCurrentThreadId(state);
     if (entry.state === "running" && !hasRunning && next.length > 0 && index < 0 && !commentaryActive) {
       next.splice(0, next.length);
     }
@@ -770,7 +841,7 @@ export function createComposerUiModule(deps) {
   function assignActivePlan(plan) {
     state.activeThreadPlan = plan
       ? {
-          threadId: String(plan.threadId || state.activeThreadId || ""),
+          threadId: String(plan.threadId || resolveCurrentThreadId(state) || ""),
           turnId: String(plan.turnId || ""),
           title: String(plan.title || "Plan").trim() || "Plan",
           explanation: String(plan.explanation || "").trim(),
@@ -785,8 +856,8 @@ export function createComposerUiModule(deps) {
     renderRuntimePanels();
   }
 
-  function syncRuntimeActivityFromState(threadId = state.activeThreadId) {
-    const currentThreadId = String(threadId || state.activeThreadId || "").trim();
+  function syncRuntimeActivityFromState(threadId = resolveCurrentThreadId(state)) {
+    const currentThreadId = String(threadId || resolveCurrentThreadId(state) || "").trim();
     const plan = state.activeThreadPlan && state.activeThreadPlan.threadId === currentThreadId
       ? state.activeThreadPlan
       : null;
@@ -805,7 +876,8 @@ export function createComposerUiModule(deps) {
   }
 
   function syncRuntimeStateFromHistory(thread) {
-    const threadId = String(thread?.id || state.activeThreadId || "").trim();
+    const threadId = String(thread?.id || resolveCurrentThreadId(state) || "").trim();
+    const currentThreadId = resolveCurrentThreadId(state, threadId);
     const suppressSyntheticPending = state.suppressedSyntheticPendingUserInputsByThreadId?.[threadId] === true;
     const suppressIncompleteRuntime = state.suppressedIncompleteHistoryRuntimeByThreadId?.[threadId] === true;
     const pageIncomplete = !!thread?.page?.incomplete;
@@ -813,7 +885,7 @@ export function createComposerUiModule(deps) {
     const turns = Array.isArray(thread?.turns) ? thread.turns : [];
     const lastTurn = turns.length ? turns[turns.length - 1] : null;
     const items = Array.isArray(lastTurn?.items) ? lastTurn.items : [];
-    if (!pageIncomplete || interruptedHistory || !threadId || threadId !== state.activeThreadId) {
+    if (!pageIncomplete || interruptedHistory || !threadId || threadId !== currentThreadId) {
       if (threadId) clearProposedPlanConfirmation(state, threadId);
       if (
         threadId &&
@@ -898,8 +970,9 @@ export function createComposerUiModule(deps) {
   }
 
   function applyToolItemRuntimeUpdate(item, options = {}) {
-    const threadId = String(options.threadId || state.activeThreadId || "").trim();
-    if (!threadId || threadId !== state.activeThreadId) return;
+    const currentThreadId = resolveCurrentThreadId(state);
+    const threadId = String(options.threadId || currentThreadId || "").trim();
+    if (!threadId || threadId !== currentThreadId) return;
     const planUpdate = extractPlanUpdate(item, { threadId, normalizeType });
     if (planUpdate) {
       setRuntimeActivity({
@@ -931,8 +1004,9 @@ export function createComposerUiModule(deps) {
   }
 
   function applyPlanDeltaUpdate(payload = {}) {
-    const threadId = String(payload.threadId || payload.thread_id || state.activeThreadId || "").trim();
-    if (!threadId || threadId !== state.activeThreadId) return;
+    const currentThreadId = resolveCurrentThreadId(state);
+    const threadId = String(payload.threadId || payload.thread_id || currentThreadId || "").trim();
+    if (!threadId || threadId !== currentThreadId) return;
     const turnId = String(payload.turnId || payload.turn_id || "").trim();
     const delta = String(payload.delta || "").trim();
     const previous = state.activeThreadPlan && state.activeThreadPlan.threadId === threadId
@@ -949,8 +1023,9 @@ export function createComposerUiModule(deps) {
   }
 
   function applyPlanSnapshotUpdate(payload = {}) {
-    const threadId = String(payload.threadId || payload.thread_id || state.activeThreadId || "").trim();
-    if (!threadId || threadId !== state.activeThreadId) return;
+    const currentThreadId = resolveCurrentThreadId(state);
+    const threadId = String(payload.threadId || payload.thread_id || currentThreadId || "").trim();
+    if (!threadId || threadId !== currentThreadId) return;
     const turnId = String(payload.turnId || payload.turn_id || "").trim();
     const steps = Array.isArray(payload.plan) ? payload.plan : [];
     setActivePlan({
@@ -973,8 +1048,9 @@ export function createComposerUiModule(deps) {
   }
 
   function finalizeRuntimeState(threadId = "") {
-    const current = String(threadId || state.activeThreadId || "").trim();
-    if (current && current !== state.activeThreadId) return;
+    const currentThreadId = resolveCurrentThreadId(state);
+    const current = String(threadId || currentThreadId || "").trim();
+    if (current && current !== currentThreadId) return;
     clearRuntimeState();
   }
 
@@ -1037,7 +1113,7 @@ export function createComposerUiModule(deps) {
 
   function shouldRefreshActiveThreadGitMeta(options = {}) {
     if (typeof api !== "function") return false;
-    const threadId = String(options.threadId || state.activeThreadId || "").trim();
+    const threadId = String(options.threadId || resolveCurrentThreadId(state) || "").trim();
     const workspace = normalizeGitMetaWorkspace(options.workspace, state);
     const cwd = String(options.cwd || state.startCwdByWorkspace?.[workspace] || "").trim();
     if (workspace !== "windows" && workspace !== "wsl2") return false;
@@ -1056,7 +1132,7 @@ export function createComposerUiModule(deps) {
   }
 
   function shouldClearActiveThreadGitMeta(options = {}) {
-    const threadId = String(options.threadId || state.activeThreadId || "").trim();
+    const threadId = String(options.threadId || resolveCurrentThreadId(state) || "").trim();
     const workspace = String(options.workspace || activeComposerWorkspace(state)).trim().toLowerCase();
     const cwd = String(options.cwd || state.startCwdByWorkspace?.[normalizeGitMetaWorkspace(workspace, state)] || "").trim();
     if (workspace !== "windows" && workspace !== "wsl2") return true;
@@ -1065,7 +1141,7 @@ export function createComposerUiModule(deps) {
 
   async function refreshActiveThreadGitMeta(options = {}) {
     if (typeof api !== "function") return null;
-    const threadId = String(options.threadId || state.activeThreadId || "").trim();
+    const threadId = String(options.threadId || resolveCurrentThreadId(state) || "").trim();
     const workspace = normalizeGitMetaWorkspace(options.workspace, state);
     const cwd = String(options.cwd || state.startCwdByWorkspace?.[workspace] || "").trim();
     if (workspace !== "windows" && workspace !== "wsl2") {
@@ -1254,7 +1330,8 @@ export function createComposerUiModule(deps) {
     }
     const promptText = String(input.value || "").trim();
     const hasText = !!promptText;
-    const running = state.activeThreadPendingTurnRunning === true;
+    const currentThreadId = resolveCurrentThreadId(state);
+    const running = state.activeThreadPendingTurnRunning === true && !!currentThreadId;
       const queuedTurns = readQueuedTurns();
       const queuedTurn = queuedTurns.length ? queuedTurns[0] : null;
       const queuedPrompt = String(queuedTurn?.prompt || "").trim();
@@ -1531,7 +1608,9 @@ export function createComposerUiModule(deps) {
     setComposerBranchMenuOpen,
     setComposerPermissionMenuOpen,
     setRuntimeActivity,
+    setThreadStatusCard,
     setMainTab,
+    clearThreadStatusCard,
     showWelcomeCard,
     refreshActiveThreadGitMeta,
     syncRuntimeStateFromHistory,

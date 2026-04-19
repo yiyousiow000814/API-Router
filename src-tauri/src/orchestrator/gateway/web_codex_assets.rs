@@ -102,6 +102,8 @@ const WEB_CODEX_THREAD_GIT_META_STATE_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/threadGitMetaState.js");
 const WEB_CODEX_THREAD_LIST_VIEW_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/threadListView.js");
+const WEB_CODEX_THREAD_OPEN_STATE_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/threadOpenState.js");
 const WEB_CODEX_TRANSPORT_MODE_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/transportMode.js");
 const WEB_CODEX_TURN_ACTIONS_JS: &str =
@@ -168,6 +170,7 @@ fn resolve_web_codex_module_body(module_path: &str) -> Option<&'static str> {
         "codex-web/threadMeta.js" => Some(WEB_CODEX_THREAD_META_JS),
         "codex-web/threadGitMetaState.js" => Some(WEB_CODEX_THREAD_GIT_META_STATE_JS),
         "codex-web/threadListView.js" => Some(WEB_CODEX_THREAD_LIST_VIEW_JS),
+        "codex-web/threadOpenState.js" => Some(WEB_CODEX_THREAD_OPEN_STATE_JS),
         "codex-web/transportMode.js" => Some(WEB_CODEX_TRANSPORT_MODE_JS),
         "codex-web/turnActions.js" => Some(WEB_CODEX_TURN_ACTIONS_JS),
         "codex-web/uiHelpers.js" => Some(WEB_CODEX_UI_HELPERS_JS),
@@ -304,6 +307,7 @@ mod tests {
         assert!(resolve_web_codex_module_body("codex-web/threadMeta.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/threadGitMetaState.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/threadListView.js").is_some());
+        assert!(resolve_web_codex_module_body("codex-web/threadOpenState.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/transportMode.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/turnActions.js").is_some());
         assert!(resolve_web_codex_module_body("codex-web/uiHelpers.js").is_some());

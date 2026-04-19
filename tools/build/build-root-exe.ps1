@@ -33,6 +33,8 @@ $SrcExe = Resolve-BuildArtifactPath 'API_ROUTER_BUILD_SRC_EXE_PATH' $DefaultSrcE
 $DstExe = Resolve-BuildArtifactPath 'API_ROUTER_BUILD_DST_EXE_PATH' $DefaultDstExe
 $DstTestExe = Resolve-BuildArtifactPath 'API_ROUTER_BUILD_DST_TEST_EXE_PATH' $DefaultDstTestExe
 $StartFilePath = Resolve-BuildArtifactPath 'API_ROUTER_BUILD_START_FILE_PATH' $DstExe
+$SkipReleaseBuild = ([string][System.Environment]::GetEnvironmentVariable('API_ROUTER_BUILD_SKIP_RELEASE_BUILD')).Trim() -eq '1'
+$SkipPrereleaseChecks = ([string][System.Environment]::GetEnvironmentVariable('API_ROUTER_BUILD_SKIP_PRERELEASE_CHECKS')).Trim() -eq '1'
 $UsesArtifactPathOverrides = @(
   'API_ROUTER_BUILD_SRC_EXE_PATH',
   'API_ROUTER_BUILD_DST_EXE_PATH',
@@ -69,18 +71,14 @@ if ([string]::IsNullOrWhiteSpace($NodeCli)) {
   $NodeCli = $NodeCli.Trim()
 }
 
-$TypeScriptCli = Resolve-BuildToolPath `
-  -EnvVarName 'API_ROUTER_BUILD_TSC_PATH' `
-  -DefaultPath (Join-Path $RepoRoot 'node_modules\.bin\tsc.cmd') `
-  -Label 'TypeScript compiler'
-$ViteCli = Resolve-BuildToolPath `
-  -EnvVarName 'API_ROUTER_BUILD_VITE_PATH' `
-  -DefaultPath (Join-Path $RepoRoot 'node_modules\.bin\vite.cmd') `
-  -Label 'Vite CLI'
 $RunWithWinSdkCli = Resolve-BuildToolPath `
   -EnvVarName 'API_ROUTER_BUILD_RUN_WITH_WIN_SDK_PATH' `
   -DefaultPath (Join-Path $RepoRoot 'tools\windows\run-with-win-sdk.mjs') `
   -Label 'Windows SDK wrapper'
+$RootExeChecksCli = Resolve-BuildToolPath `
+  -EnvVarName 'API_ROUTER_BUILD_CHECKS_PATH' `
+  -DefaultPath (Join-Path $RepoRoot 'tools\build\run-root-exe-checks.mjs') `
+  -Label 'Root EXE checks entry'
 $TauriCliEntry = Resolve-BuildToolPath `
   -EnvVarName 'API_ROUTER_BUILD_TAURI_ENTRY_PATH' `
   -DefaultPath (Join-Path $RepoRoot 'node_modules\@tauri-apps\cli\tauri.js') `
@@ -256,6 +254,14 @@ function Enter-BuildStep {
   Update-RemoteUpdateTimelineStep -Phase $Phase -Label $Label -Detail "${Label}: $Detail"
 }
 
+function Get-StageDurationText([int64]$StartedAtUnixMs) {
+  $elapsedMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $StartedAtUnixMs
+  if ($elapsedMs -lt 0) {
+    $elapsedMs = 0
+  }
+  return ('{0:N1}s' -f ($elapsedMs / 1000.0))
+}
+
 function Is-ApiRouterRunning {
   try {
     $p = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path -ieq $DstExe) } | Select-Object -First 1
@@ -336,7 +342,24 @@ function Copy-WithRetry([string]$From, [string]$To) {
   }
 }
 
+function Test-ArtifactUpToDate([string]$From, [string]$To) {
+  if (-not (Test-Path -LiteralPath $From)) { return $false }
+  if (-not (Test-Path -LiteralPath $To)) { return $false }
+  try {
+    $fromItem = Get-Item -LiteralPath $From
+    $toItem = Get-Item -LiteralPath $To
+    return $toItem.LastWriteTimeUtc -ge $fromItem.LastWriteTimeUtc
+  } catch {
+    return $false
+  }
+}
+
 function Try-CopyOptionalArtifact([string]$From, [string]$To, [string]$Label) {
+  if (Test-ArtifactUpToDate $From $To) {
+    Write-Host "Up to date: $To"
+    Write-RemoteUpdateLog "$Label already up to date: $To"
+    return $true
+  }
   try {
     Copy-WithRetry $From $To
     Write-Host "Wrote: $To"
@@ -578,65 +601,49 @@ $script:CurrentBuildStepPhase = ''
 $script:CurrentBuildStepLabel = ''
 $script:CurrentBuildStepDetail = ''
 try {
-  # Split the frontend chain into explicit sub-steps so remote-update diagnostics can
-  # identify the exact failing command instead of collapsing everything into "npm run build".
-  Invoke-BuildStage `
-    -Phase 'check_gateway_provider_id' `
-    -Label 'Checking provider ids' `
-    -Detail 'Running npm run check:gateway-provider-id' `
-    -FilePath $NpmCli `
-    -ArgumentList @('run', 'check:gateway-provider-id') `
-    -FailureLabel 'gateway provider id check'
+  $buildStartedAtUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+  # Keep the outer checks explicit so remote-update diagnostics can point at the first
+  # failing gate, but let Tauri own the frontend build itself.
+  if ($SkipPrereleaseChecks) {
+    Enter-BuildStep -Phase 'skip_prerelease_checks' -Label 'Skipping pre-build checks' -Detail 'Using results from the checked-build parallel preflight stage'
+  } else {
+    Invoke-BuildStage `
+      -Phase 'run_prebuild_checks' `
+      -Label 'Running pre-build checks' `
+      -Detail 'Running the canonical root EXE checks entry' `
+      -FilePath $NodeCli `
+      -ArgumentList @($RootExeChecksCli) `
+      -FailureLabel 'root exe checks'
+  }
 
-  Invoke-BuildStage `
-    -Phase 'check_line_endings' `
-    -Label 'Checking line endings' `
-    -Detail 'Running npm run check:line-endings' `
-    -FilePath $NpmCli `
-    -ArgumentList @('run', 'check:line-endings') `
-    -FailureLabel 'line ending check'
-
-  Invoke-BuildStage `
-    -Phase 'check_web_codex_assets' `
-    -Label 'Checking web assets' `
-    -Detail 'Running npm run check:web-codex-assets' `
-    -FilePath $NpmCli `
-    -ArgumentList @('run', 'check:web-codex-assets') `
-    -FailureLabel 'web codex asset check'
-
-  Invoke-BuildStage `
-    -Phase 'build_typescript' `
-    -Label 'TypeScript compile' `
-    -Detail 'Running tsc' `
-    -FilePath $TypeScriptCli `
-    -ArgumentList @() `
-    -FailureLabel 'TypeScript compile'
-
-  Invoke-BuildStage `
-    -Phase 'build_vite' `
-    -Label 'Building frontend assets' `
-    -Detail 'Running vite build' `
-    -FilePath $ViteCli `
-    -ArgumentList @('build') `
-    -FailureLabel 'vite build'
-
-  # Build tauri app (produces src-tauri/target/release/api_router.exe).
-  Invoke-BuildStage `
-    -Phase 'build_release_binary' `
-    -Label 'Building release binary' `
-    -Detail 'Running direct Tauri build via Windows SDK wrapper' `
-    -FilePath $NodeCli `
-    -ArgumentList @($RunWithWinSdkCli, 'node', $TauriCliEntry, 'build', '--no-bundle') `
-    -FailureLabel 'tauri build'
+  if ($SkipReleaseBuild) {
+    Enter-BuildStep -Phase 'reuse_release_binary' -Label 'Reusing release binary' -Detail 'Skipping Tauri build and copying the existing src-tauri/target/release/api_router.exe'
+    if (-not (Test-Path $SrcExe)) { throw "Missing built exe: $SrcExe" }
+  } else {
+    # Build tauri app (produces src-tauri/target/release/api_router.exe).
+    Invoke-BuildStage `
+      -Phase 'build_release_binary' `
+      -Label 'Building release binary' `
+      -Detail 'Running direct Tauri build via Windows SDK wrapper' `
+      -FilePath $NodeCli `
+      -ArgumentList @($RunWithWinSdkCli, 'node', $TauriCliEntry, 'build', '--no-bundle') `
+      -FailureLabel 'tauri build'
+  }
+  Write-RemoteUpdateLog ("Primary build stages completed in {0}" -f (Get-StageDurationText $buildStartedAtUnixMs))
 
   if (-not $NoCopy) {
     Enter-BuildStep -Phase 'install_release_binary' -Label 'Installing EXE' -Detail 'Replacing repo root API Router executables'
     if (-not (Test-Path $SrcExe)) { throw "Missing built exe: $SrcExe" }
 
-    Stop-RunningApiRouter
-    Copy-WithRetry $SrcExe $DstExe
-    Write-Host "Wrote: $DstExe"
-    Write-RemoteUpdateLog "Installed canonical runtime executable: $DstExe"
+    if (Test-ArtifactUpToDate $SrcExe $DstExe) {
+      Write-Host "Up to date: $DstExe"
+      Write-RemoteUpdateLog "Canonical runtime executable already up to date: $DstExe"
+    } else {
+      Stop-RunningApiRouter
+      Copy-WithRetry $SrcExe $DstExe
+      Write-Host "Wrote: $DstExe"
+      Write-RemoteUpdateLog "Installed canonical runtime executable: $DstExe"
+    }
     # The canonical runtime is API Router.exe. The TEST copy is auxiliary and must not
     # turn a successful remote update into a failed one if that secondary artifact is locked.
     $null = Try-CopyOptionalArtifact $SrcExe $DstTestExe 'Optional TEST EXE'

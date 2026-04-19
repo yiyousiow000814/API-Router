@@ -1,5 +1,24 @@
-export function activeThreadHistoryTurnCount(state, threadId = state.activeThreadId) {
-  const normalizedThreadId = String(threadId || state.activeThreadId || "").trim();
+export function resolveCurrentThreadId(state = {}, fallback = "") {
+  const candidates = [
+    state?.activeThreadPendingTurnThreadId,
+    state?.activeThreadId,
+    state?.activeThreadOpenState?.threadId,
+    state?.activeThreadActivity?.threadId,
+    state?.activeThreadCommentaryCurrent?.threadId,
+    state?.activeThreadPlan?.threadId,
+    state?.activeThreadLiveAssistantThreadId,
+    state?.activeThreadHistoryThreadId,
+    fallback,
+  ];
+  for (const candidate of candidates) {
+    const normalized = String(candidate || "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+export function activeThreadHistoryTurnCount(state, threadId = resolveCurrentThreadId(state)) {
+  const normalizedThreadId = String(threadId || resolveCurrentThreadId(state) || "").trim();
   if (!normalizedThreadId) return 0;
   if (String(state.activeThreadHistoryThreadId || "").trim() !== normalizedThreadId) return 0;
   return Array.isArray(state.activeThreadHistoryTurns) ? state.activeThreadHistoryTurns.length : 0;

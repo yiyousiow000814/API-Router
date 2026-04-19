@@ -124,7 +124,6 @@ describe("turnActions", () => {
       activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
       activeThreadAttachTransport: "",
       activeThreadAttachPendingUntil: 0,
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -236,12 +235,19 @@ describe("turnActions", () => {
 
   it("executes slash commands through the slash endpoint instead of starting a turn", async () => {
     const calls = [];
+    const statusCalls = [];
+    const chatCalls = [];
     const state = {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
+      activeThreadPendingTurnRunning: true,
+      activeThreadOpenState: {
+        threadId: "thread-1",
+        loaded: false,
+        resumeRequired: true,
+      },
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
       chatShouldStickToBottom: false,
@@ -252,13 +258,17 @@ describe("turnActions", () => {
     };
     let cleared = 0;
     let hidden = 0;
+    const statusTrayCalls = [];
     const module = createTurnActionsModule({
       state,
       byId: () => ({ value: "" }),
       api: async (path, options = {}) => {
         calls.push({ path, method: options.method || "GET", body: options.body || null });
+        if (path === "/codex/threads/thread-1/resume") {
+          throw new Error("status should not force resume");
+        }
         if (path === "/codex/slash/execute") {
-          return { ok: true, method: "status/read", result: {} };
+          return { ok: true, method: "status/read", result: { sessionId: "thread-1" } };
         }
         throw new Error(`unexpected api call: ${path}`);
       },
@@ -270,10 +280,14 @@ describe("turnActions", () => {
       getPromptValue: () => "/status",
       getWorkspaceTarget: () => "windows",
       getStartCwdForWorkspace: () => "",
-      waitPendingThreadResume: async () => {},
+      waitPendingThreadResume: async () => {
+        throw new Error("status should not wait for resume");
+      },
       registerPendingThreadResume: () => {},
       updateHeaderUi: () => {},
-      addChat: () => {},
+      addChat: (role, text, options = {}) => {
+        chatCalls.push({ role, text, options });
+      },
       clearChatMessages: () => {},
       hideWelcomeCard: () => {},
       showWelcomeCard: () => {},
@@ -290,7 +304,12 @@ describe("turnActions", () => {
       refreshThreads: async () => {},
       refreshHosts: async () => {},
       refreshPending: async () => {},
-      setStatus: () => {},
+      setStatus: (message, isWarn = false) => {
+        statusCalls.push({ message, isWarn });
+      },
+      setThreadStatusCard(card) {
+        statusTrayCalls.push(card);
+      },
       setActiveThread: () => {},
       setMainTab: () => {},
       setMobileTab: () => {},
@@ -315,6 +334,18 @@ describe("turnActions", () => {
         },
       },
     ]);
+    expect(statusCalls).toContainEqual({
+      message: "Status opened.",
+      isWarn: false,
+    });
+    expect(statusTrayCalls).toEqual([
+      {
+        threadId: "thread-1",
+        sessionId: "thread-1",
+        title: "Status",
+      },
+    ]);
+    expect(chatCalls).toEqual([]);
     expect(cleared).toBe(1);
     expect(hidden).toBe(1);
   });
@@ -326,7 +357,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -401,7 +431,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnThreadId: "thread-1",
       activeThreadPendingTurnId: "turn-1",
@@ -478,7 +507,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       activeThreadHistoryReqSeq: 7,
@@ -567,7 +595,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnThreadId: "thread-1",
       activeThreadPendingTurnId: "turn-1",
@@ -584,7 +611,7 @@ describe("turnActions", () => {
       state,
       byId: () => ({ value: "" }),
       api: async (path, options = {}) => {
-        apiCalls.push({ path, method: options.method || "GET" });
+        apiCalls.push({ path, method: options.method || "GET", body: options.body || null });
         return { ok: true };
       },
       wsSend: () => false,
@@ -627,7 +654,11 @@ describe("turnActions", () => {
     await module.sendTurn();
 
     expect(apiCalls).toEqual([
-      { path: "/codex/turns/turn-1/interrupt", method: "POST" },
+      {
+        path: "/codex/turns/turn-1/interrupt",
+        method: "POST",
+        body: { threadId: "thread-1" },
+      },
     ]);
   });
 
@@ -637,7 +668,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "wsl2",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnThreadId: "thread-1",
       activeThreadPendingTurnId: "",
@@ -654,7 +684,7 @@ describe("turnActions", () => {
       state,
       byId: () => ({ value: "" }),
       api: async (path, options = {}) => {
-        apiCalls.push({ path, method: options.method || "GET" });
+        apiCalls.push({ path, method: options.method || "GET", body: options.body || null });
         return { ok: true };
       },
       wsSend: () => false,
@@ -697,7 +727,11 @@ describe("turnActions", () => {
     await module.sendTurn();
 
     expect(apiCalls).toEqual([
-      { path: "/codex/threads/thread-1/interrupt?workspace=wsl2", method: "POST" },
+      {
+        path: "/codex/threads/thread-1/interrupt?workspace=wsl2",
+        method: "POST",
+        body: null,
+      },
     ]);
   });
 
@@ -708,7 +742,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnThreadId: "thread-1",
       activeThreadPendingTurnId: "turn-1",
@@ -725,7 +758,7 @@ describe("turnActions", () => {
       state,
       byId: (id) => (id === "mobilePromptInput" ? input : { value: "" }),
       api: async (path, options = {}) => {
-        apiCalls.push({ path, method: options.method || "GET" });
+        apiCalls.push({ path, method: options.method || "GET", body: options.body || null });
         return { ok: true };
       },
       wsSend: () => false,
@@ -768,7 +801,11 @@ describe("turnActions", () => {
     await module.steerTurn();
 
     expect(apiCalls).toEqual([
-      { path: "/codex/turns/turn-1/interrupt", method: "POST" },
+      {
+        path: "/codex/turns/turn-1/interrupt",
+        method: "POST",
+        body: { threadId: "thread-1" },
+      },
     ]);
     expect(state.activeThreadQueuedTurns).toEqual([
       {
@@ -786,7 +823,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnThreadId: "thread-1",
       activeThreadPendingTurnId: "turn-1",
@@ -858,7 +894,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnThreadId: "thread-1",
       activeThreadPendingTurnId: "turn-1",
@@ -931,7 +966,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnThreadId: "thread-1",
       activeThreadPendingTurnId: "",
@@ -1006,7 +1040,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnRunning: false,
       activeThreadMessages: [],
@@ -1086,7 +1119,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnRunning: true,
       activeThreadMessages: [],
@@ -1174,7 +1206,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnRunning: true,
       activeThreadMessages: [],
@@ -1241,10 +1272,10 @@ describe("turnActions", () => {
     const calls = [];
     let releasePendingResume = null;
     const state = {
-      activeThreadId: "thread-1",
+      activeThreadId: "",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
-      activeThreadNeedsResume: true,
+      activeThreadOpenState: { threadId: "thread-1", threadStatusType: "notLoaded", resumeRequired: true, loaded: false },
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -1277,7 +1308,7 @@ describe("turnActions", () => {
         expect(threadId).toBe("thread-1");
         await new Promise((resolve) => {
           releasePendingResume = () => {
-            state.activeThreadNeedsResume = false;
+            state.activeThreadOpenState = { threadId: "thread-1", resumeRequired: false, loaded: true };
             resolve();
           };
         });
@@ -1335,7 +1366,7 @@ describe("turnActions", () => {
         },
       },
     ]);
-    expect(state.activeThreadNeedsResume).toBe(false);
+    expect(state.activeThreadOpenState?.resumeRequired).toBeFalsy();
   });
 
   it("does not create a thread before toggling local plan mode in a new chat", async () => {
@@ -1345,7 +1376,6 @@ describe("turnActions", () => {
       activeThreadId: "",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: false,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -1416,7 +1446,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -1502,7 +1531,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "wsl2",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -1584,7 +1612,6 @@ describe("turnActions", () => {
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
       activeThreadAttachTransport: "terminal-session",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -1658,7 +1685,6 @@ describe("turnActions", () => {
       activeThreadId: "",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -1739,7 +1765,6 @@ describe("turnActions", () => {
       activeThreadId: "",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: false,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -1846,7 +1871,7 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
-      activeThreadNeedsResume: true,
+      activeThreadOpenState: { threadId: "thread-1", threadStatusType: "notLoaded", resumeRequired: true, loaded: false },
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -1930,7 +1955,107 @@ describe("turnActions", () => {
         },
       },
     ]);
-    expect(state.activeThreadNeedsResume).toBe(false);
+    expect(state.activeThreadOpenState?.loaded).toBe(true);
+  });
+
+  it("resumes history-open threads before starting a turn even when they were only attached, not loaded", async () => {
+    const calls = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
+      activeThreadAttachTransport: "terminal-session",
+      activeThreadOpenState: {
+        threadId: "thread-1",
+        threadStatusType: "idle",
+        resumeRequired: false,
+        resumeReason: "history-complete",
+        loaded: false,
+      },
+      activeThreadStarted: true,
+      activeThreadMessages: [],
+      pendingThreadResumes: new Map(),
+      chatShouldStickToBottom: false,
+      selectedModel: "",
+      selectedReasoningEffort: "",
+      ws: null,
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => ({ value: "" }),
+      api: async (path, options = {}) => {
+        calls.push({ path, method: options.method || "GET", body: options.body || null });
+        if (String(path).startsWith("/codex/threads/thread-1/resume")) {
+          return { threadId: "thread-1" };
+        }
+        if (path === "/codex/turns/start") {
+          return { threadId: "thread-1" };
+        }
+        throw new Error(`unexpected api call: ${path}`);
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "hello",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: () => {},
+      setActiveThread: (id) => {
+        state.activeThreadId = id;
+      },
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await module.sendTurn();
+
+    expect(calls).toEqual([
+      {
+        path: "/codex/threads/thread-1/resume?workspace=windows&rolloutPath=C%3A%5Crepo%5C.codex%5Csessions%5Crollout.jsonl",
+        method: "POST",
+        body: null,
+      },
+      {
+        path: "/codex/turns/start",
+        method: "POST",
+        body: {
+          threadId: "thread-1",
+          prompt: "hello",
+          workspace: "windows",
+          cwd: undefined,
+          model: undefined,
+          reasoningEffort: undefined,
+          serviceTier: null,
+          approvalPolicy: "on-request",
+          sandboxPolicy: { type: "workspaceWrite" },
+        },
+      },
+    ]);
+    expect(state.activeThreadOpenState?.loaded).toBe(true);
   });
 
   it("shows the pending Working placeholder before waiting on thread resume state", async () => {
@@ -1944,7 +2069,7 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
-      activeThreadNeedsResume: true,
+      activeThreadOpenState: { threadId: "thread-1", threadStatusType: "notLoaded", resumeRequired: true, loaded: false },
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -2062,7 +2187,7 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
-      activeThreadNeedsResume: true,
+      activeThreadOpenState: { threadId: "thread-1", threadStatusType: "notLoaded", resumeRequired: true, loaded: false },
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -2151,7 +2276,6 @@ describe("turnActions", () => {
       activeThreadId: "",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: false,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -2242,7 +2366,6 @@ describe("turnActions", () => {
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
       activeThreadAttachTransport: "terminal-session",
-      activeThreadNeedsResume: false,
       activeThreadStarted: false,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -2304,7 +2427,7 @@ describe("turnActions", () => {
     expect(state.activeThreadId).toBe("");
     expect(state.activeThreadRolloutPath).toBe("");
     expect(state.activeThreadAttachTransport).toBe("");
-    expect(state.activeThreadNeedsResume).toBe(false);
+    expect(state.activeThreadOpenState?.loaded).toBe(false);
   });
 
   it("keeps rolloutPath when sendTurn creates a new thread", async () => {
@@ -2313,7 +2436,6 @@ describe("turnActions", () => {
       activeThreadId: "",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: false,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -2422,7 +2544,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -2547,7 +2668,7 @@ describe("turnActions", () => {
       state,
       byId: () => ({ value: "" }),
       api: async (path, options = {}) => {
-        calls.push({ path, method: options.method || "GET" });
+        calls.push({ path, method: options.method || "GET", body: options.body || null });
         return { ok: true };
       },
       wsSend: () => false,
@@ -2592,9 +2713,89 @@ describe("turnActions", () => {
 
     await module.interruptTurn();
 
-    expect(calls).toEqual([{ path: "/codex/turns/turn-1/interrupt", method: "POST" }]);
+    expect(calls).toEqual([
+      {
+        path: "/codex/turns/turn-1/interrupt",
+        method: "POST",
+        body: { threadId: "thread-1" },
+      },
+    ]);
     expect(syntheticClears).toEqual([{ threadId: "thread-1", items: [] }]);
     expect(state.suppressedIncompleteHistoryRuntimeByThreadId).toEqual({ "thread-1": true });
+  });
+
+  it("interrupts by the resolved open-state thread when activeThreadId is blank", async () => {
+    const calls = [];
+    const state = {
+      activeThreadId: "",
+      activeThreadWorkspace: "wsl2",
+      activeThreadOpenState: {
+        threadId: "thread-1",
+        threadStatusType: "notLoaded",
+        historyThreadId: "",
+        historyStatusType: "",
+        historyIncomplete: false,
+        pendingTurnRunning: true,
+        pendingThreadId: "",
+        loaded: false,
+        resumeRequired: true,
+        resumeReason: "thread-not-loaded",
+      },
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: true,
+      suppressedIncompleteHistoryRuntimeByThreadId: {},
+      threadAttachTransportById: new Map(),
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => ({ value: "" }),
+      api: async (path, options = {}) => {
+        calls.push({ path, method: options.method || "GET" });
+        return { ok: true };
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "",
+      getWorkspaceTarget: () => "wsl2",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: () => {},
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      updateMobileComposerState: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await module.interruptTurn();
+
+    expect(calls).toEqual([
+      { path: "/codex/threads/thread-1/interrupt?workspace=wsl2", method: "POST" },
+    ]);
   });
 
   it("interrupts terminal-session threads by thread even when history already assigned a turn id", async () => {
@@ -2995,7 +3196,6 @@ describe("turnActions", () => {
     const state = {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),

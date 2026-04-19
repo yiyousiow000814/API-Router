@@ -58,6 +58,151 @@ describe("wsClient", () => {
     expect(resolveApiErrorMessage({}, 404)).toBe("HTTP 404");
   });
 
+  it("records codex api failures and missing-thread details", async () => {
+    const transportEvents = [];
+    const module = createWsClientModule({
+      state: {
+        token: "",
+        ws: null,
+        wsReqHandlers: new Map(),
+        pendingApprovals: [],
+        pendingUserInputs: [],
+        wsLastEventId: 0,
+        wsRecentEventIds: new Set(),
+        wsSubscribedEvents: false,
+      },
+      setStatus() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh() {},
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      recordWebTransportEvent(kind, detail) {
+        transportEvents.push({ kind, detail });
+      },
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "0"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: class {},
+      fetchRef: async () => ({
+        ok: false,
+        status: 502,
+        json: async () => ({
+          error: {
+            detail: "thread not found: thread-1",
+          },
+        }),
+      }),
+    });
+
+    await expect(
+      module.api("/codex/turns/start", {
+        method: "POST",
+        body: { threadId: "thread-1" },
+      })
+    ).rejects.toThrow("thread not found: thread-1");
+    expect(transportEvents).toEqual([
+      {
+        kind: "api_request_failed",
+        detail: "POST /codex/turns/start -> HTTP 502: thread not found: thread-1",
+      },
+      {
+        kind: "thread_missing_observed",
+        detail: "thread not found: thread-1",
+      },
+    ]);
+  });
+
+  it("records network-level codex api failures", async () => {
+    const transportEvents = [];
+    const module = createWsClientModule({
+      state: {
+        token: "",
+        ws: null,
+        wsReqHandlers: new Map(),
+        pendingApprovals: [],
+        pendingUserInputs: [],
+        wsLastEventId: 0,
+        wsRecentEventIds: new Set(),
+        wsSubscribedEvents: false,
+      },
+      setStatus() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh() {},
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      recordWebTransportEvent(kind, detail) {
+        transportEvents.push({ kind, detail });
+      },
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "0"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: class {},
+      fetchRef: async () => {
+        throw new Error("gateway offline");
+      },
+    });
+
+    await expect(module.api("/codex/threads")).rejects.toThrow("gateway offline");
+    expect(transportEvents).toEqual([
+      {
+        kind: "api_request_failed",
+        detail: "GET /codex/threads -> network error: gateway offline",
+      },
+    ]);
+  });
+
   it("preserves conversation id on ui assistant delta notifications", () => {
     const notifications = [];
     const statuses = [];
@@ -691,6 +836,366 @@ describe("wsClient", () => {
       type: "subscribe.events",
       payload: { events: true, lastEventId: 9, workspace: "windows" },
     });
+  });
+
+  it("invalidates the active thread open state after reconnecting websocket open", () => {
+    class FakeWebSocket {
+      static OPEN = 1;
+      static CONNECTING = 0;
+      static instances = [];
+      constructor(url) {
+        this.url = url;
+        this.readyState = FakeWebSocket.CONNECTING;
+        FakeWebSocket.instances.push(this);
+      }
+      send() {}
+    }
+    const state = {
+      token: "",
+      ws: null,
+      wsPingTimer: null,
+      wsReconnectTimer: null,
+      wsReconnectAttempt: 2,
+      wsConnectSeq: 0,
+      wsReqHandlers: new Map(),
+      pendingApprovals: [],
+      pendingUserInputs: [],
+      wsLastEventId: 0,
+      wsRecentEventIds: new Set(),
+      wsSubscribedEvents: false,
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadOpenState: {
+        threadId: "thread-1",
+        threadStatusType: "idle",
+        historyThreadId: "",
+        historyStatusType: "",
+        historyIncomplete: false,
+        pendingTurnRunning: false,
+        pendingThreadId: "",
+        loaded: true,
+        resumeRequired: false,
+        resumeReason: "loaded",
+      },
+      workspaceTarget: "windows",
+      liveDebugEvents: [],
+    };
+    const module = createWsClientModule({
+      state,
+      setStatus() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh() {},
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "0"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: FakeWebSocket,
+      fetchRef: async () => ({ ok: true, json: async () => ({}) }),
+      setTimeoutRef(callback, delay) {
+        return { callback, delay };
+      },
+      clearTimeoutRef() {},
+      setIntervalRef() {
+        return 1;
+      },
+      clearIntervalRef() {},
+      WS_RECONNECT_BASE_MS: 25,
+      WS_RECONNECT_MAX_MS: 25,
+    });
+
+    module.connectWs();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    FakeWebSocket.instances[0].readyState = FakeWebSocket.OPEN;
+    FakeWebSocket.instances[0].onopen();
+
+    expect(state.wsReconnectAttempt).toBe(0);
+    expect(state.activeThreadOpenState).toMatchObject({
+      threadId: "thread-1",
+      threadStatusType: "notloaded",
+      loaded: false,
+      resumeRequired: true,
+      resumeReason: "thread-not-loaded",
+    });
+  });
+
+  it("surfaces reconnecting activity and errors after reconnect retries are exhausted", () => {
+    const activities = [];
+    const statuses = [];
+    const timeouts = [];
+    class FakeWebSocket {
+      static OPEN = 1;
+      static CONNECTING = 0;
+      static instances = [];
+      constructor(url) {
+        this.url = url;
+        this.readyState = FakeWebSocket.CONNECTING;
+        FakeWebSocket.instances.push(this);
+      }
+      send() {}
+    }
+    const state = {
+      token: "",
+      ws: null,
+      wsPingTimer: null,
+      wsReconnectTimer: null,
+      wsReconnectAttempt: 0,
+      wsConnectSeq: 0,
+      wsReqHandlers: new Map(),
+      pendingApprovals: [],
+      pendingUserInputs: [],
+      wsLastEventId: 0,
+      wsRecentEventIds: new Set(),
+      wsSubscribedEvents: false,
+      activeThreadId: "",
+      activeThreadWorkspace: "windows",
+      activeThreadOpenState: {
+        threadId: "thread-1",
+        threadStatusType: "idle",
+        historyThreadId: "",
+        historyStatusType: "",
+        historyIncomplete: false,
+        pendingTurnRunning: false,
+        pendingThreadId: "",
+        loaded: true,
+        resumeRequired: false,
+        resumeReason: "loaded",
+      },
+      workspaceTarget: "windows",
+      liveDebugEvents: [],
+    };
+    const module = createWsClientModule({
+      state,
+      setStatus(message, isWarn) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity(payload) {
+        activities.push(payload);
+      },
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh() {},
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "0"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: FakeWebSocket,
+      fetchRef: async () => ({ ok: true, json: async () => ({}) }),
+      setTimeoutRef(callback, delay) {
+        timeouts.push({ callback, delay });
+        return timeouts.length;
+      },
+      clearTimeoutRef() {},
+      setIntervalRef() {
+        return 1;
+      },
+      clearIntervalRef() {},
+      WS_RECONNECT_BASE_MS: 25,
+      WS_RECONNECT_MAX_MS: 25,
+      WS_RECONNECT_MAX_ATTEMPTS: 1,
+    });
+
+    module.connectWs();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    FakeWebSocket.instances[0].readyState = FakeWebSocket.OPEN;
+    FakeWebSocket.instances[0].readyState = 3;
+    FakeWebSocket.instances[0].onclose({ code: 1006, reason: "server restart", wasClean: false });
+
+    expect(statuses).toEqual(
+      expect.arrayContaining([
+        { message: "Reconnecting... 1/1", isWarn: true },
+      ])
+    );
+    expect(activities).toEqual(
+      expect.arrayContaining([
+        { threadId: "thread-1", title: "Reconnecting", detail: "1/1", tone: "running" },
+      ])
+    );
+
+    expect(timeouts).toHaveLength(1);
+    timeouts[0].callback();
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    FakeWebSocket.instances[1].readyState = FakeWebSocket.OPEN;
+    FakeWebSocket.instances[1].readyState = 3;
+    FakeWebSocket.instances[1].onclose({ code: 1006, reason: "server restart", wasClean: false });
+
+    expect(statuses).toEqual(
+      expect.arrayContaining([
+        { message: "Live updates disconnected after 1 retry.", isWarn: true },
+      ])
+    );
+    expect(activities).toEqual(
+      expect.arrayContaining([
+        {
+          threadId: "thread-1",
+          title: "Error",
+          detail: "Live updates disconnected after 1 retry.",
+          tone: "error",
+        },
+      ])
+    );
+  });
+
+  it("records structured websocket close detail for diagnostics", () => {
+    const recorded = [];
+    class FakeWebSocket {
+      static OPEN = 1;
+      static CONNECTING = 0;
+      static instances = [];
+      constructor() {
+        this.readyState = FakeWebSocket.CONNECTING;
+        FakeWebSocket.instances.push(this);
+      }
+      send() {}
+    }
+    const state = {
+      token: "",
+      ws: null,
+      wsPingTimer: null,
+      wsReconnectTimer: null,
+      wsReconnectAttempt: 0,
+      wsConnectSeq: 0,
+      wsReqHandlers: new Map(),
+      pendingApprovals: [],
+      pendingUserInputs: [],
+      wsLastEventId: 0,
+      wsRecentEventIds: new Set(),
+      wsSubscribedEvents: false,
+      activeThreadId: "",
+      activeThreadWorkspace: "windows",
+      activeThreadOpenState: {
+        threadId: "thread-1",
+        threadStatusType: "idle",
+        historyThreadId: "",
+        historyStatusType: "",
+        historyIncomplete: false,
+        pendingTurnRunning: false,
+        pendingThreadId: "",
+        loaded: true,
+        resumeRequired: false,
+        resumeReason: "loaded",
+      },
+      workspaceTarget: "windows",
+      liveDebugEvents: [],
+    };
+    const module = createWsClientModule({
+      state,
+      setStatus() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh() {},
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      recordWebTransportEvent(eventType, detail) {
+        recorded.push({ eventType, detail });
+      },
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "0"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: FakeWebSocket,
+      fetchRef: async () => ({ ok: true, json: async () => ({}) }),
+      setTimeoutRef(callback, delay) {
+        return 1;
+      },
+      clearTimeoutRef() {},
+      setIntervalRef() {
+        return 1;
+      },
+      clearIntervalRef() {},
+    });
+
+    module.connectWs();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    FakeWebSocket.instances[0].readyState = FakeWebSocket.OPEN;
+    FakeWebSocket.instances[0].onclose({ code: 1006, reason: "server restart", wasClean: false });
+
+    expect(recorded).toEqual([
+      {
+        eventType: "ws_close_observed",
+        detail: JSON.stringify({ code: 1006, reason: "server restart", wasClean: false }),
+      },
+      {
+        eventType: "ws_reconnect_scheduled",
+        detail: "server restart",
+      },
+    ]);
   });
 
   it("sends heartbeat pings while websocket stays open", () => {

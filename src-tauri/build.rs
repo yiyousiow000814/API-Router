@@ -85,6 +85,30 @@ fn discover_windows_sdk_bin_dirs(kits_bin: &Path) -> Vec<PathBuf> {
 #[cfg(windows)]
 fn resolve_windows_sdk_toolchain() -> Result<WindowsSdkToolchain, String> {
     let mut checked_rc_paths = Vec::new();
+    if let Ok(rc_env) = env::var("RC") {
+        let rc_path = PathBuf::from(rc_env.trim());
+        if rc_path.is_file() {
+            let bin_dir = rc_path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| rc_path.clone());
+            let mt_path = env::var("MT")
+                .ok()
+                .map(|value| PathBuf::from(value.trim()))
+                .filter(|path| path.is_file())
+                .or_else(|| {
+                    let candidate = bin_dir.join("mt.exe");
+                    candidate.is_file().then_some(candidate)
+                });
+            return Ok(WindowsSdkToolchain {
+                rc_path,
+                mt_path,
+                bin_dir,
+                checked_rc_paths,
+            });
+        }
+        checked_rc_paths.push(rc_path);
+    }
     if let (Ok(sdk_dir), Ok(sdk_version)) =
         (env::var("WindowsSdkDir"), env::var("WindowsSDKVersion"))
     {

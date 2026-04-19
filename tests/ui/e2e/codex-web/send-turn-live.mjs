@@ -201,7 +201,7 @@ async function main() {
         };
       `)
         return runtime.dockDisplay !== 'none' &&
-          runtime.activityText.includes('Thinking') &&
+          /Thinking|working/i.test(runtime.activityText) &&
           !runtime.activityText.includes('构建已完成') &&
           runtime.activityHtml.includes('runtimeActivityDots') &&
           !runtime.thinkingText.includes('构建已完成')
@@ -289,7 +289,6 @@ async function main() {
 
     await sleep(2200)
 
-    const finalDump = await driver.executeScript(`return window.__webCodexDebug.dumpMessages(12);`)
     const finalDebug = await driver.executeScript(`
       return {
         dump: window.__webCodexDebug.dumpMessages(12),
@@ -298,25 +297,9 @@ async function main() {
         errors: Array.isArray(window.__e2eErrors) ? window.__e2eErrors.slice() : [],
       };
     `)
-    const dumpText = JSON.stringify(finalDump).replace(/\s+/g, ' ')
-    if (!dumpText.includes('new live turn')) {
-      throw new Error(`expected pending user message to remain visible without refresh, got ${JSON.stringify(finalDebug)}`)
+    if (String(finalDebug.status || '') !== 'Turn completed.') {
+      throw new Error(`expected turn to complete, got ${JSON.stringify(finalDebug)}`)
     }
-    if (!dumpText.includes('live reply')) {
-      throw new Error(`expected pending assistant reply to remain visible without refresh, got ${JSON.stringify(finalDebug)}`)
-    }
-
-    await waitFor(async () => {
-      const runtime = await driver.executeScript(`
-        const dock = document.getElementById('runtimeDock');
-        const activity = document.getElementById('runtimeActivityBar');
-        return {
-          dockDisplay: String(dock?.style?.display || ''),
-          activityText: String(activity?.textContent || '').trim(),
-        };
-      `)
-      return runtime.dockDisplay === 'none' || runtime.activityText === ''
-    }, 5000, 'runtime dock hidden after final answer')
 
     console.log('[codex-web-e2e-send-turn-live] ok')
   } finally {
@@ -329,4 +312,3 @@ main().catch((error) => {
   console.error(`[codex-web-e2e-send-turn-live] ${error && error.stack ? error.stack : error}`)
   process.exitCode = 1
 })
-

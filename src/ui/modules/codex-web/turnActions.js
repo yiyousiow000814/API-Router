@@ -4,12 +4,17 @@ import {
   primePendingTurnRuntime as primePendingTurnRuntimeState,
   resetPendingTurnRuntime,
   resetTurnPresentationState,
+  resolveCurrentThreadId,
   syncPendingTurnRuntime,
 } from "./runtimeState.js";
 import {
   clearProposedPlanConfirmation,
   getProposedPlanConfirmation,
 } from "./proposedPlan.js";
+import {
+  resolveThreadOpenState,
+  setThreadOpenState,
+} from "./threadOpenState.js";
 
 export function buildTurnPayload({
   activeThreadId,
@@ -100,6 +105,14 @@ function readSlashResultThreadId(value, fallback = "") {
     value?.result?.thread_id ||
     value?.result?.id ||
     value?.result?.thread?.id ||
+    fallback
+  ).trim();
+}
+
+function readSlashStatusSessionId(value, fallback = "") {
+  return String(
+    value?.sessionId ||
+    value?.session_id ||
     fallback
   ).trim();
 }
@@ -208,6 +221,7 @@ export function createTurnActionsModule(deps) {
     clearTransientToolMessages = () => {},
     clearTransientThinkingMessages = () => {},
     hideSlashCommandMenu = () => {},
+    setThreadStatusCard = () => {},
     blockInSandbox,
     localStorageRef,
     FAST_MODE_DEVICE_DEFAULT_KEY = "web_codex_fast_mode_device_default_v1",
@@ -215,6 +229,16 @@ export function createTurnActionsModule(deps) {
     TextDecoderRef = TextDecoder,
   } = deps;
   const storage = localStorageRef ?? globalThis.localStorage ?? { setItem() {} };
+  function setActiveThreadOpenState(nextState, options = {}) {
+    return setThreadOpenState(state, nextState, options);
+  }
+
+  function activeThreadRequiresResume() {
+    const openState = state.activeThreadOpenState;
+    if (openState && openState.loaded !== true) return true;
+    return (openState || resolveThreadOpenState()).resumeRequired === true;
+  }
+
   function shouldMirrorPendingResolutionToChat() {
     return !(globalThis.window?.__webCodexDebug?.isPreviewPendingActive?.() === true);
   }
@@ -246,7 +270,7 @@ export function createTurnActionsModule(deps) {
   }
 
   function resolveManagedTerminalCwd(workspace = getWorkspaceTarget()) {
-    const activeThreadId = String(state.activeThreadId || "").trim();
+    const activeThreadId = resolveCurrentThreadId(state);
     const workspaceKey = String(workspace || "").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
     const threadItem = Array.isArray(state.threadItemsAll)
       ? state.threadItemsAll.find((item) => String(item?.id || item?.threadId || "").trim() === activeThreadId)
@@ -258,7 +282,7 @@ export function createTurnActionsModule(deps) {
 
   async function openManagedTerminalSurface(options = {}) {
     if (blockInSandbox("open linked terminal")) return null;
-    const threadId = String(options.threadId || state.activeThreadId || "").trim();
+    const threadId = String(options.threadId || resolveCurrentThreadId(state) || "").trim();
     if (!threadId) throw new Error("No active chat to link.");
     if (activeThreadAttachPending(state)) return null;
     if (String(state.activeThreadAttachTransport || "").trim().toLowerCase() === "terminal-session") {
@@ -320,7 +344,7 @@ export function createTurnActionsModule(deps) {
   }
 
   function resetLiveTurnStateForNewTurn() {
-    const threadId = String(state.activeThreadId || state.activeThreadPendingTurnThreadId || "").trim();
+    const threadId = resolveCurrentThreadId(state);
     state.activeThreadHistoryReqSeq = Math.max(0, Number(state.activeThreadHistoryReqSeq || 0)) + 1;
     resetTurnPresentationState(state, { bumpLiveEpoch: true });
     if (threadId && state.suppressedIncompleteHistoryRuntimeByThreadId) {
@@ -335,7 +359,7 @@ export function createTurnActionsModule(deps) {
   }
 
   function clearPlanTurnArtifacts(threadId, options = {}) {
-    const normalizedThreadId = String(threadId || state.activeThreadPendingTurnThreadId || state.activeThreadId || "").trim();
+    const normalizedThreadId = String(threadId || resolveCurrentThreadId(state) || "").trim();
     const liveAssistantThreadId = String(state.activeThreadLiveAssistantThreadId || "").trim();
     const liveAssistantIndex = Number(state.activeThreadLiveAssistantIndex);
     const liveAssistantMsgNode = state.activeThreadLiveAssistantMsgNode;
@@ -390,7 +414,7 @@ export function createTurnActionsModule(deps) {
 
   function rollbackOptimisticPendingTurn(prompt = "", options = {}) {
     const normalizedPrompt = String(prompt || "");
-    clearPendingTurnRuntimePlaceholder(state.activeThreadPendingTurnThreadId || state.activeThreadId, {
+    clearPendingTurnRuntimePlaceholder(resolveCurrentThreadId(state), {
       force: true,
     });
     if (Array.isArray(state.activeThreadMessages) && state.activeThreadMessages.length > 0) {
@@ -506,11 +530,9 @@ export function createTurnActionsModule(deps) {
     return restoreQueuedTurnToComposer(queued);
   }
 
-  function createQueuedTurn(prompt, mode = "queue", threadId = state.activeThreadId) {
+  function createQueuedTurn(prompt, mode = "queue", threadId = resolveCurrentThreadId(state)) {
     const normalizedPrompt = String(prompt || "").trim();
-    const normalizedThreadId = String(
-      threadId || state.activeThreadId || state.activeThreadPendingTurnThreadId || ""
-    ).trim();
+    const normalizedThreadId = String(threadId || resolveCurrentThreadId(state) || "").trim();
     if (!normalizedPrompt || !normalizedThreadId) return null;
     return {
       id: `queued_${Date.now()}_${Math.floor(Math.random() * 1e6)}`,
@@ -520,7 +542,7 @@ export function createTurnActionsModule(deps) {
     };
   }
 
-  function queuePendingTurn(prompt, mode = "queue", threadId = state.activeThreadId) {
+  function queuePendingTurn(prompt, mode = "queue", threadId = resolveCurrentThreadId(state)) {
     const nextQueuedTurn = createQueuedTurn(prompt, mode, threadId);
     if (!nextQueuedTurn) return false;
     const nextQueue = readQueuedTurns();
@@ -615,7 +637,7 @@ export function createTurnActionsModule(deps) {
   }
 
   function findNextQueuedTurnIndex(threadId = "", options = {}) {
-    const targetThreadId = String(threadId || state.activeThreadId || "").trim();
+    const targetThreadId = String(threadId || resolveCurrentThreadId(state) || "").trim();
     if (!targetThreadId) return -1;
     const skipEditingId =
       options.skipEditing !== false ? String(state.queuedTurnEditingId || "").trim() : "";
@@ -630,7 +652,7 @@ export function createTurnActionsModule(deps) {
   }
 
   async function interruptTurn(options = {}) {
-    const threadId = String(state.activeThreadPendingTurnThreadId || state.activeThreadId || "").trim();
+    const threadId = resolveCurrentThreadId(state);
     const turnId = String(state.activeThreadPendingTurnId || "").trim();
     if (!threadId) throw new Error("No running turn to stop.");
     const workspace = String(state.activeThreadWorkspace || state.workspaceTarget || "").trim();
@@ -663,6 +685,9 @@ export function createTurnActionsModule(deps) {
         )
       : await api(`/codex/turns/${encodeURIComponent(turnId)}/interrupt`, {
           method: "POST",
+          body: {
+            threadId,
+          },
         });
     clearPlanTurnArtifacts(threadId, { bumpLiveEpoch: true });
     await refreshPending().catch(() => {});
@@ -685,7 +710,7 @@ export function createTurnActionsModule(deps) {
     if (state.activeThreadPendingTurnRunning !== true) {
       return sendTurn();
     }
-    const threadId = String(state.activeThreadPendingTurnThreadId || state.activeThreadId || "").trim();
+    const threadId = resolveCurrentThreadId(state);
     if (!threadId) throw new Error("No active thread to steer.");
     const input = byId("mobilePromptInput");
     queuePendingTurn(prompt, "steer", threadId);
@@ -710,7 +735,7 @@ export function createTurnActionsModule(deps) {
     if (state.activeThreadPendingTurnRunning !== true) {
       return sendTurn();
     }
-    const threadId = String(state.activeThreadPendingTurnThreadId || state.activeThreadId || "").trim();
+    const threadId = resolveCurrentThreadId(state);
     if (!threadId) throw new Error("No active thread to queue.");
     queuePendingTurn(prompt, "queue", threadId);
     setStatus("Queued follow-up after the current turn.");
@@ -721,14 +746,16 @@ export function createTurnActionsModule(deps) {
     if (!prompt) return interruptTurn();
     if (isSlashCommandPrompt(prompt)) {
       if (state.activeThreadPendingTurnRunning === true) {
-        throw new Error("Wait for the current turn to finish before using slash commands.");
+        if (String(prompt || "").trim() !== "/status") {
+          throw new Error("Wait for the current turn to finish before using slash commands.");
+        }
       }
       return sendTurn();
     }
     if (state.activeThreadPendingTurnRunning !== true) {
       return sendTurn();
     }
-    const threadId = String(state.activeThreadPendingTurnThreadId || state.activeThreadId || "").trim();
+    const threadId = resolveCurrentThreadId(state);
     if (!threadId) throw new Error("No active thread to send now.");
     queuePendingTurn(prompt, "send-now", threadId);
     await interruptTurn({ setStatus: false });
@@ -749,7 +776,7 @@ export function createTurnActionsModule(deps) {
     const prompt = String(queued.prompt || "").trim();
     if (!prompt) return false;
     if (state.activeThreadPendingTurnRunning === true) {
-      const threadId = String(queued.threadId || state.activeThreadId || "").trim();
+      const threadId = String(queued.threadId || resolveCurrentThreadId(state) || "").trim();
       if (!threadId) throw new Error("No active thread to send now.");
       const queue = readQueuedTurns();
       queue.unshift({
@@ -768,7 +795,7 @@ export function createTurnActionsModule(deps) {
   }
 
   async function flushQueuedTurn(threadId = "") {
-    const targetThreadId = String(threadId || state.activeThreadId || "").trim();
+    const targetThreadId = String(threadId || resolveCurrentThreadId(state) || "").trim();
     const queuedIndex = findNextQueuedTurnIndex(targetThreadId);
     if (queuedIndex < 0) return false;
     const queue = readQueuedTurns();
@@ -848,7 +875,7 @@ export function createTurnActionsModule(deps) {
     state.planModeEnabled = false;
     state.activeThreadRolloutPath = "";
     state.activeThreadAttachTransport = "";
-    state.activeThreadNeedsResume = false;
+    setActiveThreadOpenState(resolveThreadOpenState());
     state.activeThreadTokenUsage = null;
     state.activeThreadPendingTurnId = "";
     writeQueuedTurns([]);
@@ -879,7 +906,39 @@ export function createTurnActionsModule(deps) {
         result: { mode: state.planModeEnabled === true ? "plan" : "default" },
       };
     }
-    let activeThreadId = String(state.activeThreadId || "").trim();
+    if (trimmed === "/status") {
+      const sessionThreadId = resolveCurrentThreadId(state);
+      const response = await api("/codex/slash/execute", {
+        method: "POST",
+        body: {
+          command: trimmed,
+          threadId: sessionThreadId || undefined,
+          workspace,
+          serviceTier: state.fastModeEnabled === true ? "fast" : null,
+          ...(() => {
+            const permission = buildPermissionRuntimeOptions(state.permissionPresetByWorkspace?.[workspace]);
+            return {
+              approvalPolicy: permission.approvalPolicy,
+              sandbox: permission.sandbox,
+            };
+          })(),
+        },
+      });
+      const result = response?.result || null;
+      const sessionId = readSlashStatusSessionId(result, sessionThreadId);
+      const statusSessionId = sessionId || sessionThreadId || "";
+      if (options.clearPrompt !== false) clearPromptValue();
+      if (options.hideMenu !== false) hideSlashCommandMenu();
+      if (options.switchToChat !== false) setMainTab("chat");
+      if (options.setStatus !== false) setStatus("Status opened.");
+      setThreadStatusCard({
+        threadId: sessionThreadId || activeThreadId || "",
+        sessionId: statusSessionId,
+        title: "Status",
+      });
+      return response;
+    }
+    let activeThreadId = resolveCurrentThreadId(state);
     if (!activeThreadId && requiresActiveThreadForSlashCommand(trimmed)) {
       const created = await api("/codex/threads", {
         method: "POST",
@@ -902,15 +961,20 @@ export function createTurnActionsModule(deps) {
         state.activeThreadWorkspace = workspace;
         state.activeThreadRolloutPath = createdRolloutPath;
         state.activeThreadTokenUsage = null;
-        state.activeThreadNeedsResume = attached;
+        setActiveThreadOpenState(
+          resolveThreadOpenState({
+            threadId: activeThreadId,
+            loaded: true,
+          })
+        );
         state.activeThreadAttachTransport = attachTransport;
         setThreadAttachTransport(state, activeThreadId, attachTransport);
       }
       refreshRuntimeForWorkspace(workspace);
     }
     await waitPendingThreadResume(activeThreadId);
-    activeThreadId = String(state.activeThreadId || activeThreadId || "").trim();
-    if (activeThreadId && state.activeThreadNeedsResume) {
+    activeThreadId = String(resolveCurrentThreadId(state, activeThreadId) || "").trim();
+    if (activeThreadId && activeThreadRequiresResume()) {
       const resumePromise = api(
         buildThreadResumeUrl(activeThreadId, {
           workspace: state.activeThreadWorkspace || workspace,
@@ -926,7 +990,12 @@ export function createTurnActionsModule(deps) {
         resumed?.threadId || resumed?.thread_id || resumed?.id || resumed?.thread?.id || activeThreadId
       ).trim();
       if (activeThreadId) setActiveThread(activeThreadId);
-      state.activeThreadNeedsResume = false;
+        setActiveThreadOpenState(
+          resolveThreadOpenState({
+            threadId: activeThreadId,
+            loaded: true,
+          })
+        );
       refreshRuntimeForWorkspace(state.activeThreadWorkspace || workspace);
     }
     const response = await api("/codex/slash/execute", {
@@ -956,12 +1025,24 @@ export function createTurnActionsModule(deps) {
       ""
     ).trim();
     if (nextThreadId && nextThreadId !== state.activeThreadId) setActiveThread(nextThreadId);
-    if (nextThreadId) state.activeThreadNeedsResume = false;
+    if (nextThreadId) {
+        setActiveThreadOpenState(
+          resolveThreadOpenState({
+            threadId: nextThreadId,
+            loaded: true,
+          })
+        );
+    }
     if (nextRolloutPath) state.activeThreadRolloutPath = nextRolloutPath;
     if (method === "thread/start") {
       const attachTransport = attachedLiveThreadTransport(result);
       state.activeThreadStarted = false;
-      state.activeThreadNeedsResume = attachedLiveThread(result);
+        setActiveThreadOpenState(
+          resolveThreadOpenState({
+            threadId: nextThreadId,
+            loaded: true,
+          })
+        );
       state.activeThreadAttachTransport = attachTransport;
       setThreadAttachTransport(state, nextThreadId, attachTransport);
       state.activeThreadWorkspace = workspace;
@@ -1021,23 +1102,26 @@ export function createTurnActionsModule(deps) {
     const startCwd = getStartCwdForWorkspace(workspace);
     if (state.activeThreadPendingTurnRunning === true && options.fromQueuedTurn !== true) {
       if (isSlashCommandPrompt(prompt)) {
-        throw new Error("Wait for the current turn to finish before using slash commands.");
-      }
-      const queued = queuePendingTurn(prompt, "queue");
-      if (queued) {
-        setStatus("Queued after the current turn.");
-        return;
+        if (String(prompt || "").trim() !== "/status") {
+          throw new Error("Wait for the current turn to finish before using slash commands.");
+        }
+      } else {
+        const queued = queuePendingTurn(prompt, "queue");
+        if (queued) {
+          setStatus("Queued after the current turn.");
+          return;
+        }
       }
     }
     if (isSlashCommandPrompt(prompt)) {
       await executeSlashCommand(prompt);
       return;
     }
-    let activeThreadId = String(state.activeThreadId || "").trim();
+    let activeThreadId = resolveCurrentThreadId(state);
     const primedPendingRuntime = primePendingTurnRuntime(activeThreadId, prompt);
     try {
-      await waitPendingThreadResume(state.activeThreadId);
-      activeThreadId = String(state.activeThreadId || "").trim();
+      await waitPendingThreadResume(activeThreadId);
+      activeThreadId = String(resolveCurrentThreadId(state, activeThreadId) || "").trim();
       if (!activeThreadId) {
         const created = await api("/codex/threads", {
           method: "POST",
@@ -1058,11 +1142,16 @@ export function createTurnActionsModule(deps) {
         const attachTransport = attachedLiveThreadTransport(created);
         state.activeThreadWorkspace = workspace;
         state.activeThreadRolloutPath = createdRolloutPath;
-        state.activeThreadNeedsResume = attached;
+        setActiveThreadOpenState(
+          resolveThreadOpenState({
+            threadId: activeThreadId,
+            loaded: true,
+          })
+        );
         state.activeThreadAttachTransport = attachTransport;
         setThreadAttachTransport(state, activeThreadId, attachTransport);
         refreshRuntimeForWorkspace(workspace);
-      } else if (state.activeThreadNeedsResume) {
+      } else if (activeThreadRequiresResume()) {
         const resumePromise = api(
           buildThreadResumeUrl(activeThreadId, {
             workspace: state.activeThreadWorkspace || workspace,
@@ -1080,7 +1169,12 @@ export function createTurnActionsModule(deps) {
         if (!resumedThreadId) throw new Error("turn resume failed: missing threadId");
         activeThreadId = resumedThreadId;
         if (state.activeThreadId !== resumedThreadId) setActiveThread(resumedThreadId);
-        state.activeThreadNeedsResume = false;
+        setActiveThreadOpenState(
+          resolveThreadOpenState({
+            threadId: resumedThreadId,
+            loaded: true,
+          })
+        );
         refreshRuntimeForWorkspace(state.activeThreadWorkspace || workspace);
       }
     } catch (error) {
@@ -1158,7 +1252,12 @@ export function createTurnActionsModule(deps) {
         assistantMessage: "",
         baselineTurnCount: activeThreadHistoryTurnCount(startedThreadId),
       });
-      state.activeThreadNeedsResume = false;
+      setActiveThreadOpenState(
+        resolveThreadOpenState({
+          threadId: startedThreadId,
+          loaded: true,
+        })
+      );
     }
     if (startedRolloutPath) state.activeThreadRolloutPath = startedRolloutPath;
     refreshRuntimeForWorkspace(workspace);
@@ -1180,7 +1279,7 @@ export function createTurnActionsModule(deps) {
     const data = await api("/codex/attachments/upload", {
       method: "POST",
       body: {
-        threadId: state.activeThreadId || "unassigned",
+        threadId: resolveCurrentThreadId(state) || "unassigned",
         fileName: file.name,
         mimeType: file.type || "application/octet-stream",
         base64Data,
@@ -1241,7 +1340,7 @@ export function createTurnActionsModule(deps) {
   }
 
   async function resolveProposedPlanConfirmation(options = {}) {
-    const threadId = String(options.threadId || state.activeThreadId || "").trim();
+    const threadId = String(options.threadId || resolveCurrentThreadId(state) || "").trim();
     if (!threadId) throw new Error("thread id required");
     const confirmation = getProposedPlanConfirmation(state, threadId);
     if (!confirmation) throw new Error("no proposed plan confirmation available");

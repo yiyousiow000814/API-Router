@@ -6,9 +6,12 @@ import {
   hasTauriInvokeAvailable,
   formatIncidentKind,
   formatTailscaleProbeEvidence,
+  getWebTransportHeroMetaRows,
   isMonitoringDevPreview,
   MonitoringPanel,
   getWebTransportHealth,
+  getWebTransportObservedErrorDetail,
+  normalizeWebTransportSnapshot,
   getWatchdogStatusPresentation,
   peerSupportsLanDiagnostics,
   type WatchdogSummary,
@@ -86,12 +89,26 @@ describe('MonitoringPanel', () => {
     expect(html).toContain('Remote peer diagnostics are available in the Tauri desktop app only.')
   })
 
-  it('uses simulated monitor data in the 5173 preview shell', () => {
-    ;(globalThis as { window?: unknown }).window = {
+  it('uses simulated monitor data only in dev preview builds on 5173', () => {
+    const windowRef = {
       location: { port: '5173' },
     }
 
-    expect(isMonitoringDevPreview()).toBe(true)
+    expect(
+      isMonitoringDevPreview({
+        importMetaEnv: { DEV: true },
+        windowRef,
+      }),
+    ).toBe(true)
+
+    expect(
+      isMonitoringDevPreview({
+        importMetaEnv: { DEV: false },
+        windowRef,
+      }),
+    ).toBe(false)
+
+    ;(globalThis as { window?: unknown }).window = windowRef
 
     const html = renderToStaticMarkup(
       <MonitoringPanel
@@ -107,7 +124,7 @@ describe('MonitoringPanel', () => {
     expect(html).toContain('Gateway reachable')
     expect(html).toContain('desk-monitor.tail.ts.net')
     expect(html).toContain('Degraded')
-    expect(html).toContain('Thread refresh failures detected')
+    expect(html).toContain('Web Codex thread refresh failed')
     expect(html).toContain('Desk B')
     expect(html).toContain(
       'Tried: C:\\Program Files\\Tailscale\\tailscale.exe (not found) → C:\\Program Files\\Tailscale\\tailscale.exe (found)',
@@ -126,6 +143,8 @@ describe('MonitoringPanel', () => {
       thread_refresh_failed: { count: 0, last_unix_ms: 0 },
       active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
       live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
+      api_request_failed: { count: 0, last_unix_ms: 0, latest_detail: null },
+      thread_missing_observed: { count: 0, last_unix_ms: 0, latest_detail: null },
     }
 
     expect(getWebTransportHealth(baseSnapshot, now)).toBe('degraded')
@@ -139,6 +158,146 @@ describe('MonitoringPanel', () => {
         now,
       ),
     ).toBe('healthy')
+  })
+
+  it('falls back to websocket close detail when error detail is missing', () => {
+    const snapshot: WebTransportDomainSnapshot = {
+      ws_open_observed: { count: 1, last_unix_ms: 1 },
+      ws_error_observed: { count: 1, last_unix_ms: 2, latest_detail: null },
+      ws_close_observed: {
+        count: 1,
+        last_unix_ms: 2,
+        latest_close_code: 1006,
+        latest_close_reason: 'server restart',
+        latest_close_was_clean: false,
+      },
+      ws_reconnect_scheduled: { count: 0, last_unix_ms: 0 },
+      ws_reconnect_attempted: { count: 0, last_unix_ms: 0 },
+      http_fallback_engaged: { count: 0, last_unix_ms: 0 },
+      thread_refresh_failed: { count: 0, last_unix_ms: 0 },
+      active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
+      live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
+      api_request_failed: { count: 0, last_unix_ms: 0, latest_detail: null },
+      thread_missing_observed: { count: 0, last_unix_ms: 0, latest_detail: null },
+    }
+
+    expect(getWebTransportObservedErrorDetail(snapshot)).toBe('Closed: server restart (code 1006)')
+  })
+
+  it('explains abnormal websocket close codes without a reason', () => {
+    const snapshot: WebTransportDomainSnapshot = {
+      ws_open_observed: { count: 1, last_unix_ms: 1 },
+      ws_error_observed: { count: 1, last_unix_ms: 2, latest_detail: null },
+      ws_close_observed: {
+        count: 1,
+        last_unix_ms: 2,
+        latest_close_code: 1006,
+        latest_close_reason: null,
+        latest_close_was_clean: false,
+      },
+      ws_reconnect_scheduled: { count: 0, last_unix_ms: 0 },
+      ws_reconnect_attempted: { count: 0, last_unix_ms: 0 },
+      http_fallback_engaged: { count: 0, last_unix_ms: 0 },
+      thread_refresh_failed: { count: 0, last_unix_ms: 0 },
+      active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
+      live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
+      api_request_failed: { count: 0, last_unix_ms: 0, latest_detail: null },
+      thread_missing_observed: { count: 0, last_unix_ms: 0, latest_detail: null },
+    }
+
+    expect(getWebTransportObservedErrorDetail(snapshot)).toBe(
+      'Abnormal close (1006): the browser did not receive a normal close reason',
+    )
+  })
+
+  it('deduplicates the close detail row when it matches the latest error detail', () => {
+    const snapshot: WebTransportDomainSnapshot = {
+      ws_open_observed: { count: 1, last_unix_ms: 1 },
+      ws_error_observed: { count: 1, last_unix_ms: 2, latest_detail: null },
+      ws_close_observed: {
+        count: 1,
+        last_unix_ms: 2,
+        latest_close_code: 1006,
+        latest_close_reason: null,
+        latest_close_was_clean: false,
+      },
+      ws_reconnect_scheduled: { count: 0, last_unix_ms: 0 },
+      ws_reconnect_attempted: { count: 0, last_unix_ms: 0 },
+      http_fallback_engaged: { count: 0, last_unix_ms: 0 },
+      thread_refresh_failed: { count: 0, last_unix_ms: 0 },
+      active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
+      live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
+      api_request_failed: { count: 0, last_unix_ms: 0, latest_detail: null },
+      thread_missing_observed: { count: 0, last_unix_ms: 0, latest_detail: null },
+    }
+
+    expect(getWebTransportHeroMetaRows(snapshot, 2)).toEqual([
+      {
+        key: 'error',
+        label: 'Latest error',
+        value: 'Abnormal close (1006): the browser did not receive a normal close reason',
+      },
+      {
+        key: 'close',
+        label: 'Latest close code',
+        value: '1006',
+      },
+    ])
+  })
+
+  it('treats recent codex api failures as degraded web codex health', () => {
+    const now = 1_700_000_000_000
+    const snapshot: WebTransportDomainSnapshot = {
+      ws_open_observed: { count: 1, last_unix_ms: now - 2 * 60_000 },
+      ws_error_observed: { count: 0, last_unix_ms: 0, latest_detail: null },
+      ws_close_observed: { count: 0, last_unix_ms: 0, latest_close_code: null },
+      ws_reconnect_scheduled: { count: 0, last_unix_ms: 0 },
+      ws_reconnect_attempted: { count: 0, last_unix_ms: 0 },
+      http_fallback_engaged: { count: 0, last_unix_ms: 0 },
+      thread_refresh_failed: { count: 0, last_unix_ms: 0 },
+      active_thread_poll_failed: { count: 0, last_unix_ms: 0 },
+      live_notification_gap_observed: { count: 0, last_unix_ms: 0 },
+      api_request_failed: {
+        count: 1,
+        last_unix_ms: now - 60_000,
+        latest_detail: 'POST /codex/turns/start -> HTTP 502: thread not found',
+      },
+      thread_missing_observed: {
+        count: 1,
+        last_unix_ms: now - 60_000,
+        latest_detail: 'thread not found: thread-1',
+      },
+    }
+
+    expect(getWebTransportHealth(snapshot, now)).toBe('degraded')
+    expect(getWebTransportHeroMetaRows(snapshot, now)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Latest API error',
+          value: 'POST /codex/turns/start -> HTTP 502: thread not found',
+        }),
+        expect.objectContaining({
+          label: 'Latest missing thread',
+          value: 'thread not found: thread-1',
+        }),
+      ]),
+    )
+  })
+
+  it('normalizes partial webtransport snapshots before the panel reads last_unix_ms', () => {
+    const snapshot = normalizeWebTransportSnapshot({
+      ws_error_observed: { count: 2 },
+      ws_close_observed: { latest_close_code: '1006' },
+      api_request_failed: { count: 1, last_unix_ms: 1_700_000_000_000, latest_detail: 'HTTP 502' },
+    })
+
+    expect(snapshot).not.toBeNull()
+    expect(snapshot?.ws_error_observed.last_unix_ms).toBe(0)
+    expect(snapshot?.ws_close_observed.last_unix_ms).toBe(0)
+    expect(snapshot?.ws_close_observed.latest_close_code).toBe(1006)
+    expect(snapshot?.thread_missing_observed.last_unix_ms).toBe(0)
+    expect(() => getWebTransportHealth(snapshot!)).not.toThrow()
+    expect(() => getWebTransportHeroMetaRows(snapshot!, 1_700_000_001_000)).not.toThrow()
   })
 
   it('treats watchdog health as the latest activity bucket only', () => {
@@ -346,7 +505,7 @@ describe('MonitoringPanel', () => {
       source.indexOf('WatchdogSection summary={peer.watchdog} loading={false}'),
     )
     expect(source).toContain('Recent incidents')
-    expect(source).toContain('No WebTransport data available yet.')
+    expect(source).toContain('No Web Codex data available yet.')
     expect(source).toContain('command_path')
     expect(source).toContain('command_source')
     expect(source).toContain('Probe:')

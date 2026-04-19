@@ -635,7 +635,13 @@ requires_openai_auth = true`}
           setGatewayTokenReveal(t)
         }}
         onRotate={async () => {
-          const res = await invoke<RotateGatewayTokenResult>('rotate_gateway_token')
+          const cliHomes = resolveCliHomes(
+            codexSwapDir1,
+            codexSwapDir2,
+            codexSwapUseWindows,
+            codexSwapUseWsl,
+          )
+          const res = await invoke<RotateGatewayTokenResult>('rotate_gateway_token', { cliHomes })
           setGatewayTokenReveal(res.token)
           const p = await invoke<string>('get_gateway_token_preview')
           setGatewayTokenPreview(p)

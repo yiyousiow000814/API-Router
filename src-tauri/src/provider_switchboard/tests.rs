@@ -662,7 +662,7 @@ mod tests {
         )
         .unwrap();
 
-        sync_gateway_target_for_rotated_token_impl(&state).expect("sync gateway token");
+        sync_gateway_target_for_rotated_token_impl(&state, None).expect("sync gateway token");
 
         let auth: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(cli_auth_path(&cli_home)).unwrap())
@@ -712,7 +712,7 @@ mod tests {
         )
         .unwrap();
 
-        sync_gateway_target_for_rotated_token_impl(&state).expect("sync gateway token");
+        sync_gateway_target_for_rotated_token_impl(&state, None).expect("sync gateway token");
 
         let auth: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(cli_auth_path(&cli_home)).unwrap())
@@ -724,6 +724,106 @@ mod tests {
         let cfg = std::fs::read_to_string(cli_cfg_path(&cli_home)).expect("read cli cfg");
         assert!(cfg.contains("model_provider = \"api_router\""));
         assert!(cfg.contains("base_url = \"http://127.0.0.1:4000/v1\""));
+    }
+
+    #[test]
+    fn sync_gateway_target_for_rotated_token_uses_override_homes_and_refreshes_state() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+        state
+            .secrets
+            .set_gateway_token("ao_new_gateway_token")
+            .expect("set gateway token");
+
+        let win_home = tmp.path().join("cli-home-win");
+        let second_home = tmp.path().join("cli-home-second");
+        std::fs::create_dir_all(&win_home).unwrap();
+        std::fs::create_dir_all(&second_home).unwrap();
+        for home in [&win_home, &second_home] {
+            std::fs::write(cli_auth_path(home), r#"{"OPENAI_API_KEY":"ao_old"}"#).unwrap();
+            std::fs::write(
+                cli_cfg_path(home),
+                "model_provider = \"api_router\"\nmodel = \"gpt-5.3-codex\"\n",
+            )
+            .unwrap();
+        }
+
+        let sw_path = switchboard_state_path_from_config_path(&state.config_path);
+        std::fs::create_dir_all(sw_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &sw_path,
+            serde_json::to_string_pretty(&json!({
+              "target": "gateway",
+              "provider": serde_json::Value::Null,
+              "cli_homes": [win_home.to_string_lossy().to_string()]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        sync_gateway_target_for_rotated_token_impl(
+            &state,
+            Some(vec![
+                win_home.to_string_lossy().to_string(),
+                second_home.to_string_lossy().to_string(),
+            ]),
+        )
+        .expect("sync gateway token");
+
+        for home in [&win_home, &second_home] {
+            let auth: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(cli_auth_path(home)).unwrap())
+                    .unwrap();
+            assert_eq!(
+                auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()),
+                Some("ao_new_gateway_token")
+            );
+        }
+
+        let saved_state: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(sw_path).unwrap()).unwrap();
+        let homes = saved_state
+            .get("cli_homes")
+            .and_then(|value| value.as_array())
+            .expect("cli homes");
+        assert!(homes.len() >= 2);
+        let home_values = homes
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+        assert!(home_values.iter().any(|value| *value == win_home.to_string_lossy()));
+        assert!(home_values
+            .iter()
+            .any(|value| *value == second_home.to_string_lossy()));
+    }
+
+    #[test]
+    fn augment_gateway_sync_homes_with_candidates_adds_existing_missing_home() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let win_home = tmp.path().join("cli-home-win");
+        let wsl_home = tmp.path().join("cli-home-wsl");
+        for home in [&win_home, &wsl_home] {
+            std::fs::create_dir_all(home).unwrap();
+            std::fs::write(cli_auth_path(home), r#"{"OPENAI_API_KEY":"ao_old"}"#).unwrap();
+            std::fs::write(
+                cli_cfg_path(home),
+                "model_provider = \"api_router\"\nmodel = \"gpt-5.3-codex\"\n",
+            )
+            .unwrap();
+        }
+
+        let homes = augment_gateway_sync_homes_with_candidates(
+            vec![win_home.clone()],
+            vec![win_home.clone(), wsl_home.clone()],
+        );
+
+        assert_eq!(homes.len(), 2);
+        assert!(homes.iter().any(|path| dedup_key(path) == dedup_key(&win_home)));
+        assert!(homes.iter().any(|path| dedup_key(path) == dedup_key(&wsl_home)));
     }
 
     #[test]

@@ -1,5 +1,7 @@
 import { createMockCodexTransport } from "./mockTransport.js";
 import { synthesizeProvisionalThreadItem } from "./notificationRouting.js";
+import { setThreadOpenState } from "./threadOpenState.js";
+import { resolveCurrentThreadId } from "./runtimeState.js";
 
 export function ensureArrayItems(value) {
   if (Array.isArray(value)) return value;
@@ -116,6 +118,7 @@ export function createWsClientModule(deps) {
   const {
     state,
     setStatus,
+    setRuntimeActivity = () => {},
     toRecord,
     readString,
     readNumber,
@@ -144,9 +147,46 @@ export function createWsClientModule(deps) {
     WS_PING_INTERVAL_MS = 15000,
     WS_RECONNECT_BASE_MS = 800,
     WS_RECONNECT_MAX_MS = 5000,
+    WS_RECONNECT_MAX_ATTEMPTS = 5,
     transportMode = "live",
     seedDefaultThreads = false,
   } = deps;
+
+  function getActiveThreadRuntimeActivityTitle() {
+    const threadId = resolveCurrentThreadId(state);
+    if (!threadId) return "";
+    return String(state.activeThreadActivity?.threadId || "").trim() === threadId
+      ? String(state.activeThreadActivity?.title || "").trim().toLowerCase()
+      : "";
+  }
+
+  function setReconnectRuntimeActivity(title, detail) {
+    const threadId = resolveCurrentThreadId(state);
+    if (!threadId) return;
+    setRuntimeActivity({
+      threadId,
+      title,
+      detail,
+      tone: title === "Error" ? "error" : "running",
+    });
+  }
+
+  function restoreRuntimeActivityAfterReconnect() {
+    const threadId = resolveCurrentThreadId(state);
+    if (!threadId) return;
+    const isWorkingThread =
+      state.activeThreadPendingTurnRunning === true ||
+      Boolean(String(state.activeThreadPendingAssistantMessage || "").trim()) ||
+      String(state.activeThreadLiveAssistantThreadId || "").trim() === threadId;
+    const currentActivityTitle = getActiveThreadRuntimeActivityTitle();
+    if (isWorkingThread) {
+      setRuntimeActivity({ threadId, title: "Working", detail: "", tone: "running" });
+      return;
+    }
+    if (currentActivityTitle === "reconnecting" || currentActivityTitle === "error") {
+      setRuntimeActivity(null);
+    }
+  }
 
   async function liveApi(path, options = {}) {
     const headers = {
@@ -154,15 +194,28 @@ export function createWsClientModule(deps) {
       ...(options.headers || {}),
     };
     if (state.token.trim()) headers.Authorization = `Bearer ${state.token.trim()}`;
-    const res = await fetchRef(path, {
-      method: options.method || "GET",
-      headers,
-      body: options.body ? JSON.stringify(options.body) : undefined,
-      signal: options.signal,
-    });
+    const route = `${String(options.method || "GET").toUpperCase()} ${String(path || "")}`.trim();
+    let res;
+    try {
+      res = await fetchRef(path, {
+        method: options.method || "GET",
+        headers,
+        body: options.body ? JSON.stringify(options.body) : undefined,
+        signal: options.signal,
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error || "Network request failed");
+      recordWebTransportEvent("api_request_failed", `${route} -> network error: ${detail}`);
+      throw error;
+    }
     const payload = await res.json().catch(() => ({}));
     if (!res.ok) {
-      throw new Error(resolveApiErrorMessage(payload, res.status));
+      const detail = resolveApiErrorMessage(payload, res.status);
+      recordWebTransportEvent("api_request_failed", `${route} -> HTTP ${String(res.status)}: ${detail}`);
+      if (/thread not found/i.test(detail)) {
+        recordWebTransportEvent("thread_missing_observed", detail);
+      }
+      throw new Error(detail);
     }
     return payload;
   }
@@ -194,6 +247,14 @@ export function createWsClientModule(deps) {
   function scheduleReconnect(reason = "unknown") {
     if (state.wsReconnectTimer) return;
     const attempt = Math.max(0, Number(state.wsReconnectAttempt || 0));
+    const maxAttempts = Math.max(1, Number(WS_RECONNECT_MAX_ATTEMPTS || 5));
+    if (attempt >= maxAttempts) {
+      recordWebTransportEvent("ws_reconnect_failed", String(reason));
+      const failureMessage = `Live updates disconnected after ${maxAttempts} ${maxAttempts === 1 ? "retry" : "retries"}.`;
+      setStatus(failureMessage, true);
+      setReconnectRuntimeActivity("Error", failureMessage);
+      return;
+    }
     const delay = Math.min(
       WS_RECONNECT_MAX_MS,
       WS_RECONNECT_BASE_MS * Math.max(1, 2 ** attempt)
@@ -205,6 +266,8 @@ export function createWsClientModule(deps) {
       delay,
       reason,
     });
+    setStatus(`Reconnecting... ${state.wsReconnectAttempt}/${maxAttempts}`, true);
+    setReconnectRuntimeActivity("Reconnecting", `${state.wsReconnectAttempt}/${maxAttempts}`);
     state.wsReconnectTimer = setTimeoutRef(() => {
       state.wsReconnectTimer = null;
       recordWebTransportEvent("ws_reconnect_attempted", null);
@@ -465,7 +528,8 @@ export function createWsClientModule(deps) {
     if (payload.type === "events.reset") {
       resetEventReplayState();
       scheduleThreadRefresh();
-      if (state.activeThreadId) scheduleActiveThreadRefresh(state.activeThreadId);
+      const currentThreadId = resolveCurrentThreadId(state);
+      if (currentThreadId) scheduleActiveThreadRefresh(currentThreadId);
       setStatus("Live event stream resynced.");
       return;
     }
@@ -482,8 +546,9 @@ export function createWsClientModule(deps) {
           ? state.wsRequestedWorkspaceTargets.slice()
           : [normalizeLiveWorkspaceTarget(state.wsRequestedWorkspaceTarget, "windows")];
       scheduleThreadRefresh(0);
-      if (state.activeThreadId) {
-        scheduleActiveThreadRefresh(state.activeThreadId, 0);
+      const currentThreadId = resolveCurrentThreadId(state);
+      if (currentThreadId) {
+        scheduleActiveThreadRefresh(currentThreadId, 0);
       }
       setStatus("Live updates connected.");
     }
@@ -514,8 +579,21 @@ export function createWsClientModule(deps) {
       pushLiveDebugEvent("ws.open", {
         url: wsUrl,
       });
+      const hadReconnectAttempt = Number(state.wsReconnectAttempt || 0) > 0;
       state.wsReconnectAttempt = 0;
       setStatus("Connected (live updates syncing).");
+      restoreRuntimeActivityAfterReconnect();
+      const currentThreadId = resolveCurrentThreadId(state);
+      if (hadReconnectAttempt && currentThreadId) {
+        const openState = state.activeThreadOpenState;
+        if (openState?.loaded === true) {
+          setThreadOpenState(state, {
+            ...openState,
+            threadStatusType: "notLoaded",
+            loaded: false,
+          });
+        }
+      }
       startWsHeartbeat(ws);
       let lastEventId = 0;
       try {
@@ -530,14 +608,21 @@ export function createWsClientModule(deps) {
       state.wsSubscribedEvents = false;
       state.wsSubscribedWorkspaceTarget = "";
       state.wsSubscribedWorkspaceTargets = [];
-      setStatus("WS error; fallback to HTTP.", true);
+      scheduleReconnect("ws error");
     };
     ws.onclose = (event) => {
       if (state.ws !== ws || connectSeq !== state.wsConnectSeq) return;
       clearWsPingTimer();
       const rawCloseCode = Number(event?.code);
-      const closeCode = Number.isFinite(rawCloseCode) && rawCloseCode >= 1000 ? String(rawCloseCode) : null;
-      recordWebTransportEvent("ws_close_observed", closeCode);
+      const closeCode = Number.isFinite(rawCloseCode) && rawCloseCode >= 1000 ? rawCloseCode : null;
+      recordWebTransportEvent(
+        "ws_close_observed",
+        JSON.stringify({
+          code: closeCode,
+          reason: String(event?.reason || ""),
+          wasClean: event?.wasClean === true,
+        }),
+      );
       pushLiveDebugEvent("ws.close:client", {
         code: Number(event?.code ?? 0),
         reason: String(event?.reason || ""),

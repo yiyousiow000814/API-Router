@@ -230,6 +230,7 @@ function buildSlashCatalog(state) {
         ],
       },
       { command: "/diff", description: "Show current diff.", usage: "/diff" },
+      { command: "/status", description: "Show the current session id.", usage: "/status" },
       { command: "/compact", description: "Compact the conversation context.", usage: "/compact" },
       { command: "/review", description: "Open review helpers.", usage: "/review" },
     ],
@@ -912,6 +913,14 @@ export function createMockCodexTransport(deps) {
             preset,
             approvalPolicy: runtime.approvalPolicy,
             sandbox: runtime.sandbox,
+          },
+        };
+      }
+      if (command === "/status") {
+        return {
+          method: "status/read",
+          result: {
+            sessionId: String(options.body?.threadId || state.activeThreadId || "").trim(),
           },
         };
       }

@@ -1028,11 +1028,13 @@ pub(crate) fn get_gateway_token(state: tauri::State<'_, app_state::AppState>) ->
 #[tauri::command]
 pub(crate) fn rotate_gateway_token(
     state: tauri::State<'_, app_state::AppState>,
+    cli_homes: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
     let token = state.secrets.rotate_gateway_token()?;
     let (failed_targets, sync_hard_failed) =
         match crate::provider_switchboard::sync_gateway_target_for_rotated_token_with_failures(
             &state,
+            cli_homes,
         ) {
             Ok(v) => (v, false),
             Err(e) => {

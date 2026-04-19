@@ -16,6 +16,16 @@ function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
+function isUpToDate(srcPath, dstPath) {
+  try {
+    const srcStat = fs.statSync(srcPath)
+    const dstStat = fs.statSync(dstPath)
+    return dstStat.mtimeMs >= srcStat.mtimeMs
+  } catch {
+    return false
+  }
+}
+
 function tryKillRunningExe() {
   if (process.platform !== 'win32') return
   // Best-effort: if the root EXE is running, replacing it will fail with EPERM.
@@ -30,6 +40,10 @@ function copyOverwriting(srcPath, dstPath) {
 }
 
 for (const dst of [dstMain, dstTest]) {
+  if (isUpToDate(src, dst)) {
+    console.log(`Up to date: ${dst}`)
+    continue
+  }
   try {
     copyOverwriting(src, dst)
   } catch (e) {

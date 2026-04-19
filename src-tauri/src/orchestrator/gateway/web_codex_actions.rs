@@ -358,12 +358,17 @@ pub(super) async fn codex_turn_interrupt(
     State(st): State<GatewayState>,
     headers: HeaderMap,
     AxumPath(id): AxumPath<String>,
+    LoggedJson(req): LoggedJson<TurnInterruptRequest>,
 ) -> Response {
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
+    let thread_id = req.thread_id.trim();
+    if thread_id.is_empty() {
+        return api_error(StatusCode::BAD_REQUEST, "threadId is required");
+    }
     let manager = CodexSessionManager::new(None);
-    match manager.interrupt_turn(&id).await {
+    match manager.interrupt_turn(thread_id, &id).await {
         Ok(v) => Json(v).into_response(),
         Err(error) => api_error_detail(
             StatusCode::BAD_GATEWAY,
@@ -371,6 +376,13 @@ pub(super) async fn codex_turn_interrupt(
             error,
         ),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TurnInterruptRequest {
+    #[serde(default)]
+    pub(super) thread_id: String,
 }
 
 #[derive(Deserialize)]
@@ -952,6 +964,14 @@ pub(super) fn supported_slash_commands(
             children: Vec::new(),
         },
         SlashCommandDescriptor {
+            command: "/status",
+            usage: "/status",
+            insert_text: "/status",
+            description: "Show the current session id.",
+            active: false,
+            children: Vec::new(),
+        },
+        SlashCommandDescriptor {
             command: "/help",
             usage: "/help",
             insert_text: "/help",
@@ -1002,6 +1022,16 @@ fn fast_mode_result(workspace: Option<&str>, enabled: bool) -> Value {
 fn plan_mode_result(mode: &str) -> Value {
     json!({
         "mode": mode,
+    })
+}
+
+fn status_read_result(session_id: Option<&str>) -> Value {
+    let session_id = session_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("");
+    json!({
+        "sessionId": session_id,
     })
 }
 
@@ -1273,6 +1303,14 @@ pub(super) async fn codex_slash_execute(
             }
         }
     }
+    if parsed.method == "status/read" {
+        return Json(json!({
+            "ok": true,
+            "method": parsed.method,
+            "result": status_read_result(req.thread_id.as_deref()),
+        }))
+        .into_response();
+    }
     let mut params = parsed.params;
     if parsed.method == "thread/start" {
         if let Some(service_tier) = service_tier_override_json(&req.service_tier) {
@@ -1387,8 +1425,8 @@ pub(super) async fn codex_rpc_proxy(
 mod tests {
     use super::{
         build_turn_start_params, build_turn_start_response, parse_slash_command,
-        prompt_with_plan_protocol, service_tier_override_json, supported_slash_commands,
-        turn_thread_id, ServiceTierOverride, TurnStartRequest,
+        prompt_with_plan_protocol, service_tier_override_json, status_read_result,
+        supported_slash_commands, turn_thread_id, ServiceTierOverride, TurnStartRequest,
     };
     use serde_json::{json, Value};
 
@@ -1571,6 +1609,10 @@ mod tests {
         assert_eq!(permission.params["preset"], "auto");
         assert!(parse_slash_command("/permission read-only").is_some());
 
+        let status = parse_slash_command("/status").expect("status");
+        assert_eq!(status.method, "status/read");
+        assert_eq!(status.params, Value::Null);
+
         let review = parse_slash_command("/review uncommitted").expect("review target");
         assert_eq!(review.method, "review/start");
         assert_eq!(review.params["target"]["type"], "uncommittedChanges");
@@ -1614,11 +1656,11 @@ mod tests {
         assert!(commands.iter().any(|entry| entry.command == "/compact"));
         assert!(commands.iter().any(|entry| entry.command == "/review"));
         assert!(commands.iter().any(|entry| entry.command == "/diff"));
+        assert!(commands.iter().any(|entry| entry.command == "/status"));
         assert!(commands.iter().any(|entry| entry.command == "/plan"));
         assert!(commands.iter().any(|entry| entry.command == "/fast"));
         assert!(commands.iter().any(|entry| entry.command == "/permission"));
         assert!(!commands.iter().any(|entry| entry.command == "/new"));
-        assert!(!commands.iter().any(|entry| entry.command == "/status"));
         assert!(!commands.iter().any(|entry| entry.command == "/model"));
         assert!(!commands.iter().any(|entry| entry.command == "/fork"));
         assert!(!commands.iter().any(|entry| entry.command == "/rename"));
@@ -1634,6 +1676,15 @@ mod tests {
             .children
             .iter()
             .any(|child| child.command == "/plan off"));
+    }
+
+    #[test]
+    fn status_read_result_includes_session_id() {
+        assert_eq!(
+            status_read_result(Some("thread-1"))["sessionId"],
+            "thread-1"
+        );
+        assert_eq!(status_read_result(None)["sessionId"], "");
     }
 
     #[test]

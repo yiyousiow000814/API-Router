@@ -1,4 +1,5 @@
 import { resetTurnPresentationState, syncPendingTurnRuntime } from "./runtimeState.js";
+import { resolveThreadOpenState, setThreadOpenState } from "./threadOpenState.js";
 
 export function readDebugMessageNode(node, index) {
   const body = node?.querySelector?.(".msgBody") || null;
@@ -1309,6 +1310,7 @@ export function createDebugToolsModule(deps) {
           state.activeThreadStarted = false;
           state.activeThreadWorkspace = getWorkspaceTarget();
           state.activeThreadTokenUsage = null;
+          setThreadOpenState(state, resolveThreadOpenState());
           renderComposerContextLeft();
           clearChatMessages();
           showWelcomeCard();
@@ -1426,7 +1428,15 @@ export function createDebugToolsModule(deps) {
           setMainTab("chat");
           setMobileTab("chat");
           setActiveThread(id);
-          state.activeThreadNeedsResume = true;
+          setThreadOpenState(state, resolveThreadOpenState({
+            threadId: id,
+            threadStatusType: meta.threadStatusType || "",
+            historyThreadId: state.activeThreadHistoryThreadId,
+            historyIncomplete: state.activeThreadHistoryIncomplete === true,
+            historyStatusType: state.activeThreadHistoryStatusType,
+            pendingTurnRunning: state.activeThreadPendingTurnRunning === true,
+            pendingThreadId: state.activeThreadPendingTurnThreadId,
+          }));
           state.activeThreadWorkspace = meta.workspace;
           state.activeThreadRolloutPath = meta.rolloutPath;
           setChatOpening(false);
