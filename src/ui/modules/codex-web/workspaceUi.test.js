@@ -7,6 +7,7 @@ import {
   normalizeRuntimeStatePayload,
   normalizeStartCwd,
 } from "./workspaceUi.js";
+import { resolveThreadOpenState } from "./threadOpenState.js";
 
 describe("workspaceUi", () => {
   it("normalizes windows and wsl cwd values", () => {
@@ -191,6 +192,97 @@ describe("workspaceUi", () => {
     expect(module.getWorkspaceRuntimeState("windows")).toMatchObject({
       connected: true,
       loaded: true,
+    });
+  });
+
+  it("recomputes active thread resume state from the current thread list", () => {
+    const state = {
+      workspaceTarget: "windows",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      collapsedWorkspaceKeys: new Set(),
+      collapsedWorkspaceKeysByWorkspace: { windows: new Set(), wsl2: new Set() },
+      threadItemsByWorkspace: { windows: [], wsl2: [] },
+      threadWorkspaceHydratedByWorkspace: { windows: false, wsl2: false },
+      threadListRenderSigByWorkspace: { windows: "", wsl2: "" },
+      threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+      startCwdByWorkspace: { windows: "", wsl2: "" },
+      threadItemsAll: [
+        {
+          id: "thread-1",
+          workspace: "windows",
+          path: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
+          status: { type: "notLoaded" },
+        },
+      ],
+      threadItems: [],
+      folderPickerOpen: false,
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "",
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryIncomplete: false,
+      activeThreadHistoryStatusType: "idle",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingTurnThreadId: "",
+      threadAttachTransportById: new Map(),
+    };
+    const module = createWorkspaceUiModule({
+      state,
+      byId() {
+        return null;
+      },
+      api() {
+        return Promise.resolve({});
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      localStorageRef: { setItem() {} },
+      WORKSPACE_TARGET_KEY: "workspace",
+      START_CWD_BY_WORKSPACE_KEY: "cwd",
+      detectThreadWorkspaceTarget(thread) {
+        return thread.workspace;
+      },
+      updateHeaderUi() {},
+      renderFolderPicker() {},
+      setStatus() {},
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return false;
+      },
+      buildThreadRenderSig() {
+        return "";
+      },
+      applyThreadFilter() {},
+      refreshThreads() {
+        return Promise.resolve();
+      },
+      syncEventSubscription() {
+        return true;
+      },
+      renderThreads() {},
+    });
+
+    module.syncActiveThreadMetaFromList();
+
+    expect(state.activeThreadWorkspace).toBe("windows");
+    expect(state.activeThreadRolloutPath).toBe("C:\\repo\\.codex\\sessions\\rollout.jsonl");
+    expect(state.activeThreadOpenState.resumeRequired).toBe(true);
+  });
+
+  it("resolves thread open state canonically from a single decision function", () => {
+    expect(
+      resolveThreadOpenState({
+        threadId: "thread-1",
+        threadStatusType: "notLoaded",
+        historyThreadId: "thread-1",
+        historyIncomplete: false,
+        historyStatusType: "idle",
+      })
+    ).toMatchObject({
+      threadId: "thread-1",
+      resumeRequired: true,
+      resumeReason: "thread-not-loaded",
     });
   });
 });

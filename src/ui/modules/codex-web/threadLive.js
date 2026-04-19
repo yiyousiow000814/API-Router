@@ -34,7 +34,7 @@ export function shouldPollActiveThreadLive({
   activeThreadPendingTurnRunning,
   activeThreadPendingUserMessage,
   activeThreadPendingAssistantMessage,
-  activeThreadNeedsResume,
+  activeThreadOpenState,
 }) {
   if (!String(threadId || "").trim()) return false;
   if (String(activeMainTab || "").trim() !== "chat") return false;
@@ -42,7 +42,7 @@ export function shouldPollActiveThreadLive({
   if (activeThreadPendingTurnRunning === true) return true;
   if (String(activeThreadPendingUserMessage || "").trim()) return true;
   if (String(activeThreadPendingAssistantMessage || "").trim()) return true;
-  if (activeThreadNeedsResume === true) return true;
+  if (activeThreadOpenState?.resumeRequired === true) return true;
   if (activeThreadStarted === true) return true;
   return false;
 }
@@ -277,7 +277,7 @@ export function createThreadLiveModule(deps) {
           activeThreadPendingTurnRunning: state.activeThreadPendingTurnRunning,
           activeThreadPendingUserMessage: state.activeThreadPendingUserMessage,
           activeThreadPendingAssistantMessage: state.activeThreadPendingAssistantMessage,
-          activeThreadNeedsResume: state.activeThreadNeedsResume,
+          activeThreadOpenState: state.activeThreadOpenState,
         })
       ) return;
       const now = Date.now();

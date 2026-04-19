@@ -1,4 +1,5 @@
 import { syncPendingTurnRuntime } from "./runtimeState.js";
+import { resolveThreadOpenState, setThreadOpenState } from "./threadOpenState.js";
 
 function splitWorkspaceKeySegments(key) {
   return String(key || "")
@@ -110,39 +111,6 @@ export function buildThreadTransportUrl(threadId, options = {}) {
   return `/codex/threads/${encodeURIComponent(threadId)}/transport${query ? `?${query}` : ""}`;
 }
 
-function normalizeThreadStatusType(value) {
-  return String(value || "").trim().toLowerCase();
-}
-
-export function shouldResumeThreadOnOpen({
-  threadId,
-  threadStatusType = "",
-  historyThreadId = "",
-  historyIncomplete = false,
-  historyStatusType = "",
-  pendingTurnRunning = false,
-  pendingThreadId = "",
-} = {}) {
-  const id = String(threadId || "").trim();
-  if (!id) return false;
-  const status = normalizeThreadStatusType(threadStatusType);
-  const historyStatus = normalizeThreadStatusType(historyStatusType);
-  const historyId = String(historyThreadId || "").trim();
-  const pendingId = String(pendingThreadId || "").trim();
-  const hasPendingForThread = pendingTurnRunning === true && (!pendingId || pendingId === id);
-
-  if (hasPendingForThread) return true;
-  if (historyId === id) {
-    if (historyIncomplete === true) return true;
-    if (historyStatus === "running" || historyStatus === "queued" || historyStatus === "pending") {
-      return true;
-    }
-    return false;
-  }
-  if (status === "running" || status === "queued" || status === "pending") return true;
-  return false;
-}
-
 function attachedLiveThreadTransport(response) {
   if (response?.attached === true) {
     return String(response?.transport || "terminal-session").trim();
@@ -200,7 +168,7 @@ export async function resumeThreadLiveOnOpen({
 }) {
   const id = String(threadId || "").trim();
   if (!id) return null;
-  const needsResume = shouldResumeThreadOnOpen({
+  const openState = resolveThreadOpenState({
     threadId: id,
     threadStatusType,
     historyThreadId: state?.activeThreadHistoryThreadId,
@@ -209,8 +177,9 @@ export async function resumeThreadLiveOnOpen({
     pendingTurnRunning: state?.activeThreadPendingTurnRunning === true,
     pendingThreadId: state?.activeThreadPendingTurnThreadId,
   });
+  const needsResume = openState.resumeRequired === true;
   if (!needsResume) {
-    if (state) state.activeThreadNeedsResume = false;
+    setThreadOpenState(state, openState, { loaded: true });
     await syncThreadAttachTransport({ threadId: id, workspace, state, api });
     if (workspace === "windows" || workspace === "wsl2") {
       await refreshWorkspaceRuntimeState(workspace, { silent: true, updateHeader: true }).catch(() => null);
@@ -244,7 +213,7 @@ export async function resumeThreadLiveOnOpen({
         resumed?.result?.turn?.id ||
         ""
       ).trim();
-      state.activeThreadNeedsResume = false;
+      setThreadOpenState(state, openState, { loaded: true });
       state.activeThreadAttachTransport = attachTransport;
       setThreadAttachTransport(state, id, attachTransport);
       if (!attachTransport) {
@@ -263,7 +232,6 @@ export async function resumeThreadLiveOnOpen({
     }
     return resumed;
   } catch {
-    if (state) state.activeThreadNeedsResume = true;
     return null;
   }
 }
@@ -294,7 +262,7 @@ export function primeOpeningThreadState({
   const rolloutPath = String(thread?.path || "").trim();
   const threadStatusType = String(thread?.status?.type || "").trim();
   setActiveThread(threadId);
-  state.activeThreadNeedsResume = shouldResumeThreadOnOpen({
+  setThreadOpenState(state, resolveThreadOpenState({
     threadId,
     threadStatusType,
     historyThreadId: state?.activeThreadHistoryThreadId,
@@ -302,7 +270,7 @@ export function primeOpeningThreadState({
     historyStatusType: state?.activeThreadHistoryStatusType,
     pendingTurnRunning: state?.activeThreadPendingTurnRunning === true,
     pendingThreadId: state?.activeThreadPendingTurnThreadId,
-  });
+  }));
   if (workspace === "windows" || workspace === "wsl2") {
     state.activeThreadWorkspace = workspace;
   }

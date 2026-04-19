@@ -46,7 +46,7 @@ describe("threadLive", () => {
         activeThreadPendingTurnRunning: false,
         activeThreadPendingUserMessage: "",
         activeThreadPendingAssistantMessage: "",
-        activeThreadNeedsResume: false,
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
       })
     ).toBe(true);
   });
@@ -61,7 +61,7 @@ describe("threadLive", () => {
         activeThreadPendingTurnRunning: false,
         activeThreadPendingUserMessage: "",
         activeThreadPendingAssistantMessage: "",
-        activeThreadNeedsResume: false,
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
       })
     ).toBe(true);
     expect(
@@ -73,7 +73,7 @@ describe("threadLive", () => {
         activeThreadPendingTurnRunning: false,
         activeThreadPendingUserMessage: "",
         activeThreadPendingAssistantMessage: "",
-        activeThreadNeedsResume: false,
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
       })
     ).toBe(false);
     expect(
@@ -85,7 +85,7 @@ describe("threadLive", () => {
         activeThreadPendingTurnRunning: false,
         activeThreadPendingUserMessage: "",
         activeThreadPendingAssistantMessage: "",
-        activeThreadNeedsResume: false,
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
       })
     ).toBe(false);
     expect(
@@ -97,7 +97,7 @@ describe("threadLive", () => {
         activeThreadPendingTurnRunning: false,
         activeThreadPendingUserMessage: "",
         activeThreadPendingAssistantMessage: "",
-        activeThreadNeedsResume: false,
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
       })
     ).toBe(true);
   });
@@ -127,7 +127,7 @@ describe("threadLive", () => {
         activeThreadPendingTurnRunning: false,
         activeThreadPendingUserMessage: "",
         activeThreadPendingAssistantMessage: "",
-        activeThreadNeedsResume: false,
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
         activeThreadLiveLastPollMs: 0,
         activeThreadLivePolling: false,
         activeThreadWorkspace: "windows",
@@ -188,7 +188,7 @@ describe("threadLive", () => {
         activeThreadPendingTurnRunning: false,
         activeThreadPendingUserMessage: "",
         activeThreadPendingAssistantMessage: "",
-        activeThreadNeedsResume: false,
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
         activeThreadLiveLastPollMs: 0,
         activeThreadLivePolling: false,
         activeThreadWorkspace: "windows",
@@ -246,7 +246,7 @@ describe("threadLive", () => {
         activeThreadPendingTurnRunning: false,
         activeThreadPendingUserMessage: "",
         activeThreadPendingAssistantMessage: "",
-        activeThreadNeedsResume: false,
+        activeThreadOpenState: { resumeRequired: false, loaded: false },
         activeThreadLiveLastPollMs: 0,
         activeThreadLivePolling: false,
         activeThreadWorkspace: "windows",

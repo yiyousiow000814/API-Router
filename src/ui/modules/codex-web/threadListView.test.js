@@ -9,9 +9,9 @@ import {
   filterWorkspaceSectionThreads,
   primeOpeningThreadState,
   resumeThreadLiveOnOpen,
-  shouldResumeThreadOnOpen,
   shouldStaggerThreadGroupEnter,
 } from "./threadListView.js";
+import { resolveThreadOpenState } from "./threadOpenState.js";
 
 describe("threadListView", () => {
   async function flushAsyncWork() {
@@ -464,7 +464,6 @@ describe("threadListView", () => {
     const state = {
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
     };
     const selected = [];
 
@@ -491,7 +490,7 @@ describe("threadListView", () => {
       threadStatusType: "running",
     });
     expect(selected).toEqual(["thread-wsl"]);
-    expect(state.activeThreadNeedsResume).toBe(true);
+    expect(state.activeThreadOpenState.resumeRequired).toBe(true);
     expect(state.activeThreadWorkspace).toBe("wsl2");
     expect(state.activeThreadRolloutPath).toBe("/home/yiyou/.codex/sessions/rollout.jsonl");
   });
@@ -500,7 +499,6 @@ describe("threadListView", () => {
     const state = {
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: true,
       activeThreadHistoryThreadId: "",
       activeThreadHistoryIncomplete: false,
       activeThreadPendingTurnRunning: false,
@@ -522,66 +520,110 @@ describe("threadListView", () => {
     });
 
     expect(result.threadStatusType).toBe("idle");
-    expect(state.activeThreadNeedsResume).toBe(false);
+    expect(state.activeThreadOpenState.resumeRequired).toBe(false);
+  });
+
+  it("marks not-loaded threads as needing resume even when history is idle", () => {
+    const state = {
+      activeThreadWorkspace: "windows",
+      activeThreadRolloutPath: "",
+      activeThreadHistoryThreadId: "thread-notloaded",
+      activeThreadHistoryIncomplete: false,
+      activeThreadHistoryStatusType: "idle",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingTurnThreadId: "",
+    };
+
+    const result = primeOpeningThreadState({
+      thread: {
+        id: "thread-notloaded",
+        workspace: "windows",
+        path: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
+        status: { type: "notLoaded" },
+      },
+      state,
+      setActiveThread() {},
+      detectThreadWorkspaceTarget(thread) {
+        return thread.workspace;
+      },
+    });
+
+    expect(result.threadStatusType).toBe("notLoaded");
+    expect(state.activeThreadOpenState.resumeRequired).toBe(true);
   });
 
   it("only resumes threads on open when runtime evidence says it is needed", () => {
     expect(
-      shouldResumeThreadOnOpen({
+      resolveThreadOpenState({
         threadId: "thread-1",
         threadStatusType: "running",
-      })
+      }).resumeRequired
     ).toBe(true);
     expect(
-      shouldResumeThreadOnOpen({
+      resolveThreadOpenState({
         threadId: "thread-1",
         threadStatusType: "idle",
-      })
+      }).resumeRequired
     ).toBe(false);
     expect(
-      shouldResumeThreadOnOpen({
+      resolveThreadOpenState({
         threadId: "thread-1",
         historyThreadId: "thread-1",
         historyIncomplete: true,
-      })
+      }).resumeRequired
     ).toBe(true);
     expect(
-      shouldResumeThreadOnOpen({
+      resolveThreadOpenState({
         threadId: "thread-1",
         historyThreadId: "thread-1",
         historyIncomplete: false,
-      })
+      }).resumeRequired
     ).toBe(false);
     expect(
-      shouldResumeThreadOnOpen({
+      resolveThreadOpenState({
         threadId: "thread-1",
         pendingTurnRunning: true,
         pendingThreadId: "thread-1",
-      })
+      }).resumeRequired
     ).toBe(true);
     expect(
-      shouldResumeThreadOnOpen({
+      resolveThreadOpenState({
         threadId: "thread-1",
         historyThreadId: "thread-1",
         historyIncomplete: false,
         historyStatusType: "running",
-      })
+      }).resumeRequired
     ).toBe(true);
     expect(
-      shouldResumeThreadOnOpen({
+      resolveThreadOpenState({
         threadId: "thread-1",
         threadStatusType: "running",
         historyThreadId: "thread-1",
         historyIncomplete: false,
         historyStatusType: "idle",
-      })
+      }).resumeRequired
+    ).toBe(false);
+    expect(
+      resolveThreadOpenState({
+        threadId: "thread-1",
+        threadStatusType: "notLoaded",
+        historyThreadId: "thread-1",
+        historyIncomplete: false,
+        historyStatusType: "idle",
+      }).resumeRequired
+    ).toBe(true);
+    expect(
+      resolveThreadOpenState({
+        threadId: "thread-1",
+        threadStatusType: "notLoaded",
+        loaded: true,
+      }).resumeRequired
     ).toBe(false);
   });
 
   it("resumes opened threads in background to attach live updates", async () => {
     const calls = [];
     const state = {
-      activeThreadNeedsResume: true,
       activeThreadAttachTransport: "",
       activeThreadPendingTurnThreadId: "",
       activeThreadPendingTurnId: "",
@@ -628,7 +670,7 @@ describe("threadListView", () => {
         method: "POST",
       },
     ]);
-    expect(state.activeThreadNeedsResume).toBe(false);
+    expect(state.activeThreadOpenState.loaded).toBe(true);
     expect(state.activeThreadAttachTransport).toBe("terminal-session");
     expect(state.threadAttachTransportById.get("thread-1")).toBe("terminal-session");
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
@@ -646,7 +688,6 @@ describe("threadListView", () => {
   it("does not resume completed threads after history load", async () => {
     const calls = [];
     const state = {
-      activeThreadNeedsResume: true,
       activeThreadAttachTransport: "",
       activeThreadHistoryThreadId: "thread-1",
       activeThreadHistoryIncomplete: false,
@@ -686,7 +727,7 @@ describe("threadListView", () => {
         method: "GET",
       },
     ]);
-    expect(state.activeThreadNeedsResume).toBe(false);
+    expect(state.activeThreadOpenState.loaded).toBe(true);
     expect(state.activeThreadAttachTransport).toBe("terminal-session");
     expect(state.threadAttachTransportById.get("thread-1")).toBe("terminal-session");
   });
@@ -694,7 +735,6 @@ describe("threadListView", () => {
   it("does not blindly resume when loaded history overrides stale running sidebar state", async () => {
     const calls = [];
     const state = {
-      activeThreadNeedsResume: true,
       activeThreadAttachTransport: "",
       activeThreadHistoryThreadId: "thread-1",
       activeThreadHistoryIncomplete: false,
@@ -727,7 +767,7 @@ describe("threadListView", () => {
         method: "GET",
       },
     ]);
-    expect(state.activeThreadNeedsResume).toBe(false);
+    expect(state.activeThreadOpenState.loaded).toBe(true);
   });
 
   it("resumes only after history proves the opened thread is still active", async () => {
@@ -875,7 +915,7 @@ describe("threadListView", () => {
       events.indexOf("history:thread-2")
     );
     expect(events).toContain("pending:sync");
-    expect(state.activeThreadNeedsResume).toBe(false);
+    expect(state.activeThreadOpenState.loaded).toBe(true);
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-2");
     expect(state.activeThreadPendingTurnRunning).toBe(true);
   });

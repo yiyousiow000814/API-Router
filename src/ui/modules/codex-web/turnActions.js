@@ -10,6 +10,10 @@ import {
   clearProposedPlanConfirmation,
   getProposedPlanConfirmation,
 } from "./proposedPlan.js";
+import {
+  resolveThreadOpenState,
+  setThreadOpenState,
+} from "./threadOpenState.js";
 
 export function buildTurnPayload({
   activeThreadId,
@@ -215,6 +219,14 @@ export function createTurnActionsModule(deps) {
     TextDecoderRef = TextDecoder,
   } = deps;
   const storage = localStorageRef ?? globalThis.localStorage ?? { setItem() {} };
+  function setActiveThreadOpenState(nextState, options = {}) {
+    return setThreadOpenState(state, nextState, options);
+  }
+
+  function activeThreadRequiresResume() {
+    return (state.activeThreadOpenState || resolveThreadOpenState()).resumeRequired === true;
+  }
+
   function shouldMirrorPendingResolutionToChat() {
     return !(globalThis.window?.__webCodexDebug?.isPreviewPendingActive?.() === true);
   }
@@ -848,7 +860,7 @@ export function createTurnActionsModule(deps) {
     state.planModeEnabled = false;
     state.activeThreadRolloutPath = "";
     state.activeThreadAttachTransport = "";
-    state.activeThreadNeedsResume = false;
+    setActiveThreadOpenState(resolveThreadOpenState());
     state.activeThreadTokenUsage = null;
     state.activeThreadPendingTurnId = "";
     writeQueuedTurns([]);
@@ -902,7 +914,12 @@ export function createTurnActionsModule(deps) {
         state.activeThreadWorkspace = workspace;
         state.activeThreadRolloutPath = createdRolloutPath;
         state.activeThreadTokenUsage = null;
-        state.activeThreadNeedsResume = attached;
+        setActiveThreadOpenState(
+          resolveThreadOpenState({
+            threadId: activeThreadId,
+            loaded: attached,
+          })
+        );
         state.activeThreadAttachTransport = attachTransport;
         setThreadAttachTransport(state, activeThreadId, attachTransport);
       }
@@ -910,7 +927,7 @@ export function createTurnActionsModule(deps) {
     }
     await waitPendingThreadResume(activeThreadId);
     activeThreadId = String(state.activeThreadId || activeThreadId || "").trim();
-    if (activeThreadId && state.activeThreadNeedsResume) {
+    if (activeThreadId && activeThreadRequiresResume()) {
       const resumePromise = api(
         buildThreadResumeUrl(activeThreadId, {
           workspace: state.activeThreadWorkspace || workspace,
@@ -926,7 +943,12 @@ export function createTurnActionsModule(deps) {
         resumed?.threadId || resumed?.thread_id || resumed?.id || resumed?.thread?.id || activeThreadId
       ).trim();
       if (activeThreadId) setActiveThread(activeThreadId);
-      state.activeThreadNeedsResume = false;
+        setActiveThreadOpenState(
+          resolveThreadOpenState({
+            threadId: activeThreadId,
+            loaded: true,
+          })
+        );
       refreshRuntimeForWorkspace(state.activeThreadWorkspace || workspace);
     }
     const response = await api("/codex/slash/execute", {
@@ -956,12 +978,24 @@ export function createTurnActionsModule(deps) {
       ""
     ).trim();
     if (nextThreadId && nextThreadId !== state.activeThreadId) setActiveThread(nextThreadId);
-    if (nextThreadId) state.activeThreadNeedsResume = false;
+    if (nextThreadId) {
+        setActiveThreadOpenState(
+          resolveThreadOpenState({
+            threadId: nextThreadId,
+            loaded: true,
+          })
+        );
+    }
     if (nextRolloutPath) state.activeThreadRolloutPath = nextRolloutPath;
     if (method === "thread/start") {
       const attachTransport = attachedLiveThreadTransport(result);
       state.activeThreadStarted = false;
-      state.activeThreadNeedsResume = attachedLiveThread(result);
+        setActiveThreadOpenState(
+          resolveThreadOpenState({
+            threadId: nextThreadId,
+            loaded: attachedLiveThread(result),
+          })
+        );
       state.activeThreadAttachTransport = attachTransport;
       setThreadAttachTransport(state, nextThreadId, attachTransport);
       state.activeThreadWorkspace = workspace;
@@ -1058,11 +1092,16 @@ export function createTurnActionsModule(deps) {
         const attachTransport = attachedLiveThreadTransport(created);
         state.activeThreadWorkspace = workspace;
         state.activeThreadRolloutPath = createdRolloutPath;
-        state.activeThreadNeedsResume = attached;
+        setActiveThreadOpenState(
+          resolveThreadOpenState({
+            threadId: activeThreadId,
+            loaded: attached,
+          })
+        );
         state.activeThreadAttachTransport = attachTransport;
         setThreadAttachTransport(state, activeThreadId, attachTransport);
         refreshRuntimeForWorkspace(workspace);
-      } else if (state.activeThreadNeedsResume) {
+      } else if (activeThreadRequiresResume()) {
         const resumePromise = api(
           buildThreadResumeUrl(activeThreadId, {
             workspace: state.activeThreadWorkspace || workspace,
@@ -1080,7 +1119,12 @@ export function createTurnActionsModule(deps) {
         if (!resumedThreadId) throw new Error("turn resume failed: missing threadId");
         activeThreadId = resumedThreadId;
         if (state.activeThreadId !== resumedThreadId) setActiveThread(resumedThreadId);
-        state.activeThreadNeedsResume = false;
+        setActiveThreadOpenState(
+          resolveThreadOpenState({
+            threadId: resumedThreadId,
+            loaded: true,
+          })
+        );
         refreshRuntimeForWorkspace(state.activeThreadWorkspace || workspace);
       }
     } catch (error) {
@@ -1158,7 +1202,12 @@ export function createTurnActionsModule(deps) {
         assistantMessage: "",
         baselineTurnCount: activeThreadHistoryTurnCount(startedThreadId),
       });
-      state.activeThreadNeedsResume = false;
+      setActiveThreadOpenState(
+        resolveThreadOpenState({
+          threadId: startedThreadId,
+          loaded: true,
+        })
+      );
     }
     if (startedRolloutPath) state.activeThreadRolloutPath = startedRolloutPath;
     refreshRuntimeForWorkspace(workspace);

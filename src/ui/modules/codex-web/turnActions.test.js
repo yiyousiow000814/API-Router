@@ -124,7 +124,6 @@ describe("turnActions", () => {
       activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
       activeThreadAttachTransport: "",
       activeThreadAttachPendingUntil: 0,
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -240,7 +239,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -326,7 +324,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -401,7 +398,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnThreadId: "thread-1",
       activeThreadPendingTurnId: "turn-1",
@@ -478,7 +474,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       activeThreadHistoryReqSeq: 7,
@@ -567,7 +562,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnThreadId: "thread-1",
       activeThreadPendingTurnId: "turn-1",
@@ -637,7 +631,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "wsl2",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnThreadId: "thread-1",
       activeThreadPendingTurnId: "",
@@ -708,7 +701,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnThreadId: "thread-1",
       activeThreadPendingTurnId: "turn-1",
@@ -786,7 +778,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnThreadId: "thread-1",
       activeThreadPendingTurnId: "turn-1",
@@ -858,7 +849,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnThreadId: "thread-1",
       activeThreadPendingTurnId: "turn-1",
@@ -931,7 +921,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnThreadId: "thread-1",
       activeThreadPendingTurnId: "",
@@ -1006,7 +995,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnRunning: false,
       activeThreadMessages: [],
@@ -1086,7 +1074,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnRunning: true,
       activeThreadMessages: [],
@@ -1174,7 +1161,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadPendingTurnRunning: true,
       activeThreadMessages: [],
@@ -1244,7 +1230,7 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
-      activeThreadNeedsResume: true,
+      activeThreadOpenState: { threadId: "thread-1", threadStatusType: "notLoaded", resumeRequired: true, loaded: false },
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -1277,7 +1263,7 @@ describe("turnActions", () => {
         expect(threadId).toBe("thread-1");
         await new Promise((resolve) => {
           releasePendingResume = () => {
-            state.activeThreadNeedsResume = false;
+            state.activeThreadOpenState = { threadId: "thread-1", resumeRequired: false, loaded: true };
             resolve();
           };
         });
@@ -1335,7 +1321,7 @@ describe("turnActions", () => {
         },
       },
     ]);
-    expect(state.activeThreadNeedsResume).toBe(false);
+    expect(state.activeThreadOpenState?.resumeRequired).toBeFalsy();
   });
 
   it("does not create a thread before toggling local plan mode in a new chat", async () => {
@@ -1345,7 +1331,6 @@ describe("turnActions", () => {
       activeThreadId: "",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: false,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -1416,7 +1401,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -1502,7 +1486,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "wsl2",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -1584,7 +1567,6 @@ describe("turnActions", () => {
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
       activeThreadAttachTransport: "terminal-session",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -1658,7 +1640,6 @@ describe("turnActions", () => {
       activeThreadId: "",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -1739,7 +1720,6 @@ describe("turnActions", () => {
       activeThreadId: "",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: false,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -1846,7 +1826,7 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
-      activeThreadNeedsResume: true,
+      activeThreadOpenState: { threadId: "thread-1", threadStatusType: "notLoaded", resumeRequired: true, loaded: false },
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -1930,7 +1910,7 @@ describe("turnActions", () => {
         },
       },
     ]);
-    expect(state.activeThreadNeedsResume).toBe(false);
+    expect(state.activeThreadOpenState?.loaded).toBe(true);
   });
 
   it("shows the pending Working placeholder before waiting on thread resume state", async () => {
@@ -1944,7 +1924,7 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
-      activeThreadNeedsResume: true,
+      activeThreadOpenState: { threadId: "thread-1", threadStatusType: "notLoaded", resumeRequired: true, loaded: false },
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -2062,7 +2042,7 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
-      activeThreadNeedsResume: true,
+      activeThreadOpenState: { threadId: "thread-1", threadStatusType: "notLoaded", resumeRequired: true, loaded: false },
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -2151,7 +2131,6 @@ describe("turnActions", () => {
       activeThreadId: "",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: false,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -2242,7 +2221,6 @@ describe("turnActions", () => {
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
       activeThreadAttachTransport: "terminal-session",
-      activeThreadNeedsResume: false,
       activeThreadStarted: false,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -2304,7 +2282,7 @@ describe("turnActions", () => {
     expect(state.activeThreadId).toBe("");
     expect(state.activeThreadRolloutPath).toBe("");
     expect(state.activeThreadAttachTransport).toBe("");
-    expect(state.activeThreadNeedsResume).toBe(false);
+    expect(state.activeThreadOpenState?.loaded).toBe(false);
   });
 
   it("keeps rolloutPath when sendTurn creates a new thread", async () => {
@@ -2313,7 +2291,6 @@ describe("turnActions", () => {
       activeThreadId: "",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: false,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -2422,7 +2399,6 @@ describe("turnActions", () => {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
@@ -2995,7 +2971,6 @@ describe("turnActions", () => {
     const state = {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
-      activeThreadNeedsResume: false,
       activeThreadStarted: true,
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),

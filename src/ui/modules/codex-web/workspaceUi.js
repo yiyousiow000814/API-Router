@@ -1,3 +1,5 @@
+import { resolveThreadOpenState, setThreadOpenState } from "./threadOpenState.js";
+
 export function normalizeStartCwd(value, target = "windows") {
   const text = String(value || "").trim();
   if (!text) return "";
@@ -177,6 +179,17 @@ export function createWorkspaceUiModule(deps) {
     state.activeThreadIsWorktree = thread?.isWorktree === true;
     const attachTransport = String(state.threadAttachTransportById?.get?.(String(threadId || "")) || "").trim();
     state.activeThreadAttachTransport = attachTransport;
+    setThreadOpenState(state, resolveThreadOpenState({
+      threadId,
+      threadStatusType: thread?.status?.type || "",
+      historyThreadId: state?.activeThreadHistoryThreadId,
+      historyIncomplete: state?.activeThreadHistoryIncomplete === true,
+      historyStatusType: state?.activeThreadHistoryStatusType,
+      pendingTurnRunning: state?.activeThreadPendingTurnRunning === true,
+      pendingThreadId: state?.activeThreadPendingTurnThreadId,
+    }), {
+      loaded: state.activeThreadOpenState?.loaded === true,
+    });
   }
 
   async function refreshWorkspaceRuntimeState(target = getWorkspaceTarget(), options = {}) {

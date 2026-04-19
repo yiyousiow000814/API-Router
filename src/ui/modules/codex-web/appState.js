@@ -1,4 +1,6 @@
-﻿export const WEB_CODEX_DEV_DEBUG_VERSION = "2026-03-09-debug-7";
+import { resolveThreadOpenState } from "./threadOpenState.js";
+
+export const WEB_CODEX_DEV_DEBUG_VERSION = "2026-03-09-debug-7";
 
 export const GUIDE_DISMISSED_KEY = "web_codex_guide_dismissed_v2";
 export const TOKEN_STORAGE_KEY = "web_codex_token_v1";
@@ -244,7 +246,7 @@ export function createInitialState() {
     activeThreadGitMetaCwd: "",
     activeThreadGitMetaSource: "",
     activeThreadGitMetaReqSeq: 0,
-    activeThreadNeedsResume: false,
+    activeThreadOpenState: resolveThreadOpenState(),
     activeThreadTransientToolText: "",
     activeThreadTransientThinkingText: "",
     activeThreadCommentaryCurrent: null,
