@@ -15,6 +15,7 @@ import {
   resolveThreadOpenState,
   setThreadOpenState,
 } from "./threadOpenState.js";
+import { resolveActionErrorMessage } from "./actionBindings.js";
 
 export function buildTurnPayload({
   activeThreadId,
@@ -1230,6 +1231,7 @@ export function createTurnActionsModule(deps) {
       rollbackOptimisticPendingTurn(prompt, {
         restorePrompt: options.fromQueuedTurn !== true,
       });
+      addChat("system", resolveActionErrorMessage(error), { kind: "error" });
       throw error;
     }
     const startedThreadId = String(started?.threadId || started?.thread_id || activeThreadId).trim();
