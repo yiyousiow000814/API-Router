@@ -618,6 +618,74 @@ describe("composerUi", () => {
     expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
   });
 
+  it("renders a dedicated status tray above the composer and clears it", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const statusTrayMount = makeNode();
+    statusTrayMount.id = "statusTrayMount";
+    nodes.set("statusTrayMount", statusTrayMount);
+    const statusTrayTitle = makeNode();
+    statusTrayTitle.id = "statusTrayTitle";
+    nodes.set("statusTrayTitle", statusTrayTitle);
+    const statusTraySessionValue = makeNode();
+    statusTraySessionValue.id = "statusTraySessionValue";
+    nodes.set("statusTraySessionValue", statusTraySessionValue);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+      activeThreadStatusCard: null,
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) {
+        return item?.text || "";
+      },
+      normalizeType(value) { return String(value || "").replace(/[^a-z]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      localStorageRef: { getItem() { return "0"; } },
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { requestAnimationFrame(cb) { cb(); } },
+    });
+
+    module.setThreadStatusCard({
+      threadId: "thread-1",
+      sessionId: "019da209-a2eb-7741-ab62-8a4474de0821",
+      title: "Status",
+    });
+
+    expect(nodes.get("statusTrayTitle").textContent).toBe("Status");
+    expect(nodes.get("statusTraySessionValue").textContent).toBe("019da209-a2eb-7741-ab62-8a4474de0821");
+    expect(nodes.get("statusTrayMount").classList.contains("is-hidden")).toBe(false);
+
+    module.clearThreadStatusCard();
+
+    expect(nodes.get("statusTrayTitle").textContent).toBe("");
+    expect(nodes.get("statusTraySessionValue").textContent).toBe("");
+    expect(nodes.get("statusTrayMount").classList.contains("is-hidden")).toBe(true);
+  });
+
   it("marks runtime tool entries as error when the enclosing turn fails", () => {
     const nodes = new Map();
     const runtimeDock = makeNode();

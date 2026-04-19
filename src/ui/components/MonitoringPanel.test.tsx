@@ -89,12 +89,26 @@ describe('MonitoringPanel', () => {
     expect(html).toContain('Remote peer diagnostics are available in the Tauri desktop app only.')
   })
 
-  it('uses simulated monitor data in the 5173 preview shell', () => {
-    ;(globalThis as { window?: unknown }).window = {
+  it('uses simulated monitor data only in dev preview builds on 5173', () => {
+    const windowRef = {
       location: { port: '5173' },
     }
 
-    expect(isMonitoringDevPreview()).toBe(true)
+    expect(
+      isMonitoringDevPreview({
+        importMetaEnv: { DEV: true },
+        windowRef,
+      }),
+    ).toBe(true)
+
+    expect(
+      isMonitoringDevPreview({
+        importMetaEnv: { DEV: false },
+        windowRef,
+      }),
+    ).toBe(false)
+
+    ;(globalThis as { window?: unknown }).window = windowRef
 
     const html = renderToStaticMarkup(
       <MonitoringPanel

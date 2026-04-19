@@ -235,11 +235,19 @@ describe("turnActions", () => {
 
   it("executes slash commands through the slash endpoint instead of starting a turn", async () => {
     const calls = [];
+    const statusCalls = [];
+    const chatCalls = [];
     const state = {
       activeThreadId: "thread-1",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
       activeThreadStarted: true,
+      activeThreadPendingTurnRunning: true,
+      activeThreadOpenState: {
+        threadId: "thread-1",
+        loaded: false,
+        resumeRequired: true,
+      },
       activeThreadMessages: [],
       pendingThreadResumes: new Map(),
       chatShouldStickToBottom: false,
@@ -250,13 +258,17 @@ describe("turnActions", () => {
     };
     let cleared = 0;
     let hidden = 0;
+    const statusTrayCalls = [];
     const module = createTurnActionsModule({
       state,
       byId: () => ({ value: "" }),
       api: async (path, options = {}) => {
         calls.push({ path, method: options.method || "GET", body: options.body || null });
+        if (path === "/codex/threads/thread-1/resume") {
+          throw new Error("status should not force resume");
+        }
         if (path === "/codex/slash/execute") {
-          return { ok: true, method: "status/read", result: {} };
+          return { ok: true, method: "status/read", result: { sessionId: "thread-1" } };
         }
         throw new Error(`unexpected api call: ${path}`);
       },
@@ -268,10 +280,14 @@ describe("turnActions", () => {
       getPromptValue: () => "/status",
       getWorkspaceTarget: () => "windows",
       getStartCwdForWorkspace: () => "",
-      waitPendingThreadResume: async () => {},
+      waitPendingThreadResume: async () => {
+        throw new Error("status should not wait for resume");
+      },
       registerPendingThreadResume: () => {},
       updateHeaderUi: () => {},
-      addChat: () => {},
+      addChat: (role, text, options = {}) => {
+        chatCalls.push({ role, text, options });
+      },
       clearChatMessages: () => {},
       hideWelcomeCard: () => {},
       showWelcomeCard: () => {},
@@ -288,7 +304,12 @@ describe("turnActions", () => {
       refreshThreads: async () => {},
       refreshHosts: async () => {},
       refreshPending: async () => {},
-      setStatus: () => {},
+      setStatus: (message, isWarn = false) => {
+        statusCalls.push({ message, isWarn });
+      },
+      setThreadStatusCard(card) {
+        statusTrayCalls.push(card);
+      },
       setActiveThread: () => {},
       setMainTab: () => {},
       setMobileTab: () => {},
@@ -313,6 +334,18 @@ describe("turnActions", () => {
         },
       },
     ]);
+    expect(statusCalls).toContainEqual({
+      message: "Status opened.",
+      isWarn: false,
+    });
+    expect(statusTrayCalls).toEqual([
+      {
+        threadId: "thread-1",
+        sessionId: "thread-1",
+        title: "Status",
+      },
+    ]);
+    expect(chatCalls).toEqual([]);
     expect(cleared).toBe(1);
     expect(hidden).toBe(1);
   });

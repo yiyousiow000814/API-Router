@@ -578,6 +578,9 @@ export function createComposerUiModule(deps) {
   function renderRuntimePanels() {
     const dock = byId("runtimeDock");
     const activityNode = byId("runtimeActivityBar");
+    const statusTrayMount = byId("statusTrayMount");
+    const statusTrayTitle = byId("statusTrayTitle");
+    const statusTraySessionValue = byId("statusTraySessionValue");
     if (!dock || !activityNode) return;
     const inChat = state.activeMainTab !== "settings";
     const currentThreadId = resolveCurrentThreadId(state);
@@ -594,6 +597,10 @@ export function createComposerUiModule(deps) {
     const thinkingText = String(state.activeThreadTransientThinkingText || commentary?.text || "").trim();
     const explicitActivity = state.activeThreadActivity && state.activeThreadActivity.threadId === currentThreadId
       ? state.activeThreadActivity
+      : null;
+    const statusCard = state.activeThreadStatusCard &&
+      String(state.activeThreadStatusCard.threadId || "").trim() === currentThreadId
+      ? state.activeThreadStatusCard
       : null;
     const activity = resolveRuntimeActivity(currentThreadId, {
       commands,
@@ -636,6 +643,13 @@ export function createComposerUiModule(deps) {
             title: String(activity.title || ""),
             detail: String(activity.detail || ""),
             tone: String(activity.tone || ""),
+          }
+        : null,
+      statusCard: statusCard
+        ? {
+            threadId: String(statusCard.threadId || ""),
+            title: String(statusCard.title || ""),
+            sessionId: String(statusCard.sessionId || ""),
           }
         : null,
       pendingThreadId: String(state.activeThreadPendingTurnThreadId || ""),
@@ -684,6 +698,13 @@ export function createComposerUiModule(deps) {
       node.__runtimeHtml = nextHtml;
       if (hadHtml && nextHtml) animateRuntimeSectionRefresh(node);
     };
+    const updateTextIfChanged = (node, text) => {
+      if (!node) return;
+      const nextText = String(text || "");
+      if (node.__runtimeText === nextText) return;
+      node.textContent = nextText;
+      node.__runtimeText = nextText;
+    };
 
     if (planNode) {
       updateHtmlIfChanged(planNode, plan ? renderPlanHtml(plan) : "");
@@ -696,6 +717,14 @@ export function createComposerUiModule(deps) {
     if (commandNode) {
       updateHtmlIfChanged(commandNode, commands.length ? commands.map(renderCommandEntryHtml).join("") : "");
       setRuntimeSectionVisible(commandNode, commands.length > 0);
+    }
+    if (statusTrayMount) {
+      updateTextIfChanged(statusTrayTitle, statusCard ? String(statusCard.title || "Status").trim() || "Status" : "");
+      updateTextIfChanged(statusTraySessionValue, statusCard ? String(statusCard.sessionId || "").trim() || "Unavailable" : "");
+      if (statusTraySessionValue?.classList?.toggle) {
+        statusTraySessionValue.classList.toggle("is-empty", !!statusCard && !String(statusCard.sessionId || "").trim());
+      }
+      setRuntimeSectionVisible(statusTrayMount, !!statusCard);
     }
     updateHtmlIfChanged(activityNode, activity ? renderActivityHtml(activity) : "");
     activityNode.style.display = activity ? "" : "none";
@@ -738,6 +767,36 @@ export function createComposerUiModule(deps) {
   function setRuntimeActivity(activity) {
     assignRuntimeActivity(activity);
     renderRuntimePanels();
+  }
+
+  function assignThreadStatusCard(card) {
+    const threadId = String(card?.threadId || resolveCurrentThreadId(state) || card?.sessionId || "").trim();
+    const sessionId = String(card?.sessionId || card?.session_id || "").trim();
+    if (!threadId && !sessionId) {
+      state.activeThreadStatusCard = null;
+      return null;
+    }
+    state.activeThreadStatusCard = {
+      threadId,
+      title: String(card?.title || "Status").trim() || "Status",
+      sessionId,
+    };
+    return state.activeThreadStatusCard;
+  }
+
+  function setThreadStatusCard(card) {
+    assignThreadStatusCard(card);
+    renderRuntimePanels();
+  }
+
+  function clearThreadStatusCard(threadId = resolveCurrentThreadId(state)) {
+    const current = state.activeThreadStatusCard;
+    if (!current) return false;
+    const normalizedThreadId = String(threadId || "").trim();
+    if (normalizedThreadId && String(current.threadId || "").trim() !== normalizedThreadId) return false;
+    state.activeThreadStatusCard = null;
+    renderRuntimePanels();
+    return true;
   }
 
   function upsertActiveCommand(entry) {
@@ -1549,7 +1608,9 @@ export function createComposerUiModule(deps) {
     setComposerBranchMenuOpen,
     setComposerPermissionMenuOpen,
     setRuntimeActivity,
+    setThreadStatusCard,
     setMainTab,
+    clearThreadStatusCard,
     showWelcomeCard,
     refreshActiveThreadGitMeta,
     syncRuntimeStateFromHistory,

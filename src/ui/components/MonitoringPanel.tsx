@@ -975,10 +975,29 @@ function getLocalDomainGlow(domain: LocalDomain | null | undefined): string {
   return `0 0 0 1px ${accent}, 0 10px 28px ${accent.replace('0.42', '0.08')}`
 }
 
-export function isMonitoringDevPreview() {
-  if (typeof window === 'undefined') return false
+type MonitoringDevPreviewEnv = {
+  DEV?: boolean
+}
+
+type MonitoringDevPreviewWindow = {
+  location?: {
+    port?: string
+  }
+}
+
+type MonitoringDevPreviewOptions = {
+  importMetaEnv?: MonitoringDevPreviewEnv
+  windowRef?: MonitoringDevPreviewWindow
+}
+
+export function isMonitoringDevPreview({
+  importMetaEnv = import.meta.env,
+  windowRef = typeof window === 'undefined' ? undefined : window,
+}: MonitoringDevPreviewOptions = {}) {
+  if (!importMetaEnv?.DEV) return false
+  if (!windowRef?.location) return false
   if (hasTauriInvokeAvailable()) return false
-  return window.location.port === '5173'
+  return windowRef.location.port === '5173'
 }
 
 export function hasTauriInvokeAvailable(): boolean {

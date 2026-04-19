@@ -37,6 +37,7 @@ export function createActionBindingsModule(deps) {
     bindResponsiveClick,
     bindInput,
     setStatus,
+    clearThreadStatusCard = () => {},
     updateMobileComposerState,
     updateNotificationState,
     armSyntheticClickSuppression,
@@ -494,6 +495,9 @@ export function createActionBindingsModule(deps) {
       } catch (error) {
         setStatus(resolveActionErrorMessage(error, "Failed to preview pending actions."), true);
       }
+    });
+    bindClick("statusTrayCloseBtn", () => {
+      clearThreadStatusCard();
     });
     bindClick("settingsFullAccessOnBtn", () =>
       executeSlashCommand("/permission full-access", {

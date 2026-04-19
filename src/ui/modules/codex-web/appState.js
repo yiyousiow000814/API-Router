@@ -257,6 +257,7 @@ export function createInitialState() {
     activeThreadActivity: null,
     activeThreadActiveCommands: [],
     activeThreadPlan: null,
+    activeThreadStatusCard: null,
     composerBranchMenuOpen: false,
     composerPermissionMenuOpen: false,
     slashCommands: [],

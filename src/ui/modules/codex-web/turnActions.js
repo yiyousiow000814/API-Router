@@ -109,6 +109,14 @@ function readSlashResultThreadId(value, fallback = "") {
   ).trim();
 }
 
+function readSlashStatusSessionId(value, fallback = "") {
+  return String(
+    value?.sessionId ||
+    value?.session_id ||
+    fallback
+  ).trim();
+}
+
 function buildThreadResumeUrl(threadId, options = {}) {
   const params = new URLSearchParams();
   const workspace = String(options.workspace || "").trim();
@@ -213,6 +221,7 @@ export function createTurnActionsModule(deps) {
     clearTransientToolMessages = () => {},
     clearTransientThinkingMessages = () => {},
     hideSlashCommandMenu = () => {},
+    setThreadStatusCard = () => {},
     blockInSandbox,
     localStorageRef,
     FAST_MODE_DEVICE_DEFAULT_KEY = "web_codex_fast_mode_device_default_v1",
@@ -737,7 +746,9 @@ export function createTurnActionsModule(deps) {
     if (!prompt) return interruptTurn();
     if (isSlashCommandPrompt(prompt)) {
       if (state.activeThreadPendingTurnRunning === true) {
-        throw new Error("Wait for the current turn to finish before using slash commands.");
+        if (String(prompt || "").trim() !== "/status") {
+          throw new Error("Wait for the current turn to finish before using slash commands.");
+        }
       }
       return sendTurn();
     }
@@ -894,6 +905,38 @@ export function createTurnActionsModule(deps) {
         method: "web/planMode/set",
         result: { mode: state.planModeEnabled === true ? "plan" : "default" },
       };
+    }
+    if (trimmed === "/status") {
+      const sessionThreadId = resolveCurrentThreadId(state);
+      const response = await api("/codex/slash/execute", {
+        method: "POST",
+        body: {
+          command: trimmed,
+          threadId: sessionThreadId || undefined,
+          workspace,
+          serviceTier: state.fastModeEnabled === true ? "fast" : null,
+          ...(() => {
+            const permission = buildPermissionRuntimeOptions(state.permissionPresetByWorkspace?.[workspace]);
+            return {
+              approvalPolicy: permission.approvalPolicy,
+              sandbox: permission.sandbox,
+            };
+          })(),
+        },
+      });
+      const result = response?.result || null;
+      const sessionId = readSlashStatusSessionId(result, sessionThreadId);
+      const statusSessionId = sessionId || sessionThreadId || "";
+      if (options.clearPrompt !== false) clearPromptValue();
+      if (options.hideMenu !== false) hideSlashCommandMenu();
+      if (options.switchToChat !== false) setMainTab("chat");
+      if (options.setStatus !== false) setStatus("Status opened.");
+      setThreadStatusCard({
+        threadId: sessionThreadId || activeThreadId || "",
+        sessionId: statusSessionId,
+        title: "Status",
+      });
+      return response;
     }
     let activeThreadId = resolveCurrentThreadId(state);
     if (!activeThreadId && requiresActiveThreadForSlashCommand(trimmed)) {
@@ -1059,12 +1102,15 @@ export function createTurnActionsModule(deps) {
     const startCwd = getStartCwdForWorkspace(workspace);
     if (state.activeThreadPendingTurnRunning === true && options.fromQueuedTurn !== true) {
       if (isSlashCommandPrompt(prompt)) {
-        throw new Error("Wait for the current turn to finish before using slash commands.");
-      }
-      const queued = queuePendingTurn(prompt, "queue");
-      if (queued) {
-        setStatus("Queued after the current turn.");
-        return;
+        if (String(prompt || "").trim() !== "/status") {
+          throw new Error("Wait for the current turn to finish before using slash commands.");
+        }
+      } else {
+        const queued = queuePendingTurn(prompt, "queue");
+        if (queued) {
+          setStatus("Queued after the current turn.");
+          return;
+        }
       }
     }
     if (isSlashCommandPrompt(prompt)) {

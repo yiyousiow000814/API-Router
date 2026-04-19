@@ -2,7 +2,6 @@ const HIDDEN_WEB_SLASH_COMMANDS = new Set([
   "/help",
   "/model",
   "/new",
-  "/status",
   "/fork",
   "/rename",
 ]);

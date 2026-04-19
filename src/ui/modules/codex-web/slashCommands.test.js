@@ -13,6 +13,7 @@ describe("slashCommands", () => {
       normalizeSlashCommandCatalog({
         commands: [
           { command: "/help", usage: "/help", insertText: "/help", description: "Show help" },
+          { command: "/status", usage: "/status", insertText: "/status", description: "Show session id" },
           { command: "/fork", usage: "/fork", insertText: "/fork", description: "hidden" },
           {
             command: "/plan",
@@ -27,6 +28,14 @@ describe("slashCommands", () => {
         ],
       })
     ).toEqual([
+      {
+        command: "/status",
+        usage: "/status",
+        insertText: "/status",
+        description: "Show session id",
+        active: false,
+        children: [],
+      },
       {
         command: "/plan",
         usage: "/plan",
@@ -90,11 +99,13 @@ describe("slashCommands", () => {
     const commands = [
       { command: "/plan", usage: "/plan", insertText: "/plan", description: "Plan mode", children: [] },
       { command: "/compact", usage: "/compact", insertText: "/compact", description: "Compact", children: [] },
+      { command: "/status", usage: "/status", insertText: "/status", description: "Session", children: [] },
       { command: "/review", usage: "/review", insertText: "/review", description: "Review", children: [] },
     ];
     expect(filterSlashCommands(commands, "/pl")).toEqual([commands[0]]);
     expect(filterSlashCommands(commands, "/com")).toEqual([commands[1]]);
-    expect(filterSlashCommands(commands, "/re")).toEqual([commands[2]]);
+    expect(filterSlashCommands(commands, "/st")).toEqual([commands[2]]);
+    expect(filterSlashCommands(commands, "/re")).toEqual([commands[3]]);
   });
 
   it("enters a submenu when selecting a parent slash command", async () => {
