@@ -1085,16 +1085,60 @@ fn normalize_rollout_item_thread(item: &mut serde_json::Map<String, Value>, thre
         .or_insert_with(|| Value::String(thread_id.to_string()));
 }
 
-fn rollout_status_notification(thread_id: &str, status: &str) -> Value {
+fn thread_status_notification(
+    thread_id: &str,
+    status: &str,
+    source: &str,
+    message: Option<&str>,
+) -> Value {
+    let mut params = serde_json::Map::from_iter([
+        ("threadId".to_string(), Value::String(thread_id.to_string())),
+        (
+            "thread_id".to_string(),
+            Value::String(thread_id.to_string()),
+        ),
+        ("status".to_string(), Value::String(status.to_string())),
+        ("source".to_string(), Value::String(source.to_string())),
+    ]);
+    if let Some(message) = message.map(str::trim).filter(|value| !value.is_empty()) {
+        params.insert("message".to_string(), Value::String(message.to_string()));
+    }
     serde_json::json!({
         "method": "thread/status/changed",
-        "params": {
-            "threadId": thread_id,
-            "thread_id": thread_id,
-            "status": status,
-            "source": "rollout_live_sync",
-        }
+        "params": Value::Object(params),
     })
+}
+
+pub async fn push_thread_status_changed_notification(
+    codex_home: Option<&str>,
+    thread_id: &str,
+    status: &str,
+    source: &str,
+    message: Option<&str>,
+) {
+    let normalized_thread_id = thread_id.trim();
+    let normalized_status = status.trim();
+    let normalized_source = source.trim();
+    if normalized_thread_id.is_empty()
+        || normalized_status.is_empty()
+        || normalized_source.is_empty()
+    {
+        return;
+    }
+    push_notification(
+        codex_home,
+        thread_status_notification(
+            normalized_thread_id,
+            normalized_status,
+            normalized_source,
+            message,
+        ),
+    )
+    .await;
+}
+
+fn rollout_status_notification(thread_id: &str, status: &str) -> Value {
+    thread_status_notification(thread_id, status, "rollout_live_sync", None)
 }
 
 fn rollout_turn_notification(
@@ -2344,6 +2388,92 @@ mod tests {
         assert_eq!(last, Some(1));
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].get("eventId").and_then(Value::as_u64), Some(1));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn push_thread_status_changed_notification_preserves_message_and_source() {
+        let _guard = lock_tests();
+        let _home = isolate_default_codex_home();
+        _clear_notifications_for_test().await;
+
+        let codex_home = std::env::var("CODEX_HOME").expect("isolated codex home");
+        ensure_notification_home_state(Some(codex_home.as_str())).await;
+        push_thread_status_changed_notification(
+            Some(codex_home.as_str()),
+            "thread-1",
+            "reconnecting",
+            "gateway.upstream_retry",
+            Some("provider-a 1/5"),
+        )
+        .await;
+        push_thread_status_changed_notification(
+            Some(codex_home.as_str()),
+            "thread-1",
+            "failed",
+            "gateway.upstream_error",
+            Some("provider-a exhausted retries"),
+        )
+        .await;
+
+        let (items, first, last, gap) =
+            replay_notifications_since_in_home(Some(codex_home.as_str()), 0, 8).await;
+        assert!(!gap);
+        assert_eq!(first, Some(1));
+        assert_eq!(last, Some(2));
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0].get("method").and_then(Value::as_str),
+            Some("thread/status/changed")
+        );
+        assert_eq!(
+            items[0]
+                .get("params")
+                .and_then(|value| value.get("threadId"))
+                .and_then(Value::as_str),
+            Some("thread-1")
+        );
+        assert_eq!(
+            items[0]
+                .get("params")
+                .and_then(|value| value.get("status"))
+                .and_then(Value::as_str),
+            Some("reconnecting")
+        );
+        assert_eq!(
+            items[0]
+                .get("params")
+                .and_then(|value| value.get("source"))
+                .and_then(Value::as_str),
+            Some("gateway.upstream_retry")
+        );
+        assert_eq!(
+            items[0]
+                .get("params")
+                .and_then(|value| value.get("message"))
+                .and_then(Value::as_str),
+            Some("provider-a 1/5")
+        );
+        assert_eq!(
+            items[1]
+                .get("params")
+                .and_then(|value| value.get("status"))
+                .and_then(Value::as_str),
+            Some("failed")
+        );
+        assert_eq!(
+            items[1]
+                .get("params")
+                .and_then(|value| value.get("source"))
+                .and_then(Value::as_str),
+            Some("gateway.upstream_error")
+        );
+        assert_eq!(
+            items[1]
+                .get("params")
+                .and_then(|value| value.get("message"))
+                .and_then(Value::as_str),
+            Some("provider-a exhausted retries")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -1,5 +1,6 @@
 import { createMockCodexTransport } from "./mockTransport.js";
 import { synthesizeProvisionalThreadItem } from "./notificationRouting.js";
+import { setThreadOpenState } from "./threadOpenState.js";
 
 export function ensureArrayItems(value) {
   if (Array.isArray(value)) return value;
@@ -575,9 +576,20 @@ export function createWsClientModule(deps) {
       pushLiveDebugEvent("ws.open", {
         url: wsUrl,
       });
+      const hadReconnectAttempt = Number(state.wsReconnectAttempt || 0) > 0;
       state.wsReconnectAttempt = 0;
       setStatus("Connected (live updates syncing).");
       restoreRuntimeActivityAfterReconnect();
+      if (hadReconnectAttempt && String(state.activeThreadId || "").trim()) {
+        const openState = state.activeThreadOpenState;
+        if (openState?.loaded === true) {
+          setThreadOpenState(state, {
+            ...openState,
+            threadStatusType: "notLoaded",
+            loaded: false,
+          });
+        }
+      }
       startWsHeartbeat(ws);
       let lastEventId = 0;
       try {

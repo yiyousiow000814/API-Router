@@ -838,6 +838,113 @@ describe("wsClient", () => {
     });
   });
 
+  it("invalidates the active thread open state after reconnecting websocket open", () => {
+    class FakeWebSocket {
+      static OPEN = 1;
+      static CONNECTING = 0;
+      static instances = [];
+      constructor(url) {
+        this.url = url;
+        this.readyState = FakeWebSocket.CONNECTING;
+        FakeWebSocket.instances.push(this);
+      }
+      send() {}
+    }
+    const state = {
+      token: "",
+      ws: null,
+      wsPingTimer: null,
+      wsReconnectTimer: null,
+      wsReconnectAttempt: 2,
+      wsConnectSeq: 0,
+      wsReqHandlers: new Map(),
+      pendingApprovals: [],
+      pendingUserInputs: [],
+      wsLastEventId: 0,
+      wsRecentEventIds: new Set(),
+      wsSubscribedEvents: false,
+      activeThreadId: "thread-1",
+      activeThreadWorkspace: "windows",
+      activeThreadOpenState: {
+        threadId: "thread-1",
+        threadStatusType: "idle",
+        historyThreadId: "",
+        historyStatusType: "",
+        historyIncomplete: false,
+        pendingTurnRunning: false,
+        pendingThreadId: "",
+        loaded: true,
+        resumeRequired: false,
+        resumeReason: "loaded",
+      },
+      workspaceTarget: "windows",
+      liveDebugEvents: [],
+    };
+    const module = createWsClientModule({
+      state,
+      setStatus() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh() {},
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "0"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: FakeWebSocket,
+      fetchRef: async () => ({ ok: true, json: async () => ({}) }),
+      setTimeoutRef(callback, delay) {
+        return { callback, delay };
+      },
+      clearTimeoutRef() {},
+      setIntervalRef() {
+        return 1;
+      },
+      clearIntervalRef() {},
+      WS_RECONNECT_BASE_MS: 25,
+      WS_RECONNECT_MAX_MS: 25,
+    });
+
+    module.connectWs();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    FakeWebSocket.instances[0].readyState = FakeWebSocket.OPEN;
+    FakeWebSocket.instances[0].onopen();
+
+    expect(state.wsReconnectAttempt).toBe(0);
+    expect(state.activeThreadOpenState).toMatchObject({
+      threadId: "thread-1",
+      threadStatusType: "notloaded",
+      loaded: false,
+      resumeRequired: true,
+      resumeReason: "thread-not-loaded",
+    });
+  });
+
   it("surfaces reconnecting activity and errors after reconnect retries are exhausted", () => {
     const activities = [];
     const statuses = [];

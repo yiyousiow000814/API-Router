@@ -727,7 +727,7 @@ describe("threadListView", () => {
         method: "GET",
       },
     ]);
-    expect(state.activeThreadOpenState.loaded).toBe(true);
+    expect(state.activeThreadOpenState.loaded).toBe(false);
     expect(state.activeThreadAttachTransport).toBe("terminal-session");
     expect(state.threadAttachTransportById.get("thread-1")).toBe("terminal-session");
   });
@@ -767,7 +767,7 @@ describe("threadListView", () => {
         method: "GET",
       },
     ]);
-    expect(state.activeThreadOpenState.loaded).toBe(true);
+    expect(state.activeThreadOpenState.loaded).toBe(false);
   });
 
   it("resumes only after history proves the opened thread is still active", async () => {

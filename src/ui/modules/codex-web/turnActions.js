@@ -224,7 +224,9 @@ export function createTurnActionsModule(deps) {
   }
 
   function activeThreadRequiresResume() {
-    return (state.activeThreadOpenState || resolveThreadOpenState()).resumeRequired === true;
+    const openState = state.activeThreadOpenState;
+    if (openState && openState.loaded !== true) return true;
+    return (openState || resolveThreadOpenState()).resumeRequired === true;
   }
 
   function shouldMirrorPendingResolutionToChat() {
@@ -917,7 +919,7 @@ export function createTurnActionsModule(deps) {
         setActiveThreadOpenState(
           resolveThreadOpenState({
             threadId: activeThreadId,
-            loaded: attached,
+            loaded: true,
           })
         );
         state.activeThreadAttachTransport = attachTransport;
@@ -993,7 +995,7 @@ export function createTurnActionsModule(deps) {
         setActiveThreadOpenState(
           resolveThreadOpenState({
             threadId: nextThreadId,
-            loaded: attachedLiveThread(result),
+            loaded: true,
           })
         );
       state.activeThreadAttachTransport = attachTransport;
@@ -1095,7 +1097,7 @@ export function createTurnActionsModule(deps) {
         setActiveThreadOpenState(
           resolveThreadOpenState({
             threadId: activeThreadId,
-            loaded: attached,
+            loaded: true,
           })
         );
         state.activeThreadAttachTransport = attachTransport;

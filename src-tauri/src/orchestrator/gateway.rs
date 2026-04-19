@@ -647,23 +647,7 @@ fn cached_unsupported_model_response(
     requested_model: Option<&str>,
     unsupported_providers: &HashSet<String>,
 ) -> Response {
-    let model = requested_model
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("requested model");
-    let mut providers = unsupported_providers
-        .iter()
-        .map(|provider| provider.as_str())
-        .collect::<Vec<_>>();
-    providers.sort_unstable();
-    let message = if providers.is_empty() {
-        format!("Unsupported model: {model}")
-    } else {
-        format!(
-            "Unsupported model: {model}; unsupported by providers: {}",
-            providers.join(", ")
-        )
-    };
+    let message = unsupported_model_message(requested_model, unsupported_providers);
     (
         StatusCode::BAD_REQUEST,
         Json(json!({
@@ -674,6 +658,29 @@ fn cached_unsupported_model_response(
         })),
     )
         .into_response()
+}
+
+fn unsupported_model_message(
+    requested_model: Option<&str>,
+    unsupported_providers: &HashSet<String>,
+) -> String {
+    let model = requested_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("requested model");
+    let mut providers = unsupported_providers
+        .iter()
+        .map(|provider| provider.as_str())
+        .collect::<Vec<_>>();
+    providers.sort_unstable();
+    if providers.is_empty() {
+        format!("Unsupported model: {model}")
+    } else {
+        format!(
+            "Unsupported model: {model}; unsupported by providers: {}",
+            providers.join(", ")
+        )
+    }
 }
 
 fn is_retryable_upstream_status(code: u16) -> bool {
@@ -693,29 +700,77 @@ fn should_fallback_stream_response_to_non_stream(code: u16, body: &str) -> bool 
             .is_some_and(|err_code| err_code == "token_invalidated")
 }
 
-fn log_upstream_retry_event(
-    st: &GatewayState,
-    provider_name: &str,
-    kind: &str,
-    detail: &str,
+#[derive(Clone, Copy)]
+struct GatewayThreadNotificationTarget<'a> {
+    home: Option<&'a str>,
+    thread_id: Option<&'a str>,
+}
+
+struct UpstreamRetryEvent<'a> {
+    provider_name: &'a str,
+    kind: &'a str,
+    detail: &'a str,
     attempt: usize,
     max_attempts: usize,
     stream: bool,
+}
+
+struct NonStreamRetryRequest<'a> {
+    provider_name: &'a str,
+    provider: &'a super::config::ProviderConfig,
+    payload: &'a Value,
+    api_key: Option<&'a str>,
+    client_auth: Option<&'a str>,
+    timeout: u64,
+}
+
+async fn push_gateway_thread_status_notification(
+    notification_home: Option<&str>,
+    thread_id: Option<&str>,
+    status: &str,
+    source: &str,
+    message: Option<&str>,
+) {
+    let Some(thread_id) = thread_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    crate::codex_app_server::push_thread_status_changed_notification(
+        notification_home,
+        thread_id,
+        status,
+        source,
+        message,
+    )
+    .await;
+}
+
+async fn log_upstream_retry_event(
+    st: &GatewayState,
+    notification: GatewayThreadNotificationTarget<'_>,
+    event: UpstreamRetryEvent<'_>,
 ) {
     let cfg = st.cfg.read().clone();
     st.router
-        .mark_transient_warning(provider_name, &cfg, detail, unix_ms());
+        .mark_transient_warning(event.provider_name, &cfg, event.detail, unix_ms());
     st.store.events().emit(
-        provider_name,
+        event.provider_name,
         crate::orchestrator::store::EventCode::GATEWAY_UPSTREAM_RETRY,
-        detail,
+        event.detail,
         json!({
-            "kind": kind,
-            "attempt": attempt,
-            "max_attempts": max_attempts,
-            "stream": stream,
+            "kind": event.kind,
+            "attempt": event.attempt,
+            "max_attempts": event.max_attempts,
+            "stream": event.stream,
         }),
     );
+    push_gateway_thread_status_notification(
+        notification.home,
+        notification.thread_id,
+        "reconnecting",
+        "gateway.upstream_retry",
+        Some(event.detail),
+    )
+    .await;
 }
 
 fn log_websocket_fallback_event(st: &GatewayState, provider_name: &str, detail: &str) {
@@ -732,24 +787,20 @@ fn log_websocket_fallback_event(st: &GatewayState, provider_name: &str, detail: 
 
 async fn post_non_stream_with_http_retry(
     st: &GatewayState,
-    provider_name: &str,
-    provider: &super::config::ProviderConfig,
-    payload: &Value,
-    api_key: Option<&str>,
-    client_auth: Option<&str>,
-    timeout: u64,
+    notification: GatewayThreadNotificationTarget<'_>,
+    request: NonStreamRetryRequest<'_>,
 ) -> Result<(u16, Value), reqwest::Error> {
     let mut http_result = None;
     for attempt in 1..=TRANSIENT_UPSTREAM_RETRY_ATTEMPTS {
         let result = st
             .upstream
             .post_json(
-                provider,
+                request.provider,
                 RESPONSES_ENDPOINT,
-                payload,
-                api_key,
-                client_auth,
-                timeout,
+                request.payload,
+                request.api_key,
+                request.client_auth,
+                request.timeout,
             )
             .await;
         let should_retry = match &result {
@@ -764,10 +815,14 @@ async fn post_non_stream_with_http_retry(
         if should_retry {
             let detail = match &result {
                 Ok((code, _)) => {
-                    format!("retrying upstream non-stream after http {code} from {provider_name}")
+                    format!(
+                        "retrying upstream non-stream after http {code} from {}",
+                        request.provider_name
+                    )
                 }
                 Err(e) => format!(
-                    "retrying upstream non-stream after request error from {provider_name}: {e}"
+                    "retrying upstream non-stream after request error from {}: {e}",
+                    request.provider_name
                 ),
             };
             let kind = if result.is_ok() {
@@ -777,13 +832,17 @@ async fn post_non_stream_with_http_retry(
             };
             log_upstream_retry_event(
                 st,
-                provider_name,
-                kind,
-                &detail,
-                attempt,
-                TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
-                false,
-            );
+                notification,
+                UpstreamRetryEvent {
+                    provider_name: request.provider_name,
+                    kind,
+                    detail: &detail,
+                    attempt,
+                    max_attempts: TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
+                    stream: false,
+                },
+            )
+            .await;
             tokio::time::sleep(std::time::Duration::from_millis(
                 TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
             ))
@@ -1017,6 +1076,7 @@ use self::web_codex_assets::{
     codex_web_app_js, codex_web_favicon, codex_web_icon_svg, codex_web_index, codex_web_logo_png,
     codex_web_module_js,
 };
+use self::web_codex_home::web_codex_rpc_home_override_for_target;
 use self::web_codex_hosts::{
     codex_hosts_create, codex_hosts_delete, codex_hosts_list, codex_hosts_update,
 };
@@ -1232,6 +1292,16 @@ async fn responses(
     let request_base_url = request_base_url_hint(&headers, cfg.listen.port);
     let request_origin = usage_origin_from_base_url(request_base_url.as_deref());
     let request_is_wsl = request_origin == crate::constants::USAGE_ORIGIN_WSL2;
+    let notification_home = web_codex_rpc_home_override_for_target(Some(if request_is_wsl {
+        web_codex_home::WorkspaceTarget::Wsl2
+    } else {
+        web_codex_home::WorkspaceTarget::Windows
+    }));
+    let notification_thread_id = (!session_key.starts_with("peer:")).then_some(session_key.clone());
+    let notification = GatewayThreadNotificationTarget {
+        home: notification_home.as_deref(),
+        thread_id: notification_thread_id.as_deref(),
+    };
     let inferred_wt_marker = client_session.as_ref().map(|s| {
         let wt = s
             .wt_session
@@ -1486,6 +1556,18 @@ async fn responses(
                 provider_name = picked;
                 reason = "session_invalid_request_fallback";
             } else if request_unsupported_providers.contains(&provider_name) {
+                let unsupported_message = unsupported_model_message(
+                    requested_model.as_deref(),
+                    &request_unsupported_providers,
+                );
+                push_gateway_thread_status_notification(
+                    notification_home.as_deref(),
+                    notification_thread_id.as_deref(),
+                    "failed",
+                    "gateway.invalid_request",
+                    Some(&unsupported_message),
+                )
+                .await;
                 invalid_request_response = Some(cached_unsupported_model_response(
                     requested_model.as_deref(),
                     &request_unsupported_providers,
@@ -1498,6 +1580,14 @@ async fn responses(
                 "no routable providers available; preferred={preferred}; tried={}",
                 tried.join(",")
             );
+            push_gateway_thread_status_notification(
+                notification_home.as_deref(),
+                notification_thread_id.as_deref(),
+                "failed",
+                "gateway.no_routable_provider",
+                Some(&last_err),
+            )
+            .await;
             break;
         }
         if tried.contains(&provider_name) {
@@ -1829,15 +1919,19 @@ async fn responses(
                             if can_retry {
                                 log_upstream_retry_event(
                                     &st,
-                                    &provider_name,
-                                    "http_status",
-                                    &format!(
-                                        "retrying upstream stream after http {code} from {provider_name}"
-                                    ),
-                                    attempt,
-                                    TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
-                                    true,
-                                );
+                                    notification,
+                                    UpstreamRetryEvent {
+                                        provider_name: &provider_name,
+                                        kind: "http_status",
+                                        detail: &format!(
+                                            "retrying upstream stream after http {code} from {provider_name}"
+                                        ),
+                                        attempt,
+                                        max_attempts: TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
+                                        stream: true,
+                                    },
+                                )
+                                .await;
                                 tokio::time::sleep(std::time::Duration::from_millis(
                                     TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
                                 ))
@@ -1881,6 +1975,14 @@ async fn responses(
                                         "stream": true
                                     }),
                                 );
+                                push_gateway_thread_status_notification(
+                                    notification_home.as_deref(),
+                                    notification_thread_id.as_deref(),
+                                    "failed",
+                                    "gateway.invalid_request",
+                                    Some(&last_err),
+                                )
+                                .await;
                                 remember_session_unsupported_model_provider(
                                     &session_key,
                                     requested_model.as_deref(),
@@ -1903,6 +2005,14 @@ async fn responses(
                                     "stream": true
                                 }),
                             );
+                            push_gateway_thread_status_notification(
+                                notification_home.as_deref(),
+                                notification_thread_id.as_deref(),
+                                "failed",
+                                "gateway.upstream_error",
+                                Some(&last_err),
+                            )
+                            .await;
                             refresh_usage_once_after_first_failure(
                                 &st,
                                 &provider_name,
@@ -1917,15 +2027,19 @@ async fn responses(
                             if can_retry {
                                 log_upstream_retry_event(
                                     &st,
-                                    &provider_name,
-                                    "request_error",
-                                    &format!(
-                                        "retrying upstream stream after request error from {provider_name}: {e}"
-                                    ),
-                                    attempt,
-                                    TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
-                                    true,
-                                );
+                                    notification,
+                                    UpstreamRetryEvent {
+                                        provider_name: &provider_name,
+                                        kind: "request_error",
+                                        detail: &format!(
+                                            "retrying upstream stream after request error from {provider_name}: {e}"
+                                        ),
+                                        attempt,
+                                        max_attempts: TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
+                                        stream: true,
+                                    },
+                                )
+                                .await;
                                 tokio::time::sleep(std::time::Duration::from_millis(
                                     TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
                                 ))
@@ -1961,6 +2075,14 @@ async fn responses(
                                 &last_err,
                                 json!({ "endpoint": RESPONSES_ENDPOINT, "stream": true }),
                             );
+                            push_gateway_thread_status_notification(
+                                notification_home.as_deref(),
+                                notification_thread_id.as_deref(),
+                                "failed",
+                                "gateway.upstream_error",
+                                Some(&last_err),
+                            )
+                            .await;
                             refresh_usage_once_after_first_failure(
                                 &st,
                                 &provider_name,
@@ -2010,12 +2132,15 @@ async fn responses(
                         );
                         post_non_stream_with_http_retry(
                             &st,
-                            &provider_name,
-                            &p,
-                            &body_for_provider,
-                            api_key.as_deref(),
-                            client_auth,
-                            timeout,
+                            notification,
+                            NonStreamRetryRequest {
+                                provider_name: &provider_name,
+                                provider: &p,
+                                payload: &body_for_provider,
+                                api_key: api_key.as_deref(),
+                                client_auth,
+                                timeout,
+                            },
                         )
                         .await
                     }
@@ -2023,12 +2148,15 @@ async fn responses(
             } else {
                 post_non_stream_with_http_retry(
                     &st,
-                    &provider_name,
-                    &p,
-                    &body_for_provider,
-                    api_key.as_deref(),
-                    client_auth,
-                    timeout,
+                    notification,
+                    NonStreamRetryRequest {
+                        provider_name: &provider_name,
+                        provider: &p,
+                        payload: &body_for_provider,
+                        api_key: api_key.as_deref(),
+                        client_auth,
+                        timeout,
+                    },
                 )
                 .await
             };
@@ -2173,6 +2301,14 @@ async fn responses(
                                 "stream": false
                             }),
                         );
+                        push_gateway_thread_status_notification(
+                            notification_home.as_deref(),
+                            notification_thread_id.as_deref(),
+                            "failed",
+                            "gateway.invalid_request",
+                            Some(&last_err),
+                        )
+                        .await;
                         remember_session_unsupported_model_provider(
                             &session_key,
                             requested_model.as_deref(),
@@ -2192,6 +2328,14 @@ async fn responses(
                         &last_err,
                         json!({ "http_status": code, "endpoint": RESPONSES_ENDPOINT, "stream": false }),
                     );
+                    push_gateway_thread_status_notification(
+                        notification_home.as_deref(),
+                        notification_thread_id.as_deref(),
+                        "failed",
+                        "gateway.upstream_error",
+                        Some(&last_err),
+                    )
+                    .await;
                     refresh_usage_once_after_first_failure(
                         &st,
                         &provider_name,
@@ -2211,6 +2355,14 @@ async fn responses(
                         &last_err,
                         json!({ "endpoint": RESPONSES_ENDPOINT, "stream": false }),
                     );
+                    push_gateway_thread_status_notification(
+                        notification_home.as_deref(),
+                        notification_thread_id.as_deref(),
+                        "failed",
+                        "gateway.upstream_error",
+                        Some(&last_err),
+                    )
+                    .await;
                     refresh_usage_once_after_first_failure(
                         &st,
                         &provider_name,

@@ -179,7 +179,7 @@ export async function resumeThreadLiveOnOpen({
   });
   const needsResume = openState.resumeRequired === true;
   if (!needsResume) {
-    setThreadOpenState(state, openState, { loaded: true });
+    setThreadOpenState(state, openState);
     await syncThreadAttachTransport({ threadId: id, workspace, state, api });
     if (workspace === "windows" || workspace === "wsl2") {
       await refreshWorkspaceRuntimeState(workspace, { silent: true, updateHeader: true }).catch(() => null);
