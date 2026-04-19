@@ -25,7 +25,7 @@ export function createCodexWebComposition(deps) {
   const { api, connectWs, handleWsPayload, syncEventSubscription, wsCall, wsSend } = deps.createWsClientModule({
     state: deps.state,
     setStatus: deps.setStatus,
-    addChat: chatTimeline.addChat,
+    addChat: (...args) => chatTimeline.addChat(...args),
     clearTransientToolMessages: deps.clearTransientToolMessages,
     setRuntimeActivity: deps.setRuntimeActivity,
     toRecord: deps.toRecord,
