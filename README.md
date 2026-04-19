@@ -4,56 +4,55 @@
 
 # API Router
 
-**A professional desktop gateway for seamless AI provider orchestration.**
+**A local gateway for managing and switching between AI model providers.**
 
-API Router is a lightweight desktop application designed to provide a stable, local gateway for various AI services (such as OpenAI, Claude, and others). It allows users to switch between different model providers without modifying application code or complex configuration files.
-
----
-
-### Key Capabilities
-
-- **Seamless Switching**: Change the active AI provider through the desktop interface; all connected tools update their routing instantly.
-- **Automated Failover**: Built-in redundancy ensures that if a primary provider becomes unavailable, the router can automatically fallback to a secondary service.
-- **Local-First Security**: API keys and sensitive credentials are stored exclusively on your local machine.
-- **Background Operation**: Runs as a native system tray application for minimal workflow interruption.
+API Router is a desktop application that provides a stable, local endpoint for various AI services. It allows you to switch between providers (such as OpenAI or Claude) without modifying your tool configurations or source code.
 
 ---
 
-### Quick Start Guide
+### Key Features
 
-1.  **Download**: Obtain the latest `API Router.exe` from the [GitHub Releases](https://github.com/yiyousiow000814/API-Router/releases) page.
-2.  **Configuration**: Launch the application, select "Add Provider," and input your API credentials.
-3.  **Integration**: Point your AI-enabled tool (such as Codex) to the local gateway address:  
-    `http://127.0.0.1:4000/v1`
+*   🔄 **Model Routing**: Change your active AI provider in the app interface; all connected clients update instantly.
+*   🛡️ **Automatic Failover**: If a primary provider is unavailable, the router can fallback to a secondary service.
+*   🔒 **Local Security**: API keys and credentials are stored exclusively on your local machine.
+*   💻 **System Integration**: Runs as a background application with a system tray icon for quick access.
 
 ---
 
-### For Developers and Advanced Users
+### Quick Start
 
-To contribute to the project or build the executable from source, follow the instructions below.
+1.  **Download**: Get the latest `API Router.exe` from [GitHub Releases](https://github.com/yiyousiow000814/API-Router/releases).
+2.  **Setup**: Launch the app, select **Add Provider**, and enter your API key.
+3.  **Connect**: Point your AI tool (e.g., Codex) to: `http://127.0.0.1:4000/v1`
+
+---
+
+### Developer Information
+
+To build from source or contribute, follow these steps:
 
 #### Prerequisites
-- Node.js and npm
-- Rust and Tauri development environment
+*   Node.js & npm
+*   Rust & Tauri environment
 
-#### Local Build Process
+#### Local Build
 ```powershell
 npm install
-# Recommended: performs pre-build validation and utilizes smart caching
+# Performs pre-build checks and utilizes caching
 npm run build:root-exe:checked
 ```
-The compiled executable will be located in the repository root as `API Router.exe`.
+The executable is generated at the repository root as `API Router.exe`.
 
-#### Project Structure
-- `src-tauri/`: Core gateway logic and native integration (Rust).
-- `src/ui/`: Desktop management interface (React/TypeScript).
-- `providers/`: Configuration templates for supported AI services.
+#### Project Layout
+*   `src-tauri/`: Core gateway logic (Rust).
+*   `src/`: Desktop management UI (React/TypeScript).
+*   `providers/`: Configuration templates for AI services.
 
 ---
 
-### Troubleshooting and Support
+### Support & Troubleshooting
 
-- **Connection Issues**: Verify that the application is running and that the port configuration matches your client's settings.
-- **Authentication Errors**: Ensure that your `.codex/auth.json` is encoded in UTF-8 without BOM (Byte Order Mark).
+*   **Connection**: Ensure the application is running and the port matches your tool's settings.
+*   **Authentication**: Verify that `.codex/auth.json` is UTF-8 encoded without BOM.
 
-For detailed technical documentation, including debugging interfaces and MCP integration, refer to [docs/debug-interfaces.md](docs/debug-interfaces.md).
+For technical details, debugging, and MCP integration, see [docs/debug-interfaces.md](docs/debug-interfaces.md).
