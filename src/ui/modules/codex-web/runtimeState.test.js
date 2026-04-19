@@ -11,12 +11,34 @@ import {
   resetTurnPresentationState,
   rememberFinalAssistant,
   restorePendingUserFallback,
+  resolveCurrentThreadId,
   setPendingTurnRunning,
   syncPendingTurnRuntime,
   syncPendingAssistantState,
 } from "./runtimeState.js";
 
 describe("runtimeState", () => {
+  it("resolves the current thread id from the best available state", () => {
+    expect(
+      resolveCurrentThreadId({
+        activeThreadPendingTurnThreadId: "",
+        activeThreadId: "",
+        activeThreadOpenState: { threadId: "thread-open" },
+        activeThreadActivity: { threadId: "thread-activity" },
+        activeThreadCommentaryCurrent: { threadId: "thread-commentary" },
+      })
+    ).toBe("thread-open");
+
+    expect(
+      resolveCurrentThreadId({
+        activeThreadPendingTurnThreadId: "thread-pending",
+        activeThreadId: "thread-active",
+        activeThreadOpenState: { threadId: "thread-open" },
+        activeThreadActivity: { threadId: "thread-activity" },
+      })
+    ).toBe("thread-pending");
+  });
+
   it("primes pending turn state from the active thread history baseline", () => {
     const state = {
       activeThreadId: "thread-1",

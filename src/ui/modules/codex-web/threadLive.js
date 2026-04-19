@@ -1,3 +1,5 @@
+import { resolveCurrentThreadId } from "./runtimeState.js";
+
 export function resolveThreadAutoRefreshInterval(wsOpen, wsSubscribed, connectedMs, disconnectedMs) {
   return wsOpen && wsSubscribed ? connectedMs : disconnectedMs;
 }
@@ -265,7 +267,7 @@ export function createThreadLiveModule(deps) {
 
   function startActiveThreadLivePollLoop() {
     setIntervalRef(async () => {
-      const threadId = state.activeThreadId || "";
+      const threadId = resolveCurrentThreadId(state);
       const wsOpen = !!(state.ws && state.ws.readyState === WebSocketRef.OPEN);
       const wsSubscribed = !!(wsOpen && state.wsSubscribedEvents);
       if (

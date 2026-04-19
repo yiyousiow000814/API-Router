@@ -338,6 +338,8 @@ describe("composerUi", () => {
     nodes.set("queuedTurnCardList", queuedList);
     const { updateMobileComposerState } = createComposerUiModule({
       state: {
+        activeThreadId: "",
+        activeThreadOpenState: { threadId: "thread-1" },
         activeThreadTokenUsage: null,
         activeMainTab: "chat",
         activeThreadPendingTurnRunning: true,
@@ -562,7 +564,8 @@ describe("composerUi", () => {
     const chatBox = makeNode();
     nodes.set("chatBox", chatBox);
     const state = {
-      activeThreadId: "thread-1",
+      activeThreadId: "",
+      activeThreadOpenState: { threadId: "thread-1" },
       activeThreadTokenUsage: null,
       activeMainTab: "chat",
       activeThreadActiveCommands: [],
@@ -626,7 +629,8 @@ describe("composerUi", () => {
     const chatBox = makeNode();
     nodes.set("chatBox", chatBox);
     const state = {
-      activeThreadId: "thread-1",
+      activeThreadId: "",
+      activeThreadOpenState: { threadId: "thread-1" },
       activeThreadTokenUsage: null,
       activeMainTab: "chat",
       activeThreadActiveCommands: [],

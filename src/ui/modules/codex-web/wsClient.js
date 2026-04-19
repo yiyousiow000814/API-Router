@@ -1,6 +1,7 @@
 import { createMockCodexTransport } from "./mockTransport.js";
 import { synthesizeProvisionalThreadItem } from "./notificationRouting.js";
 import { setThreadOpenState } from "./threadOpenState.js";
+import { resolveCurrentThreadId } from "./runtimeState.js";
 
 export function ensureArrayItems(value) {
   if (Array.isArray(value)) return value;
@@ -152,7 +153,7 @@ export function createWsClientModule(deps) {
   } = deps;
 
   function getActiveThreadRuntimeActivityTitle() {
-    const threadId = String(state.activeThreadId || "").trim();
+    const threadId = resolveCurrentThreadId(state);
     if (!threadId) return "";
     return String(state.activeThreadActivity?.threadId || "").trim() === threadId
       ? String(state.activeThreadActivity?.title || "").trim().toLowerCase()
@@ -160,7 +161,7 @@ export function createWsClientModule(deps) {
   }
 
   function setReconnectRuntimeActivity(title, detail) {
-    const threadId = String(state.activeThreadId || "").trim();
+    const threadId = resolveCurrentThreadId(state);
     if (!threadId) return;
     setRuntimeActivity({
       threadId,
@@ -171,7 +172,7 @@ export function createWsClientModule(deps) {
   }
 
   function restoreRuntimeActivityAfterReconnect() {
-    const threadId = String(state.activeThreadId || "").trim();
+    const threadId = resolveCurrentThreadId(state);
     if (!threadId) return;
     const isWorkingThread =
       state.activeThreadPendingTurnRunning === true ||
@@ -527,7 +528,8 @@ export function createWsClientModule(deps) {
     if (payload.type === "events.reset") {
       resetEventReplayState();
       scheduleThreadRefresh();
-      if (state.activeThreadId) scheduleActiveThreadRefresh(state.activeThreadId);
+      const currentThreadId = resolveCurrentThreadId(state);
+      if (currentThreadId) scheduleActiveThreadRefresh(currentThreadId);
       setStatus("Live event stream resynced.");
       return;
     }
@@ -544,8 +546,9 @@ export function createWsClientModule(deps) {
           ? state.wsRequestedWorkspaceTargets.slice()
           : [normalizeLiveWorkspaceTarget(state.wsRequestedWorkspaceTarget, "windows")];
       scheduleThreadRefresh(0);
-      if (state.activeThreadId) {
-        scheduleActiveThreadRefresh(state.activeThreadId, 0);
+      const currentThreadId = resolveCurrentThreadId(state);
+      if (currentThreadId) {
+        scheduleActiveThreadRefresh(currentThreadId, 0);
       }
       setStatus("Live updates connected.");
     }
@@ -580,7 +583,8 @@ export function createWsClientModule(deps) {
       state.wsReconnectAttempt = 0;
       setStatus("Connected (live updates syncing).");
       restoreRuntimeActivityAfterReconnect();
-      if (hadReconnectAttempt && String(state.activeThreadId || "").trim()) {
+      const currentThreadId = resolveCurrentThreadId(state);
+      if (hadReconnectAttempt && currentThreadId) {
         const openState = state.activeThreadOpenState;
         if (openState?.loaded === true) {
           setThreadOpenState(state, {

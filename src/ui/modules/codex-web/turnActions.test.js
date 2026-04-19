@@ -1227,7 +1227,7 @@ describe("turnActions", () => {
     const calls = [];
     let releasePendingResume = null;
     const state = {
-      activeThreadId: "thread-1",
+      activeThreadId: "",
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
       activeThreadOpenState: { threadId: "thread-1", threadStatusType: "notLoaded", resumeRequired: true, loaded: false },
@@ -2671,6 +2671,80 @@ describe("turnActions", () => {
     expect(calls).toEqual([{ path: "/codex/turns/turn-1/interrupt", method: "POST" }]);
     expect(syntheticClears).toEqual([{ threadId: "thread-1", items: [] }]);
     expect(state.suppressedIncompleteHistoryRuntimeByThreadId).toEqual({ "thread-1": true });
+  });
+
+  it("interrupts by the resolved open-state thread when activeThreadId is blank", async () => {
+    const calls = [];
+    const state = {
+      activeThreadId: "",
+      activeThreadWorkspace: "wsl2",
+      activeThreadOpenState: {
+        threadId: "thread-1",
+        threadStatusType: "notLoaded",
+        historyThreadId: "",
+        historyStatusType: "",
+        historyIncomplete: false,
+        pendingTurnRunning: true,
+        pendingThreadId: "",
+        loaded: false,
+        resumeRequired: true,
+        resumeReason: "thread-not-loaded",
+      },
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: true,
+      suppressedIncompleteHistoryRuntimeByThreadId: {},
+      threadAttachTransportById: new Map(),
+    };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => ({ value: "" }),
+      api: async (path, options = {}) => {
+        calls.push({ path, method: options.method || "GET" });
+        return { ok: true };
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "",
+      getWorkspaceTarget: () => "wsl2",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      registerPendingThreadResume: () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({ msg: null, body: null }),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: () => {},
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      setStatus: () => {},
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      updateMobileComposerState: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await module.interruptTurn();
+
+    expect(calls).toEqual([
+      { path: "/codex/threads/thread-1/interrupt?workspace=wsl2", method: "POST" },
+    ]);
   });
 
   it("interrupts terminal-session threads by thread even when history already assigned a turn id", async () => {

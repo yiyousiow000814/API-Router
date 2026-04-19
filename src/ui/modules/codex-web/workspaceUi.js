@@ -1,4 +1,5 @@
 import { resolveThreadOpenState, setThreadOpenState } from "./threadOpenState.js";
+import { resolveCurrentThreadId } from "./runtimeState.js";
 
 export function normalizeStartCwd(value, target = "windows") {
   const text = String(value || "").trim();
@@ -166,10 +167,11 @@ export function createWorkspaceUiModule(deps) {
     return state.activeThreadWorkspace === "wsl2" ? "WSL2" : "WIN";
   }
 
-  function syncActiveThreadMetaFromList(threadId = state.activeThreadId) {
-    if (!threadId) return;
+  function syncActiveThreadMetaFromList(threadId = resolveCurrentThreadId(state)) {
+    const currentThreadId = String(threadId || resolveCurrentThreadId(state) || "").trim();
+    if (!currentThreadId) return;
     const thread = state.threadItemsAll.find(
-      (item) => (item?.id || item?.threadId || "") === threadId
+      (item) => (item?.id || item?.threadId || "") === currentThreadId
     );
     if (!thread) return;
     const target = detectThreadWorkspaceTarget(thread);
@@ -177,10 +179,10 @@ export function createWorkspaceUiModule(deps) {
     const rolloutPath = String(thread?.path || "").trim();
     if (rolloutPath) state.activeThreadRolloutPath = rolloutPath;
     state.activeThreadIsWorktree = thread?.isWorktree === true;
-    const attachTransport = String(state.threadAttachTransportById?.get?.(String(threadId || "")) || "").trim();
+    const attachTransport = String(state.threadAttachTransportById?.get?.(String(currentThreadId || "")) || "").trim();
     state.activeThreadAttachTransport = attachTransport;
     setThreadOpenState(state, resolveThreadOpenState({
-      threadId,
+      threadId: currentThreadId,
       threadStatusType: thread?.status?.type || "",
       historyThreadId: state?.activeThreadHistoryThreadId,
       historyIncomplete: state?.activeThreadHistoryIncomplete === true,

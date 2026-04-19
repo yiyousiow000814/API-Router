@@ -1,5 +1,6 @@
 import { applyActiveThreadGitMetaState, activeComposerWorkspace } from "./threadGitMetaState.js";
 import { resolveBranchPickerSelection } from "./branchPickerState.js";
+import { resolveCurrentThreadId } from "./runtimeState.js";
 
 export function shouldSubmitPromptKey(event) {
   return (
@@ -334,7 +335,7 @@ export function createActionBindingsModule(deps) {
     bindClick("mobileAttachBtn", () => byId("attachInput")?.click());
     bindResponsiveClick("mobileSendBtn", () => {
       const promptValue = String(byId("mobilePromptInput")?.value || "").trim();
-      const running = state.activeThreadPendingTurnRunning === true;
+      const running = state.activeThreadPendingTurnRunning === true && !!resolveCurrentThreadId(state);
       const hasQueuedTurn = Array.isArray(state.activeThreadQueuedTurns)
         ? state.activeThreadQueuedTurns.some((item) => !!String(item?.prompt || "").trim())
         : !!String(state.activeThreadQueuedTurn?.prompt || "").trim();
@@ -434,6 +435,7 @@ export function createActionBindingsModule(deps) {
       const promptValue = String(byId("mobilePromptInput")?.value || "").trim();
       const canSteer =
         state.activeThreadPendingTurnRunning === true &&
+        !!resolveCurrentThreadId(state) &&
         !!promptValue &&
         !/^\/\S+/.test(promptValue);
       if (canSteer && shouldSteerPromptKey(event)) {
@@ -751,7 +753,7 @@ export function createActionBindingsModule(deps) {
           if (branchBtn) {
             event.preventDefault();
             event.stopPropagation();
-            const threadId = String(state.activeThreadId || "").trim();
+            const threadId = resolveCurrentThreadId(state);
             const branch = String(branchBtn.getAttribute("data-composer-branch-option") || "").trim();
             const selection = resolveBranchPickerSelection(state, branch);
             if (selection.action === "ignore") return;

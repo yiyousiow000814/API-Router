@@ -1471,6 +1471,12 @@ describe("actionBindings", () => {
         modelOptionsLoading: false,
         threadItems: [],
         activeThreadPendingTurnRunning: true,
+        activeThreadId: "",
+        activeThreadOpenState: {
+          threadId: "thread-1",
+          loaded: true,
+          resumeRequired: false,
+        },
       },
       byId(id) {
         if (id === "mobilePromptInput") return promptNode;
