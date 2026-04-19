@@ -3066,7 +3066,7 @@
     .mobileContextLeft {
       display: flex;
       align-items: flex-start;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       flex: 1 1 auto;
       gap: 0;
       max-width: 100%;
@@ -3077,6 +3077,9 @@
       font-weight: 500;
       letter-spacing: -0.01em;
       color: #51627f;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .mobileContextLeftNumberViewport {
       display: inline-flex;
