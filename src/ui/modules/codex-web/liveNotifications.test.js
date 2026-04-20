@@ -3136,7 +3136,7 @@ Implement this plan?
     expect(statuses.at(-1)).toEqual({ message: "Turn cancelled.", isWarn: true });
   });
 
-  it("shows reconnecting thread status as a runtime activity without ending the pending turn", () => {
+  it("shows reconnecting thread status in chat without ending the pending turn", () => {
     const statuses = [];
     const runtimeActivity = [];
     const finalizedRuntime = [];
@@ -3171,6 +3171,7 @@ Implement this plan?
       addChat(role, content, options) {
         chatMessages.push({ role, content, options });
       },
+      removeChatMessageByKey() { return false; },
       scheduleChatLiveFollow() {},
       finalizeRuntimeState(threadId) {
         finalizedRuntime.push(threadId);
@@ -3193,7 +3194,7 @@ Implement this plan?
       params: {
         threadId: "thread-1",
         status: "reconnecting",
-        message: "Provider disconnected. Reconnecting...",
+        message: "Provider disconnected. Reconnecting... 1/5",
       },
     });
     module.renderLiveNotification({
@@ -3209,28 +3210,36 @@ Implement this plan?
       message: "Provider disconnected. Reconnecting... 2/5",
       isWarn: false,
     });
-    expect(chatMessages).toEqual([]);
-    expect(runtimeActivity).toEqual([
+    expect(chatMessages).toEqual([
       {
-        threadId: "thread-1",
-        title: "Reconnecting",
-        detail: "Provider disconnected. Reconnecting...",
-        tone: "running",
+        role: "system",
+        content: "Reconnecting... 1/5",
+        options: {
+          kind: "thinking",
+          transient: false,
+          animate: true,
+          messageKey: "live-thread-connection-status",
+        },
       },
       {
-        threadId: "thread-1",
-        title: "Reconnecting",
-        detail: "Provider disconnected. Reconnecting... 2/5",
-        tone: "running",
+        role: "system",
+        content: "Reconnecting... 2/5",
+        options: {
+          kind: "thinking",
+          transient: false,
+          animate: true,
+          messageKey: "live-thread-connection-status",
+        },
       },
     ]);
+    expect(runtimeActivity).toEqual([]);
     expect(finalizedRuntime).toEqual([]);
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
     expect(state.activeThreadPendingTurnId).toBe("turn-1");
     expect(state.activeThreadPendingTurnRunning).toBe(true);
   });
 
-  it("surfaces thread status failures in the status line and ends the pending turn", () => {
+  it("surfaces thread status failures as a final chat error and ends the pending turn", () => {
     const statuses = [];
     const runtimeActivity = [];
     const finalizedRuntime = [];
@@ -3266,6 +3275,10 @@ Implement this plan?
       addChat(role, content, options) {
         chatMessages.push({ role, content, options });
       },
+      removeChatMessageByKey(key) {
+        chatMessages.push({ role: "remove", content: key, options: null });
+        return true;
+      },
       scheduleChatLiveFollow() {},
       finalizeRuntimeState(threadId) {
         finalizedRuntime.push(threadId);
@@ -3296,7 +3309,23 @@ Implement this plan?
       message: "Reconnecting failed.",
       isWarn: true,
     });
-    expect(chatMessages).toEqual([]);
+    expect(chatMessages).toEqual([
+      {
+        role: "remove",
+        content: "live-thread-connection-status",
+        options: null,
+      },
+      {
+        role: "system",
+        content: "Reconnecting failed.",
+        options: {
+          kind: "error",
+          transient: false,
+          animate: true,
+          messageKey: "live-thread-connection-status",
+        },
+      },
+    ]);
     expect(finalizedRuntime).toEqual(["thread-1"]);
     expect(runtimeActivity).toEqual([]);
     expect(state.activeThreadPendingTurnThreadId).toBe("");

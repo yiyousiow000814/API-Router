@@ -247,11 +247,13 @@ function readAssistantContentText(item, helpers) {
 }
 
 export function createLiveNotificationsModule(deps) {
+  const LIVE_THREAD_CONNECTION_STATUS_MESSAGE_KEY = "live-thread-connection-status";
   const {
     state,
     byId,
     setStatus = () => {},
     addChat,
+    removeChatMessageByKey = () => false,
     scheduleChatLiveFollow,
     hideWelcomeCard = () => {},
     createAssistantStreamingMessage = () => ({ msg: null, body: null }),
@@ -373,6 +375,42 @@ export function createLiveNotificationsModule(deps) {
     if (hasMatchingTransientThinkingNode(thinkingText)) return;
     clearTransientThinkingMessages();
     state.activeThreadTransientThinkingText = thinkingText;
+  }
+
+  function clearLiveThreadConnectionStatus() {
+    removeChatMessageByKey(LIVE_THREAD_CONNECTION_STATUS_MESSAGE_KEY);
+  }
+
+  function formatLiveThreadReconnectPreview(message) {
+    const raw = String(message || "").trim();
+    if (!raw) return "Reconnecting...";
+    const attemptMatch = raw.match(/\b(\d+\s*\/\s*\d+)\b/);
+    const attempt = attemptMatch ? String(attemptMatch[1] || "").replace(/\s+/g, "") : "";
+    if (attempt) return `Reconnecting... ${attempt}`;
+    return "Reconnecting...";
+  }
+
+  function showLiveThreadReconnectStatus(message) {
+    const detail = String(message || "").trim();
+    if (!detail) return;
+    addChat("system", formatLiveThreadReconnectPreview(detail), {
+      kind: "thinking",
+      transient: false,
+      animate: true,
+      messageKey: LIVE_THREAD_CONNECTION_STATUS_MESSAGE_KEY,
+    });
+  }
+
+  function showLiveThreadReconnectError(message) {
+    const detail = String(message || "").trim();
+    if (!detail) return;
+    clearLiveThreadConnectionStatus();
+    addChat("system", detail, {
+      kind: "error",
+      transient: false,
+      animate: true,
+      messageKey: LIVE_THREAD_CONNECTION_STATUS_MESSAGE_KEY,
+    });
   }
 
   function ensureCommentaryState() {
@@ -1203,6 +1241,10 @@ export function createLiveNotificationsModule(deps) {
       return;
     }
 
+    if (!connectionStatusMethod || (!isReconnectLiveStatus(connectionStatusValue) && !isFailedLiveStatus(connectionStatusValue))) {
+      clearLiveThreadConnectionStatus();
+    }
+
     if (interruptSuppressed && !terminalMethod && !method.includes("turn/started")) {
       pushLiveDebugEvent("live.drop:suppress_after_interrupt", {
         method,
@@ -1382,13 +1424,7 @@ export function createLiveNotificationsModule(deps) {
     if (reconnectingStatus) {
       if (suppressReplayedConnectionStatus) return;
       setPendingTurnRunning(threadId, true);
-      setRuntimeActivity({
-        threadId,
-        title: "Reconnecting",
-        detail: statusMessage,
-        tone: "running",
-      });
-
+      showLiveThreadReconnectStatus(statusMessage || "Connection interrupted.");
       return;
     }
     const failedThreadStatus = method.includes("thread/status/changed") && isFailedLiveStatus(status || statusMessage);
@@ -1404,7 +1440,7 @@ export function createLiveNotificationsModule(deps) {
       clearTransientToolMessages();
       clearTransientThinkingMessages();
       finalizeRuntimeState(threadId);
-      // Provider/routing errors are surfaced in the status line and the runtime state is finalized above.
+      showLiveThreadReconnectError(statusMessage || "Reconnecting failed.");
       return;
     }
     const isRunning = /running|inprogress|working|queued/.test(status || "") || method.includes("turn/started");

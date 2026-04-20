@@ -951,6 +951,8 @@ describe("wsClient", () => {
     const activities = [];
     const statuses = [];
     const timeouts = [];
+    const chatMessages = [];
+    const removedKeys = [];
     class FakeWebSocket {
       static OPEN = 1;
       static CONNECTING = 0;
@@ -1029,6 +1031,13 @@ describe("wsClient", () => {
       scheduleActiveThreadRefresh() {},
       renderLiveNotification() {},
       applyPendingPayloads() {},
+      addChat(role, text, options = {}) {
+        chatMessages.push({ role, text, options });
+      },
+      removeChatMessageByKey(key) {
+        removedKeys.push(key);
+        return true;
+      },
       LAST_EVENT_ID_KEY: "last",
       localStorageRef: { setItem() {}, getItem() { return "0"; } },
       windowRef: { location: { protocol: "http:", host: "example.com" } },
@@ -1059,6 +1068,18 @@ describe("wsClient", () => {
         { message: "Reconnecting... 1/1", isWarn: true },
       ])
     );
+    expect(chatMessages).toEqual([
+      {
+        role: "system",
+        text: "Reconnecting... 1/1",
+        options: {
+          kind: "thinking",
+          transient: false,
+          animate: true,
+          messageKey: "transport-connection-status",
+        },
+      },
+    ]);
 
     expect(timeouts).toHaveLength(1);
     timeouts[0].callback();
@@ -1068,9 +1089,20 @@ describe("wsClient", () => {
     FakeWebSocket.instances[1].onclose({ code: 1006, reason: "server restart", wasClean: false });
     expect(statuses).toEqual(
       expect.arrayContaining([
-        { message: "Live updates disconnected after 1 retry.", isWarn: true },
+        { message: "Live updates disconnected after 1 retry. Last error: server restart", isWarn: true },
       ])
     );
+    expect(chatMessages.at(-1)).toEqual({
+      role: "system",
+      text: "Live updates disconnected after 1 retry. Last error: server restart",
+      options: {
+        kind: "error",
+        transient: false,
+        animate: true,
+        messageKey: "transport-connection-status",
+      },
+    });
+    expect(removedKeys).toEqual(["transport-connection-status"]);
   });
 
   it("records structured websocket close detail for diagnostics", () => {
