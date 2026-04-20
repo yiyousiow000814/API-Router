@@ -506,6 +506,11 @@ export function createActionBindingsModule(deps) {
         { type: "turn", message: "Turn failed: unknown variant `invalid_request_error`" },
       ];
       const scenario = scenarios[Math.floor(Math.random() * scenarios.length)];
+
+      // Switch to chat tab to see the error
+      setMainTab("chat");
+
+      // Add error to chat
       addChat("system", `[TEST] ${scenario.type}: ${scenario.message}`, { kind: "error" });
       setStatus(`Test error displayed: ${scenario.type}`, false);
     });
