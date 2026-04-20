@@ -3274,14 +3274,8 @@ Implement this plan?
       isWarn: true,
     });
     expect(finalizedRuntime).toEqual(["thread-1"]);
-    expect(runtimeActivity).toEqual([
-      {
-        threadId: "thread-1",
-        title: "Error",
-        detail: "Reconnecting failed.",
-        tone: "error",
-      },
-    ]);
+    // Runtime activity should not show errors - they're in chat area
+    expect(runtimeActivity).toEqual([]);
     expect(state.activeThreadPendingTurnThreadId).toBe("");
     expect(state.activeThreadPendingTurnId).toBe("");
     expect(state.activeThreadPendingTurnRunning).toBe(false);

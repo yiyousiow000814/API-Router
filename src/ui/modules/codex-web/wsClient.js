@@ -264,7 +264,7 @@ export function createWsClientModule(deps) {
       recordWebTransportEvent("ws_reconnect_failed", String(reason));
       const failureMessage = `Live updates disconnected after ${maxAttempts} ${maxAttempts === 1 ? "retry" : "retries"}.`;
       setConnectionStatus(failureMessage, true, { transient: false });
-      setReconnectRuntimeActivity("Error", failureMessage);
+      // Don't set runtime activity - error is already visible in chat
       return;
     }
     const delay = Math.min(
@@ -279,7 +279,7 @@ export function createWsClientModule(deps) {
       reason,
     });
     setConnectionStatus(`Reconnecting... ${state.wsReconnectAttempt}/${maxAttempts}`, true, { chatKind: "" });
-    setReconnectRuntimeActivity("Reconnecting", `${state.wsReconnectAttempt}/${maxAttempts}`);
+    // Don't set runtime activity - reconnection progress is already visible in chat
     state.wsReconnectTimer = setTimeoutRef(() => {
       state.wsReconnectTimer = null;
       recordWebTransportEvent("ws_reconnect_attempted", null);

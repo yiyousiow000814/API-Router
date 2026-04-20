@@ -1388,17 +1388,12 @@ export function createLiveNotificationsModule(deps) {
       clearTransientThinkingMessages();
       finalizeRuntimeState(threadId);
 
-      // New: Add the actual provider/routing error message to the chat conversation
+      // Provider/routing errors: show in chat as persistent error
       if (statusMessage) {
         addChat("system", statusMessage, { kind: "error" });
       }
 
-      setRuntimeActivity({
-        threadId,
-        title: "Error",
-        detail: "", // Don't crowd the activity bar with long error messages
-        tone: "error",
-      });
+      // Don't set runtime activity - error is already visible in chat
       return;
     }
     const isRunning = /running|inprogress|working|queued/.test(status || "") || method.includes("turn/started");

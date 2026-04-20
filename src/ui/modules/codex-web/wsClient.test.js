@@ -1058,11 +1058,8 @@ describe("wsClient", () => {
         { message: "Reconnecting... 1/1", isWarn: true },
       ])
     );
-    expect(activities).toEqual(
-      expect.arrayContaining([
-        { threadId: "thread-1", title: "Reconnecting", detail: "1/1", tone: "running" },
-      ])
-    );
+    // Runtime activity should not show reconnection progress - it's in chat area
+    expect(activities).toEqual([]);
 
     expect(timeouts).toHaveLength(1);
     timeouts[0].callback();
@@ -1076,16 +1073,8 @@ describe("wsClient", () => {
         { message: "Live updates disconnected after 1 retry.", isWarn: true },
       ])
     );
-    expect(activities).toEqual(
-      expect.arrayContaining([
-        {
-          threadId: "thread-1",
-          title: "Error",
-          detail: "Live updates disconnected after 1 retry.",
-          tone: "error",
-        },
-      ])
-    );
+    // Runtime activity should not show errors - they're in chat area
+    expect(activities).toEqual([]);
   });
 
   it("records structured websocket close detail for diagnostics", () => {
