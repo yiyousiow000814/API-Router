@@ -323,6 +323,7 @@ export function createCodexWebComposition(deps) {
     bindResponsiveClick: deps.bindResponsiveClick,
     bindInput: deps.bindInput,
     setStatus: deps.setStatus,
+    addChat: chatTimeline.addChat,
     updateMobileComposerState: deps.updateMobileComposerState,
     refreshActiveThreadGitMeta: deps.refreshActiveThreadGitMeta,
     updateNotificationState: deps.updateNotificationState,
