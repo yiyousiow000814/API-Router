@@ -655,6 +655,7 @@ export function createCodexWebComposition(deps) {
     renderCommentaryArchive,
     renderAssistantLiveBody,
     renderPendingInline,
+    removeChatMessageByKey,
     setChatOpening,
     applyThreadToChat,
     loadThreadMessages,
