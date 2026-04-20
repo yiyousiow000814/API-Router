@@ -25,7 +25,7 @@ export function createCodexWebComposition(deps) {
   const { api, connectWs, handleWsPayload, syncEventSubscription, wsCall, wsSend } = deps.createWsClientModule({
     state: deps.state,
     setStatus: deps.setStatus,
-    addChat: (...args) => chatTimeline.addChat(...args),
+    removeChatMessageByKey: (...args) => chatTimeline.removeChatMessageByKey(...args),
     clearTransientToolMessages: deps.clearTransientToolMessages,
     setRuntimeActivity: deps.setRuntimeActivity,
     toRecord: deps.toRecord,
@@ -324,6 +324,7 @@ export function createCodexWebComposition(deps) {
     bindInput: deps.bindInput,
     setStatus: deps.setStatus,
     addChat: chatTimeline.addChat,
+    removeChatMessageByKey: chatTimeline.removeChatMessageByKey,
     updateMobileComposerState: deps.updateMobileComposerState,
     refreshActiveThreadGitMeta: deps.refreshActiveThreadGitMeta,
     updateNotificationState: deps.updateNotificationState,
@@ -557,6 +558,7 @@ export function createCodexWebComposition(deps) {
     renderCommentaryArchive,
     renderAssistantLiveBody,
     renderPendingInline,
+    removeChatMessageByKey,
     setChatOpening,
   } = chatTimeline;
   const { applyThreadToChat, loadThreadMessages, updateLoadOlderControl } = historyLoader;

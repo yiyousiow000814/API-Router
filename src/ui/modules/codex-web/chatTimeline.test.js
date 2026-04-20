@@ -142,12 +142,25 @@ class FakeElement {
     this.parentElement = null;
   }
 
+  replaceWith(nextNode) {
+    if (!this.parentElement) return;
+    const index = this.parentElement.children.indexOf(this);
+    if (index < 0) return;
+    nextNode.parentElement = this.parentElement;
+    this.parentElement.children.splice(index, 1, nextNode);
+    this.parentElement = null;
+  }
+
   setAttribute(name, value) {
     this.attributes.set(String(name), String(value));
   }
 
   removeAttribute(name) {
     this.attributes.delete(String(name));
+  }
+
+  getAttribute(name) {
+    return this.attributes.has(String(name)) ? this.attributes.get(String(name)) : null;
   }
 
   querySelector(selector) {
@@ -417,6 +430,31 @@ describe("chatTimeline", () => {
     expect(nodes[0].attributes.get("data-msg-transient")).toBe("1");
     expect(nodes[0].attributes.get("data-msg-source")).toBe("live");
     expect(refs.renderRuntimePanels).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses one reconnecting status message and clears it when the key is removed", () => {
+    module.addChat("system", "Reconnecting... provider-a 1/5", {
+      kind: "",
+      messageKey: "ws-connection-status",
+      animate: false,
+      scroll: false,
+    });
+    module.addChat("system", "Reconnecting... provider-a 2/5", {
+      kind: "",
+      messageKey: "ws-connection-status",
+      animate: false,
+      scroll: false,
+    });
+
+    let nodes = dom.chatBox.children.filter((child) => child.classList.contains("msg"));
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].attributes.get("data-msg-key")).toBe("ws-connection-status");
+    expect(nodes[0].querySelector(".msgBody")?.textContent).toContain("Reconnecting... provider-a 2/5");
+
+    expect(module.removeChatMessageByKey("ws-connection-status")).toBe(true);
+
+    nodes = dom.chatBox.children.filter((child) => child.classList.contains("msg"));
+    expect(nodes).toHaveLength(0);
   });
 
   it("renders inline commentary archive messages as collapsible archive mounts", () => {

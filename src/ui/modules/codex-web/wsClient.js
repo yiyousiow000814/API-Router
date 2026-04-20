@@ -119,6 +119,7 @@ export function createWsClientModule(deps) {
     state,
     setStatus,
     addChat = () => {},
+    removeChatMessageByKey = () => {},
     clearTransientToolMessages = () => {},
     setRuntimeActivity = () => {},
     toRecord,
@@ -228,6 +229,7 @@ export function createWsClientModule(deps) {
         kind: options.chatKind !== undefined ? options.chatKind : (isWarn ? "error" : ""),
         transient: options.transient !== false,
         animate: false,
+        messageKey: String(options.chatKey || "").trim() || undefined,
       });
     }
   }
@@ -263,7 +265,7 @@ export function createWsClientModule(deps) {
     if (attempt >= maxAttempts) {
       recordWebTransportEvent("ws_reconnect_failed", String(reason));
       const failureMessage = `Live updates disconnected after ${maxAttempts} ${maxAttempts === 1 ? "retry" : "retries"}.`;
-      setConnectionStatus(failureMessage, true, { transient: false });
+      setConnectionStatus(failureMessage, true, { transient: false, chatKey: "ws-connection-status" });
       // Don't set runtime activity - error is already visible in chat
       return;
     }
@@ -282,6 +284,7 @@ export function createWsClientModule(deps) {
       chatKind: "",
       transient: false,  // Keep each reconnection message visible
       forceChat: true,   // Always show in chat
+      chatKey: "ws-connection-status",
     });
     // Don't set runtime activity - reconnection progress is already visible in chat
     state.wsReconnectTimer = setTimeoutRef(() => {
@@ -597,6 +600,9 @@ export function createWsClientModule(deps) {
       });
       const hadReconnectAttempt = Number(state.wsReconnectAttempt || 0) > 0;
       state.wsReconnectAttempt = 0;
+      if (hadReconnectAttempt) {
+        removeChatMessageByKey("ws-connection-status");
+      }
       setConnectionStatus("Connected (live updates syncing).");
       if (hadReconnectAttempt) {
         clearTransientToolMessages();
@@ -652,7 +658,7 @@ export function createWsClientModule(deps) {
       state.wsSubscribedWorkspaceTarget = "";
       state.wsSubscribedWorkspaceTargets = [];
       const reasonText = String(event?.reason || `code:${Number(event?.code ?? 0) || 0}`);
-      setConnectionStatus(`WS closed: ${reasonText}`, true);
+      setConnectionStatus(`WS closed: ${reasonText}`, true, { chatKey: "ws-connection-status" });
       scheduleReconnect(reasonText);
     };
     ws.onmessage = (event) => {

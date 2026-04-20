@@ -70,6 +70,27 @@ export function createChatTimelineModule(deps) {
     }, { once: true });
   }
 
+  function findMessageNodesByKey(box, messageKey) {
+    if (!box || !messageKey) return [];
+    const matches = [];
+    for (const child of Array.from(box.children || [])) {
+      if (!child || typeof child.getAttribute !== "function") continue;
+      if (String(child.getAttribute("data-msg-key") || "") !== messageKey) continue;
+      matches.push(child);
+    }
+    return matches;
+  }
+
+  function removeChatMessageByKey(messageKey) {
+    const box = byId("chatBox");
+    const normalizedKey = String(messageKey || "").trim();
+    if (!box || !normalizedKey) return false;
+    const matches = findMessageNodesByKey(box, normalizedKey);
+    if (!matches.length) return false;
+    for (const node of matches) node.remove?.();
+    return true;
+  }
+
   function createMessageNode(role, text, options = {}) {
     const node = documentRef.createElement("div");
     const kind = typeof options.kind === "string" && options.kind.trim() ? options.kind.trim() : "";
@@ -650,6 +671,8 @@ export function createChatTimelineModule(deps) {
     const box = byId("chatBox");
     const welcome = byId("welcomeCard");
     if (!box) return;
+    const messageKey = String(options.messageKey || "").trim();
+    const existingNodes = messageKey ? findMessageNodesByKey(box, messageKey) : [];
     if (welcome) welcome.style.display = "none";
     const node = options.kind === "commentaryArchive"
       ? createCommentaryArchiveNode(options.archiveBlocks, {
@@ -667,13 +690,22 @@ export function createChatTimelineModule(deps) {
           source: String(options.source || "").trim() || "addChat",
           transient: options.transient === true,
         });
-    if (options.animate !== false) {
+    if (messageKey) {
+      node.setAttribute("data-msg-key", messageKey);
+    }
+    if (options.animate !== false && !existingNodes.length) {
       const defaultDelay = role === "assistant" || role === "system" ? 50 : 0;
       const delayMs = Number.isFinite(Number(options.delayMs)) ? Number(options.delayMs) : defaultDelay;
       animateMessageNode(node, delayMs);
     }
     const pendingMount = byId("pendingInlineMount");
-    if (pendingMount && pendingMount.parentElement === box) box.insertBefore(node, pendingMount);
+    if (existingNodes.length > 0) {
+      const anchorNode = existingNodes[existingNodes.length - 1];
+      anchorNode.replaceWith(node);
+      for (let index = 0; index < existingNodes.length - 1; index += 1) {
+        existingNodes[index].remove?.();
+      }
+    } else if (pendingMount && pendingMount.parentElement === box) box.insertBefore(node, pendingMount);
     else box.appendChild(node);
     renderRuntimePanels();
     if (options.scroll !== false) {
@@ -874,6 +906,7 @@ export function createChatTimelineModule(deps) {
     renderPendingInline,
     removeCommentaryArchiveMount,
     removePendingInlineMount,
+    removeChatMessageByKey,
     setChatOpening,
   };
 }

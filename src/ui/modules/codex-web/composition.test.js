@@ -114,7 +114,7 @@ describe("composition", () => {
       createWorkspaceUiModule: stubFactory({ applyWorkspaceUi: () => {}, getActiveWorkspaceBadgeLabel: () => "WIN", getStartCwdForWorkspace: () => "", getWorkspaceLabel: () => "", getWorkspaceTarget: () => "windows", hasDualWorkspaceTargets: () => false, isWorkspaceAvailable: () => true, persistStartCwdByWorkspace: () => {}, setStartCwdForWorkspace: () => {}, setWorkspaceTarget: () => {}, syncActiveThreadMetaFromList: () => {} }),
       createChatViewportModule: stubFactory({ canStartChatLiveFollow: () => false, chatDistanceFromBottom: () => 0, ensureScrollToBottomBtn: () => {}, isChatNearBottom: () => true, isChatNearBottomForJumpBtn: () => true, scheduleChatLiveFollow: () => {}, scrollChatToBottom: () => {}, scrollToBottomReliable: () => {}, smoothScrollChatToBottom: () => {}, stopChatLiveFollow: () => {}, updateScrollToBottomBtn: () => {} }),
       createImageViewerModule: stubFactory({ ensureImageViewer: () => {}, openImageViewer: () => {}, wireMessageAttachments: () => {} }),
-      createChatTimelineModule: stubFactory({ addChat: () => {}, appendStreamingDelta: () => {}, buildMsgNode: () => {}, clearChatMessages: () => {}, createAssistantStreamingMessage: () => {}, finalizeAssistantMessage: () => {}, setChatOpening: () => {} }),
+      createChatTimelineModule: stubFactory({ addChat: () => {}, appendStreamingDelta: () => {}, buildMsgNode: () => {}, clearChatMessages: () => {}, createAssistantStreamingMessage: () => {}, finalizeAssistantMessage: () => {}, removeChatMessageByKey: () => {}, setChatOpening: () => {} }),
       createHistoryLoaderModule: stubFactory({ applyThreadToChat: () => {}, loadThreadMessages: () => {}, updateLoadOlderControl: () => {} }),
       createModelPickerModule: stubFactory({ closeInlineEffortOverlay: () => {}, ensureInlineEffortOverlay: () => {}, openInlineEffortOverlay: () => {}, refreshModels: () => {}, renderHeaderModelMenu: () => {}, setHeaderModelMenuOpen: () => {}, syncHeaderModelPicker: () => {} }),
       createThreadListRefreshModule: stubFactory({ applyThreadFilter: () => {}, isThreadListActuallyVisible: () => false, refreshThreads: () => {}, scheduleThreadListDeferredRender: () => {}, scheduleThreadListVisibleAnimationRender: () => {}, updateWorkspaceAvailability: () => {}, updateWorkspaceAvailabilityFromThreads: () => {} }),
@@ -134,6 +134,7 @@ describe("composition", () => {
     expect(createActionBindingsModule).toHaveBeenCalledWith(
       expect.objectContaining({
         refreshActiveThreadGitMeta: expect.any(Function),
+        removeChatMessageByKey: expect.any(Function),
       })
     );
   });

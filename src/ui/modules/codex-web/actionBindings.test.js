@@ -29,6 +29,130 @@ describe("actionBindings", () => {
     expect(resolveActionErrorMessage(null, "fallback")).toBe("fallback");
   });
 
+  it("replays a compact provider-free error demo with button motion", async () => {
+    const handlers = new Map();
+    const timeouts = [];
+    const chatCalls = [];
+    const removedKeys = [];
+    const classOps = [];
+    const previousRandom = Math.random;
+    Math.random = () => 0;
+
+    const testButton = {
+      textContent: "Replay error demo",
+      disabled: false,
+      classList: {
+        add(...names) {
+          classOps.push(["add", ...names]);
+        },
+        remove(...names) {
+          classOps.push(["remove", ...names]);
+        },
+      },
+    };
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId(id) {
+        return id === "testErrorBtn" ? testButton : null;
+      },
+      bindClick(id, handler) {
+        handlers.set(id, handler);
+      },
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus() {},
+      updateMobileComposerState() {},
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab(tab) {
+        deps.__mainTab = tab;
+      },
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      removeChatMessageByKey(key) {
+        removedKeys.push(key);
+        return true;
+      },
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSettingsControlsFromMain() {},
+      addChat(role, text, options = {}) {
+        chatCalls.push({ role, text, options });
+      },
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: {
+        addEventListener() {},
+        setTimeout(callback, delay) {
+          timeouts.push({ callback, delay });
+          return timeouts.length;
+        },
+      },
+      documentRef: { addEventListener() {} },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+
+    const previousDocument = globalThis.document;
+    const previousWindow = globalThis.window;
+    const previousNotification = globalThis.Notification;
+    globalThis.document = { addEventListener() {} };
+    globalThis.window = deps.windowRef;
+    globalThis.Notification = deps.NotificationRef;
+
+    try {
+      createActionBindingsModule(deps).wireActions();
+      await handlers.get("testErrorBtn")();
+
+      expect(deps.__mainTab).toBe("chat");
+      expect(testButton.textContent).toBe("Replaying...");
+      expect(testButton.disabled).toBe(true);
+      expect(classOps).toContainEqual(["add", "is-replaying"]);
+      expect(removedKeys).toEqual(["error-demo-sequence"]);
+      expect(timeouts).toHaveLength(1);
+
+      while (timeouts.length) {
+        const next = timeouts.shift();
+        next.callback();
+      }
+
+      expect(chatCalls).toHaveLength(6);
+      expect(chatCalls.every((call) => call.options.messageKey === "error-demo-sequence")).toBe(true);
+      expect(chatCalls.slice(0, 5).every((call, index) => call.text === `Reconnecting... ${index + 1}/5`)).toBe(true);
+      expect(chatCalls[0].options.kind).toBe("thinking");
+      expect(chatCalls[5].options.kind).toBe("error");
+      expect(chatCalls[5].options.animate).toBe(true);
+      expect(chatCalls.slice(0, 5).every((call) => !call.text.includes("anthropic"))).toBe(true);
+      expect(chatCalls[5].text).toBe("[TEST] stream disconnected before completion: response closed early");
+      expect(removedKeys).toEqual(["error-demo-sequence", "error-demo-sequence"]);
+      expect(testButton.textContent).toBe("Replay error demo");
+      expect(testButton.disabled).toBe(false);
+      expect(classOps).toContainEqual(["remove", "is-replaying"]);
+    } finally {
+      Math.random = previousRandom;
+      globalThis.document = previousDocument;
+      globalThis.window = previousWindow;
+      globalThis.Notification = previousNotification;
+    }
+  });
+
   it("wires the status tray close button", async () => {
     const handlers = new Map();
     const clearCalls = [];

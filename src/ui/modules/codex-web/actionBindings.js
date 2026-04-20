@@ -38,6 +38,7 @@ export function createActionBindingsModule(deps) {
     bindInput,
     setStatus,
     addChat,
+    removeChatMessageByKey = () => false,
     clearThreadStatusCard = () => {},
     updateMobileComposerState,
     updateNotificationState,
@@ -497,53 +498,67 @@ export function createActionBindingsModule(deps) {
         setStatus(resolveActionErrorMessage(error, "Failed to preview pending actions."), true);
       }
     });
+    let errorDemoRunId = 0;
     bindClick("testErrorBtn", () => {
-      // Toggle error display mode
       const btn = byId("testErrorBtn");
-      const isOn = btn?.textContent?.includes("On");
+      const runId = errorDemoRunId + 1;
+      errorDemoRunId = runId;
+      const demoKey = "error-demo-sequence";
+      const finishDemo = (statusMessage) => {
+        if (runId !== errorDemoRunId) return;
+        if (btn) {
+          btn.textContent = "Replay error demo";
+          btn.disabled = false;
+          btn.classList?.remove?.("is-replaying");
+        }
+        setStatus(statusMessage || "Error demo completed.", false);
+      };
 
-      if (isOn) {
-        // Turn off - just update button text
-        if (btn) btn.textContent = "Error Display: Off";
-        setStatus("Error display mode disabled.", false);
-      } else {
-        // Turn on - simulate reconnection flow
-        if (btn) btn.textContent = "Error Display: On";
-
-        // Switch to chat tab to see the messages
-        setMainTab("chat");
-
-        const scenarios = [
-          { provider: "openai", error: "stream disconnected before completion: stream closed before response.completed" },
-          { provider: "anthropic", error: "No routable providers available; preferred=aigateway; tried=openai,anthropic" },
-          { provider: "aigateway", error: "Live updates disconnected after 5 retries." },
-          { provider: "provider-a", error: "Turn failed: unknown variant `invalid_request_error`" },
-        ];
-        const scenario = scenarios[Math.floor(Math.random() * scenarios.length)];
-        const maxRetries = 5;
-
-        // Simulate reconnection attempts (1/5, 2/5, etc.)
-        let attempt = 0;
-        const reconnectInterval = scheduleTimeout(function showReconnect() {
-          attempt++;
-          if (attempt <= maxRetries) {
-            addChat("system", `Reconnecting... ${scenario.provider} ${attempt}/${maxRetries}`, {
-              kind: "",
-              transient: false,
-              animate: true,  // Add animation
-            });
-            if (attempt < maxRetries) {
-              scheduleTimeout(showReconnect, 800);
-            } else {
-              // After max retries, show final error
-              scheduleTimeout(() => {
-                addChat("system", `[TEST] ${scenario.error}`, { kind: "error" });
-                setStatus(`Test error sequence completed`, false);
-              }, 800);
-            }
-          }
-        }, 100);
+      if (btn) {
+        btn.textContent = "Replaying...";
+        btn.disabled = true;
+        btn.classList?.add?.("is-replaying");
       }
+
+      setMainTab("chat");
+      removeChatMessageByKey(demoKey);
+
+      const scenarios = [
+        "stream disconnected before completion: response closed early",
+        "No routable providers available for this request.",
+        "Live updates disconnected after 5 retries.",
+        "Turn failed: unknown variant `invalid_request_error`",
+      ];
+      const scenario = scenarios[Math.floor(Math.random() * scenarios.length)];
+      const maxRetries = 5;
+
+      let attempt = 0;
+      scheduleTimeout(function showReconnect() {
+        if (runId !== errorDemoRunId) return;
+        attempt += 1;
+        if (attempt <= maxRetries) {
+          addChat("system", `Reconnecting... ${attempt}/${maxRetries}`, {
+            kind: "thinking",
+            transient: false,
+            animate: true,
+            messageKey: demoKey,
+          });
+          if (attempt < maxRetries) {
+            scheduleTimeout(showReconnect, 800);
+          } else {
+            scheduleTimeout(() => {
+              if (runId !== errorDemoRunId) return;
+              removeChatMessageByKey(demoKey);
+              addChat("system", `[TEST] ${scenario}`, {
+                kind: "error",
+                animate: true,
+                messageKey: demoKey,
+              });
+              finishDemo("Error demo completed.");
+            }, 800);
+          }
+        }
+      }, 100);
     });
     bindClick("statusTrayCloseBtn", () => {
       clearThreadStatusCard();

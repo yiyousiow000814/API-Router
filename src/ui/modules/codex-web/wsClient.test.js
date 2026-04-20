@@ -839,6 +839,7 @@ describe("wsClient", () => {
   });
 
   it("invalidates the active thread open state after reconnecting websocket open", () => {
+    const removedKeys = [];
     class FakeWebSocket {
       static OPEN = 1;
       static CONNECTING = 0;
@@ -913,6 +914,9 @@ describe("wsClient", () => {
       renderLiveNotification() {},
       applyPendingPayloads() {},
       addChat() {},
+      removeChatMessageByKey(key) {
+        removedKeys.push(key);
+      },
       LAST_EVENT_ID_KEY: "last",
       localStorageRef: { setItem() {}, getItem() { return "0"; } },
       windowRef: { location: { protocol: "http:", host: "example.com" } },
@@ -936,6 +940,7 @@ describe("wsClient", () => {
     FakeWebSocket.instances[0].onopen();
 
     expect(state.wsReconnectAttempt).toBe(0);
+    expect(removedKeys).toEqual(["ws-connection-status"]);
     expect(state.activeThreadOpenState).toMatchObject({
       threadId: "thread-1",
       threadStatusType: "notloaded",
@@ -949,6 +954,7 @@ describe("wsClient", () => {
     const activities = [];
     const statuses = [];
     const timeouts = [];
+    const chatCalls = [];
     class FakeWebSocket {
       static OPEN = 1;
       static CONNECTING = 0;
@@ -1027,7 +1033,9 @@ describe("wsClient", () => {
       scheduleActiveThreadRefresh() {},
       renderLiveNotification() {},
       applyPendingPayloads() {},
-      addChat() {},
+      addChat(role, text, options = {}) {
+        chatCalls.push({ role, text, options });
+      },
       LAST_EVENT_ID_KEY: "last",
       localStorageRef: { setItem() {}, getItem() { return "0"; } },
       windowRef: { location: { protocol: "http:", host: "example.com" } },
@@ -1058,6 +1066,8 @@ describe("wsClient", () => {
         { message: "Reconnecting... 1/1", isWarn: true },
       ])
     );
+    expect(chatCalls.every((call) => call.options?.messageKey === "ws-connection-status")).toBe(true);
+    expect(chatCalls.some((call) => call.text === "Reconnecting... 1/1")).toBe(true);
     // Runtime activity should not show reconnection progress - it's in chat area
     expect(activities).toEqual([]);
 

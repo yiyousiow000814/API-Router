@@ -89,6 +89,34 @@ describe("codex-web runtime layout", () => {
     expect(source).toContain(".runtimeThinkingCard");
   });
 
+  it("keeps reconnecting and error system cards on the light neutral palette", () => {
+    const systemMatch = source.match(/\.msg\.system\s*\{([^}]+)\}/s);
+    const pendingMatch = source.match(/\.msg\.system\.kind-pending\s*\{([^}]+)\}/s);
+    const errorMatch = source.match(/\.msg\.system\.kind-error\s*\{([^}]+)\}/s);
+    const errorHeadMatch = source.match(/\.msg\.system\.kind-error\s*\.msgHead\s*\{([^}]+)\}/s);
+
+    expect(systemMatch).toBeTruthy();
+    expect(pendingMatch).toBeTruthy();
+    expect(errorMatch).toBeTruthy();
+    expect(errorHeadMatch).toBeTruthy();
+    expect(source).toContain("--system-surface: rgba(248, 250, 253, 0.98);");
+    expect(source).toContain("--system-error-surface: rgba(255, 247, 248, 0.98);");
+    expect(systemMatch?.[1] || "").toMatch(/background:\s*linear-gradient\(180deg,\s*var\(--system-surface\),\s*var\(--system-surface-2\)\)/i);
+    expect(systemMatch?.[1] || "").toMatch(/color:\s*var\(--system-text\)/i);
+    expect(pendingMatch?.[1] || "").toMatch(/border-color:\s*var\(--system-border\)/i);
+    expect(pendingMatch?.[1] || "").toMatch(/background:\s*linear-gradient\(180deg,\s*var\(--system-surface\),\s*var\(--system-surface-2\)\)/i);
+    expect(errorMatch?.[1] || "").toMatch(/background:\s*linear-gradient\(180deg,\s*var\(--system-error-surface\),\s*var\(--system-error-surface-2\)\)/i);
+    expect(errorMatch?.[1] || "").toMatch(/color:\s*var\(--system-error-text\)/i);
+    expect(errorHeadMatch?.[1] || "").toMatch(/color:\s*var\(--system-error-head\)/i);
+  });
+
+  it("animates the replay error demo trigger while it is running", () => {
+    const buttonMatch = source.match(/#testErrorBtn\.is-replaying\s*\{([^}]+)\}/s);
+    expect(buttonMatch).toBeTruthy();
+    expect(buttonMatch?.[1] || "").toMatch(/animation:\s*error-demo-pulse/i);
+    expect(source).toContain("@keyframes error-demo-pulse");
+  });
+
   it("animates runtime stack section visibility instead of hard hiding sections", () => {
     expect(source).toContain(".runtimeStackSection");
     expect(source).toContain(".runtimeStackSection.is-hidden");
