@@ -247,6 +247,7 @@ function readAssistantContentText(item, helpers) {
 }
 
 export function createLiveNotificationsModule(deps) {
+  const LIVE_THREAD_CONNECTION_STATUS_KEY = "live-thread-connection-status";
   const {
     state,
     byId,
@@ -1371,9 +1372,10 @@ export function createLiveNotificationsModule(deps) {
       // Show reconnection progress in chat area (not runtime activity bar)
       if (statusMessage) {
         addChat("system", `Reconnecting... ${statusMessage}`, {
-          kind: "",  // Not an error, just progress
-          transient: false,  // Keep each message visible
-          animate: true,  // Add animation
+          kind: "",
+          transient: false,
+          animate: true,
+          messageKey: LIVE_THREAD_CONNECTION_STATUS_KEY,
         });
       }
 
@@ -1394,7 +1396,10 @@ export function createLiveNotificationsModule(deps) {
 
       // Provider/routing errors: show in chat as persistent error
       if (statusMessage) {
-        addChat("system", statusMessage, { kind: "error" });
+        addChat("system", statusMessage, {
+          kind: "error",
+          messageKey: LIVE_THREAD_CONNECTION_STATUS_KEY,
+        });
       }
 
       // Don't set runtime activity - error is already visible in chat

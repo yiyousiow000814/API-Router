@@ -162,17 +162,6 @@ export function createWsClientModule(deps) {
       : "";
   }
 
-  function setReconnectRuntimeActivity(title, detail) {
-    const threadId = resolveCurrentThreadId(state);
-    if (!threadId) return;
-    setRuntimeActivity({
-      threadId,
-      title,
-      detail,
-      tone: title === "Error" ? "error" : "running",
-    });
-  }
-
   function restoreRuntimeActivityAfterReconnect() {
     const threadId = resolveCurrentThreadId(state);
     if (!threadId) return;

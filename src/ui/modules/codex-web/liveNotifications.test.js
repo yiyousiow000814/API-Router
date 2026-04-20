@@ -3136,7 +3136,7 @@ Implement this plan?
     expect(statuses.at(-1)).toEqual({ message: "Turn cancelled.", isWarn: true });
   });
 
-  it("shows reconnecting runtime activity for thread status updates without ending the pending turn", () => {
+  it("shows reconnecting thread status as one keyed chat status without ending the pending turn", () => {
     const statuses = [];
     const runtimeActivity = [];
     const finalizedRuntime = [];
@@ -3195,9 +3195,17 @@ Implement this plan?
         message: "Provider disconnected. Reconnecting...",
       },
     });
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "reconnecting",
+        message: "Provider disconnected. Reconnecting... 2/5",
+      },
+    });
 
     expect(statuses.at(-1)).toEqual({
-      message: "Provider disconnected. Reconnecting...",
+      message: "Provider disconnected. Reconnecting... 2/5",
       isWarn: false,
     });
     // Reconnecting messages now appear in chat, not runtime activity bar
@@ -3209,6 +3217,17 @@ Implement this plan?
           kind: "",
           transient: false,
           animate: true,
+          messageKey: "live-thread-connection-status",
+        },
+      },
+      {
+        role: "system",
+        content: "Reconnecting... Provider disconnected. Reconnecting... 2/5",
+        options: {
+          kind: "",
+          transient: false,
+          animate: true,
+          messageKey: "live-thread-connection-status",
         },
       },
     ]);
