@@ -498,21 +498,33 @@ export function createActionBindingsModule(deps) {
       }
     });
     bindClick("testErrorBtn", () => {
-      // Test different error scenarios
-      const scenarios = [
-        { type: "provider", message: "stream disconnected before completion: stream closed before response.completed" },
-        { type: "routing", message: "No routable providers available; preferred=aigateway; tried=openai,anthropic" },
-        { type: "network", message: "Live updates disconnected after 5 retries." },
-        { type: "turn", message: "Turn failed: unknown variant `invalid_request_error`" },
-      ];
-      const scenario = scenarios[Math.floor(Math.random() * scenarios.length)];
+      // Toggle error display mode
+      const btn = byId("testErrorBtn");
+      const isOn = btn?.textContent?.includes("On");
 
-      // Switch to chat tab to see the error
-      setMainTab("chat");
+      if (isOn) {
+        // Turn off - just update button text
+        if (btn) btn.textContent = "Error Display: Off";
+        setStatus("Error display mode disabled.", false);
+      } else {
+        // Turn on - show a test error
+        if (btn) btn.textContent = "Error Display: On";
 
-      // Add error to chat
-      addChat("system", `[TEST] ${scenario.type}: ${scenario.message}`, { kind: "error" });
-      setStatus(`Test error displayed: ${scenario.type}`, false);
+        const scenarios = [
+          { type: "provider", message: "stream disconnected before completion: stream closed before response.completed" },
+          { type: "routing", message: "No routable providers available; preferred=aigateway; tried=openai,anthropic" },
+          { type: "network", message: "Live updates disconnected after 5 retries." },
+          { type: "turn", message: "Turn failed: unknown variant `invalid_request_error`" },
+        ];
+        const scenario = scenarios[Math.floor(Math.random() * scenarios.length)];
+
+        // Switch to chat tab to see the error
+        setMainTab("chat");
+
+        // Add error to chat
+        addChat("system", `[TEST] ${scenario.type}: ${scenario.message}`, { kind: "error" });
+        setStatus(`Test error displayed: ${scenario.type}`, false);
+      }
     });
     bindClick("statusTrayCloseBtn", () => {
       clearThreadStatusCard();
