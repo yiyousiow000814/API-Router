@@ -496,6 +496,18 @@ export function createActionBindingsModule(deps) {
         setStatus(resolveActionErrorMessage(error, "Failed to preview pending actions."), true);
       }
     });
+    bindClick("testErrorBtn", () => {
+      // Test different error scenarios
+      const scenarios = [
+        { type: "provider", message: "stream disconnected before completion: stream closed before response.completed" },
+        { type: "routing", message: "No routable providers available; preferred=aigateway; tried=openai,anthropic" },
+        { type: "network", message: "Live updates disconnected after 5 retries." },
+        { type: "turn", message: "Turn failed: unknown variant `invalid_request_error`" },
+      ];
+      const scenario = scenarios[Math.floor(Math.random() * scenarios.length)];
+      addChat("system", `[TEST] ${scenario.type}: ${scenario.message}`, { kind: "error" });
+      setStatus(`Test error displayed: ${scenario.type}`, false);
+    });
     bindClick("statusTrayCloseBtn", () => {
       clearThreadStatusCard();
     });
