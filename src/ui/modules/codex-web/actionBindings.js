@@ -37,6 +37,7 @@ export function createActionBindingsModule(deps) {
     bindResponsiveClick,
     bindInput,
     setStatus,
+    addChat,
     clearThreadStatusCard = () => {},
     updateMobileComposerState,
     updateNotificationState,
