@@ -50,4 +50,24 @@ describe("historyPageState", () => {
     expect(state.activeThreadHistoryHasMore).toBe(true);
     expect(state.activeThreadHistoryStatusType).toBe("completed");
   });
+
+  it("treats terminal failed history as complete even when the page is still incomplete", () => {
+    const state = {
+      activeThreadHistoryTurns: [],
+      activeThreadHistoryThreadId: "",
+      activeThreadHistoryIncomplete: false,
+    };
+
+    applyHistoryPageToState(state, "thread-1", {
+      page: { hasMore: false, incomplete: true, beforeCursor: "", totalTurns: 1 },
+      thread: {
+        id: "thread-1",
+        status: { type: "failed" },
+        turns: [{ id: "turn-1" }],
+      },
+    });
+
+    expect(state.activeThreadHistoryIncomplete).toBe(false);
+    expect(state.activeThreadHistoryStatusType).toBe("failed");
+  });
 });

@@ -1,3 +1,5 @@
+import { isTerminalHistoryStatus } from "./historyLiveCommentaryState.js";
+
 const THREAD_RESUME_STATUSES = new Set(["running", "queued", "pending"]);
 
 function normalizeThreadStatusType(value) {
@@ -72,6 +74,12 @@ export function resolveThreadOpenState(value = {}) {
   }
 
   if (historyId === id) {
+    if (isTerminalHistoryStatus(historyStatus)) {
+      return {
+        ...baseState,
+        resumeReason: "history-complete",
+      };
+    }
     if (historyIncomplete === true) {
       return {
         ...baseState,

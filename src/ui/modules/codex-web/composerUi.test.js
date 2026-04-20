@@ -2322,6 +2322,77 @@ describe("composerUi", () => {
     expect(nodes.get("runtimeDock").style.display).toBe("none");
   });
 
+  it("does not rebuild runtime panels from failed incomplete history", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [{ key: "cmd-old", state: "running", text: "old" }],
+      activeThreadActivity: { threadId: "thread-1", title: "Working", detail: "", tone: "running" },
+      activeThreadPlan: { threadId: "thread-1", title: "Updated Plan", explanation: "old", steps: [] },
+      activeThreadCommentaryCurrent: null,
+      activeThreadHistoryStatusType: "failed",
+    };
+    const syntheticPendingCalls = [];
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) { return String(node?.value || ""); },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) { return item?.text || ""; },
+      normalizeType(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      setSyntheticPendingUserInputs(threadId, items) {
+        syntheticPendingCalls.push({ threadId, items });
+      },
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(chatBox) },
+      windowRef: { innerHeight: 900 },
+    });
+
+    module.syncRuntimeStateFromHistory({
+      id: "thread-1",
+      status: { type: "failed" },
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            { type: "agentMessage", id: "commentary-1", phase: "commentary", text: "thinking" },
+            { type: "plan", text: "Inspect" },
+            {
+              id: "request-1",
+              type: "toolCall",
+              tool: "request_user_input",
+              status: "running",
+              arguments: JSON.stringify({
+                questions: [{ id: "q-1", header: "Question 1/1", question: "Keep waiting?" }],
+              }),
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(syntheticPendingCalls).toEqual([{ threadId: "thread-1", items: [] }]);
+    expect(nodes.get("runtimeActivityBar").innerHTML).toBe("");
+    expect(nodes.get("runtimeDock").style.display).toBe("none");
+  });
+
   it("does not restore proposed plan confirmation from interrupted history", () => {
     const nodes = new Map();
     const runtimeDock = makeNode();

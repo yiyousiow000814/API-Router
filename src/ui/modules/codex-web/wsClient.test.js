@@ -914,9 +914,6 @@ describe("wsClient", () => {
       renderLiveNotification() {},
       applyPendingPayloads() {},
       addChat() {},
-      removeChatMessageByKey(key) {
-        removedKeys.push(key);
-      },
       LAST_EVENT_ID_KEY: "last",
       localStorageRef: { setItem() {}, getItem() { return "0"; } },
       windowRef: { location: { protocol: "http:", host: "example.com" } },
@@ -940,7 +937,7 @@ describe("wsClient", () => {
     FakeWebSocket.instances[0].onopen();
 
     expect(state.wsReconnectAttempt).toBe(0);
-    expect(removedKeys).toEqual(["ws-connection-status"]);
+    expect(removedKeys).toEqual([]);
     expect(state.activeThreadOpenState).toMatchObject({
       threadId: "thread-1",
       threadStatusType: "notloaded",
@@ -954,7 +951,6 @@ describe("wsClient", () => {
     const activities = [];
     const statuses = [];
     const timeouts = [];
-    const chatCalls = [];
     class FakeWebSocket {
       static OPEN = 1;
       static CONNECTING = 0;
@@ -1033,9 +1029,6 @@ describe("wsClient", () => {
       scheduleActiveThreadRefresh() {},
       renderLiveNotification() {},
       applyPendingPayloads() {},
-      addChat(role, text, options = {}) {
-        chatCalls.push({ role, text, options });
-      },
       LAST_EVENT_ID_KEY: "last",
       localStorageRef: { setItem() {}, getItem() { return "0"; } },
       windowRef: { location: { protocol: "http:", host: "example.com" } },
@@ -1066,10 +1059,6 @@ describe("wsClient", () => {
         { message: "Reconnecting... 1/1", isWarn: true },
       ])
     );
-    expect(chatCalls.every((call) => call.options?.messageKey === "ws-connection-status")).toBe(true);
-    expect(chatCalls.some((call) => call.text === "Reconnecting... 1/1")).toBe(true);
-    // Runtime activity should not show reconnection progress - it's in chat area
-    expect(activities).toEqual([]);
 
     expect(timeouts).toHaveLength(1);
     timeouts[0].callback();
@@ -1077,14 +1066,11 @@ describe("wsClient", () => {
     FakeWebSocket.instances[1].readyState = FakeWebSocket.OPEN;
     FakeWebSocket.instances[1].readyState = 3;
     FakeWebSocket.instances[1].onclose({ code: 1006, reason: "server restart", wasClean: false });
-
     expect(statuses).toEqual(
       expect.arrayContaining([
         { message: "Live updates disconnected after 1 retry.", isWarn: true },
       ])
     );
-    // Runtime activity should not show errors - they're in chat area
-    expect(activities).toEqual([]);
   });
 
   it("records structured websocket close detail for diagnostics", () => {

@@ -1,4 +1,5 @@
 import { mergeHistoryTurns } from "./historyLoader.js";
+import { isTerminalHistoryStatus } from "./historyLiveCommentaryState.js";
 
 export function applyHistoryPageToState(state, threadId, history, options = {}) {
   const page = history?.page || {};
@@ -23,7 +24,7 @@ export function applyHistoryPageToState(state, threadId, history, options = {}) 
   state.activeThreadHistoryTurns = mergedTurns;
   state.activeThreadHistoryThreadId = threadId;
   state.activeThreadHistoryHasMore = !!page?.hasMore;
-  state.activeThreadHistoryIncomplete = !!page?.incomplete;
+  state.activeThreadHistoryIncomplete = !!page?.incomplete && !isTerminalHistoryStatus(incomingThread?.status?.type);
   state.activeThreadHistoryStatusType = String(incomingThread?.status?.type || "").trim().toLowerCase();
   state.activeThreadHistoryBeforeCursor = String(page?.beforeCursor || "").trim();
   state.activeThreadHistoryTotalTurns =

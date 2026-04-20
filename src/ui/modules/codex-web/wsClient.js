@@ -118,8 +118,6 @@ export function createWsClientModule(deps) {
   const {
     state,
     setStatus,
-    addChat = () => {},
-    removeChatMessageByKey = () => {},
     clearTransientToolMessages = () => {},
     setRuntimeActivity = () => {},
     toRecord,
@@ -147,8 +145,8 @@ export function createWsClientModule(deps) {
     setIntervalRef = setInterval,
     clearIntervalRef = clearInterval,
     WS_PING_INTERVAL_MS = 15000,
-    WS_RECONNECT_BASE_MS = 800,
-    WS_RECONNECT_MAX_MS = 5000,
+    WS_RECONNECT_BASE_MS = 3000,
+    WS_RECONNECT_MAX_MS = 15000,
     WS_RECONNECT_MAX_ATTEMPTS = 5,
     transportMode = "live",
     seedDefaultThreads = false,
@@ -211,16 +209,8 @@ export function createWsClientModule(deps) {
     return payload;
   }
 
-  function setConnectionStatus(message, isWarn = false, options = {}) {
+  function setConnectionStatus(message, isWarn = false) {
     setStatus(message, isWarn);
-    if (message && (isWarn || options.forceChat === true)) {
-      addChat("system", message, {
-        kind: options.chatKind !== undefined ? options.chatKind : (isWarn ? "error" : ""),
-        transient: options.transient !== false,
-        animate: false,
-        messageKey: String(options.chatKey || "").trim() || undefined,
-      });
-    }
   }
 
   const mockTransport =
@@ -254,8 +244,7 @@ export function createWsClientModule(deps) {
     if (attempt >= maxAttempts) {
       recordWebTransportEvent("ws_reconnect_failed", String(reason));
       const failureMessage = `Live updates disconnected after ${maxAttempts} ${maxAttempts === 1 ? "retry" : "retries"}.`;
-      setConnectionStatus(failureMessage, true, { transient: false, chatKey: "ws-connection-status" });
-      // Don't set runtime activity - error is already visible in chat
+      setConnectionStatus(failureMessage, true);
       return;
     }
     const delay = Math.min(
@@ -269,13 +258,7 @@ export function createWsClientModule(deps) {
       delay,
       reason,
     });
-    setConnectionStatus(`Reconnecting... ${state.wsReconnectAttempt}/${maxAttempts}`, true, {
-      chatKind: "",
-      transient: false,  // Keep each reconnection message visible
-      forceChat: true,   // Always show in chat
-      chatKey: "ws-connection-status",
-    });
-    // Don't set runtime activity - reconnection progress is already visible in chat
+    setConnectionStatus(`Reconnecting... ${state.wsReconnectAttempt}/${maxAttempts}`, true);
     state.wsReconnectTimer = setTimeoutRef(() => {
       state.wsReconnectTimer = null;
       recordWebTransportEvent("ws_reconnect_attempted", null);
@@ -589,9 +572,6 @@ export function createWsClientModule(deps) {
       });
       const hadReconnectAttempt = Number(state.wsReconnectAttempt || 0) > 0;
       state.wsReconnectAttempt = 0;
-      if (hadReconnectAttempt) {
-        removeChatMessageByKey("ws-connection-status");
-      }
       setConnectionStatus("Connected (live updates syncing).");
       if (hadReconnectAttempt) {
         clearTransientToolMessages();
@@ -647,7 +627,7 @@ export function createWsClientModule(deps) {
       state.wsSubscribedWorkspaceTarget = "";
       state.wsSubscribedWorkspaceTargets = [];
       const reasonText = String(event?.reason || `code:${Number(event?.code ?? 0) || 0}`);
-      setConnectionStatus(`WS closed: ${reasonText}`, true, { chatKey: "ws-connection-status" });
+      setConnectionStatus(`WS closed: ${reasonText}`, true);
       scheduleReconnect(reasonText);
     };
     ws.onmessage = (event) => {

@@ -76,12 +76,24 @@ export function latestTurnContainsPendingUserEcho(thread, state = {}, parseUserM
   return false;
 }
 
+export function isTerminalHistoryStatus(value) {
+  const statusType = String(value || "").trim().toLowerCase();
+  if (!statusType) return false;
+  return (
+    statusType === "interrupted" ||
+    statusType === "cancelled" ||
+    statusType === "failed" ||
+    statusType === "error" ||
+    statusType === "timeout" ||
+    statusType === "denied"
+  );
+}
+
 export function isTerminalInterruptedHistory(thread, state = {}) {
   const threadStatusType = String(thread?.status?.type || "").trim().toLowerCase();
   const historyStatusType = String(state.activeThreadHistoryStatusType || "").trim().toLowerCase();
   const statusType = threadStatusType || historyStatusType;
-  if (!statusType) return false;
-  return statusType === "interrupted" || statusType === "cancelled";
+  return isTerminalHistoryStatus(statusType);
 }
 
 export function shouldOmitLatestIncompleteTurnArtifacts(thread, state = {}) {

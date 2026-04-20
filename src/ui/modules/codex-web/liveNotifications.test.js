@@ -3136,7 +3136,7 @@ Implement this plan?
     expect(statuses.at(-1)).toEqual({ message: "Turn cancelled.", isWarn: true });
   });
 
-  it("shows reconnecting thread status as one keyed chat status without ending the pending turn", () => {
+  it("shows reconnecting thread status as a runtime activity without ending the pending turn", () => {
     const statuses = [];
     const runtimeActivity = [];
     const finalizedRuntime = [];
@@ -3157,6 +3157,7 @@ Implement this plan?
       activeThreadCommentaryArchiveExpanded: false,
       activeThreadActiveCommands: [],
       activeThreadPlan: null,
+      wsSubscribedEvents: true,
     };
     const module = createLiveNotificationsModule({
       state,
@@ -3208,40 +3209,32 @@ Implement this plan?
       message: "Provider disconnected. Reconnecting... 2/5",
       isWarn: false,
     });
-    // Reconnecting messages now appear in chat, not runtime activity bar
-    expect(chatMessages).toEqual([
+    expect(chatMessages).toEqual([]);
+    expect(runtimeActivity).toEqual([
       {
-        role: "system",
-        content: "Reconnecting... Provider disconnected. Reconnecting...",
-        options: {
-          kind: "",
-          transient: false,
-          animate: true,
-          messageKey: "live-thread-connection-status",
-        },
+        threadId: "thread-1",
+        title: "Reconnecting",
+        detail: "Provider disconnected. Reconnecting...",
+        tone: "running",
       },
       {
-        role: "system",
-        content: "Reconnecting... Provider disconnected. Reconnecting... 2/5",
-        options: {
-          kind: "",
-          transient: false,
-          animate: true,
-          messageKey: "live-thread-connection-status",
-        },
+        threadId: "thread-1",
+        title: "Reconnecting",
+        detail: "Provider disconnected. Reconnecting... 2/5",
+        tone: "running",
       },
     ]);
-    expect(runtimeActivity).toEqual([]);
     expect(finalizedRuntime).toEqual([]);
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
     expect(state.activeThreadPendingTurnId).toBe("turn-1");
     expect(state.activeThreadPendingTurnRunning).toBe(true);
   });
 
-  it("surfaces thread status failures as persistent runtime errors and ends the pending turn", () => {
+  it("surfaces thread status failures in the status line and ends the pending turn", () => {
     const statuses = [];
     const runtimeActivity = [];
     const finalizedRuntime = [];
+    const chatMessages = [];
     const state = {
       activeThreadId: "thread-1",
       activeThreadMessages: [],
@@ -3259,6 +3252,7 @@ Implement this plan?
       activeThreadCommentaryArchiveExpanded: false,
       activeThreadActiveCommands: [{ key: "cmd-1", state: "running", text: "npm test" }],
       activeThreadPlan: { threadId: "thread-1", title: "Updated Plan", explanation: "", steps: [] },
+      wsSubscribedEvents: true,
     };
     const module = createLiveNotificationsModule({
       state,
@@ -3269,7 +3263,9 @@ Implement this plan?
       setRuntimeActivity(payload) {
         runtimeActivity.push(payload);
       },
-      addChat() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
       scheduleChatLiveFollow() {},
       finalizeRuntimeState(threadId) {
         finalizedRuntime.push(threadId);
@@ -3300,8 +3296,8 @@ Implement this plan?
       message: "Reconnecting failed.",
       isWarn: true,
     });
+    expect(chatMessages).toEqual([]);
     expect(finalizedRuntime).toEqual(["thread-1"]);
-    // Runtime activity should not show errors - they're in chat area
     expect(runtimeActivity).toEqual([]);
     expect(state.activeThreadPendingTurnThreadId).toBe("");
     expect(state.activeThreadPendingTurnId).toBe("");
@@ -3310,6 +3306,79 @@ Implement this plan?
     expect(state.activeThreadPendingAssistantMessage).toBe("");
     expect(state.activeThreadTransientThinkingText).toBe("");
     expect(state.activeThreadTransientToolText).toBe("");
+  });
+
+  it("drops replayed failed thread status before websocket subscriptions are restored", () => {
+    const statuses = [];
+    const runtimeActivity = [];
+    const finalizedRuntime = [];
+    const chatMessages = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "partial",
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadTransientThinkingText: "thinking",
+      activeThreadTransientToolText: "tool",
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadActiveCommands: [{ key: "cmd-1", state: "running", text: "npm test" }],
+      activeThreadPlan: { threadId: "thread-1", title: "Updated Plan", explanation: "", steps: [] },
+      wsSubscribedEvents: false,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity(payload) {
+        runtimeActivity.push(payload);
+      },
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState(threadId) {
+        finalizedRuntime.push(threadId);
+      },
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "error",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    });
+
+    expect(statuses).toEqual([]);
+    expect(runtimeActivity).toEqual([]);
+    expect(chatMessages).toEqual([]);
+    expect(finalizedRuntime).toEqual([]);
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnId).toBe("turn-1");
+    expect(state.activeThreadPendingUserMessage).toBe("hello");
+    expect(state.activeThreadPendingAssistantMessage).toBe("partial");
   });
 
   it("inserts the live assistant message before the pending inline card", () => {

@@ -45,6 +45,25 @@ describe("historyLiveCommentaryState", () => {
     })).toBe(true);
   });
 
+  it("treats failed history status as terminal too", () => {
+    const thread = {
+      id: "thread-1",
+      status: { type: "failed" },
+      page: { incomplete: true },
+      turns: [],
+    };
+
+    expect(isTerminalInterruptedHistory(thread, {})).toBe(true);
+    expect(
+      shouldSuppressStalePendingHistoryLiveState(thread, {
+        activeThreadId: "thread-1",
+        activeThreadPendingTurnThreadId: "",
+        activeThreadPendingTurnRunning: false,
+        activeThreadPendingUserMessage: "",
+      }, () => ({ text: "", images: [] }))
+    ).toBe(true);
+  });
+
   it("suppresses stale incomplete history when a local interrupt marker is active", () => {
     const thread = {
       id: "thread-1",

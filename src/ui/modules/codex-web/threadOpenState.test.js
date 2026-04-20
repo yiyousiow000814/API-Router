@@ -48,6 +48,23 @@ describe("threadOpenState", () => {
     });
   });
 
+  it("does not require resuming a failed history thread even when the page is incomplete", () => {
+    expect(
+      resolveThreadOpenState({
+        threadId: "thread-1",
+        historyThreadId: "thread-1",
+        historyIncomplete: true,
+        historyStatusType: "failed",
+        loaded: false,
+      })
+    ).toMatchObject({
+      threadId: "thread-1",
+      loaded: false,
+      resumeRequired: false,
+      resumeReason: "history-complete",
+    });
+  });
+
   it("creates an idle open state by default", () => {
     expect(resolveThreadOpenState()).toMatchObject({
       threadId: "",
