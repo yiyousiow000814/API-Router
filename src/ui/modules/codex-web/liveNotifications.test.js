@@ -3140,6 +3140,7 @@ Implement this plan?
     const statuses = [];
     const runtimeActivity = [];
     const finalizedRuntime = [];
+    const chatMessages = [];
     const state = {
       activeThreadId: "thread-1",
       activeThreadMessages: [],
@@ -3166,7 +3167,9 @@ Implement this plan?
       setRuntimeActivity(payload) {
         runtimeActivity.push(payload);
       },
-      addChat() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
       scheduleChatLiveFollow() {},
       finalizeRuntimeState(threadId) {
         finalizedRuntime.push(threadId);
@@ -3197,14 +3200,19 @@ Implement this plan?
       message: "Provider disconnected. Reconnecting...",
       isWarn: false,
     });
-    expect(runtimeActivity).toEqual([
+    // Reconnecting messages now appear in chat, not runtime activity bar
+    expect(chatMessages).toEqual([
       {
-        threadId: "thread-1",
-        title: "Reconnecting",
-        detail: "Provider disconnected. Reconnecting...",
-        tone: "running",
+        role: "system",
+        content: "Reconnecting... Provider disconnected. Reconnecting...",
+        options: {
+          kind: "",
+          transient: false,
+          animate: false,
+        },
       },
     ]);
+    expect(runtimeActivity).toEqual([]);
     expect(finalizedRuntime).toEqual([]);
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
     expect(state.activeThreadPendingTurnId).toBe("turn-1");

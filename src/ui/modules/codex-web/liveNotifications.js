@@ -1367,12 +1367,16 @@ export function createLiveNotificationsModule(deps) {
     const reconnectingStatus = method.includes("thread/status/changed") && isReconnectLiveStatus(status || statusMessage);
     if (reconnectingStatus) {
       setPendingTurnRunning(threadId, true);
-      setRuntimeActivity({
-        threadId,
-        title: "Reconnecting",
-        detail: statusMessage || "Trying to restore provider connection...",
-        tone: "running",
-      });
+
+      // Show reconnection progress in chat area (not runtime activity bar)
+      if (statusMessage) {
+        addChat("system", `Reconnecting... ${statusMessage}`, {
+          kind: "",  // Not an error, just progress
+          transient: false,  // Keep each message visible
+          animate: false,
+        });
+      }
+
       return;
     }
     const failedThreadStatus = method.includes("thread/status/changed") && isFailedLiveStatus(status || statusMessage);
