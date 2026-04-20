@@ -1232,7 +1232,7 @@ export function createTurnActionsModule(deps) {
         restorePrompt: options.fromQueuedTurn !== true,
       });
       addChat("system", resolveActionErrorMessage(error), { kind: "error" });
-      return; // Do not re-throw, already handled by addChat
+      throw error;
     }
     const startedThreadId = String(started?.threadId || started?.thread_id || activeThreadId).trim();
     const startedRolloutPath = String(

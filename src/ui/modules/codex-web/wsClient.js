@@ -225,7 +225,7 @@ export function createWsClientModule(deps) {
     setStatus(message, isWarn);
     if (message && (isWarn || options.forceChat === true)) {
       addChat("system", message, {
-        kind: isWarn ? "error" : "",
+        kind: options.chatKind !== undefined ? options.chatKind : (isWarn ? "error" : ""),
         transient: options.transient !== false,
         animate: false,
       });
@@ -278,7 +278,7 @@ export function createWsClientModule(deps) {
       delay,
       reason,
     });
-    setConnectionStatus(`Reconnecting... ${state.wsReconnectAttempt}/${maxAttempts}`, true);
+    setConnectionStatus(`Reconnecting... ${state.wsReconnectAttempt}/${maxAttempts}`, true, { chatKind: "" });
     setReconnectRuntimeActivity("Reconnecting", `${state.wsReconnectAttempt}/${maxAttempts}`);
     state.wsReconnectTimer = setTimeoutRef(() => {
       state.wsReconnectTimer = null;
