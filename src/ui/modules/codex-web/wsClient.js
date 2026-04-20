@@ -278,7 +278,11 @@ export function createWsClientModule(deps) {
       delay,
       reason,
     });
-    setConnectionStatus(`Reconnecting... ${state.wsReconnectAttempt}/${maxAttempts}`, true, { chatKind: "" });
+    setConnectionStatus(`Reconnecting... ${state.wsReconnectAttempt}/${maxAttempts}`, true, {
+      chatKind: "",
+      transient: false,  // Keep each reconnection message visible
+      forceChat: true,   // Always show in chat
+    });
     // Don't set runtime activity - reconnection progress is already visible in chat
     state.wsReconnectTimer = setTimeoutRef(() => {
       state.wsReconnectTimer = null;
