@@ -507,23 +507,42 @@ export function createActionBindingsModule(deps) {
         if (btn) btn.textContent = "Error Display: Off";
         setStatus("Error display mode disabled.", false);
       } else {
-        // Turn on - show a test error
+        // Turn on - simulate reconnection flow
         if (btn) btn.textContent = "Error Display: On";
 
-        const scenarios = [
-          { type: "provider", message: "stream disconnected before completion: stream closed before response.completed" },
-          { type: "routing", message: "No routable providers available; preferred=aigateway; tried=openai,anthropic" },
-          { type: "network", message: "Live updates disconnected after 5 retries." },
-          { type: "turn", message: "Turn failed: unknown variant `invalid_request_error`" },
-        ];
-        const scenario = scenarios[Math.floor(Math.random() * scenarios.length)];
-
-        // Switch to chat tab to see the error
+        // Switch to chat tab to see the messages
         setMainTab("chat");
 
-        // Add error to chat
-        addChat("system", `[TEST] ${scenario.type}: ${scenario.message}`, { kind: "error" });
-        setStatus(`Test error displayed: ${scenario.type}`, false);
+        const scenarios = [
+          { provider: "openai", error: "stream disconnected before completion: stream closed before response.completed" },
+          { provider: "anthropic", error: "No routable providers available; preferred=aigateway; tried=openai,anthropic" },
+          { provider: "aigateway", error: "Live updates disconnected after 5 retries." },
+          { provider: "provider-a", error: "Turn failed: unknown variant `invalid_request_error`" },
+        ];
+        const scenario = scenarios[Math.floor(Math.random() * scenarios.length)];
+        const maxRetries = 5;
+
+        // Simulate reconnection attempts (1/5, 2/5, etc.)
+        let attempt = 0;
+        const reconnectInterval = scheduleTimeout(function showReconnect() {
+          attempt++;
+          if (attempt <= maxRetries) {
+            addChat("system", `Reconnecting... ${scenario.provider} ${attempt}/${maxRetries}`, {
+              kind: "",
+              transient: false,
+              animate: false,
+            });
+            if (attempt < maxRetries) {
+              scheduleTimeout(showReconnect, 800);
+            } else {
+              // After max retries, show final error
+              scheduleTimeout(() => {
+                addChat("system", `[TEST] ${scenario.error}`, { kind: "error" });
+                setStatus(`Test error sequence completed`, false);
+              }, 800);
+            }
+          }
+        }, 100);
       }
     });
     bindClick("statusTrayCloseBtn", () => {
