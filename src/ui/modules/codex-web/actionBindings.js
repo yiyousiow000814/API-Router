@@ -530,7 +530,7 @@ export function createActionBindingsModule(deps) {
             addChat("system", `Reconnecting... ${scenario.provider} ${attempt}/${maxRetries}`, {
               kind: "",
               transient: false,
-              animate: false,
+              animate: true,  // Add animation
             });
             if (attempt < maxRetries) {
               scheduleTimeout(showReconnect, 800);

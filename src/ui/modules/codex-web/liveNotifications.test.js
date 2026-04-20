@@ -3208,7 +3208,7 @@ Implement this plan?
         options: {
           kind: "",
           transient: false,
-          animate: false,
+          animate: true,
         },
       },
     ]);

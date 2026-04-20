@@ -1373,7 +1373,7 @@ export function createLiveNotificationsModule(deps) {
         addChat("system", `Reconnecting... ${statusMessage}`, {
           kind: "",  // Not an error, just progress
           transient: false,  // Keep each message visible
-          animate: false,
+          animate: true,  // Add animation
         });
       }
 
