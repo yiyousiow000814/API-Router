@@ -1039,7 +1039,7 @@ fn record_started_turn_runtime(
             status: Some("running"),
             last_event_id: None,
             last_turn_id: turn_id,
-            clear_last_turn_id: false,
+            clear_last_turn_id: turn_id.is_none(),
         },
     );
 }
@@ -1777,6 +1777,63 @@ mod tests {
 
         crate::codex_app_server::_set_test_request_handler(None).await;
         let _ = std::fs::remove_dir_all(source_root);
+    }
+
+    #[tokio::test]
+    async fn turn_start_without_turn_id_clears_previous_runtime_turn_id() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        let _home = isolate_windows_web_codex_home();
+        _clear_workspace_runtime_registry_for_test();
+        clear_threads_workspace_index_for_test();
+
+        crate::orchestrator::gateway::web_codex_session_runtime::upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Windows),
+            web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows)).as_deref(),
+            crate::orchestrator::gateway::web_codex_session_runtime::WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: Some("C:\\repo"),
+                rollout_path: None,
+                status: Some("failed"),
+                last_event_id: None,
+                last_turn_id: Some("turn-old"),
+                clear_last_turn_id: false,
+            },
+        );
+
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
+            move |_home, method, params| match method {
+                "thread/loaded/list" => Ok(json!({ "data": [] })),
+                "turn/start" => {
+                    assert_eq!(
+                        params.get("threadId").and_then(Value::as_str),
+                        Some("thread-1")
+                    );
+                    Ok(json!({}))
+                }
+                other => Err(format!("unexpected method: {other}")),
+            },
+        )))
+        .await;
+
+        let manager = CodexSessionManager::new(parse_workspace_target("windows"));
+        manager
+            .turn_start(
+                "thread-1",
+                json!({ "threadId": "thread-1", "workspace": "windows" }),
+            )
+            .await
+            .expect("turn/start without explicit turn id should succeed");
+
+        let snapshot =
+            crate::orchestrator::gateway::web_codex_session_runtime::workspace_thread_runtime_snapshot(
+                Some(WorkspaceTarget::Windows),
+                web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows)).as_deref(),
+                "thread-1",
+            )
+            .expect("thread snapshot");
+        assert_eq!(snapshot.last_turn_id, None);
+
+        crate::codex_app_server::_set_test_request_handler(None).await;
     }
 
     #[test]

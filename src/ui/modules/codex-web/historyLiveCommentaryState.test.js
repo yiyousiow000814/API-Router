@@ -46,7 +46,7 @@ describe("historyLiveCommentaryState", () => {
     })).toBe(true);
   });
 
-  it("treats failed history status as terminal too", () => {
+  it("does not treat failed history status as interrupted history", () => {
     const thread = {
       id: "thread-1",
       status: { type: "failed" },
@@ -54,7 +54,7 @@ describe("historyLiveCommentaryState", () => {
       turns: [],
     };
 
-    expect(isTerminalInterruptedHistory(thread, {})).toBe(true);
+    expect(isTerminalInterruptedHistory(thread, {})).toBe(false);
     expect(
       shouldSuppressStalePendingHistoryLiveState(thread, {
         activeThreadId: "thread-1",
@@ -65,7 +65,7 @@ describe("historyLiveCommentaryState", () => {
     ).toBe(true);
   });
 
-  it("treats systemError history status as terminal too", () => {
+  it("does not treat systemError history status as interrupted history", () => {
     const thread = {
       id: "thread-1",
       status: { type: "systemError" },
@@ -73,7 +73,7 @@ describe("historyLiveCommentaryState", () => {
       turns: [],
     };
 
-    expect(isTerminalInterruptedHistory(thread, {})).toBe(true);
+    expect(isTerminalInterruptedHistory(thread, {})).toBe(false);
     expect(
       shouldSuppressStalePendingHistoryLiveState(thread, {
         activeThreadId: "thread-1",

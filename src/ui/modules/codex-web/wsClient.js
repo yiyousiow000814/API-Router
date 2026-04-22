@@ -143,6 +143,7 @@ export function createWsClientModule(deps) {
     WebSocketRef = WebSocket,
     fetchRef = fetch,
     localStorageRef = localStorage,
+    nowRef = () => Date.now(),
     setTimeoutRef = setTimeout,
     clearTimeoutRef = clearTimeout,
     setIntervalRef = setInterval,
@@ -151,9 +152,85 @@ export function createWsClientModule(deps) {
     WS_RECONNECT_BASE_MS = 3000,
     WS_RECONNECT_MAX_MS = 15000,
     WS_RECONNECT_MAX_ATTEMPTS = 5,
+    WS_RESUME_SILENCE_MS = 1200,
     transportMode = "live",
     seedDefaultThreads = false,
   } = deps;
+  const documentRef = windowRef?.document || (typeof document !== "undefined" ? document : null);
+
+  function hasVisibleLiveTurn() {
+    if (state.activeThreadPendingTurnRunning === true) return true;
+    if (String(state.activeThreadPendingTurnId || "").trim()) return true;
+    if (String(state.activeThreadPendingUserMessage || "").trim()) return true;
+    if (String(state.activeThreadPendingAssistantMessage || "").trim()) return true;
+    if (String(state.activeThreadLiveAssistantThreadId || "").trim()) return true;
+    return false;
+  }
+
+  function noteVisibilityState(nextState) {
+    const normalized = String(nextState || "").trim().toLowerCase() || "visible";
+    const now = Number(nowRef()) || Date.now();
+    state.pageVisibilityState = normalized;
+    if (normalized === "hidden") {
+      state.pageLastHiddenAt = now;
+      state.pageLastResumeReconciledHiddenAt = 0;
+      return;
+    }
+    if (normalized === "visible") {
+      state.pageLastVisibleAt = now;
+    }
+  }
+
+  function shouldSuppressTransportReconnectUi() {
+    const visibilityState = String(
+      state.pageVisibilityState || documentRef?.visibilityState || "visible"
+    ).trim().toLowerCase();
+    if (visibilityState === "hidden") return true;
+    const lastHiddenAt = Number(state.pageLastHiddenAt || 0);
+    const lastVisibleAt = Number(state.pageLastVisibleAt || 0);
+    if (!lastHiddenAt || !lastVisibleAt || lastVisibleAt < lastHiddenAt) return false;
+    const elapsedSinceVisible = (Number(nowRef()) || Date.now()) - lastVisibleAt;
+    return elapsedSinceVisible >= 0 && elapsedSinceVisible < Math.max(0, Number(WS_RESUME_SILENCE_MS || 0));
+  }
+
+  function reconcileActiveRuntimeAfterResume() {
+    if (!hasVisibleLiveTurn()) return;
+    const lastHiddenAt = Number(state.pageLastHiddenAt || 0);
+    const lastVisibleAt = Number(state.pageLastVisibleAt || 0);
+    const lastReconciledHiddenAt = Number(state.pageLastResumeReconciledHiddenAt || 0);
+    if (!lastHiddenAt || !lastVisibleAt || lastVisibleAt < lastHiddenAt) return;
+    if (lastReconciledHiddenAt === lastHiddenAt) return;
+    const currentThreadId = resolveCurrentThreadId(state);
+    if (!currentThreadId) return;
+    state.pageLastResumeReconciledHiddenAt = lastHiddenAt;
+    pushLiveDebugEvent("ws.visibility:reconcile_active_runtime", {
+      threadId: currentThreadId,
+      pendingTurnId: String(state.activeThreadPendingTurnId || "").trim(),
+      pendingRunning: state.activeThreadPendingTurnRunning === true,
+      hiddenAt: lastHiddenAt,
+    });
+    scheduleActiveThreadRefresh(currentThreadId, 0);
+  }
+
+  function installVisibilityTracking() {
+    if (!documentRef || documentRef.__webCodexWsVisibilityTrackingInstalled) return;
+    documentRef.__webCodexWsVisibilityTrackingInstalled = true;
+    noteVisibilityState(documentRef.visibilityState || "visible");
+    documentRef.addEventListener?.("visibilitychange", () => {
+      const nextState = documentRef.visibilityState || "visible";
+      noteVisibilityState(nextState);
+      if (String(nextState).trim().toLowerCase() === "visible") {
+        reconcileActiveRuntimeAfterResume();
+      }
+    });
+    windowRef?.addEventListener?.("pagehide", () => {
+      noteVisibilityState("hidden");
+    });
+    windowRef?.addEventListener?.("pageshow", () => {
+      noteVisibilityState(documentRef.visibilityState || "visible");
+      reconcileActiveRuntimeAfterResume();
+    });
+  }
 
   function getActiveThreadRuntimeActivityTitle() {
     const threadId = resolveCurrentThreadId(state);
@@ -251,6 +328,8 @@ export function createWsClientModule(deps) {
         })
       : null;
 
+  installVisibilityTracking();
+
   function clearWsPingTimer() {
     if (!state.wsPingTimer) return;
     clearIntervalRef(state.wsPingTimer);
@@ -267,11 +346,14 @@ export function createWsClientModule(deps) {
     if (state.wsReconnectTimer) return;
     const attempt = Math.max(0, Number(state.wsReconnectAttempt || 0));
     const maxAttempts = Math.max(1, Number(WS_RECONNECT_MAX_ATTEMPTS || 5));
+    const suppressUi = shouldSuppressTransportReconnectUi();
     if (attempt >= maxAttempts) {
       recordWebTransportEvent("ws_reconnect_failed", String(reason));
       const failureMessage = formatTransportReconnectFailure(reason, maxAttempts);
-      setConnectionStatus(failureMessage, true);
-      renderTransportConnectionStatus(failureMessage, { kind: "error", reset: true });
+      if (!suppressUi) {
+        setConnectionStatus(failureMessage, true);
+        renderTransportConnectionStatus(failureMessage, { kind: "error", reset: true });
+      }
       return;
     }
     const delay = Math.min(
@@ -284,10 +366,13 @@ export function createWsClientModule(deps) {
       attempt: state.wsReconnectAttempt,
       delay,
       reason,
+      uiSuppressed: suppressUi,
     });
     const reconnectMessage = formatTransportReconnectMessage(reason, state.wsReconnectAttempt, maxAttempts);
-    setConnectionStatus(reconnectMessage, true);
-    renderTransportConnectionStatus(reconnectMessage, { kind: "thinking" });
+    if (!suppressUi) {
+      setConnectionStatus(reconnectMessage, true);
+      renderTransportConnectionStatus(reconnectMessage, { kind: "thinking" });
+    }
     state.wsReconnectTimer = setTimeoutRef(() => {
       state.wsReconnectTimer = null;
       recordWebTransportEvent("ws_reconnect_attempted", null);

@@ -112,6 +112,14 @@ fn assistant_phase(payload: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+fn payload_turn_id(payload: &Value) -> Option<&str> {
+    payload
+        .get("turn_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
 #[cfg(test)]
 fn history_parse_counts_by_path(
 ) -> &'static std::sync::Mutex<std::collections::HashMap<String, usize>> {
@@ -247,11 +255,14 @@ impl HistoryTurnBuilder {
         if content.is_empty() {
             return;
         }
-        self.ensure_turn().items.push(json!({
-            "type": "userMessage",
-            "id": item_id,
-            "content": content,
-        }));
+        self.push_turn_item_for_payload(
+            payload,
+            json!({
+                "type": "userMessage",
+                "id": item_id,
+                "content": content,
+            }),
+        );
     }
 
     fn handle_agent_message(&mut self, payload: &Value) {
@@ -263,12 +274,17 @@ impl HistoryTurnBuilder {
         if text.is_empty() {
             return;
         }
-        self.push_assistant_text_item("agentMessage", text, assistant_phase(payload));
+        self.push_assistant_text_item_for_payload(
+            payload,
+            "agentMessage",
+            text,
+            assistant_phase(payload),
+        );
     }
 
     fn handle_context_compacted(&mut self) {
         let item_id = self.next_item_id();
-        self.ensure_turn().items.push(json!({
+        self.push_turn_item(json!({
             "type": "contextCompaction",
             "id": item_id,
         }));
@@ -314,7 +330,7 @@ impl HistoryTurnBuilder {
                 "status": payload.get("status").and_then(Value::as_str),
             })
         };
-        let index = self.push_turn_item(value);
+        let index = self.push_turn_item_for_payload(payload, value);
         if !call_id.is_empty() {
             let kind = if is_shell_like_tool_name(name) {
                 PendingToolKind::CommandExecution
@@ -393,7 +409,7 @@ impl HistoryTurnBuilder {
             "input": payload.get("input").cloned().unwrap_or(Value::Null),
             "status": payload.get("status").and_then(Value::as_str),
         });
-        let index = self.push_turn_item(value);
+        let index = self.push_turn_item_for_payload(payload, value);
         if !call_id.is_empty() {
             self.pending_tool_calls.insert(
                 call_id.to_string(),
@@ -418,13 +434,16 @@ impl HistoryTurnBuilder {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string);
-        self.push_turn_item(json!({
-            "type": "webSearch",
-            "id": item_id,
-            "status": payload.get("status").and_then(Value::as_str),
-            "query": query,
-            "action": action,
-        }));
+        self.push_turn_item_for_payload(
+            payload,
+            json!({
+                "type": "webSearch",
+                "id": item_id,
+                "status": payload.get("status").and_then(Value::as_str),
+                "query": query,
+                "action": action,
+            }),
+        );
     }
 
     fn handle_response_message(&mut self, payload: &Value) {
@@ -439,7 +458,12 @@ impl HistoryTurnBuilder {
         let Some(text) = extract_response_message_text(payload.get("content")) else {
             return;
         };
-        self.push_assistant_text_item("assistantMessage", &text, assistant_phase(payload));
+        self.push_assistant_text_item_for_payload(
+            payload,
+            "assistantMessage",
+            &text,
+            assistant_phase(payload),
+        );
     }
 
     fn handle_compacted(&mut self) {
@@ -500,15 +524,58 @@ impl HistoryTurnBuilder {
         turn.items.len().saturating_sub(1)
     }
 
-    fn push_assistant_text_item(&mut self, item_type: &str, text: &str, phase: Option<String>) {
+    fn push_turn_item_for_payload(&mut self, payload: &Value, item: Value) -> usize {
+        let Some(turn_id) = payload_turn_id(payload) else {
+            return self.push_turn_item(item);
+        };
+        if self
+            .current_turn
+            .as_ref()
+            .is_some_and(|turn| turn.id.as_str() == turn_id)
+        {
+            let turn = self.current_turn.as_mut().expect("current turn");
+            turn.items.push(item);
+            return turn.items.len().saturating_sub(1);
+        }
+        if let Some(index) = self.turns.iter().rposition(|turn| turn.id == turn_id) {
+            let turn = self.turns.get_mut(index).expect("history turn");
+            turn.items.push(item);
+            return turn.items.len().saturating_sub(1);
+        }
+        self.push_turn_item(item)
+    }
+
+    fn push_assistant_text_item_for_payload(
+        &mut self,
+        payload: &Value,
+        item_type: &str,
+        text: &str,
+        phase: Option<String>,
+    ) {
         let trimmed = text.trim();
         if trimmed.is_empty() {
             return;
         }
-        let should_skip_duplicate = self
-            .current_turn
-            .as_ref()
-            .and_then(|turn| turn.items.last())
+        let target_turn_last_item = if let Some(turn_id) = payload_turn_id(payload) {
+            if let Some(turn) = self
+                .current_turn
+                .as_ref()
+                .filter(|turn| turn.id.as_str() == turn_id)
+            {
+                turn.items.last()
+            } else {
+                self.turns
+                    .iter()
+                    .rposition(|turn| turn.id == turn_id)
+                    .and_then(|index| self.turns.get(index))
+                    .and_then(|turn| turn.items.last())
+            }
+        } else {
+            self.current_turn
+                .as_ref()
+                .and_then(|turn| turn.items.last())
+        };
+        let should_skip_duplicate = target_turn_last_item
             .and_then(Value::as_object)
             .is_some_and(|item| {
                 let existing_type = item.get("type").and_then(Value::as_str).unwrap_or_default();
@@ -544,7 +611,7 @@ impl HistoryTurnBuilder {
                 map.insert("phase".to_string(), Value::String(phase_value));
             }
         }
-        self.push_turn_item(item);
+        self.push_turn_item_for_payload(payload, item);
     }
 
     fn turn_item_object_mut(
@@ -1072,6 +1139,31 @@ mod tests {
             parsed.turns[1].items[0]["type"].as_str(),
             Some("userMessage")
         );
+    }
+
+    #[test]
+    fn parser_reuses_completed_turn_for_late_assistant_with_same_turn_id() {
+        let rollout = write_rollout(&[
+            r#"{"type":"session_meta","payload":{"id":"thread-late-assistant"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"hello","images":[],"local_images":[],"text_elements":[]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1"}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","thread_id":"thread-late-assistant","turn_id":"turn-1","role":"assistant","content":[{"type":"output_text","text":"late reply"}]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"task_complete","thread_id":"thread-late-assistant","turn_id":"turn-1"}}"#,
+        ]);
+
+        let parsed = parse_rollout_history(rollout.path()).expect("parsed history");
+        assert_eq!(
+            parsed.turns.len(),
+            1,
+            "late assistant should not create a synthetic extra turn"
+        );
+        assert_eq!(parsed.turns[0].id, "turn-1");
+        let items = &parsed.turns[0].items;
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["type"].as_str(), Some("userMessage"));
+        assert_eq!(items[1]["type"].as_str(), Some("assistantMessage"));
+        assert_eq!(items[1]["text"].as_str(), Some("late reply"));
     }
 
     #[test]

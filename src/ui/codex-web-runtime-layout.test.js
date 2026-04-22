@@ -249,8 +249,31 @@ describe("codex-web runtime layout", () => {
     expect(source).toMatch(/@media \(max-width: 1080px\)\s*\{[\s\S]*?\.leftPanel,\s*[\s\S]*?\.rightPanel\s*\{[\s\S]*?bottom:\s*0/i);
     expect(source).toMatch(/@media \(max-width: 1080px\)\s*\{[\s\S]*?\.leftPanel\s*\{[\s\S]*?left:\s*0/i);
     expect(source).toMatch(/@media \(max-width: 1080px\)\s*\{[\s\S]*?\.leftPanel\s*\{[\s\S]*?border-radius:\s*0/i);
-    expect(source).toMatch(/@media \(max-width: 1080px\)\s*\{[\s\S]*?\.leftPanel,\s*[\s\S]*?\.rightPanel\s*\{[\s\S]*?transition:\s*transform 260ms cubic-bezier\(\.22, \.61, \.36, 1\)/i);
+    expect(source).toMatch(/@media \(max-width: 1080px\)\s*\{[\s\S]*?\.leftPanel,\s*[\s\S]*?\.rightPanel\s*\{[\s\S]*?transition:\s*transform var\(--motion-drawer,\s*var\(--motion-slow,\s*260ms\)\) cubic-bezier\(\.22, \.61, \.36, 1\)/i);
     expect(source).toMatch(/@media \(max-width: 1080px\)\s*\{[\s\S]*?\.leftPanel \.panelFooter\s*\{[\s\S]*?padding-bottom:\s*max\(24px,\s*calc\(env\(safe-area-inset-bottom, 0px\) \+ 18px\)\)/i);
+  });
+
+  it("defines shared motion tokens and slows them for phone-like layouts", () => {
+    expect(source).toContain("--motion-fast: 160ms;");
+    expect(source).toContain("--motion-base: 220ms;");
+    expect(source).toContain("--motion-slow: 260ms;");
+    expect(source).toContain("--motion-enter: 360ms;");
+    expect(source).toContain("--motion-drawer: var(--motion-slow);");
+    expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?:root\s*\{[\s\S]*?--motion-fast:\s*200ms;/i);
+    expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?:root\s*\{[\s\S]*?--motion-base:\s*280ms;/i);
+    expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?:root\s*\{[\s\S]*?--motion-slow:\s*340ms;/i);
+    expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?:root\s*\{[\s\S]*?--motion-enter:\s*420ms;/i);
+    expect(source).toMatch(/transition:\s*opacity var\(--motion-fast,\s*160ms\) ease, transform var\(--motion-base,\s*220ms\) ease/i);
+    expect(source).toMatch(/animation:\s*thread-card-enter var\(--motion-enter,\s*360ms\) cubic-bezier\(\.22, \.61, \.36, 1\) both/i);
+    expect(source).toMatch(/animation:\s*thread-group-enter var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, \.61, \.36, 1\) both/i);
+    expect(source).toMatch(/animation:\s*thread-list-state-text-swap var\(--motion-fast,\s*160ms\) ease both/i);
+    expect(source).toMatch(/animation:\s*chevron-open var\(--motion-fast,\s*160ms\) ease/i);
+    expect(source).toMatch(/animation:\s*settings-card-in var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, 1, \.36, 1\) both/i);
+    expect(source).toMatch(/animation:\s*settings-section-in var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, 1, \.36, 1\) both/i);
+    expect(source).toMatch(/animation:\s*runtime-panel-in var\(--motion-fast,\s*160ms\) cubic-bezier\(\.22,1,\.36,1\)/i);
+    expect(source).toMatch(/animation:\s*composer-picker-item-in var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, 1, \.36, 1\)/i);
+    expect(source).toMatch(/animation:\s*composer-action-menu-in var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, 1, \.36, 1\)/i);
+    expect(source).toMatch(/animation:\s*folderPickerItemIn var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, \.61, \.36, 1\) both/i);
   });
 
   it("hides the mobile chat scrollbar gutter for a cleaner floating chat surface", () => {

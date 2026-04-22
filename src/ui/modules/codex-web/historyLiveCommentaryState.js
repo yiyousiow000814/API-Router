@@ -116,11 +116,17 @@ export function isTerminalHistoryStatus(value) {
   );
 }
 
+export function isInterruptedHistoryStatus(value) {
+  const statusType = String(value || "").trim().toLowerCase();
+  if (!statusType) return false;
+  return statusType === "interrupted" || statusType === "cancelled";
+}
+
 export function isTerminalInterruptedHistory(thread, state = {}) {
   const threadStatusType = String(thread?.status?.type || "").trim().toLowerCase();
   const historyStatusType = String(state.activeThreadHistoryStatusType || "").trim().toLowerCase();
   const statusType = threadStatusType || historyStatusType;
-  return isTerminalHistoryStatus(statusType);
+  return isInterruptedHistoryStatus(statusType);
 }
 
 export function shouldOmitLatestIncompleteTurnArtifacts(thread, state = {}) {
@@ -161,6 +167,7 @@ export function hasAuthoritativeHistoryMaterialization(thread) {
 export function shouldSuppressStalePendingHistoryLiveState(thread, state = {}, parseUserMessageParts) {
   const threadId = String(thread?.id || state.activeThreadId || "").trim();
   if (threadId && state.suppressedIncompleteHistoryRuntimeByThreadId?.[threadId] === true) return true;
+  const historyStatusType = String(thread?.status?.type || state.activeThreadHistoryStatusType || "").trim().toLowerCase();
   const connectionStatusKind = String(state.activeThreadConnectionStatusKind || "").trim().toLowerCase();
   const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
   const pendingRunning = state.activeThreadPendingTurnRunning === true;
@@ -176,6 +183,7 @@ export function shouldSuppressStalePendingHistoryLiveState(thread, state = {}, p
   }
   if (connectionStatusKind === "reconnecting") return false;
   if (isTerminalInterruptedHistory(thread, state)) return true;
+  if (isTerminalHistoryStatus(historyStatusType)) return true;
   const activeThreadId = String(state.activeThreadId || "").trim();
   const terminalConnectionErrorThreadId = String(state.activeThreadTerminalConnectionErrorThreadId || "").trim();
   if (
