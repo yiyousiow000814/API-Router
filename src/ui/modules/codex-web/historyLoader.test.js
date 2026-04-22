@@ -2512,9 +2512,10 @@ Implement this plan?
     )).toBe(true);
   });
 
-  it("settles a reconnecting second-send when terminal history becomes authoritative without replaying reconnect status", async () => {
+  it("materializes an error when terminal history becomes authoritative for a reconnecting second-send", async () => {
     const added = [];
     const clears = [];
+    const statuses = [];
     const state = {
       activeThreadId: "thread-1",
       activeThreadRenderSig: "",
@@ -2544,6 +2545,10 @@ Implement this plan?
       activeThreadConnectionStatusKind: "reconnecting",
       activeThreadConnectionStatusText: "Reconnecting... 5/5",
       activeThreadTerminalConnectionErrorThreadId: "",
+      activeThreadConnectionReplayGuardThreadId: "thread-1",
+      activeThreadConnectionReplayGuardText: "no routable providers available; preferred=aigateway; tried=",
+      activeThreadConnectionReplayGuardEpoch: 4,
+      activeThreadConnectionReplayGuardReconnectSeen: true,
     };
     const module = createHistoryLoaderModule({
       state,
@@ -2580,9 +2585,12 @@ Implement this plan?
       scrollChatToBottom() {},
       scrollToBottomReliable() {},
       canStartChatLiveFollow() { return false; },
+      setStatus(text, isWarn) {
+        statuses.push({ text, isWarn });
+      },
       renderMessageBody() { return ""; },
       addChat(role, text, options = {}) {
-        added.push({ role, text, kind: options.kind || "" });
+        added.push({ role, text, kind: options.kind || "", key: options.messageKey || "" });
       },
       buildMsgNode() { return { nodeType: 1 }; },
       clearChatMessages() {},
@@ -2604,7 +2612,7 @@ Implement this plan?
     await module.applyThreadToChat({
       id: "thread-1",
       workspace: "windows",
-      status: { type: "failed" },
+      status: { type: "systemError" },
       page: { incomplete: false },
       turns: [
         {
@@ -2617,9 +2625,22 @@ Implement this plan?
     expect(state.activeThreadPendingTurnRunning).toBe(false);
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
     expect(state.activeThreadPendingUserMessage).toBe("hi");
-    expect(clears).toEqual(["clear"]);
-    expect(state.activeThreadConnectionStatusKind).toBe("");
-    expect(state.activeThreadConnectionStatusText).toBe("");
+    expect(clears).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe(
+      "no routable providers available; preferred=aigateway; tried="
+    );
+    expect(statuses).toContainEqual({
+      text: "no routable providers available; preferred=aigateway; tried=",
+      isWarn: true,
+    });
+    expect(added.some(
+      (entry) =>
+        entry.role === "system" &&
+        entry.kind === "error" &&
+        entry.key === "live-thread-connection-status" &&
+        entry.text === "no routable providers available; preferred=aigateway; tried="
+    )).toBe(true);
     expect(added.some(
       (entry) =>
         entry.role === "system" &&
@@ -4401,7 +4422,7 @@ Implement this plan?
     ).toBe(false);
   });
 
-  it("does not stop a reconnecting pending turn before the terminal error is latched", async () => {
+  it("stops a reconnecting pending turn once systemError history can materialize the terminal error", async () => {
     const state = {
       activeThreadId: "thread-1",
       activeThreadRenderSig: "",
@@ -4431,7 +4452,12 @@ Implement this plan?
       activeThreadConnectionStatusKind: "reconnecting",
       activeThreadConnectionStatusText: "Reconnecting... 5/5",
       activeThreadTerminalConnectionErrorThreadId: "",
+      activeThreadConnectionReplayGuardThreadId: "thread-1",
+      activeThreadConnectionReplayGuardText: "no routable providers available; preferred=aigateway; tried=",
+      activeThreadConnectionReplayGuardEpoch: 4,
+      activeThreadConnectionReplayGuardReconnectSeen: true,
     };
+    const statuses = [];
     const module = createHistoryLoaderModule({
       state,
       byId() { return null; },
@@ -4467,6 +4493,9 @@ Implement this plan?
       scrollChatToBottom() {},
       scrollToBottomReliable() {},
       canStartChatLiveFollow() { return false; },
+      setStatus(text, isWarn) {
+        statuses.push({ text, isWarn });
+      },
       renderMessageBody() { return ""; },
       addChat() {},
       buildMsgNode() { return { nodeType: 1 }; },
@@ -4501,13 +4530,24 @@ Implement this plan?
 
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
     expect(state.activeThreadPendingTurnId).toBe("turn-2");
-    expect(state.activeThreadPendingTurnRunning).toBe(true);
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe(
+      "no routable providers available; preferred=aigateway; tried="
+    );
+    expect(statuses).toContainEqual({
+      text: "no routable providers available; preferred=aigateway; tried=",
+      isWarn: true,
+    });
     expect(state.liveDebugEvents.some(
       (event) => event?.kind === "pending.runtime:set_running" && event?.reason === "history.sync:terminal_preserve_pending_user"
     )).toBe(false);
     expect(state.liveDebugEvents.some(
       (event) => event?.kind === "pending.runtime:reset" && event?.reason === "history.sync:terminal_preserve_pending_user"
     )).toBe(false);
+    expect(state.liveDebugEvents.some(
+      (event) => event?.kind === "history.connection:materialize_terminal_error"
+    )).toBe(true);
   });
 
   it("does not let suppressed synthetic pending inputs clear an active second-send runtime", async () => {

@@ -394,6 +394,68 @@ function materializeDeferredTerminalConnectionError(thread, state = {}, setStatu
   setStatus(deferredText, true);
 }
 
+function materializeTerminalConnectionErrorFromHistory(thread, state = {}, setStatus = () => {}, pushLiveDebugEvent = () => {}) {
+  const threadId = String(thread?.id || state.activeThreadId || "").trim();
+  const historyStatusType = String(thread?.status?.type || state.activeThreadHistoryStatusType || "")
+    .trim()
+    .toLowerCase();
+  if (!threadId || !isTerminalHistoryStatus(historyStatusType) || historyStatusType === "interrupted" || historyStatusType === "cancelled") {
+    return;
+  }
+  if (thread?.page?.incomplete === true) return;
+  const connectionStatusKind = String(state.activeThreadConnectionStatusKind || "").trim().toLowerCase();
+  const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
+  const hasPendingRuntime =
+    pendingThreadId === threadId &&
+    (
+      state.activeThreadPendingTurnRunning === true ||
+      !!String(state.activeThreadPendingTurnId || "").trim() ||
+      !!String(state.activeThreadPendingUserMessage || "").trim() ||
+      !!String(state.activeThreadPendingAssistantMessage || "").trim()
+    );
+  const deferredThreadId = String(state.activeThreadPendingTerminalConnectionErrorThreadId || "").trim();
+  const guardThreadId = String(state.activeThreadConnectionReplayGuardThreadId || "").trim();
+  const hasTerminalErrorContext =
+    connectionStatusKind === "reconnecting" ||
+    hasPendingRuntime ||
+    deferredThreadId === threadId ||
+    guardThreadId === threadId;
+  if (!hasTerminalErrorContext) return;
+  const message = String(
+    state.activeThreadPendingTerminalConnectionErrorText ||
+    state.activeThreadConnectionReplayGuardText ||
+    state.activeThreadConnectionStatusText ||
+    ""
+  ).trim();
+  if (!message) return;
+  pushLiveDebugEvent("history.connection:materialize_terminal_error", {
+    threadId,
+    historyStatusType,
+    fromKind: connectionStatusKind,
+    hadPendingRuntime: hasPendingRuntime,
+    message: message.slice(0, 180),
+  });
+  state.activeThreadConnectionStatusKind = "error";
+  state.activeThreadConnectionStatusText = message;
+  state.activeThreadTerminalConnectionErrorThreadId = threadId;
+  state.activeThreadPendingTerminalConnectionErrorThreadId = "";
+  state.activeThreadPendingTerminalConnectionErrorText = "";
+  setStatus(message, true);
+  if (pendingThreadId === threadId) {
+    setPendingTurnRunning(state, threadId, false, {
+      reason: "history.connection:materialize_terminal_error",
+    });
+    resetPendingTurnRuntime(state, {
+      preserveThreadId: true,
+      preserveTurnId: true,
+      preserveMessages: true,
+      preserveBaselineTurnCount: true,
+      preserveBaselineUserCount: true,
+      reason: "history.connection:materialize_terminal_error",
+    });
+  }
+}
+
 function syncPendingTurnStateFromIncompleteHistory(thread, state = {}, parseUserMessageParts) {
   const threadId = String(thread?.id || state.activeThreadId || "").trim();
   const openStateThreadId = String(state.activeThreadOpenState?.threadId || "").trim();
@@ -742,6 +804,7 @@ export function createHistoryLoaderModule(deps) {
     else showWelcomeCard();
     updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
     restoreLiveCommentarySnapshot(liveCommentarySnapshot, thread, { historyCommentary });
+    materializeTerminalConnectionErrorFromHistory(thread, state, setStatus, pushLiveDebugEvent);
     const historyStatusType = String(
       thread?.status?.type || state.activeThreadHistoryStatusType || ""
     ).trim().toLowerCase();
