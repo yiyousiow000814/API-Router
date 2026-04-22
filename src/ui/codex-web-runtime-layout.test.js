@@ -222,7 +222,7 @@ describe("codex-web runtime layout", () => {
 
   it("floats the mobile composer above the bottom edge and keyboard offset", () => {
     expect(source).toContain("--composer-float-height: 148px;");
-    expect(source).toContain("--mobile-bottom-clearance: max(22px, calc(env(safe-area-inset-bottom, 0px) + 12px));");
+    expect(source).toContain("--mobile-bottom-clearance: max(26px, calc(env(safe-area-inset-bottom, 0px) + 14px));");
     expect(source).toContain("body.floating-composer-layout .chatPanel");
     expect(source).toContain("body.floating-composer-layout .composer");
     expect(source).toContain("body.floating-composer-layout .messages");
@@ -234,6 +234,8 @@ describe("codex-web runtime layout", () => {
 
   it("uses an edge-to-edge phone layout instead of an inset floating card", () => {
     expect(source).toContain("@media (max-width: 720px) {");
+    expect(source).toContain("--mobile-bottom-clearance: max(34px, calc(env(safe-area-inset-bottom, 0px) + 18px));");
+    expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?\.leftPanel \.panelFooter\s*\{[\s\S]*?padding-bottom:\s*max\(32px,\s*calc\(env\(safe-area-inset-bottom, 0px\) \+ 24px\)\)/i);
     expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?\.shell\s*\{[\s\S]*?padding:\s*0/i);
     expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?top:\s*0/i);
     expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?left:\s*0/i);
@@ -247,6 +249,8 @@ describe("codex-web runtime layout", () => {
     expect(source).toMatch(/@media \(max-width: 1080px\)\s*\{[\s\S]*?\.leftPanel,\s*[\s\S]*?\.rightPanel\s*\{[\s\S]*?bottom:\s*0/i);
     expect(source).toMatch(/@media \(max-width: 1080px\)\s*\{[\s\S]*?\.leftPanel\s*\{[\s\S]*?left:\s*0/i);
     expect(source).toMatch(/@media \(max-width: 1080px\)\s*\{[\s\S]*?\.leftPanel\s*\{[\s\S]*?border-radius:\s*0/i);
+    expect(source).toMatch(/@media \(max-width: 1080px\)\s*\{[\s\S]*?\.leftPanel,\s*[\s\S]*?\.rightPanel\s*\{[\s\S]*?transition:\s*transform 260ms cubic-bezier\(\.22, \.61, \.36, 1\)/i);
+    expect(source).toMatch(/@media \(max-width: 1080px\)\s*\{[\s\S]*?\.leftPanel \.panelFooter\s*\{[\s\S]*?padding-bottom:\s*max\(24px,\s*calc\(env\(safe-area-inset-bottom, 0px\) \+ 18px\)\)/i);
   });
 
   it("hides the mobile chat scrollbar gutter for a cleaner floating chat surface", () => {

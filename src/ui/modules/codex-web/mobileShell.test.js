@@ -48,11 +48,16 @@ describe("mobileShell", () => {
     ).toBe(false);
   });
 
-  it("commits drawer opening only after a meaningful drag distance", () => {
-    expect(shouldCommitDrawerOpen({ deltaX: 40, drawerWidth: 300 })).toBe(false);
-    expect(shouldCommitDrawerOpen({ deltaX: 120, drawerWidth: 300 })).toBe(true);
-    expect(shouldCommitDrawerClose({ deltaX: -40, drawerWidth: 300 })).toBe(false);
-    expect(shouldCommitDrawerClose({ deltaX: -120, drawerWidth: 300 })).toBe(true);
+  it("keeps a tiny accidental drag from committing the drawer", () => {
+    expect(shouldCommitDrawerOpen({ deltaX: 8, drawerWidth: 300 })).toBe(false);
+    expect(shouldCommitDrawerOpen({ deltaX: 18, drawerWidth: 300 })).toBe(true);
+    expect(shouldCommitDrawerClose({ deltaX: -8, drawerWidth: 300 })).toBe(false);
+    expect(shouldCommitDrawerClose({ deltaX: -18, drawerWidth: 300 })).toBe(true);
+  });
+
+  it("snaps open or closed once the drag has clearly started in that direction", () => {
+    expect(shouldCommitDrawerOpen({ deltaX: 18, drawerWidth: 300 })).toBe(true);
+    expect(shouldCommitDrawerClose({ deltaX: -18, drawerWidth: 300 })).toBe(true);
   });
 
   it("starts close swipe only when the left drawer is already open", () => {
@@ -321,6 +326,207 @@ describe("mobileShell", () => {
 
     expect(body._classes.has("drawer-left-open")).toBe(true);
     expect(body._classes.has("drawer-left-dragging")).toBe(false);
+  });
+
+  it("commits drawer opening from the last drag point when touchend omits changedTouches", () => {
+    const handlers = new Map();
+    const body = {
+      _classes: new Set(),
+      _style: new Map(),
+      classList: {
+        contains(name) {
+          return body._classes.has(name);
+        },
+        add(...names) {
+          for (const name of names) body._classes.add(name);
+        },
+        remove(...names) {
+          for (const name of names) body._classes.delete(name);
+        },
+      },
+      style: {
+        setProperty(name, value) {
+          body._style.set(name, value);
+        },
+        removeProperty(name) {
+          body._style.delete(name);
+        },
+      },
+    };
+    const backdrop = {
+      classList: {
+        _classes: new Set(),
+        toggle(name, force) {
+          if (force) {
+            this._classes.add(name);
+            return;
+          }
+          this._classes.delete(name);
+        },
+        add(name) {
+          this._classes.add(name);
+        },
+        remove(name) {
+          this._classes.delete(name);
+        },
+      },
+    };
+    createMobileShellModule({
+      state: {
+        drawerOpenPhaseTimer: 0,
+        threadListVisibleOpenAnimationUntil: 0,
+        threadListPendingSidebarOpenAnimation: false,
+        threadListVisibleAnimationTimer: 0,
+        threadListLoading: false,
+        threadItems: [],
+        threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+        threadListAnimateNextRender: false,
+        threadListAnimateThreadIds: new Set(),
+        threadListExpandAnimateGroupKeys: new Set(),
+        threadListSkipScrollRestoreOnce: false,
+      },
+      byId(id) {
+        if (id === "mobileDrawerBackdrop") return backdrop;
+        return null;
+      },
+      documentRef: {
+        body,
+        querySelector(selector) {
+          if (selector === ".leftPanel") {
+            return {
+              getBoundingClientRect() {
+                return { width: 300 };
+              },
+            };
+          }
+          return null;
+        },
+        addEventListener(name, handler) {
+          handlers.set(name, handler);
+        },
+      },
+      windowRef: { innerWidth: 420 },
+      normalizeWorkspaceTarget(value) {
+        return value;
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      pushThreadAnimDebug() {},
+      renderThreads() {},
+    });
+
+    handlers.get("touchstart")({
+      touches: [{ clientX: 12, clientY: 220 }],
+    });
+    handlers.get("touchmove")({
+      touches: [{ clientX: 148, clientY: 226 }],
+    });
+    handlers.get("touchend")({});
+
+    expect(body._classes.has("drawer-left-open")).toBe(true);
+  });
+
+  it("does not cancel an already-horizontal drawer drag because of later vertical drift", () => {
+    const handlers = new Map();
+    const body = {
+      _classes: new Set(),
+      _style: new Map(),
+      classList: {
+        contains(name) {
+          return body._classes.has(name);
+        },
+        add(...names) {
+          for (const name of names) body._classes.add(name);
+        },
+        remove(...names) {
+          for (const name of names) body._classes.delete(name);
+        },
+      },
+      style: {
+        setProperty(name, value) {
+          body._style.set(name, value);
+        },
+        removeProperty(name) {
+          body._style.delete(name);
+        },
+      },
+    };
+    const backdrop = {
+      classList: {
+        _classes: new Set(),
+        toggle(name, force) {
+          if (force) {
+            this._classes.add(name);
+            return;
+          }
+          this._classes.delete(name);
+        },
+        add(name) {
+          this._classes.add(name);
+        },
+        remove(name) {
+          this._classes.delete(name);
+        },
+      },
+    };
+    createMobileShellModule({
+      state: {
+        drawerOpenPhaseTimer: 0,
+        threadListVisibleOpenAnimationUntil: 0,
+        threadListPendingSidebarOpenAnimation: false,
+        threadListVisibleAnimationTimer: 0,
+        threadListLoading: false,
+        threadItems: [],
+        threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+        threadListAnimateNextRender: false,
+        threadListAnimateThreadIds: new Set(),
+        threadListExpandAnimateGroupKeys: new Set(),
+        threadListSkipScrollRestoreOnce: false,
+      },
+      byId(id) {
+        if (id === "mobileDrawerBackdrop") return backdrop;
+        return null;
+      },
+      documentRef: {
+        body,
+        querySelector(selector) {
+          if (selector === ".leftPanel") {
+            return {
+              getBoundingClientRect() {
+                return { width: 300 };
+              },
+            };
+          }
+          return null;
+        },
+        addEventListener(name, handler) {
+          handlers.set(name, handler);
+        },
+      },
+      windowRef: { innerWidth: 420 },
+      normalizeWorkspaceTarget(value) {
+        return value;
+      },
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      pushThreadAnimDebug() {},
+      renderThreads() {},
+    });
+
+    handlers.get("touchstart")({
+      touches: [{ clientX: 10, clientY: 200 }],
+    });
+    handlers.get("touchmove")({
+      touches: [{ clientX: 62, clientY: 206 }],
+    });
+    handlers.get("touchmove")({
+      touches: [{ clientX: 86, clientY: 248 }],
+    });
+
+    expect(body._classes.has("drawer-left-dragging")).toBe(true);
+    expect(body._style.has("--drawer-left-drag-translate")).toBe(true);
   });
 
   it("ignores non-edge swipes so the chat surface can scroll normally", () => {

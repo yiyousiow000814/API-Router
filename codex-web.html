@@ -41,7 +41,7 @@
       --visual-viewport-height: 100vh;
       --keyboard-offset: 0px;
       --composer-float-height: 148px;
-      --mobile-bottom-clearance: max(22px, calc(env(safe-area-inset-bottom, 0px) + 12px));
+      --mobile-bottom-clearance: max(26px, calc(env(safe-area-inset-bottom, 0px) + 14px));
 
       /* z-index scale (sequential, no gaps). */
       --z-chat-opening: 1;  /* "Opening chat..." overlay inside #chatBox only */
@@ -5153,7 +5153,7 @@
         width: clamp(260px, 70vw, 320px);
         z-index: var(--z-drawer-panel);
         box-shadow: none;
-        transition: transform 180ms ease;
+        transition: transform 260ms cubic-bezier(.22, .61, .36, 1);
         border-color: #32405b;
       }
       .leftPanel {
@@ -5179,7 +5179,7 @@
         padding-bottom: 0;
       }
       .leftPanel .panelFooter {
-        padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+        padding-bottom: max(24px, calc(env(safe-area-inset-bottom, 0px) + 18px));
       }
       .leftPanel .panelFooter .drawerSettingsBtn {
         pointer-events: auto;
@@ -5242,6 +5242,12 @@
     }
 
     @media (max-width: 720px) {
+      :root {
+        --mobile-bottom-clearance: max(34px, calc(env(safe-area-inset-bottom, 0px) + 18px));
+      }
+      .leftPanel .panelFooter {
+        padding-bottom: max(32px, calc(env(safe-area-inset-bottom, 0px) + 24px));
+      }
       .shell {
         padding: 0;
       }

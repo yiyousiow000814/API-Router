@@ -3,10 +3,10 @@ export function shouldOpenDrawerWithAnimation(tab, wasThreadsOpen) {
 }
 
 const EDGE_SWIPE_START_PX = 24;
-const EDGE_SWIPE_OPEN_DELTA_PX = 56;
+const EDGE_SWIPE_COMMIT_DELTA_PX = 12;
 const EDGE_SWIPE_VERTICAL_TOLERANCE_PX = 40;
-const EDGE_SWIPE_OPEN_RATIO = 0.36;
 const EDGE_SWIPE_CLOSE_GUTTER_PX = 20;
+const EDGE_SWIPE_HORIZONTAL_LOCK_PX = 16;
 
 function readTouchPoint(event) {
   const touch =
@@ -37,8 +37,7 @@ export function shouldStartDrawerEdgeSwipe({ startX, body, windowRef }) {
 
 export function shouldCommitDrawerOpen({ deltaX, drawerWidth }) {
   if (!Number.isFinite(deltaX) || deltaX <= 0) return false;
-  const normalizedDrawerWidth = Number.isFinite(drawerWidth) && drawerWidth > 0 ? drawerWidth : 280;
-  return deltaX >= Math.max(EDGE_SWIPE_OPEN_DELTA_PX, normalizedDrawerWidth * EDGE_SWIPE_OPEN_RATIO);
+  return deltaX >= EDGE_SWIPE_COMMIT_DELTA_PX;
 }
 
 export function shouldStartDrawerCloseSwipe({ startX, body, panelRect, windowRef }) {
@@ -175,8 +174,10 @@ export function createMobileShellModule(deps) {
   function bindDrawerEdgeSwipe() {
     if (!documentRef?.addEventListener) return;
     let swipeStart = null;
+    let swipeLastPoint = null;
     let swipeDrawerWidth = 0;
     let swipeMode = "open";
+    let swipeHorizontalLocked = false;
 
     documentRef.addEventListener(
       "touchstart",
@@ -184,6 +185,7 @@ export function createMobileShellModule(deps) {
         const point = readTouchPoint(event);
         if (!point) {
           swipeStart = null;
+          swipeLastPoint = null;
           return;
         }
         if (
@@ -194,8 +196,10 @@ export function createMobileShellModule(deps) {
           })
         ) {
           swipeStart = point;
+          swipeLastPoint = point;
           swipeDrawerWidth = Number(getLeftDrawerPanel()?.getBoundingClientRect?.().width || 0);
           swipeMode = "open";
+          swipeHorizontalLocked = false;
           return;
         }
         const panelRect = getLeftDrawerPanel()?.getBoundingClientRect?.() || null;
@@ -208,13 +212,17 @@ export function createMobileShellModule(deps) {
           })
         ) {
           swipeStart = point;
+          swipeLastPoint = point;
           swipeDrawerWidth = Number(panelRect?.width || 0);
           swipeMode = "close";
+          swipeHorizontalLocked = false;
           return;
         }
         swipeStart = null;
+        swipeLastPoint = null;
         swipeDrawerWidth = 0;
         swipeMode = "open";
+        swipeHorizontalLocked = false;
       },
       { passive: true }
     );
@@ -226,19 +234,28 @@ export function createMobileShellModule(deps) {
         const point = readTouchPoint(event);
         if (!point) {
           swipeStart = null;
+          swipeLastPoint = null;
           return;
         }
         const deltaX = point.x - swipeStart.x;
         const deltaY = Math.abs(point.y - swipeStart.y);
+        if (!swipeHorizontalLocked && Math.abs(deltaX) >= EDGE_SWIPE_HORIZONTAL_LOCK_PX && Math.abs(deltaX) > deltaY) {
+          swipeHorizontalLocked = true;
+        }
         const invalidHorizontalDirection =
           swipeMode === "open" ? deltaX < -12 : deltaX > 12;
-        if (deltaY > EDGE_SWIPE_VERTICAL_TOLERANCE_PX || invalidHorizontalDirection) {
+        const shouldCancelForVerticalDrift =
+          !swipeHorizontalLocked && deltaY > EDGE_SWIPE_VERTICAL_TOLERANCE_PX;
+        if (shouldCancelForVerticalDrift || invalidHorizontalDirection) {
           clearDrawerDragVisual();
           swipeStart = null;
+          swipeLastPoint = null;
           swipeDrawerWidth = 0;
           swipeMode = "open";
+          swipeHorizontalLocked = false;
           return;
         }
+        swipeLastPoint = point;
         updateDrawerDragVisual(deltaX, swipeMode);
       },
       { passive: true }
@@ -248,7 +265,7 @@ export function createMobileShellModule(deps) {
       "touchend",
       (event) => {
         if (swipeStart) {
-          const point = readTouchPoint(event) || swipeStart;
+          const point = readTouchPoint(event) || swipeLastPoint || swipeStart;
           const deltaX = point.x - swipeStart.x;
           const shouldOpen =
             swipeMode === "open" &&
@@ -267,8 +284,10 @@ export function createMobileShellModule(deps) {
           else if (shouldClose) setMobileTab("chat");
         }
         swipeStart = null;
+        swipeLastPoint = null;
         swipeDrawerWidth = 0;
         swipeMode = "open";
+        swipeHorizontalLocked = false;
       },
       { passive: true }
     );
@@ -278,8 +297,10 @@ export function createMobileShellModule(deps) {
       () => {
         clearDrawerDragVisual();
         swipeStart = null;
+        swipeLastPoint = null;
         swipeDrawerWidth = 0;
         swipeMode = "open";
+        swipeHorizontalLocked = false;
       },
       { passive: true }
     );
