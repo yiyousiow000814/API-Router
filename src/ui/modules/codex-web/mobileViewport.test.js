@@ -40,23 +40,33 @@ describe("mobileViewport", () => {
     expect(isEditableElement({ tagName: "BUTTON" })).toBe(false);
   });
 
-  it("uses pointer capabilities instead of a width breakpoint for floating composer mode", () => {
+  it("uses a compact-width fallback in addition to touch heuristics for floating composer mode", () => {
+    expect(shouldUseFloatingComposerLayout({
+      innerWidth: 900,
+      matchMedia() {
+        return { matches: false };
+      },
+      navigator: { maxTouchPoints: 0 },
+    })).toBe(true);
     expect(shouldUseFloatingComposerLayout({
       matchMedia(query) {
         return { matches: query === "(pointer: coarse)" };
       },
+      innerWidth: 1400,
       navigator: { maxTouchPoints: 0 },
     })).toBe(true);
     expect(shouldUseFloatingComposerLayout({
       matchMedia() {
         return { matches: false };
       },
+      innerWidth: 1400,
       navigator: { maxTouchPoints: 5 },
     })).toBe(true);
     expect(shouldUseFloatingComposerLayout({
       matchMedia() {
         return { matches: false };
       },
+      innerWidth: 1400,
       navigator: { maxTouchPoints: 0 },
     })).toBe(false);
   });
@@ -109,5 +119,46 @@ describe("mobileViewport", () => {
     expect(vvHandlers.has("scroll")).toBe(true);
     expect(docHandlers.has("focusin")).toBe(true);
     expect(winHandlers.has("resize")).toBe(true);
+  });
+
+  it("recomputes floating composer mode when only the viewport width changes", () => {
+    const rootStyle = { setProperty: vi.fn() };
+    const bodyClassList = { toggle: vi.fn() };
+    const winHandlers = new Map();
+    const documentRef = {
+      activeElement: null,
+      documentElement: { clientHeight: 820, clientWidth: 1320, style: rootStyle },
+      body: { classList: bodyClassList },
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    const windowRef = {
+      innerHeight: 820,
+      innerWidth: 1320,
+      addEventListener(event, handler) { winHandlers.set(event, handler); },
+      removeEventListener(event) { winHandlers.delete(event); },
+      matchMedia() {
+        return { matches: false };
+      },
+      navigator: { maxTouchPoints: 0 },
+      requestAnimationFrame(callback) {
+        callback();
+        return 1;
+      },
+    };
+
+    installMobileViewportSync({ windowRef, documentRef });
+    expect(bodyClassList.toggle).toHaveBeenCalledWith("floating-composer-layout", false);
+
+    bodyClassList.toggle.mockClear();
+    rootStyle.setProperty.mockClear();
+    windowRef.innerWidth = 900;
+    documentRef.documentElement.clientWidth = 900;
+    const resizeHandler = winHandlers.get("resize");
+    expect(resizeHandler).toBeTypeOf("function");
+    resizeHandler();
+
+    expect(bodyClassList.toggle).toHaveBeenCalledWith("floating-composer-layout", true);
+    expect(rootStyle.setProperty).toHaveBeenCalledWith("--app-height", "820px");
   });
 });

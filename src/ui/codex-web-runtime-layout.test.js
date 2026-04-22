@@ -25,17 +25,42 @@ describe("codex-web runtime layout", () => {
   it("adds a separate picker bar below the composer meta row", () => {
     const metaIndex = source.indexOf('<div class="mobileComposerMetaRow">');
     const surfaceIndex = source.indexOf('<div class="composerInputSurface">');
-    const pickerIndex = source.indexOf('<div id="composerPickerBar" class="composerPickerBar" style="display:none;">');
+    const pickerIndex = source.indexOf('<div id="composerPickerBar" class="composerPickerBar">');
     expect(surfaceIndex).toBeGreaterThanOrEqual(0);
     expect(metaIndex).toBeGreaterThanOrEqual(0);
     expect(pickerIndex).toBeGreaterThan(metaIndex);
     expect(pickerIndex).toBeGreaterThan(surfaceIndex);
     expect(source).toContain('id="composerBranchPickerBtn"');
     expect(source).toContain('id="composerPermissionPickerBtn"');
-    expect(source).toContain('id="composerPickerBar" class="composerPickerBar" style="display:none;"');
+    expect(source).toContain('id="composerPickerBar" class="composerPickerBar"');
     expect(source).toContain(".composerInputSurface");
     expect(source).toContain(".composerPickerBar");
     expect(source).toContain(".composerPickerMenu");
+  });
+
+  it("uses the same frosted composer surface chrome on desktop as on mobile", () => {
+    const surfaceMatch = source.match(/\.composerInputSurface\s*\{([^}]+)\}/s);
+    expect(surfaceMatch).toBeTruthy();
+    expect(surfaceMatch?.[1] || "").toMatch(/background:\s*rgba\(248,\s*250,\s*255,\s*0\.96\)/i);
+    expect(surfaceMatch?.[1] || "").toMatch(/box-shadow:\s*0 14px 40px rgba\(13,\s*18,\s*32,\s*0\.12\)/i);
+  });
+
+  it("keeps the desktop composer inset from the bottom edge instead of pinning it flush to the panel", () => {
+    const composerMatch = source.match(/\.composer\s*\{([^}]+)\}/s);
+    expect(composerMatch).toBeTruthy();
+    expect(composerMatch?.[1] || "").toMatch(/gap:\s*8px/i);
+    expect(composerMatch?.[1] || "").toMatch(/padding:\s*0 10px 10px/i);
+  });
+
+  it("renders the picker bar shell immediately instead of waiting for JS to unhide it", () => {
+    expect(source).not.toContain('id="composerPickerBar" class="composerPickerBar" style="display:none;"');
+    expect(source).toContain('<span class="composerPickerBtnLabel">Branch</span>');
+    expect(source).toContain('<span class="composerPickerBtnLabel">Full access</span>');
+  });
+
+  it("keeps queued turn chrome hidden on first paint until a queued turn actually exists", () => {
+    expect(source).toContain('id="queuedTurnCard" class="queuedTurnCard" style="display:none;"');
+    expect(source).toContain('id="queuedTurnToggleBtn" class="queuedTurnCardBtn queuedTurnCardToggleBtn" type="button" aria-label="Collapse queued messages" title="Collapse queued messages" aria-expanded="true" style="display:none;"');
   });
 
   it("keeps the picker bar above the send action rail on desktop layouts", () => {
@@ -47,6 +72,12 @@ describe("codex-web runtime layout", () => {
     expect(pickerBarMatch?.[1] || "").toMatch(/z-index:\s*var\(--z-composer-picker\)/i);
     expect(actionRailMatch?.[1] || "").toMatch(/z-index:\s*var\(--z-composer-overlay\)/i);
     expect(source).toContain("--z-composer-picker: 12;");
+  });
+
+  it("drops the composer picker bar behind the drawer while a sidebar is open", () => {
+    expect(source).toMatch(/body\.drawer-left-open \.composerPickerBar,/);
+    expect(source).toMatch(/body\.drawer-right-open \.composerPickerBar,/);
+    expect(source).toMatch(/body\.drawer-left-open \.composerPickerBar,[\s\S]*?z-index:\s*0 !important/i);
   });
 
   it("opens picker menus upward from the bottom picker bar", () => {
@@ -180,6 +211,9 @@ describe("codex-web runtime layout", () => {
     expect(source).toContain("--app-height: 100vh;");
     expect(source).toContain("--visual-viewport-height: 100vh;");
     expect(source).toContain("--keyboard-offset: 0px;");
+    expect(source).toContain("applyInitialMobileComposerLayout");
+    expect(source).toContain('body.classList.add("floating-composer-layout")');
+    expect(source).toContain("viewportWidth <= 1080");
     const shellMatch = source.match(/\.shell\s*\{([^}]+)\}/s);
     expect(shellMatch).toBeTruthy();
     expect(shellMatch?.[1] || "").toMatch(/height:\s*var\(--app-height,\s*100dvh\)/i);
@@ -188,13 +222,31 @@ describe("codex-web runtime layout", () => {
 
   it("floats the mobile composer above the bottom edge and keyboard offset", () => {
     expect(source).toContain("--composer-float-height: 148px;");
+    expect(source).toContain("--mobile-bottom-clearance: max(22px, calc(env(safe-area-inset-bottom, 0px) + 12px));");
     expect(source).toContain("body.floating-composer-layout .chatPanel");
     expect(source).toContain("body.floating-composer-layout .composer");
     expect(source).toContain("body.floating-composer-layout .messages");
     expect(source).toMatch(/body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?bottom:\s*auto/);
     expect(source).toMatch(/body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?height:\s*calc\(var\(--visual-viewport-height,\s*var\(--app-height,\s*100vh\)\)\s*-\s*16px\)/);
-    expect(source).toMatch(/body\.floating-composer-layout \.composer\s*\{[\s\S]*?bottom:\s*calc\(10px \+ env\(safe-area-inset-bottom, 0px\)\)/);
-    expect(source).toMatch(/body\.floating-composer-layout \.messages\s*\{[\s\S]*?padding-bottom:\s*calc\(var\(--composer-float-height, 148px\) \+ 20px \+ env\(safe-area-inset-bottom, 0px\)\)/);
+    expect(source).toMatch(/body\.floating-composer-layout \.composer\s*\{[\s\S]*?bottom:\s*var\(--mobile-bottom-clearance,\s*calc\(10px \+ env\(safe-area-inset-bottom, 0px\)\)\)/);
+    expect(source).toMatch(/body\.floating-composer-layout \.messages\s*\{[\s\S]*?padding-bottom:\s*calc\(var\(--composer-float-height, 148px\) \+ 20px \+ var\(--mobile-bottom-clearance,\s*env\(safe-area-inset-bottom, 0px\)\)\)/);
+  });
+
+  it("uses an edge-to-edge phone layout instead of an inset floating card", () => {
+    expect(source).toContain("@media (max-width: 720px) {");
+    expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?\.shell\s*\{[\s\S]*?padding:\s*0/i);
+    expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?top:\s*0/i);
+    expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?left:\s*0/i);
+    expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?right:\s*0/i);
+    expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?body\.floating-composer-layout \.chatPanel\s*\{[\s\S]*?border-radius:\s*0/i);
+    expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?body\.floating-composer-layout \.composer\s*\{[\s\S]*?padding-inline:\s*10px/i);
+  });
+
+  it("attaches the mobile sidebar drawer to the top-left edge instead of floating like a card", () => {
+    expect(source).toMatch(/@media \(max-width: 1080px\)\s*\{[\s\S]*?\.leftPanel,\s*[\s\S]*?\.rightPanel\s*\{[\s\S]*?top:\s*0/i);
+    expect(source).toMatch(/@media \(max-width: 1080px\)\s*\{[\s\S]*?\.leftPanel,\s*[\s\S]*?\.rightPanel\s*\{[\s\S]*?bottom:\s*0/i);
+    expect(source).toMatch(/@media \(max-width: 1080px\)\s*\{[\s\S]*?\.leftPanel\s*\{[\s\S]*?left:\s*0/i);
+    expect(source).toMatch(/@media \(max-width: 1080px\)\s*\{[\s\S]*?\.leftPanel\s*\{[\s\S]*?border-radius:\s*0/i);
   });
 
   it("hides the mobile chat scrollbar gutter for a cleaner floating chat surface", () => {
