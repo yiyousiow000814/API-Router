@@ -265,6 +265,15 @@ describe("codex-web runtime layout", () => {
     expect(source).toMatch(/@media \(max-width: 720px\)\s*\{[\s\S]*?:root\s*\{[\s\S]*?--motion-enter:\s*420ms;/i);
     expect(source).toMatch(/transition:\s*opacity var\(--motion-fast,\s*160ms\) ease, transform var\(--motion-base,\s*220ms\) ease/i);
     expect(source).toMatch(/animation:\s*thread-card-enter var\(--motion-enter,\s*360ms\) cubic-bezier\(\.22, \.61, \.36, 1\) both/i);
+    expect(source).toMatch(/animation:\s*thread-group-enter var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, \.61, \.36, 1\) both/i);
+    expect(source).toMatch(/animation:\s*thread-list-state-text-swap var\(--motion-fast,\s*160ms\) ease both/i);
+    expect(source).toMatch(/animation:\s*chevron-open var\(--motion-fast,\s*160ms\) ease/i);
+    expect(source).toMatch(/animation:\s*settings-card-in var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, 1, \.36, 1\) both/i);
+    expect(source).toMatch(/animation:\s*settings-section-in var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, 1, \.36, 1\) both/i);
+    expect(source).toMatch(/animation:\s*runtime-panel-in var\(--motion-fast,\s*160ms\) cubic-bezier\(\.22,1,\.36,1\)/i);
+    expect(source).toMatch(/animation:\s*composer-picker-item-in var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, 1, \.36, 1\)/i);
+    expect(source).toMatch(/animation:\s*composer-action-menu-in var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, 1, \.36, 1\)/i);
+    expect(source).toMatch(/animation:\s*folderPickerItemIn var\(--motion-base,\s*220ms\) cubic-bezier\(\.22, \.61, \.36, 1\) both/i);
   });
 
   it("hides the mobile chat scrollbar gutter for a cleaner floating chat surface", () => {

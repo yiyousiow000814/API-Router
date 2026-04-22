@@ -697,7 +697,7 @@
     }
     .groupCard.groupEnter {
       opacity: 0;
-      animation: thread-group-enter 240ms cubic-bezier(.22, .61, .36, 1) both;
+      animation: thread-group-enter var(--motion-base, 220ms) cubic-bezier(.22, .61, .36, 1) both;
       animation-delay: var(--thread-group-enter-delay, 0ms);
       will-change: opacity;
     }
@@ -749,7 +749,7 @@
     }
     .threadListStateText.is-text-swap,
     .threadListPlainState.is-text-swap {
-      animation: thread-list-state-text-swap 180ms ease both;
+      animation: thread-list-state-text-swap var(--motion-fast, 160ms) ease both;
     }
     @keyframes thread-list-state-text-swap {
       from { opacity: 0.42; transform: translate3d(0, 2px, 0); }
@@ -865,10 +865,10 @@
       stroke-linejoin: round;
     }
     .groupChevron.anim-open {
-      animation: chevron-open 0.16s ease;
+      animation: chevron-open var(--motion-fast, 160ms) ease;
     }
     .groupChevron.anim-close {
-      animation: chevron-close 0.16s ease;
+      animation: chevron-close var(--motion-fast, 160ms) ease;
     }
     @keyframes chevron-open {
       from { transform: rotate(0deg); }
@@ -993,10 +993,10 @@
       gap: 12px;
     }
     .settingsTab.show .settingsCard {
-      animation: settings-card-in 220ms cubic-bezier(.22, 1, .36, 1) both;
+      animation: settings-card-in var(--motion-base, 220ms) cubic-bezier(.22, 1, .36, 1) both;
     }
     .settingsTab.show .settingsSectionCard {
-      animation: settings-section-in 220ms cubic-bezier(.22, 1, .36, 1) both;
+      animation: settings-section-in var(--motion-base, 220ms) cubic-bezier(.22, 1, .36, 1) both;
     }
     .settingsTab.show .settingsSectionCard:nth-of-type(1) { animation-delay: 16ms; }
     .settingsTab.show .settingsSectionCard:nth-of-type(2) { animation-delay: 40ms; }
@@ -2444,7 +2444,7 @@
       transition: transform 180ms cubic-bezier(.22, .61, .36, 1), opacity 160ms ease;
     }
     .runtimeToolItem.runtimeToolItemEnter {
-      animation: runtime-panel-in 180ms cubic-bezier(.22,1,.36,1);
+      animation: runtime-panel-in var(--motion-fast, 160ms) cubic-bezier(.22,1,.36,1);
     }
     .runtimeToolItemLead,
     .runtimeToolItemTail {
@@ -3105,7 +3105,7 @@
     }
     .composerPickerMenu.open .composerPickerMenuItem,
     .composerPickerMenu.open .composerPickerMenuState {
-      animation: composer-picker-item-in 190ms cubic-bezier(.22, 1, .36, 1);
+      animation: composer-picker-item-in var(--motion-base, 220ms) cubic-bezier(.22, 1, .36, 1);
     }
     @keyframes composer-picker-item-in {
       from {
@@ -3665,7 +3665,7 @@
       opacity: 1;
       transform: translate3d(0, 0, 0) scale(1);
       pointer-events: auto;
-      animation: composer-action-menu-in 190ms cubic-bezier(.22, 1, .36, 1);
+      animation: composer-action-menu-in var(--motion-base, 220ms) cubic-bezier(.22, 1, .36, 1);
     }
     .composerActionMenu.closing {
       display: flex;
@@ -4728,7 +4728,7 @@
       text-align: left;
     }
     .folderPickerItem.is-enter {
-      animation: folderPickerItemIn 200ms cubic-bezier(.22, .61, .36, 1) both;
+      animation: folderPickerItemIn var(--motion-base, 220ms) cubic-bezier(.22, .61, .36, 1) both;
       animation-delay: var(--folder-enter-delay, 0ms);
       will-change: opacity, transform;
     }
