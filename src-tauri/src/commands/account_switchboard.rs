@@ -22,13 +22,14 @@ pub(crate) async fn codex_account_login(
     });
     state.gateway.store.put_codex_account_snapshot(&snap);
     let gateway = state.gateway.clone();
+    let config_path = state.config_path.clone();
     tauri::async_runtime::spawn(async move {
         let deadline = unix_ms().saturating_add(120_000);
         loop {
             if unix_ms() >= deadline {
                 break;
             }
-            if let Ok(true) = refresh_codex_account_snapshot(&gateway).await {
+            if let Ok(true) = refresh_codex_account_snapshot(&config_path, &gateway).await {
                 break;
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -62,7 +63,7 @@ pub(crate) async fn codex_account_refresh(
     state: tauri::State<'_, app_state::AppState>,
 ) -> Result<(), String> {
     let gateway = state.gateway.clone();
-    let _ = refresh_codex_account_snapshot(&gateway).await?;
+    let _ = refresh_codex_account_snapshot(&state.config_path, &gateway).await?;
     Ok(())
 }
 
@@ -156,6 +157,7 @@ fn persist_config(state: &tauri::State<'_, app_state::AppState>) -> anyhow::Resu
 }
 
 async fn refresh_codex_account_snapshot(
+    config_path: &std::path::Path,
     gateway: &crate::orchestrator::gateway::GatewayState,
 ) -> Result<bool, String> {
     let mut signed_in = false;
@@ -274,7 +276,7 @@ async fn refresh_codex_account_snapshot(
 
     // Do not infer code review from other limits.
     // Fetch the dedicated code-review window from ChatGPT usage API when available.
-    if let Some(access_token) = read_codex_access_token() {
+    if let Some(access_token) = read_codex_access_token_from_app(config_path) {
         if let Ok(Some((remaining, reset_at))) = fetch_code_review_from_wham(&access_token).await {
             code_review_remaining = Some(remaining);
             code_review_reset_at = reset_at;
@@ -299,36 +301,47 @@ async fn refresh_codex_account_snapshot(
     Ok(signed_in)
 }
 
-fn read_codex_access_token() -> Option<String> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(home) = std::env::var("CODEX_HOME") {
-        candidates.push(PathBuf::from(home).join("auth.json"));
-    }
-    if let Ok(user) = std::env::var("USERPROFILE") {
-        candidates.push(PathBuf::from(user).join(".codex").join("auth.json"));
-    } else if let Ok(home) = std::env::var("HOME") {
-        candidates.push(PathBuf::from(home).join(".codex").join("auth.json"));
-    }
+fn read_codex_access_token_from_app(config_path: &std::path::Path) -> Option<String> {
+    let app_auth = config_path.parent()?.join("codex-home").join("auth.json");
+    let text = std::fs::read_to_string(app_auth).ok()?;
+    let v = serde_json::from_str::<Value>(&text).ok()?;
+    v.get("tokens")
+        .and_then(|t| t.get("access_token"))
+        .and_then(|t| t.as_str())
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string())
+}
 
-    for path in candidates {
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(v) = serde_json::from_str::<Value>(&text) else {
-            continue;
-        };
-        if let Some(tok) = v
-            .get("tokens")
-            .and_then(|t| t.get("access_token"))
-            .and_then(|t| t.as_str())
-        {
-            let trimmed = tok.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
-        }
+#[cfg(test)]
+mod account_switchboard_tests {
+    use super::*;
+
+    #[test]
+    fn read_codex_access_token_from_app_uses_app_local_codex_home() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let app_auth = config_path.parent().unwrap().join("codex-home").join("auth.json");
+        std::fs::create_dir_all(app_auth.parent().expect("app auth parent")).expect("mkdir");
+        std::fs::write(
+            &app_auth,
+            r#"{"tokens":{"access_token":"app-token","refresh_token":"app-refresh"}}"#,
+        )
+        .expect("write app auth");
+
+        let cli_home = tmp.path().join(".codex");
+        std::fs::create_dir_all(&cli_home).expect("mkdir cli");
+        std::fs::write(
+            cli_home.join("auth.json"),
+            r#"{"OPENAI_API_KEY":"ao-runtime","tokens":{"access_token":"runtime-token"}}"#,
+        )
+        .expect("write cli auth");
+
+        assert_eq!(
+            read_codex_access_token_from_app(&config_path).as_deref(),
+            Some("app-token")
+        );
     }
-    None
 }
 
 async fn fetch_code_review_from_wham(

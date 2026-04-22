@@ -64,4 +64,10 @@ describe("codex-web-dev wiring", () => {
       "MutationObserverRef: MutationObserver,"
     );
   });
+
+  it("clears stale live connection status when switching threads", () => {
+    expect(source).toContain("let clearLiveThreadConnectionStatus = () => {};");
+    expect(source).toContain("clearLiveThreadConnectionStatus();");
+    expect(source).toContain("({\n  clearLiveThreadConnectionStatus,");
+  });
 });

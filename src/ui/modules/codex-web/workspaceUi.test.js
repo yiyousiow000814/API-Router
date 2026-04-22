@@ -195,6 +195,82 @@ describe("workspaceUi", () => {
     });
   });
 
+  it("suppresses abort-like runtime refresh errors from the status line", async () => {
+    const statuses = [];
+    const state = {
+      workspaceTarget: "windows",
+      activeThreadWorkspace: "windows",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      collapsedWorkspaceKeys: new Set(),
+      collapsedWorkspaceKeysByWorkspace: { windows: new Set(), wsl2: new Set() },
+      threadItemsByWorkspace: { windows: [], wsl2: [] },
+      threadWorkspaceHydratedByWorkspace: { windows: false, wsl2: false },
+      threadListRenderSigByWorkspace: { windows: "", wsl2: "" },
+      threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+      startCwdByWorkspace: { windows: "", wsl2: "" },
+      threadItemsAll: [],
+      threadItems: [],
+      folderPickerOpen: false,
+      workspaceRuntimeByTarget: {
+        windows: {
+          workspace: "windows",
+          homeOverride: "",
+          connected: false,
+          connectedAtUnixSecs: null,
+          lastReplayCursor: 0,
+          lastReplayLastEventId: null,
+          lastReplayAtUnixSecs: null,
+          loaded: false,
+          loading: false,
+        },
+      },
+      workspaceRuntimeRefreshReqSeqByWorkspace: { windows: 0, wsl2: 0 },
+    };
+    const module = createWorkspaceUiModule({
+      state,
+      byId() {
+        return null;
+      },
+      api() {
+        return Promise.reject(new Error("signal is aborted without reason"));
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      localStorageRef: { setItem() {} },
+      WORKSPACE_TARGET_KEY: "workspace",
+      START_CWD_BY_WORKSPACE_KEY: "cwd",
+      detectThreadWorkspaceTarget() {
+        return "unknown";
+      },
+      updateHeaderUi() {},
+      renderFolderPicker() {},
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return false;
+      },
+      buildThreadRenderSig() {
+        return "";
+      },
+      applyThreadFilter() {},
+      refreshThreads() {
+        return Promise.resolve();
+      },
+      syncEventSubscription() {
+        return true;
+      },
+      renderThreads() {},
+    });
+
+    const runtime = await module.refreshWorkspaceRuntimeState("windows");
+
+    expect(runtime).toBe(null);
+    expect(statuses).toEqual([]);
+  });
+
   it("recomputes active thread resume state from the current thread list", () => {
     const state = {
       workspaceTarget: "windows",
@@ -267,7 +343,7 @@ describe("workspaceUi", () => {
 
     expect(state.activeThreadWorkspace).toBe("windows");
     expect(state.activeThreadRolloutPath).toBe("C:\\repo\\.codex\\sessions\\rollout.jsonl");
-    expect(state.activeThreadOpenState.resumeRequired).toBe(true);
+    expect(state.activeThreadOpenState.resumeRequired).toBe(false);
   });
 
   it("resolves thread open state canonically from a single decision function", () => {
@@ -281,8 +357,8 @@ describe("workspaceUi", () => {
       })
     ).toMatchObject({
       threadId: "thread-1",
-      resumeRequired: true,
-      resumeReason: "thread-not-loaded",
+      resumeRequired: false,
+      resumeReason: "history-complete",
     });
   });
 });

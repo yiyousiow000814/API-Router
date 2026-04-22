@@ -4,7 +4,7 @@ import { isTerminalHistoryStatus } from "./historyLiveCommentaryState.js";
 export function applyHistoryPageToState(state, threadId, history, options = {}) {
   const page = history?.page || {};
   const incomingThread = history?.thread || null;
-  const incomingTurns = Array.isArray(incomingThread?.turns) ? incomingThread.turns : [];
+  const incomingTurns = mergeHistoryTurns([], Array.isArray(incomingThread?.turns) ? incomingThread.turns : []);
   const mergeDirection = options.mergeDirection === "prepend" ? "prepend" : "replace_or_append";
   let mergedTurns = incomingTurns;
 

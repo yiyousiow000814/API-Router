@@ -411,7 +411,7 @@ describe("wsClient", () => {
     module.handleWsPayload({ type: "approval.requested", payload: [{ id: "a1" }] });
     module.handleWsPayload({ type: "subscribed" });
 
-    expect(statuses).toEqual(["Approval requested.", "Live updates connected."]);
+    expect(statuses).toEqual(["Approval requested."]);
     expect(chats).toEqual([]);
     expect(threadRefreshes).toEqual([0]);
     expect(activeRefreshes).toEqual([{ threadId: "thread-live", delay: 0 }]);
@@ -552,7 +552,168 @@ describe("wsClient", () => {
     });
 
     expect(resetCalls).toBe(1);
-    expect(statuses).toEqual(["Live event stream resynced."]);
+    expect(statuses).toEqual([]);
+    expect(threadRefreshes).toEqual([null]);
+    expect(activeRefreshes).toEqual(["thread-1"]);
+  });
+
+  it("keeps terminal history reopen free of resync status noise", () => {
+    const statuses = [];
+    let resetCalls = 0;
+    const threadRefreshes = [];
+    const activeRefreshes = [];
+    const module = createWsClientModule({
+      state: {
+        token: "",
+        ws: null,
+        wsReqHandlers: new Map(),
+        pendingApprovals: [],
+        pendingUserInputs: [],
+        activeThreadId: "thread-1",
+        activeThreadHistoryStatusType: "failed",
+        activeThreadPendingTurnRunning: false,
+        activeThreadPendingAssistantMessage: "",
+        activeThreadPendingUserMessage: "",
+        wsLastEventId: 14549,
+        wsRecentEventIds: new Set([14549]),
+        wsSubscribedEvents: true,
+      },
+      setStatus(message) {
+        statuses.push(message);
+      },
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {
+        resetCalls += 1;
+      },
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh(delay) {
+        threadRefreshes.push(delay ?? null);
+      },
+      scheduleActiveThreadRefresh(threadId) {
+        activeRefreshes.push(threadId);
+      },
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "14549"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: class {},
+      fetchRef: async () => ({ ok: true, json: async () => ({}) } ),
+    });
+
+    module.handleWsPayload({
+      type: "events.reset",
+      payload: { requestedSince: 14549, lastEventId: 108 },
+    });
+
+    expect(resetCalls).toBe(1);
+    expect(statuses).toEqual([]);
+    expect(threadRefreshes).toEqual([null]);
+    expect(activeRefreshes).toEqual(["thread-1"]);
+  });
+
+  it("keeps history-only reopen free of resync status noise before history reload finishes", () => {
+    const statuses = [];
+    let resetCalls = 0;
+    const threadRefreshes = [];
+    const activeRefreshes = [];
+    const module = createWsClientModule({
+      state: {
+        token: "",
+        ws: null,
+        wsReqHandlers: new Map(),
+        pendingApprovals: [],
+        pendingUserInputs: [],
+        activeThreadId: "thread-1",
+        activeThreadHistoryStatusType: "",
+        activeThreadOpenState: {
+          threadId: "thread-1",
+          loaded: false,
+          resumeRequired: false,
+        },
+        activeThreadPendingTurnRunning: false,
+        activeThreadPendingAssistantMessage: "",
+        activeThreadPendingUserMessage: "",
+        wsLastEventId: 14549,
+        wsRecentEventIds: new Set([14549]),
+        wsSubscribedEvents: true,
+      },
+      setStatus(message) {
+        statuses.push(message);
+      },
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {
+        resetCalls += 1;
+      },
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh(delay) {
+        threadRefreshes.push(delay ?? null);
+      },
+      scheduleActiveThreadRefresh(threadId) {
+        activeRefreshes.push(threadId);
+      },
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "14549"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: class {},
+      fetchRef: async () => ({ ok: true, json: async () => ({}) } ),
+    });
+
+    module.handleWsPayload({
+      type: "events.reset",
+      payload: { requestedSince: 14549, lastEventId: 108 },
+    });
+
+    expect(resetCalls).toBe(1);
+    expect(statuses).toEqual([]);
     expect(threadRefreshes).toEqual([null]);
     expect(activeRefreshes).toEqual(["thread-1"]);
   });
@@ -942,7 +1103,7 @@ describe("wsClient", () => {
       threadId: "thread-1",
       threadStatusType: "notloaded",
       loaded: false,
-      resumeRequired: true,
+      resumeRequired: false,
       resumeReason: "thread-not-loaded",
     });
   });

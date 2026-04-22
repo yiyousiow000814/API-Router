@@ -10,6 +10,7 @@ use super::web_codex_session_runtime::{
     workspace_thread_runtime_snapshot, WorkspaceRuntimeSnapshot, WorkspaceThreadRuntimeSnapshot,
     WorkspaceThreadRuntimeUpdate,
 };
+use super::web_codex_threads::explicit_notification_status;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -321,7 +322,23 @@ impl CodexSessionManager {
             let replayed = self.replay_notifications_since(0, limit).await;
             items = replayed.0;
         }
+        let raw_max_event_id = items
+            .iter()
+            .filter_map(|item| item.get("eventId").and_then(Value::as_u64))
+            .max();
+        if requested_cursor == 0 {
+            items.retain(|item| {
+                !initial_replay_should_drop_terminal_gateway_connection_notification(
+                    self.workspace_target,
+                    self.home_override(),
+                    item,
+                )
+            });
+        }
         let mut next_cursor = if reset { 0 } else { cursor };
+        if let Some(max_event_id) = raw_max_event_id {
+            next_cursor = next_cursor.max(max_event_id);
+        }
         for item in &mut items {
             if include_workspace {
                 if let Some(target) = self.workspace_target {
@@ -552,6 +569,7 @@ impl CodexSessionManager {
                         status: Some("queued"),
                         last_event_id: None,
                         last_turn_id: None,
+                        clear_last_turn_id: false,
                     },
                 );
             }
@@ -648,7 +666,7 @@ impl CodexSessionManager {
         thread_id: &str,
         include_turns: bool,
     ) -> Result<Value, String> {
-        let value = self
+        let mut value = self
             .request(
                 "thread/read",
                 json!({
@@ -657,6 +675,8 @@ impl CodexSessionManager {
                 }),
             )
             .await?;
+        let runtime_snapshot = self.thread_runtime_snapshot(thread_id);
+        reconcile_terminal_runtime_history_status(&mut value, runtime_snapshot.as_ref());
         record_runtime_thread_state(self.workspace_target, self.home_override(), &value);
         trace_read_thread_runtime_summary(
             self.workspace_target,
@@ -711,7 +731,9 @@ impl CodexSessionManager {
         thread_id: &str,
         thread: &mut Value,
     ) -> Result<(), String> {
-        let runtime_value = self.read_thread(thread_id, false).await?;
+        let runtime_snapshot = self.thread_runtime_snapshot(thread_id);
+        let mut runtime_value = self.read_thread(thread_id, false).await?;
+        reconcile_terminal_runtime_history_status(&mut runtime_value, runtime_snapshot.as_ref());
         merge_runtime_thread_overlay(thread, &runtime_value);
         Ok(())
     }
@@ -723,9 +745,15 @@ impl CodexSessionManager {
         limit: usize,
         allow_empty_history_fallback: bool,
     ) -> Result<crate::orchestrator::gateway::web_codex_history::ThreadHistoryPage, String> {
+        let runtime_snapshot = self.thread_runtime_snapshot(thread_id);
         match self.read_thread(thread_id, true).await {
             Ok(runtime_value) => {
-                runtime_thread_response_to_history_page(&runtime_value, before, limit)
+                let mut normalized_runtime_value = runtime_value;
+                reconcile_terminal_runtime_history_status(
+                    &mut normalized_runtime_value,
+                    runtime_snapshot.as_ref(),
+                );
+                runtime_thread_response_to_history_page(&normalized_runtime_value, before, limit)
             }
             Err(runtime_error) => {
                 if !allow_empty_history_fallback
@@ -741,13 +769,17 @@ impl CodexSessionManager {
                             "{runtime_error}; empty-history fallback failed: {runtime_read_error}"
                         )
                         })?;
-                runtime_thread_response_to_history_page(&runtime_value, before, limit).map_err(
-                    |runtime_page_error| {
+                let mut normalized_runtime_value = runtime_value;
+                reconcile_terminal_runtime_history_status(
+                    &mut normalized_runtime_value,
+                    runtime_snapshot.as_ref(),
+                );
+                runtime_thread_response_to_history_page(&normalized_runtime_value, before, limit)
+                    .map_err(|runtime_page_error| {
                         format!(
                             "{runtime_error}; empty-history fallback failed: {runtime_page_error}"
                         )
-                    },
-                )
+                    })
             }
         }
     }
@@ -917,6 +949,76 @@ fn inject_workspace_into_notification(notification: &mut Value, workspace_target
         .or_insert_with(|| json!(workspace_label(Some(workspace_target))));
 }
 
+fn initial_replay_should_drop_terminal_gateway_connection_notification(
+    workspace_target: Option<WorkspaceTarget>,
+    home_override: Option<&str>,
+    notification: &Value,
+) -> bool {
+    if workspace_target.is_none() {
+        return false;
+    }
+    let params = notification
+        .get("params")
+        .and_then(Value::as_object)
+        .or_else(|| notification.get("payload").and_then(Value::as_object));
+    let source = params
+        .and_then(|map| map.get("source"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if !matches!(source, Some(source) if source.starts_with("gateway.")) {
+        return false;
+    }
+    let method = notification
+        .get("method")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if !matches!(method, "thread/status/changed" | "turn/completed") {
+        return false;
+    }
+    let explicit_status = explicit_notification_status(params);
+    if !matches!(
+        explicit_status.as_deref().map(str::trim),
+        Some("reconnecting" | "failed" | "error" | "timeout" | "denied")
+    ) {
+        return false;
+    }
+    let thread_id =
+        params.and_then(|map| read_object_string_alias(map, &["threadId", "thread_id"]));
+    let Some(thread_id) = thread_id.as_deref() else {
+        return false;
+    };
+    let Some(snapshot) =
+        workspace_thread_runtime_snapshot(workspace_target, home_override, thread_id)
+    else {
+        return false;
+    };
+    if !matches!(
+        snapshot.status.as_deref(),
+        Some("failed" | "completed" | "interrupted")
+    ) {
+        return false;
+    }
+    let notification_turn_id = params
+        .and_then(|map| read_object_string_alias(map, &["turnId", "turn_id"]))
+        .or_else(|| {
+            params
+                .and_then(|map| map.get("turn").and_then(Value::as_object))
+                .and_then(|turn| read_object_string_alias(turn, &["id", "turnId", "turn_id"]))
+        });
+    match (
+        notification_turn_id.as_deref(),
+        snapshot.last_turn_id.as_deref(),
+    ) {
+        (Some(notification_turn_id), Some(snapshot_turn_id)) => {
+            notification_turn_id == snapshot_turn_id
+        }
+        (None, _) => true,
+        _ => false,
+    }
+}
+
 fn record_started_turn_runtime(
     workspace_target: Option<WorkspaceTarget>,
     home_override: Option<&str>,
@@ -937,6 +1039,7 @@ fn record_started_turn_runtime(
             status: Some("running"),
             last_event_id: None,
             last_turn_id: turn_id,
+            clear_last_turn_id: false,
         },
     );
 }
@@ -976,6 +1079,7 @@ fn record_runtime_thread_state(
             status,
             last_event_id: runtime_value.get("eventId").and_then(Value::as_u64),
             last_turn_id,
+            clear_last_turn_id: false,
         },
     );
 }
@@ -1016,23 +1120,39 @@ fn record_notification_thread_state(
     let cwd = params
         .and_then(|map| read_object_string_alias(map, &["cwd"]))
         .or_else(|| thread.and_then(|map| read_object_string_alias(map, &["cwd"])));
-    let status = params
-        .and_then(|map| read_object_string_alias(map, &["status"]))
-        .or_else(|| {
-            if method.contains("turn/started") {
-                Some("running".to_string())
-            } else if method.contains("turn/completed") || method.contains("turn/finished") {
-                Some("completed".to_string())
-            } else if method.contains("turn/failed") {
-                Some("failed".to_string())
-            } else if method.contains("turn/cancelled") {
+    let explicit_status = explicit_notification_status(params);
+    let status = explicit_notification_status(params).or_else(|| {
+        if method.contains("turn/started") {
+            Some("running".to_string())
+        } else if matches!(
+            explicit_status.as_deref(),
+            Some("failed" | "error" | "denied" | "cancelled" | "timeout" | "interrupted")
+        ) {
+            if matches!(
+                explicit_status.as_deref(),
+                Some("cancelled" | "interrupted")
+            ) {
                 Some("interrupted".to_string())
             } else {
-                None
+                Some("failed".to_string())
             }
-        });
+        } else if method.contains("turn/completed") || method.contains("turn/finished") {
+            Some("completed".to_string())
+        } else if method.contains("turn/failed") {
+            Some("failed".to_string())
+        } else if method.contains("turn/cancelled") {
+            Some("interrupted".to_string())
+        } else {
+            None
+        }
+    });
     let last_turn_id = params
         .and_then(|map| read_object_string_alias(map, &["turnId", "turn_id"]))
+        .or_else(|| {
+            params
+                .and_then(|map| map.get("turn").and_then(Value::as_object))
+                .and_then(|turn| read_object_string_alias(turn, &["id", "turnId", "turn_id"]))
+        })
         .or_else(|| thread.and_then(|map| read_object_string_alias(map, &["lastTurnId"])));
     upsert_workspace_thread_runtime(
         workspace_target,
@@ -1044,8 +1164,68 @@ fn record_notification_thread_state(
             status: status.as_deref(),
             last_event_id: notification.get("eventId").and_then(Value::as_u64),
             last_turn_id: last_turn_id.as_deref(),
+            clear_last_turn_id: false,
         },
     );
+}
+
+pub(crate) fn record_app_notification_thread_state_for_home(
+    home_override: Option<&str>,
+    notification: &Value,
+) {
+    let normalized_home = home_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    for workspace_target in [WorkspaceTarget::Windows, WorkspaceTarget::Wsl2] {
+        let workspace_home = web_codex_rpc_home_override_for_target(Some(workspace_target));
+        let workspace_home = workspace_home
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if workspace_home != normalized_home {
+            continue;
+        }
+        record_notification_thread_state(
+            Some(workspace_target),
+            normalized_home.as_deref(),
+            notification,
+        );
+        return;
+    }
+}
+
+pub(crate) fn workspace_thread_runtime_snapshot_for_home(
+    home_override: Option<&str>,
+    thread_id: &str,
+) -> Option<WorkspaceThreadRuntimeSnapshot> {
+    if let Some(snapshot) = workspace_thread_runtime_snapshot(None, home_override, thread_id) {
+        return Some(snapshot);
+    }
+    let normalized_home = home_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    for workspace_target in [WorkspaceTarget::Windows, WorkspaceTarget::Wsl2] {
+        let workspace_home = web_codex_rpc_home_override_for_target(Some(workspace_target));
+        let workspace_home = workspace_home
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if workspace_home != normalized_home {
+            continue;
+        }
+        if let Some(snapshot) = workspace_thread_runtime_snapshot(
+            Some(workspace_target),
+            normalized_home.as_deref(),
+            thread_id,
+        ) {
+            return Some(snapshot);
+        }
+    }
+    None
 }
 
 fn attached_thread_start_result(
@@ -1135,6 +1315,19 @@ pub(super) fn runtime_thread_payload(value: &Value) -> Option<&Value> {
         .or_else(|| value.get("id").and_then(Value::as_str).map(|_| value))
 }
 
+fn runtime_thread_payload_mut(value: &mut Value) -> Option<&mut Value> {
+    if value.get("thread").is_some() {
+        return value.get_mut("thread");
+    }
+    if value.get("data").is_some() {
+        return value.get_mut("data");
+    }
+    if value.get("id").and_then(Value::as_str).is_some() {
+        return Some(value);
+    }
+    None
+}
+
 pub(super) fn runtime_thread_path(value: &Value) -> Option<String> {
     runtime_thread_payload(value)
         .and_then(Value::as_object)
@@ -1199,6 +1392,54 @@ pub(super) fn overlay_runtime_thread_item(item: &mut Value, runtime_value: &Valu
     }
 }
 
+fn reconcile_terminal_runtime_history_status(
+    runtime_value: &mut Value,
+    runtime_snapshot: Option<&WorkspaceThreadRuntimeSnapshot>,
+) {
+    let Some(snapshot) = runtime_snapshot else {
+        return;
+    };
+    let Some(snapshot_status) = snapshot
+        .status
+        .as_deref()
+        .map(str::trim)
+        .filter(|status| matches!(*status, "failed" | "interrupted" | "completed"))
+    else {
+        return;
+    };
+    let Some(thread_obj) = runtime_thread_payload_mut(runtime_value).and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    let turn_count = thread_obj
+        .get("turns")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    if turn_count > 0 {
+        return;
+    }
+    let current_status = thread_obj
+        .get("status")
+        .and_then(Value::as_object)
+        .and_then(|status| status.get("type"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if !matches!(
+        current_status,
+        "active" | "running" | "queued" | "pending" | "reconnecting"
+    ) {
+        return;
+    }
+    thread_obj.insert(
+        "status".to_string(),
+        json!({
+            "type": snapshot_status,
+        }),
+    );
+}
+
 pub(super) fn runtime_thread_response_to_history_page(
     value: &Value,
     before: Option<&str>,
@@ -1253,7 +1494,12 @@ pub(super) fn runtime_thread_response_to_history_page(
         .and_then(|status| status.get("type"))
         .and_then(Value::as_str)
         .map(str::trim)
-        .map(|status| matches!(status, "running" | "queued" | "pending"))
+        .map(|status| {
+            matches!(
+                status,
+                "running" | "queued" | "pending" | "active" | "reconnecting"
+            )
+        })
         .unwrap_or(false)
         && page_end == turns.len();
     Ok(
@@ -1488,6 +1734,7 @@ mod tests {
                 status: Some("running"),
                 last_event_id: None,
                 last_turn_id: None,
+                clear_last_turn_id: false,
             },
         );
         crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
@@ -1599,6 +1846,38 @@ mod tests {
         crate::codex_app_server::_clear_notifications_for_test().await;
     }
 
+    #[test]
+    fn app_notification_push_updates_workspace_runtime_registry_before_replay() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        let _home = isolate_windows_web_codex_home();
+        _clear_workspace_runtime_registry_for_test();
+        clear_threads_workspace_index_for_test();
+        let home = web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows))
+            .expect("isolated windows home");
+
+        record_app_notification_thread_state_for_home(
+            Some(home.as_str()),
+            &json!({
+                "eventId": 9,
+                "method": "thread/status/changed",
+                "params": {
+                    "threadId": "thread-1",
+                    "status": "failed",
+                    "message": "no routable providers available; preferred=aigateway; tried="
+                }
+            }),
+        );
+
+        let snapshot = workspace_thread_runtime_snapshot(
+            Some(WorkspaceTarget::Windows),
+            Some(home.as_str()),
+            "thread-1",
+        )
+        .expect("thread runtime snapshot");
+        assert_eq!(snapshot.status.as_deref(), Some("failed"));
+        assert_eq!(snapshot.last_event_id, Some(9));
+    }
+
     #[tokio::test]
     async fn replay_notification_batch_resets_cursor_and_injects_workspace() {
         let _guard = crate::codex_app_server::lock_test_globals();
@@ -1647,6 +1926,165 @@ mod tests {
         assert_eq!(thread_snapshot.thread_id, "thread-1");
         assert_eq!(thread_snapshot.status.as_deref(), Some("running"));
         assert_eq!(thread_snapshot.last_event_id, Some(batch.next_cursor));
+
+        crate::codex_app_server::_clear_notifications_for_test().await;
+    }
+
+    #[tokio::test]
+    async fn replay_failed_turn_completed_marks_runtime_failed() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        let _home = isolate_windows_web_codex_home();
+        _clear_workspace_runtime_registry_for_test();
+        clear_threads_workspace_index_for_test();
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        let home = web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows))
+            .expect("isolated windows home");
+        crate::codex_app_server::_push_notification_for_test(
+            Some(home.as_str()),
+            json!({
+                "eventId": 5,
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "status": "failed"
+                }
+            }),
+        )
+        .await;
+
+        let manager = CodexSessionManager::new(parse_workspace_target("windows"));
+        let batch = manager.replay_notification_batch(0, 16, true).await;
+
+        assert_eq!(batch.items.len(), 1);
+        let thread_snapshot = manager
+            .thread_runtime_snapshot("thread-1")
+            .expect("thread runtime snapshot");
+        assert_eq!(thread_snapshot.thread_id, "thread-1");
+        assert_eq!(thread_snapshot.status.as_deref(), Some("failed"));
+        assert_eq!(thread_snapshot.last_turn_id.as_deref(), Some("turn-1"));
+
+        crate::codex_app_server::_clear_notifications_for_test().await;
+    }
+
+    #[tokio::test]
+    async fn replay_nested_failed_turn_completed_marks_runtime_failed() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        let _home = isolate_windows_web_codex_home();
+        _clear_workspace_runtime_registry_for_test();
+        clear_threads_workspace_index_for_test();
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        let home = web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows))
+            .expect("isolated windows home");
+        crate::codex_app_server::_push_notification_for_test(
+            Some(home.as_str()),
+            json!({
+                "eventId": 5,
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turn": {
+                        "id": "turn-1",
+                        "status": "failed"
+                    }
+                }
+            }),
+        )
+        .await;
+
+        let manager = CodexSessionManager::new(parse_workspace_target("windows"));
+        let batch = manager.replay_notification_batch(0, 16, true).await;
+
+        assert_eq!(batch.items.len(), 1);
+        let thread_snapshot = manager
+            .thread_runtime_snapshot("thread-1")
+            .expect("thread runtime snapshot");
+        assert_eq!(thread_snapshot.thread_id, "thread-1");
+        assert_eq!(thread_snapshot.status.as_deref(), Some("failed"));
+        assert_eq!(thread_snapshot.last_turn_id.as_deref(), Some("turn-1"));
+
+        crate::codex_app_server::_clear_notifications_for_test().await;
+    }
+
+    #[tokio::test]
+    async fn initial_replay_drops_gateway_connection_lifecycle_for_terminal_thread() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        let _home = isolate_windows_web_codex_home();
+        _clear_workspace_runtime_registry_for_test();
+        clear_threads_workspace_index_for_test();
+        crate::codex_app_server::_clear_notifications_for_test().await;
+        let home = web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows))
+            .expect("isolated windows home");
+
+        record_app_notification_thread_state_for_home(
+            Some(home.as_str()),
+            &json!({
+                "eventId": 4,
+                "method": "thread/status/changed",
+                "params": {
+                    "threadId": "thread-1",
+                    "status": "failed",
+                    "source": "gateway.no_routable_provider",
+                    "turnId": "turn-1",
+                    "message": "no routable providers available"
+                }
+            }),
+        );
+
+        crate::codex_app_server::_push_notification_for_test(
+            Some(home.as_str()),
+            json!({
+                "eventId": 5,
+                "method": "thread/status/changed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "status": "reconnecting",
+                    "source": "gateway.upstream_retry",
+                    "message": "Reconnecting... 1/5"
+                }
+            }),
+        )
+        .await;
+        crate::codex_app_server::_push_notification_for_test(
+            Some(home.as_str()),
+            json!({
+                "eventId": 6,
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "status": "failed",
+                    "source": "gateway.no_routable_provider",
+                    "message": "no routable providers available"
+                }
+            }),
+        )
+        .await;
+        crate::codex_app_server::_push_notification_for_test(
+            Some(home.as_str()),
+            json!({
+                "eventId": 7,
+                "method": "thread/status/changed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "status": "failed",
+                    "source": "gateway.no_routable_provider",
+                    "message": "no routable providers available"
+                }
+            }),
+        )
+        .await;
+
+        let manager = CodexSessionManager::new(parse_workspace_target("windows"));
+        let batch = manager.replay_notification_batch(0, 16, true).await;
+
+        assert!(
+            batch.items.is_empty(),
+            "initial replay should drop stale gateway reconnect/failed notifications for terminal thread: {:?}",
+            batch.items
+        );
 
         crate::codex_app_server::_clear_notifications_for_test().await;
     }
@@ -1757,6 +2195,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn overlay_runtime_thread_prefers_failed_runtime_snapshot_over_active_empty_runtime() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        _clear_workspace_runtime_registry_for_test();
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
+            move |_home, method, _params| {
+                assert_eq!(method, "thread/read");
+                Ok(json!({
+                    "thread": {
+                        "id": "thread-1",
+                        "path": "C:\\temp\\rollout.jsonl",
+                        "status": { "type": "active" },
+                        "turns": []
+                    }
+                }))
+            },
+        )))
+        .await;
+
+        upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Windows),
+            web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows)).as_deref(),
+            WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: None,
+                rollout_path: Some("C:\\temp\\rollout.jsonl"),
+                status: Some("failed"),
+                last_event_id: Some(9),
+                last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
+            },
+        );
+
+        let manager = CodexSessionManager::new(parse_workspace_target("windows"));
+        let mut page_thread = json!({
+            "id": "thread-1",
+            "status": { "type": "idle" },
+            "turns": []
+        });
+        manager
+            .overlay_runtime_thread("thread-1", &mut page_thread)
+            .await
+            .expect("overlay should succeed");
+
+        assert_eq!(
+            page_thread
+                .get("status")
+                .and_then(Value::as_object)
+                .and_then(|status| status.get("type"))
+                .and_then(Value::as_str),
+            Some("failed")
+        );
+
+        crate::codex_app_server::_set_test_request_handler(None).await;
+    }
+
+    #[tokio::test]
     async fn read_thread_history_page_from_runtime_uses_empty_history_fallback_for_new_thread() {
         let _guard = crate::codex_app_server::lock_test_globals();
         crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
@@ -1795,6 +2289,157 @@ mod tests {
             Some("C:\\temp\\rollout.jsonl")
         );
         assert_eq!(page.page["incomplete"].as_bool(), Some(true));
+
+        crate::codex_app_server::_set_test_request_handler(None).await;
+    }
+
+    #[tokio::test]
+    async fn read_thread_history_page_from_runtime_keeps_active_empty_fallback_incomplete() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
+            move |_home, method, params| {
+                assert_eq!(method, "thread/read");
+                if params
+                    .get("includeTurns")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    return Err(
+                        "thread abc is not materialized yet; includeTurns is unavailable before first user message"
+                            .to_string(),
+                    );
+                }
+                Ok(json!({
+                    "thread": {
+                        "id": "thread-1",
+                        "path": "C:\\temp\\rollout.jsonl",
+                        "status": { "type": "active" }
+                    }
+                }))
+            },
+        )))
+        .await;
+
+        let manager = CodexSessionManager::new(parse_workspace_target("windows"));
+        let page = manager
+            .read_thread_history_page_from_runtime("thread-1", None, 20, false)
+            .await
+            .expect("runtime history page should use empty fallback");
+
+        assert_eq!(page.thread["id"].as_str(), Some("thread-1"));
+        assert_eq!(page.page["incomplete"].as_bool(), Some(true));
+
+        crate::codex_app_server::_set_test_request_handler(None).await;
+    }
+
+    #[tokio::test]
+    async fn read_thread_history_page_prefers_failed_runtime_snapshot_over_active_empty_runtime() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        _clear_workspace_runtime_registry_for_test();
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
+            move |_home, method, _params| {
+                assert_eq!(method, "thread/read");
+                Ok(json!({
+                    "thread": {
+                        "id": "thread-1",
+                        "path": "C:\\temp\\rollout.jsonl",
+                        "status": { "type": "active" },
+                        "turns": []
+                    }
+                }))
+            },
+        )))
+        .await;
+
+        upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Windows),
+            web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows)).as_deref(),
+            WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: None,
+                rollout_path: Some("C:\\temp\\rollout.jsonl"),
+                status: Some("failed"),
+                last_event_id: Some(9),
+                last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
+            },
+        );
+
+        let manager = CodexSessionManager::new(parse_workspace_target("windows"));
+        let page = manager
+            .read_thread_history_page_from_runtime("thread-1", None, 20, false)
+            .await
+            .expect("runtime history page should prefer terminal snapshot");
+
+        assert_eq!(
+            page.thread
+                .get("status")
+                .and_then(Value::as_object)
+                .and_then(|status| status.get("type"))
+                .and_then(Value::as_str),
+            Some("failed")
+        );
+        assert_eq!(
+            page.page.get("incomplete").and_then(Value::as_bool),
+            Some(false)
+        );
+
+        crate::codex_app_server::_set_test_request_handler(None).await;
+    }
+
+    #[tokio::test]
+    async fn read_thread_prefers_failed_runtime_snapshot_over_active_empty_runtime() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        _clear_workspace_runtime_registry_for_test();
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
+            move |_home, method, _params| {
+                assert_eq!(method, "thread/read");
+                Ok(json!({
+                    "thread": {
+                        "id": "thread-1",
+                        "path": "C:\\temp\\rollout.jsonl",
+                        "status": { "type": "active" },
+                        "turns": []
+                    }
+                }))
+            },
+        )))
+        .await;
+
+        upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Windows),
+            web_codex_rpc_home_override_for_target(Some(WorkspaceTarget::Windows)).as_deref(),
+            WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: None,
+                rollout_path: Some("C:\\temp\\rollout.jsonl"),
+                status: Some("failed"),
+                last_event_id: Some(9),
+                last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
+            },
+        );
+
+        let manager = CodexSessionManager::new(parse_workspace_target("windows"));
+        let value = manager
+            .read_thread("thread-1", false)
+            .await
+            .expect("thread read should prefer terminal snapshot");
+
+        assert_eq!(
+            value
+                .get("thread")
+                .and_then(Value::as_object)
+                .and_then(|thread| thread.get("status"))
+                .and_then(Value::as_object)
+                .and_then(|status| status.get("type"))
+                .and_then(Value::as_str),
+            Some("failed")
+        );
+        let snapshot = manager
+            .thread_runtime_snapshot("thread-1")
+            .expect("thread runtime snapshot");
+        assert_eq!(snapshot.status.as_deref(), Some("failed"));
 
         crate::codex_app_server::_set_test_request_handler(None).await;
     }

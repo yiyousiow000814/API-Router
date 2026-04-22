@@ -9,6 +9,15 @@ function stubFactory(result) {
 describe("composition", () => {
   it("wires module outputs into one composition object", () => {
     const createActionBindingsModule = vi.fn(() => ({ wireActions: () => {} }));
+    const createTurnActionsModule = vi.fn(() => ({
+      addHost: () => {},
+      newThread: () => {},
+      resolveApproval: () => {},
+      resolveUserInput: () => {},
+      sendTurn: () => {},
+      uploadAttachment: () => {},
+    }));
+    const clearLiveThreadConnectionStatus = () => {};
     const composition = createCodexWebComposition({
       state: {},
       byId: () => null,
@@ -121,11 +130,12 @@ describe("composition", () => {
       createThreadListViewModule: stubFactory({ renderThreads: () => {} }),
       createFolderPickerModule: stubFactory({ closeFolderPicker: () => {}, confirmFolderPickerCurrentPath: () => {}, openFolderPicker: () => {}, refreshFolderPicker: () => {}, renderFolderPicker: () => {}, resetFolderPickerPath: () => {}, switchFolderPickerWorkspace: () => {} }),
       createConnectionFlowsModule: stubFactory({ applyPendingPayloads: () => {}, connect: () => {}, refreshAll: () => {}, refreshHosts: () => {}, refreshPending: () => {}, refreshPendingFromHttp: () => {}, renderHosts: () => {}, renderPendingLists: () => {}, setActiveHost: () => {} }),
-      createTurnActionsModule: stubFactory({ addHost: () => {}, newThread: () => {}, resolveApproval: () => {}, resolveUserInput: () => {}, sendTurn: () => {}, uploadAttachment: () => {} }),
+      createTurnActionsModule,
       createActionBindingsModule,
       createDebugToolsModule: stubFactory({ installDebugAndE2E: () => {} }),
       createThreadLiveModule: stubFactory({ wireThreadPullToRefresh: () => {}, startThreadAutoRefreshLoop: () => {}, startActiveThreadLivePollLoop: () => {} }),
       createBootstrapModule: stubFactory({ bootstrap: () => {} }),
+      clearLiveThreadConnectionStatus,
     });
 
     expect(typeof composition.bootstrap).toBe("function");
@@ -135,6 +145,11 @@ describe("composition", () => {
       expect.objectContaining({
         refreshActiveThreadGitMeta: expect.any(Function),
         removeChatMessageByKey: expect.any(Function),
+      })
+    );
+    expect(createTurnActionsModule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clearLiveThreadConnectionStatus,
       })
     );
   });

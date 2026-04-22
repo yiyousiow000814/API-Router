@@ -83,9 +83,9 @@ pub(crate) fn thread_item_updated_unix_ms(item: &serde_json::Value) -> u64 {
 }
 
 pub(crate) fn thread_item_is_live_presence(item: &serde_json::Value) -> bool {
-    !matches!(
+    matches!(
         thread_item_status_type(item).as_deref(),
-        None | Some("notLoaded")
+        Some("running") | Some("queued") | Some("pending") | Some("reconnecting")
     )
 }
 
@@ -314,6 +314,66 @@ mod tests {
         assert!(
             !map.contains_key("old-agent-thread"),
             "historical notLoaded subagent should not be promoted into the runtime session map"
+        );
+    }
+
+    #[test]
+    fn system_error_thread_is_not_treated_as_live_presence() {
+        assert!(
+            !thread_item_is_live_presence(&serde_json::json!({
+                "id": "thread-system-error",
+                "status": { "type": "systemError" }
+            })),
+            "systemError thread snapshots must not be treated as live runtime evidence"
+        );
+    }
+
+    #[test]
+    fn merge_thread_index_system_error_does_not_refresh_existing_runtime_session_to_now() {
+        let now = 1_800_000_000_000_u64;
+        let previous_last_discovered = now.saturating_sub(10 * 60 * 1000);
+        let system_error_updated_at = now.saturating_sub(5 * 60 * 1000);
+        let mut map = HashMap::from([(
+            "thread-system-error".to_string(),
+            ClientSessionRuntime {
+                codex_session_id: "thread-system-error".to_string(),
+                pid: 0,
+                wt_session: Some("wt-thread-system-error".to_string()),
+                last_request_unix_ms: now.saturating_sub(20 * 60 * 1000),
+                last_discovered_unix_ms: previous_last_discovered,
+                last_reported_model_provider: Some("api_router".to_string()),
+                last_reported_model: Some("gpt-5.4".to_string()),
+                last_reported_base_url: Some("http://127.0.0.1:4000/v1".to_string()),
+                rollout_path: Some(
+                    "C:\\Users\\yiyou\\.codex\\sessions\\thread-system-error.jsonl".to_string(),
+                ),
+                agent_parent_session_id: None,
+                is_agent: false,
+                is_review: false,
+                confirmed_router: true,
+            },
+        )]);
+
+        merge_thread_index_session_hints(
+            &mut map,
+            now,
+            &[serde_json::json!({
+                "id": "thread-system-error",
+                "workspace": "windows",
+                "path": "C:\\Users\\yiyou\\.codex\\sessions\\thread-system-error.jsonl",
+                "status": { "type": "systemError" },
+                "updatedAt": system_error_updated_at / 1000
+            })],
+            true,
+        );
+
+        let entry = map
+            .get("thread-system-error")
+            .expect("system error runtime session");
+        assert_eq!(
+            entry.last_discovered_unix_ms,
+            system_error_updated_at,
+            "terminal systemError thread snapshots should preserve their own updatedAt instead of refreshing discovery to now"
         );
     }
 }

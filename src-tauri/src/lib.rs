@@ -85,6 +85,13 @@ fn app_profile_name() -> String {
     app_profile_name_from_inputs(Some(raw.as_str()), exe_stem.as_deref())
 }
 
+fn has_explicit_user_data_override() -> bool {
+    std::env::var("API_ROUTER_USER_DATA_DIR")
+        .ok()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
 fn app_launch_args() -> Vec<String> {
     std::env::args().collect()
 }
@@ -179,6 +186,14 @@ fn should_seed_mock_data(profile: &str, is_ui_tauri: bool) -> bool {
     !is_ui_tauri && profile == "test"
 }
 
+fn should_enable_single_instance(
+    profile: &str,
+    is_ui_tauri: bool,
+    has_explicit_user_data_override: bool,
+) -> bool {
+    !is_ui_tauri && profile != "test" && !has_explicit_user_data_override
+}
+
 fn resolve_codex_home(user_data_dir: &Path, _is_ui_tauri: bool, _app_profile: &str) -> PathBuf {
     let isolated = user_data_dir.join("codex-home");
 
@@ -191,6 +206,34 @@ fn resolve_codex_home(user_data_dir: &Path, _is_ui_tauri: bool, _app_profile: &s
 
     // Keep app auth/session isolated by default so login state is stable inside API Router.
     isolated
+}
+
+fn resolve_user_data_dir(exe_dir: &Path, is_ui_tauri: bool, app_profile: &str) -> PathBuf {
+    if let Ok(explicit) = std::env::var("API_ROUTER_USER_DATA_DIR") {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            let path = PathBuf::from(trimmed);
+            let _ = std::fs::create_dir_all(&path);
+            return path;
+        }
+    }
+
+    if is_ui_tauri {
+        if let Ok(p) = std::env::var("UI_TAURI_PROFILE_DIR") {
+            let p = PathBuf::from(p);
+            let _ = std::fs::create_dir_all(&p);
+            return p;
+        }
+        let p = std::env::temp_dir()
+            .join("api-router-ui-check")
+            .join(format!("{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&p);
+        return p;
+    }
+
+    let p = exe_dir.join(profile_data_dir_name(app_profile));
+    let _ = std::fs::create_dir_all(&p);
+    p
 }
 
 fn app_startup_diag_path() -> Option<PathBuf> {
@@ -428,10 +471,11 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
 pub fn run() {
     let is_ui_tauri = std::env::var("UI_TAURI").ok().as_deref() == Some("1");
     let app_profile = app_profile_name();
+    let has_explicit_user_data_override = has_explicit_user_data_override();
     let launch_args = app_launch_args();
     let start_hidden = app_launch_requests_hidden(&launch_args);
     let mut builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
-    if !is_ui_tauri && app_profile != "test" {
+    if should_enable_single_instance(&app_profile, is_ui_tauri, has_explicit_user_data_override) {
         // Ensure clicking the EXE again focuses the existing instance instead of launching a second one.
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if app_launch_requests_hidden(&argv) {
@@ -481,28 +525,12 @@ pub fn run() {
             // - user-data/data/* (sled store, metrics, events)
             let is_ui_tauri = std::env::var("UI_TAURI").ok().as_deref() == Some("1");
             let app_profile = app_profile_for_setup.clone();
-            let user_data_dir = if is_ui_tauri {
-                if let Ok(p) = std::env::var("UI_TAURI_PROFILE_DIR") {
-                    let p = PathBuf::from(p);
-                    let _ = std::fs::create_dir_all(&p);
-                    p
-                } else {
-                    let p = std::env::temp_dir()
-                        .join("api-router-ui-check")
-                        .join(format!("{}", std::process::id()));
-                    let _ = std::fs::create_dir_all(&p);
-                    p
-                }
-            } else {
-                let exe = std::env::current_exe()?;
-                let dir = exe
-                    .parent()
-                    .map(std::path::Path::to_path_buf)
-                    .ok_or_else(|| anyhow::anyhow!("failed to resolve EXE directory"))?;
-                let p = dir.join(profile_data_dir_name(&app_profile));
-                let _ = std::fs::create_dir_all(&p);
-                p
-            };
+            let exe = std::env::current_exe()?;
+            let exe_dir = exe
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .ok_or_else(|| anyhow::anyhow!("failed to resolve EXE directory"))?;
+            let user_data_dir = resolve_user_data_dir(&exe_dir, is_ui_tauri, &app_profile);
 
             if should_reset_profile_data(&app_profile, is_ui_tauri) {
                 if user_data_dir.exists() {
@@ -875,9 +903,10 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        app_launch_requests_hidden, app_profile_name_from_inputs, profile_data_dir_name,
-        resolve_codex_home, should_reset_profile_data, should_reveal_main_window_on_setup,
-        should_seed_mock_data,
+        app_launch_requests_hidden, app_profile_name_from_inputs, has_explicit_user_data_override,
+        profile_data_dir_name, resolve_codex_home, resolve_user_data_dir,
+        should_enable_single_instance, should_reset_profile_data,
+        should_reveal_main_window_on_setup, should_seed_mock_data,
     };
 
     #[test]
@@ -916,6 +945,30 @@ mod tests {
         std::env::remove_var("API_ROUTER_CODEX_HOME");
         let got = resolve_codex_home(&user_data, false, "default");
         assert_eq!(got, user_data.join("codex-home"));
+    }
+
+    #[test]
+    fn resolve_user_data_dir_prefers_explicit_override() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let exe_dir = tmp.path().join("repo");
+        let override_dir = tmp.path().join("isolated-user-data");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        std::env::set_var("API_ROUTER_USER_DATA_DIR", &override_dir);
+        let got = resolve_user_data_dir(&exe_dir, false, "default");
+        std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        assert_eq!(got, override_dir);
+    }
+
+    #[test]
+    fn explicit_user_data_override_disables_single_instance() {
+        std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        assert!(!has_explicit_user_data_override());
+        assert!(should_enable_single_instance("default", false, false));
+
+        std::env::set_var("API_ROUTER_USER_DATA_DIR", "C:\\temp\\api-router-e2e");
+        assert!(has_explicit_user_data_override());
+        assert!(!should_enable_single_instance("default", false, true));
+        std::env::remove_var("API_ROUTER_USER_DATA_DIR");
     }
 
     #[test]

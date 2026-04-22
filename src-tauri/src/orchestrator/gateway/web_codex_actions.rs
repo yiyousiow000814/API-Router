@@ -204,6 +204,42 @@ pub(super) fn build_turn_start_response(
     response
 }
 
+fn terminal_ack_turn_id(payload: &Value) -> Option<&str> {
+    payload
+        .get("turn")
+        .and_then(Value::as_object)
+        .and_then(|turn| turn.get("id"))
+        .and_then(Value::as_str)
+        .or_else(|| payload.get("turnId").and_then(Value::as_str))
+        .or_else(|| payload.get("turn_id").and_then(Value::as_str))
+}
+
+fn record_terminal_turn_start_runtime(
+    workspace_target: Option<WorkspaceTarget>,
+    home_override: Option<&str>,
+    thread_id: &str,
+    rollout_path: Option<&str>,
+    payload: &Value,
+) {
+    if workspace_target.is_none() {
+        return;
+    }
+    let turn_id = terminal_ack_turn_id(payload);
+    crate::orchestrator::gateway::web_codex_session_runtime::upsert_workspace_thread_runtime(
+        workspace_target,
+        home_override,
+        crate::orchestrator::gateway::web_codex_session_runtime::WorkspaceThreadRuntimeUpdate {
+            thread_id,
+            cwd: None,
+            rollout_path,
+            status: Some("running"),
+            last_event_id: None,
+            last_turn_id: turn_id,
+            clear_last_turn_id: turn_id.is_none(),
+        },
+    );
+}
+
 async fn try_terminal_turn_start(
     st: &GatewayState,
     req: &TurnStartRequest,
@@ -236,6 +272,17 @@ async fn try_terminal_turn_start(
         }
         None => None,
     };
+    let home_override =
+        crate::orchestrator::gateway::web_codex_home::web_codex_rpc_home_override_for_target(
+            workspace_target,
+        );
+    record_terminal_turn_start_runtime(
+        workspace_target,
+        home_override.as_deref(),
+        thread_id,
+        rollout_path.as_deref(),
+        &ack.payload,
+    );
     Ok(Some(build_turn_start_response(
         thread_id,
         ack.payload,
@@ -1425,9 +1472,11 @@ pub(super) async fn codex_rpc_proxy(
 mod tests {
     use super::{
         build_turn_start_params, build_turn_start_response, parse_slash_command,
-        prompt_with_plan_protocol, service_tier_override_json, status_read_result,
-        supported_slash_commands, turn_thread_id, ServiceTierOverride, TurnStartRequest,
+        prompt_with_plan_protocol, record_terminal_turn_start_runtime, service_tier_override_json,
+        status_read_result, supported_slash_commands, turn_thread_id, ServiceTierOverride,
+        TurnStartRequest,
     };
+    use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
     use serde_json::{json, Value};
 
     #[test]
@@ -1555,6 +1604,51 @@ mod tests {
         assert_eq!(response["threadId"], "thread-1");
         assert_eq!(response["turnId"], "turn-1");
         assert_eq!(response["rolloutPath"], "C:\\temp\\rollout.jsonl");
+    }
+
+    #[test]
+    fn terminal_turn_start_runtime_clears_stale_turn_id_when_ack_has_no_turn() {
+        crate::orchestrator::gateway::web_codex_session_runtime::_clear_workspace_runtime_registry_for_test();
+        crate::orchestrator::gateway::web_codex_session_runtime::upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Windows),
+            Some("terminal-live-home"),
+            crate::orchestrator::gateway::web_codex_session_runtime::WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: None,
+                rollout_path: None,
+                status: Some("failed"),
+                last_event_id: None,
+                last_turn_id: Some("turn-old"),
+                clear_last_turn_id: false,
+            },
+        );
+
+        record_terminal_turn_start_runtime(
+            Some(WorkspaceTarget::Windows),
+            Some("terminal-live-home"),
+            "thread-1",
+            Some("C:\\temp\\rollout.jsonl"),
+            &json!({
+                "threadId": "thread-1",
+                "turnId": Value::Null,
+                "transport": "terminal-session",
+                "result": { "accepted": true }
+            }),
+        );
+
+        let snapshot =
+            crate::orchestrator::gateway::web_codex_session_runtime::workspace_thread_runtime_snapshot(
+                Some(WorkspaceTarget::Windows),
+                Some("terminal-live-home"),
+                "thread-1",
+            )
+            .expect("thread snapshot");
+        assert_eq!(snapshot.status.as_deref(), Some("running"));
+        assert_eq!(snapshot.last_turn_id, None);
+        assert_eq!(
+            snapshot.rollout_path.as_deref(),
+            Some("C:\\temp\\rollout.jsonl")
+        );
     }
 
     #[tokio::test]

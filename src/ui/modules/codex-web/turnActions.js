@@ -1,4 +1,5 @@
 import {
+  activeThreadHistoryUserCount,
   activeThreadHistoryTurnCount,
   clearPendingTurnRuntimePlaceholder as clearPendingTurnRuntimePlaceholderState,
   primePendingTurnRuntime as primePendingTurnRuntimeState,
@@ -212,6 +213,7 @@ export function createTurnActionsModule(deps) {
     clearSyntheticPendingUserInputById = () => false,
     setSyntheticPendingUserInputs = () => false,
     suppressSyntheticPendingUserInputs = () => false,
+    clearLiveThreadConnectionStatus = () => {},
     setStatus,
     setActiveThread,
     setMainTab,
@@ -281,6 +283,11 @@ export function createTurnActionsModule(deps) {
     return String(getStartCwdForWorkspace(workspaceKey) || "").trim();
   }
 
+  function visibleUserMessageCount() {
+    const box = byId("chatBox");
+    return box?.querySelectorAll?.(".msg.user")?.length || 0;
+  }
+
   async function openManagedTerminalSurface(options = {}) {
     if (blockInSandbox("open linked terminal")) return null;
     const threadId = String(options.threadId || resolveCurrentThreadId(state) || "").trim();
@@ -348,8 +355,19 @@ export function createTurnActionsModule(deps) {
     const threadId = resolveCurrentThreadId(state);
     state.activeThreadHistoryReqSeq = Math.max(0, Number(state.activeThreadHistoryReqSeq || 0)) + 1;
     resetTurnPresentationState(state, { bumpLiveEpoch: true });
+    state.activeThreadTerminalConnectionErrorThreadId = "";
+    clearLiveThreadConnectionStatus("turn.send:new_turn");
     if (threadId && state.suppressedIncompleteHistoryRuntimeByThreadId) {
       delete state.suppressedIncompleteHistoryRuntimeByThreadId[threadId];
+    }
+    if (threadId) {
+      suppressSyntheticPendingUserInputs(threadId, false);
+      if (
+        state.suppressedSyntheticPendingUserInputsByThreadId &&
+        typeof state.suppressedSyntheticPendingUserInputsByThreadId === "object"
+      ) {
+        delete state.suppressedSyntheticPendingUserInputsByThreadId[threadId];
+      }
     }
     if (threadId) clearProposedPlanConfirmation(state, threadId);
     if (threadId) setSyntheticPendingUserInputs(threadId, []);
@@ -375,7 +393,7 @@ export function createTurnActionsModule(deps) {
     }
     liveAssistantMsgNode?.remove?.();
     resetTurnPresentationState(state, { bumpLiveEpoch: options.bumpLiveEpoch === true });
-    resetPendingTurnRuntime(state);
+    resetPendingTurnRuntime(state, { reason: "turn.plan.clear_artifacts" });
     if (normalizedThreadId) {
       state.suppressedIncompleteHistoryRuntimeByThreadId = {
         ...(state.suppressedIncompleteHistoryRuntimeByThreadId && typeof state.suppressedIncompleteHistoryRuntimeByThreadId === "object"
@@ -408,7 +426,11 @@ export function createTurnActionsModule(deps) {
   }
 
   function clearPendingTurnRuntimePlaceholder(threadId, options = {}) {
-    if (!clearPendingTurnRuntimePlaceholderState(state, threadId, options)) return;
+    const runtimeOptions = {
+      ...options,
+      reason: String(options?.reason || "").trim() || "turn.pending.clear_placeholder",
+    };
+    if (!clearPendingTurnRuntimePlaceholderState(state, threadId, runtimeOptions)) return;
     syncPendingTurnUi();
     updateMobileComposerState();
   }
@@ -417,6 +439,7 @@ export function createTurnActionsModule(deps) {
     const normalizedPrompt = String(prompt || "");
     clearPendingTurnRuntimePlaceholder(resolveCurrentThreadId(state), {
       force: true,
+      reason: "turn.pending.rollback_optimistic",
     });
     if (Array.isArray(state.activeThreadMessages) && state.activeThreadMessages.length > 0) {
       const last = state.activeThreadMessages[state.activeThreadMessages.length - 1];
@@ -446,6 +469,17 @@ export function createTurnActionsModule(deps) {
       }
     }
     updateMobileComposerState();
+  }
+
+  function appendOptimisticUserMessage(prompt) {
+    const text = String(prompt || "");
+    if (!text.trim()) return;
+    if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
+    state.activeThreadMessages = state.activeThreadMessages.concat([{ role: "user", text, kind: "" }]);
+    addChat("user", text, {
+      animate: false,
+      source: "turnSendOptimisticUser",
+    });
   }
 
   function readQueuedTurns() {
@@ -1179,7 +1213,12 @@ export function createTurnActionsModule(deps) {
         refreshRuntimeForWorkspace(state.activeThreadWorkspace || workspace);
       }
     } catch (error) {
-      if (primedPendingRuntime) clearPendingTurnRuntimePlaceholder(activeThreadId, { force: true });
+      if (primedPendingRuntime) {
+        clearPendingTurnRuntimePlaceholder(activeThreadId, {
+          force: true,
+          reason: "turn.send.resume_failed",
+        });
+      }
       throw error;
     }
     const payload = buildTurnPayload({
@@ -1202,13 +1241,18 @@ export function createTurnActionsModule(deps) {
       running: true,
       userMessage: prompt,
       assistantMessage: "",
-      baselineTurnCount: activeThreadHistoryTurnCount(activeThreadId),
+      baselineTurnCount: activeThreadHistoryTurnCount(state, activeThreadId),
+      baselineUserCount: Math.max(
+        activeThreadHistoryUserCount(state, activeThreadId),
+        visibleUserMessageCount()
+      ),
     });
-    resetLiveTurnStateForNewTurn();
+    if (!primedPendingRuntime) {
+      resetLiveTurnStateForNewTurn();
+    }
     updateHeaderUi(shouldAnimateWorkspaceBadge);
     hideWelcomeCard();
-    if (!Array.isArray(state.activeThreadMessages)) state.activeThreadMessages = [];
-    state.activeThreadMessages = state.activeThreadMessages.concat([{ role: "user", text: prompt, kind: "" }]);
+    appendOptimisticUserMessage(prompt);
     state.chatShouldStickToBottom = true;
     scrollToBottomReliable();
     setMainTab("chat");
@@ -1251,7 +1295,6 @@ export function createTurnActionsModule(deps) {
         running: true,
         userMessage: prompt,
         assistantMessage: "",
-        baselineTurnCount: activeThreadHistoryTurnCount(startedThreadId),
       });
       setActiveThreadOpenState(
         resolveThreadOpenState({

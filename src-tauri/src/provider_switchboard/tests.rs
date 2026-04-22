@@ -674,6 +674,67 @@ mod tests {
     }
 
     #[test]
+    fn write_swapped_files_replaces_runtime_auth_when_setting_openai_key() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(
+            cli_auth_path(&cli_home),
+            r#"{"tokens":{"access_token":"token-1","refresh_token":"refresh-1"},"profile":"keep"}"#,
+        )
+        .unwrap();
+        std::fs::write(cli_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+
+        write_swapped_files(
+            &config_path,
+            &cli_home,
+            &json!({"OPENAI_API_KEY":"sk-new"}),
+            "model = \"gpt-5.2\"\n",
+        )
+        .expect("write swapped files");
+
+        let auth = read_json(&cli_auth_path(&cli_home)).expect("read auth");
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(|v| v.as_str()),
+            Some("sk-new")
+        );
+        assert!(auth.get("tokens").is_none());
+        assert!(auth.get("profile").is_none());
+    }
+
+    #[test]
+    fn write_swapped_files_clears_runtime_auth_when_using_config_storage() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        std::fs::write(
+            cli_auth_path(&cli_home),
+            r#"{"OPENAI_API_KEY":"sk-old","tokens":{"access_token":"token-1","refresh_token":"refresh-1"},"profile":"keep"}"#,
+        )
+        .unwrap();
+        std::fs::write(cli_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
+
+        write_swapped_files(
+            &config_path,
+            &cli_home,
+            &json!({}),
+            "model = \"gpt-5.2\"\n",
+        )
+        .expect("write swapped files");
+
+        let auth = read_json(&cli_auth_path(&cli_home)).expect("read auth");
+        assert!(auth.get("OPENAI_API_KEY").is_none());
+        assert!(auth.get("tokens").is_none());
+        assert!(auth.get("profile").is_none());
+    }
+
+    #[test]
     fn sync_gateway_target_for_rotated_token_rewrites_gateway_target_even_when_auth_matches() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let config_path = tmp.path().join("user-data").join("config.toml");

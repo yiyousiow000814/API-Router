@@ -34,6 +34,7 @@ pub(crate) struct WorkspaceThreadRuntimeUpdate<'a> {
     pub(crate) status: Option<&'a str>,
     pub(crate) last_event_id: Option<u64>,
     pub(crate) last_turn_id: Option<&'a str>,
+    pub(crate) clear_last_turn_id: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +58,7 @@ struct WorkspaceThreadRuntimeRecord {
     status: Option<String>,
     last_event_id: Option<u64>,
     last_turn_id: Option<String>,
+    retry_used_attempts: usize,
     updated_at_unix_secs: i64,
 }
 
@@ -189,6 +191,7 @@ pub(crate) fn upsert_workspace_thread_runtime(
     let entry = guard
         .entry(key)
         .or_insert_with(|| ensure_runtime_record(workspace_target, home_override));
+    let normalized_status = normalize_optional_text(update.status);
     let thread =
         entry
             .threads
@@ -200,6 +203,7 @@ pub(crate) fn upsert_workspace_thread_runtime(
                 status: None,
                 last_event_id: None,
                 last_turn_id: None,
+                retry_used_attempts: 0,
                 updated_at_unix_secs: now,
             });
     if let Some(cwd) = normalize_optional_text(update.cwd) {
@@ -208,16 +212,89 @@ pub(crate) fn upsert_workspace_thread_runtime(
     if let Some(rollout_path) = normalize_optional_text(update.rollout_path) {
         thread.rollout_path = Some(rollout_path);
     }
-    if let Some(status) = normalize_optional_text(update.status) {
+    if let Some(status) = normalized_status.clone() {
         thread.status = Some(status);
     }
     if let Some(last_event_id) = update.last_event_id {
         thread.last_event_id = Some(last_event_id);
     }
+    if update.clear_last_turn_id && update.last_turn_id.is_none() && thread.last_turn_id.is_some() {
+        thread.last_turn_id = None;
+        thread.retry_used_attempts = 0;
+    }
     if let Some(last_turn_id) = normalize_optional_text(update.last_turn_id) {
-        thread.last_turn_id = Some(last_turn_id);
+        if thread.last_turn_id.as_deref() != Some(last_turn_id.as_str()) {
+            thread.last_turn_id = Some(last_turn_id);
+            thread.retry_used_attempts = 0;
+        }
     }
     thread.updated_at_unix_secs = now;
+}
+
+pub(crate) fn workspace_thread_retry_budget_can_retry(
+    workspace_target: Option<WorkspaceTarget>,
+    home_override: Option<&str>,
+    thread_id: &str,
+    max_attempts: usize,
+) -> bool {
+    let Some(thread_id) = normalize_thread_id(thread_id) else {
+        return false;
+    };
+    let key = runtime_key(workspace_target, home_override);
+    let mut guard = lock_registry();
+    let entry = guard
+        .entry(key)
+        .or_insert_with(|| ensure_runtime_record(workspace_target, home_override));
+    let thread =
+        entry
+            .threads
+            .entry(thread_id.clone())
+            .or_insert_with(|| WorkspaceThreadRuntimeRecord {
+                thread_id,
+                cwd: None,
+                rollout_path: None,
+                status: None,
+                last_event_id: None,
+                last_turn_id: None,
+                retry_used_attempts: 0,
+                updated_at_unix_secs: current_unix_secs(),
+            });
+    thread.retry_used_attempts < max_attempts
+}
+
+pub(crate) fn consume_workspace_thread_retry_attempt(
+    workspace_target: Option<WorkspaceTarget>,
+    home_override: Option<&str>,
+    thread_id: &str,
+    max_attempts: usize,
+) -> Option<usize> {
+    let thread_id = normalize_thread_id(thread_id)?;
+    let key = runtime_key(workspace_target, home_override);
+    let now = current_unix_secs();
+    let mut guard = lock_registry();
+    let entry = guard
+        .entry(key)
+        .or_insert_with(|| ensure_runtime_record(workspace_target, home_override));
+    let thread =
+        entry
+            .threads
+            .entry(thread_id.clone())
+            .or_insert_with(|| WorkspaceThreadRuntimeRecord {
+                thread_id,
+                cwd: None,
+                rollout_path: None,
+                status: None,
+                last_event_id: None,
+                last_turn_id: None,
+                retry_used_attempts: 0,
+                updated_at_unix_secs: now,
+            });
+    if thread.retry_used_attempts >= max_attempts {
+        return None;
+    }
+    thread.retry_used_attempts += 1;
+    thread.updated_at_unix_secs = now;
+    Some(thread.retry_used_attempts)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -285,10 +362,11 @@ pub(crate) fn _clear_workspace_runtime_registry_for_test() {
 #[cfg(test)]
 mod tests {
     use super::{
-        _clear_workspace_runtime_registry_for_test, ensure_workspace_runtime_registered,
-        mark_workspace_runtime_connected, mark_workspace_runtime_replay,
-        upsert_workspace_thread_runtime, workspace_runtime_snapshot,
-        workspace_thread_runtime_count, workspace_thread_runtime_snapshot,
+        _clear_workspace_runtime_registry_for_test, consume_workspace_thread_retry_attempt,
+        ensure_workspace_runtime_registered, mark_workspace_runtime_connected,
+        mark_workspace_runtime_replay, upsert_workspace_thread_runtime, workspace_runtime_snapshot,
+        workspace_thread_retry_budget_can_retry, workspace_thread_runtime_count,
+        workspace_thread_runtime_snapshot,
     };
 
     fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
@@ -354,6 +432,7 @@ mod tests {
                 status: Some("running"),
                 last_event_id: Some(12),
                 last_turn_id: Some("turn-9"),
+                clear_last_turn_id: false,
             },
         );
 
@@ -378,6 +457,72 @@ mod tests {
                 Some("C:\\Users\\yiyou\\.codex")
             ),
             1
+        );
+    }
+
+    #[test]
+    fn workspace_thread_retry_budget_resets_when_turn_changes() {
+        let _guard = lock_tests();
+        _clear_workspace_runtime_registry_for_test();
+
+        upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Windows),
+            Some("C:\\Users\\yiyou\\.codex"),
+            super::WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: None,
+                rollout_path: None,
+                status: Some("running"),
+                last_event_id: None,
+                last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
+            },
+        );
+        assert!(workspace_thread_retry_budget_can_retry(
+            Some(WorkspaceTarget::Windows),
+            Some("C:\\Users\\yiyou\\.codex"),
+            "thread-1",
+            5,
+        ));
+        for expected_attempt in 1..=5 {
+            assert_eq!(
+                consume_workspace_thread_retry_attempt(
+                    Some(WorkspaceTarget::Windows),
+                    Some("C:\\Users\\yiyou\\.codex"),
+                    "thread-1",
+                    5,
+                ),
+                Some(expected_attempt)
+            );
+        }
+        assert!(!workspace_thread_retry_budget_can_retry(
+            Some(WorkspaceTarget::Windows),
+            Some("C:\\Users\\yiyou\\.codex"),
+            "thread-1",
+            5,
+        ));
+
+        upsert_workspace_thread_runtime(
+            Some(WorkspaceTarget::Windows),
+            Some("C:\\Users\\yiyou\\.codex"),
+            super::WorkspaceThreadRuntimeUpdate {
+                thread_id: "thread-1",
+                cwd: None,
+                rollout_path: None,
+                status: Some("running"),
+                last_event_id: None,
+                last_turn_id: Some("turn-2"),
+                clear_last_turn_id: false,
+            },
+        );
+        assert_eq!(
+            consume_workspace_thread_retry_attempt(
+                Some(WorkspaceTarget::Windows),
+                Some("C:\\Users\\yiyou\\.codex"),
+                "thread-1",
+                5,
+            ),
+            Some(1)
         );
     }
 }

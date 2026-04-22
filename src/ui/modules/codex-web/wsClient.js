@@ -550,7 +550,6 @@ export function createWsClientModule(deps) {
       scheduleThreadRefresh();
       const currentThreadId = resolveCurrentThreadId(state);
       if (currentThreadId) scheduleActiveThreadRefresh(currentThreadId);
-      setStatus("Live event stream resynced.");
       return;
     }
     if (payload.type === "subscribed") {
@@ -570,7 +569,7 @@ export function createWsClientModule(deps) {
       if (currentThreadId) {
         scheduleActiveThreadRefresh(currentThreadId, 0);
       }
-      setStatus("Live updates connected.");
+      return;
     }
   }
 

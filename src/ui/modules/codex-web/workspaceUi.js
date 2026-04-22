@@ -81,6 +81,13 @@ function createFallbackRuntimeState(target = "windows") {
   };
 }
 
+function isAbortLikeError(error) {
+  if (!error) return false;
+  const name = String(error?.name || "").trim();
+  const message = String(error?.message || error || "").trim().toLowerCase();
+  return name === "AbortError" || message.includes("aborted");
+}
+
 export function createWorkspaceUiModule(deps) {
   const {
     state,
@@ -221,7 +228,7 @@ export function createWorkspaceUiModule(deps) {
         loaded: true,
         loading: false,
       };
-      if (options.silent !== true && error?.message) {
+      if (options.silent !== true && error?.message && !isAbortLikeError(error)) {
         setStatus(error.message, true);
       }
       if (options.updateHeader !== false && state.activeThreadWorkspace === workspace) {

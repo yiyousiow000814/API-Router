@@ -127,6 +127,7 @@ async function getDebugState(driver) {
       info: window.__webCodexDebug?.getScriptInfo?.() || null,
       active: window.__webCodexDebug?.getActiveState?.() || null,
       pipeline: window.__webCodexDebug?.getLivePipelineSnapshot?.(40) || null,
+      liveEvents: window.__webCodexDebug?.getRecentLiveEvents?.(200) || [],
       dump: window.__webCodexDebug?.dumpMessages?.(20) || [],
       status: String(document.getElementById('statusLine')?.textContent || '').trim(),
       runtime: String(document.getElementById('runtimeActivityBar')?.textContent || '').trim(),
@@ -185,6 +186,20 @@ function latestAssistantText(dump) {
 }
 
 function collectFailureSnapshot(state, history) {
+  const liveEvents = Array.isArray(state?.liveEvents) ? state.liveEvents : []
+  const keyLiveEvents = liveEvents.filter((event) => {
+    const kind = String(event?.kind || '')
+    return (
+      kind.startsWith('chat.timeline:') ||
+      kind.startsWith('live.connection:') ||
+      kind.startsWith('live.status') ||
+      kind.startsWith('history.render:') ||
+      kind === 'history.apply' ||
+      kind === 'history.receive' ||
+      kind === 'turn.send' ||
+      kind === 'turn.start.ack'
+    )
+  })
   return {
     info: state?.info || null,
     active: state?.active || null,
@@ -194,8 +209,32 @@ function collectFailureSnapshot(state, history) {
     promptValue: state?.promptValue || '',
     welcomeVisible: !!state?.welcomeVisible,
     pipeline: state?.pipeline || null,
+    liveEvents,
+    keyLiveEvents,
     dump: state?.dump || [],
     history: history || null,
+  }
+}
+
+async function collectLiveLogSlice(threadIds = [], limit = 120) {
+  const ids = [...new Set((Array.isArray(threadIds) ? threadIds : []).map((value) => String(value || '').trim()).filter(Boolean))]
+  if (!ids.length) return []
+  const logPath = path.join(repoRoot, 'user-data', 'logs', 'codex-web-live.ndjson')
+  try {
+    const raw = await fs.readFile(logPath, 'utf8')
+    const lines = raw.split(/\r?\n/).filter(Boolean)
+    const matched = []
+    for (const line of lines) {
+      if (!ids.some((threadId) => line.includes(threadId))) continue
+      try {
+        matched.push(JSON.parse(line))
+      } catch {
+        matched.push({ parseError: true, line })
+      }
+    }
+    return matched.slice(Math.max(0, matched.length - Math.max(1, Number(limit || 120) | 0)))
+  } catch (error) {
+    return [{ logReadError: String(error && error.message ? error.message : error), path: logPath }]
   }
 }
 
@@ -305,6 +344,7 @@ async function main() {
   } catch (error) {
     let failureState = null
     let failureHistory = null
+    let liveLogSlice = []
     try {
       failureState = await getDebugState(driver)
       const threadId = String(failureState?.info?.activeThreadId || '').trim()
@@ -315,11 +355,13 @@ async function main() {
           String(failureState?.info?.activeThreadWorkspace || 'windows').trim() || 'windows',
           String(failureState?.info?.activeThreadRolloutPath || '').trim(),
         )
+        liveLogSlice = await collectLiveLogSlice([threadId], 160)
       }
     } catch {}
     console.error('[ui:e2e:codex-real-send-turn] FAIL')
     console.error(error?.stack || error)
     console.error(JSON.stringify(collectFailureSnapshot(failureState, failureHistory), null, 2))
+    console.error(JSON.stringify({ liveLogSlice }, null, 2))
     process.exitCode = 1
   } finally {
     try {
@@ -332,4 +374,3 @@ main().catch((error) => {
   console.error(`[ui:e2e:codex-real-send-turn] FAIL: ${error?.stack || error}`)
   process.exitCode = 1
 })
-

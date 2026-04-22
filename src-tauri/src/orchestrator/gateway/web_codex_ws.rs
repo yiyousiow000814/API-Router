@@ -130,11 +130,46 @@ fn backend_live_debug_push_send(client_id: u64, notif: &Value, delivered: bool) 
         } else {
             "backend.ws.notification_send_failed"
         },
-        json!({
-            "clientId": client_id,
-            "method": method,
-            "threadId": thread_id,
-            "eventId": event_id,
+        Value::Object({
+            let mut map = serde_json::Map::from_iter([
+                ("clientId".to_string(), Value::from(client_id)),
+                ("method".to_string(), Value::String(method.to_string())),
+                ("threadId".to_string(), Value::String(thread_id)),
+                (
+                    "eventId".to_string(),
+                    event_id.map(Value::from).unwrap_or(Value::Null),
+                ),
+            ]);
+            if let Some(params) = notif.get("params").and_then(Value::as_object) {
+                if let Some(status) = params
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                {
+                    map.insert("status".to_string(), Value::String(status.to_string()));
+                }
+                if let Some(source) = params
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                {
+                    map.insert("source".to_string(), Value::String(source.to_string()));
+                }
+                if let Some(message) = params
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                {
+                    map.insert(
+                        "message".to_string(),
+                        Value::String(message.chars().take(220).collect()),
+                    );
+                }
+            }
+            map
         }),
     );
 }

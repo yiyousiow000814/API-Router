@@ -857,6 +857,57 @@ describe("composerUi", () => {
     );
   });
 
+  it("keeps generic working activity visible while a connection status card shows reconnect state", () => {
+    const nodes = new Map();
+    const runtimeDock = makeNode();
+    const runtimeActivityBar = makeNode();
+    runtimeActivityBar.id = "runtimeActivityBar";
+    runtimeDock.appendChild(runtimeActivityBar);
+    nodes.set("runtimeDock", runtimeDock);
+    nodes.set("runtimeActivityBar", runtimeActivityBar);
+    const chatBox = makeNode();
+    nodes.set("chatBox", chatBox);
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadTokenUsage: null,
+      activeMainTab: "chat",
+      activeThreadActiveCommands: [],
+      activeThreadActivity: null,
+      activeThreadPlan: null,
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadConnectionStatusKind: "reconnecting",
+      activeThreadConnectionStatusText: "Reconnecting... 2/5",
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || (id === "mobilePromptInput" ? { value: "" } : null);
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      renderInlineMessageText(value) { return `<span>${String(value || "")}</span>`; },
+      toolItemToMessage(item) {
+        return item?.text || "";
+      },
+      normalizeType(value) { return String(value || "").replace(/[^a-z]/gi, "").toLowerCase(); },
+      escapeHtml(value) { return String(value || ""); },
+      updateHeaderUi() {},
+      localStorageRef: { getItem() { return "0"; } },
+      documentRef: { querySelector() { return null; }, createElement: makeElementFactory(runtimeDock) },
+      windowRef: { requestAnimationFrame(cb) { cb(); } },
+    });
+
+    module.renderRuntimePanels();
+
+    expect(nodes.get("runtimeDock").style.display).toBe("");
+    expectWorkingActivityBarHtml(nodes.get("runtimeActivityBar").innerHTML);
+  });
+
   it("keeps runtime chat panels above the pending inline card", () => {
     const nodes = new Map();
     const runtimeDock = makeNode();

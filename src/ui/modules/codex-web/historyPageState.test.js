@@ -70,4 +70,45 @@ describe("historyPageState", () => {
     expect(state.activeThreadHistoryIncomplete).toBe(false);
     expect(state.activeThreadHistoryStatusType).toBe("failed");
   });
+
+  it("treats systemError history as complete even when the page is still incomplete", () => {
+    const state = {
+      activeThreadHistoryTurns: [],
+      activeThreadHistoryThreadId: "",
+      activeThreadHistoryIncomplete: false,
+    };
+
+    applyHistoryPageToState(state, "thread-1", {
+      page: { hasMore: false, incomplete: true, beforeCursor: "", totalTurns: 1 },
+      thread: {
+        id: "thread-1",
+        status: { type: "systemError" },
+        turns: [{ id: "turn-1" }],
+      },
+    });
+
+    expect(state.activeThreadHistoryIncomplete).toBe(false);
+    expect(state.activeThreadHistoryStatusType).toBe("systemerror");
+  });
+
+  it("deduplicates duplicate incoming turns before storing authoritative history state", () => {
+    const state = {
+      activeThreadHistoryTurns: [],
+      activeThreadHistoryThreadId: "",
+      activeThreadHistoryIncomplete: false,
+    };
+    const duplicateTurn = { id: "turn-1", items: [{ type: "userMessage" }] };
+
+    const result = applyHistoryPageToState(state, "thread-1", {
+      page: { hasMore: false, incomplete: false, beforeCursor: "", totalTurns: 1 },
+      thread: {
+        id: "thread-1",
+        status: { type: "completed" },
+        turns: [duplicateTurn, duplicateTurn],
+      },
+    });
+
+    expect(result.mergedTurns).toEqual([duplicateTurn]);
+    expect(state.activeThreadHistoryTurns).toEqual([duplicateTurn]);
+  });
 });

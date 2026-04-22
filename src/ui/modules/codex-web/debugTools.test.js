@@ -59,18 +59,34 @@ describe("debugTools", () => {
     expect(info.links).toEqual([{ text: "c", href: "/x" }]);
   });
 
-  it("collects only unsent live trace events", () => {
+  it("collects only unsent persisted live trace events by default", () => {
     const state = {
       liveDebugEvents: [
         { at: 1, kind: "a", __traceUploaded: true },
         { at: 2, kind: "b" },
-        { at: 3, kind: "c" },
+        { at: 3, kind: "c", __tracePersist: true },
+        { at: 4, kind: "d", __tracePersist: true },
       ],
     };
-    expect(collectPendingLiveTraceEvents(state, 1)).toEqual([{ at: 2, kind: "b" }]);
+    expect(collectPendingLiveTraceEvents(state, 1)).toEqual([{ at: 3, kind: "c", __tracePersist: true }]);
+    expect(collectPendingLiveTraceEvents(state, 5)).toEqual([
+      { at: 3, kind: "c", __tracePersist: true },
+      { at: 4, kind: "d", __tracePersist: true },
+    ]);
+  });
+
+  it("collects all unsent live trace events when full upload mode is enabled", () => {
+    const state = {
+      liveTraceUploadAllEnabled: true,
+      liveDebugEvents: [
+        { at: 1, kind: "a", __traceUploaded: true },
+        { at: 2, kind: "b" },
+        { at: 3, kind: "c", __tracePersist: true },
+      ],
+    };
     expect(collectPendingLiveTraceEvents(state, 5)).toEqual([
       { at: 2, kind: "b" },
-      { at: 3, kind: "c" },
+      { at: 3, kind: "c", __tracePersist: true },
     ]);
   });
 
@@ -351,6 +367,67 @@ describe("debugTools", () => {
       id: "t2",
       cwd: "C:\\Users\\yiyou\\XAUUSD-Calendar-Agent",
     });
+  });
+
+  it("exposes persisted live trace events in debug hooks", () => {
+    const windowRef = {};
+    const state = {
+      liveDebugEvents: [
+        { at: 1, kind: "noise" },
+        { at: 2, kind: "persisted-a", __tracePersist: true },
+        { at: 3, kind: "persisted-b", __tracePersist: true, __traceUploaded: true },
+        { at: 4, kind: "persisted-c", __tracePersist: true },
+      ],
+    };
+    const module = createDebugToolsModule({
+      state,
+      byId() { return null; },
+      renderInlineMessageText(value) { return String(value || ""); },
+      findNextInlineCodeSpan() { return null; },
+      normalizeWorkspaceTarget(value) { return value === "wsl2" ? "wsl2" : "windows"; },
+      normalizeModelOption(value) { return value; },
+      ensureArrayItems(value) { return Array.isArray(value) ? value : []; },
+      pickLatestModelId() { return ""; },
+      REASONING_EFFORT_KEY: "reasoning",
+      MODEL_LOADING_MIN_MS: 0,
+      normalizeThreadTokenUsage(value) { return value; },
+      renderComposerContextLeft() {},
+      clearChatMessages() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      getWorkspaceTarget() { return "windows"; },
+      getStartCwdForWorkspace() { return ""; },
+      parseUserMessageParts() { return { text: "", images: [] }; },
+      renderMessageAttachments() { return ""; },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      loadThreadMessages: async () => {},
+      refreshThreads: async () => {},
+      handleWsPayload() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      createAssistantStreamingMessage() { return { msg: null, body: null }; },
+      appendStreamingDelta() {},
+      setStatus() {},
+      isThreadAnimDebugEnabled() { return false; },
+      pushThreadAnimDebug() {},
+      threadAnimDebug: { enabled: false, events: [], seq: 0 },
+      WEB_CODEX_DEV_DEBUG_VERSION: "test",
+      documentRef: {
+        querySelectorAll() { return []; },
+        getElementById() { return { textContent: "" }; },
+      },
+      windowRef,
+      performanceRef: { now: () => 0 },
+    });
+
+    module.installWebCodexDebug();
+    expect(windowRef.__webCodexDebug?.getRecentLiveTraceEvents?.(10)).toEqual([
+      { at: 2, kind: "persisted-a", __tracePersist: true },
+      { at: 4, kind: "persisted-c", __tracePersist: true },
+    ]);
   });
 
   it("uses history fallback events for live pipeline snapshot when rpc notifications are missing", () => {
@@ -1062,8 +1139,71 @@ describe("debugTools", () => {
     expect(state.workspaceTarget).toBe("wsl2");
   });
 
-  it("does not install live trace background sync unless debug live mode is enabled", () => {
+  it("sends a prompt through the e2e hook using the real turn action path", async () => {
+    const windowRef = {
+      location: { search: "?e2e=1" },
+      setInterval() { return 1; },
+      clearInterval() {},
+      addEventListener() {},
+    };
+    const sentPrompts = [];
+    const module = createDebugToolsModule({
+      state: { liveDebugEvents: [], wsSubscribedEvents: true },
+      byId() { return null; },
+      renderInlineMessageText(value) { return String(value || ""); },
+      findNextInlineCodeSpan() { return null; },
+      normalizeWorkspaceTarget(value) { return value === "wsl2" ? "wsl2" : "windows"; },
+      normalizeModelOption(value) { return value; },
+      ensureArrayItems(value) { return Array.isArray(value) ? value : []; },
+      pickLatestModelId() { return ""; },
+      REASONING_EFFORT_KEY: "reasoning",
+      MODEL_LOADING_MIN_MS: 0,
+      normalizeThreadTokenUsage(value) { return value; },
+      renderComposerContextLeft() {},
+      clearChatMessages() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      getWorkspaceTarget() { return "windows"; },
+      getStartCwdForWorkspace() { return ""; },
+      parseUserMessageParts() { return { text: "", images: [] }; },
+      renderMessageAttachments() { return ""; },
+      setMainTab() {},
+      setMobileTab() {},
+      setActiveThread() {},
+      setChatOpening() {},
+      loadThreadMessages: async () => {},
+      refreshThreads: async () => {},
+      sendTurn: async (prompt) => {
+        sentPrompts.push(String(prompt || ""));
+      },
+      handleWsPayload() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      createAssistantStreamingMessage() { return { msg: null, body: null }; },
+      appendStreamingDelta() {},
+      setStatus() {},
+      isThreadAnimDebugEnabled() { return false; },
+      pushThreadAnimDebug() {},
+      threadAnimDebug: { enabled: false, events: [], seq: 0 },
+      WEB_CODEX_DEV_DEBUG_VERSION: "test",
+      documentRef: {
+        querySelectorAll() { return []; },
+        getElementById() { return { textContent: "" }; },
+      },
+      windowRef,
+      performanceRef: { now: () => 0 },
+    });
+
+    module.installDebugAndE2E();
+    const result = await windowRef.__webCodexE2E.sendPrompt("hello");
+
+    expect(result).toEqual({ ok: true });
+    expect(sentPrompts).toEqual(["hello"]);
+  });
+
+  it("installs live trace background sync with persisted-only upload by default", () => {
     let intervalCalls = 0;
+    const state = { liveDebugEvents: [] };
     const windowRef = {
       fetch: async () => ({
         ok: true,
@@ -1085,7 +1225,7 @@ describe("debugTools", () => {
       removeItem() {},
     };
     const module = createDebugToolsModule({
-      state: { liveDebugEvents: [] },
+      state,
       byId() { return null; },
       renderInlineMessageText(value) { return String(value || ""); },
       findNextInlineCodeSpan() { return null; },
@@ -1133,7 +1273,8 @@ describe("debugTools", () => {
 
     module.installDebugAndE2E();
 
-    expect(intervalCalls).toBe(1);
+    expect(intervalCalls).toBeGreaterThanOrEqual(1);
+    expect(state.liveTraceUploadAllEnabled ?? false).toBe(false);
   });
 
   it("renders live inspector with a single title and top edge resize affordance", () => {

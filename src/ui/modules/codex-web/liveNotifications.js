@@ -64,22 +64,67 @@ export function isReconnectLiveStatus(value) {
   );
 }
 
+export function formatReconnectStatusPreview(message) {
+  const raw = String(message || "").trim();
+  if (!raw) return "Reconnecting...";
+  const attemptMatch = raw.match(/\b(\d+\s*\/\s*\d+)\b/);
+  const attempt = attemptMatch ? String(attemptMatch[1] || "").replace(/\s+/g, "") : "";
+  return attempt ? `Reconnecting... ${attempt}` : "Reconnecting...";
+}
+
 export function normalizeLiveMethod(value) {
   const raw = String(value || "").trim().toLowerCase();
   if (!raw) return "";
   const aliases = {
-    task_started: "turn/started",
-    turn_started: "turn/started",
-    task_complete: "turn/completed",
-    turn_complete: "turn/completed",
-    task_aborted: "turn/cancelled",
-    turn_aborted: "turn/cancelled",
+    task_started: "codex/event/task_started",
+    turn_started: "codex/event/turn_started",
+    task_complete: "codex/event/task_complete",
+    turn_complete: "codex/event/turn_complete",
+    task_aborted: "codex/event/task_aborted",
+    turn_aborted: "codex/event/turn_aborted",
+    task_failed: "codex/event/task_failed",
+    turn_failed: "codex/event/turn_failed",
     item_started: "item/started",
     item_completed: "item/completed",
     thread_name_updated: "thread/name/updated",
     thread_status_changed: "thread/status/changed",
   };
   return aliases[raw] || raw.replace(/\./g, "/");
+}
+
+function normalizeLiveStatusValue(value, helpers) {
+  const { normalizeType, toRecord } = helpers;
+  const record = toRecord(value);
+  if (record) {
+    return (
+      normalizeType(record.type) ||
+      normalizeType(record.status) ||
+      normalizeType(record.state) ||
+      normalizeType(record.kind) ||
+      normalizeType(record.name)
+    );
+  }
+  return normalizeType(value);
+}
+
+function extractLiveStatusMessage(params, helpers) {
+  const { normalizeInline, toRecord } = helpers;
+  const error = toRecord(params?.error);
+  const turnError = toRecord(params?.turn?.error);
+  const threadError = toRecord(params?.thread?.error);
+  return (
+    normalizeInline(params?.message, 180) ||
+    normalizeInline(error?.message, 180) ||
+    normalizeInline(params?.error, 180) ||
+    normalizeInline(params?.turn?.message, 180) ||
+    normalizeInline(turnError?.message, 180) ||
+    normalizeInline(params?.turn?.error, 180) ||
+    normalizeInline(params?.thread?.message, 180) ||
+    normalizeInline(threadError?.message, 180) ||
+    normalizeInline(params?.thread?.error, 180) ||
+    normalizeInline(params?.code, 180) ||
+    ""
+  );
 }
 
 export function deriveLiveStatusFromToolItem(item, helpers) {
@@ -155,19 +200,28 @@ export function deriveLiveStatusFromNotification(notification, helpers) {
   }
 
   const status =
-    normalizeType(params?.status) || normalizeType(params?.turn?.status) || normalizeType(params?.thread?.status);
-  const message =
-    normalizeInline(params?.message, 180) ||
-    normalizeInline(params?.turn?.message, 180) ||
-    normalizeInline(params?.thread?.message, 180) ||
-    normalizeInline(params?.code, 180) ||
-    "";
+    normalizeLiveStatusValue(params?.status, helpers) ||
+    normalizeLiveStatusValue(params?.turn?.status, helpers) ||
+    normalizeLiveStatusValue(params?.thread?.status, helpers);
+  const message = extractLiveStatusMessage(params, helpers);
 
   if (isReconnectLiveStatus(status || message)) {
     return {
-      message: message || "Reconnecting...",
+      message: formatReconnectStatusPreview(message),
       isWarn: false,
     };
+  }
+  if (
+    (method.includes("turn/completed") || method.includes("turn/finished")) &&
+    isFailedLiveStatus(status || message)
+  ) {
+    return { message: message || "Turn failed.", isWarn: true };
+  }
+  if (
+    (method.includes("turn/completed") || method.includes("turn/finished")) &&
+    /cancel|interrupt/.test(String(status || message || "").trim().toLowerCase())
+  ) {
+    return { message: message || "Turn cancelled.", isWarn: true };
   }
   if (message) {
     return { message, isWarn: isFailedLiveStatus(status || message) };
@@ -195,6 +249,20 @@ function matchesNormalizedType(value, names, normalizeType) {
     const normalizedName = typeof normalizeType === "function" ? normalizeType(name) : rawName;
     return raw === rawName || normalized === normalizedName;
   });
+}
+
+function isTerminalHistoryStatusValue(value) {
+  const statusType = String(value || "").trim().toLowerCase();
+  if (!statusType) return false;
+  return (
+    statusType === "interrupted" ||
+    statusType === "cancelled" ||
+    statusType === "failed" ||
+    statusType === "error" ||
+    statusType === "systemerror" ||
+    statusType === "timeout" ||
+    statusType === "denied"
+  );
 }
 
 function isVisibleAssistantPhase(value) {
@@ -290,11 +358,31 @@ export function createLiveNotificationsModule(deps) {
   }
 
   function pushLiveDebugEvent(kind, payload = {}) {
+    const eventKind = String(kind || "");
+    const nextPayload = payload && typeof payload === "object" ? { ...payload } : {};
+    const combinedStatusText = [
+      nextPayload.rawStatus,
+      nextPayload.rawMessage,
+      nextPayload.status,
+      nextPayload.statusMessage,
+      nextPayload.message,
+    ]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .join(" ");
+    if (eventKind.startsWith("live.connection:")) {
+      nextPayload.__tracePersist = true;
+    } else if (
+      eventKind === "live.status" &&
+      (isReconnectLiveStatus(combinedStatusText) || isFailedLiveStatus(combinedStatusText))
+    ) {
+      nextPayload.__tracePersist = true;
+    }
     if (!Array.isArray(state.liveDebugEvents)) state.liveDebugEvents = [];
     state.liveDebugEvents.push({
       at: Date.now(),
-      kind: String(kind || ""),
-      ...payload,
+      kind: eventKind,
+      ...nextPayload,
     });
     if (state.liveDebugEvents.length > 160) {
       state.liveDebugEvents.splice(0, state.liveDebugEvents.length - 160);
@@ -377,23 +465,143 @@ export function createLiveNotificationsModule(deps) {
     state.activeThreadTransientThinkingText = thinkingText;
   }
 
-  function clearLiveThreadConnectionStatus() {
+  function clearLiveThreadConnectionStatus(reason = "") {
+    const currentKind = String(state.activeThreadConnectionStatusKind || "").trim();
+    const currentText = String(state.activeThreadConnectionStatusText || "").trim();
+    const currentThreadId = String(state.activeThreadId || "").trim();
+    const currentEpoch = Math.max(0, Number(state.activeThreadLiveStateEpoch || 0));
+    const normalizedReason = String(reason || "").trim();
+    const terminalConnectionErrorThreadId = String(state.activeThreadTerminalConnectionErrorThreadId || "").trim();
+    const shouldForceRemove = !!terminalConnectionErrorThreadId;
+    if (
+      normalizedReason === "turn.send:new_turn" &&
+      currentKind === "error" &&
+      currentText &&
+      currentThreadId
+    ) {
+      state.activeThreadConnectionReplayGuardThreadId = currentThreadId;
+      state.activeThreadConnectionReplayGuardText = currentText;
+      state.activeThreadConnectionReplayGuardEpoch = currentEpoch;
+      state.activeThreadConnectionReplayGuardReconnectSeen = false;
+      pushLiveDebugEvent("live.connection:replay_guard_prime", {
+        threadId: currentThreadId,
+        epoch: currentEpoch,
+        text: currentText.slice(0, 180),
+      });
+    } else if (
+      normalizedReason !== "show_error:replace_previous_status" &&
+      (
+        String(state.activeThreadConnectionReplayGuardThreadId || "").trim() ||
+        String(state.activeThreadConnectionReplayGuardText || "").trim() ||
+        Number(state.activeThreadConnectionReplayGuardEpoch || 0) > 0 ||
+        state.activeThreadConnectionReplayGuardReconnectSeen === true
+      )
+    ) {
+      pushLiveDebugEvent("live.connection:replay_guard_clear", {
+        threadId: String(state.activeThreadConnectionReplayGuardThreadId || "").trim(),
+        epoch: Math.max(0, Number(state.activeThreadConnectionReplayGuardEpoch || 0)),
+        reconnectSeen: state.activeThreadConnectionReplayGuardReconnectSeen === true,
+        reason: normalizedReason,
+      });
+      state.activeThreadConnectionReplayGuardThreadId = "";
+      state.activeThreadConnectionReplayGuardText = "";
+      state.activeThreadConnectionReplayGuardEpoch = 0;
+      state.activeThreadConnectionReplayGuardReconnectSeen = false;
+    }
+    if (
+      normalizedReason === "turn.send:new_turn" &&
+      terminalConnectionErrorThreadId &&
+      terminalConnectionErrorThreadId === currentThreadId
+    ) {
+      pushLiveDebugEvent("live.connection:terminal_error_latch_clear", {
+        threadId: currentThreadId,
+        reason: normalizedReason,
+      });
+      state.activeThreadTerminalConnectionErrorThreadId = "";
+    }
+    if (normalizedReason === "turn.send:new_turn") {
+      state.activeThreadPendingTerminalConnectionErrorThreadId = "";
+      state.activeThreadPendingTerminalConnectionErrorText = "";
+    }
+    if (!currentKind && !currentText && !shouldForceRemove) return;
+    pushLiveDebugEvent("live.connection:thread_clear", {
+      threadId: String(state.activeThreadId || ""),
+      reason: normalizedReason,
+      currentKind,
+      currentText: currentText.slice(0, 180),
+      forced: !currentKind && !currentText,
+    });
+    state.activeThreadConnectionStatusKind = "";
+    state.activeThreadConnectionStatusText = "";
     removeChatMessageByKey(LIVE_THREAD_CONNECTION_STATUS_MESSAGE_KEY);
+    if (currentText && normalizedReason && normalizedReason !== "show_error:replace_previous_status") {
+      setStatus("", false);
+    }
   }
 
-  function formatLiveThreadReconnectPreview(message) {
-    const raw = String(message || "").trim();
-    if (!raw) return "Reconnecting...";
-    const attemptMatch = raw.match(/\b(\d+\s*\/\s*\d+)\b/);
-    const attempt = attemptMatch ? String(attemptMatch[1] || "").replace(/\s+/g, "") : "";
-    if (attempt) return `Reconnecting... ${attempt}`;
-    return "Reconnecting...";
+  function shouldDeferTerminalConnectionFailure(threadId) {
+    const activeThreadId = String(state.activeThreadId || "").trim();
+    const historyThreadId = String(state.activeThreadHistoryThreadId || "").trim();
+    const historyStatusType = String(state.activeThreadHistoryStatusType || "").trim().toLowerCase();
+    if (!threadId || activeThreadId !== threadId || historyThreadId !== threadId) return false;
+    return !isTerminalHistoryStatusValue(historyStatusType);
   }
 
-  function showLiveThreadReconnectStatus(message) {
+  function rememberDeferredTerminalConnectionFailure(threadId, message, context = {}) {
+    const detail = String(message || "").trim();
+    if (!threadId || !detail) return;
+    state.activeThreadPendingTerminalConnectionErrorThreadId = threadId;
+    state.activeThreadPendingTerminalConnectionErrorText = detail;
+    pushLiveDebugEvent("live.connection:terminal_error_deferred", {
+      threadId,
+      method: String(context.method || ""),
+      status: String(context.status || ""),
+      message: detail.slice(0, 180),
+      historyStatusType: String(state.activeThreadHistoryStatusType || "").trim().toLowerCase(),
+    });
+  }
+
+  function showLiveThreadReconnectStatus(message, context = {}) {
     const detail = String(message || "").trim();
     if (!detail) return;
-    addChat("system", formatLiveThreadReconnectPreview(detail), {
+    const rendered = formatReconnectStatusPreview(detail);
+    const threadId = String(context.threadId || state.activeThreadId || "").trim();
+    const currentEpoch = Math.max(0, Number(state.activeThreadLiveStateEpoch || 0));
+    if (
+      String(state.activeThreadConnectionReplayGuardThreadId || "").trim() === threadId &&
+      Math.max(0, Number(state.activeThreadConnectionReplayGuardEpoch || 0)) === currentEpoch &&
+      state.activeThreadConnectionReplayGuardReconnectSeen !== true
+    ) {
+      state.activeThreadConnectionReplayGuardReconnectSeen = true;
+      pushLiveDebugEvent("live.connection:replay_guard_reconnect_seen", {
+        threadId,
+        epoch: currentEpoch,
+      });
+    }
+    if (
+      String(state.activeThreadConnectionStatusKind || "") === "reconnecting" &&
+      String(state.activeThreadConnectionStatusText || "") === rendered
+    ) {
+      pushLiveDebugEvent("live.connection:thread_skip_duplicate_reconnect", {
+        threadId: String(context.threadId || state.activeThreadId || ""),
+        method: String(context.method || ""),
+        status: String(context.status || ""),
+        rendered,
+      });
+      return;
+    }
+    const attemptMatch = detail.match(/\b(\d+\s*\/\s*\d+)\b/);
+    pushLiveDebugEvent("live.connection:thread_show_reconnect", {
+      threadId: String(context.threadId || state.activeThreadId || ""),
+      method: String(context.method || ""),
+      status: String(context.status || ""),
+      rawMessage: detail.slice(0, 180),
+      rendered,
+      attempt: attemptMatch ? String(attemptMatch[1] || "").replace(/\s+/g, "") : "",
+    });
+    state.activeThreadConnectionStatusKind = "reconnecting";
+    state.activeThreadConnectionStatusText = rendered;
+    addChat("system", rendered, {
       kind: "thinking",
       transient: false,
       animate: true,
@@ -401,16 +609,108 @@ export function createLiveNotificationsModule(deps) {
     });
   }
 
-  function showLiveThreadReconnectError(message) {
+  function showLiveThreadReconnectError(message, context = {}) {
     const detail = String(message || "").trim();
     if (!detail) return;
-    clearLiveThreadConnectionStatus();
+    const threadId = String(context.threadId || state.activeThreadId || "").trim();
+    const previousKind = String(state.activeThreadConnectionStatusKind || "");
+    const previousText = String(state.activeThreadConnectionStatusText || "").trim();
+    if (
+      previousKind === "error" &&
+      previousText === detail
+    ) {
+      pushLiveDebugEvent("live.connection:thread_skip_duplicate_error", {
+        threadId: String(context.threadId || state.activeThreadId || ""),
+        method: String(context.method || ""),
+        status: String(context.status || ""),
+        rawMessage: detail.slice(0, 180),
+      });
+      return;
+    }
+    if (previousKind === "error" && previousText && detail.length <= previousText.length) {
+      pushLiveDebugEvent("live.connection:thread_skip_weaker_error", {
+        threadId: String(context.threadId || state.activeThreadId || ""),
+        method: String(context.method || ""),
+        status: String(context.status || ""),
+        rawMessage: detail.slice(0, 180),
+        previousText: previousText.slice(0, 180),
+      });
+      return;
+    }
+    pushLiveDebugEvent("live.connection:thread_show_error", {
+      threadId: String(context.threadId || state.activeThreadId || ""),
+      method: String(context.method || ""),
+      status: String(context.status || ""),
+      rawMessage: detail.slice(0, 180),
+      previousKind,
+      previousText: previousText.slice(0, 180),
+    });
+    clearLiveThreadConnectionStatus("show_error:replace_previous_status");
+    state.activeThreadConnectionStatusKind = "error";
+    state.activeThreadConnectionStatusText = detail;
+    state.activeThreadTerminalConnectionErrorThreadId = threadId;
     addChat("system", detail, {
       kind: "error",
       transient: false,
       animate: true,
       messageKey: LIVE_THREAD_CONNECTION_STATUS_MESSAGE_KEY,
     });
+  }
+
+  function shouldKeepReconnectStatusDuringActiveTurn(_threadId, method, status, statusMessage) {
+    if (String(state.activeThreadConnectionStatusKind || "").trim() !== "reconnecting") return false;
+    if (
+      method.includes("thread/status/changed") ||
+      method === "thread/status" ||
+      method === "turn/status"
+    ) {
+      const liveValue = String(status || statusMessage || "").trim();
+      if (isReconnectLiveStatus(liveValue) || isFailedLiveStatus(liveValue)) return false;
+    }
+    return true;
+  }
+
+  function shouldSuppressPendingConnectionTerminalReplay({
+    threadId,
+    method,
+    status,
+    statusMessage,
+    terminalFailureStatus = false,
+  }) {
+    const normalizedThreadId = String(threadId || "").trim();
+    const guardThreadId = String(state.activeThreadConnectionReplayGuardThreadId || "").trim();
+    if (!normalizedThreadId || !guardThreadId || guardThreadId !== normalizedThreadId) return false;
+    const currentEpoch = Math.max(0, Number(state.activeThreadLiveStateEpoch || 0));
+    const guardEpoch = Math.max(0, Number(state.activeThreadConnectionReplayGuardEpoch || 0));
+    if (!guardEpoch || guardEpoch !== currentEpoch) return false;
+    if (state.activeThreadConnectionReplayGuardReconnectSeen === true) return false;
+    const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
+    const hasPendingRuntime =
+      pendingThreadId === normalizedThreadId &&
+      (
+        state.activeThreadPendingTurnRunning === true ||
+        !!String(state.activeThreadPendingTurnId || "").trim() ||
+        !!String(state.activeThreadPendingUserMessage || "").trim() ||
+        !!String(state.activeThreadPendingAssistantMessage || "").trim()
+      );
+    if (!hasPendingRuntime) return false;
+    if (method === "error") return true;
+    if (
+      method.includes("thread/status/changed") ||
+      method === "thread/status" ||
+      method === "turn/status"
+    ) {
+      if (!isFailedLiveStatus(status || statusMessage)) return false;
+      const guardText = String(state.activeThreadConnectionReplayGuardText || "").trim();
+      const nextMessage = String(statusMessage || "").trim();
+      return !!guardText && nextMessage === guardText;
+    }
+    const isFailedTurnTerminal =
+      terminalFailureStatus &&
+      (method.includes("turn/completed") || method.includes("turn/failed"));
+    if (!isFailedTurnTerminal) return false;
+    const guardText = String(state.activeThreadConnectionReplayGuardText || "").trim();
+    return !!guardText;
   }
 
   function ensureCommentaryState() {
@@ -764,8 +1064,8 @@ export function createLiveNotificationsModule(deps) {
     syncPendingAssistantStateRuntime(state, threadId, text);
   }
 
-  function finishPendingTurnRun(threadId) {
-    finishPendingTurnRunRuntime(state, threadId);
+  function finishPendingTurnRun(threadId, options = {}) {
+    finishPendingTurnRunRuntime(state, threadId, options);
   }
 
   function syncPendingTurnRuntime(threadId, options = {}) {
@@ -780,8 +1080,33 @@ export function createLiveNotificationsModule(deps) {
     setPendingTurnRunningRuntime(state, threadId, running, options);
   }
 
-  function resetPendingTurnRuntime() {
-    resetPendingTurnRuntimeRuntime(state);
+  function resetPendingTurnRuntime(options = {}) {
+    resetPendingTurnRuntimeRuntime(state, options);
+  }
+
+  function settlePendingTurnFailure(threadId, reason = "", options = {}) {
+    const normalizedThreadId = String(threadId || "").trim();
+    const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
+    const pendingAssistant = String(state.activeThreadPendingAssistantMessage || "").trim();
+    const preserveUserFallback =
+      options.allowUserFallback !== false &&
+      !!normalizedThreadId &&
+      pendingThreadId === normalizedThreadId &&
+      !!String(state.activeThreadPendingUserMessage || "").trim() &&
+      !pendingAssistant;
+    finishPendingTurnRun(threadId, {
+      preserveTurnId: preserveUserFallback,
+      preserveBaselineTurnCount: preserveUserFallback,
+      preserveBaselineUserCount: preserveUserFallback,
+    });
+    resetPendingTurnRuntime({
+      preserveThreadId: preserveUserFallback,
+      preserveTurnId: preserveUserFallback,
+      preserveMessages: preserveUserFallback,
+      preserveBaselineTurnCount: preserveUserFallback,
+      preserveBaselineUserCount: preserveUserFallback,
+      reason: String(reason || "").trim(),
+    });
   }
 
   function findAssistantLiveStream(box, threadId) {
@@ -990,7 +1315,7 @@ export function createLiveNotificationsModule(deps) {
         chars: nextText.length,
       });
       finishPendingTurnRun(threadId);
-      resetPendingTurnRuntime();
+      resetPendingTurnRuntime({ reason: "live.assistant_snapshot:final" });
       finalizeAssistantLive(threadId);
       if (
         (!Array.isArray(state.activeThreadActiveCommands) || state.activeThreadActiveCommands.length === 0) &&
@@ -1179,20 +1504,207 @@ export function createLiveNotificationsModule(deps) {
       });
     }
     const status =
-      normalizeType(params?.status) || normalizeType(params?.turn?.status) || normalizeType(params?.thread?.status);
-    const statusMessage =
-      normalizeInline(params?.message, 180) ||
-      normalizeInline(params?.turn?.message, 180) ||
-      normalizeInline(params?.thread?.message, 180) ||
-      normalizeInline(params?.code, 180) ||
-      "";
-    const connectionStatusMethod = method.includes("thread/status/changed");
+      normalizeLiveStatusValue(params?.status, {
+        normalizeType,
+        toRecord,
+      }) ||
+      normalizeLiveStatusValue(params?.turn?.status, {
+        normalizeType,
+        toRecord,
+      }) ||
+      normalizeLiveStatusValue(params?.thread?.status, {
+        normalizeType,
+        toRecord,
+      });
+    const statusMessage = extractLiveStatusMessage(params, {
+      normalizeInline,
+      toRecord,
+    });
+    const notificationTurnId = String(
+      params?.turnId || params?.turn_id || params?.turn?.id || params?.id || ""
+    ).trim();
+    const connectionStatusMethod =
+      method.includes("thread/status/changed") ||
+      method === "thread/status" ||
+      method === "turn/status";
     const connectionStatusValue = status || statusMessage;
+    const terminalFailureStatus = isFailedLiveStatus(connectionStatusValue);
+    const terminalFailureMethod =
+      method.includes("error") ||
+      method.includes("turn/failed") ||
+      (method.includes("turn/completed") && terminalFailureStatus);
+    const terminalConnectionErrorThreadId = String(state.activeThreadTerminalConnectionErrorThreadId || "").trim();
+    const latchedConnectionError =
+      terminalConnectionErrorThreadId === threadId ||
+      (
+        String(state.activeThreadConnectionStatusKind || "").trim() === "error" &&
+        !!String(state.activeThreadConnectionStatusText || "").trim()
+      );
+    const weakTerminalConnectionEcho =
+      latchedConnectionError &&
+      (
+        method === "error" ||
+        (
+          (method.includes("turn/completed") || method.includes("turn/finished")) &&
+          !terminalFailureStatus &&
+          !String(statusMessage || "").trim()
+        ) ||
+        (
+          connectionStatusMethod &&
+          !terminalFailureStatus &&
+          !isReconnectLiveStatus(connectionStatusValue) &&
+          (
+            !String(status || "").trim() ||
+            String(status || "").trim() === "completed"
+          ) &&
+          !String(statusMessage || "").trim()
+        )
+      );
     const suppressReplayedConnectionStatus =
       connectionStatusMethod &&
       (isReconnectLiveStatus(connectionStatusValue) || isFailedLiveStatus(connectionStatusValue)) &&
       state.wsSubscribedEvents !== true;
+    const historyStatusType = String(state.activeThreadHistoryStatusType || "").trim().toLowerCase();
+    const suppressDeferredTerminalFailureStatus =
+      isFailedLiveStatus(connectionStatusValue) &&
+      shouldDeferTerminalConnectionFailure(String(threadId || "").trim());
+    const activeThreadStarted = state.activeThreadStarted === true;
+    const hasTrackedRuntimeContext =
+      (String(state.activeThreadPendingTurnThreadId || "").trim() === threadId) ||
+      (String(state.activeThreadLiveAssistantThreadId || "").trim() === threadId) ||
+      (String(state.activeThreadCommentaryCurrent?.threadId || "").trim() === threadId) ||
+      (String(state.activeThreadPlan?.threadId || "").trim() === threadId) ||
+      (Array.isArray(state.activeThreadActiveCommands) && state.activeThreadActiveCommands.length > 0);
+    const suppressDormantReplayedTurnLifecycle =
+      state.wsSubscribedEvents !== true &&
+      !!historyStatusType &&
+      !/active|running|queued|pending|inprogress/.test(historyStatusType) &&
+      !hasTrackedRuntimeContext &&
+      (method.includes("turn/started") || terminalMethod);
+    const hasLivePendingContext =
+      String(state.activeThreadPendingTurnThreadId || "").trim() === threadId &&
+      (
+        state.activeThreadPendingTurnRunning === true ||
+        !!String(state.activeThreadPendingTurnId || "").trim() ||
+        !!String(state.activeThreadPendingUserMessage || "").trim() ||
+        !!String(state.activeThreadPendingAssistantMessage || "").trim()
+      );
+    const pendingTurnId = String(state.activeThreadPendingTurnId || "").trim();
+    const stalePendingTurnTerminalReplay =
+      String(state.activeThreadPendingTurnThreadId || "").trim() === threadId &&
+      !!pendingTurnId &&
+      !!notificationTurnId &&
+      notificationTurnId !== pendingTurnId &&
+      (
+        terminalMethod ||
+        (connectionStatusMethod && isFailedLiveStatus(connectionStatusValue))
+      );
+    const hasLiveConnectionProgressContext =
+      String(state.activeThreadConnectionStatusKind || "").trim() === "reconnecting" ||
+      hasLivePendingContext;
+    const hasAuthoritativeHistoryContext =
+      (
+        String(state.activeThreadHistoryThreadId || "").trim() === threadId ||
+        String(state.activeThreadId || "").trim() === threadId
+      ) &&
+      (
+        (Array.isArray(state.activeThreadHistoryTurns) && state.activeThreadHistoryTurns.length > 0) ||
+        (Array.isArray(state.activeThreadMessages) && state.activeThreadMessages.length > 0) ||
+        isTerminalHistoryStatusValue(historyStatusType)
+      );
+    const historyOnlyReopenContext =
+      String(state.activeThreadOpenState?.threadId || "").trim() === threadId &&
+      state.activeThreadOpenState?.resumeRequired !== true &&
+      !hasTrackedRuntimeContext &&
+      !hasLivePendingContext &&
+      hasAuthoritativeHistoryContext;
+    const currentConnectionReplayGuardMatchesThread =
+      String(state.activeThreadConnectionReplayGuardThreadId || "").trim() === threadId &&
+      Math.max(0, Number(state.activeThreadConnectionReplayGuardEpoch || 0)) ===
+        Math.max(0, Number(state.activeThreadLiveStateEpoch || 0));
+    const hasCurrentCycleReconnectReplayContext =
+      currentConnectionReplayGuardMatchesThread &&
+      state.activeThreadConnectionReplayGuardReconnectSeen === true &&
+      activeThreadStarted;
+    const suppressDormantTerminalConnectionReplay =
+      connectionStatusMethod &&
+      isFailedLiveStatus(connectionStatusValue) &&
+      !hasCurrentCycleReconnectReplayContext &&
+      !hasLiveConnectionProgressContext &&
+      hasAuthoritativeHistoryContext &&
+      (isTerminalHistoryStatusValue(historyStatusType) || historyOnlyReopenContext);
+    const suppressDormantReconnectReplay =
+      connectionStatusMethod &&
+      isReconnectLiveStatus(connectionStatusValue) &&
+      !hasLivePendingContext &&
+      hasAuthoritativeHistoryContext &&
+      (isTerminalHistoryStatusValue(historyStatusType) || historyOnlyReopenContext);
+    const suppressDormantTerminalTurnFailureReplay =
+      terminalMethod &&
+      terminalFailureStatus &&
+      !hasCurrentCycleReconnectReplayContext &&
+      String(state.activeThreadConnectionStatusKind || "").trim().toLowerCase() !== "reconnecting" &&
+      !hasLiveConnectionProgressContext &&
+      hasAuthoritativeHistoryContext &&
+      (isTerminalHistoryStatusValue(historyStatusType) || historyOnlyReopenContext);
+    const keepLatchedDormantTerminalConnectionError =
+      suppressDormantTerminalConnectionReplay &&
+      String(state.activeThreadConnectionStatusKind || "").trim() === "error" &&
+      String(state.activeThreadTerminalConnectionErrorThreadId || "").trim() === threadId;
+    const clearDormantTerminalConnectionReplay =
+      suppressDormantTerminalConnectionReplay &&
+      !keepLatchedDormantTerminalConnectionError;
+    const suppressDormantBareErrorReplay =
+      method === "error" &&
+      !hasLiveConnectionProgressContext &&
+      hasAuthoritativeHistoryContext;
+    const clearDormantBareErrorReplay =
+      suppressDormantBareErrorReplay;
+    const hydratingActiveThreadConnectionReplay =
+      String(state.activeThreadId || "").trim() === threadId &&
+      !String(state.activeThreadConnectionStatusKind || "").trim() &&
+      !hasAuthoritativeHistoryContext &&
+      !hasLiveConnectionProgressContext &&
+      (
+        (connectionStatusMethod && isFailedLiveStatus(connectionStatusValue)) ||
+        (terminalMethod && terminalFailureStatus) ||
+        method === "error"
+      );
+    const suppressHydratingThreadConnectionReplay =
+      hydratingActiveThreadConnectionReplay ||
+      (
+        String(state.activeThreadOpenState?.threadId || "").trim() === threadId &&
+        state.activeThreadOpenState?.loaded !== true &&
+        !hasLiveConnectionProgressContext &&
+        (
+          (connectionStatusMethod && isFailedLiveStatus(connectionStatusValue)) ||
+          (terminalMethod && terminalFailureStatus) ||
+          method === "error"
+        )
+      );
+    const suppressPendingConnectionTerminalReplay = shouldSuppressPendingConnectionTerminalReplay({
+      threadId,
+      method,
+      status,
+      statusMessage,
+      terminalFailureStatus,
+    });
+    const suppressReconnectAfterTerminalError =
+      latchedConnectionError &&
+      connectionStatusMethod &&
+      isReconnectLiveStatus(connectionStatusValue);
     if (!threadId || threadId === state.activeThreadId) {
+      if (stalePendingTurnTerminalReplay) {
+        pushLiveDebugEvent("live.drop:stale_pending_turn_terminal_replay", {
+          method,
+          threadId: String(threadId || ""),
+          pendingTurnId,
+          notificationTurnId,
+          status: String(status || ""),
+          statusMessage: String(statusMessage || "").slice(0, 180),
+        });
+        return;
+      }
       if (interruptSuppressed && !terminalMethod && !method.includes("turn/started")) {
         pushLiveDebugEvent("live.status:suppress_after_interrupt", {
           method,
@@ -1205,11 +1717,92 @@ export function createLiveNotificationsModule(deps) {
           normalizeInline,
           toRecord,
         });
-        if (nextStatus?.message && !suppressReplayedConnectionStatus) {
+        const suppressTerminalConnectionErrorEcho =
+          method === "error" &&
+          String(state.activeThreadConnectionStatusKind || "").trim() === "error" &&
+          (isReconnectLiveStatus(nextStatus?.message) || isFailedLiveStatus(nextStatus?.message));
+        const suppressLatchedConnectionTerminalEcho =
+          weakTerminalConnectionEcho &&
+          (
+            !nextStatus?.message ||
+            nextStatus.message === "Turn completed."
+          );
+        const suppressLatchedConnectionFailureOverride =
+          latchedConnectionError &&
+          terminalMethod &&
+          terminalFailureStatus &&
+          !connectionStatusMethod &&
+          !!String(nextStatus?.message || "").trim();
+        const suppressLatchedConnectionStatusEcho =
+          latchedConnectionError &&
+          connectionStatusMethod &&
+          terminalFailureStatus &&
+          !!String(statusMessage || "").trim() &&
+          String(statusMessage || "").trim() === String(state.activeThreadConnectionStatusText || "").trim();
+        if (suppressTerminalConnectionErrorEcho) {
+          pushLiveDebugEvent("live.status:suppress_terminal_connection_error_echo", {
+            method,
+            threadId: String(threadId || ""),
+            activeThreadId: String(state.activeThreadId || ""),
+            message: String(nextStatus?.message || "").slice(0, 180),
+          });
+        }
+        if (suppressLatchedConnectionTerminalEcho) {
+          pushLiveDebugEvent("live.status:suppress_latched_connection_terminal_echo", {
+            method,
+            threadId: String(threadId || ""),
+            activeThreadId: String(state.activeThreadId || ""),
+            message: String(nextStatus?.message || "").slice(0, 180),
+          });
+        }
+        if (suppressLatchedConnectionFailureOverride) {
+          pushLiveDebugEvent("live.status:suppress_latched_connection_failure_override", {
+            method,
+            threadId: String(threadId || ""),
+            activeThreadId: String(state.activeThreadId || ""),
+            message: String(nextStatus?.message || "").slice(0, 180),
+          });
+        }
+        if (suppressLatchedConnectionStatusEcho) {
+          pushLiveDebugEvent("live.status:suppress_latched_connection_status_echo", {
+            method,
+            threadId: String(threadId || ""),
+            activeThreadId: String(state.activeThreadId || ""),
+            message: String(statusMessage || "").slice(0, 180),
+          });
+        }
+        if (suppressPendingConnectionTerminalReplay) {
+          pushLiveDebugEvent("live.status:suppress_pending_connection_terminal_replay", {
+            method,
+            threadId: String(threadId || ""),
+            activeThreadId: String(state.activeThreadId || ""),
+            message: String(statusMessage || "").slice(0, 180),
+            guardText: String(state.activeThreadConnectionReplayGuardText || "").slice(0, 180),
+          });
+        }
+        if (
+          nextStatus?.message &&
+          !suppressReplayedConnectionStatus &&
+          !suppressDormantReconnectReplay &&
+          !suppressDormantReplayedTurnLifecycle &&
+          !suppressDormantTerminalConnectionReplay &&
+          !suppressDormantTerminalTurnFailureReplay &&
+          !suppressDormantBareErrorReplay &&
+          !suppressHydratingThreadConnectionReplay &&
+          !suppressPendingConnectionTerminalReplay &&
+          !suppressReconnectAfterTerminalError &&
+          !suppressDeferredTerminalFailureStatus &&
+          !suppressTerminalConnectionErrorEcho &&
+          !suppressLatchedConnectionTerminalEcho &&
+          !suppressLatchedConnectionFailureOverride &&
+          !suppressLatchedConnectionStatusEcho
+        ) {
           pushLiveDebugEvent("live.status", {
             method,
             threadId: String(threadId || ""),
             activeThreadId: String(state.activeThreadId || ""),
+            rawStatus: String(params?.status || params?.turn?.status || params?.thread?.status || "").slice(0, 180),
+            rawMessage: String(params?.message || params?.turn?.message || params?.thread?.message || params?.code || "").slice(0, 180),
             message: String(nextStatus.message || "").slice(0, 180),
             isWarn: nextStatus.isWarn === true,
           });
@@ -1240,9 +1833,116 @@ export function createLiveNotificationsModule(deps) {
       });
       return;
     }
+    if (suppressDormantReconnectReplay) {
+      pushLiveDebugEvent("live.drop:dormant_reconnect_replay", {
+        method,
+        threadId: String(threadId || ""),
+        historyStatusType,
+      });
+      clearLiveThreadConnectionStatus("drop:dormant_reconnect_replay");
+      return;
+    }
+    if (suppressDormantReplayedTurnLifecycle) {
+      pushLiveDebugEvent("live.drop:dormant_replayed_turn_lifecycle", {
+        method,
+        threadId: String(threadId || ""),
+        historyStatusType,
+      });
+      return;
+    }
+    if (suppressDormantTerminalConnectionReplay) {
+      pushLiveDebugEvent("live.drop:dormant_terminal_connection_replay", {
+        method,
+        threadId: String(threadId || ""),
+        historyStatusType,
+      });
+      if (clearDormantTerminalConnectionReplay) {
+        clearLiveThreadConnectionStatus("drop:dormant_terminal_connection_replay");
+      }
+      return;
+    }
+    if (suppressDormantTerminalTurnFailureReplay) {
+      pushLiveDebugEvent("live.drop:dormant_terminal_turn_failure_replay", {
+        method,
+        threadId: String(threadId || ""),
+        historyStatusType,
+      });
+      return;
+    }
+    if (suppressDormantBareErrorReplay) {
+      pushLiveDebugEvent("live.drop:dormant_bare_error_replay", {
+        method,
+        threadId: String(threadId || ""),
+        historyStatusType,
+      });
+      if (clearDormantBareErrorReplay) {
+        clearLiveThreadConnectionStatus("drop:dormant_bare_error_replay");
+      }
+      return;
+    }
+    if (suppressHydratingThreadConnectionReplay) {
+      pushLiveDebugEvent("live.drop:hydrating_thread_connection_replay", {
+        method,
+        threadId: String(threadId || ""),
+        historyStatusType,
+      });
+      clearLiveThreadConnectionStatus("drop:hydrating_thread_connection_replay");
+      return;
+    }
+    if (suppressPendingConnectionTerminalReplay) {
+      pushLiveDebugEvent("live.drop:pending_connection_terminal_replay", {
+        method,
+        threadId: String(threadId || ""),
+        status: String(status || ""),
+        statusMessage: String(statusMessage || "").slice(0, 180),
+      });
+      return;
+    }
+    if (weakTerminalConnectionEcho) {
+      pushLiveDebugEvent("live.drop:latched_connection_terminal_echo", {
+        method,
+        threadId: String(threadId || ""),
+        status: String(status || ""),
+        statusMessage: String(statusMessage || "").slice(0, 180),
+      });
+      return;
+    }
 
-    if (!connectionStatusMethod || (!isReconnectLiveStatus(connectionStatusValue) && !isFailedLiveStatus(connectionStatusValue))) {
-      clearLiveThreadConnectionStatus();
+    const emptyConnectionStatusMethod =
+      connectionStatusMethod &&
+      !String(status || "").trim() &&
+      !String(statusMessage || "").trim();
+    const keepReconnectStatusDuringActiveTurn = shouldKeepReconnectStatusDuringActiveTurn(
+      threadId,
+      method,
+      status,
+      statusMessage
+    );
+    const keepTerminalConnectionErrorLatched =
+      String(state.activeThreadConnectionStatusKind || "").trim() === "error" &&
+      String(state.activeThreadTerminalConnectionErrorThreadId || "").trim() === String(threadId || "").trim();
+    if (
+      !emptyConnectionStatusMethod &&
+      !keepTerminalConnectionErrorLatched &&
+      !keepReconnectStatusDuringActiveTurn &&
+      !terminalFailureMethod &&
+      (!connectionStatusMethod ||
+        (!isReconnectLiveStatus(connectionStatusValue) && !isFailedLiveStatus(connectionStatusValue)))
+    ) {
+      if (String(state.activeThreadConnectionStatusKind || "").trim()) {
+        pushLiveDebugEvent("live.connection:thread_clear_reason", {
+          threadId: String(threadId || ""),
+          method,
+          rawStatus: String(params?.status || params?.turn?.status || params?.thread?.status || "").slice(0, 180),
+          rawMessage: String(params?.message || params?.turn?.message || params?.thread?.message || params?.code || "").slice(0, 180),
+          status: String(status || ""),
+          statusMessage: String(statusMessage || "").slice(0, 180),
+          connectionStatusMethod,
+          keepReconnectStatusDuringActiveTurn,
+          keepTerminalConnectionErrorLatched,
+        });
+      }
+      clearLiveThreadConnectionStatus("notification:non_connection_status");
     }
 
     if (interruptSuppressed && !terminalMethod && !method.includes("turn/started")) {
@@ -1343,7 +2043,7 @@ export function createLiveNotificationsModule(deps) {
         liveMsgNode?.remove?.();
         clearActiveAssistantLiveState();
         finishPendingTurnRun(threadId);
-        resetPendingTurnRuntime();
+        resetPendingTurnRuntime({ reason: "live.assistant_update:plan_only_final" });
       } else {
         renderAssistantSnapshot(threadId, nextAssistantText, { final: isFinalAssistantUpdate });
       }
@@ -1420,32 +2120,71 @@ export function createLiveNotificationsModule(deps) {
       }
     }
 
-    const reconnectingStatus = method.includes("thread/status/changed") && isReconnectLiveStatus(status || statusMessage);
+    const reconnectingStatus = connectionStatusMethod && isReconnectLiveStatus(status || statusMessage);
     if (reconnectingStatus) {
+      if (suppressReconnectAfterTerminalError) {
+        pushLiveDebugEvent("live.connection:suppress_reconnect_after_terminal_error", {
+          threadId: String(threadId || ""),
+          method,
+          status: String(status || ""),
+          statusMessage: String(statusMessage || "").slice(0, 180),
+        });
+        return;
+      }
       if (suppressReplayedConnectionStatus) return;
-      setPendingTurnRunning(threadId, true);
-      showLiveThreadReconnectStatus(statusMessage || "Connection interrupted.");
+      setPendingTurnRunning(threadId, true, { reason: "live.thread_status:reconnecting" });
+      showLiveThreadReconnectStatus(statusMessage || "Connection interrupted.", {
+        threadId,
+        method,
+        status,
+      });
       return;
     }
-    const failedThreadStatus = method.includes("thread/status/changed") && isFailedLiveStatus(status || statusMessage);
-    if (failedThreadStatus) {
+    const failedConnectionStatus = connectionStatusMethod && isFailedLiveStatus(status || statusMessage);
+    if (failedConnectionStatus) {
       if (suppressReplayedConnectionStatus) return;
+      if (shouldDeferTerminalConnectionFailure(threadId)) {
+        rememberDeferredTerminalConnectionFailure(threadId, statusMessage, { method, status });
+        return;
+      }
+      const previousConnectionError =
+        String(state.activeThreadConnectionStatusKind || "") === "error"
+          ? String(state.activeThreadConnectionStatusText || "").trim()
+          : "";
+      const connectionErrorMessage = statusMessage || previousConnectionError;
+      const hadPendingAssistant = !!String(state.activeThreadPendingAssistantMessage || "").trim();
       if (String(state.activeThreadLiveAssistantThreadId || "") === String(threadId || "").trim()) {
         discardAssistantLive(threadId);
       }
       clearProposedPlanConfirmation(state, threadId);
-      finishPendingTurnRun(threadId);
-      resetPendingTurnRuntime();
       syncPendingAssistantState(threadId, "");
+      settlePendingTurnFailure(threadId, "live.thread_status:failed", {
+        allowUserFallback: !hadPendingAssistant,
+      });
       clearTransientToolMessages();
       clearTransientThinkingMessages();
       finalizeRuntimeState(threadId);
-      showLiveThreadReconnectError(statusMessage || "Reconnecting failed.");
+      renderPendingInline();
+      if (connectionErrorMessage) {
+        showLiveThreadReconnectError(connectionErrorMessage, {
+          threadId,
+          method,
+          status,
+        });
+        setStatus(connectionErrorMessage, true);
+      } else {
+        pushLiveDebugEvent("live.connection:thread_skip_empty_error", {
+          threadId: String(threadId || ""),
+          method,
+          status: String(status || ""),
+        });
+        setStatus("", false);
+      }
       return;
     }
     const isRunning = /running|inprogress|working|queued/.test(status || "") || method.includes("turn/started");
     if (isRunning) {
-      setPendingTurnRunning(threadId, true);
+      setPendingTurnRunning(threadId, true, { reason: "live.status:running" });
       setRuntimeActivity({ threadId, title: "Thinking", detail: "", tone: "running" });
       return;
     }
@@ -1455,16 +2194,24 @@ export function createLiveNotificationsModule(deps) {
         threadId: String(threadId || ""),
       });
       const turnCancelled = method.includes("turn/cancelled");
+      const turnFailed =
+        method.includes("turn/failed") ||
+        (method.includes("turn/completed") && terminalFailureStatus);
       if (
         state.suppressedLiveInterruptByThreadId &&
         state.suppressedLiveInterruptByThreadId[threadId] === true
       ) {
         delete state.suppressedLiveInterruptByThreadId[threadId];
       }
-      if (method.includes("turn/failed") || turnCancelled) {
+      if (turnFailed || turnCancelled) {
+        if (turnFailed && shouldDeferTerminalConnectionFailure(threadId)) {
+          rememberDeferredTerminalConnectionFailure(threadId, statusMessage, { method, status });
+          return;
+        }
         if (String(state.activeThreadLiveAssistantThreadId || "") === String(threadId || "").trim()) {
           discardAssistantLive(threadId);
         }
+        const hadPendingAssistant = !!String(state.activeThreadPendingAssistantMessage || "").trim();
         if (turnCancelled) {
           resetTurnPresentationState({ bumpLiveEpoch: true });
         }
@@ -1472,20 +2219,29 @@ export function createLiveNotificationsModule(deps) {
         clearPendingUserInputs({ threadId });
         suppressSyntheticPendingUserInputs(threadId, true);
         setSyntheticPendingUserInputs(threadId, []);
-        resetPendingTurnRuntime();
+        if (turnCancelled) {
+          resetPendingTurnRuntime({
+            reason: "live.turn_terminal:cancelled",
+          });
+        } else {
+          syncPendingAssistantState(threadId, "");
+          settlePendingTurnFailure(threadId, "live.turn_terminal:failed", {
+            allowUserFallback: !hadPendingAssistant,
+          });
+        }
       }
-      finishPendingTurnRun(threadId);
+      if (turnCancelled || !(turnFailed || turnCancelled)) finishPendingTurnRun(threadId);
       if (
         state.activeThreadCommentaryCurrent &&
         !String(state.activeThreadLiveAssistantThreadId || "").trim()
       ) {
         finalizeCommentaryArchive(null);
       }
-      if (!(turnCancelled || method.includes("turn/failed"))) {
+      if (!(turnCancelled || turnFailed)) {
         finalizeAssistantLive(threadId);
       }
       const finalizedAssistantThreadId = String(state.activeThreadLastFinalAssistantThreadId || "").trim();
-      if (method.includes("turn/failed") || method.includes("turn/cancelled")) {
+      if (turnFailed || method.includes("turn/cancelled")) {
         syncPendingAssistantState(threadId, "");
       } else if (finalizedAssistantThreadId === String(threadId || "").trim()) {
         syncPendingAssistantState(threadId, String(state.activeThreadLastFinalAssistantText || ""));
@@ -1493,15 +2249,34 @@ export function createLiveNotificationsModule(deps) {
       clearTransientToolMessages();
       clearTransientThinkingMessages();
       finalizeRuntimeState(threadId);
-      if (turnCancelled) {
+      if (turnCancelled || turnFailed) {
+        const terminalErrorMessage = String(
+          statusMessage ||
+          state.activeThreadConnectionStatusText ||
+          ""
+        ).trim();
+        if (
+          turnFailed &&
+          terminalErrorMessage &&
+          String(state.activeThreadConnectionStatusKind || "").trim() !== "error"
+        ) {
+          showLiveThreadReconnectError(terminalErrorMessage, {
+            threadId,
+            method,
+            status,
+          });
+          setStatus(terminalErrorMessage, true);
+        }
         renderCommentaryArchive();
         renderPendingInline();
+        return;
       }
       void flushQueuedTurn(threadId);
     }
   }
 
   return {
+    clearLiveThreadConnectionStatus,
     clearTransientThinkingMessages,
     clearTransientToolMessages,
     deriveLiveStatusFromNotification,
