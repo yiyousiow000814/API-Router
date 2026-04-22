@@ -45,7 +45,7 @@ describe("mobileShell", () => {
         },
         windowRef: { innerWidth: 420 },
       })
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("keeps a tiny accidental drag from committing the drawer", () => {
@@ -60,7 +60,7 @@ describe("mobileShell", () => {
     expect(shouldCommitDrawerClose({ deltaX: -18, drawerWidth: 300 })).toBe(true);
   });
 
-  it("starts close swipe only when the left drawer is already open", () => {
+  it("starts close swipe from anywhere once the left drawer is already open on non-phone layouts", () => {
     expect(
       shouldStartDrawerCloseSwipe({
         startX: 250,
@@ -77,7 +77,7 @@ describe("mobileShell", () => {
     ).toBe(true);
     expect(
       shouldStartDrawerCloseSwipe({
-        startX: 340,
+        startX: 380,
         body: {
           classList: {
             contains(name) {
@@ -87,6 +87,29 @@ describe("mobileShell", () => {
         },
         panelRect: { right: 300 },
         windowRef: { innerWidth: 420 },
+      })
+    ).toBe(true);
+  });
+
+  it("does not start close swipe on phone-like touch layouts", () => {
+    expect(
+      shouldStartDrawerCloseSwipe({
+        startX: 180,
+        body: {
+          classList: {
+            contains(name) {
+              return name === "drawer-left-open";
+            },
+          },
+        },
+        panelRect: { right: 300 },
+        windowRef: {
+          innerWidth: 420,
+          navigator: { maxTouchPoints: 5 },
+          matchMedia(query) {
+            return { matches: query === "(pointer: coarse)" || query === "(hover: none)" };
+          },
+        },
       })
     ).toBe(false);
   });

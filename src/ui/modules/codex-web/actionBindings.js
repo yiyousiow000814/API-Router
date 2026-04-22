@@ -643,24 +643,8 @@ export function createActionBindingsModule(deps) {
     }
     {
       const backdrop = byId("mobileDrawerBackdrop");
-      const shouldAllowBackdropClose = () => {
-        const viewportWidth = Math.max(
-          0,
-          Number(win?.innerWidth || 0),
-          Number(doc?.documentElement?.clientWidth || 0)
-        );
-        const touchCapable = Math.max(0, Number(win?.navigator?.maxTouchPoints || 0)) > 0;
-        const coarsePointer =
-          typeof win?.matchMedia === "function" &&
-          (win.matchMedia("(pointer: coarse)").matches || win.matchMedia("(hover: none)").matches);
-        const isPhoneLikeViewport = viewportWidth > 0 && viewportWidth <= 720 && (touchCapable || coarsePointer);
-        return !isPhoneLikeViewport;
-      };
       wireBlurBackdropShield(backdrop, {
-        onClose: () => {
-          if (!shouldAllowBackdropClose()) return;
-          setMobileTab("chat");
-        },
+        onClose: () => setMobileTab("chat"),
         suppressMs: 420,
       });
     }

@@ -2,7 +2,7 @@ export function shouldOpenDrawerWithAnimation(tab, wasThreadsOpen) {
   return tab === "threads" && !wasThreadsOpen;
 }
 
-const EDGE_SWIPE_START_PX = 24;
+const EDGE_SWIPE_START_PX = 44;
 const EDGE_SWIPE_COMMIT_DELTA_PX = 12;
 const EDGE_SWIPE_VERTICAL_TOLERANCE_PX = 40;
 const EDGE_SWIPE_CLOSE_GUTTER_PX = 20;
@@ -26,6 +26,18 @@ export function isCompactMobileViewport(windowRef) {
   return false;
 }
 
+export function isPhoneLikeTouchViewport(windowRef) {
+  const viewportWidth = Math.max(0, Number(windowRef?.innerWidth || 0));
+  const touchCapable = Math.max(0, Number(windowRef?.navigator?.maxTouchPoints || 0)) > 0;
+  let coarsePointer = false;
+  try {
+    coarsePointer =
+      typeof windowRef?.matchMedia === "function" &&
+      (windowRef.matchMedia("(pointer: coarse)").matches || windowRef.matchMedia("(hover: none)").matches);
+  } catch {}
+  return viewportWidth > 0 && viewportWidth <= 720 && (touchCapable || coarsePointer);
+}
+
 export function shouldStartDrawerEdgeSwipe({ startX, body, windowRef }) {
   if (!Number.isFinite(startX) || startX > EDGE_SWIPE_START_PX) return false;
   if (!isCompactMobileViewport(windowRef)) return false;
@@ -42,11 +54,10 @@ export function shouldCommitDrawerOpen({ deltaX, drawerWidth }) {
 
 export function shouldStartDrawerCloseSwipe({ startX, body, panelRect, windowRef }) {
   if (!isCompactMobileViewport(windowRef)) return false;
+  if (isPhoneLikeTouchViewport(windowRef)) return false;
   if (!body?.classList?.contains?.("drawer-left-open")) return false;
   if (body.classList.contains("drawer-right-open")) return false;
-  const panelRight = Number(panelRect?.right);
-  if (!Number.isFinite(panelRight)) return false;
-  return Number.isFinite(startX) && startX <= panelRight + EDGE_SWIPE_CLOSE_GUTTER_PX;
+  return Number.isFinite(startX);
 }
 
 export function shouldCommitDrawerClose({ deltaX, drawerWidth }) {

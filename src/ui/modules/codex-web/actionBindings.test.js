@@ -29,7 +29,7 @@ describe("actionBindings", () => {
     expect(resolveActionErrorMessage(null, "fallback")).toBe("fallback");
   });
 
-  it("does not close the mobile drawer from backdrop taps on phone-like touch viewports", () => {
+  it("closes the mobile drawer from backdrop taps on phone-like touch viewports", () => {
     let backdropOptions = null;
     const setMobileTabCalls = [];
     const mobileBackdrop = {};
@@ -94,7 +94,7 @@ describe("actionBindings", () => {
 
     backdropOptions.onClose();
 
-    expect(setMobileTabCalls).toEqual([]);
+    expect(setMobileTabCalls).toEqual(["chat"]);
   });
 
   it("still closes the drawer from backdrop taps on tablet-width viewports", () => {
