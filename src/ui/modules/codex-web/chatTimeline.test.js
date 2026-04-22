@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createChatTimelineModule } from "./chatTimeline.js";
+import { applyFullHistoryRender } from "./historyRenderApply.js";
 
 class FakeClassList {
   constructor(owner) {
@@ -142,12 +143,25 @@ class FakeElement {
     this.parentElement = null;
   }
 
+  replaceWith(nextNode) {
+    if (!this.parentElement) return;
+    const index = this.parentElement.children.indexOf(this);
+    if (index < 0) return;
+    nextNode.parentElement = this.parentElement;
+    this.parentElement.children.splice(index, 1, nextNode);
+    this.parentElement = null;
+  }
+
   setAttribute(name, value) {
     this.attributes.set(String(name), String(value));
   }
 
   removeAttribute(name) {
     this.attributes.delete(String(name));
+  }
+
+  getAttribute(name) {
+    return this.attributes.has(String(name)) ? this.attributes.get(String(name)) : null;
   }
 
   querySelector(selector) {
@@ -417,6 +431,190 @@ describe("chatTimeline", () => {
     expect(nodes[0].attributes.get("data-msg-transient")).toBe("1");
     expect(nodes[0].attributes.get("data-msg-source")).toBe("live");
     expect(refs.renderRuntimePanels).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses one reconnecting status message and clears it when the key is removed", () => {
+    module.addChat("system", "Reconnecting... provider-a 1/5", {
+      kind: "",
+      messageKey: "ws-connection-status",
+      animate: false,
+      scroll: false,
+    });
+    module.addChat("system", "Reconnecting... provider-a 2/5", {
+      kind: "",
+      messageKey: "ws-connection-status",
+      animate: false,
+      scroll: false,
+    });
+
+    let nodes = dom.chatBox.children.filter((child) => child.classList.contains("msg"));
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].attributes.get("data-msg-key")).toBe("ws-connection-status");
+    expect(nodes[0].querySelector(".msgBody")?.textContent).toContain("Reconnecting... provider-a 2/5");
+
+    expect(module.removeChatMessageByKey("ws-connection-status")).toBe(true);
+
+    nodes = dom.chatBox.children.filter((child) => child.classList.contains("msg"));
+    expect(nodes).toHaveLength(0);
+  });
+
+  it("records compact timeline order after user and connection card insertions", () => {
+    module.addChat("user", "hi", {
+      animate: false,
+      scroll: false,
+      source: "turnSendOptimisticUser",
+    });
+    module.addChat("system", "Reconnecting... 1/5", {
+      kind: "thinking",
+      messageKey: "live-thread-connection-status",
+      animate: false,
+      scroll: false,
+    });
+    module.addChat("system", "no routable providers available", {
+      kind: "error",
+      messageKey: "live-thread-connection-status",
+      animate: false,
+      scroll: false,
+    });
+
+    const timelineEvents = state.liveDebugEvents.filter((event) => event.kind === "chat.timeline:add");
+    expect(timelineEvents).toHaveLength(3);
+    expect(timelineEvents.every((event) => event.__tracePersist === true)).toBe(true);
+    expect(timelineEvents[0]).toEqual(expect.objectContaining({
+      role: "user",
+      source: "turnSendOptimisticUser",
+      text: "hi",
+    }));
+    expect(timelineEvents[2].timeline).toEqual(expect.objectContaining({
+      count: 2,
+      userIndexes: [0],
+      connectionIndexes: [1],
+      errorIndexes: [1],
+      userAfterConnection: false,
+      userAfterError: false,
+      duplicateLastUserCount: 1,
+    }));
+    expect(timelineEvents[2].timeline.messages).toEqual([
+      expect.objectContaining({ index: 0, role: "user", text: "hi" }),
+      expect.objectContaining({
+        index: 1,
+        role: "system",
+        kind: "error",
+        key: "live-thread-connection-status",
+        text: "no routable providers available",
+      }),
+    ]);
+  });
+
+  it("inserts history messages before an active connection status card", () => {
+    module.addChat("user", "hi", {
+      animate: false,
+      scroll: false,
+      source: "turnSendOptimisticUser",
+    });
+    module.addChat("system", "Reconnecting... 3/5", {
+      kind: "thinking",
+      messageKey: "live-thread-connection-status",
+      animate: false,
+      scroll: false,
+    });
+    module.addChat("user", "older hi", {
+      animate: false,
+      scroll: false,
+      source: "historyRender",
+    });
+
+    const nodes = dom.chatBox.children.filter((child) => child.classList.contains("msg"));
+    expect(nodes.map((node) => ({
+      role: node.__webCodexRole,
+      source: node.__webCodexSource,
+      key: node.attributes.get("data-msg-key") || "",
+      text: node.__webCodexRawText,
+    }))).toEqual([
+      {
+        role: "user",
+        source: "turnSendOptimisticUser",
+        key: "",
+        text: "hi",
+      },
+      {
+        role: "user",
+        source: "historyRender",
+        key: "",
+        text: "older hi",
+      },
+      {
+        role: "system",
+        source: "addChat",
+        key: "live-thread-connection-status",
+        text: "Reconnecting... 3/5",
+      },
+    ]);
+
+    const timelineEvents = state.liveDebugEvents.filter((event) => event.kind === "chat.timeline:add");
+    expect(timelineEvents.at(-1).timeline).toEqual(expect.objectContaining({
+      connectionIndexes: [2],
+      userAfterConnection: false,
+    }));
+  });
+
+  it("rerenders authoritative history when state messages were cleared but stale chat nodes remain", async () => {
+    state.activeThreadMessages = [];
+    module.addChat("user", "hi", {
+      animate: false,
+      scroll: false,
+      source: "turnSendOptimisticUser",
+    });
+    module.addChat("system", "no routable providers available", {
+      kind: "error",
+      messageKey: "live-thread-connection-status",
+      animate: false,
+      scroll: false,
+    });
+
+    await applyFullHistoryRender({
+      state,
+      threadId: "thread-1",
+      messages: [{ role: "user", text: "hi", kind: "" }],
+      prevMessages: [],
+      box: dom.chatBox,
+      preservedScrollTop: null,
+      inlineCommentaryArchiveCount: 0,
+      renderSig: "thread-1::history",
+      toolCount: 0,
+      forceFullRender: true,
+      options: {},
+      historyCommentary: null,
+      liveCommentarySnapshot: null,
+      deps: {
+        renderMessageBody: (_role, text) => `<span>${String(text || "")}</span>`,
+        addChat: module.addChat,
+        clearChatMessages: module.clearChatMessages,
+        renderChatFull: async () => {},
+        pushLiveDebugEvent() {},
+        scrollChatToBottom() {},
+        canStartChatLiveFollow() { return false; },
+        maybeScheduleChatFollow() {},
+        scrollToBottomReliable() {},
+        scheduleChatLiveFollow() {},
+        finalizeThreadRenderEffects() {},
+      },
+    });
+
+    const nodes = dom.chatBox.children.filter((child) => child.classList.contains("msg"));
+    expect(nodes.map((node) => ({
+      role: node.__webCodexRole,
+      source: node.__webCodexSource,
+      key: node.attributes.get("data-msg-key") || "",
+      text: node.__webCodexRawText,
+    }))).toEqual([
+      {
+        role: "user",
+        source: "historyRender",
+        key: "",
+        text: "hi",
+      },
+    ]);
   });
 
   it("renders inline commentary archive messages as collapsible archive mounts", () => {

@@ -436,8 +436,8 @@ async fn e2e_first_failure_refreshes_usage_once_and_closes_provider_before_retry
     assert_eq!(json_resp.get("id").and_then(|v| v.as_str()), Some("resp_p2"));
     assert_eq!(
         p1_hits.load(Ordering::Relaxed),
-        2,
-        "p1 should get one transient retry before the quota refresh closes it"
+        6,
+        "p1 should consume the unified 5 reconnect budget before the quota refresh closes it"
     );
     assert_eq!(p2_hits.load(Ordering::Relaxed), 1, "fallback provider should be used");
     assert_eq!(
@@ -630,7 +630,7 @@ async fn e2e_stops_retrying_preferred_when_refresh_leaves_no_routable_provider()
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
@@ -641,14 +641,184 @@ async fn e2e_stops_retrying_preferred_when_refresh_leaves_no_routable_provider()
     );
     assert_eq!(
         p1_hits.load(Ordering::Relaxed),
-        2,
-        "p1 should stop after its transient retry and must not be retried again after refresh closes it"
+        6,
+        "p1 should stop after consuming the unified 5 reconnect budget before refresh closes it"
     );
     assert_eq!(
         usage_hits.load(Ordering::Relaxed),
         1,
         "usage refresh should still run exactly once"
     );
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn e2e_web_codex_requests_emit_gateway_reconnect_statuses() {
+    let _env_guard = crate::codex_home_env::lock_env();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("API_ROUTER_WEB_CODEX_CODEX_HOME", tmp.path());
+    crate::codex_app_server::_clear_notifications_for_test().await;
+
+    let p1_hits = Arc::new(AtomicUsize::new(0));
+    let usage_hits = Arc::new(AtomicUsize::new(0));
+
+    let p1_app = Router::new().route(
+        "/v1/responses",
+        post({
+            let p1_hits = p1_hits.clone();
+            move |_body: axum::extract::Json<serde_json::Value>| {
+                p1_hits.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": "p1 upstream failed"})),
+                    )
+                }
+            }
+        }),
+    );
+    let p1_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let p1_addr = p1_listener.local_addr().unwrap();
+    let p1_base = format!("http://{}:{}/v1", p1_addr.ip(), p1_addr.port());
+    tokio::spawn(async move {
+        let _ = axum::serve(p1_listener, p1_app).await;
+    });
+
+    let usage_app = Router::new().route(
+        "/api/backend/users/info",
+        axum::routing::get({
+            let usage_hits = usage_hits.clone();
+            move || {
+                usage_hits.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    Json(json!({
+                        "daily_spent_usd": 120.0,
+                        "daily_budget_usd": 120.0,
+                        "weekly_spent_usd": 120.0,
+                        "weekly_budget_usd": 360.0,
+                        "monthly_spent_usd": 120.0,
+                        "monthly_budget_usd": 600.0
+                    }))
+                }
+            }
+        }),
+    );
+    let usage_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let usage_addr = usage_listener.local_addr().unwrap();
+    let usage_base = format!("http://{}:{}", usage_addr.ip(), usage_addr.port());
+    tokio::spawn(async move {
+        let _ = axum::serve(usage_listener, usage_app).await;
+    });
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
+            auto_return_to_preferred: true,
+            preferred_stable_seconds: 30,
+            failure_threshold: 1,
+            cooldown_seconds: 120,
+            request_timeout_seconds: 5,
+        },
+        providers: std::collections::BTreeMap::from([(
+            "p1".to_string(),
+            ProviderConfig {
+                display_name: "P1".to_string(),
+                base_url: p1_base,
+                group: None,
+                disabled: false,
+                supports_websockets: false,
+                usage_adapter: "openai".to_string(),
+                usage_base_url: Some(usage_base),
+                api_key: "test-key".to_string(),
+            },
+        )]),
+        provider_order: vec!["p1".to_string()],
+    };
+
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+    secrets
+        .set_provider_key("p1", "test-key")
+        .expect("set provider key");
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg.clone())),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let app = build_router(state);
+    let body = json!({
+        "model": "gpt-test",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "hello"}]
+        }],
+        "stream": false
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("session_id", "sid-no-routable-app-server-owned")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::FAILED_DEPENDENCY);
+    let (items, _, _, gap) = crate::codex_app_server::replay_notifications_since_in_home(
+        Some(tmp.path().to_string_lossy().as_ref()),
+        0,
+        16,
+    )
+    .await;
+    assert!(!gap);
+
+    let gateway_status_items = items
+        .iter()
+        .filter(|item| item.get("method").and_then(|value| value.as_str()) == Some("thread/status/changed"))
+        .filter(|item| {
+            item.get("params")
+                .and_then(|value| value.get("source"))
+                .and_then(|value| value.as_str())
+                .is_some_and(|source| source.starts_with("gateway."))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(gateway_status_items.len(), 6);
+    assert_eq!(
+        gateway_status_items[0]
+            .get("params")
+            .and_then(|value| value.get("status"))
+            .and_then(|value| value.as_str()),
+        Some("reconnecting")
+    );
+    assert_eq!(
+        gateway_status_items.last()
+            .and_then(|item| item.get("params"))
+            .and_then(|value| value.get("status"))
+            .and_then(|value| value.as_str()),
+        Some("failed")
+    );
+    assert_eq!(p1_hits.load(Ordering::Relaxed), 6);
+    assert_eq!(usage_hits.load(Ordering::Relaxed), 0);
 }
 
 #[test]
@@ -866,22 +1036,212 @@ async fn e2e_failure_usage_refresh_only_runs_once_per_request() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(resp.status(), StatusCode::FAILED_DEPENDENCY);
     assert_eq!(
         p1_hits.load(Ordering::Relaxed),
-        2,
-        "p1 should get one transient retry before failing the request"
+        6,
+        "p1 should consume the unified 5 reconnect budget before failing the request"
     );
     assert_eq!(
         p2_hits.load(Ordering::Relaxed),
-        2,
-        "p2 should also get one transient retry before the request returns 502"
+        1,
+        "p2 should not receive extra retry budget after p1 exhausts the unified reconnect budget"
     );
     assert_eq!(
         usage_hits.load(Ordering::Relaxed),
         1,
         "usage refresh should run only once for first failure"
     );
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn e2e_same_turn_does_not_restart_reconnect_budget() {
+    let _guard = crate::codex_app_server::lock_test_globals();
+    let _env_guard = crate::codex_home_env::lock_env();
+    crate::codex_app_server::_clear_notifications_for_test().await;
+    crate::orchestrator::gateway::_clear_workspace_runtime_registry_for_test();
+
+    let p1_hits = Arc::new(AtomicUsize::new(0));
+    let p1_app = Router::new().route(
+        "/v1/responses",
+        post({
+            let p1_hits = p1_hits.clone();
+            move |_body: axum::extract::Json<serde_json::Value>| {
+                p1_hits.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": "p1 upstream failed"})),
+                    )
+                }
+            }
+        }),
+    );
+    let p1_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let p1_addr = p1_listener.local_addr().unwrap();
+    let p1_base = format!("http://{}:{}/v1", p1_addr.ip(), p1_addr.port());
+    tokio::spawn(async move {
+        let _ = axum::serve(p1_listener, p1_app).await;
+    });
+
+    let cfg = AppConfig {
+        listen: ListenConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        },
+        routing: RoutingConfig {
+            preferred_provider: "p1".to_string(),
+            session_preferred_providers: std::collections::BTreeMap::new(),
+            route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
+            auto_return_to_preferred: true,
+            preferred_stable_seconds: 30,
+            failure_threshold: 1,
+            cooldown_seconds: 120,
+            request_timeout_seconds: 5,
+        },
+        providers: std::collections::BTreeMap::from([(
+            "p1".to_string(),
+            ProviderConfig {
+                display_name: "P1".to_string(),
+                base_url: p1_base,
+                group: None,
+                disabled: false,
+                supports_websockets: false,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        )]),
+        provider_order: vec!["p1".to_string()],
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let tmp_home = tmp.path().to_string_lossy().to_string();
+    let previous_web_home = std::env::var("API_ROUTER_WEB_CODEX_CODEX_HOME").ok();
+    std::env::set_var("API_ROUTER_WEB_CODEX_CODEX_HOME", &tmp_home);
+
+    let store = open_store_dir(tmp.path().join("data")).expect("store");
+    let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+    let router = Arc::new(RouterState::new(&cfg, unix_ms()));
+    let state = GatewayState {
+        cfg: Arc::new(RwLock::new(cfg)),
+        router,
+        store,
+        upstream: UpstreamClient::new(),
+        secrets,
+        last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+        last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+        usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+        prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+        client_sessions: Arc::new(RwLock::new(HashMap::new())),
+    };
+
+    let app = build_router(state);
+    let body = json!({
+        "model": "gpt-test",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "hello"}]
+        }],
+        "stream": false
+    });
+
+    let first = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("session_id", "thread-same-turn")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::FAILED_DEPENDENCY);
+
+    let (first_items, _, last_event_id, gap) = crate::codex_app_server::replay_notifications_since_in_home(
+        Some(tmp_home.as_str()),
+        0,
+        32,
+    )
+    .await;
+    assert!(!gap);
+    let first_gateway_statuses: Vec<_> = first_items
+        .iter()
+        .filter(|item| item.get("method").and_then(|value| value.as_str()) == Some("thread/status/changed"))
+        .filter(|item| {
+            item.get("params")
+                .and_then(|value| value.get("source"))
+                .and_then(|value| value.as_str())
+                .is_some_and(|source| source.starts_with("gateway."))
+        })
+        .collect();
+    assert_eq!(first_gateway_statuses.len(), 6);
+    assert_eq!(
+        first_gateway_statuses[0]
+            .get("params")
+            .and_then(|value| value.get("status"))
+            .and_then(|value| value.as_str()),
+        Some("reconnecting")
+    );
+    assert_eq!(
+        first_gateway_statuses.last()
+            .and_then(|item| item.get("params"))
+            .and_then(|value| value.get("status"))
+            .and_then(|value| value.as_str()),
+        Some("failed")
+    );
+
+    let second = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/responses")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("session_id", "thread-same-turn")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::FAILED_DEPENDENCY);
+
+    let (second_items, _, _, gap) = crate::codex_app_server::replay_notifications_since_in_home(
+        Some(tmp_home.as_str()),
+        last_event_id.unwrap_or(0),
+        32,
+    )
+    .await;
+    assert!(!gap);
+    let second_gateway_statuses: Vec<_> = second_items
+        .iter()
+        .filter(|item| item.get("method").and_then(|value| value.as_str()) == Some("thread/status/changed"))
+        .filter(|item| {
+            item.get("params")
+                .and_then(|value| value.get("source"))
+                .and_then(|value| value.as_str())
+                .is_some_and(|source| source.starts_with("gateway."))
+        })
+        .collect();
+    assert_eq!(second_gateway_statuses.len(), 1);
+    assert_eq!(
+        second_gateway_statuses[0]
+            .get("params")
+            .and_then(|value| value.get("status"))
+            .and_then(|value| value.as_str()),
+        Some("failed")
+    );
+    assert_eq!(p1_hits.load(Ordering::Relaxed), 6);
+
+    if let Some(previous_web_home) = previous_web_home {
+        std::env::set_var("API_ROUTER_WEB_CODEX_CODEX_HOME", previous_web_home);
+    } else {
+        std::env::remove_var("API_ROUTER_WEB_CODEX_CODEX_HOME");
+    }
 }
 
 #[tokio::test]
@@ -1081,7 +1441,7 @@ async fn e2e_provider_stays_skipped_until_usage_refresh_confirms_available() {
         .await
         .unwrap();
     assert_eq!(resp1.status(), StatusCode::OK);
-    assert_eq!(p1_hits.load(Ordering::Relaxed), 2);
+    assert_eq!(p1_hits.load(Ordering::Relaxed), 6);
     assert_eq!(p2_hits.load(Ordering::Relaxed), 1);
     assert_eq!(usage_hits.load(Ordering::Relaxed), 1);
 
@@ -1102,7 +1462,7 @@ async fn e2e_provider_stays_skipped_until_usage_refresh_confirms_available() {
     assert_eq!(resp2.status(), StatusCode::OK);
     assert_eq!(
         p1_hits.load(Ordering::Relaxed),
-        2,
+        6,
         "p1 should remain skipped while usage confirmation is pending"
     );
     assert_eq!(p2_hits.load(Ordering::Relaxed), 2);
@@ -1136,7 +1496,7 @@ async fn e2e_provider_stays_skipped_until_usage_refresh_confirms_available() {
     assert_eq!(resp3.status(), StatusCode::OK);
     assert_eq!(
         p1_hits.load(Ordering::Relaxed),
-        3,
+        7,
         "p1 should be retried only after usage confirms available"
     );
     assert_eq!(usage_hits.load(Ordering::Relaxed), 2);

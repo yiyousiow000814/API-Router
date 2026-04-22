@@ -132,6 +132,425 @@ describe("historyLoader", () => {
     expect(state.activeThreadHistoryStatusType).toBe("running");
   });
 
+  it("clears transient live connection status when terminal history becomes authoritative", async () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: false,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available; preferred=aigateway; tried=",
+    };
+    const clears = [];
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      clearChatMessages() {},
+      buildMsgNode() { return { dataset: {} }; },
+      ensureLoadOlderControl() { return null; },
+      syncEventSubscription() {},
+      captureLiveCommentarySnapshot() { return null; },
+      extractLatestCommentaryState,
+      clearCommentaryArchiveState() {},
+      clearCommentaryDraft() {},
+      clearIncompleteToolMessage() {},
+      restoreCommentaryArchiveState() {},
+      syncIncompleteToolMessage() {},
+      renderCommentaryArchive() {},
+      renderActiveCommentary() {},
+      syncRuntimeStateFromHistory() {},
+      clearLiveThreadConnectionStatus() {
+        clears.push("clear");
+        state.activeThreadConnectionStatusKind = "";
+        state.activeThreadConnectionStatusText = "";
+      },
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "failed" },
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [{ type: "userMessage", content: [{ type: "input_text", text: "hi" }] }],
+        },
+      ],
+    });
+
+    expect(clears).toEqual(["clear"]);
+    expect(state.activeThreadConnectionStatusKind).toBe("");
+    expect(state.activeThreadConnectionStatusText).toBe("");
+  });
+
+  it("keeps the current live connection error when the terminal history belongs to the current started thread", async () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available; preferred=aigateway; tried=",
+    };
+    const clears = [];
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      clearChatMessages() {},
+      buildMsgNode() { return { dataset: {} }; },
+      ensureLoadOlderControl() { return null; },
+      syncEventSubscription() {},
+      captureLiveCommentarySnapshot() { return null; },
+      extractLatestCommentaryState,
+      clearCommentaryArchiveState() {},
+      clearCommentaryDraft() {},
+      clearIncompleteToolMessage() {},
+      restoreCommentaryArchiveState() {},
+      syncIncompleteToolMessage() {},
+      renderCommentaryArchive() {},
+      renderActiveCommentary() {},
+      syncRuntimeStateFromHistory() {},
+      clearLiveThreadConnectionStatus() {
+        clears.push("clear");
+      },
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "failed" },
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [{ type: "userMessage", content: [{ type: "input_text", text: "hi" }] }],
+        },
+      ],
+    });
+
+    expect(clears).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe(
+      "no routable providers available; preferred=aigateway; tried="
+    );
+  });
+
+  it("does not re-overlay a stale live connection error when reopening a terminal history thread", async () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: false,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available; preferred=aigateway; tried=",
+    };
+    const clears = [];
+    const overlays = [];
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat(role, text, options = {}) {
+        overlays.push({ role, text, options });
+      },
+      clearChatMessages() {},
+      buildMsgNode() { return { dataset: {} }; },
+      ensureLoadOlderControl() { return null; },
+      syncEventSubscription() {},
+      captureLiveCommentarySnapshot() { return null; },
+      extractLatestCommentaryState,
+      clearCommentaryArchiveState() {},
+      clearCommentaryDraft() {},
+      clearIncompleteToolMessage() {},
+      restoreCommentaryArchiveState() {},
+      syncIncompleteToolMessage() {},
+      renderCommentaryArchive() {},
+      renderActiveCommentary() {},
+      syncRuntimeStateFromHistory() {},
+      clearLiveThreadConnectionStatus() {
+        clears.push("clear");
+        state.activeThreadConnectionStatusKind = "";
+        state.activeThreadConnectionStatusText = "";
+      },
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "failed" },
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [{ type: "userMessage", content: [{ type: "input_text", text: "hi" }] }],
+        },
+      ],
+    });
+
+    expect(clears).toEqual(["clear"]);
+    expect(
+      overlays.filter((entry) => String(entry?.role || "").trim().toLowerCase() === "system")
+    ).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("");
+    expect(state.activeThreadConnectionStatusText).toBe("");
+  });
+
+  it("clears a latched transient connection error when explicitly reopening a non-resumable history thread", async () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available; preferred=aigateway; tried=",
+      activeThreadTerminalConnectionErrorThreadId: "thread-1",
+      activeThreadOpenState: {
+        threadId: "thread-1",
+        resumeRequired: false,
+        loaded: false,
+      },
+    };
+    const clears = [];
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      clearChatMessages() {},
+      buildMsgNode() { return { dataset: {} }; },
+      ensureLoadOlderControl() { return null; },
+      syncEventSubscription() {},
+      captureLiveCommentarySnapshot() { return null; },
+      extractLatestCommentaryState,
+      clearCommentaryArchiveState() {},
+      clearCommentaryDraft() {},
+      clearIncompleteToolMessage() {},
+      restoreCommentaryArchiveState() {},
+      syncIncompleteToolMessage() {},
+      renderCommentaryArchive() {},
+      renderActiveCommentary() {},
+      syncRuntimeStateFromHistory() {},
+      clearLiveThreadConnectionStatus() {
+        clears.push("clear");
+        state.activeThreadConnectionStatusKind = "";
+        state.activeThreadConnectionStatusText = "";
+      },
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "failed" },
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [{ type: "userMessage", content: [{ type: "input_text", text: "hi" }] }],
+        },
+      ],
+    }, {
+      forceRender: true,
+    });
+
+    expect(clears).toEqual(["clear"]);
+    expect(state.activeThreadConnectionStatusKind).toBe("");
+    expect(state.activeThreadConnectionStatusText).toBe("");
+    expect(state.activeThreadTerminalConnectionErrorThreadId).toBe("");
+  });
+
   it("merges history turns without duplicates", () => {
     expect(
       mergeHistoryTurns(
@@ -650,6 +1069,11 @@ Implement this plan?
       activeThreadRenderSig: "",
       activeThreadMessages: [],
       activeThreadWorkspace: "windows",
+      activeThreadOpenState: {
+        threadId: "thread-1",
+        loaded: false,
+        resumeRequired: true,
+      },
       activeThreadPendingTurnThreadId: "",
       activeThreadPendingTurnId: "",
       activeThreadPendingTurnRunning: false,
@@ -731,6 +1155,514 @@ Implement this plan?
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
     expect(state.activeThreadPendingTurnId).toBe("turn-live");
     expect(state.activeThreadPendingTurnRunning).toBe(true);
+  });
+
+  it("does not restore pending running from incomplete systemError history", async () => {
+    const ops = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-live",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadActiveCommands: [{ key: "cmd-1" }],
+      activeThreadPlan: null,
+      activeThreadActivity: { threadId: "thread-1", title: "Working" },
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientToolMessage() {},
+      clearTransientToolMessages() {},
+      clearTransientThinkingMessages() {},
+      clearRuntimeState() {
+        ops.push("runtime:clear");
+        state.activeThreadActiveCommands = [];
+        state.activeThreadPlan = null;
+        state.activeThreadActivity = null;
+      },
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {
+        ops.push("runtime:sync");
+        state.activeThreadPendingTurnRunning = true;
+        state.activeThreadActivity = { threadId: "thread-1", title: "Working" };
+      },
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "systemError" },
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-live",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "hello" }] },
+            { type: "commandExecution", command: "npm test", status: "running" },
+          ],
+        },
+      ],
+    });
+
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadActivity).toBeNull();
+    expect(state.activeThreadActiveCommands).toEqual([]);
+    expect(ops).toContain("runtime:clear");
+    expect(ops).not.toContain("runtime:sync");
+  });
+
+  it("clears stale header status once terminal history becomes authoritative", async () => {
+    const statuses = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadConnectionStatusKind: "",
+      activeThreadConnectionStatusText: "",
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadActivity: null,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientToolMessage() {},
+      clearTransientToolMessages() {},
+      clearTransientThinkingMessages() {},
+      clearRuntimeState() {},
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {},
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "failed" },
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [{ type: "userMessage", content: [{ type: "input_text", text: "hello" }] }],
+        },
+      ],
+    });
+
+    expect(statuses).toContainEqual({ message: "", isWarn: false });
+  });
+
+  it("does not let incomplete history revive runtime after the current thread already latched a connection error", async () => {
+    const ops = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-live",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available",
+      activeThreadActiveCommands: [{ key: "cmd-1" }],
+      activeThreadPlan: null,
+      activeThreadActivity: { threadId: "thread-1", title: "Working" },
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientToolMessage() {},
+      clearTransientToolMessages() {
+        ops.push("tool:clear");
+      },
+      clearTransientThinkingMessages() {},
+      clearRuntimeState() {
+        ops.push("runtime:clear");
+        state.activeThreadActiveCommands = [];
+        state.activeThreadPlan = null;
+        state.activeThreadActivity = null;
+      },
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {
+        ops.push("runtime:sync");
+        state.activeThreadPendingTurnRunning = true;
+      },
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "active" },
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-live",
+          items: [{ type: "userMessage", content: [{ type: "input_text", text: "hello" }] }],
+        },
+      ],
+    });
+
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadActivity).toBeNull();
+    expect(state.activeThreadActiveCommands).toEqual([]);
+    expect(ops).toContain("runtime:clear");
+    expect(ops).not.toContain("runtime:sync");
+  });
+
+  it("does not let incomplete history revive runtime after a terminal connection error latch even if the status card is already gone", async () => {
+    const ops = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-live",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadConnectionStatusKind: "",
+      activeThreadConnectionStatusText: "",
+      activeThreadTerminalConnectionErrorThreadId: "thread-1",
+      activeThreadActiveCommands: [{ key: "cmd-1" }],
+      activeThreadPlan: null,
+      activeThreadActivity: { threadId: "thread-1", title: "Working" },
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientToolMessage() {},
+      clearTransientToolMessages() {
+        ops.push("tool:clear");
+      },
+      clearTransientThinkingMessages() {},
+      clearRuntimeState() {
+        ops.push("runtime:clear");
+        state.activeThreadActiveCommands = [];
+        state.activeThreadPlan = null;
+        state.activeThreadActivity = null;
+      },
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {
+        ops.push("runtime:sync");
+        state.activeThreadPendingTurnRunning = true;
+      },
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "active" },
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-live",
+          items: [{ type: "userMessage", content: [{ type: "input_text", text: "hello" }] }],
+        },
+      ],
+    });
+
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadActivity).toBeNull();
+    expect(state.activeThreadActiveCommands).toEqual([]);
+    expect(ops).toContain("runtime:clear");
+    expect(ops).not.toContain("runtime:sync");
+  });
+
+  it("does not resurrect pending runtime from an incomplete history turn that only contains the user message", async () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadOpenState: {
+        threadId: "thread-1",
+        loaded: false,
+        resumeRequired: false,
+      },
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      clearChatMessages() {},
+      buildMsgNode() { return { dataset: {} }; },
+      syncEventSubscription() {},
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "active" },
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-1",
+          items: [{ type: "userMessage", content: [{ type: "input_text", text: "hi" }] }],
+        },
+      ],
+    });
+
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadPendingTurnThreadId).toBe("");
+    expect(state.activeThreadPendingTurnId).toBe("");
   });
 
   it("restores pending turn running when incomplete history arrives while a partial assistant snapshot already exists", async () => {
@@ -932,6 +1864,203 @@ Implement this plan?
     expect(state.activeThreadActiveCommands).toEqual([]);
     expect(ops).toContain("runtime:clear");
     expect(ops).not.toContain("runtime:sync");
+  });
+
+  it("does not clear pending runtime from empty incomplete history materialization", async () => {
+    const ops = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [{ role: "user", text: "hello", kind: "" }],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-live",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadPendingTurnBaselineTurnCount: 0,
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadActiveCommands: [{ key: "cmd-1" }],
+      activeThreadPlan: null,
+      activeThreadActivity: { threadId: "thread-1", title: "Working" },
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      clearTransientToolMessages() {
+        ops.push("tool:clear");
+      },
+      clearTransientThinkingMessages() {},
+      clearRuntimeState() {
+        ops.push("runtime:clear");
+        state.activeThreadActiveCommands = [];
+        state.activeThreadPlan = null;
+        state.activeThreadActivity = null;
+      },
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {
+        ops.push("runtime:sync");
+      },
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: true },
+      turns: [],
+    });
+
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadActivity).toEqual({ threadId: "thread-1", title: "Working" });
+    expect(state.activeThreadActiveCommands).toEqual([{ key: "cmd-1" }]);
+    expect(ops).not.toContain("runtime:clear");
+  });
+
+  it("does not clear pending runtime from non-terminal empty history pages", async () => {
+    const ops = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [{ role: "user", text: "hello", kind: "" }],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-live",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadPendingTurnBaselineTurnCount: 0,
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadActiveCommands: [{ key: "cmd-1" }],
+      activeThreadPlan: null,
+      activeThreadActivity: { threadId: "thread-1", title: "Working" },
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      clearTransientToolMessages() {
+        ops.push("tool:clear");
+      },
+      clearTransientThinkingMessages() {},
+      clearRuntimeState() {
+        ops.push("runtime:clear");
+        state.activeThreadActiveCommands = [];
+        state.activeThreadPlan = null;
+        state.activeThreadActivity = null;
+      },
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {
+        ops.push("runtime:sync");
+      },
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "active" },
+      page: { incomplete: false },
+      turns: [],
+    });
+
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingUserMessage).toBe("hello");
+    expect(state.activeThreadActivity).toEqual({ threadId: "thread-1", title: "Working" });
+    expect(ops).not.toContain("runtime:clear");
   });
 
   it("clears pending turn state once history catches up", () => {
@@ -1139,6 +2268,83 @@ Implement this plan?
     ]);
   });
 
+  it("does not append a duplicate pending user when authoritative history already contains the latest user echo before commentary", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+    };
+
+    expect(
+      mergePendingLiveMessages(
+        [
+          { role: "assistant", text: "older reply", kind: "" },
+          { role: "user", text: "hi", kind: "" },
+          { role: "system", text: "tool trace", kind: "commentaryArchive" },
+        ],
+        state,
+        "thread-1",
+        { historyIncomplete: true }
+      )
+    ).toEqual([
+      { role: "assistant", text: "older reply", kind: "" },
+      { role: "user", text: "hi", kind: "" },
+      { role: "system", text: "tool trace", kind: "commentaryArchive" },
+    ]);
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingUserMessage).toBe("hi");
+    expect(state.activeThreadPendingAssistantMessage).toBe("");
+  });
+
+  it("does not treat an identical prompt from the baseline turn as a materialized pending user", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnBaselineTurnCount: 1,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+    };
+
+    expect(
+      mergePendingLiveMessages(
+        [{ role: "user", text: "hi", kind: "" }],
+        state,
+        "thread-1",
+        { historyIncomplete: true, historyTurnCount: 1 }
+      )
+    ).toEqual([
+      { role: "user", text: "hi", kind: "" },
+      { role: "user", text: "hi", kind: "" },
+    ]);
+    expect(state.activeThreadPendingUserMessage).toBe("hi");
+  });
+
+  it("does not treat an unchanged authoritative user count as a materialized duplicate prompt when turn count stays zero", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnBaselineTurnCount: 0,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+    };
+
+    expect(
+      mergePendingLiveMessages(
+        [{ role: "user", text: "hi", kind: "" }],
+        state,
+        "thread-1",
+        { historyIncomplete: true, historyTurnCount: 0 }
+      )
+    ).toEqual([
+      { role: "user", text: "hi", kind: "" },
+      { role: "user", text: "hi", kind: "" },
+    ]);
+    expect(state.activeThreadPendingUserMessage).toBe("hi");
+  });
+
   it("keeps finalized pending placeholders visible while history is still stale", () => {
     const state = {
       activeThreadPendingTurnThreadId: "thread-1",
@@ -1154,6 +2360,272 @@ Implement this plan?
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
     expect(state.activeThreadPendingUserMessage).toBe("hello");
     expect(state.activeThreadPendingAssistantMessage).toBe("done");
+  });
+
+  it("keeps a failed second-send user echo visible while authoritative history is still on the previous turn", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingTurnBaselineTurnCount: 1,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+    };
+
+    expect(
+      mergePendingLiveMessages(
+        [{ role: "user", text: "hi", kind: "" }],
+        state,
+        "thread-1",
+        { historyTurnCount: 1 }
+      )
+    ).toEqual([
+      { role: "user", text: "hi", kind: "" },
+      { role: "user", text: "hi", kind: "" },
+    ]);
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadPendingUserMessage).toBe("hi");
+    expect(state.activeThreadPendingTurnBaselineTurnCount).toBe(1);
+    expect(state.activeThreadPendingTurnBaselineUserCount).toBe(1);
+  });
+
+  it("keeps the failed second-send pending user across repeated terminal history polls until history materializes it", async () => {
+    const added = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingTurnBaselineTurnCount: 0,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      activeThreadMessages: [
+        { role: "user", text: "hi", kind: "", images: [] },
+        { role: "user", text: "hi", kind: "" },
+      ],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available; preferred=aigateway; tried=",
+      activeThreadTerminalConnectionErrorThreadId: "thread-1",
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat(role, text, options = {}) {
+        added.push({ role, text, kind: options.kind || "" });
+      },
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientToolMessage() {},
+      showTransientThinkingMessage() {},
+      clearTransientToolMessages() {},
+      clearTransientThinkingMessages() {},
+      clearRuntimeState() {},
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {},
+      syncEventSubscription() {},
+      clearLiveThreadConnectionStatus() {},
+    });
+
+    const staleFailedThread = {
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "failed" },
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [{ type: "userMessage", content: [{ type: "input_text", text: "hi" }] }],
+        },
+      ],
+    };
+
+    await module.applyThreadToChat(staleFailedThread);
+    await module.applyThreadToChat(staleFailedThread);
+
+    expect(state.activeThreadMessages).toEqual([
+      { role: "user", text: "hi", kind: "", images: [] },
+      { role: "user", text: "hi", kind: "" },
+    ]);
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadPendingUserMessage).toBe("hi");
+    expect(state.activeThreadPendingTurnBaselineTurnCount).toBe(0);
+    expect(state.activeThreadPendingTurnBaselineUserCount).toBe(1);
+    expect(added.filter((entry) => entry.role === "user")).toEqual([]);
+    expect(state.activeThreadMessages).toEqual([
+      { role: "user", text: "hi", kind: "", images: [] },
+      { role: "user", text: "hi", kind: "" },
+    ]);
+    expect(added.some(
+      (entry) =>
+        entry.role === "system" &&
+        entry.kind === "error" &&
+        entry.text === "no routable providers available; preferred=aigateway; tried=",
+    )).toBe(true);
+  });
+
+  it("settles a reconnecting second-send when terminal history becomes authoritative without replaying reconnect status", async () => {
+    const added = [];
+    const clears = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [
+        { role: "user", text: "hi", kind: "", images: [] },
+        { role: "user", text: "hi", kind: "" },
+      ],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-2",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnBaselineTurnCount: 0,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadConnectionStatusKind: "reconnecting",
+      activeThreadConnectionStatusText: "Reconnecting... 5/5",
+      activeThreadTerminalConnectionErrorThreadId: "",
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat(role, text, options = {}) {
+        added.push({ role, text, kind: options.kind || "" });
+      },
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientToolMessage() {},
+      showTransientThinkingMessage() {},
+      clearTransientToolMessages() {},
+      clearTransientThinkingMessages() {},
+      clearRuntimeState() {},
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {},
+      syncEventSubscription() {},
+      clearLiveThreadConnectionStatus() {
+        clears.push("clear");
+        state.activeThreadConnectionStatusKind = "";
+        state.activeThreadConnectionStatusText = "";
+      },
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "failed" },
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [{ type: "userMessage", content: [{ type: "input_text", text: "hi" }] }],
+        },
+      ],
+    });
+
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingUserMessage).toBe("hi");
+    expect(clears).toEqual(["clear"]);
+    expect(state.activeThreadConnectionStatusKind).toBe("");
+    expect(state.activeThreadConnectionStatusText).toBe("");
+    expect(added.some(
+      (entry) =>
+        entry.role === "system" &&
+        entry.kind === "thinking" &&
+        entry.text === "Reconnecting... 5/5"
+    )).toBe(false);
   });
 
   it("keeps tool-only summaries inside history commentary archives before the final assistant message", async () => {
@@ -2614,6 +4086,534 @@ Implement this plan?
     expect(ops).not.toContain("runtime:sync");
   });
 
+  it("does not suppress a failed incomplete history page when it still needs the pending second-send user fallback", async () => {
+    const ops = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [
+        { role: "user", text: "hi", kind: "" },
+        { role: "user", text: "hi", kind: "" },
+      ],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingTurnBaselineTurnCount: 1,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available; preferred=aigateway; tried=",
+      activeThreadTerminalConnectionErrorThreadId: "thread-1",
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientThinkingMessage(text) {
+        ops.push(`thinking:${text}`);
+      },
+      clearTransientThinkingMessages() {
+        ops.push("thinking:clear");
+      },
+      showTransientToolMessage(text) {
+        ops.push(`tool:${text}`);
+      },
+      clearTransientToolMessages() {
+        ops.push("tool:clear");
+      },
+      clearRuntimeState() {
+        ops.push("runtime:clear");
+      },
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {
+        ops.push("runtime:sync");
+      },
+      syncEventSubscription() {},
+      clearLiveThreadConnectionStatus() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "failed" },
+      page: { incomplete: true },
+      turns: [
+        {
+          id: "turn-1",
+          items: [{ type: "userMessage", content: [{ type: "input_text", text: "hi" }] }],
+        },
+      ],
+    });
+
+    expect(state.activeThreadMessages).toEqual([
+      { role: "user", text: "hi", kind: "", images: [] },
+      { role: "user", text: "hi", kind: "" },
+    ]);
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingUserMessage).toBe("hi");
+    expect(state.liveDebugEvents.some((event) => event?.kind === "history.runtime:suppress_stale_pending")).toBe(false);
+    expect(ops).not.toContain("runtime:clear");
+  });
+
+  it("does not drop pending running during a stale non-incomplete history poll when the second-send fallback still owns the turn", async () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [
+        { role: "user", text: "hi", kind: "" },
+        { role: "user", text: "hi", kind: "" },
+      ],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnBaselineTurnCount: 1,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientThinkingMessage() {},
+      clearTransientThinkingMessages() {},
+      showTransientToolMessage() {},
+      clearTransientToolMessages() {},
+      clearRuntimeState() {},
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {},
+      syncEventSubscription() {},
+      clearLiveThreadConnectionStatus() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "active" },
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [{ type: "userMessage", content: [{ type: "input_text", text: "hi" }] }],
+        },
+      ],
+    });
+
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+    expect(state.activeThreadPendingUserMessage).toBe("hi");
+    expect(
+      state.liveDebugEvents.some(
+        (event) => event?.kind === "pending.runtime:set_running" && event?.reason === "history.sync:not_incomplete_or_terminal"
+      )
+    ).toBe(false);
+  });
+
+  it("does not let a stale failed history page clear a newly started second send before reconnect begins", async () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [{ role: "user", text: "hi", kind: "" }],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-2",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnBaselineTurnCount: 0,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientThinkingMessage() {},
+      clearTransientThinkingMessages() {},
+      showTransientToolMessage() {},
+      clearTransientToolMessages() {},
+      clearRuntimeState() {},
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {},
+      syncEventSubscription() {},
+      clearLiveThreadConnectionStatus() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "failed" },
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [{ type: "userMessage", content: [{ type: "input_text", text: "hi" }] }],
+        },
+      ],
+    });
+
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnId).toBe("turn-2");
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+    expect(state.activeThreadPendingUserMessage).toBe("hi");
+    expect(
+      state.liveDebugEvents.some(
+        (event) => event?.kind === "pending.runtime:reset" && event?.reason === "history.sync:not_incomplete_or_terminal"
+      )
+    ).toBe(false);
+  });
+
+  it("does not stop a reconnecting pending turn before the terminal error is latched", async () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [
+        { role: "user", text: "hi", kind: "" },
+        { role: "user", text: "hi", kind: "" },
+      ],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-2",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnBaselineTurnCount: 1,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadConnectionStatusKind: "reconnecting",
+      activeThreadConnectionStatusText: "Reconnecting... 5/5",
+      activeThreadTerminalConnectionErrorThreadId: "",
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientThinkingMessage() {},
+      clearTransientThinkingMessages() {},
+      showTransientToolMessage() {},
+      clearTransientToolMessages() {},
+      clearRuntimeState() {},
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {},
+      syncEventSubscription() {},
+      clearLiveThreadConnectionStatus() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "systemError" },
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [{ type: "userMessage", content: [{ type: "input_text", text: "hi" }] }],
+        },
+        {
+          id: "turn-2",
+          items: [{ type: "userMessage", content: [{ type: "input_text", text: "hi" }] }],
+        },
+      ],
+    });
+
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnId).toBe("turn-2");
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+    expect(state.liveDebugEvents.some(
+      (event) => event?.kind === "pending.runtime:set_running" && event?.reason === "history.sync:terminal_preserve_pending_user"
+    )).toBe(false);
+    expect(state.liveDebugEvents.some(
+      (event) => event?.kind === "pending.runtime:reset" && event?.reason === "history.sync:terminal_preserve_pending_user"
+    )).toBe(false);
+  });
+
+  it("does not let suppressed synthetic pending inputs clear an active second-send runtime", async () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [
+        { role: "user", text: "hi", kind: "" },
+        { role: "user", text: "hi", kind: "" },
+      ],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-2",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnBaselineTurnCount: 0,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      suppressedSyntheticPendingUserInputsByThreadId: { "thread-1": true },
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientThinkingMessage() {},
+      clearTransientThinkingMessages() {},
+      showTransientToolMessage() {},
+      clearTransientToolMessages() {},
+      clearRuntimeState() {},
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {},
+      syncEventSubscription() {},
+      clearLiveThreadConnectionStatus() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "active" },
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [{ type: "userMessage", content: [{ type: "input_text", text: "hi" }] }],
+        },
+      ],
+    });
+
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnId).toBe("turn-2");
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+    expect(state.activeThreadPendingUserMessage).toBe("hi");
+    expect(
+      state.liveDebugEvents.some((event) => event?.kind === "pending.runtime:reset" && event?.reason === "history.sync:suppressed_pending")
+    ).toBe(false);
+    expect(
+      state.liveDebugEvents.some((event) => event?.kind === "pending.runtime:reset" && event?.reason === "history.sync:not_incomplete_or_terminal")
+    ).toBe(false);
+  });
+
   it("does not restore a commentary snapshot captured before a new pending turn reset", async () => {
     const ops = [];
     const state = {
@@ -3574,5 +5574,90 @@ Implement this plan?
     }, { forceHistoryWindow: true });
 
     expect(chatBox.scrollTop).toBe(420);
+  });
+
+  it("deduplicates duplicate turns from authoritative history before rendering chat messages", async () => {
+    const rendered = [];
+    const module = createHistoryLoaderModule({
+      state: {
+        activeThreadId: "thread-1",
+        activeThreadRenderSig: "",
+        activeThreadMessages: [],
+        activeThreadWorkspace: "windows",
+        activeThreadPendingTurnThreadId: "",
+        activeThreadPendingUserMessage: "",
+        activeThreadPendingAssistantMessage: "",
+        activeThreadStarted: true,
+        activeThreadHistoryHasMore: false,
+        historyWindowEnabled: false,
+        historyWindowThreadId: "",
+        historyAllMessages: [],
+        chatShouldStickToBottom: false,
+        liveDebugEvents: [],
+      },
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat(role, text, options = {}) {
+        rendered.push({ role, text, kind: options.kind || "" });
+      },
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {
+        rendered.length = 0;
+      },
+      renderChatFull: async () => {},
+      syncEventSubscription() {},
+    });
+
+    const duplicateTurn = {
+      id: "turn-1",
+      items: [
+        { type: "userMessage", content: [{ type: "input_text", text: "hi" }] },
+        { type: "assistantMessage", text: "你好。" },
+      ],
+    };
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      page: { incomplete: false, hasMore: false },
+      turns: [duplicateTurn, duplicateTurn],
+    });
+
+    expect(rendered).toEqual([
+      { role: "user", text: "hi", kind: "" },
+      { role: "assistant", text: "你好。", kind: "" },
+    ]);
   });
 });

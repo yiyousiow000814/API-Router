@@ -61,27 +61,66 @@ export function createCommentarySnapshotFromHistory(commentaryState, threadId = 
 export function latestTurnContainsPendingUserEcho(thread, state = {}, parseUserMessageParts) {
   const threadId = String(thread?.id || state.activeThreadId || "").trim();
   const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
+  const pendingTurnId = String(state.activeThreadPendingTurnId || "").trim();
   const pendingPrompt = String(state.activeThreadPendingUserMessage || "").trim();
   if (!threadId || !pendingThreadId || pendingThreadId !== threadId) return false;
   if (!pendingPrompt) return false;
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
-  const lastTurn = turns.length ? turns[turns.length - 1] : null;
-  const items = Array.isArray(lastTurn?.items) ? lastTurn.items : [];
-  for (const item of items) {
-    if (String(item?.type || "").trim() !== "userMessage") continue;
-    const parsed = parseUserMessageParts(item);
-    const text = String(parsed?.text || "").trim();
-    if (text && text === pendingPrompt) return true;
+  if (pendingTurnId) {
+    const matchingTurn = turns.find((turn) => String(turn?.id || "").trim() === pendingTurnId);
+    if (!matchingTurn) return false;
+    const items = Array.isArray(matchingTurn?.items) ? matchingTurn.items : [];
+    for (const item of items) {
+      if (String(item?.type || "").trim() !== "userMessage") continue;
+      const parsed = parseUserMessageParts(item);
+      const text = String(parsed?.text || "").trim();
+      if (text && text === pendingPrompt) return true;
+    }
+    return false;
+  }
+  const baselineTurnCount = Math.max(0, Number(state.activeThreadPendingTurnBaselineTurnCount || 0));
+  const baselineUserCount = Math.max(0, Number(state.activeThreadPendingTurnBaselineUserCount || 0));
+  let authoritativeUserCount = 0;
+  for (const turn of turns) {
+    const items = Array.isArray(turn?.items) ? turn.items : [];
+    for (const item of items) {
+      if (String(item?.type || "").trim() !== "userMessage") continue;
+      authoritativeUserCount += 1;
+    }
+  }
+  if (authoritativeUserCount <= baselineUserCount) return false;
+  if (turns.length <= baselineTurnCount) return false;
+  for (const turn of turns.slice(baselineTurnCount)) {
+    const items = Array.isArray(turn?.items) ? turn.items : [];
+    for (const item of items) {
+      if (String(item?.type || "").trim() !== "userMessage") continue;
+      const parsed = parseUserMessageParts(item);
+      const text = String(parsed?.text || "").trim();
+      if (text && text === pendingPrompt) return true;
+    }
   }
   return false;
+}
+
+export function isTerminalHistoryStatus(value) {
+  const statusType = String(value || "").trim().toLowerCase();
+  if (!statusType) return false;
+  return (
+    statusType === "interrupted" ||
+    statusType === "cancelled" ||
+    statusType === "failed" ||
+    statusType === "error" ||
+    statusType === "systemerror" ||
+    statusType === "timeout" ||
+    statusType === "denied"
+  );
 }
 
 export function isTerminalInterruptedHistory(thread, state = {}) {
   const threadStatusType = String(thread?.status?.type || "").trim().toLowerCase();
   const historyStatusType = String(state.activeThreadHistoryStatusType || "").trim().toLowerCase();
   const statusType = threadStatusType || historyStatusType;
-  if (!statusType) return false;
-  return statusType === "interrupted" || statusType === "cancelled";
+  return isTerminalHistoryStatus(statusType);
 }
 
 export function shouldOmitLatestIncompleteTurnArtifacts(thread, state = {}) {
@@ -109,20 +148,54 @@ export function omitLatestIncompleteTurnArtifacts(messages, enabled = false) {
   return trimIndex === items.length ? items : items.slice(0, trimIndex);
 }
 
+export function hasAuthoritativeHistoryMaterialization(thread) {
+  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+  if (!turns.length) return false;
+  for (const turn of turns) {
+    const items = Array.isArray(turn?.items) ? turn.items : [];
+    if (items.length > 0) return true;
+  }
+  return false;
+}
+
 export function shouldSuppressStalePendingHistoryLiveState(thread, state = {}, parseUserMessageParts) {
   const threadId = String(thread?.id || state.activeThreadId || "").trim();
   if (threadId && state.suppressedIncompleteHistoryRuntimeByThreadId?.[threadId] === true) return true;
-  if (isTerminalInterruptedHistory(thread, state)) return true;
+  const connectionStatusKind = String(state.activeThreadConnectionStatusKind || "").trim().toLowerCase();
   const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
   const pendingRunning = state.activeThreadPendingTurnRunning === true;
+  const pendingPrompt = String(state.activeThreadPendingUserMessage || "").trim();
+  const baselineUserCount = Math.max(0, Number(state.activeThreadPendingTurnBaselineUserCount || 0));
+  if (
+    threadId &&
+    pendingThreadId === threadId &&
+    pendingPrompt &&
+    baselineUserCount > 0
+  ) {
+    return false;
+  }
+  if (connectionStatusKind === "reconnecting") return false;
+  if (isTerminalInterruptedHistory(thread, state)) return true;
+  const activeThreadId = String(state.activeThreadId || "").trim();
+  const terminalConnectionErrorThreadId = String(state.activeThreadTerminalConnectionErrorThreadId || "").trim();
+  if (
+    threadId &&
+    activeThreadId === threadId &&
+    (
+      terminalConnectionErrorThreadId === threadId ||
+      connectionStatusKind === "error"
+    )
+  ) {
+    return true;
+  }
   const finalAssistantThreadId = String(state.activeThreadLastFinalAssistantThreadId || "").trim();
   const finalAssistantText = String(state.activeThreadLastFinalAssistantText || "").trim();
   const hasFinalAssistantSnapshot = finalAssistantThreadId === threadId && !!finalAssistantText;
   if (!threadId || !pendingThreadId || pendingThreadId !== threadId) return false;
   if (hasFinalAssistantSnapshot && !pendingRunning) return true;
   if (!pendingRunning) return false;
+  if (!hasAuthoritativeHistoryMaterialization(thread)) return false;
   if (latestTurnContainsPendingUserEcho(thread, state, parseUserMessageParts) === true) return false;
-  const pendingPrompt = String(state.activeThreadPendingUserMessage || "").trim();
   if (pendingPrompt) return true;
   const baselineTurnCount = Math.max(0, Number(state.activeThreadPendingTurnBaselineTurnCount || 0));
   const incomingTurnCount = Array.isArray(thread?.turns) ? thread.turns.length : 0;

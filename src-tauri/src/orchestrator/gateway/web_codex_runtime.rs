@@ -579,6 +579,7 @@ mod tests {
                 status: Some("running"),
                 last_event_id: Some(34),
                 last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
             },
         );
         let payload = build_runtime_state_payload(workspace_runtime_snapshot(

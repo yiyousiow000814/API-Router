@@ -1,3 +1,4 @@
+import { summarizeChatTimeline } from "./chatTimeline.js";
 import { decideHistoryRenderStrategy } from "./historyRenderStrategy.js";
 
 function appendMessages(messages, startIndex, addChat) {
@@ -9,6 +10,7 @@ function appendMessages(messages, startIndex, addChat) {
       attachments: msg.images || [],
       archiveBlocks: msg.archiveBlocks || [],
       archiveKey: msg.archiveKey || "",
+      source: "historyRender",
     });
   }
 }
@@ -25,6 +27,11 @@ function updateLastNode(box, role, text, kind, renderMessageBody) {
   return true;
 }
 
+function snapshotTimeline(box, byId) {
+  const target = box || (typeof byId === "function" ? byId("chatBox") : null);
+  return target ? summarizeChatTimeline(target) : null;
+}
+
 export function applyWindowedHistoryRender(params = {}) {
   const {
     state,
@@ -37,6 +44,7 @@ export function applyWindowedHistoryRender(params = {}) {
     inlineCommentaryArchiveCount,
     renderSig,
     toolCount,
+    forceFullRender = false,
     options,
     historyCommentary,
     liveCommentarySnapshot,
@@ -114,7 +122,7 @@ export function applyWindowedHistoryRender(params = {}) {
     alreadyWindowed,
   });
 
-  if (strategy === "window_full") {
+  if (forceFullRender || strategy === "window_full") {
     doWindowedRender();
     return true;
   }
@@ -137,6 +145,7 @@ export function applyWindowedHistoryRender(params = {}) {
         threadId,
         messages: messages.length,
         toolMessages: toolCount,
+        timeline: snapshotTimeline(box, byId),
       });
       updateLoadOlderControl();
       maybeScheduleChatFollow(900);
@@ -156,6 +165,7 @@ export function applyWindowedHistoryRender(params = {}) {
       appended: messages.length - prevAll.length,
       messages: messages.length,
       toolMessages: toolCount,
+      timeline: snapshotTimeline(box, byId),
     });
     updateLoadOlderControl();
     if (state.chatShouldStickToBottom) scrollChatToBottom({ force: true });
@@ -181,6 +191,7 @@ export async function applyFullHistoryRender(params = {}) {
     inlineCommentaryArchiveCount,
     renderSig,
     toolCount,
+    forceFullRender = false,
     options,
     historyCommentary,
     liveCommentarySnapshot,
@@ -198,10 +209,12 @@ export async function applyFullHistoryRender(params = {}) {
     finalizeThreadRenderEffects,
   } = deps;
 
-  const strategy = decideHistoryRenderStrategy({
-    previousMessages: prevMessages,
-    nextMessages: messages,
-  });
+  const strategy = forceFullRender
+    ? "full_rerender"
+    : decideHistoryRenderStrategy({
+        previousMessages: prevMessages,
+        nextMessages: messages,
+      });
 
   if (strategy === "full_update_last") {
     const nextLast = messages[messages.length - 1];
@@ -212,6 +225,7 @@ export async function applyFullHistoryRender(params = {}) {
       threadId,
       messages: messages.length,
       toolMessages: toolCount,
+      timeline: snapshotTimeline(box, deps.byId),
     });
     maybeScheduleChatFollow(900);
     finalizeThreadRenderEffects(historyCommentary, liveCommentarySnapshot);
@@ -227,6 +241,7 @@ export async function applyFullHistoryRender(params = {}) {
       appended: messages.length - prevMessages.length,
       messages: messages.length,
       toolMessages: toolCount,
+      timeline: snapshotTimeline(box, deps.byId),
     });
     if (state.chatShouldStickToBottom) scrollChatToBottom({ force: true });
     maybeScheduleChatFollow(1100);
@@ -253,6 +268,7 @@ export async function applyFullHistoryRender(params = {}) {
       messages: messages.length,
       toolMessages: toolCount,
       async: shouldAsyncRender,
+      timeline: snapshotTimeline(box, deps.byId),
     });
     if (state.chatShouldStickToBottom) scrollChatToBottom({ force: true });
     if (canStartChatLiveFollow()) maybeScheduleChatFollow(1100);

@@ -33,6 +33,7 @@
     "ui:e2e:codex-plan-interrupt-cleanup": "node tests/ui/e2e/codex-web/plan-interrupt-cleanup.mjs",
     "ui:e2e:codex-runtime-panels-no-reenter": "node tests/ui/e2e/codex-web/runtime-panels-no-reenter.mjs",
     "ui:e2e:codex-send-turn-live": "node tests/ui/e2e/codex-web/send-turn-live.mjs",
+    "ui:e2e:codex-reconnect-error-sequence": "node tests/ui/e2e/codex-web/reconnect-error-sequence.mjs",
     "check:codex-open-latency": "node tools/benchmarks/thread-open-latency.mjs --threads 1 --samples 3 --max-visible-ms 3000",
     "e2e:build-root-exe-restart": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/e2e/build/build-root-exe-restart.ps1",
     "backend:check": "npm run check:rust",

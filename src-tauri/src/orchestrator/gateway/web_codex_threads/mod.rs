@@ -111,6 +111,47 @@ struct NotificationScopes<'a> {
     method_lower: String,
 }
 
+fn extract_notification_status_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_ascii_lowercase())
+            }
+        }
+        Value::Object(map) => map
+            .get("type")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_ascii_lowercase()),
+        _ => None,
+    }
+}
+
+pub(crate) fn explicit_notification_status(params: Option<&JsonMap>) -> Option<String> {
+    let params = params?;
+    params
+        .get("status")
+        .and_then(extract_notification_status_value)
+        .or_else(|| {
+            params
+                .get("turn")
+                .and_then(Value::as_object)
+                .and_then(|turn| turn.get("status"))
+                .and_then(extract_notification_status_value)
+        })
+        .or_else(|| {
+            params
+                .get("thread")
+                .and_then(Value::as_object)
+                .and_then(|thread| thread.get("status"))
+                .and_then(extract_notification_status_value)
+        })
+}
+
 impl<'a> NotificationScopes<'a> {
     fn new(notification: &'a Value) -> Self {
         let params = notification
@@ -231,22 +272,32 @@ impl<'a> NotificationScopes<'a> {
     }
 
     fn status(&self) -> Option<String> {
-        self.first_non_empty_str(&[self.params], &["status"])
-            .or_else(|| {
-                if self.method_lower.contains("turn/started") {
-                    Some("running".to_string())
-                } else if self.method_lower.contains("turn/completed")
-                    || self.method_lower.contains("turn/finished")
-                {
-                    Some("completed".to_string())
-                } else if self.method_lower.contains("turn/failed") {
-                    Some("failed".to_string())
-                } else if self.method_lower.contains("turn/cancelled") {
-                    Some("interrupted".to_string())
-                } else {
-                    None
-                }
-            })
+        let explicit_status = explicit_notification_status(self.params);
+        explicit_status.clone().or_else(|| {
+            if self.method_lower.contains("turn/started") {
+                Some("running".to_string())
+            } else if matches!(
+                explicit_status.as_deref(),
+                Some("failed" | "error" | "denied" | "timeout")
+            ) {
+                Some("failed".to_string())
+            } else if matches!(
+                explicit_status.as_deref(),
+                Some("cancelled" | "interrupted")
+            ) {
+                Some("interrupted".to_string())
+            } else if self.method_lower.contains("turn/completed")
+                || self.method_lower.contains("turn/finished")
+            {
+                Some("completed".to_string())
+            } else if self.method_lower.contains("turn/failed") {
+                Some("failed".to_string())
+            } else if self.method_lower.contains("turn/cancelled") {
+                Some("interrupted".to_string())
+            } else {
+                None
+            }
+        })
     }
 
     fn preview(&self) -> Option<String> {
@@ -810,7 +861,7 @@ mod tests {
         find_rollout_path_in_items, has_missing_session_rollout_path,
         invalidate_thread_list_cache_all, list_threads_snapshot, lock_threads_workspace_index,
         upsert_thread_item_hint, upsert_thread_notification_hint, workspace_bucket_mut,
-        workspace_bucket_ref, THREADS_REFRESH_STUCK_SECS,
+        workspace_bucket_ref, NotificationScopes, THREADS_REFRESH_STUCK_SECS,
     };
     use crate::codex_app_server;
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
@@ -929,6 +980,35 @@ mod tests {
         assert!(find_rollout_path_in_items(&items, "missing").is_none());
     }
 
+    #[test]
+    fn notification_scope_status_keeps_failed_turn_completed_failed() {
+        let notification = serde_json::json!({
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thread-1",
+                "status": "failed"
+            }
+        });
+        let scopes = NotificationScopes::new(&notification);
+        assert_eq!(scopes.status().as_deref(), Some("failed"));
+    }
+
+    #[test]
+    fn notification_scope_status_keeps_nested_failed_turn_completed_failed() {
+        let notification = serde_json::json!({
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thread-1",
+                "turn": {
+                    "id": "turn-1",
+                    "status": "failed"
+                }
+            }
+        });
+        let scopes = NotificationScopes::new(&notification);
+        assert_eq!(scopes.status().as_deref(), Some("failed"));
+    }
+
     #[tokio::test]
     async fn upsert_thread_item_hint_makes_new_thread_visible_immediately() {
         let _test_guard = codex_app_server::lock_test_globals();
@@ -980,6 +1060,7 @@ mod tests {
                 status: Some("running"),
                 last_event_id: Some(42),
                 last_turn_id: Some("turn-1"),
+                clear_last_turn_id: false,
             },
         );
 

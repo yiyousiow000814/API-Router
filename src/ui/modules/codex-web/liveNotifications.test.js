@@ -178,11 +178,38 @@ describe("liveNotifications", () => {
     ).toEqual({ message: "Receiving response...", isWarn: false });
   });
 
+  it("treats turn/completed with failed status as failed", () => {
+    expect(
+      deriveLiveStatusFromNotification(
+        { method: "turn/completed", params: { threadId: "thread-1", status: "failed" } },
+        {
+          normalizeType(value) { return String(value || "").toLowerCase(); },
+          normalizeInline(value) { return value == null ? null : String(value); },
+          toRecord(value) { return value && typeof value === "object" ? value : null; },
+        }
+      )
+    ).toEqual({ message: "Turn failed.", isWarn: true });
+  });
+
   it("normalizes current Codex notification method spellings", () => {
     expect(normalizeLiveMethod("turn.completed")).toBe("turn/completed");
     expect(normalizeLiveMethod("item_completed")).toBe("item/completed");
-    expect(normalizeLiveMethod("task_complete")).toBe("turn/completed");
-    expect(normalizeLiveMethod("task_aborted")).toBe("turn/cancelled");
+    expect(normalizeLiveMethod("task_complete")).toBe("codex/event/task_complete");
+    expect(normalizeLiveMethod("turn_complete")).toBe("codex/event/turn_complete");
+    expect(normalizeLiveMethod("task_aborted")).toBe("codex/event/task_aborted");
+  });
+
+  it("does not treat rollout task_complete as a successful terminal turn", () => {
+    expect(
+      deriveLiveStatusFromNotification(
+        { method: "task_complete", params: { threadId: "thread-1" } },
+        {
+          normalizeType(value) { return String(value || "").toLowerCase(); },
+          normalizeInline(value) { return value == null ? null : String(value); },
+          toRecord(value) { return value && typeof value === "object" ? value : null; },
+        }
+      )
+    ).toBeNull();
   });
 
   it("streams assistant deltas into the active thread", () => {
@@ -2797,6 +2824,7 @@ Implement this plan?
     const flushed = [];
     const state = {
       activeThreadId: "thread-1",
+      wsSubscribedEvents: true,
       activeThreadPendingTurnThreadId: "thread-1",
       activeThreadPendingTurnId: "turn-1",
       activeThreadPendingTurnRunning: true,
@@ -3136,16 +3164,19 @@ Implement this plan?
     expect(statuses.at(-1)).toEqual({ message: "Turn cancelled.", isWarn: true });
   });
 
-  it("shows reconnecting runtime activity for thread status updates without ending the pending turn", () => {
+  it("shows reconnecting thread status in chat without ending the pending turn", () => {
     const statuses = [];
     const runtimeActivity = [];
     const finalizedRuntime = [];
+    const chatMessages = [];
+    const pendingRenders = [];
     const state = {
       activeThreadId: "thread-1",
       activeThreadMessages: [],
       activeThreadPendingTurnThreadId: "thread-1",
       activeThreadPendingTurnId: "turn-1",
       activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
       activeThreadPendingAssistantMessage: "",
       activeThreadLiveAssistantThreadId: "",
       activeThreadTransientThinkingText: "",
@@ -3156,6 +3187,7 @@ Implement this plan?
       activeThreadCommentaryArchiveExpanded: false,
       activeThreadActiveCommands: [],
       activeThreadPlan: null,
+      wsSubscribedEvents: true,
     };
     const module = createLiveNotificationsModule({
       state,
@@ -3166,10 +3198,16 @@ Implement this plan?
       setRuntimeActivity(payload) {
         runtimeActivity.push(payload);
       },
-      addChat() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey() { return false; },
       scheduleChatLiveFollow() {},
       finalizeRuntimeState(threadId) {
         finalizedRuntime.push(threadId);
+      },
+      renderPendingInline() {
+        pendingRenders.push("pending");
       },
       normalizeType(value) {
         return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -3189,32 +3227,235 @@ Implement this plan?
       params: {
         threadId: "thread-1",
         status: "reconnecting",
-        message: "Provider disconnected. Reconnecting...",
+        message: "Provider disconnected. Reconnecting... 1/5",
+      },
+    });
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "reconnecting",
+        message: "Provider disconnected. Reconnecting... 2/5",
       },
     });
 
     expect(statuses.at(-1)).toEqual({
-      message: "Provider disconnected. Reconnecting...",
+      message: "Reconnecting... 2/5",
       isWarn: false,
     });
-    expect(runtimeActivity).toEqual([
+    expect(chatMessages).toEqual([
       {
-        threadId: "thread-1",
-        title: "Reconnecting",
-        detail: "Provider disconnected. Reconnecting...",
-        tone: "running",
+        role: "system",
+        content: "Reconnecting... 1/5",
+        options: {
+          kind: "thinking",
+          transient: false,
+          animate: true,
+          messageKey: "live-thread-connection-status",
+        },
+      },
+      {
+        role: "system",
+        content: "Reconnecting... 2/5",
+        options: {
+          kind: "thinking",
+          transient: false,
+          animate: true,
+          messageKey: "live-thread-connection-status",
+        },
       },
     ]);
+    expect(runtimeActivity).toEqual([]);
     expect(finalizedRuntime).toEqual([]);
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
     expect(state.activeThreadPendingTurnId).toBe("turn-1");
     expect(state.activeThreadPendingTurnRunning).toBe(true);
+    expect(state.activeThreadPendingUserMessage).toBe("hello");
+    expect(pendingRenders).toEqual([]);
+    expect(state.liveDebugEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "live.connection:thread_show_reconnect",
+        __tracePersist: true,
+        rendered: "Reconnecting... 1/5",
+        attempt: "1/5",
+        rawMessage: "Provider disconnected. Reconnecting... 1/5",
+      }),
+      expect.objectContaining({
+        kind: "live.connection:thread_show_reconnect",
+        __tracePersist: true,
+        rendered: "Reconnecting... 2/5",
+        attempt: "2/5",
+        rawMessage: "Provider disconnected. Reconnecting... 2/5",
+      }),
+    ]));
   });
 
-  it("surfaces thread status failures as persistent runtime errors and ends the pending turn", () => {
+  it("treats turn/status reconnecting as official reconnect progress", () => {
+    const statuses = [];
+    const chatMessages = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadTransientThinkingText: "",
+      activeThreadTransientToolText: "",
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      wsSubscribedEvents: true,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey() { return false; },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      renderPendingInline() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "turn/status",
+      params: {
+        threadId: "thread-1",
+        status: "reconnecting",
+        message: "Reconnecting... 1/5",
+      },
+    });
+
+    expect(statuses.at(-1)).toEqual({
+      message: "Reconnecting... 1/5",
+      isWarn: false,
+    });
+    expect(chatMessages.at(-1)).toEqual({
+      role: "system",
+      content: "Reconnecting... 1/5",
+      options: {
+        kind: "thinking",
+        transient: false,
+        animate: true,
+        messageKey: "live-thread-connection-status",
+      },
+    });
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+  });
+
+  it("keeps a live thread reconnect card through running turn lifecycle updates", () => {
+    const chatMessages = [];
+    const removedKeys = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingAssistantMessage: "",
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadTransientThinkingText: "",
+      activeThreadTransientToolText: "",
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      wsSubscribedEvents: true,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus() {},
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(key) {
+        removedKeys.push(key);
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "reconnecting",
+        message: "Provider disconnected. Reconnecting... 1/5",
+      },
+    });
+    module.renderLiveNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+      },
+    });
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "running",
+        message: "Working...",
+      },
+    });
+
+    expect(chatMessages[0]).toEqual(expect.objectContaining({
+      content: "Reconnecting... 1/5",
+    }));
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("reconnecting");
+    expect(state.activeThreadConnectionStatusText).toBe("Reconnecting... 1/5");
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+    expect(state.liveDebugEvents).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "live.connection:thread_clear_reason",
+      }),
+    ]));
+  });
+
+  it("surfaces thread status failures as a final chat error and ends the pending turn", () => {
     const statuses = [];
     const runtimeActivity = [];
     const finalizedRuntime = [];
+    const chatMessages = [];
+    const pendingRenders = [];
     const state = {
       activeThreadId: "thread-1",
       activeThreadMessages: [],
@@ -3232,6 +3473,7 @@ Implement this plan?
       activeThreadCommentaryArchiveExpanded: false,
       activeThreadActiveCommands: [{ key: "cmd-1", state: "running", text: "npm test" }],
       activeThreadPlan: { threadId: "thread-1", title: "Updated Plan", explanation: "", steps: [] },
+      wsSubscribedEvents: true,
     };
     const module = createLiveNotificationsModule({
       state,
@@ -3242,7 +3484,840 @@ Implement this plan?
       setRuntimeActivity(payload) {
         runtimeActivity.push(payload);
       },
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(key) {
+        chatMessages.push({ role: "remove", content: key, options: null });
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState(threadId) {
+        finalizedRuntime.push(threadId);
+      },
+      renderPendingInline() {
+        pendingRenders.push("pending");
+      },
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "error",
+        message: "no routable providers available; preferred=aigateway; tried=aigateway,aigateway2",
+      },
+    });
+
+    expect(statuses.at(-1)).toEqual({
+      message: "no routable providers available; preferred=aigateway; tried=aigateway,aigateway2",
+      isWarn: true,
+    });
+    expect(chatMessages).toEqual([
+      {
+        role: "system",
+        content: "no routable providers available; preferred=aigateway; tried=aigateway,aigateway2",
+        options: {
+          kind: "error",
+          transient: false,
+          animate: true,
+          messageKey: "live-thread-connection-status",
+        },
+      },
+    ]);
+    expect(finalizedRuntime).toEqual(["thread-1"]);
+    expect(pendingRenders).toEqual(["pending"]);
+    expect(runtimeActivity).toEqual([]);
+    expect(state.activeThreadPendingTurnThreadId).toBe("");
+    expect(state.activeThreadPendingTurnId).toBe("");
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadPendingUserMessage).toBe("");
+    expect(state.activeThreadPendingAssistantMessage).toBe("");
+    expect(state.activeThreadTransientThinkingText).toBe("");
+    expect(state.activeThreadTransientToolText).toBe("");
+    expect(state.liveDebugEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "live.connection:thread_show_error",
+        __tracePersist: true,
+        rawMessage: "no routable providers available; preferred=aigateway; tried=aigateway,aigateway2",
+      }),
+    ]));
+  });
+
+  it("shows reconnecting thread status in chat without ending the pending turn", () => {
+    const statuses = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadPendingTurnRunning: true,
+      wsSubscribedEvents: true,
+      liveDebugEvents: [],
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
       addChat() {},
+      removeChatMessageByKey() {
+        return false;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      renderPendingInline() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "reconnecting",
+        message: "Provider disconnected. Reconnecting... 2/5",
+      },
+    });
+
+    expect(statuses.at(-1)).toEqual({
+      message: "Reconnecting... 2/5",
+      isWarn: false,
+    });
+  });
+
+  it("does not let reconnecting status override a latched terminal error on the same thread", () => {
+    const statuses = [];
+    const chatMessages = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available; preferred=aigateway; tried=",
+      activeThreadTerminalConnectionErrorThreadId: "thread-1",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      wsSubscribedEvents: true,
+      liveDebugEvents: [],
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey() {
+        return false;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      renderPendingInline() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "reconnecting",
+        message: "no routable providers available; preferred=aigateway; tried=. Reconnecting... 1/5",
+      },
+    });
+
+    expect(chatMessages).toEqual([]);
+    expect(statuses).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe(
+      "no routable providers available; preferred=aigateway; tried="
+    );
+    expect(state.liveDebugEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "live.connection:suppress_reconnect_after_terminal_error",
+        __tracePersist: true,
+      }),
+    ]));
+  });
+
+  it("shows a terminal error card for turn/completed notifications with failed status", () => {
+    const statuses = [];
+    const chatMessages = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadPendingTurnRunning: true,
+      wsSubscribedEvents: true,
+      liveDebugEvents: [],
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey() {
+        return false;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      renderPendingInline() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-1",
+        status: "failed",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    });
+
+    expect(statuses.at(-1)).toEqual({
+      message: "no routable providers available; preferred=aigateway; tried=",
+      isWarn: true,
+    });
+    expect(chatMessages).toEqual([
+      {
+        role: "system",
+        content: "no routable providers available; preferred=aigateway; tried=",
+        options: {
+          kind: "error",
+          transient: false,
+          animate: true,
+          messageKey: "live-thread-connection-status",
+        },
+      },
+    ]);
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe(
+      "no routable providers available; preferred=aigateway; tried="
+    );
+  });
+
+  it("does not clear the live connection error for an empty thread status notification", () => {
+    const removedKeys = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available",
+      wsSubscribedEvents: true,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus() {},
+      setRuntimeActivity() {},
+      addChat() {},
+      removeChatMessageByKey(key) {
+        removedKeys.push(key);
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+      },
+    });
+
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe("no routable providers available");
+    expect(state.liveDebugEvents || []).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "live.connection:thread_clear_reason",
+      }),
+    ]));
+  });
+
+  it("does not clear the live connection error for object-shaped empty thread status", () => {
+    const removedKeys = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available",
+      wsSubscribedEvents: true,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus() {},
+      setRuntimeActivity() {},
+      addChat() {},
+      removeChatMessageByKey(key) {
+        removedKeys.push(key);
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        thread: { status: {} },
+      },
+    });
+
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe("no routable providers available");
+    expect(state.liveDebugEvents || []).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "live.connection:thread_clear_reason",
+      }),
+    ]));
+  });
+
+  it("does not clear the live connection error for non-connection token usage updates", () => {
+    const removedKeys = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available",
+      activeThreadTerminalConnectionErrorThreadId: "thread-1",
+      wsSubscribedEvents: true,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus() {},
+      setRuntimeActivity() {},
+      addChat() {},
+      removeChatMessageByKey(key) {
+        removedKeys.push(key);
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: "thread-1",
+        tokenUsage: { total: { totalTokens: 42 } },
+      },
+    });
+
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe("no routable providers available");
+    expect(state.liveDebugEvents || []).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "live.connection:thread_clear_reason",
+      }),
+    ]));
+  });
+
+  it("keeps the real connection error when a later systemError status has no message", () => {
+    const chatMessages = [];
+    const removedKeys = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available; preferred=aigateway; tried=",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      wsSubscribedEvents: true,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus() {},
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(key) {
+        removedKeys.push(key);
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      renderPendingInline() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        thread: { status: { type: "systemError" } },
+      },
+    });
+
+    expect(chatMessages).toEqual([]);
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe("no routable providers available; preferred=aigateway; tried=");
+    expect(state.liveDebugEvents || []).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        rawMessage: "Reconnecting failed.",
+      }),
+    ]));
+  });
+
+  it("does not replace a detailed connection error with a weaker repeated failure", () => {
+    const chatMessages = [];
+    const removedKeys = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available; preferred=aigateway; tried=aigateway,aigateway2",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      wsSubscribedEvents: true,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus() {},
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(key) {
+        removedKeys.push(key);
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      renderPendingInline() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "failed",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    });
+
+    expect(chatMessages).toEqual([]);
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusText).toBe(
+      "no routable providers available; preferred=aigateway; tried=aigateway,aigateway2"
+    );
+    expect(state.liveDebugEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "live.connection:thread_skip_weaker_error",
+        __tracePersist: true,
+        rawMessage: "no routable providers available; preferred=aigateway; tried=",
+      }),
+    ]));
+  });
+
+  it("does not clear the live connection error for a terminal error notification", () => {
+    const removedKeys = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available",
+      wsSubscribedEvents: true,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus() {},
+      setRuntimeActivity() {},
+      addChat() {},
+      removeChatMessageByKey(key) {
+        removedKeys.push(key);
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "error",
+      params: {
+        threadId: "thread-1",
+      },
+    });
+
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe("no routable providers available");
+    expect(state.liveDebugEvents || []).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "live.connection:thread_clear_reason",
+      }),
+    ]));
+  });
+
+  it("clears the stale terminal connection error latch when a new turn starts on the same thread", () => {
+    const removedKeys = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available",
+      activeThreadTerminalConnectionErrorThreadId: "thread-1",
+      wsSubscribedEvents: true,
+      liveDebugEvents: [],
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus() {},
+      setRuntimeActivity() {},
+      addChat() {},
+      removeChatMessageByKey(key) {
+        removedKeys.push(key);
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.clearLiveThreadConnectionStatus("turn.send:new_turn");
+
+    expect(removedKeys).toEqual(["live-thread-connection-status"]);
+    expect(state.activeThreadConnectionStatusKind).toBe("");
+    expect(state.activeThreadConnectionStatusText).toBe("");
+    expect(state.activeThreadTerminalConnectionErrorThreadId).toBe("");
+    expect(state.liveDebugEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "live.connection:terminal_error_latch_clear",
+        __tracePersist: true,
+        threadId: "thread-1",
+        reason: "turn.send:new_turn",
+      }),
+    ]));
+  });
+
+  it("does not rewrite terminal connection error status back to reconnecting for a later bare error", () => {
+    const statuses = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available",
+      wsSubscribedEvents: true,
+      liveDebugEvents: [],
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat() {},
+      removeChatMessageByKey() {
+        return false;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "error",
+      params: {
+        threadId: "thread-1",
+        error: {
+          message: "Provider disconnected. Reconnecting... 1/5",
+        },
+      },
+    });
+
+    expect(statuses).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe("no routable providers available");
+    expect(state.liveDebugEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "live.status:suppress_terminal_connection_error_echo",
+        method: "error",
+        message: "Reconnecting... 1/5",
+      }),
+    ]));
+    expect(state.liveDebugEvents).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "live.status",
+        method: "error",
+      }),
+    ]));
+  });
+
+  it("does not clear the live connection error for failed turn completion", () => {
+    const removedKeys = [];
+    const finalizedRuntime = [];
+    const flushed = [];
+    const pendingRenders = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      wsSubscribedEvents: true,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus() {},
+      setRuntimeActivity() {},
+      addChat() {},
+      removeChatMessageByKey(key) {
+        removedKeys.push(key);
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState(threadId) {
+        finalizedRuntime.push(threadId);
+      },
+      renderPendingInline() {
+        pendingRenders.push("pending");
+      },
+      flushQueuedTurn(threadId) {
+        flushed.push(threadId);
+      },
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-1",
+        status: "failed",
+      },
+    });
+
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe("no routable providers available");
+    expect(finalizedRuntime).toEqual(["thread-1"]);
+    expect(state.activeThreadPendingTurnThreadId).toBe("");
+    expect(state.activeThreadPendingTurnId).toBe("");
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(pendingRenders).toEqual(["pending"]);
+    expect(flushed).toEqual([]);
+  });
+
+  it("drops replayed failed thread status before websocket subscriptions are restored", () => {
+    const statuses = [];
+    const runtimeActivity = [];
+    const finalizedRuntime = [];
+    const chatMessages = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "partial",
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadTransientThinkingText: "thinking",
+      activeThreadTransientToolText: "tool",
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadActiveCommands: [{ key: "cmd-1", state: "running", text: "npm test" }],
+      activeThreadPlan: { threadId: "thread-1", title: "Updated Plan", explanation: "", steps: [] },
+      wsSubscribedEvents: false,
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity(payload) {
+        runtimeActivity.push(payload);
+      },
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
       scheduleChatLiveFollow() {},
       finalizeRuntimeState(threadId) {
         finalizedRuntime.push(threadId);
@@ -3265,30 +4340,80 @@ Implement this plan?
       params: {
         threadId: "thread-1",
         status: "error",
-        message: "Reconnecting failed.",
+        message: "no routable providers available; preferred=aigateway; tried=",
       },
     });
 
-    expect(statuses.at(-1)).toEqual({
-      message: "Reconnecting failed.",
-      isWarn: true,
-    });
-    expect(finalizedRuntime).toEqual(["thread-1"]);
-    expect(runtimeActivity).toEqual([
-      {
-        threadId: "thread-1",
-        title: "Error",
-        detail: "Reconnecting failed.",
-        tone: "error",
+    expect(statuses).toEqual([]);
+    expect(runtimeActivity).toEqual([]);
+    expect(chatMessages).toEqual([]);
+    expect(finalizedRuntime).toEqual([]);
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnId).toBe("turn-1");
+    expect(state.activeThreadPendingUserMessage).toBe("hello");
+    expect(state.activeThreadPendingAssistantMessage).toBe("partial");
+  });
+
+  it("drops dormant replayed turn lifecycle before websocket subscriptions are restored", () => {
+    const statuses = [];
+    const runtimeActivity = [];
+    const finalizedRuntime = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadMessages: [],
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadHistoryStatusType: "idle",
+      wsSubscribedEvents: false,
+      liveDebugEvents: [],
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
       },
-    ]);
-    expect(state.activeThreadPendingTurnThreadId).toBe("");
-    expect(state.activeThreadPendingTurnId).toBe("");
+      setRuntimeActivity(payload) {
+        runtimeActivity.push(payload);
+      },
+      finalizeRuntimeState(threadId) {
+        finalizedRuntime.push(threadId);
+      },
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-2",
+      },
+    });
+
+    expect(statuses).toEqual([]);
+    expect(runtimeActivity).toEqual([]);
+    expect(finalizedRuntime).toEqual([]);
     expect(state.activeThreadPendingTurnRunning).toBe(false);
-    expect(state.activeThreadPendingUserMessage).toBe("");
-    expect(state.activeThreadPendingAssistantMessage).toBe("");
-    expect(state.activeThreadTransientThinkingText).toBe("");
-    expect(state.activeThreadTransientToolText).toBe("");
+    expect(state.activeThreadPendingTurnId).toBe("");
+    expect(
+      state.liveDebugEvents.some((event) => event.kind === "live.drop:dormant_replayed_turn_lifecycle" && event.method === "turn/started")
+    ).toBe(true);
   });
 
   it("inserts the live assistant message before the pending inline card", () => {
@@ -3378,5 +4503,1666 @@ Implement this plan?
 
     expect(chatBox.children[0]).not.toBe(pendingMount);
     expect(chatBox.children[1]).toBe(pendingMount);
+  });
+
+  it("does not redraw the same failed thread status repeatedly", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadStarted: true,
+      wsSubscribedEvents: true,
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText:
+        "no routable providers available; preferred=aigateway; tried=",
+    };
+    const chatMessages = [];
+    const statuses = [];
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    const failedNotification = {
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "failed",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    };
+
+    module.renderLiveNotification(failedNotification);
+
+    expect(chatMessages).toEqual([]);
+    expect(statuses.at(-1)).toEqual({
+      message: "no routable providers available; preferred=aigateway; tried=",
+      isWarn: true,
+    });
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe("no routable providers available; preferred=aigateway; tried=");
+  });
+
+  it("keeps the terminal connection error latched across later terminal echoes", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadStarted: true,
+      wsSubscribedEvents: true,
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      activeThreadMessages: [],
+      liveDebugEvents: [],
+    };
+    const statuses = [];
+    const removedKeys = [];
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat() {},
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "reconnecting",
+        message: "no routable providers available; preferred=aigateway; tried=. Reconnecting... 5/5",
+      },
+    });
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "failed",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    });
+    module.renderLiveNotification({
+      method: "error",
+      params: {
+        threadId: "thread-1",
+      },
+    });
+    module.renderLiveNotification({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-1",
+        turn: {
+          status: "failed",
+          message:
+            "unexpected status 424 Failed Dependency: no routable providers available; preferred=aigateway; tried=, url: http://127.0.0.1:4000/v1/responses",
+        },
+      },
+    });
+    module.renderLiveNotification({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-1",
+      },
+    });
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "completed",
+      },
+    });
+
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe("no routable providers available; preferred=aigateway; tried=");
+    expect(statuses.at(-1)).toEqual({
+      message: "no routable providers available; preferred=aigateway; tried=",
+      isWarn: true,
+    });
+    expect(removedKeys).toEqual(["live-thread-connection-status"]);
+  });
+
+  it("drops replayed failed connection status for dormant terminal history threads without clearing the latched error", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      wsSubscribedEvents: true,
+      activeThreadHistoryStatusType: "systemerror",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryTurns: [{ id: "turn-1" }],
+      activeThreadMessages: [{ role: "user", text: "hi", kind: "" }],
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available; preferred=aigateway; tried=",
+      activeThreadTerminalConnectionErrorThreadId: "thread-1",
+      liveDebugEvents: [],
+    };
+    const chatMessages = [];
+    const statuses = [];
+    const removedKeys = [];
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "failed",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    });
+
+    expect(chatMessages).toEqual([]);
+    expect(statuses).toEqual([]);
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe(
+      "no routable providers available; preferred=aigateway; tried="
+    );
+    expect(
+      state.liveDebugEvents.some((event) => event.kind === "live.drop:dormant_terminal_connection_replay")
+    ).toBe(true);
+  });
+
+  it("keeps the current thread terminal connection error latched when the same failed status replays", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadStarted: true,
+      wsSubscribedEvents: true,
+      activeThreadHistoryStatusType: "systemerror",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryTurns: [{ id: "turn-1" }],
+      activeThreadMessages: [{ role: "user", text: "hi", kind: "" }],
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available; preferred=aigateway; tried=",
+      activeThreadTerminalConnectionErrorThreadId: "thread-1",
+      liveDebugEvents: [],
+    };
+    const chatMessages = [];
+    const statuses = [];
+    const removedKeys = [];
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "failed",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    });
+
+    expect(chatMessages).toEqual([]);
+    expect(statuses).toEqual([]);
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe(
+      "no routable providers available; preferred=aigateway; tried="
+    );
+    expect(
+      state.liveDebugEvents.some((event) => event.kind === "live.drop:dormant_terminal_connection_replay")
+    ).toBe(true);
+  });
+
+  it("drops replayed failed connection status even if a stale pending turn id lingers", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      wsSubscribedEvents: true,
+      activeThreadHistoryStatusType: "failed",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "turn-stale",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryTurns: [{ id: "turn-1" }],
+      activeThreadMessages: [{ role: "user", text: "hi", kind: "" }],
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available; preferred=aigateway; tried=",
+      activeThreadTerminalConnectionErrorThreadId: "thread-1",
+      liveDebugEvents: [],
+    };
+    const chatMessages = [];
+    const statuses = [];
+    const removedKeys = [];
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "failed",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    });
+
+    expect(chatMessages).toEqual([]);
+    expect(statuses).toEqual([]);
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe(
+      "no routable providers available; preferred=aigateway; tried="
+    );
+    expect(
+      state.liveDebugEvents.some((event) => event.kind === "live.drop:dormant_terminal_connection_replay")
+    ).toBe(true);
+  });
+
+  it("drops a stale failed replay from the previous connection cycle after a new send starts", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      wsSubscribedEvents: true,
+      activeThreadLiveStateEpoch: 7,
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-new",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadConnectionStatusKind: "",
+      activeThreadConnectionStatusText: "",
+      activeThreadConnectionReplayGuardThreadId: "thread-1",
+      activeThreadConnectionReplayGuardText: "no routable providers available; preferred=aigateway; tried=",
+      activeThreadConnectionReplayGuardEpoch: 7,
+      activeThreadConnectionReplayGuardReconnectSeen: false,
+      activeThreadHistoryStatusType: "failed",
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryTurns: [{ id: "turn-1" }],
+      activeThreadMessages: [{ role: "user", text: "hi", kind: "" }],
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      liveDebugEvents: [],
+    };
+    const chatMessages = [];
+    const statuses = [];
+    const removedKeys = [];
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "failed",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    });
+
+    expect(chatMessages).toEqual([]);
+    expect(statuses).toEqual([]);
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("");
+    expect(state.activeThreadConnectionStatusText).toBe("");
+    expect(
+      state.liveDebugEvents.some((event) => event.kind === "live.drop:pending_connection_terminal_replay")
+    ).toBe(true);
+  });
+
+  it("accepts the new terminal failed status after reconnect progress has started", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      wsSubscribedEvents: true,
+      activeThreadLiveStateEpoch: 7,
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-new",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadPendingTurnBaselineTurnCount: 1,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadConnectionStatusKind: "",
+      activeThreadConnectionStatusText: "",
+      activeThreadConnectionReplayGuardThreadId: "thread-1",
+      activeThreadConnectionReplayGuardText: "no routable providers available; preferred=aigateway; tried=",
+      activeThreadConnectionReplayGuardEpoch: 7,
+      activeThreadConnectionReplayGuardReconnectSeen: false,
+      activeThreadHistoryStatusType: "failed",
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryTurns: [{ id: "turn-1" }],
+      activeThreadMessages: [{ role: "user", text: "hi", kind: "" }],
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      liveDebugEvents: [],
+    };
+    const chatMessages = [];
+    const statuses = [];
+    const removedKeys = [];
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "reconnecting",
+        message: "no routable providers available; preferred=aigateway; tried=. Reconnecting... 1/5",
+      },
+    });
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "failed",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    });
+
+    expect(state.activeThreadConnectionReplayGuardReconnectSeen).toBe(true);
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe(
+      "no routable providers available; preferred=aigateway; tried="
+    );
+    expect(statuses.some((entry) => entry.message === "Reconnecting... 1/5")).toBe(true);
+    expect(statuses.some((entry) => entry.message === "no routable providers available; preferred=aigateway; tried=")).toBe(true);
+    expect(chatMessages[chatMessages.length - 1]).toEqual(
+      expect.objectContaining({
+        role: "system",
+        content: "no routable providers available; preferred=aigateway; tried=",
+      })
+    );
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnId).toBe("turn-new");
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadPendingUserMessage).toBe("hi");
+    expect(state.activeThreadPendingAssistantMessage).toBe("");
+    expect(state.activeThreadPendingTurnBaselineTurnCount).toBe(1);
+    expect(state.activeThreadPendingTurnBaselineUserCount).toBe(1);
+  });
+
+  it("drops a stale failed turn/completed replay from the previous connection cycle after a new send starts", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      wsSubscribedEvents: true,
+      activeThreadLiveStateEpoch: 7,
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-new",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadPendingTurnBaselineTurnCount: 1,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadConnectionStatusKind: "",
+      activeThreadConnectionStatusText: "",
+      activeThreadConnectionReplayGuardThreadId: "thread-1",
+      activeThreadConnectionReplayGuardText: "no routable providers available; preferred=aigateway; tried=",
+      activeThreadConnectionReplayGuardEpoch: 7,
+      activeThreadConnectionReplayGuardReconnectSeen: false,
+      activeThreadHistoryStatusType: "failed",
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryTurns: [{ id: "turn-1" }],
+      activeThreadMessages: [{ role: "user", text: "hi", kind: "" }],
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      liveDebugEvents: [],
+    };
+    const chatMessages = [];
+    const statuses = [];
+    const removedKeys = [];
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-1",
+        turn: {
+          id: "turn-old",
+          status: "failed",
+        },
+      },
+    });
+
+    expect(chatMessages).toEqual([]);
+    expect(statuses).toEqual([]);
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+    expect(state.activeThreadPendingUserMessage).toBe("hi");
+    expect(state.activeThreadPendingTurnBaselineTurnCount).toBe(1);
+    expect(state.activeThreadPendingTurnBaselineUserCount).toBe(1);
+    expect(
+      state.liveDebugEvents.some((event) => event.kind === "live.drop:stale_pending_turn_terminal_replay")
+    ).toBe(true);
+  });
+
+  it("drops a stale failed thread status replay when it carries an older turn id than the current send", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      wsSubscribedEvents: true,
+      activeThreadLiveStateEpoch: 7,
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-new",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadPendingTurnBaselineTurnCount: 1,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadConnectionStatusKind: "",
+      activeThreadConnectionStatusText: "",
+      activeThreadHistoryStatusType: "failed",
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryTurns: [{ id: "turn-1" }],
+      activeThreadMessages: [{ role: "user", text: "hi", kind: "" }],
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      liveDebugEvents: [],
+      suppressedSyntheticPendingUserInputsByThreadId: {},
+    };
+    const statuses = [];
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat() {},
+      removeChatMessageByKey() {
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-old",
+        status: "failed",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    });
+
+    expect(statuses).toEqual([]);
+    expect(state.activeThreadPendingTurnRunning).toBe(true);
+    expect(state.suppressedSyntheticPendingUserInputsByThreadId).toEqual({});
+    expect(
+      state.liveDebugEvents.some((event) => event.kind === "live.drop:stale_pending_turn_terminal_replay")
+    ).toBe(true);
+  });
+
+  it("drops a failed replay without clearing the current latched error even if activeThreadStarted is false", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadStarted: false,
+      wsSubscribedEvents: true,
+      activeThreadHistoryStatusType: "failed",
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryTurns: [{ id: "turn-1" }],
+      activeThreadMessages: [{ role: "user", text: "hi", kind: "" }],
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available; preferred=aigateway; tried=",
+      liveDebugEvents: [],
+    };
+    const removedKeys = [];
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus() {},
+      setRuntimeActivity() {},
+      addChat() {},
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "failed",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    });
+
+    expect(removedKeys).toEqual(["live-thread-connection-status"]);
+    expect(state.activeThreadConnectionStatusKind).toBe("");
+    expect(state.activeThreadConnectionStatusText).toBe("");
+    expect(
+      state.liveDebugEvents.some((event) => event.kind === "live.drop:dormant_terminal_connection_replay")
+    ).toBe(true);
+  });
+
+  it("drops failed connection replay while reopening a thread before history has loaded", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadOpenState: { threadId: "thread-1", loaded: false, resumeRequired: false },
+      wsSubscribedEvents: true,
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      activeThreadConnectionStatusKind: "error",
+      activeThreadConnectionStatusText: "no routable providers available; preferred=aigateway; tried=",
+      liveDebugEvents: [],
+    };
+    const chatMessages = [];
+    const statuses = [];
+    const removedKeys = [];
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "failed",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    });
+
+    expect(chatMessages).toEqual([]);
+    expect(statuses).toEqual([{ message: "", isWarn: false }]);
+    expect(removedKeys).toEqual(["live-thread-connection-status"]);
+    expect(state.activeThreadConnectionStatusKind).toBe("");
+    expect(state.activeThreadConnectionStatusText).toBe("");
+    expect(
+      state.liveDebugEvents.some((event) => event.kind === "live.drop:hydrating_thread_connection_replay")
+    ).toBe(true);
+  });
+
+  it("drops failed replay after refresh even if the old reconnect replay guard still says reconnect seen", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadStarted: false,
+      wsSubscribedEvents: true,
+      activeThreadHistoryStatusType: "failed",
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryTurns: [{ id: "turn-1" }],
+      activeThreadMessages: [{ role: "user", text: "hi", kind: "" }],
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      activeThreadConnectionStatusKind: "",
+      activeThreadConnectionStatusText: "",
+      activeThreadConnectionReplayGuardThreadId: "thread-1",
+      activeThreadConnectionReplayGuardEpoch: 4,
+      activeThreadLiveStateEpoch: 4,
+      activeThreadConnectionReplayGuardReconnectSeen: true,
+      liveDebugEvents: [],
+    };
+    const chatMessages = [];
+    const statuses = [];
+    const removedKeys = [];
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "failed",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    });
+
+    expect(chatMessages).toEqual([]);
+    expect(statuses).toEqual([]);
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("");
+    expect(state.activeThreadConnectionStatusText).toBe("");
+    expect(
+      state.liveDebugEvents.some((event) => event.kind === "live.drop:dormant_terminal_connection_replay")
+    ).toBe(true);
+  });
+
+  it("drops reconnect replay while reopening a history-only thread before terminal history catches up", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadStarted: true,
+      wsSubscribedEvents: true,
+      activeThreadOpenState: { threadId: "thread-1", loaded: true, resumeRequired: false },
+      activeThreadHistoryStatusType: "active",
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryTurns: [{ id: "turn-1" }],
+      activeThreadMessages: [{ role: "user", text: "hi", kind: "" }],
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      activeThreadConnectionStatusKind: "",
+      activeThreadConnectionStatusText: "",
+      liveDebugEvents: [],
+    };
+    const chatMessages = [];
+    const statuses = [];
+    const removedKeys = [];
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "reconnecting",
+        message: "no routable providers available; preferred=aigateway; tried=. Reconnecting... 5/5",
+      },
+    });
+
+    expect(chatMessages).toEqual([]);
+    expect(statuses).toEqual([]);
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("");
+    expect(state.activeThreadConnectionStatusText).toBe("");
+    expect(
+      state.liveDebugEvents.some((event) => event.kind === "live.drop:dormant_reconnect_replay")
+    ).toBe(true);
+  });
+
+  it("drops failed turn replay while reopening a history-only thread before terminal history catches up", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadStarted: true,
+      wsSubscribedEvents: true,
+      activeThreadOpenState: { threadId: "thread-1", loaded: true, resumeRequired: false },
+      activeThreadHistoryStatusType: "active",
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryTurns: [{ id: "turn-1" }],
+      activeThreadMessages: [{ role: "user", text: "hi", kind: "" }],
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      activeThreadConnectionStatusKind: "",
+      activeThreadConnectionStatusText: "",
+      liveDebugEvents: [],
+    };
+    const chatMessages = [];
+    const statuses = [];
+    const removedKeys = [];
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-1",
+        turn: {
+          status: "failed",
+          error: { message: "no routable providers available; preferred=aigateway; tried=" },
+        },
+      },
+    });
+
+    expect(chatMessages).toEqual([]);
+    expect(statuses).toEqual([]);
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("");
+    expect(state.activeThreadConnectionStatusText).toBe("");
+    expect(
+      state.liveDebugEvents.some((event) => event.kind === "live.drop:dormant_terminal_turn_failure_replay")
+    ).toBe(true);
+  });
+
+  it("drops reconnect replay after refresh when terminal history is already authoritative", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadStarted: false,
+      wsSubscribedEvents: true,
+      activeThreadHistoryStatusType: "failed",
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryTurns: [{ id: "turn-1" }],
+      activeThreadMessages: [{ role: "user", text: "hi", kind: "" }],
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      activeThreadConnectionStatusKind: "",
+      activeThreadConnectionStatusText: "",
+      activeThreadConnectionReplayGuardThreadId: "thread-1",
+      activeThreadConnectionReplayGuardEpoch: 4,
+      activeThreadLiveStateEpoch: 4,
+      activeThreadConnectionReplayGuardReconnectSeen: true,
+      liveDebugEvents: [],
+    };
+    const chatMessages = [];
+    const statuses = [];
+    const removedKeys = [];
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "reconnecting",
+        message: "no routable providers available; preferred=aigateway; tried=. Reconnecting... 1/5",
+      },
+    });
+
+    expect(chatMessages).toEqual([]);
+    expect(statuses).toEqual([]);
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("");
+    expect(state.activeThreadConnectionStatusText).toBe("");
+    expect(
+      state.liveDebugEvents.some((event) => event.kind === "live.drop:dormant_reconnect_replay")
+    ).toBe(true);
+  });
+
+  it("drops failed connection replay while the active thread is still hydrating history even without open-state metadata", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      wsSubscribedEvents: true,
+      activeThreadHistoryThreadId: "",
+      activeThreadHistoryTurns: [],
+      activeThreadMessages: [],
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      activeThreadConnectionStatusKind: "",
+      activeThreadConnectionStatusText: "",
+      liveDebugEvents: [],
+    };
+    const chatMessages = [];
+    const statuses = [];
+    const removedKeys = [];
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "failed",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    });
+
+    expect(chatMessages).toEqual([]);
+    expect(statuses).toEqual([]);
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("");
+    expect(state.activeThreadConnectionStatusText).toBe("");
+    expect(
+      state.liveDebugEvents.some((event) => event.kind === "live.drop:hydrating_thread_connection_replay")
+    ).toBe(true);
+  });
+
+  it("drops a failed turn/completed replay while the active thread is still hydrating history", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      wsSubscribedEvents: true,
+      activeThreadOpenState: { threadId: "thread-1", loaded: false, resumeRequired: false },
+      activeThreadHistoryThreadId: "",
+      activeThreadHistoryTurns: [],
+      activeThreadMessages: [],
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      activeThreadConnectionStatusKind: "",
+      activeThreadConnectionStatusText: "",
+      liveDebugEvents: [],
+    };
+    const chatMessages = [];
+    const statuses = [];
+    const removedKeys = [];
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-1",
+        turn: {
+          id: "turn-1",
+          status: "failed",
+          message: "no routable providers available; preferred=aigateway; tried=",
+        },
+      },
+    });
+
+    expect(chatMessages).toEqual([]);
+    expect(statuses).toEqual([]);
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("");
+    expect(state.activeThreadConnectionStatusText).toBe("");
+    expect(
+      state.liveDebugEvents.some((event) => event.kind === "live.drop:hydrating_thread_connection_replay")
+    ).toBe(true);
+  });
+
+  it("drops a failed turn/completed replay when authoritative failed history is already loaded", () => {
+    const chatMessages = [];
+    const statuses = [];
+    const removedKeys = [];
+    const state = {
+      activeThreadId: "thread-1",
+      wsSubscribedEvents: true,
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryStatusType: "failed",
+      activeThreadHistoryTurns: [{ id: "turn-1" }],
+      activeThreadMessages: [{ role: "user", text: "hi" }],
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadCommentaryCurrent: null,
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadConnectionStatusKind: "",
+      activeThreadConnectionStatusText: "",
+      liveDebugEvents: [],
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-1",
+        status: "failed",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    });
+
+    expect(chatMessages).toEqual([]);
+    expect(statuses).toEqual([]);
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("");
+    expect(state.activeThreadConnectionStatusText).toBe("");
+    expect(
+      state.liveDebugEvents.some((event) => event.kind === "live.drop:dormant_terminal_turn_failure_replay")
+    ).toBe(true);
+  });
+
+  it("keeps a delayed failed turn/completed as terminal when the current thread is still visibly reconnecting", () => {
+    const chatMessages = [];
+    const statuses = [];
+    const removedKeys = [];
+    const state = {
+      activeThreadId: "thread-1",
+      wsSubscribedEvents: true,
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryStatusType: "failed",
+      activeThreadHistoryTurns: [{ id: "turn-1" }],
+      activeThreadMessages: [
+        { role: "user", text: "hi", kind: "" },
+        { role: "user", text: "hi", kind: "" },
+      ],
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-2",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadCommentaryCurrent: null,
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadConnectionStatusKind: "reconnecting",
+      activeThreadConnectionStatusText: "Reconnecting... 5/5",
+      liveDebugEvents: [],
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-1",
+        status: "failed",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    });
+
+    expect(chatMessages).toEqual([
+      expect.objectContaining({
+        role: "system",
+        content: "no routable providers available; preferred=aigateway; tried=",
+        options: expect.objectContaining({ kind: "error" }),
+      }),
+    ]);
+    expect(statuses).toEqual([
+      { message: "no routable providers available; preferred=aigateway; tried=", isWarn: true },
+      { message: "no routable providers available; preferred=aigateway; tried=", isWarn: true },
+    ]);
+    expect(removedKeys).toEqual(["live-thread-connection-status"]);
+    expect(state.activeThreadConnectionStatusKind).toBe("error");
+    expect(state.activeThreadConnectionStatusText).toBe("no routable providers available; preferred=aigateway; tried=");
+  });
+
+  it("keeps a current-cycle failed turn/completed as terminal after reconnect was already seen", () => {
+    const chatMessages = [];
+    const statuses = [];
+    const removedKeys = [];
+    const state = {
+      activeThreadId: "thread-1",
+      wsSubscribedEvents: true,
+      activeThreadLiveStateEpoch: 9,
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryStatusType: "failed",
+      activeThreadHistoryTurns: [{ id: "turn-old" }],
+      activeThreadMessages: [
+        { role: "user", text: "hi", kind: "" },
+        { role: "user", text: "hi", kind: "" },
+      ],
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadCommentaryCurrent: null,
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadConnectionStatusKind: "",
+      activeThreadConnectionStatusText: "",
+      activeThreadConnectionReplayGuardThreadId: "thread-1",
+      activeThreadConnectionReplayGuardText: "no routable providers available; preferred=aigateway; tried=",
+      activeThreadConnectionReplayGuardEpoch: 9,
+      activeThreadConnectionReplayGuardReconnectSeen: true,
+      liveDebugEvents: [],
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-1",
+        turn: {
+          id: "turn-2",
+          status: "failed",
+          message: "no routable providers available; preferred=aigateway; tried=",
+        },
+      },
+    });
+
+    expect(chatMessages).toEqual([]);
+    expect(statuses).toEqual([]);
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("");
+    expect(state.activeThreadConnectionStatusText).toBe("");
+    expect(
+      state.liveDebugEvents.some((event) => event.kind === "live.drop:dormant_terminal_turn_failure_replay")
+    ).toBe(true);
+  });
+
+  it("keeps a current-cycle failed thread status as terminal after reconnect was already seen", () => {
+    const chatMessages = [];
+    const statuses = [];
+    const removedKeys = [];
+    const state = {
+      activeThreadId: "thread-1",
+      wsSubscribedEvents: true,
+      activeThreadLiveStateEpoch: 9,
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryStatusType: "failed",
+      activeThreadHistoryTurns: [{ id: "turn-old" }],
+      activeThreadMessages: [
+        { role: "user", text: "hi", kind: "" },
+        { role: "user", text: "hi", kind: "" },
+      ],
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadLiveAssistantThreadId: "",
+      activeThreadCommentaryCurrent: null,
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadConnectionStatusKind: "",
+      activeThreadConnectionStatusText: "",
+      activeThreadConnectionReplayGuardThreadId: "thread-1",
+      activeThreadConnectionReplayGuardText: "no routable providers available; preferred=aigateway; tried=",
+      activeThreadConnectionReplayGuardEpoch: 9,
+      activeThreadConnectionReplayGuardReconnectSeen: true,
+      liveDebugEvents: [],
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey(messageKey) {
+        removedKeys.push(String(messageKey || ""));
+        return true;
+      },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "failed",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    });
+
+    expect(chatMessages).toEqual([]);
+    expect(statuses).toEqual([]);
+    expect(removedKeys).toEqual([]);
+    expect(state.activeThreadConnectionStatusKind).toBe("");
+    expect(state.activeThreadConnectionStatusText).toBe("");
+    expect(
+      state.liveDebugEvents.some((event) => event.kind === "live.drop:dormant_terminal_connection_replay")
+    ).toBe(true);
+  });
+  it("defers terminal connection error until authoritative history also becomes terminal", () => {
+    const statuses = [];
+    const chatMessages = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryStatusType: "active",
+      wsSubscribedEvents: true,
+      activeThreadConnectionStatusKind: "reconnecting",
+      activeThreadConnectionStatusText: "Reconnecting... 5/5",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadActiveCommands: [],
+      activeThreadPlan: null,
+      activeThreadCommentaryCurrent: null,
+      liveDebugEvents: [],
+    };
+    const module = createLiveNotificationsModule({
+      state,
+      byId() { return null; },
+      setStatus(message, isWarn = false) {
+        statuses.push({ message, isWarn });
+      },
+      setRuntimeActivity() {},
+      addChat(role, content, options) {
+        chatMessages.push({ role, content, options });
+      },
+      removeChatMessageByKey() { return false; },
+      scheduleChatLiveFollow() {},
+      finalizeRuntimeState() {},
+      normalizeType(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      },
+      normalizeInline(value) { return value == null ? null : String(value); },
+      normalizeMultiline(value) { return value == null ? null : String(value); },
+      readNumber(value) { return Number.isFinite(Number(value)) ? Number(value) : null; },
+      toRecord(value) { return value && typeof value === "object" ? value : null; },
+      toStructuredPreview(value) { return value == null ? null : String(value); },
+      extractNotificationThreadId(notification) {
+        return String(notification?.params?.threadId || "");
+      },
+    });
+
+    module.renderLiveNotification({
+      method: "thread/status/changed",
+      params: {
+        threadId: "thread-1",
+        status: "failed",
+        source: "gateway.no_routable_provider",
+        message: "no routable providers available; preferred=aigateway; tried=",
+      },
+    });
+
+    expect(state.activeThreadConnectionStatusKind).toBe("reconnecting");
+    expect(state.activeThreadPendingTerminalConnectionErrorThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTerminalConnectionErrorText).toBe(
+      "no routable providers available; preferred=aigateway; tried="
+    );
+    expect(statuses).toEqual([]);
+    expect(chatMessages).toEqual([]);
   });
 });

@@ -573,7 +573,7 @@ async fn refresh_usage_once_after_first_failure(
     }
 }
 
-const TRANSIENT_UPSTREAM_RETRY_ATTEMPTS: usize = 2;
+const TRANSIENT_UPSTREAM_RETRY_ATTEMPTS: usize = 5;
 const TRANSIENT_UPSTREAM_RETRY_DELAY_MS: u64 = 250;
 
 fn upstream_error_code_from_body(body: &str) -> Option<String> {
@@ -702,6 +702,7 @@ fn should_fallback_stream_response_to_non_stream(code: u16, body: &str) -> bool 
 
 #[derive(Clone, Copy)]
 struct GatewayThreadNotificationTarget<'a> {
+    workspace_target: Option<WorkspaceTarget>,
     home: Option<&'a str>,
     thread_id: Option<&'a str>,
 }
@@ -724,22 +725,208 @@ struct NonStreamRetryRequest<'a> {
     timeout: u64,
 }
 
+struct RequestRetryBudget {
+    used_attempts: usize,
+    max_attempts: usize,
+}
+
+impl RequestRetryBudget {
+    fn new(max_attempts: usize) -> Self {
+        Self {
+            used_attempts: 0,
+            max_attempts,
+        }
+    }
+
+    fn can_retry(&self) -> bool {
+        self.used_attempts < self.max_attempts
+    }
+
+    fn next_attempt(&mut self) -> Option<usize> {
+        if !self.can_retry() {
+            return None;
+        }
+        self.used_attempts += 1;
+        Some(self.used_attempts)
+    }
+}
+
+enum GatewayRetryBudget {
+    Request(RequestRetryBudget),
+    AppServerOwned {
+        workspace_target: WorkspaceTarget,
+        home: Option<String>,
+        thread_id: String,
+        max_attempts: usize,
+    },
+}
+
+fn trace_gateway_retry_budget(event: &str, payload: Value) {
+    let _ =
+        crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(&json!({
+            "source": "gateway.retry_budget",
+            "entry": {
+                "at": unix_ms(),
+                "kind": event,
+                "payload": payload,
+            }
+        }));
+}
+
+impl GatewayRetryBudget {
+    fn new(notification: GatewayThreadNotificationTarget<'_>, max_attempts: usize) -> Self {
+        let app_server_owned = notification
+            .thread_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+            && notification.workspace_target.is_some();
+        if app_server_owned {
+            let workspace_target = notification
+                .workspace_target
+                .expect("app-server-owned retry budget requires workspace target");
+            let thread_id = notification
+                .thread_id
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .expect("app-server-owned retry budget requires thread id")
+                .to_string();
+            trace_gateway_retry_budget(
+                "gateway.retry_budget.new",
+                json!({
+                    "mode": "app_server_owned",
+                    "threadId": thread_id,
+                    "workspace": format!("{workspace_target:?}"),
+                    "home": notification.home,
+                    "maxAttempts": max_attempts,
+                }),
+            );
+            return Self::AppServerOwned {
+                workspace_target,
+                home: notification.home.map(str::to_string),
+                thread_id,
+                max_attempts,
+            };
+        }
+        trace_gateway_retry_budget(
+            "gateway.retry_budget.new",
+            json!({
+                "mode": "request",
+                "threadId": notification.thread_id,
+                "workspace": notification.workspace_target.map(|target| format!("{target:?}")),
+                "home": notification.home,
+                "maxAttempts": max_attempts,
+            }),
+        );
+        Self::Request(RequestRetryBudget::new(max_attempts))
+    }
+
+    fn can_retry(&self) -> bool {
+        match self {
+            Self::Request(request) => request.can_retry(),
+            Self::AppServerOwned {
+                workspace_target,
+                home,
+                thread_id,
+                max_attempts,
+            } => crate::orchestrator::gateway::web_codex_session_runtime::workspace_thread_retry_budget_can_retry(
+                Some(*workspace_target),
+                home.as_deref(),
+                thread_id,
+                *max_attempts,
+            ),
+        }
+    }
+
+    fn emits_thread_status_notifications(&self) -> bool {
+        true
+    }
+
+    fn next_attempt(&mut self) -> Option<(usize, usize)> {
+        match self {
+            Self::Request(request) => request.next_attempt().map(|attempt| {
+                trace_gateway_retry_budget(
+                    "gateway.retry_budget.consume",
+                    json!({
+                        "mode": "request",
+                        "attempt": attempt,
+                        "maxAttempts": request.max_attempts,
+                    }),
+                );
+                (attempt, request.max_attempts)
+            }),
+            Self::AppServerOwned {
+                workspace_target,
+                home,
+                thread_id,
+                max_attempts,
+            } => crate::orchestrator::gateway::web_codex_session_runtime::consume_workspace_thread_retry_attempt(
+                Some(*workspace_target),
+                home.as_deref(),
+                thread_id,
+                *max_attempts,
+            )
+            .map(|attempt| {
+                trace_gateway_retry_budget(
+                    "gateway.retry_budget.consume",
+                    json!({
+                        "mode": "app_server_owned",
+                        "threadId": thread_id,
+                        "workspace": format!("{workspace_target:?}"),
+                        "home": home,
+                        "attempt": attempt,
+                        "maxAttempts": max_attempts,
+                    }),
+                );
+                (attempt, *max_attempts)
+            }),
+        }
+    }
+}
+
 async fn push_gateway_thread_status_notification(
-    notification_home: Option<&str>,
-    thread_id: Option<&str>,
+    notification: GatewayThreadNotificationTarget<'_>,
     status: &str,
     source: &str,
     message: Option<&str>,
 ) {
-    let Some(thread_id) = thread_id.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(thread_id) = notification
+        .thread_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
         return;
     };
-    crate::codex_app_server::push_thread_status_changed_notification(
-        notification_home,
+    let turn_id = notification
+        .workspace_target
+        .and_then(|workspace_target| {
+            self::web_codex_session_runtime::workspace_thread_runtime_snapshot(
+                Some(workspace_target),
+                notification.home,
+                thread_id,
+            )
+        })
+        .and_then(|snapshot| snapshot.last_turn_id);
+    if status == "failed" {
+        if let Some(turn_id) = turn_id.as_deref() {
+            crate::codex_app_server::push_turn_terminal_failure_notifications(
+                notification.home,
+                thread_id,
+                turn_id,
+                source,
+                message,
+            )
+            .await;
+            return;
+        }
+    }
+    crate::codex_app_server::push_thread_status_changed_notification_with_turn(
+        notification.home,
         thread_id,
         status,
         source,
         message,
+        turn_id.as_deref(),
     )
     .await;
 }
@@ -749,9 +936,6 @@ async fn log_upstream_retry_event(
     notification: GatewayThreadNotificationTarget<'_>,
     event: UpstreamRetryEvent<'_>,
 ) {
-    let cfg = st.cfg.read().clone();
-    st.router
-        .mark_transient_warning(event.provider_name, &cfg, event.detail, unix_ms());
     st.store.events().emit(
         event.provider_name,
         crate::orchestrator::store::EventCode::GATEWAY_UPSTREAM_RETRY,
@@ -764,13 +948,93 @@ async fn log_upstream_retry_event(
         }),
     );
     push_gateway_thread_status_notification(
-        notification.home,
-        notification.thread_id,
+        notification,
         "reconnecting",
         "gateway.upstream_retry",
-        Some(event.detail),
+        Some(&format_gateway_retry_status_message(
+            event.detail,
+            event.attempt,
+            event.max_attempts,
+        )),
     )
     .await;
+}
+
+fn format_gateway_retry_status_message(
+    detail: &str,
+    attempt: usize,
+    max_attempts: usize,
+) -> String {
+    let cleaned_detail = detail.trim().trim_end_matches('.');
+    let progress = format!("{attempt}/{max_attempts}");
+    if cleaned_detail.is_empty() {
+        format!("Reconnecting... {progress}")
+    } else {
+        format!("{cleaned_detail}. Reconnecting... {progress}")
+    }
+}
+
+async fn push_gateway_retry_status_notification(
+    notification_home: Option<&str>,
+    thread_id: Option<&str>,
+    detail: &str,
+    attempt: usize,
+    max_attempts: usize,
+) {
+    let message = format_gateway_retry_status_message(detail, attempt, max_attempts);
+    push_gateway_thread_status_notification(
+        GatewayThreadNotificationTarget {
+            workspace_target: None,
+            home: notification_home,
+            thread_id,
+        },
+        "reconnecting",
+        "gateway.upstream_retry",
+        Some(&message),
+    )
+    .await;
+}
+
+async fn consume_request_retry(
+    st: &GatewayState,
+    notification: GatewayThreadNotificationTarget<'_>,
+    retry_budget: &mut GatewayRetryBudget,
+    event: UpstreamRetryEvent<'_>,
+) -> bool {
+    let Some((attempt, max_attempts)) = retry_budget.next_attempt() else {
+        return false;
+    };
+    log_upstream_retry_event(
+        st,
+        notification,
+        UpstreamRetryEvent {
+            attempt,
+            max_attempts,
+            ..event
+        },
+    )
+    .await;
+    true
+}
+
+async fn consume_request_retry_without_provider(
+    notification_home: Option<&str>,
+    thread_id: Option<&str>,
+    retry_budget: &mut GatewayRetryBudget,
+    detail: &str,
+) -> bool {
+    let Some((attempt, max_attempts)) = retry_budget.next_attempt() else {
+        return false;
+    };
+    push_gateway_retry_status_notification(
+        notification_home,
+        thread_id,
+        detail,
+        attempt,
+        max_attempts,
+    )
+    .await;
+    true
 }
 
 fn log_websocket_fallback_event(st: &GatewayState, provider_name: &str, detail: &str) {
@@ -788,10 +1052,10 @@ fn log_websocket_fallback_event(st: &GatewayState, provider_name: &str, detail: 
 async fn post_non_stream_with_http_retry(
     st: &GatewayState,
     notification: GatewayThreadNotificationTarget<'_>,
+    retry_budget: &mut GatewayRetryBudget,
     request: NonStreamRetryRequest<'_>,
 ) -> Result<(u16, Value), reqwest::Error> {
-    let mut http_result = None;
-    for attempt in 1..=TRANSIENT_UPSTREAM_RETRY_ATTEMPTS {
+    loop {
         let result = st
             .upstream
             .post_json(
@@ -804,55 +1068,47 @@ async fn post_non_stream_with_http_retry(
             )
             .await;
         let should_retry = match &result {
-            Ok((code, _)) => {
-                is_retryable_upstream_status(*code) && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
-            }
-            Err(e) => {
-                should_retry_upstream_request_error(e)
-                    && attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
-            }
+            Ok((code, _)) => is_retryable_upstream_status(*code) && retry_budget.can_retry(),
+            Err(e) => should_retry_upstream_request_error(e) && retry_budget.can_retry(),
         };
-        if should_retry {
-            let detail = match &result {
-                Ok((code, _)) => {
-                    format!(
-                        "retrying upstream non-stream after http {code} from {}",
-                        request.provider_name
-                    )
-                }
-                Err(e) => format!(
-                    "retrying upstream non-stream after request error from {}: {e}",
-                    request.provider_name
-                ),
-            };
-            let kind = if result.is_ok() {
-                "http_status"
-            } else {
-                "request_error"
-            };
-            log_upstream_retry_event(
+        let detail = match &result {
+            Ok((code, _)) => format!(
+                "retrying upstream non-stream after http {code} from {}",
+                request.provider_name
+            ),
+            Err(e) => format!(
+                "retrying upstream non-stream after request error from {}: {e}",
+                request.provider_name
+            ),
+        };
+        if should_retry
+            && consume_request_retry(
                 st,
                 notification,
+                retry_budget,
                 UpstreamRetryEvent {
                     provider_name: request.provider_name,
-                    kind,
+                    kind: if result.is_ok() {
+                        "http_status"
+                    } else {
+                        "request_error"
+                    },
                     detail: &detail,
-                    attempt,
-                    max_attempts: TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
+                    attempt: 0,
+                    max_attempts: 0,
                     stream: false,
                 },
             )
-            .await;
+            .await
+        {
             tokio::time::sleep(std::time::Duration::from_millis(
                 TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
             ))
             .await;
             continue;
         }
-        http_result = Some(result);
-        break;
+        return result;
     }
-    http_result.expect("non-stream attempt result")
 }
 
 #[cfg(test)]
@@ -1058,8 +1314,10 @@ mod web_codex_meta;
 mod web_codex_rollout_import;
 mod web_codex_rollout_path;
 mod web_codex_runtime;
-mod web_codex_session_manager;
+pub(crate) mod web_codex_session_manager;
 mod web_codex_session_runtime;
+#[cfg(test)]
+pub(crate) use self::web_codex_session_runtime::_clear_workspace_runtime_registry_for_test;
 pub(crate) mod web_codex_storage;
 mod web_codex_thread_options;
 mod web_codex_thread_routes;
@@ -1292,13 +1550,15 @@ async fn responses(
     let request_base_url = request_base_url_hint(&headers, cfg.listen.port);
     let request_origin = usage_origin_from_base_url(request_base_url.as_deref());
     let request_is_wsl = request_origin == crate::constants::USAGE_ORIGIN_WSL2;
-    let notification_home = web_codex_rpc_home_override_for_target(Some(if request_is_wsl {
-        web_codex_home::WorkspaceTarget::Wsl2
+    let notification_workspace_target = Some(if request_is_wsl {
+        WorkspaceTarget::Wsl2
     } else {
-        web_codex_home::WorkspaceTarget::Windows
-    }));
+        WorkspaceTarget::Windows
+    });
+    let notification_home = web_codex_rpc_home_override_for_target(notification_workspace_target);
     let notification_thread_id = (!session_key.starts_with("peer:")).then_some(session_key.clone());
     let notification = GatewayThreadNotificationTarget {
+        workspace_target: notification_workspace_target,
         home: notification_home.as_deref(),
         thread_id: notification_thread_id.as_deref(),
     };
@@ -1511,9 +1771,15 @@ async fn responses(
     let mut last_err = String::new();
     let mut invalid_request_response: Option<Response> = None;
     let mut usage_refreshed_after_first_failure = false;
+    let mut retry_budget = GatewayRetryBudget::new(notification, TRANSIENT_UPSTREAM_RETRY_ATTEMPTS);
+    let gateway_owns_thread_status = retry_budget.emits_thread_status_notifications();
+    let mut terminal_status_sent = false;
 
     let mut session_messages: Option<Vec<Value>> = None;
-    for _ in 0..cfg.providers.len().max(1) {
+    let provider_iteration_limit = cfg.providers.len().max(1) + TRANSIENT_UPSTREAM_RETRY_ATTEMPTS;
+    let mut provider_iteration_count = 0usize;
+    'provider_loop: while provider_iteration_count < provider_iteration_limit {
+        provider_iteration_count += 1;
         let request_unsupported_providers = load_session_unsupported_model_providers(
             &session_key,
             requested_model.as_deref(),
@@ -1560,14 +1826,16 @@ async fn responses(
                     requested_model.as_deref(),
                     &request_unsupported_providers,
                 );
-                push_gateway_thread_status_notification(
-                    notification_home.as_deref(),
-                    notification_thread_id.as_deref(),
-                    "failed",
-                    "gateway.invalid_request",
-                    Some(&unsupported_message),
-                )
-                .await;
+                if gateway_owns_thread_status {
+                    push_gateway_thread_status_notification(
+                        notification,
+                        "failed",
+                        "gateway.invalid_request",
+                        Some(&unsupported_message),
+                    )
+                    .await;
+                    terminal_status_sent = true;
+                }
                 invalid_request_response = Some(cached_unsupported_model_response(
                     requested_model.as_deref(),
                     &request_unsupported_providers,
@@ -1580,14 +1848,31 @@ async fn responses(
                 "no routable providers available; preferred={preferred}; tried={}",
                 tried.join(",")
             );
-            push_gateway_thread_status_notification(
+            if consume_request_retry_without_provider(
                 notification_home.as_deref(),
                 notification_thread_id.as_deref(),
-                "failed",
-                "gateway.no_routable_provider",
-                Some(&last_err),
+                &mut retry_budget,
+                &last_err,
             )
-            .await;
+            .await
+            {
+                tried.clear();
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
+                ))
+                .await;
+                continue;
+            }
+            if gateway_owns_thread_status {
+                push_gateway_thread_status_notification(
+                    notification,
+                    "failed",
+                    "gateway.no_routable_provider",
+                    Some(&last_err),
+                )
+                .await;
+                terminal_status_sent = true;
+            }
             break;
         }
         if tried.contains(&provider_name) {
@@ -1698,7 +1983,7 @@ async fn responses(
                 let allow_websocket_transport = p.supports_websockets && !use_prev_id;
                 let mut websocket_stream_attempted = false;
                 let mut should_fallback_to_non_stream = false;
-                for attempt in 1..=TRANSIENT_UPSTREAM_RETRY_ATTEMPTS {
+                loop {
                     if allow_websocket_transport && !websocket_stream_attempted {
                         websocket_stream_attempted = true;
                         match st
@@ -1912,26 +2197,29 @@ async fn responses(
                                 );
                                 continue;
                             }
-                            let can_retry = attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
-                                && is_retryable_upstream_status(code);
-                            let can_fallback =
-                                should_fallback_stream_response_to_non_stream(code, &txt);
-                            if can_retry {
-                                log_upstream_retry_event(
+                            let can_retry =
+                                is_retryable_upstream_status(code) && retry_budget.can_retry();
+                            let can_fallback = retry_budget.can_retry()
+                                && should_fallback_stream_response_to_non_stream(code, &txt);
+                            let retry_detail = format!(
+                                "retrying upstream stream after http {code} from {provider_name}"
+                            );
+                            if can_retry
+                                && consume_request_retry(
                                     &st,
                                     notification,
+                                    &mut retry_budget,
                                     UpstreamRetryEvent {
                                         provider_name: &provider_name,
                                         kind: "http_status",
-                                        detail: &format!(
-                                            "retrying upstream stream after http {code} from {provider_name}"
-                                        ),
-                                        attempt,
-                                        max_attempts: TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
+                                        detail: &retry_detail,
+                                        attempt: 0,
+                                        max_attempts: 0,
                                         stream: true,
                                     },
                                 )
-                                .await;
+                                .await
+                            {
                                 tokio::time::sleep(std::time::Duration::from_millis(
                                     TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
                                 ))
@@ -1975,14 +2263,16 @@ async fn responses(
                                         "stream": true
                                     }),
                                 );
-                                push_gateway_thread_status_notification(
-                                    notification_home.as_deref(),
-                                    notification_thread_id.as_deref(),
-                                    "failed",
-                                    "gateway.invalid_request",
-                                    Some(&last_err),
-                                )
-                                .await;
+                                if gateway_owns_thread_status {
+                                    push_gateway_thread_status_notification(
+                                        notification,
+                                        "failed",
+                                        "gateway.invalid_request",
+                                        Some(&last_err),
+                                    )
+                                    .await;
+                                    terminal_status_sent = true;
+                                }
                                 remember_session_unsupported_model_provider(
                                     &session_key,
                                     requested_model.as_deref(),
@@ -2005,48 +2295,67 @@ async fn responses(
                                     "stream": true
                                 }),
                             );
-                            push_gateway_thread_status_notification(
-                                notification_home.as_deref(),
-                                notification_thread_id.as_deref(),
-                                "failed",
-                                "gateway.upstream_error",
-                                Some(&last_err),
-                            )
-                            .await;
                             refresh_usage_once_after_first_failure(
                                 &st,
                                 &provider_name,
                                 &mut usage_refreshed_after_first_failure,
                             )
                             .await;
+                            if consume_request_retry(
+                                &st,
+                                notification,
+                                &mut retry_budget,
+                                UpstreamRetryEvent {
+                                    provider_name: &provider_name,
+                                    kind: "http_status",
+                                    detail: &last_err,
+                                    attempt: 0,
+                                    max_attempts: 0,
+                                    stream: true,
+                                },
+                            )
+                            .await
+                            {
+                                if tried.len() >= cfg.providers.len().max(1) {
+                                    tried.clear();
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(
+                                    TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
+                                ))
+                                .await;
+                                continue 'provider_loop;
+                            }
                             break;
                         }
                         Err(e) => {
-                            let can_retry = attempt < TRANSIENT_UPSTREAM_RETRY_ATTEMPTS
-                                && should_retry_upstream_request_error(&e);
-                            if can_retry {
-                                log_upstream_retry_event(
+                            let can_retry =
+                                should_retry_upstream_request_error(&e) && retry_budget.can_retry();
+                            let retry_detail = format!(
+                                "retrying upstream stream after request error from {provider_name}: {e}"
+                            );
+                            if can_retry
+                                && consume_request_retry(
                                     &st,
                                     notification,
+                                    &mut retry_budget,
                                     UpstreamRetryEvent {
                                         provider_name: &provider_name,
                                         kind: "request_error",
-                                        detail: &format!(
-                                            "retrying upstream stream after request error from {provider_name}: {e}"
-                                        ),
-                                        attempt,
-                                        max_attempts: TRANSIENT_UPSTREAM_RETRY_ATTEMPTS,
+                                        detail: &retry_detail,
+                                        attempt: 0,
+                                        max_attempts: 0,
                                         stream: true,
                                     },
                                 )
-                                .await;
+                                .await
+                            {
                                 tokio::time::sleep(std::time::Duration::from_millis(
                                     TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
                                 ))
                                 .await;
                                 continue;
                             }
-                            if should_retry_upstream_request_error(&e) {
+                            if retry_budget.can_retry() && should_retry_upstream_request_error(&e) {
                                 should_fallback_to_non_stream = true;
                                 last_err = format!(
                                     "upstream {provider_name} error (responses stream): {e}"
@@ -2075,20 +2384,36 @@ async fn responses(
                                 &last_err,
                                 json!({ "endpoint": RESPONSES_ENDPOINT, "stream": true }),
                             );
-                            push_gateway_thread_status_notification(
-                                notification_home.as_deref(),
-                                notification_thread_id.as_deref(),
-                                "failed",
-                                "gateway.upstream_error",
-                                Some(&last_err),
-                            )
-                            .await;
                             refresh_usage_once_after_first_failure(
                                 &st,
                                 &provider_name,
                                 &mut usage_refreshed_after_first_failure,
                             )
                             .await;
+                            if consume_request_retry(
+                                &st,
+                                notification,
+                                &mut retry_budget,
+                                UpstreamRetryEvent {
+                                    provider_name: &provider_name,
+                                    kind: "request_error",
+                                    detail: &last_err,
+                                    attempt: 0,
+                                    max_attempts: 0,
+                                    stream: true,
+                                },
+                            )
+                            .await
+                            {
+                                if tried.len() >= cfg.providers.len().max(1) {
+                                    tried.clear();
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(
+                                    TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
+                                ))
+                                .await;
+                                continue 'provider_loop;
+                            }
                             break;
                         }
                     }
@@ -2133,6 +2458,7 @@ async fn responses(
                         post_non_stream_with_http_retry(
                             &st,
                             notification,
+                            &mut retry_budget,
                             NonStreamRetryRequest {
                                 provider_name: &provider_name,
                                 provider: &p,
@@ -2149,6 +2475,7 @@ async fn responses(
                 post_non_stream_with_http_retry(
                     &st,
                     notification,
+                    &mut retry_budget,
                     NonStreamRetryRequest {
                         provider_name: &provider_name,
                         provider: &p,
@@ -2301,14 +2628,16 @@ async fn responses(
                                 "stream": false
                             }),
                         );
-                        push_gateway_thread_status_notification(
-                            notification_home.as_deref(),
-                            notification_thread_id.as_deref(),
-                            "failed",
-                            "gateway.invalid_request",
-                            Some(&last_err),
-                        )
-                        .await;
+                        if gateway_owns_thread_status {
+                            push_gateway_thread_status_notification(
+                                notification,
+                                "failed",
+                                "gateway.invalid_request",
+                                Some(&last_err),
+                            )
+                            .await;
+                            terminal_status_sent = true;
+                        }
                         remember_session_unsupported_model_provider(
                             &session_key,
                             requested_model.as_deref(),
@@ -2328,20 +2657,36 @@ async fn responses(
                         &last_err,
                         json!({ "http_status": code, "endpoint": RESPONSES_ENDPOINT, "stream": false }),
                     );
-                    push_gateway_thread_status_notification(
-                        notification_home.as_deref(),
-                        notification_thread_id.as_deref(),
-                        "failed",
-                        "gateway.upstream_error",
-                        Some(&last_err),
-                    )
-                    .await;
                     refresh_usage_once_after_first_failure(
                         &st,
                         &provider_name,
                         &mut usage_refreshed_after_first_failure,
                     )
                     .await;
+                    if consume_request_retry(
+                        &st,
+                        notification,
+                        &mut retry_budget,
+                        UpstreamRetryEvent {
+                            provider_name: &provider_name,
+                            kind: "http_status",
+                            detail: &last_err,
+                            attempt: 0,
+                            max_attempts: 0,
+                            stream: false,
+                        },
+                    )
+                    .await
+                    {
+                        if tried.len() >= cfg.providers.len().max(1) {
+                            tried.clear();
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
+                        ))
+                        .await;
+                        continue 'provider_loop;
+                    }
                     break;
                 }
                 Err(e) => {
@@ -2355,20 +2700,36 @@ async fn responses(
                         &last_err,
                         json!({ "endpoint": RESPONSES_ENDPOINT, "stream": false }),
                     );
-                    push_gateway_thread_status_notification(
-                        notification_home.as_deref(),
-                        notification_thread_id.as_deref(),
-                        "failed",
-                        "gateway.upstream_error",
-                        Some(&last_err),
-                    )
-                    .await;
                     refresh_usage_once_after_first_failure(
                         &st,
                         &provider_name,
                         &mut usage_refreshed_after_first_failure,
                     )
                     .await;
+                    if consume_request_retry(
+                        &st,
+                        notification,
+                        &mut retry_budget,
+                        UpstreamRetryEvent {
+                            provider_name: &provider_name,
+                            kind: "request_error",
+                            detail: &last_err,
+                            attempt: 0,
+                            max_attempts: 0,
+                            stream: false,
+                        },
+                    )
+                    .await
+                    {
+                        if tried.len() >= cfg.providers.len().max(1) {
+                            tried.clear();
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            TRANSIENT_UPSTREAM_RETRY_DELAY_MS,
+                        ))
+                        .await;
+                        continue 'provider_loop;
+                    }
                     break;
                 }
             }
@@ -2379,8 +2740,27 @@ async fn responses(
         return response;
     }
 
+    if gateway_owns_thread_status && !terminal_status_sent && !last_err.is_empty() {
+        push_gateway_thread_status_notification(
+            notification,
+            "failed",
+            "gateway.upstream_error",
+            Some(&last_err),
+        )
+        .await;
+    }
+
+    let final_status_code = if gateway_owns_thread_status {
+        StatusCode::FAILED_DEPENDENCY
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    // Codex Web app-server owns reconnecting/terminal turn lifecycle. Surface these
+    // failures as upstream-unavailable responses so app-server can drive its single
+    // canonical retry path instead of competing with a gateway-owned lifecycle.
     (
-        StatusCode::BAD_GATEWAY,
+        final_status_code,
         Json(json!({
             "error": {
                 "message": if last_err.is_empty() { "all providers failed" } else { &last_err },

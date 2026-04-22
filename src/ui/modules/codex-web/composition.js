@@ -21,10 +21,14 @@ export function createCodexWebComposition(deps) {
   const MutationObserverRef =
     deps.MutationObserverRef ??
     (typeof MutationObserver === "undefined" ? class {} : MutationObserver);
+  const clearLiveThreadConnectionStatus =
+    deps.clearLiveThreadConnectionStatus ?? (() => {});
 
   const { api, connectWs, handleWsPayload, syncEventSubscription, wsCall, wsSend } = deps.createWsClientModule({
     state: deps.state,
     setStatus: deps.setStatus,
+    removeChatMessageByKey: (...args) => chatTimeline.removeChatMessageByKey(...args),
+    clearTransientToolMessages: deps.clearTransientToolMessages,
     setRuntimeActivity: deps.setRuntimeActivity,
     toRecord: deps.toRecord,
     readString: deps.readString,
@@ -120,6 +124,7 @@ export function createCodexWebComposition(deps) {
     scrollChatToBottom: chatViewport.scrollChatToBottom,
     scrollToBottomReliable: chatViewport.scrollToBottomReliable,
     canStartChatLiveFollow: chatViewport.canStartChatLiveFollow,
+    setStatus: deps.setStatus,
     renderMessageBody: deps.renderMessageBody,
     addChat: chatTimeline.addChat,
     buildMsgNode: chatTimeline.buildMsgNode,
@@ -133,6 +138,7 @@ export function createCodexWebComposition(deps) {
     renderCommentaryArchive: chatTimeline.renderCommentaryArchive,
     syncRuntimeStateFromHistory: deps.syncRuntimeStateFromHistory,
     syncEventSubscription,
+    clearLiveThreadConnectionStatus: deps.clearLiveThreadConnectionStatus,
   });
 
   const modelPicker = deps.createModelPickerModule({
@@ -208,6 +214,7 @@ export function createCodexWebComposition(deps) {
     },
     refreshWorkspaceRuntimeState: workspaceUi.refreshWorkspaceRuntimeState,
     updateHeaderUi: deps.updateHeaderUi,
+    clearLiveThreadConnectionStatus,
     setStatus: deps.setStatus,
     scheduleThreadRefresh: deps.scheduleThreadRefresh,
     scrollToBottomReliable: chatViewport.scrollToBottomReliable,
@@ -291,6 +298,7 @@ export function createCodexWebComposition(deps) {
     clearSyntheticPendingUserInputById: connectionFlows.clearSyntheticPendingUserInputById,
     setSyntheticPendingUserInputs: connectionFlows.setSyntheticPendingUserInputs,
     suppressSyntheticPendingUserInputs: connectionFlows.suppressSyntheticPendingUserInputs,
+    clearLiveThreadConnectionStatus,
     setStatus: deps.setStatus,
     setActiveThread: deps.setActiveThread,
     setMainTab: deps.setMainTab,
@@ -321,6 +329,8 @@ export function createCodexWebComposition(deps) {
     bindResponsiveClick: deps.bindResponsiveClick,
     bindInput: deps.bindInput,
     setStatus: deps.setStatus,
+    addChat: chatTimeline.addChat,
+    removeChatMessageByKey: chatTimeline.removeChatMessageByKey,
     updateMobileComposerState: deps.updateMobileComposerState,
     refreshActiveThreadGitMeta: deps.refreshActiveThreadGitMeta,
     updateNotificationState: deps.updateNotificationState,
@@ -411,9 +421,11 @@ export function createCodexWebComposition(deps) {
     setActivePlan: deps.setActivePlan,
     setActiveCommands: deps.setActiveCommands,
     setRuntimeActivity: deps.setRuntimeActivity,
+    clearLiveThreadConnectionStatus,
     setChatOpening: chatTimeline.setChatOpening,
     loadThreadMessages: historyLoader.loadThreadMessages,
     refreshThreads: (...args) => refreshThreads(...args),
+    sendTurn: turnActions.sendTurn,
     handleWsPayload,
     scrollChatToBottom: chatViewport.scrollChatToBottom,
     scrollToBottomReliable: chatViewport.scrollToBottomReliable,
@@ -554,6 +566,7 @@ export function createCodexWebComposition(deps) {
     renderCommentaryArchive,
     renderAssistantLiveBody,
     renderPendingInline,
+    removeChatMessageByKey,
     setChatOpening,
   } = chatTimeline;
   const { applyThreadToChat, loadThreadMessages, updateLoadOlderControl } = historyLoader;
@@ -650,6 +663,7 @@ export function createCodexWebComposition(deps) {
     renderCommentaryArchive,
     renderAssistantLiveBody,
     renderPendingInline,
+    removeChatMessageByKey,
     setChatOpening,
     applyThreadToChat,
     loadThreadMessages,

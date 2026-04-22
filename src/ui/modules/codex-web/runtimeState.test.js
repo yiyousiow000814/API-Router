@@ -44,11 +44,18 @@ describe("runtimeState", () => {
       activeThreadId: "thread-1",
       activeThreadHistoryThreadId: "thread-1",
       activeThreadHistoryTurns: [{ id: "a" }, { id: "b" }],
+      activeThreadHistoryUserCount: 2,
+      activeThreadMessages: [
+        { role: "user", text: "before-1" },
+        { role: "assistant", text: "reply-1" },
+        { role: "user", text: "before-2" },
+      ],
       activeThreadPendingTurnThreadId: "",
       activeThreadPendingTurnRunning: false,
       activeThreadPendingUserMessage: "",
       activeThreadPendingAssistantMessage: "stale",
       activeThreadPendingTurnBaselineTurnCount: 0,
+      activeThreadPendingTurnBaselineUserCount: 0,
     };
     expect(primePendingTurnRuntime(state, "thread-1", "hello")).toBe(true);
     expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
@@ -56,6 +63,25 @@ describe("runtimeState", () => {
     expect(state.activeThreadPendingUserMessage).toBe("hello");
     expect(state.activeThreadPendingAssistantMessage).toBe("");
     expect(state.activeThreadPendingTurnBaselineTurnCount).toBe(2);
+    expect(state.activeThreadPendingTurnBaselineUserCount).toBe(2);
+  });
+
+  it("prefers the authoritative history user count over stale rendered messages", () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryUserCount: 1,
+      activeThreadMessages: [],
+      activeThreadPendingTurnThreadId: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadPendingTurnBaselineTurnCount: 0,
+      activeThreadPendingTurnBaselineUserCount: 0,
+    };
+
+    expect(primePendingTurnRuntime(state, "thread-1", "retry")).toBe(true);
+    expect(state.activeThreadPendingTurnBaselineUserCount).toBe(1);
   });
 
   it("finishes and clears pending placeholder state only for the matching thread", () => {
@@ -67,12 +93,60 @@ describe("runtimeState", () => {
       activeThreadPendingUserMessage: "hello",
       activeThreadPendingAssistantMessage: "",
       activeThreadPendingTurnBaselineTurnCount: 3,
+      activeThreadPendingTurnBaselineUserCount: 2,
     };
     expect(finishPendingTurnRun(state, "thread-1")).toBe(true);
     expect(state.activeThreadPendingTurnRunning).toBe(false);
     expect(clearPendingTurnRuntimePlaceholder(state, "thread-1", { force: true })).toBe(true);
     expect(state.activeThreadPendingTurnThreadId).toBe("");
     expect(state.activeThreadPendingUserMessage).toBe("");
+  });
+
+  it("can finish a pending turn without dropping its history baseline counts", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-2",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadPendingTurnBaselineTurnCount: 3,
+      activeThreadPendingTurnBaselineUserCount: 2,
+    };
+
+    expect(
+      finishPendingTurnRun(state, "thread-1", {
+        preserveBaselineTurnCount: true,
+        preserveBaselineUserCount: true,
+      })
+    ).toBe(true);
+    expect(state.activeThreadPendingTurnId).toBe("");
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadPendingTurnBaselineTurnCount).toBe(3);
+    expect(state.activeThreadPendingTurnBaselineUserCount).toBe(2);
+  });
+
+  it("can finish a pending turn while preserving its turn id for terminal fallback ownership", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-2",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hello",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadPendingTurnBaselineTurnCount: 3,
+      activeThreadPendingTurnBaselineUserCount: 2,
+    };
+
+    expect(
+      finishPendingTurnRun(state, "thread-1", {
+        preserveTurnId: true,
+        preserveBaselineTurnCount: true,
+        preserveBaselineUserCount: true,
+      })
+    ).toBe(true);
+    expect(state.activeThreadPendingTurnId).toBe("turn-2");
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadPendingTurnBaselineTurnCount).toBe(3);
+    expect(state.activeThreadPendingTurnBaselineUserCount).toBe(2);
   });
 
   it("syncs pending assistant and remembers the final assistant snapshot", () => {
@@ -134,6 +208,7 @@ describe("runtimeState", () => {
       activeThreadPendingUserMessage: "",
       activeThreadPendingAssistantMessage: "",
       activeThreadPendingTurnBaselineTurnCount: 0,
+      activeThreadPendingTurnBaselineUserCount: 0,
     };
 
     expect(
@@ -143,10 +218,12 @@ describe("runtimeState", () => {
         userMessage: "hello",
         assistantMessage: "working",
         baselineTurnCount: 4,
+        baselineUserCount: 3,
       })
     ).toBe(true);
     expect(state.activeThreadPendingTurnId).toBe("turn-9");
     expect(state.activeThreadPendingTurnBaselineTurnCount).toBe(4);
+    expect(state.activeThreadPendingTurnBaselineUserCount).toBe(3);
 
     expect(resetPendingTurnRuntime(state)).toBe(true);
     expect(state.activeThreadPendingTurnThreadId).toBe("");
@@ -155,6 +232,7 @@ describe("runtimeState", () => {
     expect(state.activeThreadPendingUserMessage).toBe("");
     expect(state.activeThreadPendingAssistantMessage).toBe("");
     expect(state.activeThreadPendingTurnBaselineTurnCount).toBe(0);
+    expect(state.activeThreadPendingTurnBaselineUserCount).toBe(0);
   });
 
   it("bumps live turn epochs and clears final assistant dedupe state", () => {

@@ -31,7 +31,10 @@ import {
 import {
   captureLiveCommentarySnapshot as captureLiveCommentarySnapshotImpl,
   createCommentarySnapshotFromHistory,
+  hasAuthoritativeHistoryMaterialization,
+  isTerminalHistoryStatus,
   isTerminalInterruptedHistory,
+  latestTurnContainsPendingUserEcho,
   resolveLiveCommentarySnapshot,
   shouldSuppressStalePendingHistoryLiveState,
 } from "./historyLiveCommentaryState.js";
@@ -128,6 +131,31 @@ export function shouldUseHistoryWindow(messages, options = {}, state = {}) {
   return true;
 }
 
+function shouldClearTransientConnectionStatusOnExplicitHistoryOpen(state = {}, threadId = "", options = {}) {
+  if (options.forceRender !== true) return false;
+  const id = String(threadId || "").trim();
+  if (!id) return false;
+  if (String(state.activeThreadId || "").trim() !== id) return false;
+  if (
+    !String(state.activeThreadConnectionStatusKind || "").trim() &&
+    !String(state.activeThreadConnectionStatusText || "").trim() &&
+    !String(state.activeThreadTerminalConnectionErrorThreadId || "").trim() &&
+    !String(state.activeThreadPendingTerminalConnectionErrorThreadId || "").trim() &&
+    !String(state.activeThreadPendingTerminalConnectionErrorText || "").trim()
+  ) {
+    return false;
+  }
+  if (String(state.activeThreadOpenState?.threadId || "").trim() !== id) return false;
+  if (state.activeThreadOpenState?.resumeRequired === true) return false;
+  const hasTrackedRuntimeContext =
+    (String(state.activeThreadPendingTurnThreadId || "").trim() === id) ||
+    (String(state.activeThreadLiveAssistantThreadId || "").trim() === id) ||
+    (String(state.activeThreadCommentaryCurrent?.threadId || "").trim() === id) ||
+    (String(state.activeThreadPlan?.threadId || "").trim() === id) ||
+    (Array.isArray(state.activeThreadActiveCommands) && state.activeThreadActiveCommands.length > 0);
+  return !hasTrackedRuntimeContext;
+}
+
 function pushHistoryMessage(messages, nextMessage) {
   if (!Array.isArray(messages) || !nextMessage || typeof nextMessage !== "object") return;
   const role = String(nextMessage.role || "").trim();
@@ -148,6 +176,26 @@ function messageMatches(a, b) {
   return !!a && !!b && a.role === b.role && a.kind === b.kind && a.text === b.text;
 }
 
+function findLatestMaterializedPendingUserIndex(messages, pendingUser, options = {}) {
+  const items = Array.isArray(messages) ? messages : [];
+  const pendingText = String(pendingUser || "");
+  if (!pendingText) return -1;
+  const baselineUserCount = Math.max(0, Number(options.baselineUserCount || 0));
+  const historyUserCount = Math.max(0, Number(options.historyUserCount || 0));
+  if (historyUserCount <= baselineUserCount) return -1;
+  let lastAssistantIndex = -1;
+  for (let index = 0; index < items.length; index += 1) {
+    if (String(items[index]?.role || "").trim() === "assistant") lastAssistantIndex = index;
+  }
+  for (let index = Math.max(0, lastAssistantIndex + 1); index < items.length; index += 1) {
+    const entry = items[index];
+    if (String(entry?.role || "").trim() !== "user") continue;
+    if (String(entry?.text || "") !== pendingText) continue;
+    return index;
+  }
+  return -1;
+}
+
 export function mergePendingLiveMessages(messages, state = {}, threadId = "", options = {}) {
   const out = Array.isArray(messages) ? messages.slice() : [];
   const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
@@ -163,6 +211,9 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "", op
   const historyIncomplete =
     options.historyIncomplete === true ||
     (options.historyIncomplete == null && state.activeThreadHistoryIncomplete === true);
+  const historyUserCount = out.filter((entry) => String(entry?.role || "").trim() === "user").length;
+  const baselineUserCount = Math.max(0, Number(state.activeThreadPendingTurnBaselineUserCount || 0));
+  const historyMaterializedPendingUser = historyUserCount > baselineUserCount;
   const keepPendingUserFallback =
     hasPendingUser &&
     !hasPendingAssistant &&
@@ -171,13 +222,55 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "", op
   if (hasPendingUser) pending.push({ role: "user", text: pendingUser, kind: "" });
   if (hasPendingAssistant) pending.push({ role: "assistant", text: pendingAssistant, kind: "" });
   if (!pending.length) return out;
+  const materializedPendingUserIndex = hasPendingUser
+    ? findLatestMaterializedPendingUserIndex(out, pendingUser, {
+        historyUserCount,
+        baselineUserCount,
+      })
+    : -1;
+  if (materializedPendingUserIndex >= 0) {
+    if (!hasPendingAssistant) {
+      if (keepPendingUserFallback) restorePendingUserFallback(state, threadId, pendingUser);
+      else clearPendingUserFallback(state, threadId);
+      return out;
+    }
+    const materializedPendingAssistant = out
+      .slice(materializedPendingUserIndex + 1)
+      .some(
+        (entry) =>
+          String(entry?.role || "").trim() === "assistant" &&
+          String(entry?.text || "") === pendingAssistant
+      );
+    if (materializedPendingAssistant) {
+      if (!historyIncomplete || hasFinalAssistantSnapshot) {
+        clearPendingTurnRuntimePlaceholder(state, threadId, {
+          force: true,
+          reason: "history.merge:pending_materialized_after_user_echo",
+        });
+      } else if (!keepPendingUserFallback) {
+        clearPendingUserFallback(state, threadId);
+      } else {
+        restorePendingUserFallback(state, threadId, pendingUser);
+      }
+      return out;
+    }
+    clearPendingUserFallback(state, threadId);
+    return out.concat([{ role: "assistant", text: pendingAssistant, kind: "" }]);
+  }
 
+  const canTreatPendingUserAsMaterialized =
+    !hasPendingUser ||
+    historyMaterializedPendingUser;
   const endsWithPending =
+    canTreatPendingUserAsMaterialized &&
     pending.length <= out.length &&
     pending.every((msg, index) => messageMatches(out[out.length - pending.length + index], msg));
   if (endsWithPending) {
     if ((hasPendingAssistant && (!historyIncomplete || hasFinalAssistantSnapshot)) || !hasPendingUser) {
-      clearPendingTurnRuntimePlaceholder(state, threadId, { force: true });
+      clearPendingTurnRuntimePlaceholder(state, threadId, {
+        force: true,
+        reason: "history.merge:pending_already_materialized",
+      });
     } else if (!keepPendingUserFallback) {
       clearPendingUserFallback(state, threadId);
     } else {
@@ -187,7 +280,12 @@ export function mergePendingLiveMessages(messages, state = {}, threadId = "", op
   }
 
   let appendFrom = 0;
-  if (pending.length >= 1 && out.length >= 1 && messageMatches(out[out.length - 1], pending[0])) {
+  if (
+    canTreatPendingUserAsMaterialized &&
+    pending.length >= 1 &&
+    out.length >= 1 &&
+    messageMatches(out[out.length - 1], pending[0])
+  ) {
     appendFrom = 1;
   }
   return out.concat(pending.slice(appendFrom));
@@ -233,11 +331,80 @@ export function findLatestIncompleteToolMessage(thread, normalizeThreadItemText)
   return "";
 }
 
-function syncPendingTurnStateFromIncompleteHistory(thread, state = {}) {
+function pendingUserLacksAuthoritativeHistory(thread, state = {}, parseUserMessageParts) {
   const threadId = String(thread?.id || state.activeThreadId || "").trim();
+  const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
+  const pendingUser = String(state.activeThreadPendingUserMessage || "").trim();
+  const pendingAssistant = String(state.activeThreadPendingAssistantMessage || "").trim();
+  if (!threadId || !pendingThreadId || pendingThreadId !== threadId) return false;
+  if (!pendingUser || pendingAssistant) return false;
+  return latestTurnContainsPendingUserEcho(thread, state, parseUserMessageParts) !== true;
+}
+
+function shouldPreservePendingUserAcrossTerminalHistory(thread, state = {}, parseUserMessageParts) {
+  const threadId = String(thread?.id || state.activeThreadId || "").trim();
+  const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
+  const activeThreadId = String(state.activeThreadId || "").trim();
+  const connectionStatusKind = String(state.activeThreadConnectionStatusKind || "").trim().toLowerCase();
+  const terminalConnectionErrorThreadId = String(state.activeThreadTerminalConnectionErrorThreadId || "").trim();
+  if (!threadId || !pendingThreadId || pendingThreadId !== threadId) return false;
+  if (pendingUserLacksAuthoritativeHistory(thread, state, parseUserMessageParts)) {
+    return true;
+  }
+  return (
+    activeThreadId === threadId &&
+    (terminalConnectionErrorThreadId === threadId || connectionStatusKind === "error")
+  );
+}
+
+function syncLiveConnectionStatusOverlay(threadId, state = {}, addChat = () => {}) {
+  const activeThreadId = String(state.activeThreadId || "").trim();
+  const connectionStatusKind = String(state.activeThreadConnectionStatusKind || "").trim().toLowerCase();
+  const connectionStatusText = String(state.activeThreadConnectionStatusText || "").trim();
+  const historyStatusType = String(state.activeThreadHistoryStatusType || "").trim().toLowerCase();
+  if (!threadId || activeThreadId !== threadId) return;
+  if (!connectionStatusKind || !connectionStatusText) return;
+  if (connectionStatusKind === "reconnecting" && isTerminalHistoryStatus(historyStatusType)) return;
+  const kind = connectionStatusKind === "reconnecting"
+    ? "thinking"
+    : (connectionStatusKind === "error" ? "error" : "");
+  if (!kind) return;
+  addChat("system", connectionStatusText, {
+    kind,
+    scroll: false,
+    messageKey: "live-thread-connection-status",
+    source: "historyRenderLiveConnectionStatus",
+  });
+}
+
+function materializeDeferredTerminalConnectionError(thread, state = {}, setStatus = () => {}) {
+  const threadId = String(thread?.id || state.activeThreadId || "").trim();
+  const historyStatusType = String(thread?.status?.type || state.activeThreadHistoryStatusType || "")
+    .trim()
+    .toLowerCase();
+  const deferredThreadId = String(state.activeThreadPendingTerminalConnectionErrorThreadId || "").trim();
+  const deferredText = String(state.activeThreadPendingTerminalConnectionErrorText || "").trim();
+  if (!threadId || deferredThreadId !== threadId || !deferredText) return;
+  if (!isTerminalHistoryStatus(historyStatusType) || thread?.page?.incomplete === true) return;
+  state.activeThreadConnectionStatusKind = "error";
+  state.activeThreadConnectionStatusText = deferredText;
+  state.activeThreadTerminalConnectionErrorThreadId = threadId;
+  state.activeThreadPendingTerminalConnectionErrorThreadId = "";
+  state.activeThreadPendingTerminalConnectionErrorText = "";
+  setStatus(deferredText, true);
+}
+
+function syncPendingTurnStateFromIncompleteHistory(thread, state = {}, parseUserMessageParts) {
+  const threadId = String(thread?.id || state.activeThreadId || "").trim();
+  const openStateThreadId = String(state.activeThreadOpenState?.threadId || "").trim();
+  const openStateResumeRequired =
+    openStateThreadId === threadId && state.activeThreadOpenState?.resumeRequired === true;
   const suppressRuntime = state.suppressedIncompleteHistoryRuntimeByThreadId?.[threadId] === true;
   const suppressedPending = state.suppressedSyntheticPendingUserInputsByThreadId?.[threadId] === true;
+  const connectionStatusKind = String(state.activeThreadConnectionStatusKind || "").trim().toLowerCase();
+  const terminalConnectionErrorThreadId = String(state.activeThreadTerminalConnectionErrorThreadId || "").trim();
   const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
+  const pendingTurnId = String(state.activeThreadPendingTurnId || "").trim();
   const pendingRunning = state.activeThreadPendingTurnRunning === true;
   const pendingUser = String(state.activeThreadPendingUserMessage || "").trim();
   const pendingAssistant = String(state.activeThreadPendingAssistantMessage || "").trim();
@@ -245,46 +412,150 @@ function syncPendingTurnStateFromIncompleteHistory(thread, state = {}) {
   const finalAssistantText = String(state.activeThreadLastFinalAssistantText || "").trim();
   const hasFinalAssistantSnapshot = finalAssistantThreadId === threadId && !!finalAssistantText;
   const pageIncomplete = !!thread?.page?.incomplete;
+  const hasMaterializedHistory = hasAuthoritativeHistoryMaterialization(thread);
+  const terminalInterruptedHistory = isTerminalInterruptedHistory(thread, state);
+  const hasPendingEcho = latestTurnContainsPendingUserEcho(thread, state, parseUserMessageParts) === true;
+  const historyStatusType = String(thread?.status?.type || state.activeThreadHistoryStatusType || "")
+    .trim()
+    .toLowerCase();
+  const pendingUserNeedsAuthoritativeHistory =
+    pendingUserLacksAuthoritativeHistory(thread, state, parseUserMessageParts);
+  const preservePendingUserAcrossTerminalHistory = shouldPreservePendingUserAcrossTerminalHistory(
+    thread,
+    state,
+    parseUserMessageParts,
+  );
   if (!threadId) return;
-  if (!pageIncomplete || isTerminalInterruptedHistory(thread, state)) {
+  if (!pageIncomplete || terminalInterruptedHistory) {
+    if (Array.isArray(state.liveDebugEvents)) {
+      state.liveDebugEvents.push({
+        at: Date.now(),
+        kind: "history.pending_terminal_preserve_decision",
+        __tracePersist: true,
+        threadId,
+        pageIncomplete,
+        terminalInterruptedHistory,
+        hasMaterializedHistory,
+        preservePendingUserAcrossTerminalHistory,
+        hasPendingEcho,
+        pendingThreadId,
+        pendingRunning,
+        pendingUserChars: pendingUser.length,
+        pendingAssistantChars: pendingAssistant.length,
+        baselineTurnCount: Math.max(0, Number(state.activeThreadPendingTurnBaselineTurnCount || 0)),
+        baselineUserCount: Math.max(0, Number(state.activeThreadPendingTurnBaselineUserCount || 0)),
+        connectionStatusKind: String(state.activeThreadConnectionStatusKind || "").trim().toLowerCase(),
+        terminalConnectionErrorThreadId:
+          String(state.activeThreadTerminalConnectionErrorThreadId || "").trim(),
+      });
+      if (state.liveDebugEvents.length > 220) {
+        state.liveDebugEvents.splice(0, state.liveDebugEvents.length - 220);
+      }
+    }
     if (
       state.suppressedIncompleteHistoryRuntimeByThreadId &&
       state.suppressedIncompleteHistoryRuntimeByThreadId[threadId] === true
     ) {
       delete state.suppressedIncompleteHistoryRuntimeByThreadId[threadId];
     }
+    if (preservePendingUserAcrossTerminalHistory) {
+      const shouldSettlePreservedPendingUser =
+        terminalInterruptedHistory &&
+        (
+          (connectionStatusKind === "reconnecting" && historyStatusType !== "systemerror") ||
+          connectionStatusKind === "error" ||
+          terminalConnectionErrorThreadId === threadId
+        );
+      if (!shouldSettlePreservedPendingUser) {
+        return;
+      }
+      if (pendingThreadId && pendingThreadId === threadId) {
+        setPendingTurnRunning(state, threadId, false, {
+          reason: "history.sync:terminal_preserve_pending_user",
+        });
+        resetPendingTurnRuntime(state, {
+          preserveThreadId: true,
+          preserveTurnId: true,
+          preserveMessages: true,
+          preserveBaselineTurnCount: true,
+          preserveBaselineUserCount: true,
+          reason: "history.sync:terminal_preserve_pending_user",
+        });
+      }
+      return;
+    }
+    if (pendingThreadId && pendingThreadId === threadId && pendingTurnId) {
+      return;
+    }
+    if (
+      pendingThreadId &&
+      pendingThreadId === threadId &&
+      (terminalInterruptedHistory || hasMaterializedHistory)
+    ) {
+      setPendingTurnRunning(state, threadId, false, { reason: "history.sync:not_incomplete_or_terminal" });
+      resetPendingTurnRuntime(state, preservePendingUserAcrossTerminalHistory
+        ? {
+            preserveThreadId: true,
+            preserveMessages: true,
+            preserveBaselineTurnCount: true,
+            preserveBaselineUserCount: true,
+            reason: "history.sync:not_incomplete_or_terminal_preserve_pending_user",
+          }
+        : { reason: "history.sync:not_incomplete_or_terminal" });
+    }
+    if (pageIncomplete) return;
+    if (!hasMaterializedHistory) return;
   }
   if (suppressRuntime) {
     if (pendingThreadId && pendingThreadId === threadId) {
-      setPendingTurnRunning(state, threadId, false);
-      resetPendingTurnRuntime(state);
+      setPendingTurnRunning(state, threadId, false, { reason: "history.sync:suppressed_runtime" });
+      resetPendingTurnRuntime(state, { reason: "history.sync:suppressed_runtime" });
     }
     return;
   }
   if (suppressedPending) {
-    if (pendingThreadId && pendingThreadId === threadId) {
-      setPendingTurnRunning(state, threadId, false);
-      resetPendingTurnRuntime(state);
+    if (Array.isArray(state.liveDebugEvents)) {
+      state.liveDebugEvents.push({
+        at: Date.now(),
+        kind: "history.sync:suppressed_pending_inputs_only",
+        __tracePersist: true,
+        threadId,
+        pendingThreadId,
+        pendingTurnId,
+        pendingRunning,
+        pendingUserChars: pendingUser.length,
+        pendingAssistantChars: pendingAssistant.length,
+      });
+      if (state.liveDebugEvents.length > 220) {
+        state.liveDebugEvents.splice(0, state.liveDebugEvents.length - 220);
+      }
     }
     return;
   }
   if (!pageIncomplete) {
     if (pendingThreadId && pendingThreadId === threadId && !pendingUser && !pendingAssistant) {
-      setPendingTurnRunning(state, threadId, false);
+      setPendingTurnRunning(state, threadId, false, { reason: "history.sync:complete_placeholder_only" });
       resetPendingTurnRuntime(state, {
         preserveThreadId: true,
         preserveMessages: true,
         preserveTurnId: false,
         preserveBaselineTurnCount: false,
+        reason: "history.sync:complete_placeholder_only",
       });
-      clearPendingTurnRuntimePlaceholder(state, threadId, { force: true });
+      clearPendingTurnRuntimePlaceholder(state, threadId, {
+        force: true,
+        reason: "history.sync:complete_placeholder_only",
+      });
     }
     return;
   }
   if (pendingThreadId && pendingThreadId !== threadId) return;
   if (pendingThreadId === threadId && (pendingUser || pendingAssistant)) {
     if (hasFinalAssistantSnapshot && !pendingRunning) return;
-    setPendingTurnRunning(state, threadId, true);
+    setPendingTurnRunning(state, threadId, true, { reason: "history.sync:incomplete_existing_pending" });
+    return;
+  }
+  if (!openStateResumeRequired) {
     return;
   }
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
@@ -324,6 +595,7 @@ export function createHistoryLoaderModule(deps) {
     scrollChatToBottom,
     scrollToBottomReliable,
     canStartChatLiveFollow,
+    setStatus = () => {},
     renderMessageBody,
     addChat,
     buildMsgNode,
@@ -336,6 +608,7 @@ export function createHistoryLoaderModule(deps) {
     renderCommentaryArchive = () => {},
     syncRuntimeStateFromHistory = () => {},
     syncEventSubscription = () => {},
+    clearLiveThreadConnectionStatus = () => {},
   } = deps;
 
   function isSupersededHistoryApply(threadId, options = {}) {
@@ -372,15 +645,39 @@ export function createHistoryLoaderModule(deps) {
 
   function syncIncompleteToolMessage(thread) {
     if (shouldSuppressStalePendingHistoryLiveState(thread, state, parseUserMessageParts)) {
+      const threadId = String(thread?.id || state.activeThreadId || "").trim();
+      const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
+      const pendingRunning = state.activeThreadPendingTurnRunning === true;
+      const pendingPromptChars = String(state.activeThreadPendingUserMessage || "").trim().length;
+      const baselineUserCount = Math.max(0, Number(state.activeThreadPendingTurnBaselineUserCount || 0));
+      const connectionStatusKind = String(state.activeThreadConnectionStatusKind || "").trim().toLowerCase();
+      const historyStatusType = String(thread?.status?.type || state.activeThreadHistoryStatusType || "").trim().toLowerCase();
+      const hasPendingEcho =
+        threadId && pendingThreadId === threadId
+          ? latestTurnContainsPendingUserEcho(thread, state, parseUserMessageParts) === true
+          : false;
+      if (threadId && pendingThreadId === threadId) {
+        setPendingTurnRunning(state, threadId, false, { reason: "history.runtime:suppress_stale_pending" });
+        resetPendingTurnRuntime(state, {
+          preserveTurnId: true,
+          reason: "history.runtime:suppress_stale_pending",
+        });
+      }
       clearRuntimeState();
       clearTransientToolMessages();
       pushLiveDebugEvent("history.runtime:suppress_stale_pending", {
-        threadId: String(thread?.id || state.activeThreadId || "").trim(),
-        promptChars: String(state.activeThreadPendingUserMessage || "").trim().length,
+        threadId,
+        pendingThreadId,
+        pendingRunning,
+        promptChars: pendingPromptChars,
+        baselineUserCount,
+        connectionStatusKind,
+        historyStatusType,
+        hasPendingEcho,
       });
       return;
     }
-    syncPendingTurnStateFromIncompleteHistory(thread, state);
+    syncPendingTurnStateFromIncompleteHistory(thread, state, parseUserMessageParts);
     syncRuntimeStateFromHistory(thread);
     if (
       (Array.isArray(state.activeThreadActiveCommands) && state.activeThreadActiveCommands.length > 0) ||
@@ -445,6 +742,54 @@ export function createHistoryLoaderModule(deps) {
     else showWelcomeCard();
     updateHeaderUi(Boolean(options.animateBadge && state.activeThreadStarted));
     restoreLiveCommentarySnapshot(liveCommentarySnapshot, thread, { historyCommentary });
+    const historyStatusType = String(
+      thread?.status?.type || state.activeThreadHistoryStatusType || ""
+    ).trim().toLowerCase();
+    const connectionStatusKind = String(state.activeThreadConnectionStatusKind || "")
+      .trim()
+      .toLowerCase();
+    const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
+    const hasLivePendingRuntime =
+      pendingThreadId === String(thread?.id || state.activeThreadId || "").trim() &&
+      state.activeThreadPendingTurnRunning === true;
+    const staleReconnectOnCompleteHistory =
+      connectionStatusKind === "reconnecting" &&
+      thread?.page?.incomplete !== true &&
+      !hasLivePendingRuntime;
+    const dormantTerminalConnectionOverlay =
+      isTerminalHistoryStatus(historyStatusType) &&
+      thread?.page?.incomplete !== true &&
+      (
+        connectionStatusKind === "reconnecting" ||
+        (connectionStatusKind === "error" && state.activeThreadStarted !== true)
+      );
+    if (connectionStatusKind) {
+      pushLiveDebugEvent("history.connection_overlay_decision", {
+        threadId: String(thread?.id || state.activeThreadId || "").trim(),
+        connectionStatusKind,
+        historyStatusType,
+        pageIncomplete: thread?.page?.incomplete === true,
+        pendingThreadId,
+        pendingRunning: state.activeThreadPendingTurnRunning === true,
+        staleReconnectOnCompleteHistory,
+        dormantTerminalConnectionOverlay,
+      });
+    }
+    if (staleReconnectOnCompleteHistory) {
+      clearLiveThreadConnectionStatus("history.render:complete_without_live_runtime");
+    } else if (dormantTerminalConnectionOverlay) {
+      clearLiveThreadConnectionStatus("history.render:dormant_terminal_history");
+    }
+    materializeDeferredTerminalConnectionError(thread, state, setStatus);
+    if (
+      isTerminalHistoryStatus(historyStatusType) &&
+      thread?.page?.incomplete !== true &&
+      !hasLivePendingRuntime &&
+      String(state.activeThreadConnectionStatusKind || "").trim().toLowerCase() !== "error"
+    ) {
+      setStatus("", false);
+    }
+    syncLiveConnectionStatusOverlay(String(thread?.id || state.activeThreadId || "").trim(), state, addChat);
     if (extra.updateScrollButton) updateScrollToBottomBtn();
   }
 
@@ -551,6 +896,13 @@ export function createHistoryLoaderModule(deps) {
   async function applyThreadToChat(thread, options = {}) {
     const threadId = beginApplyThreadToChat(state, thread, options, pushLiveDebugEvent);
     if (isSupersededHistoryApply(threadId, options)) return;
+    const wasActiveThreadStarted = state.activeThreadStarted === true;
+    if (shouldClearTransientConnectionStatusOnExplicitHistoryOpen(state, threadId, options)) {
+      state.activeThreadTerminalConnectionErrorThreadId = "";
+      state.activeThreadPendingTerminalConnectionErrorThreadId = "";
+      state.activeThreadPendingTerminalConnectionErrorText = "";
+      clearLiveThreadConnectionStatus("history.open:non_live_thread");
+    }
     const prepared = await prepareThreadHistoryView(thread, options, {
       state,
       mapSessionHistoryMessages,
@@ -589,6 +941,21 @@ export function createHistoryLoaderModule(deps) {
       renderComposerContextLeft,
       syncEventSubscription,
     });
+    const hasTrackedRuntimeContext =
+      (String(state.activeThreadPendingTurnThreadId || "").trim() === threadId) ||
+      (String(state.activeThreadLiveAssistantThreadId || "").trim() === threadId) ||
+      (String(state.activeThreadCommentaryCurrent?.threadId || "").trim() === threadId) ||
+      (String(state.activeThreadPlan?.threadId || "").trim() === threadId) ||
+      (Array.isArray(state.activeThreadActiveCommands) && state.activeThreadActiveCommands.length > 0);
+    if (
+      isTerminalHistoryStatus(historyStatusType) &&
+      !thread?.page?.incomplete &&
+      !hasTrackedRuntimeContext &&
+      !wasActiveThreadStarted
+    ) {
+      state.activeThreadTerminalConnectionErrorThreadId = "";
+      clearLiveThreadConnectionStatus();
+    }
     if (shouldSkipHistoryRender(state, renderSig, options)) {
       state.activeThreadMessages = messages;
       pushLiveDebugEvent("history.render:unchanged", {
@@ -601,7 +968,7 @@ export function createHistoryLoaderModule(deps) {
       return;
     }
 
-    const { box, prevMessages, preservedScrollTop } = getRenderBaseline(state, byId);
+    const { box, prevMessages, preservedScrollTop, forceFullRender } = getRenderBaseline(state, byId);
 
     if (shouldUseHistoryWindow(messages, options, { activeThreadHistoryHasMore: state.activeThreadHistoryHasMore, HISTORY_WINDOW_THRESHOLD })) {
       const prevAll = Array.isArray(state.historyAllMessages) ? state.historyAllMessages : [];
@@ -616,6 +983,7 @@ export function createHistoryLoaderModule(deps) {
         inlineCommentaryArchiveCount,
         renderSig,
         toolCount,
+        forceFullRender,
         options,
         historyCommentary,
         liveCommentarySnapshot,
@@ -656,6 +1024,7 @@ export function createHistoryLoaderModule(deps) {
       inlineCommentaryArchiveCount,
       renderSig,
       toolCount,
+      forceFullRender,
       options,
       historyCommentary,
       liveCommentarySnapshot,

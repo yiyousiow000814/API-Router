@@ -115,9 +115,13 @@ export function mapUiEventToNotification(record, readString, toRecord) {
 }
 
 export function createWsClientModule(deps) {
+  const TRANSPORT_CONNECTION_STATUS_MESSAGE_KEY = "transport-connection-status";
   const {
     state,
     setStatus,
+    addChat = () => {},
+    removeChatMessageByKey = () => false,
+    clearTransientToolMessages = () => {},
     setRuntimeActivity = () => {},
     toRecord,
     readString,
@@ -132,7 +136,6 @@ export function createWsClientModule(deps) {
     scheduleActiveThreadRefresh,
     renderLiveNotification,
     applyPendingPayloads,
-    addChat,
     upsertProvisionalThreadItem = () => false,
     recordWebTransportEvent = () => {},
     LAST_EVENT_ID_KEY,
@@ -145,8 +148,8 @@ export function createWsClientModule(deps) {
     setIntervalRef = setInterval,
     clearIntervalRef = clearInterval,
     WS_PING_INTERVAL_MS = 15000,
-    WS_RECONNECT_BASE_MS = 800,
-    WS_RECONNECT_MAX_MS = 5000,
+    WS_RECONNECT_BASE_MS = 3000,
+    WS_RECONNECT_MAX_MS = 15000,
     WS_RECONNECT_MAX_ATTEMPTS = 5,
     transportMode = "live",
     seedDefaultThreads = false,
@@ -158,17 +161,6 @@ export function createWsClientModule(deps) {
     return String(state.activeThreadActivity?.threadId || "").trim() === threadId
       ? String(state.activeThreadActivity?.title || "").trim().toLowerCase()
       : "";
-  }
-
-  function setReconnectRuntimeActivity(title, detail) {
-    const threadId = resolveCurrentThreadId(state);
-    if (!threadId) return;
-    setRuntimeActivity({
-      threadId,
-      title,
-      detail,
-      tone: title === "Error" ? "error" : "running",
-    });
   }
 
   function restoreRuntimeActivityAfterReconnect() {
@@ -220,11 +212,38 @@ export function createWsClientModule(deps) {
     return payload;
   }
 
+  function renderTransportConnectionStatus(message, { kind = "thinking", animate = true, reset = false } = {}) {
+    const text = String(message || "").trim();
+    if (!text) return;
+    if (reset) removeChatMessageByKey(TRANSPORT_CONNECTION_STATUS_MESSAGE_KEY);
+    addChat("system", text, {
+      kind,
+      transient: false,
+      animate,
+      messageKey: TRANSPORT_CONNECTION_STATUS_MESSAGE_KEY,
+    });
+  }
+
+  function formatTransportReconnectMessage(reason, attempt, maxAttempts) {
+    const progress = `${Number(attempt || 0)}/${Number(maxAttempts || 0)}`;
+    return `Reconnecting... ${progress}`;
+  }
+
+  function formatTransportReconnectFailure(reason, maxAttempts) {
+    const detail = String(reason || "").trim();
+    const failureMessage = `Live updates disconnected after ${maxAttempts} ${maxAttempts === 1 ? "retry" : "retries"}.`;
+    return detail ? `${failureMessage} Last error: ${detail}` : failureMessage;
+  }
+
+  function setConnectionStatus(message, isWarn = false) {
+    setStatus(message, isWarn);
+  }
+
   const mockTransport =
     transportMode === "mock" || transportMode === "safe"
       ? createMockCodexTransport({
           state,
-          setStatus,
+          setStatus: setConnectionStatus,
           transportMode,
           seedDefaultThreads,
           liveApi,
@@ -250,9 +269,9 @@ export function createWsClientModule(deps) {
     const maxAttempts = Math.max(1, Number(WS_RECONNECT_MAX_ATTEMPTS || 5));
     if (attempt >= maxAttempts) {
       recordWebTransportEvent("ws_reconnect_failed", String(reason));
-      const failureMessage = `Live updates disconnected after ${maxAttempts} ${maxAttempts === 1 ? "retry" : "retries"}.`;
-      setStatus(failureMessage, true);
-      setReconnectRuntimeActivity("Error", failureMessage);
+      const failureMessage = formatTransportReconnectFailure(reason, maxAttempts);
+      setConnectionStatus(failureMessage, true);
+      renderTransportConnectionStatus(failureMessage, { kind: "error", reset: true });
       return;
     }
     const delay = Math.min(
@@ -266,8 +285,9 @@ export function createWsClientModule(deps) {
       delay,
       reason,
     });
-    setStatus(`Reconnecting... ${state.wsReconnectAttempt}/${maxAttempts}`, true);
-    setReconnectRuntimeActivity("Reconnecting", `${state.wsReconnectAttempt}/${maxAttempts}`);
+    const reconnectMessage = formatTransportReconnectMessage(reason, state.wsReconnectAttempt, maxAttempts);
+    setConnectionStatus(reconnectMessage, true);
+    renderTransportConnectionStatus(reconnectMessage, { kind: "thinking" });
     state.wsReconnectTimer = setTimeoutRef(() => {
       state.wsReconnectTimer = null;
       recordWebTransportEvent("ws_reconnect_attempted", null);
@@ -530,7 +550,6 @@ export function createWsClientModule(deps) {
       scheduleThreadRefresh();
       const currentThreadId = resolveCurrentThreadId(state);
       if (currentThreadId) scheduleActiveThreadRefresh(currentThreadId);
-      setStatus("Live event stream resynced.");
       return;
     }
     if (payload.type === "subscribed") {
@@ -550,7 +569,7 @@ export function createWsClientModule(deps) {
       if (currentThreadId) {
         scheduleActiveThreadRefresh(currentThreadId, 0);
       }
-      setStatus("Live updates connected.");
+      return;
     }
   }
 
@@ -581,7 +600,13 @@ export function createWsClientModule(deps) {
       });
       const hadReconnectAttempt = Number(state.wsReconnectAttempt || 0) > 0;
       state.wsReconnectAttempt = 0;
-      setStatus("Connected (live updates syncing).");
+      if (hadReconnectAttempt) {
+        removeChatMessageByKey(TRANSPORT_CONNECTION_STATUS_MESSAGE_KEY);
+      }
+      setConnectionStatus("Connected (live updates syncing).");
+      if (hadReconnectAttempt) {
+        clearTransientToolMessages();
+      }
       restoreRuntimeActivityAfterReconnect();
       const currentThreadId = resolveCurrentThreadId(state);
       if (hadReconnectAttempt && currentThreadId) {
@@ -632,8 +657,8 @@ export function createWsClientModule(deps) {
       state.wsSubscribedEvents = false;
       state.wsSubscribedWorkspaceTarget = "";
       state.wsSubscribedWorkspaceTargets = [];
-      setStatus("WS closed; fallback to HTTP.", true);
-      scheduleReconnect(String(event?.reason || `code:${Number(event?.code ?? 0) || 0}`));
+      const reasonText = String(event?.reason || `code:${Number(event?.code ?? 0) || 0}`);
+      scheduleReconnect(reasonText);
     };
     ws.onmessage = (event) => {
       if (state.ws !== ws || connectSeq !== state.wsConnectSeq) return;

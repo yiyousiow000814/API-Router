@@ -169,6 +169,7 @@ let renderAssistantLiveBody = () => {};
 let toToolLikeMessage = () => null;
 let notificationToToolItem = () => null;
 let renderLiveNotification = () => {};
+let clearLiveThreadConnectionStatus = () => {};
 let clearTransientThinkingMessages = () => {};
 let showTransientThinkingMessage = () => {};
 let showTransientToolMessage = () => {};
@@ -310,13 +311,14 @@ function setActiveThread(id) {
     clearPromptValue();
     hideSlashCommandMenu();
     state.activeThreadRenderSig = "";
+    clearLiveThreadConnectionStatus();
     clearRuntimeState();
     state.activeThreadQueuedTurns = [];
     state.queuedTurnsExpanded = true;
     state.queuedTurnEditingId = "";
     state.queuedTurnEditingDraft = "";
     state.queuedTurnDeferredComposerRestoreId = "";
-    resetPendingTurnRuntime(state);
+    resetPendingTurnRuntime(state, { reason: "thread.active.switch" });
     resetTurnPresentationState(state);
   }
   if (!state.activeThreadId) {
@@ -447,6 +449,7 @@ const composition = createCodexWebComposition({
   showTransientThinkingMessage: (...args) => showTransientThinkingMessage(...args),
   clearTransientThinkingMessages: (...args) => clearTransientThinkingMessages(...args),
   showTransientToolMessage: (...args) => showTransientToolMessage(...args),
+  clearLiveThreadConnectionStatus: (...args) => clearLiveThreadConnectionStatus(...args),
   hideSlashCommandMenu: (...args) => hideSlashCommandMenu(...args),
   handleSlashCommandKeyDown: (...args) => handleSlashCommandKeyDown(...args),
   syncSlashCommandMenu: (...args) => syncSlashCommandMenu(...args),
@@ -537,6 +540,7 @@ const {
   renderCommentaryArchive: renderCommentaryArchiveFromComposition,
   renderAssistantLiveBody: renderAssistantLiveBodyFromComposition,
   renderPendingInline: renderPendingInlineFromComposition,
+  removeChatMessageByKey,
   getActiveWorkspaceBadgeLabel,
   getStartCwdForWorkspace: getStartCwdForWorkspaceFromComposition,
   getWorkspaceTarget: getWorkspaceTargetFromComposition,
@@ -666,6 +670,7 @@ const renderPendingInline = (...args) => renderPendingInlineFromComposition(...a
 }));
 
 ({
+  clearLiveThreadConnectionStatus,
   clearTransientThinkingMessages,
   clearTransientToolMessages,
   notificationToToolItem,
@@ -679,6 +684,7 @@ const renderPendingInline = (...args) => renderPendingInlineFromComposition(...a
   byId,
   setStatus: (...args) => setStatus(...args),
   addChat: (...args) => addChat(...args),
+  removeChatMessageByKey: (...args) => removeChatMessageByKey(...args),
   scheduleChatLiveFollow: (...args) => scheduleChatLiveFollow(...args),
   hideWelcomeCard: (...args) => hideWelcomeCard(...args),
   createAssistantStreamingMessage: (...args) => createAssistantStreamingMessage(...args),

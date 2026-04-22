@@ -598,6 +598,8 @@ export function createComposerUiModule(deps) {
     const explicitActivity = state.activeThreadActivity && state.activeThreadActivity.threadId === currentThreadId
       ? state.activeThreadActivity
       : null;
+    const connectionStatusKind = String(state.activeThreadConnectionStatusKind || "").trim();
+    const connectionStatusText = String(state.activeThreadConnectionStatusText || "").trim();
     const statusCard = state.activeThreadStatusCard &&
       String(state.activeThreadStatusCard.threadId || "").trim() === currentThreadId
       ? state.activeThreadStatusCard
@@ -652,6 +654,8 @@ export function createComposerUiModule(deps) {
             sessionId: String(statusCard.sessionId || ""),
           }
         : null,
+      connectionStatusKind,
+      connectionStatusText,
       pendingThreadId: String(state.activeThreadPendingTurnThreadId || ""),
       pendingTurnRunning: state.activeThreadPendingTurnRunning === true,
     });

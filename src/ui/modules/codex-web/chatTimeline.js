@@ -10,6 +10,54 @@ import { getProposedPlanConfirmation } from "./proposedPlan.js";
 
 import { resetPendingTurnRuntime, resetTurnPresentationState } from "./runtimeState.js";
 
+export function summarizeChatTimeline(box) {
+  const nodes = Array.from(box?.children || []).filter((child) => child?.classList?.contains?.("msg"));
+  const messages = nodes.map((child, index) => {
+    const role = String(child.__webCodexRole || "").trim();
+    const kind = String(child.__webCodexKind || "").trim();
+    const source = String(child.__webCodexSource || "").trim();
+    const key =
+      typeof child.getAttribute === "function"
+        ? String(child.getAttribute("data-msg-key") || "").trim()
+        : "";
+    const text = String(child.__webCodexRawText || child.textContent || "").replace(/\s+/g, " ").trim();
+    return {
+      index,
+      role,
+      kind,
+      source,
+      key,
+      text: text.slice(0, 80),
+    };
+  });
+  const userIndexes = messages
+    .filter((item) => item.role === "user")
+    .map((item) => item.index);
+  const connectionIndexes = messages
+    .filter((item) => item.key === "live-thread-connection-status" || /reconnecting/i.test(item.text))
+    .map((item) => item.index);
+  const errorIndexes = messages
+    .filter((item) => item.kind === "error")
+    .map((item) => item.index);
+  const lastUserIndex = userIndexes.length ? userIndexes[userIndexes.length - 1] : -1;
+  const firstConnectionIndex = connectionIndexes.length ? connectionIndexes[0] : -1;
+  const firstErrorIndex = errorIndexes.length ? errorIndexes[0] : -1;
+  const lastUserText = lastUserIndex >= 0 ? String(messages[lastUserIndex]?.text || "") : "";
+  const duplicateLastUserCount = lastUserText
+    ? messages.filter((item) => item.role === "user" && item.text === lastUserText).length
+    : 0;
+  return {
+    count: messages.length,
+    messages: messages.slice(-12),
+    userIndexes,
+    connectionIndexes,
+    errorIndexes,
+    userAfterConnection: lastUserIndex >= 0 && firstConnectionIndex >= 0 && lastUserIndex > firstConnectionIndex,
+    userAfterError: lastUserIndex >= 0 && firstErrorIndex >= 0 && lastUserIndex > firstErrorIndex,
+    duplicateLastUserCount,
+  };
+}
+
 export function createChatTimelineModule(deps) {
   const {
     byId,
@@ -68,6 +116,27 @@ export function createChatTimelineModule(deps) {
       node.classList.remove("msg-enter");
       node.style.removeProperty("--msg-enter-delay");
     }, { once: true });
+  }
+
+  function findMessageNodesByKey(box, messageKey) {
+    if (!box || !messageKey) return [];
+    const matches = [];
+    for (const child of Array.from(box.children || [])) {
+      if (!child || typeof child.getAttribute !== "function") continue;
+      if (String(child.getAttribute("data-msg-key") || "") !== messageKey) continue;
+      matches.push(child);
+    }
+    return matches;
+  }
+
+  function removeChatMessageByKey(messageKey) {
+    const box = byId("chatBox");
+    const normalizedKey = String(messageKey || "").trim();
+    if (!box || !normalizedKey) return false;
+    const matches = findMessageNodesByKey(box, normalizedKey);
+    if (!matches.length) return false;
+    for (const node of matches) node.remove?.();
+    return true;
   }
 
   function createMessageNode(role, text, options = {}) {
@@ -650,6 +719,8 @@ export function createChatTimelineModule(deps) {
     const box = byId("chatBox");
     const welcome = byId("welcomeCard");
     if (!box) return;
+    const messageKey = String(options.messageKey || "").trim();
+    const existingNodes = messageKey ? findMessageNodesByKey(box, messageKey) : [];
     if (welcome) welcome.style.display = "none";
     const node = options.kind === "commentaryArchive"
       ? createCommentaryArchiveNode(options.archiveBlocks, {
@@ -667,14 +738,50 @@ export function createChatTimelineModule(deps) {
           source: String(options.source || "").trim() || "addChat",
           transient: options.transient === true,
         });
-    if (options.animate !== false) {
+    if (messageKey) {
+      node.setAttribute("data-msg-key", messageKey);
+    }
+    if (options.animate !== false && !existingNodes.length) {
       const defaultDelay = role === "assistant" || role === "system" ? 50 : 0;
       const delayMs = Number.isFinite(Number(options.delayMs)) ? Number(options.delayMs) : defaultDelay;
       animateMessageNode(node, delayMs);
     }
     const pendingMount = byId("pendingInlineMount");
-    if (pendingMount && pendingMount.parentElement === box) box.insertBefore(node, pendingMount);
-    else box.appendChild(node);
+    if (existingNodes.length > 0) {
+      const anchorNode = existingNodes[existingNodes.length - 1];
+      anchorNode.replaceWith(node);
+      for (let index = 0; index < existingNodes.length - 1; index += 1) {
+        existingNodes[index].remove?.();
+      }
+    } else {
+      const connectionStatusNode =
+        messageKey === "live-thread-connection-status"
+          ? null
+          : findMessageNodesByKey(box, "live-thread-connection-status")[0] || null;
+      if (connectionStatusNode && connectionStatusNode.parentElement === box) {
+        box.insertBefore(node, connectionStatusNode);
+      } else if (pendingMount && pendingMount.parentElement === box) {
+        box.insertBefore(node, pendingMount);
+      } else {
+        box.appendChild(node);
+      }
+    }
+    const source = String(options.source || "").trim() || "addChat";
+    const shouldPersistTimelineTrace =
+      role === "user" ||
+      messageKey === "live-thread-connection-status" ||
+      options.kind === "error" ||
+      /reconnecting/i.test(String(text || ""));
+    pushLiveDebugEvent("chat.timeline:add", {
+      __tracePersist: shouldPersistTimelineTrace,
+      role: String(role || ""),
+      messageKind: String(options.kind || ""),
+      source,
+      messageKey,
+      replacedExistingCount: existingNodes.length,
+      text: String(text || "").replace(/\s+/g, " ").trim().slice(0, 120),
+      timeline: summarizeChatTimeline(box),
+    });
     renderRuntimePanels();
     if (options.scroll !== false) {
       state.chatShouldStickToBottom = true;
@@ -803,7 +910,7 @@ export function createChatTimelineModule(deps) {
     state.activeThreadMessages = [];
     if (!preservePendingTurn) {
       resetTurnPresentationState(state, { bumpLiveEpoch: true, resetLiveRuntimeEpoch: true });
-      resetPendingTurnRuntime(state);
+      resetPendingTurnRuntime(state, { reason: "chat.clear" });
     }
     state.historyWindowEnabled = false;
     state.historyWindowThreadId = "";
@@ -817,6 +924,7 @@ export function createChatTimelineModule(deps) {
     state.activeThreadHistoryStatusType = "";
     state.activeThreadHistoryBeforeCursor = "";
     state.activeThreadHistoryTotalTurns = 0;
+    state.activeThreadHistoryUserCount = 0;
     state.activeThreadHistoryReqSeq = 0;
     state.activeThreadHistoryInFlightPromise = null;
     state.activeThreadHistoryInFlightThreadId = "";
@@ -874,6 +982,7 @@ export function createChatTimelineModule(deps) {
     renderPendingInline,
     removeCommentaryArchiveMount,
     removePendingInlineMount,
+    removeChatMessageByKey,
     setChatOpening,
   };
 }

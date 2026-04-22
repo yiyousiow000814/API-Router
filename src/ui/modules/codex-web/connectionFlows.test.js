@@ -103,6 +103,19 @@ describe("connectionFlows", () => {
     ).toEqual([]);
   });
 
+  it("also hides pending user inputs for failed active thread history", () => {
+    expect(
+      getVisiblePendingUserInputs({
+        activeThreadId: "thread-1",
+        activeThreadHistoryStatusType: "failed",
+        pendingUserInputs: [{ id: "u1", threadId: "thread-1" }],
+        syntheticPendingUserInputsByThreadId: {
+          "thread-1": [{ id: "s1", prompt: "Question" }],
+        },
+      })
+    ).toEqual([]);
+  });
+
   it("ignores host rendering when host list UI is absent", () => {
     const module = createConnectionFlowsModule({
       state: { activeHostId: "", pendingApprovals: [], pendingUserInputs: [] },

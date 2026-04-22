@@ -132,8 +132,15 @@ fn replay_notification_state(
 #[derive(Default)]
 struct RolloutLiveSyncState {
     files: HashMap<PathBuf, RolloutTrackedFile>,
+    failed_turn_fences: HashMap<String, FailedTurnFence>,
     last_discovery_at: Option<Instant>,
     last_poll_at: Option<Instant>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FailedTurnFence {
+    active_turn_id: Option<String>,
+    failed_turn_ids: HashSet<String>,
 }
 
 struct RolloutTrackedFile {
@@ -226,6 +233,72 @@ fn deep_find_thread_id(value: &Value, depth: usize) -> Option<String> {
             .find_map(|child| deep_find_thread_id(child, depth + 1)),
         _ => None,
     }
+}
+
+fn notification_debug_summary(value: &Value) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    let method = value
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if method.is_empty() {
+        return out;
+    }
+    let Some(params) = value.get("params").and_then(Value::as_object) else {
+        return out;
+    };
+    if matches!(
+        method.as_str(),
+        "thread/status/changed"
+            | "turn/started"
+            | "turn/completed"
+            | "turn/failed"
+            | "turn/cancelled"
+    ) {
+        if let Some(status) = params
+            .get("status")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            out.insert("status".to_string(), Value::String(status.to_string()));
+        }
+        if let Some(source) = params
+            .get("source")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            out.insert("source".to_string(), Value::String(source.to_string()));
+        }
+        if let Some(message) = params
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            out.insert(
+                "message".to_string(),
+                Value::String(message.chars().take(220).collect()),
+            );
+        }
+        if let Some(turn_status) = params
+            .get("turn")
+            .and_then(Value::as_object)
+            .and_then(|turn| turn.get("status"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            out.insert(
+                "turnStatus".to_string(),
+                Value::String(turn_status.to_string()),
+            );
+        }
+    }
+    out
 }
 
 async fn push_debug_event(kind: &str, payload: Value) {
@@ -488,6 +561,7 @@ impl RolloutTrackedFile {
         }
         self.thread_id = Some(thread_id.clone());
         let mut out = Vec::new();
+        let payload_value = Value::Object(payload.clone());
         match event_type.to_ascii_lowercase().as_str() {
             "turn_started" | "task_started" | "taskstarted" => {
                 out.push(rollout_turn_notification(
@@ -498,12 +572,22 @@ impl RolloutTrackedFile {
                 out.push(rollout_status_notification(&thread_id, "running"));
             }
             "turn_complete" | "task_complete" | "taskcomplete" => {
+                let terminal_status = if value_has_failure_marker(&payload_value) {
+                    "failed"
+                } else {
+                    "completed"
+                };
+                let mut terminal_payload = payload.clone();
+                terminal_payload.insert(
+                    "status".to_string(),
+                    Value::String(terminal_status.to_string()),
+                );
                 out.push(rollout_turn_notification(
                     "turn/completed",
                     &thread_id,
-                    payload,
+                    &terminal_payload,
                 ));
-                out.push(rollout_status_notification(&thread_id, "completed"));
+                out.push(rollout_status_notification(&thread_id, terminal_status));
             }
             "turn_failed" | "task_failed" | "taskfailed" => {
                 out.push(rollout_turn_notification(
@@ -819,6 +903,228 @@ fn normalize_stdout_notification(value: &Value) -> Option<Value> {
     }
 }
 
+fn notification_method(value: &Value) -> &str {
+    value
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+}
+
+fn notification_params(value: &Value) -> Option<&serde_json::Map<String, Value>> {
+    value
+        .get("params")
+        .and_then(Value::as_object)
+        .or_else(|| value.get("payload").and_then(Value::as_object))
+}
+
+fn extract_notification_source(value: &Value) -> Option<&str> {
+    notification_params(value)
+        .and_then(|params| params.get("source"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|source| !source.is_empty())
+}
+
+fn extract_notification_turn_id(value: &Value) -> Option<String> {
+    let params = notification_params(value)?;
+    params
+        .get("turnId")
+        .and_then(Value::as_str)
+        .or_else(|| params.get("turn_id").and_then(Value::as_str))
+        .or_else(|| {
+            params
+                .get("turn")
+                .and_then(Value::as_object)
+                .and_then(|turn| {
+                    turn.get("id")
+                        .and_then(Value::as_str)
+                        .or_else(|| turn.get("turnId").and_then(Value::as_str))
+                        .or_else(|| turn.get("turn_id").and_then(Value::as_str))
+                })
+        })
+        .or_else(|| {
+            params
+                .get("payload")
+                .and_then(Value::as_object)
+                .and_then(|payload| {
+                    payload
+                        .get("turn_id")
+                        .and_then(Value::as_str)
+                        .or_else(|| payload.get("turnId").and_then(Value::as_str))
+                })
+        })
+        .map(str::trim)
+        .filter(|turn_id| !turn_id.is_empty())
+        .map(str::to_string)
+}
+
+fn is_gateway_terminal_failure_notification(value: &Value) -> bool {
+    matches!(extract_notification_source(value), Some(source) if source.starts_with("gateway."))
+        && matches!(
+            notification_method(value),
+            "thread/status/changed" | "turn/completed"
+        )
+        && notification_params(value)
+            .and_then(|params| params.get("status"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|status| matches!(status, "failed" | "error" | "timeout" | "denied"))
+}
+
+fn resolve_runtime_turn_id_for_home(codex_home: Option<&str>, thread_id: &str) -> Option<String> {
+    crate::orchestrator::gateway::web_codex_session_manager::workspace_thread_runtime_snapshot_for_home(
+        codex_home,
+        thread_id,
+    )
+    .and_then(|snapshot| snapshot.last_turn_id)
+}
+
+async fn should_drop_failed_turn_notification(codex_home: Option<&str>, value: &Value) -> bool {
+    let thread_id = extract_thread_id_for_debug(value).unwrap_or_default();
+    if thread_id.is_empty() {
+        return false;
+    }
+    let key = normalize_home_key(codex_home).to_string();
+    let source = extract_notification_source(value)
+        .unwrap_or_default()
+        .to_string();
+    let notification_turn_id = extract_notification_turn_id(value);
+    let runtime_turn_id = resolve_runtime_turn_id_for_home(codex_home, &thread_id);
+
+    let mut guard = rollout_live_sync_map().lock().await;
+    let state = guard.entry(key).or_default();
+
+    if is_gateway_terminal_failure_notification(value) {
+        let Some(turn_id) = notification_turn_id.or(runtime_turn_id) else {
+            return false;
+        };
+        let fence = state
+            .failed_turn_fences
+            .entry(thread_id)
+            .or_insert_with(|| FailedTurnFence {
+                active_turn_id: None,
+                failed_turn_ids: HashSet::new(),
+            });
+        fence.failed_turn_ids.insert(turn_id.clone());
+        fence.active_turn_id = Some(turn_id);
+        return false;
+    }
+
+    let Some(fence) = state.failed_turn_fences.get(&thread_id).cloned() else {
+        return false;
+    };
+
+    if notification_turn_id
+        .as_deref()
+        .zip(fence.active_turn_id.as_deref())
+        .is_some_and(|(turn_id, active_turn_id)| turn_id != active_turn_id)
+        || runtime_turn_id
+            .as_deref()
+            .zip(fence.active_turn_id.as_deref())
+            .is_some_and(|(turn_id, active_turn_id)| turn_id != active_turn_id)
+    {
+        if let Some(entry) = state.failed_turn_fences.get_mut(&thread_id) {
+            entry.active_turn_id = None;
+        }
+        return false;
+    }
+
+    if source.starts_with("gateway.") {
+        return false;
+    }
+
+    fence.active_turn_id.is_some()
+}
+
+async fn failed_turn_fence_for_thread(
+    codex_home: Option<&str>,
+    thread_id: &str,
+) -> Option<FailedTurnFence> {
+    let normalized_thread_id = thread_id.trim();
+    if normalized_thread_id.is_empty() {
+        return None;
+    }
+    let key = normalize_home_key(codex_home).to_string();
+    let guard = rollout_live_sync_map().lock().await;
+    guard
+        .get(&key)
+        .and_then(|state| state.failed_turn_fences.get(normalized_thread_id))
+        .cloned()
+}
+
+pub(crate) fn sanitize_failed_turn_thread_payload(value: &mut Value, turn_id: &str) -> bool {
+    let normalized_turn_id = turn_id.trim();
+    if normalized_turn_id.is_empty() {
+        return false;
+    }
+    let thread_obj =
+        if let Some(thread_obj) = value.get_mut("thread").and_then(Value::as_object_mut) {
+            thread_obj
+        } else if let Some(root_obj) = value.as_object_mut() {
+            root_obj
+        } else {
+            return false;
+        };
+    let Some(turns) = thread_obj.get_mut("turns").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let mut changed = false;
+    for turn in turns.iter_mut() {
+        let matches_fenced_turn =
+            turn.get("id").and_then(Value::as_str).map(str::trim) == Some(normalized_turn_id);
+        if !matches_fenced_turn {
+            continue;
+        }
+        let Some(items) = turn.get_mut("items").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        let before_len = items.len();
+        items.retain(|item| !is_assistant_like_turn_item(item));
+        if items.len() != before_len {
+            changed = true;
+        }
+    }
+    if changed {
+        thread_obj.insert(
+            "status".to_string(),
+            serde_json::json!({ "type": "failed" }),
+        );
+    }
+    changed
+}
+
+pub(crate) async fn sanitize_failed_turn_thread_payload_in_home(
+    codex_home: Option<&str>,
+    thread_id: &str,
+    value: &mut Value,
+) -> bool {
+    let Some(fence) = failed_turn_fence_for_thread(codex_home, thread_id).await else {
+        return false;
+    };
+    let mut changed = false;
+    for failed_turn_id in fence.failed_turn_ids {
+        changed |= sanitize_failed_turn_thread_payload(value, &failed_turn_id);
+    }
+    changed
+}
+
+fn is_assistant_like_turn_item(item: &Value) -> bool {
+    let item_type = item
+        .get("type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if matches!(item_type, "assistantMessage" | "agentMessage") {
+        return true;
+    }
+    item_type == "message"
+        && item
+            .get("role")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|role| role.eq_ignore_ascii_case("assistant"))
+}
+
 fn rollout_live_sync_map() -> &'static Mutex<HashMap<String, RolloutLiveSyncState>> {
     ROLLOUT_LIVE_SYNC.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -1090,6 +1396,7 @@ fn thread_status_notification(
     status: &str,
     source: &str,
     message: Option<&str>,
+    turn_id: Option<&str>,
 ) -> Value {
     let mut params = serde_json::Map::from_iter([
         ("threadId".to_string(), Value::String(thread_id.to_string())),
@@ -1103,18 +1410,37 @@ fn thread_status_notification(
     if let Some(message) = message.map(str::trim).filter(|value| !value.is_empty()) {
         params.insert("message".to_string(), Value::String(message.to_string()));
     }
+    if let Some(turn_id) = turn_id.map(str::trim).filter(|value| !value.is_empty()) {
+        params.insert("turnId".to_string(), Value::String(turn_id.to_string()));
+        params.insert("turn_id".to_string(), Value::String(turn_id.to_string()));
+    }
     serde_json::json!({
         "method": "thread/status/changed",
         "params": Value::Object(params),
     })
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn push_thread_status_changed_notification(
     codex_home: Option<&str>,
     thread_id: &str,
     status: &str,
     source: &str,
     message: Option<&str>,
+) {
+    push_thread_status_changed_notification_with_turn(
+        codex_home, thread_id, status, source, message, None,
+    )
+    .await;
+}
+
+pub async fn push_thread_status_changed_notification_with_turn(
+    codex_home: Option<&str>,
+    thread_id: &str,
+    status: &str,
+    source: &str,
+    message: Option<&str>,
+    turn_id: Option<&str>,
 ) {
     let normalized_thread_id = thread_id.trim();
     let normalized_status = status.trim();
@@ -1132,13 +1458,93 @@ pub async fn push_thread_status_changed_notification(
             normalized_status,
             normalized_source,
             message,
+            turn_id,
         ),
     )
     .await;
 }
 
+pub async fn push_turn_terminal_failure_notifications(
+    codex_home: Option<&str>,
+    thread_id: &str,
+    turn_id: &str,
+    source: &str,
+    message: Option<&str>,
+) {
+    let normalized_thread_id = thread_id.trim();
+    let normalized_turn_id = turn_id.trim();
+    let normalized_source = source.trim();
+    if normalized_thread_id.is_empty()
+        || normalized_turn_id.is_empty()
+        || normalized_source.is_empty()
+    {
+        return;
+    }
+    let mut turn_params = serde_json::Map::from_iter([
+        (
+            "threadId".to_string(),
+            Value::String(normalized_thread_id.to_string()),
+        ),
+        (
+            "thread_id".to_string(),
+            Value::String(normalized_thread_id.to_string()),
+        ),
+        (
+            "turnId".to_string(),
+            Value::String(normalized_turn_id.to_string()),
+        ),
+        (
+            "turn_id".to_string(),
+            Value::String(normalized_turn_id.to_string()),
+        ),
+        ("status".to_string(), Value::String("failed".to_string())),
+        (
+            "source".to_string(),
+            Value::String(normalized_source.to_string()),
+        ),
+    ]);
+    if let Some(message) = message.map(str::trim).filter(|value| !value.is_empty()) {
+        let error = serde_json::json!({ "message": message });
+        turn_params.insert("message".to_string(), Value::String(message.to_string()));
+        turn_params.insert("error".to_string(), error.clone());
+        turn_params.insert(
+            "turn".to_string(),
+            serde_json::json!({
+                "id": normalized_turn_id,
+                "status": "failed",
+                "error": error,
+            }),
+        );
+    } else {
+        turn_params.insert(
+            "turn".to_string(),
+            serde_json::json!({
+                "id": normalized_turn_id,
+                "status": "failed",
+            }),
+        );
+    }
+    push_notification(
+        codex_home,
+        serde_json::json!({
+            "method": "turn/completed",
+            "params": Value::Object(turn_params),
+        }),
+    )
+    .await;
+    push_thread_status_changed_notification_with_turn(
+        codex_home,
+        normalized_thread_id,
+        "failed",
+        normalized_source,
+        message,
+        Some(normalized_turn_id),
+    )
+    .await;
+}
+
 fn rollout_status_notification(thread_id: &str, status: &str) -> Value {
-    thread_status_notification(thread_id, status, "rollout_live_sync", None)
+    thread_status_notification(thread_id, status, "rollout_live_sync", None, None)
 }
 
 fn rollout_turn_notification(
@@ -1316,6 +1722,20 @@ fn should_run_live_sync_pass(
 }
 
 async fn push_notification(codex_home: Option<&str>, value: Value) {
+    if should_drop_failed_turn_notification(codex_home, &value).await {
+        push_debug_event(
+            "app.notification.drop.failed_turn_late_event",
+            serde_json::json!({
+                "home": normalize_home_key(codex_home),
+                "method": notification_method(&value),
+                "threadId": extract_thread_id_for_debug(&value).unwrap_or_default(),
+                "turnId": extract_notification_turn_id(&value),
+                "source": extract_notification_source(&value),
+            }),
+        )
+        .await;
+        return;
+    }
     let key = normalize_home_key(codex_home);
     let map = notification_state_map();
     let mut guard = map.lock().await;
@@ -1331,8 +1751,13 @@ async fn push_notification(codex_home: Option<&str>, value: Value) {
         .unwrap_or_default()
         .to_string();
     let thread_id = extract_thread_id_for_debug(&value).unwrap_or_default();
+    let debug_value = value.clone();
     let (event_id, queue_len, dropped) = push_notification_into_state(st, value);
     drop(guard);
+    crate::orchestrator::gateway::web_codex_session_manager::record_app_notification_thread_state_for_home(
+        codex_home,
+        &with_event_id(debug_value.clone(), event_id),
+    );
     if let Some((dropped_event_id, dropped_value)) = dropped {
         push_debug_event(
             "app.notification.drop.overflow",
@@ -1348,12 +1773,20 @@ async fn push_notification(codex_home: Option<&str>, value: Value) {
     }
     push_debug_event(
         "app.notification.push",
-        serde_json::json!({
-            "home": key.as_ref(),
-            "eventId": event_id,
-            "method": method,
-            "threadId": thread_id,
-            "queueLen": queue_len,
+        Value::Object({
+            let mut map = serde_json::Map::from_iter([
+                ("home".to_string(), Value::String(key.as_ref().to_string())),
+                ("eventId".to_string(), Value::from(event_id)),
+                ("method".to_string(), Value::String(method)),
+                ("threadId".to_string(), Value::String(thread_id)),
+                ("queueLen".to_string(), Value::from(queue_len)),
+            ]);
+            for (summary_key, summary_value) in
+                notification_debug_summary(&with_event_id(debug_value, event_id))
+            {
+                map.insert(summary_key, summary_value);
+            }
+            map
         }),
     )
     .await;
@@ -2477,6 +2910,60 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn push_turn_terminal_failure_notifications_emit_failed_turn_then_thread_status() {
+        let _guard = lock_tests();
+        let _home = isolate_default_codex_home();
+        _clear_notifications_for_test().await;
+
+        let codex_home = std::env::var("CODEX_HOME").expect("isolated codex home");
+        ensure_notification_home_state(Some(codex_home.as_str())).await;
+        push_turn_terminal_failure_notifications(
+            Some(codex_home.as_str()),
+            "thread-1",
+            "turn-9",
+            "gateway.no_routable_provider",
+            Some("no routable providers available"),
+        )
+        .await;
+
+        let (items, first, last, gap) =
+            replay_notifications_since_in_home(Some(codex_home.as_str()), 0, 8).await;
+        assert!(!gap);
+        assert_eq!(first, Some(1));
+        assert_eq!(last, Some(2));
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0].get("method").and_then(Value::as_str),
+            Some("turn/completed")
+        );
+        assert_eq!(
+            items[0]
+                .get("params")
+                .and_then(|value| value.get("turn_id"))
+                .and_then(Value::as_str),
+            Some("turn-9")
+        );
+        assert_eq!(
+            items[0]
+                .get("params")
+                .and_then(|value| value.get("status"))
+                .and_then(Value::as_str),
+            Some("failed")
+        );
+        assert_eq!(
+            items[1].get("method").and_then(Value::as_str),
+            Some("thread/status/changed")
+        );
+        assert_eq!(
+            items[1]
+                .get("params")
+                .and_then(|value| value.get("turn_id"))
+                .and_then(Value::as_str),
+            Some("turn-9")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn replay_notifications_tail_rollout_turn_status_and_reasoning() {
         let _guard = lock_tests();
         _clear_notifications_for_test().await;
@@ -2540,6 +3027,295 @@ mod tests {
             items[4].get("method").and_then(Value::as_str),
             Some("thread/status/changed")
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replay_notifications_tail_rollout_task_complete_with_error_marks_failed() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+        crate::orchestrator::gateway::_clear_workspace_runtime_registry_for_test();
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp.path().join(".codex");
+        let sessions = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("04")
+            .join("22");
+        std::fs::create_dir_all(&sessions).expect("sessions dir");
+        let rollout = sessions.join("rollout-2026-04-22T12-00-00-thread-failed.jsonl");
+        std::fs::write(
+            &rollout,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-failed\"}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"thread_id\":\"thread-failed\",\"turn_id\":\"turn-1\",\"error\":{\"message\":\"provider unavailable\"}}}\n"
+            ),
+        )
+        .expect("write rollout");
+
+        let (items, _first, _last, _gap) =
+            replay_notifications_since_in_home(Some(codex_home.to_string_lossy().as_ref()), 0, 8)
+                .await;
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0].get("method").and_then(Value::as_str),
+            Some("turn/completed")
+        );
+        assert_eq!(
+            items[0]
+                .get("params")
+                .and_then(|value| value.get("status"))
+                .and_then(Value::as_str),
+            Some("failed")
+        );
+        assert_eq!(
+            items[1].get("method").and_then(Value::as_str),
+            Some("thread/status/changed")
+        );
+        assert_eq!(
+            items[1]
+                .get("params")
+                .and_then(|value| value.get("status"))
+                .and_then(Value::as_str),
+            Some("failed")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replay_notifications_drops_late_events_for_a_gateway_failed_turn() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+        crate::orchestrator::gateway::_clear_workspace_runtime_registry_for_test();
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp.path().join(".codex");
+        let sessions = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("04")
+            .join("22");
+        std::fs::create_dir_all(&sessions).expect("sessions dir");
+        let rollout = sessions.join("rollout-2026-04-22T12-10-00-thread-failed-late.jsonl");
+        std::fs::write(
+            &rollout,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-failed-late\"}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"thread_id\":\"thread-failed-late\",\"turn_id\":\"turn-1\"}}\n"
+            ),
+        )
+        .expect("write rollout");
+
+        let (initial_items, _first, initial_last, _gap) =
+            replay_notifications_since_in_home(Some(codex_home.to_string_lossy().as_ref()), 0, 8)
+                .await;
+        assert_eq!(
+            initial_items
+                .iter()
+                .map(|item| {
+                    item.get("method")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>(),
+            vec!["turn/started", "thread/status/changed"]
+        );
+
+        push_thread_status_changed_notification_with_turn(
+            Some(codex_home.to_string_lossy().as_ref()),
+            "thread-failed-late",
+            "failed",
+            "gateway.no_routable_provider",
+            Some("no routable providers available"),
+            Some("turn-1"),
+        )
+        .await;
+
+        let last_event_id = initial_last.expect("initial last event id") + 1;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&rollout)
+            .expect("append rollout");
+        use std::io::Write as _;
+        writeln!(
+            file,
+            r#"{{"type":"response_item","payload":{{"type":"message","thread_id":"thread-failed-late","turn_id":"turn-1","role":"assistant","content":[{{"type":"output_text","text":"你好。"}}]}}}}"#
+        )
+        .expect("append response item");
+        writeln!(
+            file,
+            r#"{{"type":"event_msg","payload":{{"type":"task_complete","thread_id":"thread-failed-late","turn_id":"turn-1"}}}}"#
+        )
+        .expect("append completion");
+        file.flush().expect("flush rollout");
+
+        let (late_items, _first, _last, _gap) = replay_notifications_since_in_home(
+            Some(codex_home.to_string_lossy().as_ref()),
+            last_event_id,
+            8,
+        )
+        .await;
+
+        assert!(
+            late_items.is_empty(),
+            "late same-turn rollout notifications should be dropped after gateway failure: {late_items:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replay_notifications_allows_a_new_turn_after_failed_turn_fence() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+        crate::orchestrator::gateway::_clear_workspace_runtime_registry_for_test();
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp.path().join(".codex");
+        let sessions = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("04")
+            .join("22");
+        std::fs::create_dir_all(&sessions).expect("sessions dir");
+        let rollout = sessions.join("rollout-2026-04-22T12-20-00-thread-failed-next.jsonl");
+        std::fs::write(
+            &rollout,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-failed-next\"}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"thread_id\":\"thread-failed-next\",\"turn_id\":\"turn-1\"}}\n"
+            ),
+        )
+        .expect("write rollout");
+
+        let (_initial_items, _first, initial_last, _gap) =
+            replay_notifications_since_in_home(Some(codex_home.to_string_lossy().as_ref()), 0, 8)
+                .await;
+
+        push_thread_status_changed_notification_with_turn(
+            Some(codex_home.to_string_lossy().as_ref()),
+            "thread-failed-next",
+            "failed",
+            "gateway.no_routable_provider",
+            Some("no routable providers available"),
+            Some("turn-1"),
+        )
+        .await;
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&rollout)
+            .expect("append rollout");
+        use std::io::Write as _;
+        writeln!(
+            file,
+            r#"{{"type":"event_msg","payload":{{"type":"task_started","thread_id":"thread-failed-next","turn_id":"turn-2"}}}}"#
+        )
+        .expect("append next start");
+        writeln!(
+            file,
+            r#"{{"type":"event_msg","payload":{{"type":"task_complete","thread_id":"thread-failed-next","turn_id":"turn-2"}}}}"#
+        )
+        .expect("append next completion");
+        file.flush().expect("flush rollout");
+
+        let (items, _first, _last, _gap) = replay_notifications_since_in_home(
+            Some(codex_home.to_string_lossy().as_ref()),
+            initial_last.expect("initial last event id") + 1,
+            8,
+        )
+        .await;
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| {
+                    item.get("method")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                "turn/started",
+                "thread/status/changed",
+                "turn/completed",
+                "thread/status/changed",
+            ]
+        );
+        assert_eq!(
+            items[0]
+                .get("params")
+                .and_then(|value| value.get("turn_id"))
+                .and_then(Value::as_str),
+            Some("turn-2")
+        );
+    }
+
+    #[test]
+    fn sanitize_failed_turn_thread_payload_removes_same_turn_assistant_items() {
+        let mut value = serde_json::json!({
+            "thread": {
+                "id": "thread-1",
+                "status": { "type": "active" },
+                "turns": [
+                    {
+                        "id": "turn-1",
+                        "items": [
+                            {
+                                "type": "userMessage",
+                                "content": [{ "type": "input_text", "text": "hi" }]
+                            },
+                            {
+                                "type": "assistantMessage",
+                                "text": "你好。"
+                            }
+                        ]
+                    }
+                ]
+            }
+        });
+
+        let changed = sanitize_failed_turn_thread_payload(&mut value, "turn-1");
+
+        assert!(changed);
+        let items = value["thread"]["turns"][0]["items"]
+            .as_array()
+            .expect("items array");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["type"].as_str(), Some("userMessage"));
+        assert_eq!(value["thread"]["status"]["type"].as_str(), Some("failed"));
+    }
+
+    #[test]
+    fn sanitize_failed_turn_thread_payload_keeps_other_turns_intact() {
+        let mut value = serde_json::json!({
+            "thread": {
+                "id": "thread-1",
+                "status": { "type": "active" },
+                "turns": [
+                    {
+                        "id": "turn-2",
+                        "items": [
+                            {
+                                "type": "userMessage",
+                                "content": [{ "type": "input_text", "text": "hi" }]
+                            },
+                            {
+                                "type": "assistantMessage",
+                                "text": "你好。"
+                            }
+                        ]
+                    }
+                ]
+            }
+        });
+
+        let changed = sanitize_failed_turn_thread_payload(&mut value, "turn-1");
+
+        assert!(!changed);
+        let items = value["thread"]["turns"][0]["items"]
+            .as_array()
+            .expect("items array");
+        assert_eq!(items.len(), 2);
+        assert_eq!(value["thread"]["status"]["type"].as_str(), Some("active"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3118,7 +3894,24 @@ pub async fn request_in_home(
 
     let mut server = server_arc.lock().await;
     match server.request(method, params).await {
-        Ok(result) => {
+        Ok(mut result) => {
+            if method == "thread/read"
+                && sanitize_failed_turn_thread_payload_in_home(codex_home, &thread_id, &mut result)
+                    .await
+            {
+                if let Some(fence) = failed_turn_fence_for_thread(codex_home, &thread_id).await {
+                    push_debug_event(
+                        "app.request.thread_read.sanitize_failed_turn",
+                        serde_json::json!({
+                            "home": home,
+                            "threadId": thread_id,
+                            "turnId": fence.active_turn_id,
+                            "failedTurnIds": fence.failed_turn_ids.into_iter().collect::<Vec<_>>(),
+                        }),
+                    )
+                    .await;
+                }
+            }
             push_debug_event(
                 "app.request.ok",
                 serde_json::json!({

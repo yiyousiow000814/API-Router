@@ -784,6 +784,25 @@ pub(super) async fn codex_thread_history(
     .await
     {
         Ok(Ok(Ok(mut page))) => {
+            let _ = crate::codex_app_server::sanitize_failed_turn_thread_payload_in_home(
+                runtime_manager.home_override(),
+                &id,
+                &mut page.thread,
+            )
+            .await;
+            if let Some(snapshot) = crate::orchestrator::gateway::web_codex_session_manager::workspace_thread_runtime_snapshot_for_home(
+                runtime_manager.home_override(),
+                &id,
+            ) {
+                if snapshot.status.as_deref() == Some("failed") {
+                    if let Some(turn_id) = snapshot.last_turn_id.as_deref() {
+                        let _ = crate::codex_app_server::sanitize_failed_turn_thread_payload(
+                            &mut page.thread,
+                            turn_id,
+                        );
+                    }
+                }
+            }
             if workspace_hint.is_some() {
                 let _ = runtime_manager
                     .overlay_runtime_thread(&id, &mut page.thread)
@@ -801,7 +820,26 @@ pub(super) async fn codex_thread_history(
                 )
                 .await
             {
-                Ok(page) => {
+                Ok(mut page) => {
+                    let _ = crate::codex_app_server::sanitize_failed_turn_thread_payload_in_home(
+                        runtime_manager.home_override(),
+                        &id,
+                        &mut page.thread,
+                    )
+                    .await;
+                    if let Some(snapshot) = crate::orchestrator::gateway::web_codex_session_manager::workspace_thread_runtime_snapshot_for_home(
+                        runtime_manager.home_override(),
+                        &id,
+                    ) {
+                        if snapshot.status.as_deref() == Some("failed") {
+                            if let Some(turn_id) = snapshot.last_turn_id.as_deref() {
+                                let _ = crate::codex_app_server::sanitize_failed_turn_thread_payload(
+                                    &mut page.thread,
+                                    turn_id,
+                                );
+                            }
+                        }
+                    }
                     Json(json!({ "thread": page.thread, "page": page.page })).into_response()
                 }
                 Err(runtime_error) => api_error_detail(

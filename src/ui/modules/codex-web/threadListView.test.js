@@ -523,7 +523,7 @@ describe("threadListView", () => {
     expect(state.activeThreadOpenState.resumeRequired).toBe(false);
   });
 
-  it("marks not-loaded threads as needing resume even when history is idle", () => {
+  it("does not mark not-loaded threads as needing resume once matching history is idle", () => {
     const state = {
       activeThreadWorkspace: "windows",
       activeThreadRolloutPath: "",
@@ -549,7 +549,54 @@ describe("threadListView", () => {
     });
 
     expect(result.threadStatusType).toBe("notLoaded");
-    expect(state.activeThreadOpenState.resumeRequired).toBe(true);
+    expect(state.activeThreadOpenState.resumeRequired).toBe(false);
+  });
+
+  it("does not resume not-loaded threads on open when there is no runtime evidence", async () => {
+    const calls = [];
+    const state = {
+      activeThreadHistoryThreadId: "",
+      activeThreadHistoryIncomplete: false,
+      activeThreadHistoryStatusType: "",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingTurnThreadId: "",
+      pendingThreadResumes: new Map(),
+      activeThreadOpenState: null,
+    };
+
+    const resumed = await resumeThreadLiveOnOpen({
+      threadId: "thread-notloaded",
+      workspace: "windows",
+      rolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
+      threadStatusType: "notLoaded",
+      state,
+      api: async (path, options = {}) => {
+        calls.push({ path, method: options.method || "GET" });
+        return { ok: true };
+      },
+      connectWs() {
+        calls.push({ path: "connectWs", method: "CALL" });
+      },
+      syncEventSubscription() {
+        calls.push({ path: "syncEventSubscription", method: "CALL" });
+      },
+      refreshWorkspaceRuntimeState: async () => null,
+    });
+
+    expect(resumed).toBe(null);
+    expect(calls).toEqual([
+      {
+        path: "/codex/threads/thread-notloaded/transport?workspace=windows",
+        method: "GET",
+      },
+    ]);
+    expect(state.activeThreadOpenState).toMatchObject({
+      threadId: "thread-notloaded",
+      threadStatusType: "notloaded",
+      loaded: false,
+      resumeRequired: false,
+      resumeReason: "thread-not-loaded",
+    });
   });
 
   it("only resumes threads on open when runtime evidence says it is needed", () => {
@@ -611,7 +658,7 @@ describe("threadListView", () => {
         historyIncomplete: false,
         historyStatusType: "idle",
       }).resumeRequired
-    ).toBe(true);
+    ).toBe(false);
     expect(
       resolveThreadOpenState({
         threadId: "thread-1",
@@ -754,6 +801,44 @@ describe("threadListView", () => {
       workspace: "windows",
       rolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
       threadStatusType: "running",
+      state,
+      api,
+      registerPendingThreadResume(map, threadId, promise) {
+        map.set(threadId, promise);
+      },
+    });
+
+    expect(calls).toEqual([
+      {
+        path: "/codex/threads/thread-1/transport?workspace=windows",
+        method: "GET",
+      },
+    ]);
+    expect(state.activeThreadOpenState.loaded).toBe(false);
+  });
+
+  it("does not resume when loaded history overrides stale notLoaded sidebar state", async () => {
+    const calls = [];
+    const state = {
+      activeThreadAttachTransport: "",
+      activeThreadHistoryThreadId: "thread-1",
+      activeThreadHistoryIncomplete: false,
+      activeThreadHistoryStatusType: "idle",
+      activeThreadPendingTurnRunning: false,
+      activeThreadPendingTurnThreadId: "",
+      pendingThreadResumes: new Map(),
+      threadAttachTransportById: new Map(),
+    };
+    const api = async (path, options = {}) => {
+      calls.push({ path, method: options.method || "GET" });
+      return { ok: true, attached: false, transport: null };
+    };
+
+    await resumeThreadLiveOnOpen({
+      threadId: "thread-1",
+      workspace: "windows",
+      rolloutPath: "C:\\repo\\.codex\\sessions\\rollout.jsonl",
+      threadStatusType: "notLoaded",
       state,
       api,
       registerPendingThreadResume(map, threadId, promise) {

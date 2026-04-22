@@ -1,5 +1,9 @@
 import { syncPendingTurnRuntime } from "./runtimeState.js";
-import { resolveThreadOpenState, setThreadOpenState } from "./threadOpenState.js";
+import {
+  resetTransientConnectionStatusForThreadOpen,
+  resolveThreadOpenState,
+  setThreadOpenState,
+} from "./threadOpenState.js";
 
 function splitWorkspaceKeySegments(key) {
   return String(key || "")
@@ -314,6 +318,7 @@ export function createThreadListViewModule(deps) {
     onPendingTurnStateChange = () => {},
     refreshWorkspaceRuntimeState = async () => null,
     updateHeaderUi = () => {},
+    clearLiveThreadConnectionStatus = () => {},
     setStatus,
     scheduleThreadRefresh,
     scrollToBottomReliable,
@@ -653,6 +658,11 @@ export function createThreadListViewModule(deps) {
           setActiveThread,
           detectThreadWorkspaceTarget,
         });
+        resetTransientConnectionStatusForThreadOpen(
+          state,
+          state.activeThreadOpenState,
+          clearLiveThreadConnectionStatus
+        );
         onActiveThreadOpened(selection);
         const workspaceHint = selection.workspace;
         const rolloutPath = selection.rolloutPath;

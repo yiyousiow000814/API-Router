@@ -1,3 +1,5 @@
+import { isTerminalHistoryStatus } from "./historyLiveCommentaryState.js";
+
 const THREAD_RESUME_STATUSES = new Set(["running", "queued", "pending"]);
 
 function normalizeThreadStatusType(value) {
@@ -55,23 +57,13 @@ export function resolveThreadOpenState(value = {}) {
     };
   }
 
-  if (hasPendingForThread) {
-    return {
-      ...baseState,
-      resumeRequired: true,
-      resumeReason: "pending-turn",
-    };
-  }
-
-  if (status === "notloaded") {
-    return {
-      ...baseState,
-      resumeRequired: true,
-      resumeReason: "thread-not-loaded",
-    };
-  }
-
   if (historyId === id) {
+    if (isTerminalHistoryStatus(historyStatus)) {
+      return {
+        ...baseState,
+        resumeReason: "history-complete",
+      };
+    }
     if (historyIncomplete === true) {
       return {
         ...baseState,
@@ -92,6 +84,21 @@ export function resolveThreadOpenState(value = {}) {
     };
   }
 
+  if (hasPendingForThread) {
+    return {
+      ...baseState,
+      resumeRequired: true,
+      resumeReason: "pending-turn",
+    };
+  }
+
+  if (status === "notloaded") {
+    return {
+      ...baseState,
+      resumeReason: "thread-not-loaded",
+    };
+  }
+
   if (THREAD_RESUME_STATUSES.has(status)) {
     return {
       ...baseState,
@@ -105,6 +112,29 @@ export function resolveThreadOpenState(value = {}) {
 
 export function getThreadOpenState(state = {}) {
   return resolveThreadOpenState(state?.activeThreadOpenState);
+}
+
+export function resetTransientConnectionStatusForThreadOpen(state, openState = {}, clearLiveThreadConnectionStatus = () => {}) {
+  const normalized = resolveThreadOpenState(openState);
+  const threadId = String(normalized.threadId || "").trim();
+  if (!state || !threadId) return false;
+  const hasTransientConnectionStatus =
+    !!String(state.activeThreadConnectionStatusKind || "").trim() ||
+    !!String(state.activeThreadConnectionStatusText || "").trim() ||
+    !!String(state.activeThreadTerminalConnectionErrorThreadId || "").trim();
+  if (!hasTransientConnectionStatus) return false;
+  const hasTrackedRuntimeContext =
+    (String(state.activeThreadPendingTurnThreadId || "").trim() === threadId) ||
+    (String(state.activeThreadLiveAssistantThreadId || "").trim() === threadId) ||
+    (String(state.activeThreadCommentaryCurrent?.threadId || "").trim() === threadId) ||
+    (String(state.activeThreadPlan?.threadId || "").trim() === threadId) ||
+    (Array.isArray(state.activeThreadActiveCommands) && state.activeThreadActiveCommands.length > 0);
+  if (hasTrackedRuntimeContext) return false;
+  state.activeThreadTerminalConnectionErrorThreadId = "";
+  state.activeThreadPendingTerminalConnectionErrorThreadId = "";
+  state.activeThreadPendingTerminalConnectionErrorText = "";
+  clearLiveThreadConnectionStatus("thread.open:history_only");
+  return true;
 }
 
 export function setThreadOpenState(state, value = {}, options = {}) {

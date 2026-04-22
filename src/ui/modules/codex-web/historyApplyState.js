@@ -20,6 +20,7 @@ export function applyPreparedThreadState(state = {}, threadId = "", prepared = {
     tokenUsage = null,
     started = false,
     historyStatusType = "",
+    authoritativeUserCount = 0,
     target = "unknown",
     resolvedRolloutPath = "",
   } = prepared;
@@ -29,6 +30,7 @@ export function applyPreparedThreadState(state = {}, threadId = "", prepared = {
   renderComposerContextLeft();
   state.activeThreadStarted = started;
   state.activeThreadHistoryStatusType = historyStatusType;
+  state.activeThreadHistoryUserCount = Math.max(0, Number(authoritativeUserCount || 0));
   if (target !== "unknown") state.activeThreadWorkspace = target;
   if (resolvedRolloutPath) state.activeThreadRolloutPath = resolvedRolloutPath;
 

@@ -1,3 +1,4 @@
+import { isTerminalHistoryStatus } from "./historyLiveCommentaryState.js";
 import { getProposedPlanConfirmation } from "./proposedPlan.js";
 
 export function pickPendingDefaults(approvals, userInputs) {
@@ -109,7 +110,7 @@ export function getSyntheticPendingUserInputsForThread(state, threadId = "") {
 export function getVisiblePendingUserInputs(state, threadId = "") {
   const normalizedThreadId = String(threadId || state?.activeThreadId || "").trim();
   const historyStatusType = String(state?.activeThreadHistoryStatusType || "").trim().toLowerCase();
-  if (normalizedThreadId && (historyStatusType === "interrupted" || historyStatusType === "cancelled")) {
+  if (normalizedThreadId && isTerminalHistoryStatus(historyStatusType)) {
     return [];
   }
   const real = Array.isArray(state?.pendingUserInputs) ? state.pendingUserInputs : [];

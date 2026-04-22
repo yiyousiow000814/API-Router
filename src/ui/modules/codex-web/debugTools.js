@@ -1,5 +1,9 @@
 import { resetTurnPresentationState, syncPendingTurnRuntime } from "./runtimeState.js";
-import { resolveThreadOpenState, setThreadOpenState } from "./threadOpenState.js";
+import {
+  resetTransientConnectionStatusForThreadOpen,
+  resolveThreadOpenState,
+  setThreadOpenState,
+} from "./threadOpenState.js";
 
 export function readDebugMessageNode(node, index) {
   const body = node?.querySelector?.(".msgBody") || null;
@@ -43,7 +47,14 @@ export function hasQueryFlag(search, key, expected = "1") {
 export function collectPendingLiveTraceEvents(state, limit = 40) {
   const events = Array.isArray(state?.liveDebugEvents) ? state.liveDebugEvents : [];
   const max = Math.max(1, Number(limit || 40) | 0);
-  return events.filter((event) => event && event.__traceUploaded !== true).slice(0, max);
+  const uploadAll = state?.liveTraceUploadAllEnabled === true;
+  return events
+    .filter((event) => {
+      if (!event || event.__traceUploaded === true) return false;
+      if (uploadAll) return true;
+      return event.__tracePersist === true;
+    })
+    .slice(0, max);
 }
 
 function normalizeDebugText(value) {
@@ -119,9 +130,11 @@ export function createDebugToolsModule(deps) {
     setActivePlan = () => {},
     setActiveCommands = () => {},
     setRuntimeActivity = () => {},
+    clearLiveThreadConnectionStatus = () => {},
     setChatOpening,
     loadThreadMessages,
     refreshThreads,
+    sendTurn = async () => {},
     handleWsPayload,
     scrollChatToBottom,
     scrollToBottomReliable,
@@ -849,6 +862,10 @@ export function createDebugToolsModule(deps) {
           const events = Array.isArray(state.liveDebugEvents) ? state.liveDebugEvents : [];
           return events.slice(Math.max(0, events.length - max));
         },
+        getRecentLiveTraceEvents(limit = 40) {
+          const max = Math.max(1, Number(limit || 40) | 0);
+          return collectPendingLiveTraceEvents(state, max);
+        },
         getPendingUiSnapshot,
         getPlanInterruptDiagnostics(limit = 120) {
           return buildPlanInterruptDiagnostics(limit);
@@ -1103,9 +1120,8 @@ export function createDebugToolsModule(deps) {
       const debugLiveEnabled =
         hasQueryFlag(win.location?.search || "", "debuglive") ||
         String(storage.getItem(LIVE_INSPECTOR_ENABLED_KEY) || "").trim() === "1";
-      if (debugLiveEnabled) {
-        installLiveTraceBackgroundSync();
-      }
+      state.liveTraceUploadAllEnabled = debugLiveEnabled;
+      installLiveTraceBackgroundSync();
       if (debugLiveEnabled) {
         installLiveInspector();
       }
@@ -1437,6 +1453,11 @@ export function createDebugToolsModule(deps) {
             pendingTurnRunning: state.activeThreadPendingTurnRunning === true,
             pendingThreadId: state.activeThreadPendingTurnThreadId,
           }));
+          resetTransientConnectionStatusForThreadOpen(
+            state,
+            state.activeThreadOpenState,
+            clearLiveThreadConnectionStatus
+          );
           state.activeThreadWorkspace = meta.workspace;
           state.activeThreadRolloutPath = meta.rolloutPath;
           setChatOpening(false);
@@ -1471,6 +1492,16 @@ export function createDebugToolsModule(deps) {
             workspace: meta.workspace,
             rolloutPath: meta.rolloutPath,
           };
+        },
+        async sendPrompt(prompt) {
+          const text = String(prompt || "").trim();
+          if (!text) return { ok: false, error: "missing prompt" };
+          try {
+            await sendTurn(text);
+            return { ok: true };
+          } catch (error) {
+            return { ok: false, error: String(error && error.message ? error.message : error) };
+          }
         },
         installMockTurnStream(config = {}) {
           const threadId = String(config.threadId || this._activeThreadId || state.activeThreadId || "").trim();
