@@ -80,6 +80,8 @@ async fn maybe_handle_test_request(
 struct NotificationState {
     next_event_id: u64,
     items: VecDeque<(u64, Value)>,
+    last_gateway_terminal_failure_by_thread_method:
+        HashMap<(String, String), GatewayTerminalFailureSignature>,
 }
 
 impl Default for NotificationState {
@@ -87,8 +89,18 @@ impl Default for NotificationState {
         Self {
             next_event_id: 1,
             items: VecDeque::new(),
+            last_gateway_terminal_failure_by_thread_method: HashMap::new(),
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GatewayTerminalFailureSignature {
+    method: String,
+    turn_id: Option<String>,
+    source: String,
+    status: String,
+    message: Option<String>,
 }
 
 fn push_notification_into_state(
@@ -103,6 +115,13 @@ fn push_notification_into_state(
         dropped = st.items.pop_front();
     }
     (event_id, st.items.len(), dropped)
+}
+
+fn normalize_optional_field(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn replay_notification_state(
@@ -958,6 +977,71 @@ fn extract_notification_turn_id(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+fn extract_notification_status(value: &Value) -> Option<String> {
+    notification_params(value)
+        .and_then(|params| {
+            params.get("status").and_then(Value::as_str).or_else(|| {
+                params
+                    .get("turn")
+                    .and_then(Value::as_object)
+                    .and_then(|turn| turn.get("status").and_then(Value::as_str))
+            })
+        })
+        .map(str::trim)
+        .filter(|status| !status.is_empty())
+        .map(str::to_string)
+}
+
+fn extract_notification_message(value: &Value) -> Option<String> {
+    notification_params(value)
+        .and_then(|params| params.get("message").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_string)
+}
+
+fn gateway_terminal_failure_signature(
+    value: &Value,
+) -> Option<((String, String), GatewayTerminalFailureSignature)> {
+    let thread_id = extract_thread_id_for_debug(value)?;
+    let source = extract_notification_source(value)?;
+    if !source.starts_with("gateway.") {
+        return None;
+    }
+    let status = extract_notification_status(value)?;
+    if !matches!(status.as_str(), "failed" | "error" | "timeout" | "denied") {
+        return None;
+    }
+    let method = notification_method(value);
+    if !matches!(method, "turn/completed" | "thread/status/changed") {
+        return None;
+    }
+    Some((
+        (thread_id, method.to_string()),
+        GatewayTerminalFailureSignature {
+            method: method.to_string(),
+            turn_id: normalize_optional_field(extract_notification_turn_id(value).as_deref()),
+            source: source.to_string(),
+            status,
+            message: normalize_optional_field(extract_notification_message(value).as_deref()),
+        },
+    ))
+}
+
+fn clear_gateway_terminal_failure_signature_for_started_turn(
+    st: &mut NotificationState,
+    value: &Value,
+) {
+    if notification_method(value) != "turn/started" {
+        return;
+    }
+    let Some(thread_id) = extract_thread_id_for_debug(value) else {
+        return;
+    };
+    st.last_gateway_terminal_failure_by_thread_method
+        .retain(|(entry_thread_id, _), _| entry_thread_id != thread_id.as_str());
+}
+
 fn is_gateway_terminal_failure_notification(value: &Value) -> bool {
     matches!(extract_notification_source(value), Some(source) if source.starts_with("gateway."))
         && matches!(
@@ -995,7 +1079,7 @@ async fn should_drop_failed_turn_notification(codex_home: Option<&str>, value: &
     let state = guard.entry(key).or_default();
 
     if is_gateway_terminal_failure_notification(value) {
-        let Some(turn_id) = notification_turn_id.or(runtime_turn_id) else {
+        let Some(turn_id) = notification_turn_id else {
             return false;
         };
         let fence = state
@@ -1744,7 +1828,34 @@ async fn push_notification(codex_home: Option<&str>, value: Value) {
         .or_insert_with(|| NotificationState {
             next_event_id: 1,
             items: VecDeque::new(),
+            last_gateway_terminal_failure_by_thread_method: HashMap::new(),
         });
+    clear_gateway_terminal_failure_signature_for_started_turn(st, &value);
+    if let Some(((thread_id, method_key), signature)) = gateway_terminal_failure_signature(&value) {
+        if st
+            .last_gateway_terminal_failure_by_thread_method
+            .get(&(thread_id.clone(), method_key))
+            == Some(&signature)
+        {
+            drop(guard);
+            push_debug_event(
+                "app.notification.drop.duplicate_terminal_failure",
+                serde_json::json!({
+                    "home": key.as_ref(),
+                    "method": signature.method,
+                    "threadId": thread_id,
+                    "turnId": signature.turn_id,
+                    "source": signature.source,
+                    "status": signature.status,
+                    "message": signature.message,
+                }),
+            )
+            .await;
+            return;
+        }
+        st.last_gateway_terminal_failure_by_thread_method
+            .insert((thread_id, signature.method.clone()), signature);
+    }
     let method = value
         .get("method")
         .and_then(Value::as_str)
@@ -2437,6 +2548,7 @@ impl AppServer {
 #[allow(clippy::await_holding_lock, clippy::items_after_test_module)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tokio::io::AsyncWriteExt;
 
     // codex_app_server uses global singletons (notification ring buffer + event id counter).
@@ -2964,6 +3076,49 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn duplicate_gateway_terminal_failure_for_same_turn_is_deduped() {
+        let _guard = lock_tests();
+        let _home = isolate_default_codex_home();
+        _clear_notifications_for_test().await;
+
+        let codex_home = std::env::var("CODEX_HOME").expect("isolated codex home");
+        ensure_notification_home_state(Some(codex_home.as_str())).await;
+        push_turn_terminal_failure_notifications(
+            Some(codex_home.as_str()),
+            "thread-1",
+            "turn-9",
+            "gateway.no_routable_provider",
+            Some("no routable providers available"),
+        )
+        .await;
+        push_turn_terminal_failure_notifications(
+            Some(codex_home.as_str()),
+            "thread-1",
+            "turn-9",
+            "gateway.no_routable_provider",
+            Some("no routable providers available"),
+        )
+        .await;
+
+        let (items, first, last, gap) =
+            replay_notifications_since_in_home(Some(codex_home.as_str()), 0, 8).await;
+        assert!(!gap);
+        assert_eq!(first, Some(1));
+        assert_eq!(last, Some(2));
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default())
+                .collect::<Vec<_>>(),
+            vec!["turn/completed", "thread/status/changed"]
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn replay_notifications_tail_rollout_turn_status_and_reasoning() {
         let _guard = lock_tests();
         _clear_notifications_for_test().await;
@@ -3246,6 +3401,70 @@ mod tests {
                 .and_then(|value| value.get("turn_id"))
                 .and_then(Value::as_str),
             Some("turn-2")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn gateway_failed_without_turn_id_does_not_fence_new_runtime_turn() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+        crate::orchestrator::gateway::_clear_workspace_runtime_registry_for_test();
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let codex_home = temp.path().join(".codex");
+        std::fs::create_dir_all(&codex_home).expect("codex home");
+        let home = codex_home.to_string_lossy().to_string();
+
+        crate::orchestrator::gateway::web_codex_session_manager::record_app_notification_thread_state_for_home(
+            Some(home.as_str()),
+            &json!({
+                "eventId": 1,
+                "method": "turn/started",
+                "params": {
+                    "threadId": "thread-failed-next",
+                    "turnId": "turn-2"
+                }
+            }),
+        );
+
+        _push_notification_for_test(
+            Some(home.as_str()),
+            json!({
+                "method": "thread/status/changed",
+                "params": {
+                    "threadId": "thread-failed-next",
+                    "status": "failed",
+                    "source": "gateway.no_routable_provider",
+                    "message": "no routable providers available"
+                }
+            }),
+        )
+        .await;
+
+        _push_notification_for_test(
+            Some(home.as_str()),
+            json!({
+                "method": "turn/started",
+                "params": {
+                    "threadId": "thread-failed-next",
+                    "turnId": "turn-2"
+                }
+            }),
+        )
+        .await;
+
+        let (items, _first, _last, _gap) =
+            replay_notifications_since_in_home(Some(home.as_str()), 0, 8).await;
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default())
+                .collect::<Vec<_>>(),
+            vec!["thread/status/changed", "turn/started"]
         );
     }
 

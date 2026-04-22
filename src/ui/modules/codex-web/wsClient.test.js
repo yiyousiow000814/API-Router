@@ -1377,7 +1377,7 @@ describe("wsClient", () => {
     ]));
   });
 
-  it("keeps transport reconnect UI visible after visibility resume when a turn is active", () => {
+  it("suppresses transport reconnect UI after visibility resume even when a turn is active", () => {
     const statuses = [];
     const chatMessages = [];
     const docHandlers = new Map();
@@ -1483,13 +1483,130 @@ describe("wsClient", () => {
     FakeWebSocket.instances[0].readyState = 3;
     FakeWebSocket.instances[0].onclose({ code: 1006, reason: "resume-close", wasClean: false });
 
-    expect(statuses).toEqual(expect.arrayContaining([{ message: "Reconnecting... 1/5", isWarn: true }]));
-    expect(chatMessages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: "system", text: "Reconnecting... 1/5" }),
-    ]));
+    expect(statuses).toEqual([]);
+    expect(chatMessages).toEqual([]);
     expect(state.liveDebugEvents).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: "ws.reconnect:scheduled", uiSuppressed: false }),
+      expect.objectContaining({ kind: "ws.reconnect:scheduled", uiSuppressed: true }),
     ]));
+  });
+
+  it("refreshes the active thread immediately after visibility resume when a turn is still marked running", () => {
+    const docHandlers = new Map();
+    const pageHandlers = new Map();
+    const scheduledThreadRefreshes = [];
+    let now = 40_000;
+    const fakeDocument = {
+      visibilityState: "visible",
+      addEventListener(type, handler) {
+        docHandlers.set(type, handler);
+      },
+    };
+    class FakeWebSocket {
+      static OPEN = 1;
+      static CONNECTING = 0;
+      static instances = [];
+      constructor() {
+        this.readyState = FakeWebSocket.CONNECTING;
+        FakeWebSocket.instances.push(this);
+      }
+      send() {}
+    }
+    const state = {
+      token: "",
+      ws: null,
+      wsPingTimer: null,
+      wsReconnectTimer: null,
+      wsReconnectAttempt: 0,
+      wsConnectSeq: 0,
+      wsReqHandlers: new Map(),
+      pendingApprovals: [],
+      pendingUserInputs: [],
+      wsLastEventId: 0,
+      wsRecentEventIds: new Set(),
+      wsSubscribedEvents: false,
+      activeThreadId: "thread-1",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnId: "turn-1",
+      activeThreadWorkspace: "windows",
+      workspaceTarget: "windows",
+      liveDebugEvents: [],
+    };
+    createWsClientModule({
+      state,
+      setStatus() {},
+      addChat() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh(threadId, delay) {
+        scheduledThreadRefreshes.push({ threadId, delay });
+      },
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "0"; } },
+      windowRef: {
+        location: { protocol: "http:", host: "example.com" },
+        document: fakeDocument,
+        addEventListener(type, handler) {
+          pageHandlers.set(type, handler);
+        },
+      },
+      WebSocketRef: FakeWebSocket,
+      fetchRef: async () => ({ ok: true, json: async () => ({}) }),
+      setTimeoutRef(callback, delay) {
+        return { callback, delay };
+      },
+      clearTimeoutRef() {},
+      setIntervalRef() {
+        return 1;
+      },
+      clearIntervalRef() {},
+      nowRef: () => now,
+      WS_RECONNECT_BASE_MS: 25,
+      WS_RECONNECT_MAX_MS: 25,
+      WS_RESUME_SILENCE_MS: 1200,
+    });
+
+    fakeDocument.visibilityState = "hidden";
+    docHandlers.get("visibilitychange")?.();
+    now += 250;
+    fakeDocument.visibilityState = "visible";
+    docHandlers.get("visibilitychange")?.();
+
+    expect(scheduledThreadRefreshes).toEqual([
+      { threadId: "thread-1", delay: 0 },
+    ]);
+
+    now += 50;
+    pageHandlers.get("pageshow")?.();
+    expect(scheduledThreadRefreshes).toEqual([
+      { threadId: "thread-1", delay: 0 },
+    ]);
   });
 
   it("shows transport reconnect UI again once the resume silence window has elapsed", () => {

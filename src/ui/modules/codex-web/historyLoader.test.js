@@ -1157,6 +1157,99 @@ Implement this plan?
     expect(state.activeThreadPendingTurnRunning).toBe(true);
   });
 
+  it("does not synthesize running pending state from notLoaded incomplete history without turns", async () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadOpenState: {
+        threadId: "thread-1",
+        loaded: false,
+        resumeRequired: true,
+      },
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientToolMessage() {},
+      clearTransientToolMessages() {},
+      clearTransientThinkingMessages() {},
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {},
+      syncEventSubscription() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "notLoaded" },
+      page: { incomplete: true },
+      turns: [],
+    });
+
+    expect(state.activeThreadPendingTurnThreadId).toBe("");
+    expect(state.activeThreadPendingTurnId).toBe("");
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(
+      state.liveDebugEvents.some(
+        (event) => event?.kind === "pending.runtime:reset" && event?.reason === "history.sync:incomplete_without_turn"
+      )
+    ).toBe(true);
+  });
+
   it("does not restore pending running from incomplete systemError history", async () => {
     const ops = [];
     const state = {
@@ -4422,6 +4515,99 @@ Implement this plan?
     ).toBe(false);
   });
 
+  it("clears stale running state when complete history has only a pending turn id shell", async () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-stale",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnBaselineTurnCount: 0,
+      activeThreadPendingTurnBaselineUserCount: 0,
+      activeThreadPendingUserMessage: "",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientThinkingMessage() {},
+      clearTransientThinkingMessages() {},
+      showTransientToolMessage() {},
+      clearTransientToolMessages() {},
+      clearRuntimeState() {},
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {},
+      syncEventSubscription() {},
+      clearLiveThreadConnectionStatus() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "notLoaded" },
+      page: { incomplete: false },
+      turns: [],
+    });
+
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingTurnId).toBe("");
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(
+      state.liveDebugEvents.some(
+        (event) => event?.kind === "pending.runtime:reset" && event?.reason === "history.sync:complete_without_materialized_history"
+      )
+    ).toBe(true);
+  });
+
   it("stops a reconnecting pending turn once systemError history can materialize the terminal error", async () => {
     const state = {
       activeThreadId: "thread-1",
@@ -4548,6 +4734,117 @@ Implement this plan?
     expect(state.liveDebugEvents.some(
       (event) => event?.kind === "history.connection:materialize_terminal_error"
     )).toBe(true);
+  });
+
+  it("does not materialize reconnect text as a terminal error without terminal error context text", async () => {
+    const statuses = [];
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [
+        { role: "user", text: "hi", kind: "", images: [] },
+      ],
+      activeThreadWorkspace: "windows",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-2",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnBaselineTurnCount: 0,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+      activeThreadConnectionStatusKind: "reconnecting",
+      activeThreadConnectionStatusText: "Reconnecting... 5/5",
+      activeThreadTerminalConnectionErrorThreadId: "",
+      activeThreadConnectionReplayGuardThreadId: "thread-1",
+      activeThreadConnectionReplayGuardText: "",
+      activeThreadConnectionReplayGuardEpoch: 4,
+      activeThreadConnectionReplayGuardReconnectSeen: true,
+      activeThreadPendingTerminalConnectionErrorThreadId: "",
+      activeThreadPendingTerminalConnectionErrorText: "",
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "windows"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      setStatus(text, isWarn) {
+        statuses.push({ text, isWarn });
+      },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientToolMessage() {},
+      showTransientThinkingMessage() {},
+      clearTransientToolMessages() {},
+      clearTransientThinkingMessages() {},
+      clearRuntimeState() {},
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {},
+      syncEventSubscription() {},
+      clearLiveThreadConnectionStatus() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "windows",
+      status: { type: "systemError" },
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [{ type: "userMessage", content: [{ type: "input_text", text: "hi" }] }],
+        },
+      ],
+    });
+
+    expect(state.activeThreadConnectionStatusKind).toBe("reconnecting");
+    expect(state.activeThreadConnectionStatusText).toBe("Reconnecting... 5/5");
+    expect(statuses).toEqual([]);
+    expect(state.liveDebugEvents.some(
+      (event) => event?.kind === "history.connection:materialize_terminal_error"
+    )).toBe(false);
   });
 
   it("does not let suppressed synthetic pending inputs clear an active second-send runtime", async () => {

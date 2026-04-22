@@ -156,6 +156,7 @@ export function createInitialState() {
     pageVisibilityState: "visible",
     pageLastHiddenAt: 0,
     pageLastVisibleAt: 0,
+    pageLastResumeReconciledHiddenAt: 0,
     collapsedWorkspaceKeys: new Set(),
     collapsedWorkspaceKeysByWorkspace: { windows: new Set(), wsl2: new Set() },
     threadGroupCollapseInitializedByWorkspace: { windows: false, wsl2: false },

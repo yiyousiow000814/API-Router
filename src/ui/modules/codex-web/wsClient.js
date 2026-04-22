@@ -173,6 +173,7 @@ export function createWsClientModule(deps) {
     state.pageVisibilityState = normalized;
     if (normalized === "hidden") {
       state.pageLastHiddenAt = now;
+      state.pageLastResumeReconciledHiddenAt = 0;
       return;
     }
     if (normalized === "visible") {
@@ -181,7 +182,6 @@ export function createWsClientModule(deps) {
   }
 
   function shouldSuppressTransportReconnectUi() {
-    if (hasVisibleLiveTurn()) return false;
     const visibilityState = String(
       state.pageVisibilityState || documentRef?.visibilityState || "visible"
     ).trim().toLowerCase();
@@ -193,18 +193,42 @@ export function createWsClientModule(deps) {
     return elapsedSinceVisible >= 0 && elapsedSinceVisible < Math.max(0, Number(WS_RESUME_SILENCE_MS || 0));
   }
 
+  function reconcileActiveRuntimeAfterResume() {
+    if (!hasVisibleLiveTurn()) return;
+    const lastHiddenAt = Number(state.pageLastHiddenAt || 0);
+    const lastVisibleAt = Number(state.pageLastVisibleAt || 0);
+    const lastReconciledHiddenAt = Number(state.pageLastResumeReconciledHiddenAt || 0);
+    if (!lastHiddenAt || !lastVisibleAt || lastVisibleAt < lastHiddenAt) return;
+    if (lastReconciledHiddenAt === lastHiddenAt) return;
+    const currentThreadId = resolveCurrentThreadId(state);
+    if (!currentThreadId) return;
+    state.pageLastResumeReconciledHiddenAt = lastHiddenAt;
+    pushLiveDebugEvent("ws.visibility:reconcile_active_runtime", {
+      threadId: currentThreadId,
+      pendingTurnId: String(state.activeThreadPendingTurnId || "").trim(),
+      pendingRunning: state.activeThreadPendingTurnRunning === true,
+      hiddenAt: lastHiddenAt,
+    });
+    scheduleActiveThreadRefresh(currentThreadId, 0);
+  }
+
   function installVisibilityTracking() {
     if (!documentRef || documentRef.__webCodexWsVisibilityTrackingInstalled) return;
     documentRef.__webCodexWsVisibilityTrackingInstalled = true;
     noteVisibilityState(documentRef.visibilityState || "visible");
     documentRef.addEventListener?.("visibilitychange", () => {
-      noteVisibilityState(documentRef.visibilityState || "visible");
+      const nextState = documentRef.visibilityState || "visible";
+      noteVisibilityState(nextState);
+      if (String(nextState).trim().toLowerCase() === "visible") {
+        reconcileActiveRuntimeAfterResume();
+      }
     });
     windowRef?.addEventListener?.("pagehide", () => {
       noteVisibilityState("hidden");
     });
     windowRef?.addEventListener?.("pageshow", () => {
       noteVisibilityState(documentRef.visibilityState || "visible");
+      reconcileActiveRuntimeAfterResume();
     });
   }
 

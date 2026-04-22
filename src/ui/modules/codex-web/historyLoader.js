@@ -424,7 +424,6 @@ function materializeTerminalConnectionErrorFromHistory(thread, state = {}, setSt
   const message = String(
     state.activeThreadPendingTerminalConnectionErrorText ||
     state.activeThreadConnectionReplayGuardText ||
-    state.activeThreadConnectionStatusText ||
     ""
   ).trim();
   if (!message) return;
@@ -546,7 +545,12 @@ function syncPendingTurnStateFromIncompleteHistory(thread, state = {}, parseUser
       }
       return;
     }
-    if (pendingThreadId && pendingThreadId === threadId && pendingTurnId) {
+    if (
+      pendingThreadId &&
+      pendingThreadId === threadId &&
+      pendingTurnId &&
+      (pendingUser || pendingAssistant)
+    ) {
       return;
     }
     if (
@@ -566,7 +570,24 @@ function syncPendingTurnStateFromIncompleteHistory(thread, state = {}, parseUser
         : { reason: "history.sync:not_incomplete_or_terminal" });
     }
     if (pageIncomplete) return;
-    if (!hasMaterializedHistory) return;
+    if (!hasMaterializedHistory) {
+      if (
+        pendingThreadId &&
+        pendingThreadId === threadId &&
+        pendingRunning &&
+        !pendingUser &&
+        !pendingAssistant
+      ) {
+        setPendingTurnRunning(state, threadId, false, {
+          reason: "history.sync:complete_without_materialized_history",
+        });
+        resetPendingTurnRuntime(state, {
+          preserveThreadId: true,
+          reason: "history.sync:complete_without_materialized_history",
+        });
+      }
+      return;
+    }
   }
   if (suppressRuntime) {
     if (pendingThreadId && pendingThreadId === threadId) {
@@ -623,6 +644,13 @@ function syncPendingTurnStateFromIncompleteHistory(thread, state = {}, parseUser
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
   const lastTurn = turns.length ? turns[turns.length - 1] : null;
   const lastTurnId = String(lastTurn?.id || "").trim();
+  if (!lastTurnId) {
+    if (pendingThreadId && pendingThreadId === threadId) {
+      setPendingTurnRunning(state, threadId, false, { reason: "history.sync:incomplete_without_turn" });
+      resetPendingTurnRuntime(state, { reason: "history.sync:incomplete_without_turn" });
+    }
+    return;
+  }
   syncPendingTurnRuntime(state, threadId, {
     turnId: lastTurnId,
     running: true,
