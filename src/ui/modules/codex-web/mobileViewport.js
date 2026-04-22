@@ -3,8 +3,16 @@ function toFiniteNumber(value) {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
+const FLOATING_COMPOSER_BREAKPOINT_PX = 1080;
+
 export function shouldUseFloatingComposerLayout(windowRef = globalThis.window) {
   if (!windowRef || typeof windowRef !== "object") return false;
+  const viewportWidth = Math.max(
+    0,
+    Number(windowRef.innerWidth || 0),
+    Number(windowRef.document?.documentElement?.clientWidth || 0)
+  );
+  if (viewportWidth > 0 && viewportWidth <= FLOATING_COMPOSER_BREAKPOINT_PX) return true;
   try {
     if (typeof windowRef.matchMedia === "function") {
       if (windowRef.matchMedia("(pointer: coarse)").matches) return true;
@@ -75,6 +83,11 @@ export function installMobileViewportSync({
     scheduled = false;
     if (disposed) return;
     const floatingComposerLayout = shouldUseFloatingComposerLayout(windowRef);
+    const viewportWidth = Math.max(
+      0,
+      Number(windowRef.innerWidth || 0),
+      Number(documentRef.documentElement?.clientWidth || 0)
+    );
     const metrics = computeViewportMetrics({
       innerHeight: windowRef.innerHeight,
       clientHeight: documentRef.documentElement?.clientHeight,
@@ -83,6 +96,8 @@ export function installMobileViewportSync({
       isTextEntryActive: isEditableElement(documentRef.activeElement),
     });
     const signature = [
+      floatingComposerLayout ? "floating" : "inline",
+      Math.round(viewportWidth),
       Math.round(metrics.viewportHeight),
       Math.round(metrics.keyboardOffset),
       Math.round(metrics.viewportOffsetTop),

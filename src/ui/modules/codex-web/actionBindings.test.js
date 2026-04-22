@@ -29,6 +29,203 @@ describe("actionBindings", () => {
     expect(resolveActionErrorMessage(null, "fallback")).toBe("fallback");
   });
 
+  it("closes the mobile drawer from backdrop taps on phone-like touch viewports", () => {
+    let backdropOptions = null;
+    const setMobileTabCalls = [];
+    const mobileBackdrop = {};
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId(id) {
+        if (id === "mobileDrawerBackdrop") return mobileBackdrop;
+        return null;
+      },
+      bindClick() {},
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus() {},
+      updateMobileComposerState() {},
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield(backdrop, options) {
+        if (backdrop !== mobileBackdrop) return;
+        backdropOptions = options;
+      },
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab(tab) {
+        setMobileTabCalls.push(tab);
+      },
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: {
+        innerWidth: 420,
+        addEventListener() {},
+        navigator: { maxTouchPoints: 5 },
+        matchMedia(query) {
+          return { matches: query === "(pointer: coarse)" || query === "(hover: none)" };
+        },
+      },
+      documentRef: { addEventListener() {}, documentElement: { clientWidth: 420 } },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+
+    createActionBindingsModule(deps).wireActions();
+    expect(backdropOptions).toBeTruthy();
+
+    backdropOptions.onClose();
+
+    expect(setMobileTabCalls).toEqual(["chat"]);
+  });
+
+  it("still closes the drawer from backdrop taps on tablet-width viewports", () => {
+    let backdropOptions = null;
+    const setMobileTabCalls = [];
+    const mobileBackdrop = {};
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId(id) {
+        if (id === "mobileDrawerBackdrop") return mobileBackdrop;
+        return null;
+      },
+      bindClick() {},
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus() {},
+      updateMobileComposerState() {},
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield(backdrop, options) {
+        if (backdrop !== mobileBackdrop) return;
+        backdropOptions = options;
+      },
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab(tab) {
+        setMobileTabCalls.push(tab);
+      },
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { innerWidth: 820, addEventListener() {} },
+      documentRef: { addEventListener() {}, documentElement: { clientWidth: 820 } },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+
+    createActionBindingsModule(deps).wireActions();
+    expect(backdropOptions).toBeTruthy();
+
+    backdropOptions.onClose();
+
+    expect(setMobileTabCalls).toEqual(["chat"]);
+  });
+
+  it("still closes the drawer from backdrop taps on narrow desktop viewports", () => {
+    let backdropOptions = null;
+    const setMobileTabCalls = [];
+    const mobileBackdrop = {};
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId(id) {
+        if (id === "mobileDrawerBackdrop") return mobileBackdrop;
+        return null;
+      },
+      bindClick() {},
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus() {},
+      updateMobileComposerState() {},
+      updateNotificationState() {},
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield(backdrop, options) {
+        if (backdrop !== mobileBackdrop) return;
+        backdropOptions = options;
+      },
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab(tab) {
+        setMobileTabCalls.push(tab);
+      },
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: {
+        innerWidth: 420,
+        addEventListener() {},
+        navigator: { maxTouchPoints: 0 },
+        matchMedia() {
+          return { matches: false };
+        },
+      },
+      documentRef: { addEventListener() {}, documentElement: { clientWidth: 420 } },
+      NotificationRef: { requestPermission: async () => "default" },
+    };
+
+    createActionBindingsModule(deps).wireActions();
+    expect(backdropOptions).toBeTruthy();
+
+    backdropOptions.onClose();
+
+    expect(setMobileTabCalls).toEqual(["chat"]);
+  });
+
   it("replays a compact provider-free error demo with button motion", async () => {
     const handlers = new Map();
     const timeouts = [];

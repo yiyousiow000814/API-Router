@@ -41,6 +41,7 @@
       --visual-viewport-height: 100vh;
       --keyboard-offset: 0px;
       --composer-float-height: 148px;
+      --mobile-bottom-clearance: max(26px, calc(env(safe-area-inset-bottom, 0px) + 14px));
 
       /* z-index scale (sequential, no gaps). */
       --z-chat-opening: 1;  /* "Opening chat..." overlay inside #chatBox only */
@@ -2784,8 +2785,8 @@
 
     .composer {
       display: grid;
-      gap: 6px;
-      padding: 10px;
+      gap: 8px;
+      padding: 0 10px 10px;
       background: transparent;
       border-radius: 0 0 var(--radius) var(--radius);
     }
@@ -2794,7 +2795,11 @@
       gap: 8px;
       padding: 10px;
       border-radius: 22px;
-      background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(244, 248, 255, 0.96));
+      border: 1px solid rgba(13, 18, 32, 0.1);
+      background: rgba(248, 250, 255, 0.96);
+      box-shadow: 0 14px 40px rgba(13, 18, 32, 0.12);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
     }
     body.floating-composer-layout .chatPanel {
       position: fixed;
@@ -2812,13 +2817,13 @@
       height: var(--visual-viewport-height, var(--app-height, 100dvh));
     }
     body.floating-composer-layout .messages {
-      padding-bottom: calc(var(--composer-float-height, 148px) + 20px + env(safe-area-inset-bottom, 0px));
+      padding-bottom: calc(var(--composer-float-height, 148px) + 20px + var(--mobile-bottom-clearance, env(safe-area-inset-bottom, 0px)));
     }
     body.floating-composer-layout .composer {
       position: absolute;
       left: 8px;
       right: 8px;
-      bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+      bottom: var(--mobile-bottom-clearance, calc(10px + env(safe-area-inset-bottom, 0px)));
       z-index: var(--z-chat-header);
       padding: 0;
       gap: 8px;
@@ -3560,6 +3565,8 @@
     }
     body.drawer-left-open .composerActionRail,
     body.drawer-right-open .composerActionRail,
+    body.drawer-left-open .composerPickerBar,
+    body.drawer-right-open .composerPickerBar,
     body.drawer-left-open .mobileSendBtn,
     body.drawer-right-open .mobileSendBtn,
     body.drawer-left-open .scrollToBottomBtn,
@@ -4537,6 +4544,17 @@
       opacity: 1;
       pointer-events: auto;
     }
+    body.drawer-left-dragging .drawerBackdrop {
+      opacity: var(--drawer-left-backdrop-opacity, 0);
+      pointer-events: auto;
+      transition: none;
+    }
+    body.drawer-left-opening #threadList,
+    body.drawer-left-previewing #threadPullHint,
+    body.drawer-left-previewing #threadList {
+      opacity: 0;
+      pointer-events: none;
+    }
     @media (max-width: 600px) {
       /* Keep the UX consistent (blur present) but reduce the blur radius for perf on small devices. */
       .drawerBackdrop {
@@ -4977,9 +4995,14 @@
       #statusLine {
         display: none;
       }
-      .panelHeader, .panelBody, .panelFooter, .composer {
+      .panelHeader, .panelBody, .panelFooter {
         padding-left: 8px;
         padding-right: 8px;
+      }
+      .composer {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-bottom: 10px;
       }
       .chatPanel {
         min-height: 0;
@@ -5125,21 +5148,29 @@
       .leftPanel,
       .rightPanel {
         position: fixed;
-        top: 10px;
-        bottom: 10px;
+        top: 0;
+        bottom: 0;
         width: clamp(260px, 70vw, 320px);
         z-index: var(--z-drawer-panel);
         box-shadow: none;
-        transition: transform 180ms ease;
+        transition: transform 260ms cubic-bezier(.22, .61, .36, 1);
         border-color: #32405b;
       }
       .leftPanel {
-        left: 10px;
+        left: 0;
         transform: translateX(-108%);
         background: #ffffff;
         border-color: rgba(13, 18, 32, 0.14);
-        border-radius: var(--radius);
+        border-radius: 0;
         overflow: hidden;
+      }
+      body.drawer-left-dragging .leftPanel,
+      body.drawer-left-open.drawer-left-dragging .leftPanel {
+        transition: none;
+        transform: translateX(var(--drawer-left-drag-translate, 0px));
+      }
+      body.drawer-left-previewing .leftPanel {
+        box-shadow: 0 18px 42px rgba(13, 18, 32, 0.18);
       }
       .leftPanel .panelHeader {
         display: none;
@@ -5148,7 +5179,7 @@
         padding-bottom: 0;
       }
       .leftPanel .panelFooter {
-        padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+        padding-bottom: max(24px, calc(env(safe-area-inset-bottom, 0px) + 18px));
       }
       .leftPanel .panelFooter .drawerSettingsBtn {
         pointer-events: auto;
@@ -5189,7 +5220,7 @@
         color: #b07a00;
       }
       .rightPanel {
-        right: 10px;
+        right: 0;
         transform: translateX(108%);
       }
       body.drawer-left-open .leftPanel {
@@ -5207,6 +5238,45 @@
       .msg.user {
         max-width: 92%;
         padding: 6px 9px;
+      }
+    }
+
+    @media (max-width: 720px) {
+      :root {
+        --mobile-bottom-clearance: max(34px, calc(env(safe-area-inset-bottom, 0px) + 18px));
+      }
+      .leftPanel .panelFooter {
+        padding-bottom: max(32px, calc(env(safe-area-inset-bottom, 0px) + 24px));
+      }
+      .shell {
+        padding: 0;
+      }
+      .chatPanel {
+        border-radius: 0;
+      }
+      body.floating-composer-layout .chatPanel {
+        top: 0;
+        right: 0;
+        left: 0;
+        height: var(--visual-viewport-height, var(--app-height, 100vh));
+        max-height: var(--visual-viewport-height, var(--app-height, 100vh));
+        border-radius: 0;
+      }
+      body.floating-composer-layout .messages {
+        padding-top: 10px;
+        border-radius: 0;
+      }
+      body.floating-composer-layout .composer {
+        left: 0;
+        right: 0;
+        padding-inline: 10px;
+      }
+      body.floating-composer-layout .composerInputSurface {
+        border-radius: 20px;
+      }
+      body.floating-composer-layout .composerPickerBar {
+        margin-inline: 2px;
+        border-radius: 14px;
       }
     }
 
@@ -5248,6 +5318,36 @@
   </style>
 </head>
 <body>
+  <script>
+    (function applyInitialMobileComposerLayout() {
+      try {
+        const root = document.documentElement;
+        const body = document.body;
+        const viewportWidth = Math.max(
+          Number(window.innerWidth || 0),
+          Number(root?.clientWidth || 0),
+          0
+        );
+        const coarsePointer =
+          typeof window.matchMedia === "function" &&
+          (window.matchMedia("(pointer: coarse)").matches || window.matchMedia("(hover: none)").matches);
+        const touchCapable = Math.max(0, Number(window.navigator?.maxTouchPoints || 0)) > 0;
+        if ((viewportWidth > 0 && viewportWidth <= 1080) || coarsePointer || touchCapable) {
+          body.classList.add("floating-composer-layout");
+        }
+        const viewportHeight = Math.max(
+          Number(window.innerHeight || 0),
+          Number(root?.clientHeight || 0),
+          0
+        );
+        if (viewportHeight > 0) {
+          root.style.setProperty("--app-height", viewportHeight + "px");
+          root.style.setProperty("--visual-viewport-height", viewportHeight + "px");
+          root.style.setProperty("--keyboard-offset", "0px");
+        }
+      } catch {}
+    })();
+  </script>
   <div class="shell">
     <section class="topbar">
       <div class="topbarRow">
@@ -5440,12 +5540,12 @@
         <div class="composerInputSurface">
           <div id="attachmentPills" class="pillRow"></div>
           <input id="attachInput" type="file" style="display:none;" />
-            <div id="queuedTurnCard" class="queuedTurnCard">
+            <div id="queuedTurnCard" class="queuedTurnCard" style="display:none;">
               <div class="queuedTurnCardHeader">
                 <div id="queuedTurnCardTitle" class="queuedTurnCardTitle"></div>
                 <div style="display:flex;align-items:center;gap:8px;">
                   <div id="queuedTurnCardCount" class="queuedTurnCardCount" style="display:none;"></div>
-                  <button id="queuedTurnToggleBtn" class="queuedTurnCardBtn queuedTurnCardToggleBtn" type="button" aria-label="Collapse queued messages" title="Collapse queued messages" aria-expanded="true">
+                  <button id="queuedTurnToggleBtn" class="queuedTurnCardBtn queuedTurnCardToggleBtn" type="button" aria-label="Collapse queued messages" title="Collapse queued messages" aria-expanded="true" style="display:none;">
                     <svg class="queuedTurnToggleIcon is-expanded" viewBox="0 0 16 16" focusable="false" aria-hidden="true">
                       <path d="M4.5 6.5 8 10l3.5-3.5"></path>
                     </svg>
@@ -5503,13 +5603,23 @@
             </div>
           </div>
         </div>
-          <div id="composerPickerBar" class="composerPickerBar" style="display:none;">
+          <div id="composerPickerBar" class="composerPickerBar">
             <div class="composerPicker">
-              <button id="composerBranchPickerBtn" class="composerPickerBtn" type="button" data-composer-picker-toggle="branch" aria-haspopup="menu" aria-expanded="false" disabled></button>
+              <button id="composerBranchPickerBtn" class="composerPickerBtn" type="button" data-composer-picker-toggle="branch" aria-haspopup="menu" aria-expanded="false" disabled>
+                <span class="composerPickerBtnLabel">Branch</span>
+                <span class="composerPickerBtnChevron" aria-hidden="true">
+                  <svg viewBox="0 0 16 16" focusable="false"><path d="M4.5 6.5 8 10l3.5-3.5"></path></svg>
+                </span>
+              </button>
               <div id="composerBranchPickerMenu" class="composerPickerMenu" role="menu"></div>
             </div>
             <div class="composerPicker is-right">
-              <button id="composerPermissionPickerBtn" class="composerPickerBtn" type="button" data-composer-picker-toggle="permission" aria-haspopup="menu" aria-expanded="false"></button>
+              <button id="composerPermissionPickerBtn" class="composerPickerBtn" type="button" data-composer-picker-toggle="permission" aria-haspopup="menu" aria-expanded="false">
+                <span class="composerPickerBtnLabel">Full access</span>
+                <span class="composerPickerBtnChevron" aria-hidden="true">
+                  <svg viewBox="0 0 16 16" focusable="false"><path d="M4.5 6.5 8 10l3.5-3.5"></path></svg>
+                </span>
+              </button>
               <div id="composerPermissionPickerMenu" class="composerPickerMenu" role="menu"></div>
             </div>
           </div>
