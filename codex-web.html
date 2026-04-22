@@ -42,6 +42,11 @@
       --keyboard-offset: 0px;
       --composer-float-height: 148px;
       --mobile-bottom-clearance: max(26px, calc(env(safe-area-inset-bottom, 0px) + 14px));
+      --motion-fast: 160ms;
+      --motion-base: 220ms;
+      --motion-slow: 260ms;
+      --motion-enter: 360ms;
+      --motion-drawer: var(--motion-slow);
 
       /* z-index scale (sequential, no gaps). */
       --z-chat-opening: 1;  /* "Opening chat..." overlay inside #chatBox only */
@@ -306,7 +311,7 @@
       line-height: 1.15;
       /* Some WebViews clip descenders ("g") on flex items with overflow hidden; keep 1px room. */
       padding-bottom: 1px;
-      transition: opacity 160ms ease, transform 200ms ease;
+      transition: opacity var(--motion-fast, 160ms) ease, transform var(--motion-base, 220ms) ease;
       will-change: opacity, transform;
     }
     .chatPanel .panelHeader .headerModelText.isSwapping {
@@ -314,7 +319,7 @@
       transform: translate3d(0, -3px, 0);
     }
     .chatPanel .panelHeader .headerReasoningEffort {
-      transition: opacity 160ms ease, transform 200ms ease;
+      transition: opacity var(--motion-fast, 160ms) ease, transform var(--motion-base, 220ms) ease;
       will-change: opacity, transform;
     }
     .chatPanel .panelHeader .headerReasoningEffort.isSwapping {
@@ -328,7 +333,7 @@
       display: inline-flex;
       opacity: 1;
       transform: translate3d(0, 0, 0);
-      transition: opacity 160ms ease, transform 200ms ease;
+      transition: opacity var(--motion-fast, 160ms) ease, transform var(--motion-base, 220ms) ease;
       will-change: opacity, transform;
     }
     .chatPanel .panelHeader .headerModelPicker.loading .headerModelChevron {
@@ -351,7 +356,7 @@
       stroke-linecap: round;
       stroke-linejoin: round;
       display: block;
-      transition: transform 150ms ease;
+      transition: transform var(--motion-fast, 160ms) ease;
       transform-origin: center center;
     }
     .chatPanel .panelHeader .headerModelPicker.open .headerModelChevron svg {
@@ -379,7 +384,7 @@
       transform-origin: top left;
       pointer-events: none;
       visibility: hidden;
-      transition: opacity 150ms ease, transform 180ms ease;
+      transition: opacity var(--motion-fast, 160ms) ease, transform var(--motion-base, 220ms) ease;
       will-change: opacity, transform;
       scrollbar-width: thin;
     }
@@ -632,7 +637,7 @@
       animation: workspaceBadgeLinkingPulse 1.15s ease-in-out infinite;
     }
     .workspaceBadge.enter {
-      animation: workspaceBadgeEnter 180ms cubic-bezier(.22, .61, .36, 1);
+      animation: workspaceBadgeEnter var(--motion-fast, 160ms) cubic-bezier(.22, .61, .36, 1);
     }
     .attachBadge {
       display: none;
@@ -653,7 +658,7 @@
     }
     .attachBadge.show {
       display: inline-flex;
-      animation: workspaceBadgeEnter 180ms cubic-bezier(.22, .61, .36, 1);
+      animation: workspaceBadgeEnter var(--motion-fast, 160ms) cubic-bezier(.22, .61, .36, 1);
     }
     @keyframes workspaceBadgeEnter {
       from { opacity: 0; transform: translateX(10px) scale(0.96); }
@@ -703,14 +708,14 @@
     .itemCard.threadEnter {
       opacity: 0;
       transform: translate3d(0, 18px, 0);
-      animation: thread-card-enter 360ms cubic-bezier(.22, .61, .36, 1) both;
+      animation: thread-card-enter var(--motion-enter, 360ms) cubic-bezier(.22, .61, .36, 1) both;
       animation-delay: var(--thread-enter-delay, 0ms);
       will-change: opacity, transform;
     }
     .groupHeader.threadHeaderEnter {
       opacity: 0;
       transform: translate3d(0, 18px, 0);
-      animation: thread-header-enter 360ms cubic-bezier(.22, .61, .36, 1) both;
+      animation: thread-header-enter var(--motion-enter, 360ms) cubic-bezier(.22, .61, .36, 1) both;
       animation-delay: var(--thread-group-enter-delay, 0ms);
       will-change: opacity, transform;
     }
@@ -967,7 +972,7 @@
       pointer-events: none;
     }
     .messages.chat-opening-reveal > :not(.chatOpeningOverlay) {
-      animation: chat-opening-content-in 220ms cubic-bezier(.22, .61, .36, 1) both;
+      animation: chat-opening-content-in var(--motion-base, 220ms) cubic-bezier(.22, .61, .36, 1) both;
     }
     @keyframes chat-opening-content-in {
       from { opacity: 0; transform: translateY(8px); }
@@ -1610,7 +1615,7 @@
       overflow-wrap: anywhere;
     }
     .msg.msg-enter { 
-      animation: msg-enter 360ms cubic-bezier(.22, .61, .36, 1) both; 
+      animation: msg-enter var(--motion-enter, 360ms) cubic-bezier(.22, .61, .36, 1) both; 
       animation-delay: var(--msg-enter-delay, 0ms); 
       will-change: opacity, transform; 
     } 
@@ -2948,7 +2953,7 @@
       white-space: nowrap;
     }
     .composerPickerBtnLabel.is-animating {
-      animation: composer-picker-label-swap 180ms cubic-bezier(.22, 1, .36, 1);
+      animation: composer-picker-label-swap var(--motion-fast, 160ms) cubic-bezier(.22, 1, .36, 1);
     }
     .composerPickerBtnChevron {
       width: 12px;
@@ -5153,7 +5158,7 @@
         width: clamp(260px, 70vw, 320px);
         z-index: var(--z-drawer-panel);
         box-shadow: none;
-        transition: transform 260ms cubic-bezier(.22, .61, .36, 1);
+        transition: transform var(--motion-drawer, var(--motion-slow, 260ms)) cubic-bezier(.22, .61, .36, 1);
         border-color: #32405b;
       }
       .leftPanel {
@@ -5244,6 +5249,10 @@
     @media (max-width: 720px) {
       :root {
         --mobile-bottom-clearance: max(34px, calc(env(safe-area-inset-bottom, 0px) + 18px));
+        --motion-fast: 200ms;
+        --motion-base: 280ms;
+        --motion-slow: 340ms;
+        --motion-enter: 420ms;
       }
       .leftPanel .panelFooter {
         padding-bottom: max(32px, calc(env(safe-area-inset-bottom, 0px) + 24px));
