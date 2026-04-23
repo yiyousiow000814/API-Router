@@ -20,6 +20,7 @@ use crate::orchestrator::gateway::web_codex_home::{
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const APP_SERVER_RUNTIME_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 const NOTIFICATION_QUEUE_CAP: usize = 2048;
 const DEBUG_EVENT_CAP: usize = 160;
 const ROLLOUT_LIVE_SYNC_POLL_BYTES: u64 = 64 * 1024;
@@ -2140,6 +2141,63 @@ pub async fn ensure_server_in_home(codex_home: Option<&str>) -> Result<(), Strin
     }
 }
 
+async fn stop_app_server(
+    codex_home: Option<&str>,
+    server: &std::sync::Arc<Mutex<AppServer>>,
+    reason: &str,
+) -> Result<(), String> {
+    let mut srv = server.lock().await;
+    let result = srv.child.start_kill().map_err(|error| error.to_string());
+    push_debug_event(
+        "app.server.stop",
+        serde_json::json!({
+            "home": normalize_home_key(codex_home).as_ref(),
+            "reason": reason,
+            "message": result.as_ref().err().cloned().unwrap_or_default(),
+        }),
+    )
+    .await;
+    result
+}
+
+pub async fn refresh_server_in_home(codex_home: Option<&str>) -> Result<(), String> {
+    ensure_notification_home_state(codex_home).await;
+    let key = normalize_home_key(codex_home).to_string();
+    let lock = APP_SERVERS.get_or_init(|| Mutex::new(HashMap::new()));
+    let existing = {
+        let mut guard = lock.lock().await;
+        guard.remove(&key)
+    };
+    if let Some(server) = existing {
+        let _ = stop_app_server(codex_home, &server, "manual-refresh").await;
+    }
+    Ok(())
+}
+
+async fn model_list_runtime_changed(
+    codex_home: Option<&str>,
+    server: &std::sync::Arc<Mutex<AppServer>>,
+) -> bool {
+    let previous = {
+        let srv = server.lock().await;
+        srv.runtime_fingerprint.clone()
+    };
+    let current = detect_app_server_runtime_fingerprint(codex_home).await;
+    if current == previous {
+        return false;
+    }
+    push_debug_event(
+        "app.server.runtime.changed",
+        serde_json::json!({
+            "home": normalize_home_key(codex_home).as_ref(),
+            "previous": previous,
+            "current": current,
+        }),
+    )
+    .await;
+    true
+}
+
 fn resolve_codex_cmd() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
@@ -2264,6 +2322,76 @@ fn build_codex_command(codex_home: Option<&str>) -> Command {
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
             cmd
         }
+    }
+}
+
+fn build_codex_version_command(codex_home: Option<&str>) -> Command {
+    match resolve_launch_spec(codex_home) {
+        LaunchSpec::Native { codex_home } => {
+            if let Some(path) = resolve_codex_cmd() {
+                let mut cmd = Command::new("cmd.exe");
+                cmd.arg("/c").arg(path).arg("--version");
+                if let Some(home) = codex_home.as_deref() {
+                    cmd.env("CODEX_HOME", home);
+                }
+                #[cfg(target_os = "windows")]
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+                return cmd;
+            }
+            let mut cmd = Command::new("codex");
+            cmd.arg("--version");
+            if let Some(home) = codex_home.as_deref() {
+                cmd.env("CODEX_HOME", home);
+            }
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            cmd
+        }
+        #[cfg(any(test, target_os = "windows"))]
+        LaunchSpec::Wsl {
+            distro,
+            codex_home_linux,
+        } => {
+            let mut cmd = Command::new("wsl.exe");
+            if let Some(distro) = distro.as_deref() {
+                cmd.arg("-d").arg(distro);
+            }
+            cmd.arg("-e").arg("sh").arg("-lc");
+            let script = if let Some(home) = codex_home_linux.as_deref() {
+                format!(
+                    "export CODEX_HOME={}; exec codex --version",
+                    shell_single_quote(home)
+                )
+            } else {
+                "exec codex --version".to_string()
+            };
+            cmd.arg(script);
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            cmd
+        }
+    }
+}
+
+fn normalize_runtime_fingerprint_stdout(stdout: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
+}
+
+async fn detect_app_server_runtime_fingerprint(codex_home: Option<&str>) -> String {
+    let mut cmd = build_codex_version_command(codex_home);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+    match tokio::time::timeout(APP_SERVER_RUNTIME_CHECK_TIMEOUT, cmd.output()).await {
+        Ok(Ok(output)) if output.status.success() => {
+            normalize_runtime_fingerprint_stdout(&output.stdout)
+                .unwrap_or_else(|| "codex-version:empty".to_string())
+        }
+        Ok(Ok(output)) => format!("codex-version:status:{}", output.status),
+        Ok(Err(error)) => format!("codex-version:error:{error}"),
+        Err(_) => "codex-version:timeout".to_string(),
     }
 }
 
@@ -2408,15 +2536,18 @@ struct AppServer {
     router: std::sync::Arc<PendingRouter>,
     _stdout_task: tokio::task::JoinHandle<()>,
     next_id: i64,
+    runtime_fingerprint: String,
 }
 
 impl AppServer {
     async fn spawn(codex_home: Option<&str>) -> Result<Self, String> {
         let home = normalize_home_key(codex_home).to_string();
+        let runtime_fingerprint = detect_app_server_runtime_fingerprint(codex_home).await;
         push_debug_event(
             "app.server.spawn.start",
             serde_json::json!({
                 "home": home,
+                "runtimeFingerprint": runtime_fingerprint.as_str(),
             }),
         )
         .await;
@@ -2467,6 +2598,7 @@ impl AppServer {
             router,
             _stdout_task: stdout_task,
             next_id: 1,
+            runtime_fingerprint,
         };
         let _ = server
             .request(
@@ -2491,6 +2623,7 @@ impl AppServer {
             "app.server.spawn.ok",
             serde_json::json!({
                 "home": normalize_home_key(codex_home).as_ref(),
+                "runtimeFingerprint": server.runtime_fingerprint.as_str(),
             }),
         )
         .await;
@@ -2555,6 +2688,15 @@ mod tests {
     // These tests must run serially to avoid cross-test interference.
     fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
         lock_test_globals()
+    }
+
+    #[test]
+    fn normalizes_runtime_fingerprint_from_codex_version_output() {
+        assert_eq!(
+            normalize_runtime_fingerprint_stdout(b"\ncodex-cli 0.124.0\n"),
+            Some("codex-cli 0.124.0".to_string())
+        );
+        assert_eq!(normalize_runtime_fingerprint_stdout(b"\n\t\n"), None);
     }
 
     struct TestCodexHomeGuard {
@@ -4075,6 +4217,25 @@ pub async fn request_in_home(
                 srv.is_dead().unwrap_or(true)
             };
             if !dead {
+                if method == "model/list" && model_list_runtime_changed(codex_home, &server).await {
+                    let removed = {
+                        let mut guard = lock.lock().await;
+                        if guard
+                            .get(&key)
+                            .is_some_and(|current| std::sync::Arc::ptr_eq(current, &server))
+                        {
+                            guard.remove(&key)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(removed) = removed {
+                        let _ =
+                            stop_app_server(codex_home, &removed, "runtime-fingerprint-changed")
+                                .await;
+                    }
+                    continue;
+                }
                 break server;
             }
             let mut guard = lock.lock().await;
