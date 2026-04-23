@@ -124,11 +124,12 @@ export function useMainContentCallbacks(params: Params) {
       flashToast('Refreshing all official accounts...')
       setCodexRefreshing(true)
       try {
-        await invoke('codex_account_profiles_refresh_usage_async')
+        await invoke('codex_account_profiles_refresh_usage')
         await invoke('codex_account_refresh')
         await refreshStatus()
       } catch (e) {
         flashToast(String(e), 'error')
+      } finally {
         setCodexRefreshing(false)
       }
     })()

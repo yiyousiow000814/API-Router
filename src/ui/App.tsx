@@ -1251,7 +1251,6 @@ export default function App() {
         listen<{ ok: boolean; error?: string }>(
           "codex-account-profiles-usage-refreshed",
           (event) => {
-            setCodexRefreshing(false);
             void refreshCodexAccountProfiles(undefined, {
               reason: "profile_select",
             });
@@ -1275,7 +1274,7 @@ export default function App() {
         unlisten();
       }
     };
-  }, [flashToast, isDevPreview, refreshCodexAccountProfiles, setCodexRefreshing]);
+  }, [flashToast, isDevPreview, refreshCodexAccountProfiles]);
   useEffect(() => {
     const pending = pendingOfficialAddAccountRef.current;
     if (!pending) return;

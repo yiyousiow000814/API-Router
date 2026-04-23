@@ -974,6 +974,7 @@ impl SecretStore {
                 data.active_official_account_profile_id = Some(existing_id.clone());
             }
             self.persist(&data)?;
+            let active_id = data.active_official_account_profile_id.clone();
             let profile = data
                 .official_account_profiles
                 .get(&existing_id)
@@ -981,7 +982,7 @@ impl SecretStore {
             return Ok(Self::official_account_summary(
                 &existing_id,
                 profile,
-                Some(existing_id.as_str()),
+                active_id.as_deref(),
             ));
         }
 
@@ -2062,6 +2063,12 @@ mod tests {
         assert!(listed[0].active);
         assert!(!listed[1].active);
         assert_eq!(listed[1].limit_5h_remaining.as_deref(), Some("64%"));
+
+        let refreshed_second = store
+            .capture_official_account_profile(&second_auth, None, Some(&second_usage))
+            .expect("refresh second official account");
+        assert_eq!(refreshed_second.id, second.id);
+        assert!(!refreshed_second.active);
 
         let reactivated = store
             .select_official_account_profile(&first.id)

@@ -176,8 +176,9 @@ describe('useMainContentCallbacks', () => {
 
     expect(flashToast).toHaveBeenCalledWith('Refreshing all official accounts...')
     expect(setCodexRefreshing).toHaveBeenCalledWith(true)
-    expect(invoke).toHaveBeenCalledWith('codex_account_profiles_refresh_usage_async')
+    expect(invoke).toHaveBeenCalledWith('codex_account_profiles_refresh_usage')
     expect(invoke).toHaveBeenCalledWith('codex_account_refresh')
     expect(refreshStatus).toHaveBeenCalled()
+    expect(setCodexRefreshing).toHaveBeenLastCalledWith(false)
   })
 })
