@@ -17,8 +17,9 @@ type HeroCodexProps = {
   swapBadgeTitle: string
   profiles: OfficialAccountProfileSummary[]
   profilesLoading: boolean
-  onActivateProfile: (profileId: string) => void
-  onRemoveProfile: (profileId: string) => void
+  onActivateProfile: (profileId: string) => Promise<void>
+  onRemoveProfile: (profileId: string) => Promise<void>
+  onAddAccount: () => Promise<void>
   defaultAccountsMenuOpen?: boolean
 }
 
@@ -39,14 +40,59 @@ export function HeroCodexCard({
   profilesLoading,
   onActivateProfile,
   onRemoveProfile,
+  onAddAccount,
   defaultAccountsMenuOpen = false,
 }: HeroCodexProps) {
   const [menuOpen, setMenuOpen] = useState<boolean>(false)
   const [accountsMenuOpen, setAccountsMenuOpen] = useState<boolean>(defaultAccountsMenuOpen)
   const menuWrapRef = useRef<HTMLDivElement | null>(null)
   const accountsMenuWrapRef = useRef<HTMLDivElement | null>(null)
-  const activeProfile = profiles.find((profile) => profile.active) ?? null
-  const inactiveProfiles = profiles.filter((profile) => !profile.active)
+  const parsePct = (value?: string | null): number | null => {
+    if (!value) return null
+    const match = value.match(/(\d+(?:\.\d+)?)%/)
+    if (!match) return null
+    const parsed = Number(match[1])
+    return Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : null
+  }
+  const renderAccountQuota = (profile: OfficialAccountProfileSummary) => {
+    const has5h = Boolean(profile.limit_5h_remaining)
+    const hasWeekly = Boolean(profile.limit_weekly_remaining)
+    if (!has5h && !hasWeekly) {
+      return <span className="aoAccountsQuotaFallback">Switch to inspect limits</span>
+    }
+    return (
+      <div className="aoAccountsUsageStack">
+        {has5h ? (
+          <div className="aoAccountsUsageMetric">
+            <div className="aoAccountsUsageMeta">
+              <span className="aoAccountsUsageLabel">5-hour</span>
+              <span className="aoAccountsUsageValue">{profile.limit_5h_remaining}</span>
+            </div>
+            <span className="aoAccountsUsageBar" aria-hidden="true">
+              <span
+                className="aoAccountsUsageBarFill"
+                style={{ width: `${parsePct(profile.limit_5h_remaining) ?? 0}%` }}
+              />
+            </span>
+          </div>
+        ) : null}
+        {hasWeekly ? (
+          <div className="aoAccountsUsageMetric">
+            <div className="aoAccountsUsageMeta">
+              <span className="aoAccountsUsageLabel">Weekly</span>
+              <span className="aoAccountsUsageValue">{profile.limit_weekly_remaining}</span>
+            </div>
+            <span className="aoAccountsUsageBar" aria-hidden="true">
+              <span
+                className="aoAccountsUsageBarFill"
+                style={{ width: `${parsePct(profile.limit_weekly_remaining) ?? 0}%` }}
+              />
+            </span>
+          </div>
+        ) : null}
+      </div>
+    )
+  }
   const swapTargetLabel = swapTarget === 'windows' ? 'Windows' : swapTarget === 'wsl2' ? 'WSL2' : 'Both'
   const availableTargets: Array<'windows' | 'wsl2' | 'both'> = []
   if (swapTargetWindowsEnabled && swapTargetWslEnabled) availableTargets.push('both')
@@ -190,56 +236,27 @@ export function HeroCodexCard({
                     <span className="aoAccountsMenuTitle">Official accounts</span>
                   </div>
                   <div className="aoAccountsMenuList">
-                    {activeProfile ? (
-                      <div className="aoAccountsSectionLabel aoAccountsSectionLabelSpaced">Current</div>
-                    ) : null}
-                    {activeProfile ? (
-                      <div className="aoAccountsMenuRow aoAccountsMenuRowActive">
+                    {profiles.map((profile) => (
+                      <div
+                        key={profile.id}
+                        className={`aoAccountsMenuRow${profile.active ? ' aoAccountsMenuRowActive' : ''}`}
+                      >
                         <button
                           type="button"
                           className="aoAccountsMenuPrimary"
                           onClick={() => {
                             setAccountsMenuOpen(false)
-                            onActivateProfile(activeProfile.id)
+                            void onActivateProfile(profile.id)
                           }}
                         >
                           <span className="aoAccountsMenuText">
                             <span className="aoAccountsMenuTopline">
-                              <span className="aoAccountsMenuLabel">{activeProfile.label}</span>
-                              <span className="aoAccountsMenuCurrentTag">Current</span>
-                            </span>
-                            <span className="aoAccountsMenuMeta">
-                              Updated {fmtWhen(activeProfile.updated_at_unix_ms)}
-                            </span>
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="aoAccountsMenuRemove"
-                          onClick={() => onRemoveProfile(activeProfile.id)}
-                          title={`Remove ${activeProfile.label}`}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ) : null}
-                    {inactiveProfiles.length ? (
-                      <div className="aoAccountsSectionLabel aoAccountsSectionLabelSpaced">Other accounts</div>
-                    ) : null}
-                    {inactiveProfiles.map((profile) => (
-                      <div key={profile.id} className="aoAccountsMenuRow">
-                        <button
-                          type="button"
-                          className="aoAccountsMenuPrimary"
-                          onClick={() => {
-                            setAccountsMenuOpen(false)
-                          onActivateProfile(profile.id)
-                        }}
-                      >
-                          <span className="aoAccountsMenuText">
-                            <span className="aoAccountsMenuTopline">
                               <span className="aoAccountsMenuLabel">{profile.label}</span>
+                              {profile.active ? (
+                                <span className="aoAccountsMenuCurrentTag">Current</span>
+                              ) : null}
                             </span>
+                            {renderAccountQuota(profile)}
                             <span className="aoAccountsMenuMeta">
                               Updated {fmtWhen(profile.updated_at_unix_ms)}
                             </span>
@@ -248,13 +265,29 @@ export function HeroCodexCard({
                         <button
                           type="button"
                           className="aoAccountsMenuRemove"
-                          onClick={() => onRemoveProfile(profile.id)}
+                          onClick={() => void onRemoveProfile(profile.id)}
                           title={`Remove ${profile.label}`}
+                          aria-label={`Remove ${profile.label}`}
                         >
-                          Remove
+                          <svg viewBox="0 0 16 16" aria-hidden="true">
+                            <path d="M4 4l8 8" />
+                            <path d="M12 4l-8 8" />
+                          </svg>
                         </button>
                       </div>
                     ))}
+                    <div className="aoAccountsMenuDivider" />
+                    <button
+                      type="button"
+                      className="aoAccountsMenuAdd"
+                      onClick={() => {
+                        setAccountsMenuOpen(false)
+                        void onAddAccount()
+                      }}
+                    >
+                      <span className="aoMenuIcon" aria-hidden="true">+</span>
+                      Add account
+                    </button>
                   </div>
                 </div>
               ) : null}

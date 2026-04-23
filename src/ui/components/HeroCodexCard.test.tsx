@@ -52,8 +52,9 @@ describe('HeroCodexCard', () => {
         swapBadgeTitle=""
         profiles={profiles}
         profilesLoading={false}
-        onActivateProfile={() => {}}
-        onRemoveProfile={() => {}}
+        onActivateProfile={async () => {}}
+        onRemoveProfile={async () => {}}
+        onAddAccount={async () => {}}
       />,
     )
 
@@ -62,7 +63,7 @@ describe('HeroCodexCard', () => {
     expect(html).toContain('Accounts (1)')
   })
 
-  it('renders official account rows with a dedicated two-column menu layout', () => {
+  it('renders account usage bars and add action inside the official menu', () => {
     const html = renderToStaticMarkup(
       <HeroCodexCard
         status={buildStatus()}
@@ -83,17 +84,22 @@ describe('HeroCodexCard', () => {
             label: 'Official account 1 (signed out)',
             updated_at_unix_ms: Date.now(),
             active: true,
+            limit_5h_remaining: '87%',
+            limit_weekly_remaining: '13%',
           },
           {
             id: 'official_2',
             label: 'Official account 2',
             updated_at_unix_ms: Date.now() - 1000,
             active: false,
+            limit_5h_remaining: '64%',
+            limit_weekly_remaining: '41%',
           },
         ]}
         profilesLoading={false}
-        onActivateProfile={() => {}}
-        onRemoveProfile={() => {}}
+        onActivateProfile={async () => {}}
+        onRemoveProfile={async () => {}}
+        onAddAccount={async () => {}}
         defaultAccountsMenuOpen
       />,
     )
@@ -102,7 +108,15 @@ describe('HeroCodexCard', () => {
     expect(html).toContain('aoAccountsMenuRow')
     expect(html).toContain('aoAccountsMenuPrimary')
     expect(html).toContain('aoAccountsMenuRemove')
+    expect(html).toContain('aoAccountsMenuAdd')
     expect(html).toContain('Official account 1 (signed out)')
-    expect(html).toContain('Remove')
+    expect(html).toContain('aoAccountsUsageBar')
+    expect(html).toContain('5-hour')
+    expect(html).toContain('Weekly')
+    expect(html).toContain('aoAccountsMenuCurrentTag')
+    expect(html).toContain('Current')
+    expect(html).not.toContain('>Remove<')
+    expect(html).toContain('Add account')
+    expect(html.indexOf('Official account 1 (signed out)')).toBeLessThan(html.indexOf('Official account 2'))
   })
 })

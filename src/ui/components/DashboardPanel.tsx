@@ -27,8 +27,9 @@ type Props = {
   codexSwapBadgeTitle: string
   codexAccountProfiles: OfficialAccountProfileSummary[]
   codexAccountProfilesLoading: boolean
-  onActivateCodexAccountProfile: (profileId: string) => void
-  onRemoveCodexAccountProfile: (profileId: string) => void
+  onActivateCodexAccountProfile: (profileId: string) => Promise<void>
+  onRemoveCodexAccountProfile: (profileId: string) => Promise<void>
+  onAddCodexAccountProfile: () => Promise<void>
   routeMode: 'follow_preferred_auto' | 'balanced_auto'
   onRouteModeChange: (next: 'follow_preferred_auto' | 'balanced_auto') => Promise<boolean>
   override: string
@@ -65,6 +66,7 @@ export function DashboardPanel({
   codexAccountProfilesLoading,
   onActivateCodexAccountProfile,
   onRemoveCodexAccountProfile,
+  onAddCodexAccountProfile,
   routeMode,
   onRouteModeChange,
   override,
@@ -133,6 +135,7 @@ export function DashboardPanel({
           profilesLoading={codexAccountProfilesLoading}
           onActivateProfile={onActivateCodexAccountProfile}
           onRemoveProfile={onRemoveCodexAccountProfile}
+          onAddAccount={onAddCodexAccountProfile}
         />
         <HeroRoutingCard
           config={config}

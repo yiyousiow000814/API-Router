@@ -95,7 +95,12 @@ import {
   waitForLanConfigSourceTrust,
 } from "./utils/lanPairCompletion";
 import { buildProviderCapsMenuData } from "./utils/providerCapsMenu";
-import { buildDevPreviewOfficialAccountProfiles } from "./utils/codexAccountProfiles";
+import {
+  activateDevPreviewOfficialAccountProfile,
+  addDevPreviewOfficialAccountProfile,
+  buildDevPreviewOfficialAccountProfiles,
+  removeDevPreviewOfficialAccountProfile,
+} from "./utils/codexAccountProfiles";
 
 const AppModals = lazy(async () => {
   const module = await import("./components/AppModals");
@@ -1166,6 +1171,7 @@ export default function App() {
     onCopyToken,
     onShowGatewayRotate,
     onCodexLoginLogout,
+    onCodexAddAccount,
     onCodexRefresh,
     onCodexSwapAuthConfig,
     onOpenCodexSwapOptions,
@@ -1210,7 +1216,7 @@ export default function App() {
     } finally {
       setCodexAccountProfilesLoading(false);
     }
-  }, []);
+  }, [isDevPreview, status?.codex_account]);
   useEffect(() => {
     void refreshCodexAccountProfiles();
   }, [refreshCodexAccountProfiles]);
@@ -1219,36 +1225,65 @@ export default function App() {
     void refreshCodexAccountProfiles();
   }, [status?.codex_account?.checked_at_unix_ms, refreshCodexAccountProfiles]);
   const onActivateCodexAccountProfile = useCallback(
-    (profileId: string) => {
-      void (async () => {
-        try {
-          setCodexRefreshing(true);
-          await invoke("codex_account_profile_activate", { profileId });
-          await refreshStatus();
-          await refreshCodexAccountProfiles();
-          flashToast("Official account switched");
-        } catch (e) {
-          flashToast(String(e), "error");
-        } finally {
+    async (profileId: string) => {
+      try {
+        if (isDevPreview) {
+          setCodexAccountProfiles((prev) =>
+            activateDevPreviewOfficialAccountProfile(prev, profileId),
+          );
+          flashToast("Official account switched [TEST]");
+          return;
+        }
+        setCodexRefreshing(true);
+        await invoke("codex_account_profile_activate", { profileId });
+        await refreshStatus();
+        await refreshCodexAccountProfiles();
+        flashToast("Official account switched");
+      } catch (e) {
+        flashToast(String(e), "error");
+      } finally {
+        if (!isDevPreview) {
           setCodexRefreshing(false);
         }
-      })();
+      }
     },
-    [flashToast, refreshCodexAccountProfiles, refreshStatus],
+    [flashToast, isDevPreview, refreshCodexAccountProfiles, refreshStatus],
   );
   const onRemoveCodexAccountProfile = useCallback(
-    (profileId: string) => {
-      void (async () => {
-        try {
-          await invoke("codex_account_profile_remove", { profileId });
-          await refreshCodexAccountProfiles();
-          flashToast("Official account removed");
-        } catch (e) {
-          flashToast(String(e), "error");
+    async (profileId: string) => {
+      try {
+        if (isDevPreview) {
+          setCodexAccountProfiles((prev) =>
+            removeDevPreviewOfficialAccountProfile(prev, profileId),
+          );
+          flashToast("Official account removed [TEST]");
+          return;
         }
-      })();
+        await invoke("codex_account_profile_remove", { profileId });
+        await refreshCodexAccountProfiles();
+        flashToast("Official account removed");
+      } catch (e) {
+        flashToast(String(e), "error");
+      }
     },
-    [flashToast, refreshCodexAccountProfiles],
+    [flashToast, isDevPreview, refreshCodexAccountProfiles],
+  );
+  const onAddCodexAccountProfile = useCallback(
+    async () => {
+      try {
+        if (isDevPreview) {
+          setCodexAccountProfiles((prev) =>
+            addDevPreviewOfficialAccountProfile(prev),
+          );
+          flashToast("Official account added [TEST]");
+          return;
+        }
+        await onCodexAddAccount();
+      } catch (e) {
+        flashToast(String(e), "error");
+      }
+    },
+    [flashToast, isDevPreview, onCodexAddAccount],
   );
   const {
     clearAutoSaveTimer,
@@ -2088,6 +2123,8 @@ export default function App() {
     () => ({
       providerSwitchStatus,
       providerSwitchBusy,
+      codexAccountProfiles,
+      codexAccountProfilesLoading,
       codexSwapDir1,
       codexSwapDir2,
       codexSwapUseWindows,
@@ -2096,6 +2133,7 @@ export default function App() {
       switchboardModelProviderLabel,
       switchboardTargetDirsLabel,
       switchboardProviderCards,
+      onActivateOfficialAccountProfile: onActivateCodexAccountProfile,
       onSetProviderSwitchTarget: setProviderSwitchTarget,
       onOpenConfigureDirs: () => setCodexSwapModalOpen(true),
       onOpenRawConfig: () => void openRawConfigModal(),
@@ -2103,6 +2141,8 @@ export default function App() {
     [
       providerSwitchStatus,
       providerSwitchBusy,
+      codexAccountProfiles,
+      codexAccountProfilesLoading,
       codexSwapDir1,
       codexSwapDir2,
       codexSwapUseWindows,
@@ -2111,6 +2151,8 @@ export default function App() {
       switchboardModelProviderLabel,
       switchboardTargetDirsLabel,
       switchboardProviderCards,
+      onActivateCodexAccountProfile,
+      onAddCodexAccountProfile,
       setProviderSwitchTarget,
       openRawConfigModal,
     ],
@@ -2183,6 +2225,7 @@ export default function App() {
                 codexAccountProfilesLoading={codexAccountProfilesLoading}
                 onActivateCodexAccountProfile={onActivateCodexAccountProfile}
                 onRemoveCodexAccountProfile={onRemoveCodexAccountProfile}
+                onAddCodexAccountProfile={onAddCodexAccountProfile}
                 routeMode={routeMode}
                 onRouteModeChange={setRouteMode}
                 override={override}

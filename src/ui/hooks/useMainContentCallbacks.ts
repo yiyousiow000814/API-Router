@@ -134,6 +134,16 @@ export function useMainContentCallbacks(params: Params) {
     })()
   }
 
+  const onCodexAddAccount = async (): Promise<void> => {
+    try {
+      await invoke('codex_account_login')
+      flashToast('Codex login opened in browser')
+    } catch (e) {
+      flashToast(String(e), 'error')
+      throw e
+    }
+  }
+
   const onCodexSwapAuthConfig = () => {
     void (async () => {
       try {
@@ -195,6 +205,7 @@ export function useMainContentCallbacks(params: Params) {
     onCopyToken,
     onShowGatewayRotate,
     onCodexLoginLogout,
+    onCodexAddAccount,
     onCodexRefresh,
     onCodexSwapAuthConfig,
     onOpenCodexSwapOptions,
