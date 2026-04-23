@@ -30,6 +30,8 @@ describe('HeroCodexCard', () => {
     {
       id: 'official_1',
       label: 'Official account 1',
+      email: 'user@example.com',
+      plan_label: 'Plus',
       updated_at_unix_ms: Date.now(),
       active: true,
     },
@@ -121,6 +123,8 @@ describe('HeroCodexCard', () => {
           {
             id: 'official_1',
             label: 'Official account 1 (signed out)',
+            email: 'official.account1@example.com',
+            plan_label: 'Pro Lite',
             updated_at_unix_ms: Date.now(),
             active: true,
             limit_5h_remaining: '87%',
@@ -129,6 +133,8 @@ describe('HeroCodexCard', () => {
           {
             id: 'official_2',
             label: 'Official account 2',
+            email: 'official.account2@example.com',
+            plan_label: 'Plus',
             updated_at_unix_ms: Date.now() - 1000,
             active: false,
             limit_5h_remaining: '64%',
@@ -148,7 +154,10 @@ describe('HeroCodexCard', () => {
     expect(html).toContain('aoAccountsMenuPrimary')
     expect(html).toContain('aoAccountsMenuRemove')
     expect(html).toContain('aoAccountsMenuAdd')
-    expect(html).toContain('Official account 1 (signed out)')
+    expect(html).toContain('official.account1@example.com')
+    expect(html).toContain('official.account2@example.com')
+    expect(html).toContain('Pro Lite')
+    expect(html).toContain('Plus')
     expect(html).toContain('aoAccountsUsageBar')
     expect(html).toContain('5-hour')
     expect(html).toContain('Weekly')
@@ -156,7 +165,9 @@ describe('HeroCodexCard', () => {
     expect(html).toContain('Current')
     expect(html).not.toContain('>Remove<')
     expect(html).toContain('Add account')
-    expect(html.indexOf('Official account 1 (signed out)')).toBeLessThan(html.indexOf('Official account 2'))
+    expect(html.indexOf('official.account1@example.com')).toBeLessThan(
+      html.indexOf('official.account2@example.com'),
+    )
   })
 
   it('uses cached-usage fallback text when a profile has no usage snapshot yet', () => {

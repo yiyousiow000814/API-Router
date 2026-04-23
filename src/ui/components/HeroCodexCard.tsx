@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { OfficialAccountProfileSummary, Status } from '../types'
 import { fmtResetIn, fmtWhen } from '../utils/format'
+import { officialAccountDisplayName } from '../utils/codexAccountProfiles'
 import { OfficialAccountQuotaSummary } from './OfficialAccountQuotaSummary'
 
 type HeroCodexProps = {
@@ -218,15 +219,25 @@ export function HeroCodexCard({
                           }}
                         >
                           <span className="aoAccountsMenuText">
-                            <span className="aoAccountsMenuTopline">
-                              <span className="aoAccountsMenuLabel">{profile.label}</span>
-                              {profile.active ? (
-                                <span className="aoAccountsMenuCurrentTag">Current</span>
-                              ) : null}
-                            </span>
+                              <span className="aoAccountsMenuTopline">
+                              <span
+                                className="aoAccountsMenuLabel"
+                                title={officialAccountDisplayName(profile)}
+                              >
+                                {officialAccountDisplayName(profile)}
+                              </span>
+                              <span className="aoAccountsMenuTags">
+                                {profile.plan_label ? (
+                                  <span className="aoAccountsMenuPlanTag">{profile.plan_label}</span>
+                                ) : null}
+                                {profile.active ? (
+                                  <span className="aoAccountsMenuCurrentTag">Current</span>
+                                ) : null}
+                              </span>
+                              </span>
                             <OfficialAccountQuotaSummary profile={profile} />
                             <span className="aoAccountsMenuMeta">
-                              Updated {fmtWhen(profile.updated_at_unix_ms)}
+                              Usage updated {fmtWhen(profile.usage_updated_at_unix_ms ?? profile.updated_at_unix_ms)}
                             </span>
                           </span>
                         </button>

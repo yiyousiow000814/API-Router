@@ -24,7 +24,10 @@ export function buildDevPreviewOfficialAccountProfiles(
     {
       id: "dev-official-primary",
       label: signedIn ? "Official account 1" : "Official account 1 (signed out)",
+      email: "official.account1@example.com",
+      plan_label: "Pro Lite",
       updated_at_unix_ms: DEV_PROFILE_BASE_TIME,
+      usage_updated_at_unix_ms: DEV_PROFILE_BASE_TIME,
       active: signedIn,
       limit_5h_remaining: codexAccount?.limit_5h_remaining ?? "87%",
       limit_5h_reset_at:
@@ -38,7 +41,10 @@ export function buildDevPreviewOfficialAccountProfiles(
     {
       id: "dev-official-secondary",
       label: "Official account 2",
+      email: "official.account2@example.com",
+      plan_label: "Plus",
       updated_at_unix_ms: DEV_PROFILE_BASE_TIME - 86_400_000,
+      usage_updated_at_unix_ms: DEV_PROFILE_BASE_TIME - 86_400_000,
       active: false,
       limit_5h_remaining: "64%",
       limit_5h_reset_at: String(DEV_PROFILE_BASE_TIME + 5_400_000),
@@ -80,7 +86,10 @@ export function addDevPreviewOfficialAccountProfile(
     {
       id: `dev-official-${nextIndex}`,
       label: `Official account ${nextIndex}`,
+      email: `official${nextIndex}@example.com`,
+      plan_label: "Plus",
       updated_at_unix_ms: DEV_PROFILE_BASE_TIME + nextIndex * 60_000,
+      usage_updated_at_unix_ms: DEV_PROFILE_BASE_TIME + nextIndex * 60_000,
       active: true,
       limit_5h_remaining: "100%",
       limit_5h_reset_at: String(DEV_PROFILE_BASE_TIME + 9_000_000),
@@ -88,4 +97,10 @@ export function addDevPreviewOfficialAccountProfile(
       limit_weekly_reset_at: String(DEV_PROFILE_BASE_TIME + 302_400_000),
     },
   ];
+}
+
+export function officialAccountDisplayName(
+  profile: Pick<OfficialAccountProfileSummary, "email" | "label">,
+): string {
+  return profile.email?.trim() || profile.label;
 }

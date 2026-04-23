@@ -11,7 +11,10 @@ export type ProviderHealth = {
 export type OfficialAccountProfileSummary = {
   id: string
   label: string
+  email?: string | null
+  plan_label?: string | null
   updated_at_unix_ms: number
+  usage_updated_at_unix_ms?: number | null
   active: boolean
   limit_5h_remaining?: string | null
   limit_5h_reset_at?: string | null

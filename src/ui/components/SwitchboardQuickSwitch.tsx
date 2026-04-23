@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { OfficialAccountProfileSummary } from '../types'
+import { officialAccountDisplayName } from '../utils/codexAccountProfiles'
 import { OfficialAccountQuotaSummary } from './OfficialAccountQuotaSummary'
 
 type SwitchboardQuickSwitchProps = {
@@ -67,7 +68,7 @@ export function SwitchboardQuickSwitch({
             {codexAccountProfilesLoading
               ? 'Loading official accounts'
               : activeOfficialProfile
-                ? activeOfficialProfile.label
+                ? officialAccountDisplayName(activeOfficialProfile)
                 : 'Use official Codex auth'}
           </span>
         </button>
@@ -95,14 +96,24 @@ export function SwitchboardQuickSwitch({
                   >
                     <span className="aoAccountsMenuText">
                       <span className="aoAccountsMenuTopline">
-                        <span className="aoAccountsMenuLabel">{profile.label}</span>
-                        {profile.active ? (
-                          <span className="aoAccountsMenuCurrentTag">Current</span>
-                        ) : null}
+                        <span
+                          className="aoAccountsMenuLabel"
+                          title={officialAccountDisplayName(profile)}
+                        >
+                          {officialAccountDisplayName(profile)}
+                        </span>
+                        <span className="aoAccountsMenuTags">
+                          {profile.plan_label ? (
+                            <span className="aoAccountsMenuPlanTag">{profile.plan_label}</span>
+                          ) : null}
+                          {profile.active ? (
+                            <span className="aoAccountsMenuCurrentTag">Current</span>
+                          ) : null}
+                        </span>
                       </span>
                       <OfficialAccountQuotaSummary profile={profile} />
                       <span className="aoAccountsMenuMeta">
-                        Updated {new Date(profile.updated_at_unix_ms).toLocaleString('en-GB', {
+                        Usage updated {new Date(profile.usage_updated_at_unix_ms ?? profile.updated_at_unix_ms).toLocaleString('en-GB', {
                           day: '2-digit',
                           month: '2-digit',
                           year: 'numeric',
