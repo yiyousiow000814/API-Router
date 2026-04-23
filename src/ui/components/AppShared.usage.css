@@ -1742,6 +1742,18 @@
   width: max-content;
 }
 
+.aoHeroCodexActionsRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.aoHeroCodexAccountsWrap {
+  justify-content: flex-start;
+  margin-right: auto;
+}
+
 .aoMenu {
   position: absolute;
   right: 0;

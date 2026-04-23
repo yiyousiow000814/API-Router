@@ -232,11 +232,11 @@ export function HeroCodexCard({
             Log in
           </button>
         ) : null}
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div className="aoHeroCodexActionsRow">
           {profiles.length ? (
-            <div className="aoActionsMenuWrap" ref={accountsMenuWrapRef} style={{ justifyContent: 'flex-start' }}>
+            <div className="aoActionsMenuWrap aoHeroCodexAccountsWrap" ref={accountsMenuWrapRef}>
               <button
-                className="aoBtn aoBtnSecondary"
+                className="aoBtn aoHeroCodexAccountsBtn"
                 type="button"
                 onClick={() => setAccountsMenuOpen((value) => !value)}
                 title={profilesLoading ? 'Loading accounts...' : 'Official accounts'}
