@@ -1223,7 +1223,7 @@ export default function App() {
     setCodexAccountProfilesLoading(true);
     try {
       if (shouldRefreshUsage && codexAccount?.signed_in) {
-        await invoke("codex_account_profiles_refresh_usage");
+        await invoke("codex_account_refresh");
       }
       const profiles = await invoke<OfficialAccountProfileSummary[]>(
         "codex_account_profiles_list",
@@ -1249,7 +1249,7 @@ export default function App() {
     void import("@tauri-apps/api/event")
       .then(({ listen }) =>
         listen<{ ok: boolean; error?: string }>(
-          "codex-account-profiles-usage-refreshed",
+          "codex-account-refreshed",
           (event) => {
             void refreshCodexAccountProfiles(undefined, {
               reason: "profile_select",
@@ -1283,7 +1283,7 @@ export default function App() {
     if (checkedAt < pending.startedAtUnixMs) return;
     pendingOfficialAddAccountRef.current = null;
     if (codexAccountProfiles.length > pending.expectedCount) {
-      void invoke("codex_account_profiles_refresh_usage_async");
+      void invoke("codex_account_refresh_async");
       flashToast("Official account added");
       return;
     }
