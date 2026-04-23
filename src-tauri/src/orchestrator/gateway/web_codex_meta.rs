@@ -38,6 +38,17 @@ fn extract_model_and_effort_from_toml(txt: &str) -> CliConfigSnapshot {
     }
 }
 
+fn read_windows_cli_config_snapshot() -> CliConfigSnapshot {
+    crate::orchestrator::gateway::web_codex_home::default_windows_codex_dir()
+        .map(|p| p.join("config.toml"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|txt| extract_model_and_effort_from_toml(&txt))
+        .unwrap_or(CliConfigSnapshot {
+            model: None,
+            reasoning_effort: None,
+        })
+}
+
 fn resolve_codex_file_path(raw: &str) -> Result<PathBuf, String> {
     #[cfg(target_os = "windows")]
     let wsl_distro = Some(
@@ -98,14 +109,7 @@ pub(super) async fn codex_cli_config(
         return resp;
     }
 
-    let windows_cfg = crate::orchestrator::gateway::web_codex_home::default_windows_codex_dir()
-        .map(|p| p.join("config.toml"))
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|txt| extract_model_and_effort_from_toml(&txt))
-        .unwrap_or(CliConfigSnapshot {
-            model: None,
-            reasoning_effort: None,
-        });
+    let windows_cfg = read_windows_cli_config_snapshot();
 
     Json(json!({
         "windows": windows_cfg,
@@ -350,9 +354,36 @@ pub(super) async fn codex_folders_list(
     }
 }
 
-pub(super) async fn codex_models(State(st): State<GatewayState>, headers: HeaderMap) -> Response {
+#[derive(Deserialize, Default)]
+pub(super) struct CodexModelsQuery {
+    #[serde(default)]
+    refresh: Option<String>,
+}
+
+impl CodexModelsQuery {
+    fn refresh_requested(&self) -> bool {
+        self.refresh.as_deref().map(str::trim).is_some_and(|value| {
+            matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes")
+        })
+    }
+}
+
+pub(super) async fn codex_models(
+    State(st): State<GatewayState>,
+    headers: HeaderMap,
+    Query(query): Query<CodexModelsQuery>,
+) -> Response {
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
+    }
+    if query.refresh_requested() {
+        if let Err(err) = crate::codex_app_server::refresh_server_in_home(None).await {
+            return api_error_detail(
+                StatusCode::BAD_GATEWAY,
+                "failed to refresh codex app-server",
+                err,
+            );
+        }
     }
     match super::codex_rpc_call("model/list", Value::Null).await {
         Ok(v) => Json(json!({ "items": v.get("items").cloned().unwrap_or(v) })).into_response(),
@@ -362,7 +393,10 @@ pub(super) async fn codex_models(State(st): State<GatewayState>, headers: Header
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_model_and_effort_from_toml, resolve_codex_file_path_with_wsl_distro};
+    use super::{
+        extract_model_and_effort_from_toml, resolve_codex_file_path_with_wsl_distro,
+        CodexModelsQuery,
+    };
     #[cfg(target_os = "windows")]
     use std::path::PathBuf;
 
@@ -375,6 +409,23 @@ model_reasoning_effort = "medium"
         let snap = extract_model_and_effort_from_toml(txt);
         assert_eq!(snap.model.as_deref(), Some("gpt-5.2"));
         assert_eq!(snap.reasoning_effort.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn codex_models_query_parses_refresh_flag() {
+        assert!(CodexModelsQuery {
+            refresh: Some("1".to_string()),
+        }
+        .refresh_requested());
+        assert!(CodexModelsQuery {
+            refresh: Some("true".to_string()),
+        }
+        .refresh_requested());
+        assert!(!CodexModelsQuery {
+            refresh: Some("0".to_string()),
+        }
+        .refresh_requested());
+        assert!(!CodexModelsQuery { refresh: None }.refresh_requested());
     }
 
     #[test]

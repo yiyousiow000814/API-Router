@@ -1,7 +1,11 @@
 export function compactModelLabel(raw) {
   const text = String(raw || "").trim();
   if (!text) return "";
-  return /^gpt-/i.test(text) ? text.slice(4) : text;
+  const isGpt = /^gpt-/i.test(text);
+  const compact = isGpt ? text.slice(4) : text;
+  return isGpt || /^\d+(?:\.\d+)*(?:[\s-]|$)/.test(compact)
+    ? compact.toLowerCase()
+    : compact;
 }
 
 export function parseModelRankParts(modelId) {

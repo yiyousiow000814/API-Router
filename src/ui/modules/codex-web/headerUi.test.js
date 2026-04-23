@@ -13,8 +13,10 @@ import {
 describe("headerUi", () => {
   it("compacts gpt prefixes", () => {
     expect(compactModelLabel("gpt-5.3-codex")).toBe("5.3-codex");
-    expect(compactModelLabel("GPT-5.4-Mini")).toBe("5.4-Mini");
+    expect(compactModelLabel("GPT-5.4-Mini")).toBe("5.4-mini");
+    expect(compactModelLabel("5.5 Codex Mini")).toBe("5.5 codex mini");
     expect(compactModelLabel("claude")).toBe("claude");
+    expect(compactModelLabel("Claude Sonnet")).toBe("Claude Sonnet");
   });
 
   it("prefers latest codex model id", () => {
