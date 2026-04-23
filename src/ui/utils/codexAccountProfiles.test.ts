@@ -23,7 +23,7 @@ describe("buildDevPreviewOfficialAccountProfiles", () => {
     expect(profiles[1]).toMatchObject({
       id: "dev-official-secondary",
       active: false,
-      email: "yiyousiow1234@gmail.com",
+      email: "official.account2@example.com",
       plan_label: "Plus",
     });
   });

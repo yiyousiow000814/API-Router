@@ -43,6 +43,7 @@ export function useMainContentCallbacks(params: Params) {
     setGatewayTokenReveal,
     setGatewayTokenPreview,
     setCodexRefreshing,
+    refreshStatus,
     codexSwapDir1,
     codexSwapDir2,
     codexSwapUseWindows,
@@ -124,6 +125,8 @@ export function useMainContentCallbacks(params: Params) {
       setCodexRefreshing(true)
       try {
         await invoke('codex_account_profiles_refresh_usage_async')
+        await invoke('codex_account_refresh')
+        await refreshStatus()
       } catch (e) {
         flashToast(String(e), 'error')
         setCodexRefreshing(false)

@@ -1977,8 +1977,9 @@
   font-size: 13px;
   font-weight: 700;
   line-height: 1.2;
-  white-space: normal;
-  word-break: break-word;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: rgba(13, 18, 32, 0.9);
   flex: 1 1 auto;
   min-width: 0;

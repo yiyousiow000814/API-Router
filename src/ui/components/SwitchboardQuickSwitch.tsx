@@ -96,7 +96,10 @@ export function SwitchboardQuickSwitch({
                   >
                     <span className="aoAccountsMenuText">
                       <span className="aoAccountsMenuTopline">
-                        <span className="aoAccountsMenuLabel">
+                        <span
+                          className="aoAccountsMenuLabel"
+                          title={officialAccountDisplayName(profile)}
+                        >
                           {officialAccountDisplayName(profile)}
                         </span>
                         <span className="aoAccountsMenuTags">

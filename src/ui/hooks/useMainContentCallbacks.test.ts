@@ -136,10 +136,13 @@ describe('useMainContentCallbacks', () => {
     expect(overrideDirtyRef.current).toBe(false)
   })
 
-  it('refreshes all official account usage asynchronously from the codex hero refresh button', async () => {
+  it('refreshes all official account usage and the current codex session from the hero refresh button', async () => {
     const flashToast = vi.fn()
     const setCodexRefreshing = vi.fn()
-    vi.mocked(invoke).mockResolvedValueOnce(undefined)
+    const refreshStatus = vi.fn(async () => {})
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
 
     const callbacks = useMainContentCallbacks({
       status: {
@@ -152,7 +155,7 @@ describe('useMainContentCallbacks', () => {
       setGatewayTokenReveal: vi.fn(),
       setGatewayTokenPreview: vi.fn(),
       setCodexRefreshing,
-      refreshStatus: vi.fn(async () => {}),
+      refreshStatus,
       codexSwapDir1: '',
       codexSwapDir2: '',
       codexSwapUseWindows: true,
@@ -174,6 +177,7 @@ describe('useMainContentCallbacks', () => {
     expect(flashToast).toHaveBeenCalledWith('Refreshing all official accounts...')
     expect(setCodexRefreshing).toHaveBeenCalledWith(true)
     expect(invoke).toHaveBeenCalledWith('codex_account_profiles_refresh_usage_async')
-    expect(invoke).not.toHaveBeenCalledWith('codex_account_refresh')
+    expect(invoke).toHaveBeenCalledWith('codex_account_refresh')
+    expect(refreshStatus).toHaveBeenCalled()
   })
 })

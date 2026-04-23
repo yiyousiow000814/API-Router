@@ -24,7 +24,7 @@ export function buildDevPreviewOfficialAccountProfiles(
     {
       id: "dev-official-primary",
       label: signedIn ? "Official account 1" : "Official account 1 (signed out)",
-      email: "yiyousiow1@gmail.com",
+      email: "official.account1@example.com",
       plan_label: "Pro Lite",
       updated_at_unix_ms: DEV_PROFILE_BASE_TIME,
       usage_updated_at_unix_ms: DEV_PROFILE_BASE_TIME,
@@ -41,7 +41,7 @@ export function buildDevPreviewOfficialAccountProfiles(
     {
       id: "dev-official-secondary",
       label: "Official account 2",
-      email: "yiyousiow1234@gmail.com",
+      email: "official.account2@example.com",
       plan_label: "Plus",
       updated_at_unix_ms: DEV_PROFILE_BASE_TIME - 86_400_000,
       usage_updated_at_unix_ms: DEV_PROFILE_BASE_TIME - 86_400_000,
