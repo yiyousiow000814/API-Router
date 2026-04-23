@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { OfficialAccountProfileSummary, Status } from '../types'
 import { fmtResetIn, fmtWhen } from '../utils/format'
+import { OfficialAccountQuotaSummary } from './OfficialAccountQuotaSummary'
 
 type HeroCodexProps = {
   status: Status
@@ -47,52 +48,6 @@ export function HeroCodexCard({
   const [accountsMenuOpen, setAccountsMenuOpen] = useState<boolean>(defaultAccountsMenuOpen)
   const menuWrapRef = useRef<HTMLDivElement | null>(null)
   const accountsMenuWrapRef = useRef<HTMLDivElement | null>(null)
-  const parsePct = (value?: string | null): number | null => {
-    if (!value) return null
-    const match = value.match(/(\d+(?:\.\d+)?)%/)
-    if (!match) return null
-    const parsed = Number(match[1])
-    return Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : null
-  }
-  const renderAccountQuota = (profile: OfficialAccountProfileSummary) => {
-    const has5h = Boolean(profile.limit_5h_remaining)
-    const hasWeekly = Boolean(profile.limit_weekly_remaining)
-    if (!has5h && !hasWeekly) {
-      return <span className="aoAccountsQuotaFallback">No cached limits yet</span>
-    }
-    return (
-      <div className="aoAccountsUsageStack">
-        {has5h ? (
-          <div className="aoAccountsUsageMetric">
-            <div className="aoAccountsUsageMeta">
-              <span className="aoAccountsUsageLabel">5-hour</span>
-              <span className="aoAccountsUsageValue">{profile.limit_5h_remaining}</span>
-            </div>
-            <span className="aoAccountsUsageBar" aria-hidden="true">
-              <span
-                className="aoAccountsUsageBarFill"
-                style={{ width: `${parsePct(profile.limit_5h_remaining) ?? 0}%` }}
-              />
-            </span>
-          </div>
-        ) : null}
-        {hasWeekly ? (
-          <div className="aoAccountsUsageMetric">
-            <div className="aoAccountsUsageMeta">
-              <span className="aoAccountsUsageLabel">Weekly</span>
-              <span className="aoAccountsUsageValue">{profile.limit_weekly_remaining}</span>
-            </div>
-            <span className="aoAccountsUsageBar" aria-hidden="true">
-              <span
-                className="aoAccountsUsageBarFill"
-                style={{ width: `${parsePct(profile.limit_weekly_remaining) ?? 0}%` }}
-              />
-            </span>
-          </div>
-        ) : null}
-      </div>
-    )
-  }
   const swapTargetLabel = swapTarget === 'windows' ? 'Windows' : swapTarget === 'wsl2' ? 'WSL2' : 'Both'
   const availableTargets: Array<'windows' | 'wsl2' | 'both'> = []
   const selectedProfile = profiles.find((profile) => profile.active) ?? null
@@ -269,7 +224,7 @@ export function HeroCodexCard({
                                 <span className="aoAccountsMenuCurrentTag">Current</span>
                               ) : null}
                             </span>
-                            {renderAccountQuota(profile)}
+                            <OfficialAccountQuotaSummary profile={profile} />
                             <span className="aoAccountsMenuMeta">
                               Updated {fmtWhen(profile.updated_at_unix_ms)}
                             </span>

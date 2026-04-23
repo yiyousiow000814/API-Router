@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { OfficialAccountProfileSummary } from '../types'
+import { OfficialAccountQuotaSummary } from './OfficialAccountQuotaSummary'
 
 type SwitchboardQuickSwitchProps = {
   activeMode: string | null
@@ -26,52 +27,6 @@ export function SwitchboardQuickSwitch({
     () => codexAccountProfiles.find((profile) => profile.active) ?? codexAccountProfiles[0] ?? null,
     [codexAccountProfiles],
   )
-  const parsePct = (value?: string | null): number | null => {
-    if (!value) return null
-    const match = value.match(/(\d+(?:\.\d+)?)%/)
-    if (!match) return null
-    const parsed = Number(match[1])
-    return Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : null
-  }
-  const renderAccountQuota = (profile: OfficialAccountProfileSummary) => {
-    const has5h = Boolean(profile.limit_5h_remaining)
-    const hasWeekly = Boolean(profile.limit_weekly_remaining)
-    if (!has5h && !hasWeekly) {
-      return <span className="aoAccountsQuotaFallback">No cached limits yet</span>
-    }
-    return (
-      <div className="aoAccountsUsageStack">
-        {has5h ? (
-          <div className="aoAccountsUsageMetric">
-            <div className="aoAccountsUsageMeta">
-              <span className="aoAccountsUsageLabel">5-hour</span>
-              <span className="aoAccountsUsageValue">{profile.limit_5h_remaining}</span>
-            </div>
-            <span className="aoAccountsUsageBar" aria-hidden="true">
-              <span
-                className="aoAccountsUsageBarFill"
-                style={{ width: `${parsePct(profile.limit_5h_remaining) ?? 0}%` }}
-              />
-            </span>
-          </div>
-        ) : null}
-        {hasWeekly ? (
-          <div className="aoAccountsUsageMetric">
-            <div className="aoAccountsUsageMeta">
-              <span className="aoAccountsUsageLabel">Weekly</span>
-              <span className="aoAccountsUsageValue">{profile.limit_weekly_remaining}</span>
-            </div>
-            <span className="aoAccountsUsageBar" aria-hidden="true">
-              <span
-                className="aoAccountsUsageBarFill"
-                style={{ width: `${parsePct(profile.limit_weekly_remaining) ?? 0}%` }}
-              />
-            </span>
-          </div>
-        ) : null}
-      </div>
-    )
-  }
 
   useEffect(() => {
     if (!officialMenuOpen) return
@@ -145,7 +100,7 @@ export function SwitchboardQuickSwitch({
                           <span className="aoAccountsMenuCurrentTag">Current</span>
                         ) : null}
                       </span>
-                      {renderAccountQuota(profile)}
+                      <OfficialAccountQuotaSummary profile={profile} />
                       <span className="aoAccountsMenuMeta">
                         Updated {new Date(profile.updated_at_unix_ms).toLocaleString('en-GB', {
                           day: '2-digit',
