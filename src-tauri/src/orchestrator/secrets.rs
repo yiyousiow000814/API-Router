@@ -68,6 +68,8 @@ pub struct OfficialAccountProfileSecret {
     pub auth_json: serde_json::Value,
     pub updated_at_unix_ms: u64,
     #[serde(default)]
+    pub usage_updated_at_unix_ms: Option<u64>,
+    #[serde(default)]
     pub limit_5h_remaining: Option<String>,
     #[serde(default)]
     pub limit_5h_reset_at: Option<String>,
@@ -86,6 +88,8 @@ pub struct OfficialAccountProfileSummary {
     #[serde(default)]
     pub plan_label: Option<String>,
     pub updated_at_unix_ms: u64,
+    #[serde(default)]
+    pub usage_updated_at_unix_ms: Option<u64>,
     pub active: bool,
     #[serde(default)]
     pub limit_5h_remaining: Option<String>,
@@ -374,9 +378,16 @@ fn official_account_email(auth_json: &serde_json::Value) -> Option<String> {
 }
 
 fn official_account_plan_label(auth_json: &serde_json::Value) -> Option<String> {
-    let raw = official_account_id_token_payload(auth_json)?
+    let payload = official_account_id_token_payload(auth_json)?;
+    let raw = payload
         .get("chatgpt_plan_type")
         .and_then(|value| value.as_str())
+        .or_else(|| {
+            payload
+                .get("https://api.openai.com/auth")
+                .and_then(|value| value.get("chatgpt_plan_type"))
+                .and_then(|value| value.as_str())
+        })
         .map(str::trim)
         .filter(|value| !value.is_empty())?
         .to_ascii_lowercase();
@@ -558,6 +569,7 @@ impl SecretStore {
             email: official_account_email(&profile.auth_json),
             plan_label: official_account_plan_label(&profile.auth_json),
             updated_at_unix_ms: profile.updated_at_unix_ms,
+            usage_updated_at_unix_ms: profile.usage_updated_at_unix_ms,
             active: active_id == Some(id),
             limit_5h_remaining: profile.limit_5h_remaining.clone(),
             limit_5h_reset_at: profile.limit_5h_reset_at.clone(),
@@ -849,6 +861,7 @@ impl SecretStore {
             .official_account_profiles
             .get_mut(profile_id)
             .ok_or_else(|| format!("official account profile not found: {profile_id}"))?;
+        profile.usage_updated_at_unix_ms = Some(unix_ms_now());
         profile.limit_5h_remaining = usage.limit_5h_remaining.clone();
         profile.limit_5h_reset_at = usage.limit_5h_reset_at.clone();
         profile.limit_weekly_remaining = usage.limit_weekly_remaining.clone();
@@ -897,6 +910,7 @@ impl SecretStore {
                         .expect("checked active official profile");
                     active_profile.updated_at_unix_ms = now;
                     if let Some(usage) = usage {
+                        active_profile.usage_updated_at_unix_ms = Some(now);
                         active_profile.limit_5h_remaining = usage.limit_5h_remaining.clone();
                         active_profile.limit_5h_reset_at = usage.limit_5h_reset_at.clone();
                         active_profile.limit_weekly_remaining =
@@ -946,6 +960,7 @@ impl SecretStore {
                     .expect("checked existing official profile");
                 existing_profile.updated_at_unix_ms = now;
                 if let Some(usage) = usage {
+                    existing_profile.usage_updated_at_unix_ms = Some(now);
                     existing_profile.limit_5h_remaining = usage.limit_5h_remaining.clone();
                     existing_profile.limit_5h_reset_at = usage.limit_5h_reset_at.clone();
                     existing_profile.limit_weekly_remaining = usage.limit_weekly_remaining.clone();
@@ -976,6 +991,7 @@ impl SecretStore {
             label: label.clone(),
             auth_json: auth_json.clone(),
             updated_at_unix_ms: now,
+            usage_updated_at_unix_ms: usage.map(|_| now),
             limit_5h_remaining: usage.and_then(|value| value.limit_5h_remaining.clone()),
             limit_5h_reset_at: usage.and_then(|value| value.limit_5h_reset_at.clone()),
             limit_weekly_remaining: usage.and_then(|value| value.limit_weekly_remaining.clone()),
@@ -993,6 +1009,7 @@ impl SecretStore {
             email: official_account_email(auth_json),
             plan_label: official_account_plan_label(auth_json),
             updated_at_unix_ms: now,
+            usage_updated_at_unix_ms: usage.map(|_| now),
             active: is_active,
             limit_5h_remaining: usage.and_then(|value| value.limit_5h_remaining.clone()),
             limit_5h_reset_at: usage.and_then(|value| value.limit_5h_reset_at.clone()),
@@ -2172,6 +2189,27 @@ mod tests {
 
         assert_eq!(profile.email.as_deref(), Some("user@example.com"));
         assert_eq!(profile.plan_label.as_deref(), Some("Pro Lite"));
+    }
+
+    #[test]
+    fn official_account_profile_summary_reads_nested_plan_label_from_real_id_token_shape() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = SecretStore::new(path);
+
+        let auth_json = serde_json::json!({
+            "tokens": {
+                "account_id": "acct-1",
+                "id_token": "header.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9wbGFuX3R5cGUiOiJwbHVzIn19.signature"
+            }
+        });
+
+        let profile = store
+            .capture_official_account_profile(&auth_json, None, None)
+            .expect("capture official account");
+
+        assert_eq!(profile.email.as_deref(), Some("user@example.com"));
+        assert_eq!(profile.plan_label.as_deref(), Some("Plus"));
     }
 
     #[test]

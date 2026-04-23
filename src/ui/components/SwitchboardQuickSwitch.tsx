@@ -110,7 +110,7 @@ export function SwitchboardQuickSwitch({
                       </span>
                       <OfficialAccountQuotaSummary profile={profile} />
                       <span className="aoAccountsMenuMeta">
-                        Updated {new Date(profile.updated_at_unix_ms).toLocaleString('en-GB', {
+                        Usage updated {new Date(profile.usage_updated_at_unix_ms ?? profile.updated_at_unix_ms).toLocaleString('en-GB', {
                           day: '2-digit',
                           month: '2-digit',
                           year: 'numeric',

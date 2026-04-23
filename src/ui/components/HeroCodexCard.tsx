@@ -234,7 +234,7 @@ export function HeroCodexCard({
                               </span>
                             <OfficialAccountQuotaSummary profile={profile} />
                             <span className="aoAccountsMenuMeta">
-                              Updated {fmtWhen(profile.updated_at_unix_ms)}
+                              Usage updated {fmtWhen(profile.usage_updated_at_unix_ms ?? profile.updated_at_unix_ms)}
                             </span>
                           </span>
                         </button>
