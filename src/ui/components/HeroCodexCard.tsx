@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Status } from '../types'
+import type { OfficialAccountProfileSummary, Status } from '../types'
 import { fmtResetIn, fmtWhen } from '../utils/format'
 
 type HeroCodexProps = {
@@ -15,6 +15,11 @@ type HeroCodexProps = {
   onChangeSwapTarget: (target: 'windows' | 'wsl2' | 'both') => void
   swapBadgeText: string
   swapBadgeTitle: string
+  profiles: OfficialAccountProfileSummary[]
+  profilesLoading: boolean
+  onActivateProfile: (profileId: string) => void
+  onRemoveProfile: (profileId: string) => void
+  defaultAccountsMenuOpen?: boolean
 }
 
 export function HeroCodexCard({
@@ -30,9 +35,18 @@ export function HeroCodexCard({
   onChangeSwapTarget,
   swapBadgeText,
   swapBadgeTitle,
+  profiles,
+  profilesLoading,
+  onActivateProfile,
+  onRemoveProfile,
+  defaultAccountsMenuOpen = false,
 }: HeroCodexProps) {
   const [menuOpen, setMenuOpen] = useState<boolean>(false)
+  const [accountsMenuOpen, setAccountsMenuOpen] = useState<boolean>(defaultAccountsMenuOpen)
   const menuWrapRef = useRef<HTMLDivElement | null>(null)
+  const accountsMenuWrapRef = useRef<HTMLDivElement | null>(null)
+  const activeProfile = profiles.find((profile) => profile.active) ?? null
+  const inactiveProfiles = profiles.filter((profile) => !profile.active)
   const swapTargetLabel = swapTarget === 'windows' ? 'Windows' : swapTarget === 'wsl2' ? 'WSL2' : 'Both'
   const availableTargets: Array<'windows' | 'wsl2' | 'both'> = []
   if (swapTargetWindowsEnabled && swapTargetWslEnabled) availableTargets.push('both')
@@ -51,6 +65,18 @@ export function HeroCodexCard({
     document.addEventListener('mousedown', onDocMouseDown)
     return () => document.removeEventListener('mousedown', onDocMouseDown)
   }, [menuOpen])
+
+  useEffect(() => {
+    if (!accountsMenuOpen) return
+    function onDocMouseDown(e: MouseEvent) {
+      const el = accountsMenuWrapRef.current
+      if (!el) return
+      if (e.target instanceof Node && el.contains(e.target)) return
+      setAccountsMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => document.removeEventListener('mousedown', onDocMouseDown)
+  }, [accountsMenuOpen])
 
   return (
     <div className="aoCard aoHeroCard aoHeroCodex">
@@ -148,6 +174,92 @@ export function HeroCodexCard({
           </button>
         ) : null}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {profiles.length ? (
+            <div className="aoActionsMenuWrap" ref={accountsMenuWrapRef} style={{ justifyContent: 'flex-start' }}>
+              <button
+                className="aoBtn aoBtnSecondary"
+                type="button"
+                onClick={() => setAccountsMenuOpen((value) => !value)}
+                title={profilesLoading ? 'Loading accounts...' : 'Official accounts'}
+              >
+                {profilesLoading ? 'Accounts…' : `Accounts (${profiles.length})`}
+              </button>
+              {accountsMenuOpen ? (
+                <div className="aoMenu aoMenuCompact aoMenuCompactOffset aoAccountsMenu" role="menu" aria-label="Official accounts menu">
+                  <div className="aoAccountsMenuHeader">
+                    <span className="aoAccountsMenuTitle">Official accounts</span>
+                  </div>
+                  <div className="aoAccountsMenuList">
+                    {activeProfile ? (
+                      <div className="aoAccountsSectionLabel aoAccountsSectionLabelSpaced">Current</div>
+                    ) : null}
+                    {activeProfile ? (
+                      <div className="aoAccountsMenuRow aoAccountsMenuRowActive">
+                        <button
+                          type="button"
+                          className="aoAccountsMenuPrimary"
+                          onClick={() => {
+                            setAccountsMenuOpen(false)
+                            onActivateProfile(activeProfile.id)
+                          }}
+                        >
+                          <span className="aoAccountsMenuText">
+                            <span className="aoAccountsMenuTopline">
+                              <span className="aoAccountsMenuLabel">{activeProfile.label}</span>
+                              <span className="aoAccountsMenuCurrentTag">Current</span>
+                            </span>
+                            <span className="aoAccountsMenuMeta">
+                              Updated {fmtWhen(activeProfile.updated_at_unix_ms)}
+                            </span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className="aoAccountsMenuRemove"
+                          onClick={() => onRemoveProfile(activeProfile.id)}
+                          title={`Remove ${activeProfile.label}`}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ) : null}
+                    {inactiveProfiles.length ? (
+                      <div className="aoAccountsSectionLabel aoAccountsSectionLabelSpaced">Other accounts</div>
+                    ) : null}
+                    {inactiveProfiles.map((profile) => (
+                      <div key={profile.id} className="aoAccountsMenuRow">
+                        <button
+                          type="button"
+                          className="aoAccountsMenuPrimary"
+                          onClick={() => {
+                            setAccountsMenuOpen(false)
+                          onActivateProfile(profile.id)
+                        }}
+                      >
+                          <span className="aoAccountsMenuText">
+                            <span className="aoAccountsMenuTopline">
+                              <span className="aoAccountsMenuLabel">{profile.label}</span>
+                            </span>
+                            <span className="aoAccountsMenuMeta">
+                              Updated {fmtWhen(profile.updated_at_unix_ms)}
+                            </span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className="aoAccountsMenuRemove"
+                          onClick={() => onRemoveProfile(profile.id)}
+                          title={`Remove ${profile.label}`}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <div className="aoActionsMenuWrap" ref={menuWrapRef} style={{ justifyContent: 'flex-start' }}>
             <div className="aoSplitBtn aoSplitBtnPrimary" title={swapBadgeTitle}>
               <button className="aoSplitBtnBtn" onClick={onSwapAuthConfig}>

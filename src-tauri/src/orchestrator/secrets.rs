@@ -37,6 +37,10 @@ struct SecretsFile {
     lan_trust_secret: Option<String>,
     #[serde(default)]
     lan_trusted_node_ids: BTreeSet<String>,
+    #[serde(default)]
+    official_account_profiles: BTreeMap<String, OfficialAccountProfileSecret>,
+    #[serde(default)]
+    active_official_account_profile_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +59,21 @@ pub struct ProviderPricingOverride {
 pub struct UsageLoginSecret {
     pub username: String,
     pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OfficialAccountProfileSecret {
+    pub label: String,
+    pub auth_json: serde_json::Value,
+    pub updated_at_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficialAccountProfileSummary {
+    pub id: String,
+    pub label: String,
+    pub updated_at_unix_ms: u64,
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -90,6 +109,42 @@ pub struct UsageLoginConfig {
 
 fn default_hard_cap_enabled() -> bool {
     true
+}
+
+fn unix_ms_now() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn next_official_account_label(
+    profiles: &BTreeMap<String, OfficialAccountProfileSecret>,
+    preferred_label: Option<&str>,
+) -> String {
+    let preferred = preferred_label
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if let Some(label) = preferred {
+        return label;
+    }
+    let mut next_index = 1usize;
+    loop {
+        let candidate = format!("Official account {next_index}");
+        let used = profiles.values().any(|profile| {
+            profile
+                .label
+                .trim()
+                .eq_ignore_ascii_case(candidate.as_str())
+        });
+        if !used {
+            return candidate;
+        }
+        next_index += 1;
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -458,6 +513,178 @@ impl SecretStore {
     pub fn clear_usage_login(&self, provider: &str) -> Result<(), String> {
         let mut data = self.inner.lock();
         data.usage_logins.remove(provider);
+        self.persist(&data)
+    }
+
+    pub fn list_official_account_profiles(&self) -> Vec<OfficialAccountProfileSummary> {
+        let data = self.inner.lock();
+        let active_id = data.active_official_account_profile_id.clone();
+        let mut profiles = data
+            .official_account_profiles
+            .iter()
+            .map(|(id, profile)| OfficialAccountProfileSummary {
+                id: id.clone(),
+                label: profile.label.clone(),
+                updated_at_unix_ms: profile.updated_at_unix_ms,
+                active: active_id.as_deref() == Some(id.as_str()),
+            })
+            .collect::<Vec<_>>();
+        profiles.sort_by(|left, right| {
+            right
+                .updated_at_unix_ms
+                .cmp(&left.updated_at_unix_ms)
+                .then_with(|| left.label.cmp(&right.label))
+        });
+        profiles
+    }
+
+    pub fn capture_official_account_profile(
+        &self,
+        auth_json: &serde_json::Value,
+        preferred_label: Option<&str>,
+    ) -> Result<OfficialAccountProfileSummary, String> {
+        let mut data = self.inner.lock();
+        let now = unix_ms_now();
+
+        if let Some(active_id) = data.active_official_account_profile_id.clone() {
+            let active_matches = data
+                .official_account_profiles
+                .get(&active_id)
+                .map(|profile| profile.auth_json == *auth_json)
+                .unwrap_or(false);
+            if active_matches {
+                let replacement_label = data
+                    .official_account_profiles
+                    .get(&active_id)
+                    .map(|profile| profile.label.trim().is_empty())
+                    .filter(|needs_label| *needs_label)
+                    .map(|_| {
+                        next_official_account_label(
+                            &data.official_account_profiles,
+                            preferred_label,
+                        )
+                    });
+                let (label, updated_at_unix_ms) = {
+                    let active_profile = data
+                        .official_account_profiles
+                        .get_mut(&active_id)
+                        .expect("checked active official profile");
+                    active_profile.updated_at_unix_ms = now;
+                    if let Some(label) = replacement_label {
+                        active_profile.label = label;
+                    }
+                    (
+                        active_profile.label.clone(),
+                        active_profile.updated_at_unix_ms,
+                    )
+                };
+                self.persist(&data)?;
+                return Ok(OfficialAccountProfileSummary {
+                    id: active_id,
+                    label,
+                    updated_at_unix_ms,
+                    active: true,
+                });
+            }
+        }
+
+        if let Some(existing_id) = data
+            .official_account_profiles
+            .iter()
+            .find(|(_, profile)| profile.auth_json == *auth_json)
+            .map(|(id, _)| id.clone())
+        {
+            let replacement_label = data
+                .official_account_profiles
+                .get(&existing_id)
+                .map(|profile| profile.label.trim().is_empty())
+                .filter(|needs_label| *needs_label)
+                .map(|_| {
+                    next_official_account_label(&data.official_account_profiles, preferred_label)
+                });
+            let (label, updated_at_unix_ms) = {
+                let existing_profile = data
+                    .official_account_profiles
+                    .get_mut(&existing_id)
+                    .expect("checked existing official profile");
+                existing_profile.updated_at_unix_ms = now;
+                if let Some(label) = replacement_label {
+                    existing_profile.label = label;
+                }
+                (
+                    existing_profile.label.clone(),
+                    existing_profile.updated_at_unix_ms,
+                )
+            };
+            data.active_official_account_profile_id = Some(existing_id.clone());
+            self.persist(&data)?;
+            return Ok(OfficialAccountProfileSummary {
+                id: existing_id,
+                label,
+                updated_at_unix_ms,
+                active: true,
+            });
+        }
+
+        let id = format!("official_{}", Uuid::new_v4().simple());
+        let label = next_official_account_label(&data.official_account_profiles, preferred_label);
+        let profile = OfficialAccountProfileSecret {
+            label: label.clone(),
+            auth_json: auth_json.clone(),
+            updated_at_unix_ms: now,
+        };
+        data.official_account_profiles.insert(id.clone(), profile);
+        data.active_official_account_profile_id = Some(id.clone());
+        self.persist(&data)?;
+        Ok(OfficialAccountProfileSummary {
+            id,
+            label,
+            updated_at_unix_ms: now,
+            active: true,
+        })
+    }
+
+    pub fn activate_official_account_profile(
+        &self,
+        profile_id: &str,
+    ) -> Result<(OfficialAccountProfileSummary, serde_json::Value), String> {
+        let mut data = self.inner.lock();
+        let id = profile_id.trim();
+        let Some((label, updated_at_unix_ms, auth_json)) =
+            data.official_account_profiles.get(id).map(|profile| {
+                (
+                    profile.label.clone(),
+                    profile.updated_at_unix_ms,
+                    profile.auth_json.clone(),
+                )
+            })
+        else {
+            return Err(format!("unknown official account profile: {id}"));
+        };
+        data.active_official_account_profile_id = Some(id.to_string());
+        self.persist(&data)?;
+        Ok((
+            OfficialAccountProfileSummary {
+                id: id.to_string(),
+                label,
+                updated_at_unix_ms,
+                active: true,
+            },
+            auth_json,
+        ))
+    }
+
+    pub fn remove_official_account_profile(&self, profile_id: &str) -> Result<(), String> {
+        let mut data = self.inner.lock();
+        let id = profile_id.trim();
+        data.official_account_profiles.remove(id);
+        if data.active_official_account_profile_id.as_deref() == Some(id) {
+            data.active_official_account_profile_id = data
+                .official_account_profiles
+                .iter()
+                .max_by_key(|(_, profile)| profile.updated_at_unix_ms)
+                .map(|(next_id, _)| next_id.clone());
+        }
         self.persist(&data)
     }
 
@@ -1408,6 +1635,66 @@ mod tests {
 
         reloaded.clear_usage_login("p1").expect("clear usage login");
         assert_eq!(reloaded.get_usage_login("p1"), None);
+    }
+
+    #[test]
+    fn official_account_profiles_capture_switch_and_remove_roundtrip() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = SecretStore::new(path.clone());
+
+        let first_auth = serde_json::json!({
+            "tokens": {
+                "access_token": "token-1",
+                "refresh_token": "refresh-1"
+            }
+        });
+        let second_auth = serde_json::json!({
+            "tokens": {
+                "access_token": "token-2",
+                "refresh_token": "refresh-2"
+            }
+        });
+
+        let first = store
+            .capture_official_account_profile(&first_auth, None)
+            .expect("capture first official account");
+        assert!(first.active);
+        let second = store
+            .capture_official_account_profile(&second_auth, None)
+            .expect("capture second official account");
+        assert!(second.active);
+        assert_ne!(first.id, second.id);
+
+        let listed = store.list_official_account_profiles();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].id, second.id);
+        assert!(listed[0].active);
+
+        let (reactivated, active_auth) = store
+            .activate_official_account_profile(&first.id)
+            .expect("activate first official account");
+        assert_eq!(reactivated.id, first.id);
+        assert_eq!(active_auth, first_auth);
+
+        let reloaded = SecretStore::new(path.clone());
+        let listed_after_reload = reloaded.list_official_account_profiles();
+        assert_eq!(listed_after_reload.len(), 2);
+        assert_eq!(
+            listed_after_reload
+                .iter()
+                .find(|profile| profile.active)
+                .map(|profile| profile.id.as_str()),
+            Some(first.id.as_str())
+        );
+
+        reloaded
+            .remove_official_account_profile(&first.id)
+            .expect("remove first official account");
+        let remaining = reloaded.list_official_account_profiles();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, second.id);
+        assert!(remaining[0].active);
     }
 
     #[test]

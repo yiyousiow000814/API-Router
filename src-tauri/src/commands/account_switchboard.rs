@@ -23,13 +23,16 @@ pub(crate) async fn codex_account_login(
     state.gateway.store.put_codex_account_snapshot(&snap);
     let gateway = state.gateway.clone();
     let config_path = state.config_path.clone();
+    let secrets = state.secrets.clone();
     tauri::async_runtime::spawn(async move {
         let deadline = unix_ms().saturating_add(120_000);
         loop {
             if unix_ms() >= deadline {
                 break;
             }
-            if let Ok(true) = refresh_codex_account_snapshot(&config_path, &gateway).await {
+            if let Ok(true) =
+                refresh_codex_account_snapshot(&config_path, &gateway, Some(&secrets)).await
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -63,8 +66,36 @@ pub(crate) async fn codex_account_refresh(
     state: tauri::State<'_, app_state::AppState>,
 ) -> Result<(), String> {
     let gateway = state.gateway.clone();
-    let _ = refresh_codex_account_snapshot(&state.config_path, &gateway).await?;
+    let _ = refresh_codex_account_snapshot(&state.config_path, &gateway, Some(&state.secrets)).await?;
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn codex_account_profiles_list(
+    state: tauri::State<'_, app_state::AppState>,
+) -> Result<Vec<crate::orchestrator::secrets::OfficialAccountProfileSummary>, String> {
+    Ok(state.secrets.list_official_account_profiles())
+}
+
+#[tauri::command]
+pub(crate) async fn codex_account_profile_activate(
+    state: tauri::State<'_, app_state::AppState>,
+    profile_id: String,
+) -> Result<(), String> {
+    let (_, auth_json) = state.secrets.activate_official_account_profile(&profile_id)?;
+    write_codex_auth_to_app(&state.config_path, &auth_json)?;
+    resync_official_switchboard_homes_if_needed(&state)?;
+    let gateway = state.gateway.clone();
+    let _ = refresh_codex_account_snapshot(&state.config_path, &gateway, Some(&state.secrets)).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn codex_account_profile_remove(
+    state: tauri::State<'_, app_state::AppState>,
+    profile_id: String,
+) -> Result<(), String> {
+    state.secrets.remove_official_account_profile(&profile_id)
 }
 
 #[tauri::command]
@@ -159,6 +190,7 @@ fn persist_config(state: &tauri::State<'_, app_state::AppState>) -> anyhow::Resu
 async fn refresh_codex_account_snapshot(
     config_path: &std::path::Path,
     gateway: &crate::orchestrator::gateway::GatewayState,
+    secrets: Option<&crate::orchestrator::secrets::SecretStore>,
 ) -> Result<bool, String> {
     let mut signed_in = false;
     let mut remaining: Option<String> = None;
@@ -298,7 +330,75 @@ async fn refresh_codex_account_snapshot(
       "error": error
     });
     gateway.store.put_codex_account_snapshot(&snap);
+    if signed_in {
+        if let Some(store) = secrets {
+            if let Some(app_auth_json) = read_codex_auth_from_app(config_path) {
+                let _ = store.capture_official_account_profile(&app_auth_json, None);
+            }
+        }
+    }
     Ok(signed_in)
+}
+
+fn read_codex_auth_from_app(config_path: &std::path::Path) -> Option<Value> {
+    let app_auth = config_path.parent()?.join("codex-home").join("auth.json");
+    let text = std::fs::read_to_string(app_auth).ok()?;
+    serde_json::from_str::<Value>(&text).ok()
+}
+
+fn write_codex_auth_to_app(config_path: &std::path::Path, auth_json: &Value) -> Result<(), String> {
+    let app_auth = config_path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("codex-home")
+        .join("auth.json");
+    if let Some(parent) = app_auth.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(auth_json).map_err(|e| e.to_string())?;
+    std::fs::write(app_auth, text).map_err(|e| e.to_string())
+}
+
+fn resync_official_switchboard_homes_if_needed(
+    state: &tauri::State<'_, app_state::AppState>,
+) -> Result<(), String> {
+    let switchboard_state = state
+        .config_path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("codex-home")
+        .join("provider-switchboard-state.json");
+    let Ok(text) = std::fs::read_to_string(switchboard_state) else {
+        return Ok(());
+    };
+    let Ok(payload) = serde_json::from_str::<Value>(&text) else {
+        return Ok(());
+    };
+    let target = payload
+        .get("target")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .unwrap_or("");
+    if target != "official" {
+        return Ok(());
+    }
+    let cli_homes = payload
+        .get("cli_homes")
+        .and_then(|value| value.as_array())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.as_str().map(|value| value.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let _ = crate::provider_switchboard::set_target(
+        state,
+        cli_homes,
+        "official".to_string(),
+        None,
+    )?;
+    Ok(())
 }
 
 fn read_codex_access_token_from_app(config_path: &std::path::Path) -> Option<String> {
@@ -316,6 +416,7 @@ fn read_codex_access_token_from_app(config_path: &std::path::Path) -> Option<Str
 #[cfg(test)]
 mod account_switchboard_tests {
     use super::*;
+    use crate::orchestrator::secrets::SecretStore;
 
     #[test]
     fn read_codex_access_token_from_app_uses_app_local_codex_home() {
@@ -341,6 +442,49 @@ mod account_switchboard_tests {
             read_codex_access_token_from_app(&config_path).as_deref(),
             Some("app-token")
         );
+    }
+
+    #[test]
+    fn write_codex_auth_to_app_persists_selected_profile() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let auth_json = serde_json::json!({
+            "tokens": {
+                "access_token": "chosen-access",
+                "refresh_token": "chosen-refresh"
+            }
+        });
+
+        write_codex_auth_to_app(&config_path, &auth_json).expect("write selected auth");
+
+        assert_eq!(
+            read_codex_access_token_from_app(&config_path).as_deref(),
+            Some("chosen-access")
+        );
+    }
+
+    #[test]
+    fn captured_app_auth_is_listed_as_an_official_profile() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let app_auth = config_path.parent().unwrap().join("codex-home").join("auth.json");
+        std::fs::create_dir_all(app_auth.parent().expect("auth parent")).expect("mkdir auth parent");
+        std::fs::write(
+            &app_auth,
+            r#"{"tokens":{"access_token":"capture-access","refresh_token":"capture-refresh"}}"#,
+        )
+        .expect("write app auth");
+
+        let secrets = SecretStore::new(tmp.path().join("user-data").join("secrets.json"));
+        let auth_json = read_codex_auth_from_app(&config_path).expect("read app auth json");
+        let saved = secrets
+            .capture_official_account_profile(&auth_json, None)
+            .expect("capture official profile");
+
+        let profiles = secrets.list_official_account_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, saved.id);
+        assert!(profiles[0].active);
     }
 }
 

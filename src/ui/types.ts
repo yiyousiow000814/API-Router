@@ -8,6 +8,13 @@ export type ProviderHealth = {
   last_error_event_id?: string | null
 }
 
+export type OfficialAccountProfileSummary = {
+  id: string
+  label: string
+  updated_at_unix_ms: number
+  active: boolean
+}
+
 export type Status = {
   listen: { host: string; port: number }
   config_revision?: string
