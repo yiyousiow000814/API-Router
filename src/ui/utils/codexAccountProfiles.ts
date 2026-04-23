@@ -2,6 +2,20 @@ import type { OfficialAccountProfileSummary, Status } from "../types";
 
 const DEV_PROFILE_BASE_TIME = Date.UTC(2026, 3, 23, 13, 24, 48);
 
+export type OfficialAccountProfilesRefreshReason =
+  | "status_tick"
+  | "profile_select"
+  | "profile_remove"
+  | "profile_add_complete";
+
+export function shouldRefreshOfficialAccountProfilesUsage(
+  reason: OfficialAccountProfilesRefreshReason,
+  codexAccount: Status["codex_account"] | null | undefined,
+): boolean {
+  if (!codexAccount?.signed_in) return false;
+  return reason === "profile_add_complete";
+}
+
 export function buildDevPreviewOfficialAccountProfiles(
   codexAccount: Status["codex_account"] | null | undefined,
 ): OfficialAccountProfileSummary[] {

@@ -4,6 +4,7 @@ import {
   addDevPreviewOfficialAccountProfile,
   buildDevPreviewOfficialAccountProfiles,
   removeDevPreviewOfficialAccountProfile,
+  shouldRefreshOfficialAccountProfilesUsage,
 } from "./codexAccountProfiles";
 
 describe("buildDevPreviewOfficialAccountProfiles", () => {
@@ -69,5 +70,23 @@ describe("buildDevPreviewOfficialAccountProfiles", () => {
     );
     expect(removed).toHaveLength(2);
     expect(removed.some((profile) => profile.active)).toBe(true);
+  });
+
+  it("does not refresh per-profile usage on status ticks", () => {
+    expect(
+      shouldRefreshOfficialAccountProfilesUsage("status_tick", {
+        ok: true,
+        signed_in: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("refreshes per-profile usage after a new account is added", () => {
+    expect(
+      shouldRefreshOfficialAccountProfilesUsage("profile_add_complete", {
+        ok: true,
+        signed_in: true,
+      }),
+    ).toBe(true);
   });
 });

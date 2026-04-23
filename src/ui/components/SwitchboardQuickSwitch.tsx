@@ -37,7 +37,7 @@ export function SwitchboardQuickSwitch({
     const has5h = Boolean(profile.limit_5h_remaining)
     const hasWeekly = Boolean(profile.limit_weekly_remaining)
     if (!has5h && !hasWeekly) {
-      return <span className="aoAccountsQuotaFallback">Switch to inspect limits</span>
+      return <span className="aoAccountsQuotaFallback">No cached limits yet</span>
     }
     return (
       <div className="aoAccountsUsageStack">

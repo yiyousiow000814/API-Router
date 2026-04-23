@@ -100,6 +100,8 @@ import {
   addDevPreviewOfficialAccountProfile,
   buildDevPreviewOfficialAccountProfiles,
   removeDevPreviewOfficialAccountProfile,
+  shouldRefreshOfficialAccountProfilesUsage,
+  type OfficialAccountProfilesRefreshReason,
 } from "./utils/codexAccountProfiles";
 
 const AppModals = lazy(async () => {
@@ -339,6 +341,10 @@ export default function App() {
   >([]);
   const [codexAccountProfilesLoading, setCodexAccountProfilesLoading] =
     useState<boolean>(false);
+  const pendingOfficialAddAccountRef = useRef<{
+    expectedCount: number;
+    startedAtUnixMs: number;
+  } | null>(null);
   const [activePage, setActivePage] = useState<TopPage>("dashboard");
   const { runPrimaryRefresh, enqueueBackgroundRefresh } =
     useRefreshScheduler(activePage);
@@ -1197,16 +1203,28 @@ export default function App() {
     overrideDirtyRef,
     applyOverride,
   });
-  const refreshCodexAccountProfiles = useCallback(async () => {
+  const refreshCodexAccountProfiles = useCallback(
+    async (
+      codexAccount?: Status["codex_account"] | null,
+      options?: { reason?: OfficialAccountProfilesRefreshReason },
+    ) => {
     if (isDevPreview) {
       setCodexAccountProfiles(
-        buildDevPreviewOfficialAccountProfiles(status?.codex_account),
+        buildDevPreviewOfficialAccountProfiles(codexAccount),
       );
       setCodexAccountProfilesLoading(false);
       return;
     }
+    const reason = options?.reason ?? "status_tick";
+    const shouldRefreshUsage = shouldRefreshOfficialAccountProfilesUsage(
+      reason,
+      codexAccount,
+    );
     setCodexAccountProfilesLoading(true);
     try {
+      if (shouldRefreshUsage && codexAccount?.signed_in) {
+        await invoke("codex_account_profiles_refresh_usage");
+      }
       const profiles = await invoke<OfficialAccountProfileSummary[]>(
         "codex_account_profiles_list",
       );
@@ -1216,14 +1234,74 @@ export default function App() {
     } finally {
       setCodexAccountProfilesLoading(false);
     }
-  }, [isDevPreview, status?.codex_account]);
+    },
+    [isDevPreview],
+  );
   useEffect(() => {
-    void refreshCodexAccountProfiles();
-  }, [refreshCodexAccountProfiles]);
-  useEffect(() => {
-    if (!status?.codex_account?.checked_at_unix_ms) return;
-    void refreshCodexAccountProfiles();
+    void refreshCodexAccountProfiles(status?.codex_account, {
+      reason: "status_tick",
+    });
   }, [status?.codex_account?.checked_at_unix_ms, refreshCodexAccountProfiles]);
+  useEffect(() => {
+    if (isDevPreview || typeof window === "undefined") return;
+    let disposed = false;
+    let unlisten: null | (() => void) = null;
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<{ ok: boolean; error?: string }>(
+          "codex-account-profiles-usage-refreshed",
+          (event) => {
+            void refreshCodexAccountProfiles(undefined, {
+              reason: "profile_select",
+            });
+            if (!event.payload?.ok && event.payload?.error) {
+              flashToast(event.payload.error, "error");
+            }
+          },
+        ),
+      )
+      .then((cleanup) => {
+        if (disposed) {
+          cleanup();
+          return;
+        }
+        unlisten = cleanup;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, [flashToast, isDevPreview, refreshCodexAccountProfiles]);
+  useEffect(() => {
+    const pending = pendingOfficialAddAccountRef.current;
+    if (!pending) return;
+    if (codexAccountProfilesLoading) return;
+    const checkedAt = status?.codex_account?.checked_at_unix_ms ?? 0;
+    if (checkedAt < pending.startedAtUnixMs) return;
+    pendingOfficialAddAccountRef.current = null;
+    if (codexAccountProfiles.length > pending.expectedCount) {
+      void invoke("codex_account_profiles_refresh_usage_async");
+      flashToast("Official account added");
+      return;
+    }
+    if (status?.codex_account?.signed_in) {
+      flashToast(
+        "No new official account was added. Browser returned the current official account.",
+        "error",
+      );
+    }
+  }, [
+    codexAccountProfiles.length,
+    codexAccountProfilesLoading,
+    flashToast,
+    refreshCodexAccountProfiles,
+    status?.codex_account?.checked_at_unix_ms,
+    status?.codex_account?.signed_in,
+    status?.codex_account,
+  ]);
   const onActivateCodexAccountProfile = useCallback(
     async (profileId: string) => {
       try {
@@ -1234,20 +1312,25 @@ export default function App() {
           flashToast("Official account switched [TEST]");
           return;
         }
-        setCodexRefreshing(true);
-        await invoke("codex_account_profile_activate", { profileId });
-        await refreshStatus();
-        await refreshCodexAccountProfiles();
+        setCodexAccountProfiles((prev) =>
+          prev.map((profile) => ({
+            ...profile,
+            active: profile.id === profileId,
+          })),
+        );
+        await invoke<OfficialAccountProfileSummary>(
+          "codex_account_profile_select",
+          { profileId },
+        );
+        await refreshCodexAccountProfiles(undefined, {
+          reason: "profile_select",
+        });
         flashToast("Official account switched");
       } catch (e) {
         flashToast(String(e), "error");
-      } finally {
-        if (!isDevPreview) {
-          setCodexRefreshing(false);
-        }
       }
     },
-    [flashToast, isDevPreview, refreshCodexAccountProfiles, refreshStatus],
+    [flashToast, isDevPreview, refreshCodexAccountProfiles],
   );
   const onRemoveCodexAccountProfile = useCallback(
     async (profileId: string) => {
@@ -1260,13 +1343,15 @@ export default function App() {
           return;
         }
         await invoke("codex_account_profile_remove", { profileId });
-        await refreshCodexAccountProfiles();
+        await refreshCodexAccountProfiles(status?.codex_account, {
+          reason: "profile_remove",
+        });
         flashToast("Official account removed");
       } catch (e) {
         flashToast(String(e), "error");
       }
     },
-    [flashToast, isDevPreview, refreshCodexAccountProfiles],
+    [flashToast, isDevPreview, refreshCodexAccountProfiles, status?.codex_account],
   );
   const onAddCodexAccountProfile = useCallback(
     async () => {
@@ -1278,12 +1363,17 @@ export default function App() {
           flashToast("Official account added [TEST]");
           return;
         }
+        pendingOfficialAddAccountRef.current = {
+          expectedCount: codexAccountProfiles.length,
+          startedAtUnixMs: Date.now(),
+        };
         await onCodexAddAccount();
       } catch (e) {
+        pendingOfficialAddAccountRef.current = null;
         flashToast(String(e), "error");
       }
     },
-    [flashToast, isDevPreview, onCodexAddAccount],
+    [codexAccountProfiles.length, flashToast, isDevPreview, onCodexAddAccount],
   );
   const {
     clearAutoSaveTimer,

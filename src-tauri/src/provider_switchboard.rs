@@ -223,10 +223,6 @@ fn app_auth_path_from_config_path(config_path: &Path) -> PathBuf {
     app_codex_home_from_config_path(config_path).join("auth.json")
 }
 
-fn app_auth_path(state: &tauri::State<'_, AppState>) -> PathBuf {
-    app_auth_path_from_config_path(&state.config_path)
-}
-
 fn load_app_auth_if_signed_in(config_path: &Path) -> Option<serde_json::Value> {
     let auth = read_json(&app_auth_path_from_config_path(config_path)).ok()?;
     ensure_signed_in(&auth).ok()?;

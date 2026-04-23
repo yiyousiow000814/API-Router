@@ -58,7 +58,7 @@ export function HeroCodexCard({
     const has5h = Boolean(profile.limit_5h_remaining)
     const hasWeekly = Boolean(profile.limit_weekly_remaining)
     if (!has5h && !hasWeekly) {
-      return <span className="aoAccountsQuotaFallback">Switch to inspect limits</span>
+      return <span className="aoAccountsQuotaFallback">No cached limits yet</span>
     }
     return (
       <div className="aoAccountsUsageStack">
@@ -95,6 +95,19 @@ export function HeroCodexCard({
   }
   const swapTargetLabel = swapTarget === 'windows' ? 'Windows' : swapTarget === 'wsl2' ? 'WSL2' : 'Both'
   const availableTargets: Array<'windows' | 'wsl2' | 'both'> = []
+  const selectedProfile = profiles.find((profile) => profile.active) ?? null
+  const displayedCheckedAt =
+    selectedProfile?.updated_at_unix_ms ?? status.codex_account?.checked_at_unix_ms
+  const displayed5hRemaining =
+    selectedProfile?.limit_5h_remaining ?? status.codex_account?.limit_5h_remaining ?? '-'
+  const displayed5hResetAt =
+    selectedProfile?.limit_5h_reset_at ?? status.codex_account?.limit_5h_reset_at
+  const displayedWeeklyRemaining =
+    selectedProfile?.limit_weekly_remaining ??
+    status.codex_account?.limit_weekly_remaining ??
+    '-'
+  const displayedWeeklyResetAt =
+    selectedProfile?.limit_weekly_reset_at ?? status.codex_account?.limit_weekly_reset_at
   if (swapTargetWindowsEnabled && swapTargetWslEnabled) availableTargets.push('both')
   if (swapTargetWindowsEnabled) availableTargets.push('windows')
   if (swapTargetWslEnabled) availableTargets.push('wsl2')
@@ -166,7 +179,7 @@ export function HeroCodexCard({
         <div className="aoKey">Checked</div>
         <div className="aoKvpRight">
           <div className="aoVal">
-            {status.codex_account?.checked_at_unix_ms ? fmtWhen(status.codex_account.checked_at_unix_ms) : '-'}
+            {displayedCheckedAt ? fmtWhen(displayedCheckedAt) : '-'}
           </div>
         </div>
       </div>
@@ -174,23 +187,23 @@ export function HeroCodexCard({
       <div className="aoLimitGrid">
         <div className="aoLimitCard">
           <div className="aoMiniLabel">5-hour limit</div>
-          <div className="aoLimitValue">{status.codex_account?.limit_5h_remaining ?? '-'}</div>
-          {status.codex_account?.limit_5h_remaining &&
-          status.codex_account.limit_5h_remaining !== '100%' &&
-          status.codex_account?.limit_5h_reset_at ? (
+          <div className="aoLimitValue">{displayed5hRemaining}</div>
+          {displayed5hRemaining &&
+          displayed5hRemaining !== '100%' &&
+          displayed5hResetAt ? (
             <div className="aoHint aoResetHint" style={{ marginTop: 0 }}>
-              {fmtResetIn(status.codex_account.limit_5h_reset_at) ?? 'Reset soon'}
+              {fmtResetIn(displayed5hResetAt) ?? 'Reset soon'}
             </div>
           ) : null}
         </div>
         <div className="aoLimitCard">
           <div className="aoMiniLabel">Weekly limit</div>
-          <div className="aoLimitValue">{status.codex_account?.limit_weekly_remaining ?? '-'}</div>
-          {status.codex_account?.limit_weekly_remaining &&
-          status.codex_account.limit_weekly_remaining !== '100%' &&
-          status.codex_account?.limit_weekly_reset_at ? (
+          <div className="aoLimitValue">{displayedWeeklyRemaining}</div>
+          {displayedWeeklyRemaining &&
+          displayedWeeklyRemaining !== '100%' &&
+          displayedWeeklyResetAt ? (
             <div className="aoHint aoResetHint" style={{ marginTop: 0 }}>
-              {fmtResetIn(status.codex_account.limit_weekly_reset_at) ?? 'Reset soon'}
+              {fmtResetIn(displayedWeeklyResetAt) ?? 'Reset soon'}
             </div>
           ) : null}
         </div>
@@ -228,7 +241,7 @@ export function HeroCodexCard({
                 onClick={() => setAccountsMenuOpen((value) => !value)}
                 title={profilesLoading ? 'Loading accounts...' : 'Official accounts'}
               >
-                {profilesLoading ? 'Accounts…' : `Accounts (${profiles.length})`}
+                {`Accounts (${profiles.length})`}
               </button>
               {accountsMenuOpen ? (
                 <div className="aoMenu aoMenuCompact aoMenuCompactOffset aoAccountsMenu" role="menu" aria-label="Official accounts menu">
