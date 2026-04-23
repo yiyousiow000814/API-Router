@@ -14,6 +14,7 @@ import { recordStartupStage } from "./startupTrace";
 import type {
   CodexSwapStatus,
   Config,
+  OfficialAccountProfileSummary,
   ProviderSwitchboardStatus,
   Status,
   UsageStatistics,
@@ -94,6 +95,14 @@ import {
   waitForLanConfigSourceTrust,
 } from "./utils/lanPairCompletion";
 import { buildProviderCapsMenuData } from "./utils/providerCapsMenu";
+import {
+  activateDevPreviewOfficialAccountProfile,
+  addDevPreviewOfficialAccountProfile,
+  buildDevPreviewOfficialAccountProfiles,
+  removeDevPreviewOfficialAccountProfile,
+  shouldRefreshOfficialAccountProfilesUsage,
+  type OfficialAccountProfilesRefreshReason,
+} from "./utils/codexAccountProfiles";
 
 const AppModals = lazy(async () => {
   const module = await import("./components/AppModals");
@@ -327,6 +336,15 @@ export default function App() {
     Record<string, boolean>
   >({});
   const [codexRefreshing, setCodexRefreshing] = useState<boolean>(false);
+  const [codexAccountProfiles, setCodexAccountProfiles] = useState<
+    OfficialAccountProfileSummary[]
+  >([]);
+  const [codexAccountProfilesLoading, setCodexAccountProfilesLoading] =
+    useState<boolean>(false);
+  const pendingOfficialAddAccountRef = useRef<{
+    expectedCount: number;
+    startedAtUnixMs: number;
+  } | null>(null);
   const [activePage, setActivePage] = useState<TopPage>("dashboard");
   const { runPrimaryRefresh, enqueueBackgroundRefresh } =
     useRefreshScheduler(activePage);
@@ -1159,6 +1177,7 @@ export default function App() {
     onCopyToken,
     onShowGatewayRotate,
     onCodexLoginLogout,
+    onCodexAddAccount,
     onCodexRefresh,
     onCodexSwapAuthConfig,
     onOpenCodexSwapOptions,
@@ -1184,6 +1203,178 @@ export default function App() {
     overrideDirtyRef,
     applyOverride,
   });
+  const refreshCodexAccountProfiles = useCallback(
+    async (
+      codexAccount?: Status["codex_account"] | null,
+      options?: { reason?: OfficialAccountProfilesRefreshReason },
+    ) => {
+    if (isDevPreview) {
+      setCodexAccountProfiles(
+        buildDevPreviewOfficialAccountProfiles(codexAccount),
+      );
+      setCodexAccountProfilesLoading(false);
+      return;
+    }
+    const reason = options?.reason ?? "status_tick";
+    const shouldRefreshUsage = shouldRefreshOfficialAccountProfilesUsage(
+      reason,
+      codexAccount,
+    );
+    setCodexAccountProfilesLoading(true);
+    try {
+      if (shouldRefreshUsage && codexAccount?.signed_in) {
+        await invoke("codex_account_profiles_refresh_usage");
+      }
+      const profiles = await invoke<OfficialAccountProfileSummary[]>(
+        "codex_account_profiles_list",
+      );
+      setCodexAccountProfiles(profiles);
+    } catch {
+      setCodexAccountProfiles([]);
+    } finally {
+      setCodexAccountProfilesLoading(false);
+    }
+    },
+    [isDevPreview],
+  );
+  useEffect(() => {
+    void refreshCodexAccountProfiles(status?.codex_account, {
+      reason: "status_tick",
+    });
+  }, [status?.codex_account?.checked_at_unix_ms, refreshCodexAccountProfiles]);
+  useEffect(() => {
+    if (isDevPreview || typeof window === "undefined") return;
+    let disposed = false;
+    let unlisten: null | (() => void) = null;
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<{ ok: boolean; error?: string }>(
+          "codex-account-profiles-usage-refreshed",
+          (event) => {
+            void refreshCodexAccountProfiles(undefined, {
+              reason: "profile_select",
+            });
+            if (!event.payload?.ok && event.payload?.error) {
+              flashToast(event.payload.error, "error");
+            }
+          },
+        ),
+      )
+      .then((cleanup) => {
+        if (disposed) {
+          cleanup();
+          return;
+        }
+        unlisten = cleanup;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, [flashToast, isDevPreview, refreshCodexAccountProfiles]);
+  useEffect(() => {
+    const pending = pendingOfficialAddAccountRef.current;
+    if (!pending) return;
+    if (codexAccountProfilesLoading) return;
+    const checkedAt = status?.codex_account?.checked_at_unix_ms ?? 0;
+    if (checkedAt < pending.startedAtUnixMs) return;
+    pendingOfficialAddAccountRef.current = null;
+    if (codexAccountProfiles.length > pending.expectedCount) {
+      void invoke("codex_account_profiles_refresh_usage_async");
+      flashToast("Official account added");
+      return;
+    }
+    if (status?.codex_account?.signed_in) {
+      flashToast(
+        "No new official account was added. Browser returned the current official account.",
+        "error",
+      );
+    }
+  }, [
+    codexAccountProfiles.length,
+    codexAccountProfilesLoading,
+    flashToast,
+    refreshCodexAccountProfiles,
+    status?.codex_account?.checked_at_unix_ms,
+    status?.codex_account?.signed_in,
+    status?.codex_account,
+  ]);
+  const onActivateCodexAccountProfile = useCallback(
+    async (profileId: string) => {
+      try {
+        if (isDevPreview) {
+          setCodexAccountProfiles((prev) =>
+            activateDevPreviewOfficialAccountProfile(prev, profileId),
+          );
+          flashToast("Official account switched [TEST]");
+          return;
+        }
+        setCodexAccountProfiles((prev) =>
+          prev.map((profile) => ({
+            ...profile,
+            active: profile.id === profileId,
+          })),
+        );
+        await invoke<OfficialAccountProfileSummary>(
+          "codex_account_profile_select",
+          { profileId },
+        );
+        await refreshCodexAccountProfiles(undefined, {
+          reason: "profile_select",
+        });
+        flashToast("Official account switched");
+      } catch (e) {
+        flashToast(String(e), "error");
+      }
+    },
+    [flashToast, isDevPreview, refreshCodexAccountProfiles],
+  );
+  const onRemoveCodexAccountProfile = useCallback(
+    async (profileId: string) => {
+      try {
+        if (isDevPreview) {
+          setCodexAccountProfiles((prev) =>
+            removeDevPreviewOfficialAccountProfile(prev, profileId),
+          );
+          flashToast("Official account removed [TEST]");
+          return;
+        }
+        await invoke("codex_account_profile_remove", { profileId });
+        await refreshCodexAccountProfiles(status?.codex_account, {
+          reason: "profile_remove",
+        });
+        flashToast("Official account removed");
+      } catch (e) {
+        flashToast(String(e), "error");
+      }
+    },
+    [flashToast, isDevPreview, refreshCodexAccountProfiles, status?.codex_account],
+  );
+  const onAddCodexAccountProfile = useCallback(
+    async () => {
+      try {
+        if (isDevPreview) {
+          setCodexAccountProfiles((prev) =>
+            addDevPreviewOfficialAccountProfile(prev),
+          );
+          flashToast("Official account added [TEST]");
+          return;
+        }
+        pendingOfficialAddAccountRef.current = {
+          expectedCount: codexAccountProfiles.length,
+          startedAtUnixMs: Date.now(),
+        };
+        await onCodexAddAccount();
+      } catch (e) {
+        pendingOfficialAddAccountRef.current = null;
+        flashToast(String(e), "error");
+      }
+    },
+    [codexAccountProfiles.length, flashToast, isDevPreview, onCodexAddAccount],
+  );
   const {
     clearAutoSaveTimer,
     clearAutoSaveTimersByPrefix,
@@ -2022,6 +2213,8 @@ export default function App() {
     () => ({
       providerSwitchStatus,
       providerSwitchBusy,
+      codexAccountProfiles,
+      codexAccountProfilesLoading,
       codexSwapDir1,
       codexSwapDir2,
       codexSwapUseWindows,
@@ -2030,6 +2223,7 @@ export default function App() {
       switchboardModelProviderLabel,
       switchboardTargetDirsLabel,
       switchboardProviderCards,
+      onActivateOfficialAccountProfile: onActivateCodexAccountProfile,
       onSetProviderSwitchTarget: setProviderSwitchTarget,
       onOpenConfigureDirs: () => setCodexSwapModalOpen(true),
       onOpenRawConfig: () => void openRawConfigModal(),
@@ -2037,6 +2231,8 @@ export default function App() {
     [
       providerSwitchStatus,
       providerSwitchBusy,
+      codexAccountProfiles,
+      codexAccountProfilesLoading,
       codexSwapDir1,
       codexSwapDir2,
       codexSwapUseWindows,
@@ -2045,6 +2241,8 @@ export default function App() {
       switchboardModelProviderLabel,
       switchboardTargetDirsLabel,
       switchboardProviderCards,
+      onActivateCodexAccountProfile,
+      onAddCodexAccountProfile,
       setProviderSwitchTarget,
       openRawConfigModal,
     ],
@@ -2113,6 +2311,11 @@ export default function App() {
                 onChangeCodexSwapTarget={setCodexSwapTarget}
                 codexSwapBadgeText={codexSwapBadge.badgeText}
                 codexSwapBadgeTitle={codexSwapBadge.badgeTitle}
+                codexAccountProfiles={codexAccountProfiles}
+                codexAccountProfilesLoading={codexAccountProfilesLoading}
+                onActivateCodexAccountProfile={onActivateCodexAccountProfile}
+                onRemoveCodexAccountProfile={onRemoveCodexAccountProfile}
+                onAddCodexAccountProfile={onAddCodexAccountProfile}
                 routeMode={routeMode}
                 onRouteModeChange={setRouteMode}
                 override={override}

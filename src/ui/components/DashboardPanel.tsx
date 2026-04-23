@@ -4,7 +4,7 @@ import { DashboardProvidersSection } from './DashboardProvidersSection'
 import { DashboardSessionsSection } from './DashboardSessionsSection'
 import { LoadingSurface } from './LoadingSurface'
 import type { LastErrorJump } from './ProvidersTable'
-import type { Config, Status } from '../types'
+import type { Config, OfficialAccountProfileSummary, Status } from '../types'
 import './DashboardPanel.css'
 
 type Props = {
@@ -25,6 +25,11 @@ type Props = {
   onChangeCodexSwapTarget: (target: 'windows' | 'wsl2' | 'both') => void
   codexSwapBadgeText: string
   codexSwapBadgeTitle: string
+  codexAccountProfiles: OfficialAccountProfileSummary[]
+  codexAccountProfilesLoading: boolean
+  onActivateCodexAccountProfile: (profileId: string) => Promise<void>
+  onRemoveCodexAccountProfile: (profileId: string) => Promise<void>
+  onAddCodexAccountProfile: () => Promise<void>
   routeMode: 'follow_preferred_auto' | 'balanced_auto'
   onRouteModeChange: (next: 'follow_preferred_auto' | 'balanced_auto') => Promise<boolean>
   override: string
@@ -57,6 +62,11 @@ export function DashboardPanel({
   onChangeCodexSwapTarget,
   codexSwapBadgeText,
   codexSwapBadgeTitle,
+  codexAccountProfiles,
+  codexAccountProfilesLoading,
+  onActivateCodexAccountProfile,
+  onRemoveCodexAccountProfile,
+  onAddCodexAccountProfile,
   routeMode,
   onRouteModeChange,
   override,
@@ -121,6 +131,11 @@ export function DashboardPanel({
           onChangeSwapTarget={onChangeCodexSwapTarget}
           swapBadgeText={codexSwapBadgeText}
           swapBadgeTitle={codexSwapBadgeTitle}
+          profiles={codexAccountProfiles}
+          profilesLoading={codexAccountProfilesLoading}
+          onActivateProfile={onActivateCodexAccountProfile}
+          onRemoveProfile={onRemoveCodexAccountProfile}
+          onAddAccount={onAddCodexAccountProfile}
         />
         <HeroRoutingCard
           config={config}

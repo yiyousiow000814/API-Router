@@ -67,6 +67,11 @@ type Props = {
   onChangeCodexSwapTarget: (target: 'windows' | 'wsl2' | 'both') => void
   codexSwapBadgeText: string
   codexSwapBadgeTitle: string
+  codexAccountProfiles: any[]
+  codexAccountProfilesLoading: boolean
+  onActivateCodexAccountProfile: (profileId: string) => Promise<void>
+  onRemoveCodexAccountProfile: (profileId: string) => Promise<void>
+  onAddCodexAccountProfile: () => Promise<void>
   routeMode: 'follow_preferred_auto' | 'balanced_auto'
   onRouteModeChange: (next: 'follow_preferred_auto' | 'balanced_auto') => Promise<boolean>
   override: string
@@ -174,6 +179,11 @@ function AppMainContentInner(props: Props) {
     onChangeCodexSwapTarget,
     codexSwapBadgeText,
     codexSwapBadgeTitle,
+    codexAccountProfiles,
+  codexAccountProfilesLoading,
+  onActivateCodexAccountProfile,
+  onRemoveCodexAccountProfile,
+  onAddCodexAccountProfile,
     routeMode,
     onRouteModeChange,
     override,
@@ -270,6 +280,11 @@ function AppMainContentInner(props: Props) {
         onChangeCodexSwapTarget={onChangeCodexSwapTarget}
         codexSwapBadgeText={codexSwapBadgeText}
         codexSwapBadgeTitle={codexSwapBadgeTitle}
+        codexAccountProfiles={codexAccountProfiles}
+        codexAccountProfilesLoading={codexAccountProfilesLoading}
+        onActivateCodexAccountProfile={onActivateCodexAccountProfile}
+        onRemoveCodexAccountProfile={onRemoveCodexAccountProfile}
+        onAddCodexAccountProfile={onAddCodexAccountProfile}
         routeMode={routeMode}
         onRouteModeChange={onRouteModeChange}
         override={override}
@@ -324,6 +339,11 @@ function areEqualAppMainContentProps(prev: Props, next: Props): boolean {
         prev.onChangeCodexSwapTarget === next.onChangeCodexSwapTarget &&
         prev.codexSwapBadgeText === next.codexSwapBadgeText &&
         prev.codexSwapBadgeTitle === next.codexSwapBadgeTitle &&
+        prev.codexAccountProfiles === next.codexAccountProfiles &&
+        prev.codexAccountProfilesLoading === next.codexAccountProfilesLoading &&
+        prev.onActivateCodexAccountProfile === next.onActivateCodexAccountProfile &&
+        prev.onRemoveCodexAccountProfile === next.onRemoveCodexAccountProfile &&
+        prev.onAddCodexAccountProfile === next.onAddCodexAccountProfile &&
         prev.routeMode === next.routeMode &&
         prev.onRouteModeChange === next.onRouteModeChange &&
         prev.override === next.override &&

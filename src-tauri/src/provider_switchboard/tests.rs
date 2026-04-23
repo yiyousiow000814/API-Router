@@ -1134,4 +1134,45 @@ mod tests {
             Some("provider_x")
         );
     }
+
+    #[test]
+    fn resolve_selected_official_auth_uses_active_profile_not_stale_app_auth() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+        let first_auth = json!({
+            "tokens": {
+                "account_id": "acct-1",
+                "access_token": "token-1",
+                "refresh_token": "refresh-1"
+            }
+        });
+        let second_auth = json!({
+            "tokens": {
+                "account_id": "acct-2",
+                "access_token": "token-2",
+                "refresh_token": "refresh-2"
+            }
+        });
+
+        write_json(&app_auth_path_from_config_path(&config_path), &first_auth).expect("seed app auth");
+        let _first = state
+            .secrets
+            .capture_official_account_profile(&first_auth, Some("Official account 1"), None)
+            .expect("capture first");
+        let second = state
+            .secrets
+            .capture_official_account_profile(&second_auth, Some("Official account 2"), None)
+            .expect("capture second");
+        state
+            .secrets
+            .select_official_account_profile(&second.id)
+            .expect("select second");
+
+        let auth = resolve_selected_official_auth(&state).expect("resolve selected auth");
+        assert_eq!(auth, second_auth);
+    }
 }

@@ -103,9 +103,11 @@ pub fn set_target(
 
     let app_cfg = state.gateway.cfg.read().clone();
     let app_auth = if target == "official" {
-        let auth = read_json(&app_auth_path(state))
-            .map_err(|_| "Missing app Codex auth.json. Try logging in first.".to_string())?;
-        ensure_signed_in(&auth)?;
+        let auth = resolve_selected_official_auth(state)?;
+        crate::commands::write_selected_official_account_to_app(
+            &state.config_path,
+            &state.secrets,
+        )?;
         Some(auth)
     } else {
         None
@@ -233,4 +235,15 @@ pub fn set_target(
             .map(|p| p.to_string_lossy().to_string())
             .collect(),
     )
+}
+
+pub(crate) fn resolve_selected_official_auth(
+    state: &AppState,
+) -> Result<serde_json::Value, String> {
+    let auth = state
+        .secrets
+        .active_official_account_profile_auth_json()
+        .ok_or_else(|| "Missing selected official Codex auth profile. Try logging in first.".to_string())?;
+    ensure_signed_in(&auth)?;
+    Ok(auth)
 }

@@ -1,4 +1,4 @@
-import type { ProviderSwitchboardStatus } from '../types'
+import type { OfficialAccountProfileSummary, ProviderSwitchboardStatus } from '../types'
 import { SwitchboardProvidersGrid, type SwitchboardProviderCard } from './SwitchboardProvidersGrid'
 import { SwitchboardQuickSwitch } from './SwitchboardQuickSwitch'
 import { GATEWAY_MODEL_PROVIDER_ID } from '../constants'
@@ -8,11 +8,14 @@ import './ProviderSwitchboardPanel.css'
 type ProviderSwitchboardPanelProps = {
   providerSwitchStatus: ProviderSwitchboardStatus | null
   providerSwitchBusy: boolean
+  codexAccountProfiles: OfficialAccountProfileSummary[]
+  codexAccountProfilesLoading: boolean
   codexSwapDir1: string
   codexSwapDir2: string
   codexSwapUseWindows: boolean
   codexSwapUseWsl: boolean
   switchboardProviderCards: SwitchboardProviderCard[]
+  onActivateOfficialAccountProfile: (profileId: string) => Promise<void>
   onSetProviderSwitchTarget: (
     target: 'gateway' | 'official' | 'provider',
     provider?: string,
@@ -25,11 +28,14 @@ type ProviderSwitchboardPanelProps = {
 export function ProviderSwitchboardPanel({
   providerSwitchStatus,
   providerSwitchBusy,
+  codexAccountProfiles,
+  codexAccountProfilesLoading,
   codexSwapDir1,
   codexSwapDir2,
   codexSwapUseWindows,
   codexSwapUseWsl,
   switchboardProviderCards,
+  onActivateOfficialAccountProfile,
   onSetProviderSwitchTarget,
   onOpenConfigureDirs,
   onOpenRawConfig,
@@ -146,6 +152,9 @@ export function ProviderSwitchboardPanel({
                   activeMode={activeMode}
                   activeModelProvider={activeModelProvider}
                   providerSwitchBusy={providerSwitchBusy}
+                  codexAccountProfiles={codexAccountProfiles}
+                  codexAccountProfilesLoading={codexAccountProfilesLoading}
+                  onActivateOfficialAccountProfile={onActivateOfficialAccountProfile}
                   onSetProviderSwitchTarget={(target, provider) =>
                     onSetProviderSwitchTarget(target, provider, [section.home])
                   }

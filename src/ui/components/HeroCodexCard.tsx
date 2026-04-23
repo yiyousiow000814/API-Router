@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Status } from '../types'
+import type { OfficialAccountProfileSummary, Status } from '../types'
 import { fmtResetIn, fmtWhen } from '../utils/format'
+import { OfficialAccountQuotaSummary } from './OfficialAccountQuotaSummary'
 
 type HeroCodexProps = {
   status: Status
@@ -15,6 +16,12 @@ type HeroCodexProps = {
   onChangeSwapTarget: (target: 'windows' | 'wsl2' | 'both') => void
   swapBadgeText: string
   swapBadgeTitle: string
+  profiles: OfficialAccountProfileSummary[]
+  profilesLoading: boolean
+  onActivateProfile: (profileId: string) => Promise<void>
+  onRemoveProfile: (profileId: string) => Promise<void>
+  onAddAccount: () => Promise<void>
+  defaultAccountsMenuOpen?: boolean
 }
 
 export function HeroCodexCard({
@@ -30,11 +37,32 @@ export function HeroCodexCard({
   onChangeSwapTarget,
   swapBadgeText,
   swapBadgeTitle,
+  profiles,
+  profilesLoading,
+  onActivateProfile,
+  onRemoveProfile,
+  onAddAccount,
+  defaultAccountsMenuOpen = false,
 }: HeroCodexProps) {
   const [menuOpen, setMenuOpen] = useState<boolean>(false)
+  const [accountsMenuOpen, setAccountsMenuOpen] = useState<boolean>(defaultAccountsMenuOpen)
   const menuWrapRef = useRef<HTMLDivElement | null>(null)
+  const accountsMenuWrapRef = useRef<HTMLDivElement | null>(null)
   const swapTargetLabel = swapTarget === 'windows' ? 'Windows' : swapTarget === 'wsl2' ? 'WSL2' : 'Both'
   const availableTargets: Array<'windows' | 'wsl2' | 'both'> = []
+  const selectedProfile = profiles.find((profile) => profile.active) ?? null
+  const displayedCheckedAt =
+    selectedProfile?.updated_at_unix_ms ?? status.codex_account?.checked_at_unix_ms
+  const displayed5hRemaining =
+    selectedProfile?.limit_5h_remaining ?? status.codex_account?.limit_5h_remaining ?? '-'
+  const displayed5hResetAt =
+    selectedProfile?.limit_5h_reset_at ?? status.codex_account?.limit_5h_reset_at
+  const displayedWeeklyRemaining =
+    selectedProfile?.limit_weekly_remaining ??
+    status.codex_account?.limit_weekly_remaining ??
+    '-'
+  const displayedWeeklyResetAt =
+    selectedProfile?.limit_weekly_reset_at ?? status.codex_account?.limit_weekly_reset_at
   if (swapTargetWindowsEnabled && swapTargetWslEnabled) availableTargets.push('both')
   if (swapTargetWindowsEnabled) availableTargets.push('windows')
   if (swapTargetWslEnabled) availableTargets.push('wsl2')
@@ -51,6 +79,18 @@ export function HeroCodexCard({
     document.addEventListener('mousedown', onDocMouseDown)
     return () => document.removeEventListener('mousedown', onDocMouseDown)
   }, [menuOpen])
+
+  useEffect(() => {
+    if (!accountsMenuOpen) return
+    function onDocMouseDown(e: MouseEvent) {
+      const el = accountsMenuWrapRef.current
+      if (!el) return
+      if (e.target instanceof Node && el.contains(e.target)) return
+      setAccountsMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => document.removeEventListener('mousedown', onDocMouseDown)
+  }, [accountsMenuOpen])
 
   return (
     <div className="aoCard aoHeroCard aoHeroCodex">
@@ -94,7 +134,7 @@ export function HeroCodexCard({
         <div className="aoKey">Checked</div>
         <div className="aoKvpRight">
           <div className="aoVal">
-            {status.codex_account?.checked_at_unix_ms ? fmtWhen(status.codex_account.checked_at_unix_ms) : '-'}
+            {displayedCheckedAt ? fmtWhen(displayedCheckedAt) : '-'}
           </div>
         </div>
       </div>
@@ -102,23 +142,23 @@ export function HeroCodexCard({
       <div className="aoLimitGrid">
         <div className="aoLimitCard">
           <div className="aoMiniLabel">5-hour limit</div>
-          <div className="aoLimitValue">{status.codex_account?.limit_5h_remaining ?? '-'}</div>
-          {status.codex_account?.limit_5h_remaining &&
-          status.codex_account.limit_5h_remaining !== '100%' &&
-          status.codex_account?.limit_5h_reset_at ? (
+          <div className="aoLimitValue">{displayed5hRemaining}</div>
+          {displayed5hRemaining &&
+          displayed5hRemaining !== '100%' &&
+          displayed5hResetAt ? (
             <div className="aoHint aoResetHint" style={{ marginTop: 0 }}>
-              {fmtResetIn(status.codex_account.limit_5h_reset_at) ?? 'Reset soon'}
+              {fmtResetIn(displayed5hResetAt) ?? 'Reset soon'}
             </div>
           ) : null}
         </div>
         <div className="aoLimitCard">
           <div className="aoMiniLabel">Weekly limit</div>
-          <div className="aoLimitValue">{status.codex_account?.limit_weekly_remaining ?? '-'}</div>
-          {status.codex_account?.limit_weekly_remaining &&
-          status.codex_account.limit_weekly_remaining !== '100%' &&
-          status.codex_account?.limit_weekly_reset_at ? (
+          <div className="aoLimitValue">{displayedWeeklyRemaining}</div>
+          {displayedWeeklyRemaining &&
+          displayedWeeklyRemaining !== '100%' &&
+          displayedWeeklyResetAt ? (
             <div className="aoHint aoResetHint" style={{ marginTop: 0 }}>
-              {fmtResetIn(status.codex_account.limit_weekly_reset_at) ?? 'Reset soon'}
+              {fmtResetIn(displayedWeeklyResetAt) ?? 'Reset soon'}
             </div>
           ) : null}
         </div>
@@ -147,7 +187,80 @@ export function HeroCodexCard({
             Log in
           </button>
         ) : null}
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div className="aoHeroCodexActionsRow">
+          {profiles.length ? (
+            <div className="aoActionsMenuWrap aoHeroCodexAccountsWrap" ref={accountsMenuWrapRef}>
+              <button
+                className="aoBtn aoHeroCodexAccountsBtn"
+                type="button"
+                onClick={() => setAccountsMenuOpen((value) => !value)}
+                title={profilesLoading ? 'Loading accounts...' : 'Official accounts'}
+              >
+                {`Accounts (${profiles.length})`}
+              </button>
+              {accountsMenuOpen ? (
+                <div className="aoMenu aoMenuCompact aoMenuCompactOffset aoAccountsMenu" role="menu" aria-label="Official accounts menu">
+                  <div className="aoAccountsMenuHeader">
+                    <span className="aoAccountsMenuTitle">Official accounts</span>
+                  </div>
+                  <div className="aoAccountsMenuList">
+                    {profiles.map((profile) => (
+                      <div
+                        key={profile.id}
+                        className={`aoAccountsMenuRow${profile.active ? ' aoAccountsMenuRowActive' : ''}`}
+                      >
+                        <button
+                          type="button"
+                          className="aoAccountsMenuPrimary"
+                          onClick={() => {
+                            setAccountsMenuOpen(false)
+                            void onActivateProfile(profile.id)
+                          }}
+                        >
+                          <span className="aoAccountsMenuText">
+                            <span className="aoAccountsMenuTopline">
+                              <span className="aoAccountsMenuLabel">{profile.label}</span>
+                              {profile.active ? (
+                                <span className="aoAccountsMenuCurrentTag">Current</span>
+                              ) : null}
+                            </span>
+                            <OfficialAccountQuotaSummary profile={profile} />
+                            <span className="aoAccountsMenuMeta">
+                              Updated {fmtWhen(profile.updated_at_unix_ms)}
+                            </span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className="aoAccountsMenuRemove"
+                          onClick={() => void onRemoveProfile(profile.id)}
+                          title={`Remove ${profile.label}`}
+                          aria-label={`Remove ${profile.label}`}
+                        >
+                          <svg viewBox="0 0 16 16" aria-hidden="true">
+                            <path d="M4 4l8 8" />
+                            <path d="M12 4l-8 8" />
+                          </svg>
+                        </button>
+                      </div>
+                    ))}
+                    <div className="aoAccountsMenuDivider" />
+                    <button
+                      type="button"
+                      className="aoAccountsMenuAdd"
+                      onClick={() => {
+                        setAccountsMenuOpen(false)
+                        void onAddAccount()
+                      }}
+                    >
+                      <span className="aoMenuIcon" aria-hidden="true">+</span>
+                      Add account
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <div className="aoActionsMenuWrap" ref={menuWrapRef} style={{ justifyContent: 'flex-start' }}>
             <div className="aoSplitBtn aoSplitBtnPrimary" title={swapBadgeTitle}>
               <button className="aoSplitBtnBtn" onClick={onSwapAuthConfig}>

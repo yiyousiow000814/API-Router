@@ -359,6 +359,26 @@
   color: rgba(13, 18, 32, 0.64);
 }
 
+.aoSwitchOfficialMenuWrap {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  display: block;
+}
+
+.aoSwitchOfficialMenuWrap .aoSwitchQuickBtn {
+  width: 100%;
+}
+
+.aoSwitchOfficialMenu {
+  top: calc(100% + 8px);
+  left: 0;
+  right: auto;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
 .aoSwitchProviderGrid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
