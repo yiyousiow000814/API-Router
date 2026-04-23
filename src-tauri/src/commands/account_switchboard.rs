@@ -72,10 +72,8 @@ pub(crate) async fn codex_account_logout(
 #[tauri::command]
 pub(crate) async fn codex_account_refresh(
     state: tauri::State<'_, app_state::AppState>,
-) -> Result<(), String> {
-    let gateway = state.gateway.clone();
-    let _ = refresh_codex_account_snapshot(&state.config_path, &gateway, Some(&state.secrets)).await?;
-    Ok(())
+) -> Result<serde_json::Value, String> {
+    refresh_all_codex_account_usage(&state.config_path, &state.gateway, &state.secrets).await
 }
 
 #[tauri::command]
@@ -86,26 +84,20 @@ pub(crate) fn codex_account_profiles_list(
 }
 
 #[tauri::command]
-pub(crate) async fn codex_account_profiles_refresh_usage(
-    state: tauri::State<'_, app_state::AppState>,
-) -> Result<(), String> {
-    refresh_official_account_profiles_usage(&state.config_path, &state.secrets).await
-}
-
-#[tauri::command]
-pub(crate) fn codex_account_profiles_refresh_usage_async(
+pub(crate) fn codex_account_refresh_async(
     app: tauri::AppHandle,
     state: tauri::State<'_, app_state::AppState>,
 ) -> Result<(), String> {
     let config_path = state.config_path.clone();
+    let gateway = state.gateway.clone();
     let secrets = state.secrets.clone();
     tauri::async_runtime::spawn(async move {
-        let result = refresh_official_account_profiles_usage(&config_path, &secrets).await;
+        let result = refresh_all_codex_account_usage(&config_path, &gateway, &secrets).await;
         let payload = match result {
-            Ok(()) => serde_json::json!({ "ok": true }),
+            Ok(value) => value,
             Err(error) => serde_json::json!({ "ok": false, "error": error }),
         };
-        let _ = tauri::Emitter::emit(&app, "codex-account-profiles-usage-refreshed", payload);
+        let _ = tauri::Emitter::emit(&app, "codex-account-refreshed", payload);
     });
     Ok(())
 }
@@ -232,22 +224,9 @@ async fn refresh_codex_account_snapshot(
 ) -> Result<bool, String> {
     let app_auth_json = read_codex_auth_from_app(config_path);
     let usage = read_codex_account_usage(None, app_auth_json.as_ref()).await?;
-
-    let snap = serde_json::json!({
-      "ok": usage.error.is_empty(),
-      "checked_at_unix_ms": unix_ms(),
-      "signed_in": usage.signed_in,
-      "remaining": usage.remaining,
-      "limit_5h_remaining": usage.limit_5h_remaining,
-      "limit_5h_reset_at": usage.limit_5h_reset_at,
-      "limit_weekly_remaining": usage.limit_weekly_remaining,
-      "limit_weekly_reset_at": usage.limit_weekly_reset_at,
-      "code_review_remaining": usage.code_review_remaining,
-      "code_review_reset_at": usage.code_review_reset_at,
-      "unlimited": usage.unlimited,
-      "error": usage.error
-    });
-    gateway.store.put_codex_account_snapshot(&snap);
+    gateway
+        .store
+        .put_codex_account_snapshot(&codex_account_usage_status_snapshot(&usage));
     if usage.signed_in {
         if let Some(store) = secrets {
             if let Some(app_auth_json) = app_auth_json.as_ref() {
@@ -264,24 +243,120 @@ async fn refresh_codex_account_snapshot(
     Ok(usage.signed_in)
 }
 
+fn codex_account_usage_status_snapshot(usage: &CodexAccountUsageRead) -> serde_json::Value {
+    serde_json::json!({
+      "ok": usage.error.is_empty(),
+      "checked_at_unix_ms": unix_ms(),
+      "signed_in": usage.signed_in,
+      "remaining": usage.remaining,
+      "limit_5h_remaining": usage.limit_5h_remaining,
+      "limit_5h_reset_at": usage.limit_5h_reset_at,
+      "limit_weekly_remaining": usage.limit_weekly_remaining,
+      "limit_weekly_reset_at": usage.limit_weekly_reset_at,
+      "code_review_remaining": usage.code_review_remaining,
+      "code_review_reset_at": usage.code_review_reset_at,
+      "unlimited": usage.unlimited,
+      "error": usage.error
+    })
+}
+
+#[derive(Default)]
+struct OfficialAccountProfilesRefreshOutcome {
+    refreshed: usize,
+    failures: Vec<serde_json::Value>,
+    active_usage: Option<CodexAccountUsageRead>,
+}
+
+async fn refresh_all_codex_account_usage(
+    config_path: &std::path::Path,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    secrets: &crate::orchestrator::secrets::SecretStore,
+) -> Result<serde_json::Value, String> {
+    let outcome = refresh_official_account_profiles_usage(config_path, secrets).await?;
+    if let Some(usage) = outcome.active_usage.as_ref() {
+        gateway
+            .store
+            .put_codex_account_snapshot(&codex_account_usage_status_snapshot(usage));
+    } else if outcome.refreshed == 0 {
+        let signed_in = refresh_codex_account_snapshot(config_path, gateway, Some(secrets)).await?;
+        return Ok(serde_json::json!({
+            "ok": signed_in,
+            "refreshed": 0,
+            "failures": outcome.failures,
+        }));
+    }
+    Ok(serde_json::json!({
+        "ok": outcome.failures.is_empty(),
+        "refreshed": outcome.refreshed,
+        "failures": outcome.failures,
+    }))
+}
+
 async fn refresh_official_account_profiles_usage(
     config_path: &std::path::Path,
     secrets: &crate::orchestrator::secrets::SecretStore,
-) -> Result<(), String> {
-    for entry in secrets.list_official_account_profile_auth_entries() {
-        let home = ensure_official_account_profile_home(config_path, &entry.id, &entry.auth_json)?;
-        let usage =
+) -> Result<OfficialAccountProfilesRefreshOutcome, String> {
+    let active_profile_id = secrets
+        .list_official_account_profiles()
+        .into_iter()
+        .find(|profile| profile.active)
+        .map(|profile| profile.id);
+    let entries = secrets.list_official_account_profile_auth_entries();
+    let mut outcome = OfficialAccountProfilesRefreshOutcome::default();
+    for entry in entries {
+        let usage_result = async {
+            let home =
+                ensure_official_account_profile_home(config_path, &entry.id, &entry.auth_json)?;
             read_codex_account_usage(Some(home.to_string_lossy().as_ref()), Some(&entry.auth_json))
-                .await?;
-        let snapshot = crate::orchestrator::secrets::OfficialAccountUsageSnapshot {
-            limit_5h_remaining: usage.limit_5h_remaining,
-            limit_5h_reset_at: usage.limit_5h_reset_at,
-            limit_weekly_remaining: usage.limit_weekly_remaining,
-            limit_weekly_reset_at: usage.limit_weekly_reset_at,
+                .await
+        }
+        .await;
+        let usage = match usage_result {
+            Ok(usage) => usage,
+            Err(error) => {
+                outcome.failures.push(serde_json::json!({
+                    "profileId": entry.id,
+                    "error": error,
+                }));
+                continue;
+            }
         };
-        let _ = secrets.update_official_account_profile_usage(&entry.id, &snapshot);
+        if !has_official_account_usage_limits(&usage) {
+            outcome.failures.push(serde_json::json!({
+                "profileId": entry.id,
+                "error": "official account rate limits unavailable",
+            }));
+            continue;
+        }
+        let snapshot = crate::orchestrator::secrets::OfficialAccountUsageSnapshot {
+            limit_5h_remaining: usage.limit_5h_remaining.clone(),
+            limit_5h_reset_at: usage.limit_5h_reset_at.clone(),
+            limit_weekly_remaining: usage.limit_weekly_remaining.clone(),
+            limit_weekly_reset_at: usage.limit_weekly_reset_at.clone(),
+        };
+        if let Err(error) = secrets.update_official_account_profile_usage(&entry.id, &snapshot) {
+            outcome.failures.push(serde_json::json!({
+                "profileId": entry.id,
+                "error": error,
+            }));
+            continue;
+        }
+        outcome.refreshed += 1;
+        if active_profile_id.as_deref() == Some(entry.id.as_str()) {
+            outcome.active_usage = Some(usage);
+        }
     }
-    Ok(())
+    if outcome.refreshed == 0 && !outcome.failures.is_empty() {
+        return Err(format!(
+            "failed to refresh all official accounts ({} failed)",
+            outcome.failures.len()
+        ));
+    }
+    Ok(outcome)
+}
+
+fn has_official_account_usage_limits(usage: &CodexAccountUsageRead) -> bool {
+    usage.limit_5h_remaining.is_some() || usage.limit_weekly_remaining.is_some()
 }
 
 fn read_codex_auth_from_app(config_path: &std::path::Path) -> Option<Value> {
@@ -799,6 +874,93 @@ mod account_switchboard_tests {
         assert_eq!(profiles[0].limit_5h_remaining.as_deref(), Some("87%"));
         assert_eq!(profiles[0].limit_weekly_remaining.as_deref(), Some("13%"));
         assert_eq!(profiles[1].label, "Official account 2");
+        assert_eq!(profiles[1].limit_5h_remaining.as_deref(), Some("64%"));
+        assert_eq!(profiles[1].limit_weekly_remaining.as_deref(), Some("41%"));
+
+        crate::codex_app_server::_set_test_request_handler(None).await;
+    }
+
+    #[tokio::test]
+    async fn refresh_official_account_profiles_usage_keeps_refreshing_after_profile_failure() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        let first_profile_id = Arc::new(std::sync::Mutex::new(String::new()));
+        let second_profile_id = Arc::new(std::sync::Mutex::new(String::new()));
+        let first_profile_id_for_handler = first_profile_id.clone();
+        let second_profile_id_for_handler = second_profile_id.clone();
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
+            move |codex_home, method, _params| {
+                let home = codex_home.unwrap_or_default();
+                let first_id = first_profile_id_for_handler
+                    .lock()
+                    .map(|value| value.clone())
+                    .unwrap_or_default();
+                let second_id = second_profile_id_for_handler
+                    .lock()
+                    .map(|value| value.clone())
+                    .unwrap_or_default();
+                let profile_kind = if !first_id.is_empty() && home.contains(first_id.as_str()) {
+                    "first"
+                } else if !second_id.is_empty() && home.contains(second_id.as_str()) {
+                    "second"
+                } else {
+                    "unknown"
+                };
+                match method {
+                    "getAuthStatus" => Ok(serde_json::json!({ "authToken": format!("token-{profile_kind}") })),
+                    "account/rateLimits/read" if profile_kind == "first" => {
+                        Err("first account refresh failed".to_string())
+                    }
+                    "account/rateLimits/read" => Ok(serde_json::json!({
+                        "rateLimits": {
+                            "primary": {
+                                "usedPercent": 36.0,
+                                "windowDurationMins": 300,
+                                "resetAt": "111"
+                            },
+                            "secondary": {
+                                "usedPercent": 59.0,
+                                "windowDurationMins": 10080,
+                                "resetAt": "222"
+                            }
+                        }
+                    })),
+                    _ => Err(format!("unexpected method: {method}")),
+                }
+            },
+        )))
+        .await;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+        let store = SecretStore::new(tmp.path().join("user-data").join("secrets.json"));
+
+        let first = store
+            .capture_official_account_profile(
+                &serde_json::json!({ "tokens": { "account_id": "acct-1" } }),
+                Some("Official account 1"),
+                None,
+            )
+            .expect("capture first");
+        let second = store
+            .capture_official_account_profile(
+                &serde_json::json!({ "tokens": { "account_id": "acct-2" } }),
+                Some("Official account 2"),
+                None,
+            )
+            .expect("capture second");
+        *first_profile_id.lock().expect("first profile id lock") = first.id.clone();
+        *second_profile_id.lock().expect("second profile id lock") = second.id.clone();
+
+        let outcome = refresh_official_account_profiles_usage(&config_path, &store)
+            .await
+            .expect("partial refresh succeeds");
+
+        assert_eq!(outcome.refreshed, 1);
+        assert_eq!(outcome.failures.len(), 1);
+        let profiles = store.list_official_account_profiles();
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[0].limit_5h_remaining.as_deref(), None);
         assert_eq!(profiles[1].limit_5h_remaining.as_deref(), Some("64%"));
         assert_eq!(profiles[1].limit_weekly_remaining.as_deref(), Some("41%"));
 
