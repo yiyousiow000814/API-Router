@@ -1811,7 +1811,8 @@
 }
 
 .aoAccountsMenu {
-  min-width: 320px;
+  width: min(392px, calc(100vw - 28px));
+  min-width: 0;
   padding: 8px;
   border-radius: 14px;
 }
@@ -1973,6 +1974,8 @@
 
 .aoAccountsMenuLabel {
   display: block;
+  font-size: 13px;
+  font-weight: 700;
   line-height: 1.2;
   white-space: normal;
   word-break: break-word;
@@ -1981,8 +1984,26 @@
   min-width: 0;
 }
 
-.aoAccountsMenuCurrentTag {
+.aoAccountsMenuTags {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aoAccountsMenuPlanTag {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(13, 18, 32, 0.72);
+  background: rgba(13, 18, 32, 0.07);
+}
+
+.aoAccountsMenuCurrentTag {
   padding: 2px 6px;
   border-radius: 999px;
   font-size: 10px;

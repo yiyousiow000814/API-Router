@@ -81,6 +81,10 @@ pub struct OfficialAccountProfileSecret {
 pub struct OfficialAccountProfileSummary {
     pub id: String,
     pub label: String,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub plan_label: Option<String>,
     pub updated_at_unix_ms: u64,
     pub active: bool,
     #[serde(default)]
@@ -346,6 +350,62 @@ pub(crate) fn official_account_identity_key(auth_json: &serde_json::Value) -> Op
         })
 }
 
+fn official_account_id_token_payload(auth_json: &serde_json::Value) -> Option<serde_json::Value> {
+    let id_token = auth_json
+        .get("tokens")?
+        .get("id_token")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let payload_b64 = id_token.split('.').nth(1)?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload_b64.as_bytes())
+        .ok()?;
+    serde_json::from_slice(&decoded).ok()
+}
+
+fn official_account_email(auth_json: &serde_json::Value) -> Option<String> {
+    official_account_id_token_payload(auth_json)?
+        .get("email")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
+fn official_account_plan_label(auth_json: &serde_json::Value) -> Option<String> {
+    let raw = official_account_id_token_payload(auth_json)?
+        .get("chatgpt_plan_type")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_ascii_lowercase();
+    Some(match raw.as_str() {
+        "plus" => "Plus".to_string(),
+        "pro" => "Pro".to_string(),
+        "prolite" => "Pro Lite".to_string(),
+        "free" => "Free".to_string(),
+        other => {
+            let mut normalized = String::new();
+            let mut upper = true;
+            for ch in other.chars() {
+                if ch == '_' || ch == '-' {
+                    normalized.push(' ');
+                    upper = true;
+                    continue;
+                }
+                if upper {
+                    normalized.extend(ch.to_uppercase());
+                    upper = false;
+                } else {
+                    normalized.push(ch);
+                }
+            }
+            normalized
+        }
+    })
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct ProviderQuotaHardCapOverride {
     #[serde(default = "default_hard_cap_enabled")]
@@ -495,6 +555,8 @@ impl SecretStore {
         OfficialAccountProfileSummary {
             id: id.to_string(),
             label: profile.label.clone(),
+            email: official_account_email(&profile.auth_json),
+            plan_label: official_account_plan_label(&profile.auth_json),
             updated_at_unix_ms: profile.updated_at_unix_ms,
             active: active_id == Some(id),
             limit_5h_remaining: profile.limit_5h_remaining.clone(),
@@ -893,7 +955,9 @@ impl SecretStore {
                     existing_profile.label = label;
                 }
             }
-            data.active_official_account_profile_id = Some(existing_id.clone());
+            if data.active_official_account_profile_id.is_none() {
+                data.active_official_account_profile_id = Some(existing_id.clone());
+            }
             self.persist(&data)?;
             let profile = data
                 .official_account_profiles
@@ -918,13 +982,18 @@ impl SecretStore {
             limit_weekly_reset_at: usage.and_then(|value| value.limit_weekly_reset_at.clone()),
         };
         data.official_account_profiles.insert(id.clone(), profile);
-        data.active_official_account_profile_id = Some(id.clone());
+        if data.active_official_account_profile_id.is_none() {
+            data.active_official_account_profile_id = Some(id.clone());
+        }
         self.persist(&data)?;
+        let is_active = data.active_official_account_profile_id.as_deref() == Some(id.as_str());
         Ok(OfficialAccountProfileSummary {
             id,
             label,
+            email: official_account_email(auth_json),
+            plan_label: official_account_plan_label(auth_json),
             updated_at_unix_ms: now,
-            active: true,
+            active: is_active,
             limit_5h_remaining: usage.and_then(|value| value.limit_5h_remaining.clone()),
             limit_5h_reset_at: usage.and_then(|value| value.limit_5h_reset_at.clone()),
             limit_weekly_remaining: usage.and_then(|value| value.limit_weekly_remaining.clone()),
@@ -1965,7 +2034,7 @@ mod tests {
         let second = store
             .capture_official_account_profile(&second_auth, None, Some(&second_usage))
             .expect("capture second official account");
-        assert!(second.active);
+        assert!(!second.active);
         assert_ne!(first.id, second.id);
         assert_eq!(second.limit_weekly_remaining.as_deref(), Some("41%"));
 
@@ -1973,7 +2042,8 @@ mod tests {
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].id, first.id);
         assert_eq!(listed[1].id, second.id);
-        assert!(listed[1].active);
+        assert!(listed[0].active);
+        assert!(!listed[1].active);
         assert_eq!(listed[1].limit_5h_remaining.as_deref(), Some("64%"));
 
         let reactivated = store
@@ -2037,6 +2107,71 @@ mod tests {
         assert_eq!(first.id, refreshed.id);
         let profiles = store.list_official_account_profiles();
         assert_eq!(profiles.len(), 1);
+    }
+
+    #[test]
+    fn capturing_new_official_account_profile_preserves_existing_active_selection() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = SecretStore::new(path);
+
+        let first = store
+            .capture_official_account_profile(
+                &serde_json::json!({
+                    "tokens": {
+                        "account_id": "acct-1",
+                        "access_token": "token-1"
+                    }
+                }),
+                Some("Official account 1"),
+                None,
+            )
+            .expect("capture first");
+        let second = store
+            .capture_official_account_profile(
+                &serde_json::json!({
+                    "tokens": {
+                        "account_id": "acct-2",
+                        "access_token": "token-2"
+                    }
+                }),
+                Some("Official account 2"),
+                None,
+            )
+            .expect("capture second");
+
+        assert!(first.active);
+        assert!(!second.active);
+        assert_eq!(
+            store.active_official_account_profile_auth_json(),
+            Some(serde_json::json!({
+                "tokens": {
+                    "account_id": "acct-1",
+                    "access_token": "token-1"
+                }
+            }))
+        );
+    }
+
+    #[test]
+    fn official_account_profile_summary_includes_email_and_plan_label() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("secrets.json");
+        let store = SecretStore::new(path);
+
+        let auth_json = serde_json::json!({
+            "tokens": {
+                "account_id": "acct-1",
+                "id_token": "header.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJjaGF0Z3B0X3BsYW5fdHlwZSI6InByb2xpdGUifQ.signature"
+            }
+        });
+
+        let profile = store
+            .capture_official_account_profile(&auth_json, None, None)
+            .expect("capture official account");
+
+        assert_eq!(profile.email.as_deref(), Some("user@example.com"));
+        assert_eq!(profile.plan_label.as_deref(), Some("Pro Lite"));
     }
 
     #[test]

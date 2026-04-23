@@ -3,6 +3,7 @@ import {
   activateDevPreviewOfficialAccountProfile,
   addDevPreviewOfficialAccountProfile,
   buildDevPreviewOfficialAccountProfiles,
+  officialAccountDisplayName,
   removeDevPreviewOfficialAccountProfile,
   shouldRefreshOfficialAccountProfilesUsage,
 } from "./codexAccountProfiles";
@@ -22,7 +23,24 @@ describe("buildDevPreviewOfficialAccountProfiles", () => {
     expect(profiles[1]).toMatchObject({
       id: "dev-official-secondary",
       active: false,
+      email: "yiyousiow1234@gmail.com",
+      plan_label: "Plus",
     });
+  });
+
+  it("prefers email over fallback label for display name", () => {
+    expect(
+      officialAccountDisplayName({
+        email: "user@example.com",
+        label: "Official account 1",
+      }),
+    ).toBe("user@example.com");
+    expect(
+      officialAccountDisplayName({
+        email: "",
+        label: "Official account 1",
+      }),
+    ).toBe("Official account 1");
   });
 
   it("keeps preview profiles visible even when signed out", () => {
