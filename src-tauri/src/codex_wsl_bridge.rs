@@ -33,7 +33,7 @@ const BRIDGE_PORT_CANDIDATES: usize = 4;
 #[cfg(any(test, target_os = "windows"))]
 const BRIDGE_HEALTH_MARKER: &str = "api-router-wsl-codex-bridge";
 #[cfg(any(test, target_os = "windows"))]
-const BRIDGE_SCRIPT_VERSION: u32 = 3;
+const BRIDGE_SCRIPT_VERSION: u32 = 4;
 #[cfg(any(test, target_os = "windows"))]
 const BRIDGE_LOG_PATH: &str = "/tmp/api-router-wsl-codex-bridge.log";
 
@@ -636,6 +636,16 @@ class AppServer:
         self.reader = threading.Thread(target=self._route_stdout, daemon=True)
         self.reader.start()
 
+    def stop(self):
+        child = self.child
+        self.child = None
+        if child is None or child.poll() is not None:
+            return
+        try:
+            child.kill()
+        except Exception:
+            pass
+
     def _route_stdout(self):
         try:
             for line in self.child.stdout:
@@ -712,6 +722,13 @@ def get_server(codex_home):
             servers[key] = server
         return server
 
+def refresh_server(codex_home):
+    key = normalize_home(codex_home)
+    with servers_lock:
+        server = servers.pop(key, None)
+    if server is not None:
+        server.stop()
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ApiRouterWslCodexBridge/1.0"
 
@@ -751,7 +768,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        if parsed.path != "/rpc":
+        if parsed.path not in ("/rpc", "/refresh"):
             self._send(404, {"error": "not found"})
             return
         length = int(self.headers.get("Content-Length") or "0")
@@ -761,6 +778,13 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send(400, {"error": f"invalid request body: {exc}"})
             return
+        codex_home = payload.get("codexHome")
+        if codex_home is not None:
+            codex_home = str(codex_home)
+        if parsed.path == "/refresh":
+            refresh_server(codex_home)
+            self._send(200, {"result": {"ok": True}})
+            return
         method = str(payload.get("method") or "").strip()
         if not method:
             self._send(400, {"error": "missing method"})
@@ -768,9 +792,6 @@ class Handler(BaseHTTPRequestHandler):
         params = payload.get("params")
         if not isinstance(params, dict):
             params = {}
-        codex_home = payload.get("codexHome")
-        if codex_home is not None:
-            codex_home = str(codex_home)
         try:
             result = get_server(codex_home).request(method, params)
         except Exception as exc:
@@ -1035,6 +1056,19 @@ pub async fn try_request_in_home(
     }
 }
 
+pub async fn try_refresh_server_in_home(codex_home: Option<&str>) -> Option<Result<(), String>> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = codex_home;
+        None
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let target = parse_bridge_target(codex_home)?;
+        Some(refresh_via_bridge(&target).await)
+    }
+}
+
 pub async fn try_replay_notifications_since_in_home(
     codex_home: Option<&str>,
     since_event_id: u64,
@@ -1089,6 +1123,27 @@ async fn request_via_bridge(
         .get("result")
         .cloned()
         .ok_or_else(|| "WSL bridge response missing result".to_string())
+}
+
+#[cfg(target_os = "windows")]
+async fn refresh_via_bridge(target: &BridgeTarget) -> Result<(), String> {
+    let bridge = ensure_bridge(target).await?;
+    let response = bridge
+        .client
+        .post(format!("{}/refresh", bridge.base_url))
+        .json(&serde_json::json!({
+            "codexHome": target.codex_home_linux,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("failed to call WSL Codex bridge refresh: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "WSL Codex bridge refresh returned {}",
+            response.status()
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]

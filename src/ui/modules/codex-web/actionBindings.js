@@ -169,6 +169,20 @@ export function createActionBindingsModule(deps) {
           }))
           .filter((item) => item.id)
       : [];
+    const runtimeRefresh = Array.isArray(payload.runtime_refresh)
+      ? payload.runtime_refresh
+          .map((item) => ({
+            ...(item && typeof item === "object" ? item : {}),
+            home: String(item?.home || "").trim(),
+            status: String(item?.status || "").trim(),
+            deferred: item?.deferred === true,
+            running_threads: Number.isFinite(Number(item?.running_threads))
+              ? Number(item.running_threads)
+              : 0,
+            error: String(item?.error || "").trim(),
+          }))
+          .filter((item) => item.home)
+      : [];
     return {
       ...payload,
       mode: String(payload.mode || "").trim(),
@@ -182,6 +196,7 @@ export function createActionBindingsModule(deps) {
         : [],
       scope: normalizeProviderSwitchboardScope(payload.scope || state.providerSwitchboardScope || "windows"),
       official_profiles: officialProfiles,
+      runtime_refresh: runtimeRefresh,
     };
   }
 
@@ -346,7 +361,19 @@ export function createActionBindingsModule(deps) {
           : target === "gateway"
             ? "Gateway"
             : officialProfileLabel(officialProfileId);
-      setStatus(`Web Codex ${body.scope === "wsl2" ? "WSL2" : "Windows"} provider applied: ${label}.`);
+      const runtimeRefresh = Array.isArray(state.providerSwitchboardStatus?.runtime_refresh)
+        ? state.providerSwitchboardStatus.runtime_refresh
+        : [];
+      const hasDeferredRefresh = runtimeRefresh.some((item) => item?.deferred === true);
+      const hasRefreshError = runtimeRefresh.some((item) => String(item?.status || "") === "error");
+      const workspaceLabel = body.scope === "wsl2" ? "WSL2" : "Windows";
+      if (hasDeferredRefresh) {
+        setStatus(`Web Codex ${workspaceLabel} provider will apply after the current turn finishes: ${label}.`);
+      } else if (hasRefreshError) {
+        setStatus(`Web Codex ${workspaceLabel} provider saved, but runtime refresh failed.`, true);
+      } else {
+        setStatus(`Web Codex ${workspaceLabel} provider applied: ${label}. Future messages will use it.`);
+      }
     } catch (error) {
       const message = resolveActionErrorMessage(error, "Failed to switch provider.");
       state.providerSwitchboardError = message;

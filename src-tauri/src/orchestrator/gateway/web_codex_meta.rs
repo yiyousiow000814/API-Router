@@ -457,6 +457,7 @@ pub(super) async fn codex_provider_switchboard_set(
     } else {
         None
     };
+    let homes_for_refresh = homes.clone();
     match crate::provider_switchboard::set_target_for_runtime_with_official_auth(
         &runtime,
         homes,
@@ -464,18 +465,48 @@ pub(super) async fn codex_provider_switchboard_set(
         req.provider,
         official_auth,
     ) {
-        Ok(value) => Json(augment_provider_switchboard_status(
-            &st,
-            value,
-            scope.as_deref(),
-        ))
-        .into_response(),
+        Ok(value) => {
+            let mut response = augment_provider_switchboard_status(&st, value, scope.as_deref());
+            let refreshes = refresh_provider_switchboard_runtimes(homes_for_refresh).await;
+            if let Some(obj) = response.as_object_mut() {
+                obj.insert("runtime_refresh".to_string(), Value::Array(refreshes));
+            }
+            Json(response).into_response()
+        }
         Err(error) => api_error_detail(
             StatusCode::BAD_REQUEST,
             "failed to update provider switchboard",
             error,
         ),
     }
+}
+
+async fn refresh_provider_switchboard_runtimes(homes: Vec<String>) -> Vec<Value> {
+    let mut out = Vec::new();
+    for home in homes {
+        let trimmed = home.trim();
+        if trimmed.is_empty() || trimmed.starts_with("__missing_") {
+            continue;
+        }
+        let result =
+            crate::codex_app_server::refresh_server_after_provider_switch(Some(trimmed)).await;
+        match result {
+            Ok(refresh) => out.push(json!({
+                "home": trimmed,
+                "status": if refresh.deferred { "deferred" } else { "refreshed" },
+                "deferred": refresh.deferred,
+                "running_threads": refresh.running_threads,
+            })),
+            Err(error) => out.push(json!({
+                "home": trimmed,
+                "status": "error",
+                "deferred": false,
+                "running_threads": 0,
+                "error": error,
+            })),
+        }
+    }
+    out
 }
 
 #[derive(Deserialize)]
