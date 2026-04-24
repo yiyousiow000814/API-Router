@@ -1286,7 +1286,6 @@
       min-width: 0;
       display: grid;
       gap: 10px;
-      padding-bottom: max(18px, calc(env(safe-area-inset-bottom, 0px) + 14px));
     }
     .settingsProviderScopeRow {
       display: inline-grid;
@@ -5720,7 +5719,7 @@
         border-top: none;
         border-bottom: none;
         padding-top: 8px;
-        padding-bottom: 8px;
+        padding-bottom: max(44px, calc(env(safe-area-inset-bottom, 0px) + 30px));
       }
       .settingsProviderDeck,
       .settingsProviderModeRow,
