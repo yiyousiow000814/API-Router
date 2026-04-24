@@ -58,6 +58,7 @@ export function createUiHelpersModule(deps) {
     const modalSelector = typeof options.modalSelector === "string" ? options.modalSelector : "";
     const suppressMs = Math.max(0, Number(options.suppressMs) || 420);
     const onClose = typeof options.onClose === "function" ? options.onClose : null;
+    const closeEvent = String(options.closeEvent || "pointerdown") === "pointerup" ? "pointerup" : "pointerdown";
 
     const closeFromBackdrop = (event) => {
       if (shouldSuppressSyntheticClick(event)) return;
@@ -66,20 +67,20 @@ export function createUiHelpersModule(deps) {
         event?.preventDefault?.();
         event?.stopPropagation?.();
       } catch {}
-      if (String(event?.type || "") === "pointerdown") {
+      if (String(event?.type || "") === closeEvent) {
         armSyntheticClickSuppression(suppressMs);
       }
       onClose?.();
     };
 
-    backdrop.addEventListener("pointerdown", closeFromBackdrop, { passive: false });
+    backdrop.addEventListener(closeEvent, closeFromBackdrop, { passive: false });
     backdrop.addEventListener("click", closeFromBackdrop);
 
     if (modalSelector) {
       const modal = backdrop.querySelector(modalSelector);
       if (modal && !modal.__wiredBackdropStopPropagation) {
         modal.__wiredBackdropStopPropagation = true;
-        modal.addEventListener("pointerdown", (event) => event.stopPropagation());
+        modal.addEventListener(closeEvent, (event) => event.stopPropagation());
         modal.addEventListener("click", (event) => event.stopPropagation());
       }
     }

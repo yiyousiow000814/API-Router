@@ -165,6 +165,7 @@ export function createInitialState() {
     activeMainTab: "chat",
     settingsActiveSection: "provider",
     providerSwitchboardStatus: null,
+    providerSwitchboardStatusByScope: { windows: null, wsl2: null },
     providerSwitchboardLoading: false,
     providerSwitchboardBusy: false,
     providerSwitchboardError: "",

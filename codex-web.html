@@ -979,17 +979,19 @@
       to { opacity: 1; transform: translateY(0); }
     }
     .settingsTab {
+      grid-row: 2;
       min-height: 0;
-      overflow: auto;
-      padding: 14px 14px 18px;
+      height: 100%;
+      overflow: hidden;
+      padding: 0 14px 0;
       display: none;
       background: rgba(255, 255, 255, 0.56);
       border-top: none;
       border-bottom: none;
     }
     .settingsTab.show {
-      display: grid;
-      align-content: start;
+      display: flex;
+      flex-direction: column;
       gap: 12px;
     }
     .settingsTab.show .settingsCard {
@@ -1030,26 +1032,37 @@
       z-index: var(--z-chat-header);
     }
     .settingsCard {
-      display: block;
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
       min-width: 0;
+      min-height: 0;
+      height: 100%;
     }
     #settingsInfoSection {
       min-width: 0;
+      min-height: 0;
+      height: 100%;
     }
     .settingsShell {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr);
+      display: flex;
+      flex-direction: column;
       gap: 12px;
-      align-items: start;
+      min-height: 0;
+      height: 100%;
+    }
+    .settingsStickyHeader {
+      position: relative;
+      flex: 0 0 auto;
+      z-index: var(--z-chat-header);
+      background: transparent;
     }
     .settingsNav {
-      position: sticky;
-      top: 0;
-      z-index: var(--z-chat-header);
+      position: relative;
       display: grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 4px;
-      padding: 5px;
+      padding: 7px;
       border: 1px solid rgba(13, 18, 32, 0.1);
       border-radius: 12px;
       background: rgba(255, 255, 255, 0.92);
@@ -1092,8 +1105,19 @@
     }
     .settingsContent {
       min-width: 0;
+      min-height: 0;
+      flex: 1 1 auto;
+      overflow: auto;
       display: grid;
+      align-items: start;
       gap: 12px;
+      padding-bottom: 18px;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    .settingsContent::-webkit-scrollbar {
+      width: 0;
+      height: 0;
     }
     @keyframes settings-pane-in {
       from {
@@ -1117,6 +1141,7 @@
     }
     .settingsSectionCard {
       display: grid;
+      align-content: start;
       gap: 12px;
       padding: 14px;
       border-radius: 12px;
@@ -1324,7 +1349,7 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 4px;
       width: 100%;
-      padding: 3px;
+      padding: 4px;
       border: 1px solid rgba(13, 18, 32, 0.1);
       border-radius: 999px;
       background: rgba(255, 255, 255, 0.68);
@@ -1333,10 +1358,10 @@
     .settingsProviderScopeRow::before {
       content: "";
       position: absolute;
-      top: 3px;
-      bottom: 3px;
-      left: 3px;
-      width: calc((100% - 10px) / 2);
+      top: 4px;
+      bottom: 4px;
+      left: 4px;
+      width: calc((100% - 12px) / 2);
       border: 1px solid rgba(40, 199, 217, 0.42);
       border-radius: 999px;
       background: linear-gradient(135deg, rgba(40, 199, 217, 0.16), rgba(242, 193, 77, 0.12));
@@ -1364,6 +1389,12 @@
       border-color: transparent;
       background: transparent;
       animation: none;
+    }
+    .settingsProviderScopeRow .settingsProviderBtn:hover:not(:disabled),
+    .settingsProviderScopeRow .settingsProviderBtn:active {
+      border-color: transparent;
+      background: transparent;
+      transform: none;
     }
     .settingsProviderBtn {
       min-width: 0;
@@ -5786,7 +5817,10 @@
       .settingsTab {
         border-top: none;
         border-bottom: none;
-        padding-top: 8px;
+        padding-top: 0;
+        padding-bottom: 0;
+      }
+      .settingsContent {
         padding-bottom: max(44px, calc(env(safe-area-inset-bottom, 0px) + 30px));
       }
       .settingsProviderDeck,
@@ -5801,9 +5835,11 @@
       .settingsProviderOption {
         grid-template-columns: minmax(0, 1fr);
       }
+      .settingsStickyHeader {
+        margin: 0;
+        padding: 0;
+      }
       .settingsNav {
-        position: sticky;
-        top: 0;
         grid-template-columns: repeat(5, minmax(0, 1fr));
         gap: 3px;
         padding: 4px;
@@ -6107,11 +6143,7 @@
           Number(root?.clientWidth || 0),
           0
         );
-        const coarsePointer =
-          typeof window.matchMedia === "function" &&
-          (window.matchMedia("(pointer: coarse)").matches || window.matchMedia("(hover: none)").matches);
-        const touchCapable = Math.max(0, Number(window.navigator?.maxTouchPoints || 0)) > 0;
-        if ((viewportWidth > 0 && viewportWidth <= 1080) || coarsePointer || touchCapable) {
+        if (viewportWidth > 0 && viewportWidth <= 1080) {
           body.classList.add("floating-composer-layout");
         }
         const viewportHeight = Math.max(
@@ -6229,13 +6261,15 @@
         <div id="settingsTab" class="settingsTab">
             <div class="settingsCard">
               <div id="settingsInfoSection" class="settingsShell">
-                <nav class="settingsNav" aria-label="Settings sections">
-                  <button class="settingsNavItem is-active" type="button" data-settings-section="provider">Provider</button>
-                  <button class="settingsNavItem" type="button" data-settings-section="chat">Chat</button>
-                  <button class="settingsNavItem" type="button" data-settings-section="system">System</button>
-                  <button class="settingsNavItem" type="button" data-settings-section="alerts">Alerts</button>
-                  <button class="settingsNavItem" type="button" data-settings-section="debug">Debug</button>
-                </nav>
+                <div class="settingsStickyHeader">
+                  <nav class="settingsNav" aria-label="Settings sections">
+                    <button class="settingsNavItem is-active" type="button" data-settings-section="provider">Provider</button>
+                    <button class="settingsNavItem" type="button" data-settings-section="chat">Chat</button>
+                    <button class="settingsNavItem" type="button" data-settings-section="system">System</button>
+                    <button class="settingsNavItem" type="button" data-settings-section="alerts">Alerts</button>
+                    <button class="settingsNavItem" type="button" data-settings-section="debug">Debug</button>
+                  </nav>
+                </div>
                 <div class="settingsContent">
                 <section id="settingsProviderSection" class="settingsPane is-active settingsSectionCard settingsProviderSection" data-settings-pane="provider">
                   <div class="settingsSectionHeader">

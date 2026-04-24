@@ -17,7 +17,7 @@ describe("mobileShell", () => {
     expect(shouldOpenDrawerWithAnimation("chat", false)).toBe(false);
   });
 
-  it("recognizes compact mobile viewports for edge-swipe drawer opening", () => {
+  it("recognizes compact mobile viewports for drawer opening from any horizontal start point", () => {
     expect(isCompactMobileViewport({ innerWidth: 420 })).toBe(true);
     expect(isCompactMobileViewport({ innerWidth: 1280 })).toBe(false);
     expect(
@@ -35,7 +35,7 @@ describe("mobileShell", () => {
     ).toBe(true);
     expect(
       shouldStartDrawerEdgeSwipe({
-        startX: 40,
+        startX: 240,
         body: {
           classList: {
             contains() {
@@ -91,7 +91,7 @@ describe("mobileShell", () => {
     ).toBe(true);
   });
 
-  it("does not start close swipe on phone-like touch layouts", () => {
+  it("starts close swipe from anywhere once the left drawer is already open on phone-like layouts", () => {
     expect(
       shouldStartDrawerCloseSwipe({
         startX: 180,
@@ -107,11 +107,11 @@ describe("mobileShell", () => {
           innerWidth: 420,
           navigator: { maxTouchPoints: 5 },
           matchMedia(query) {
-            return { matches: query === "(pointer: coarse)" || query === "(hover: none)" };
+            return { matches: query === "(max-width: 1080px)" || query === "(pointer: coarse)" || query === "(hover: none)" };
           },
         },
       })
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("hides the slash menu before opening a drawer", () => {
@@ -552,7 +552,7 @@ describe("mobileShell", () => {
     expect(body._style.has("--drawer-left-drag-translate")).toBe(true);
   });
 
-  it("ignores non-edge swipes so the chat surface can scroll normally", () => {
+  it("opens the thread drawer from any rightward horizontal swipe", () => {
     const handlers = new Map();
     const body = {
       _classes: new Set(),
@@ -647,7 +647,13 @@ describe("mobileShell", () => {
       touches: [{ clientX: 116, clientY: 224 }],
     });
 
-    expect(body._classes.has("drawer-left-open")).toBe(false);
+    expect(body._classes.has("drawer-left-dragging")).toBe(true);
+
+    handlers.get("touchend")({
+      changedTouches: [{ clientX: 140, clientY: 224 }],
+    });
+
+    expect(body._classes.has("drawer-left-open")).toBe(true);
     expect(body._classes.has("drawer-left-dragging")).toBe(false);
   });
 

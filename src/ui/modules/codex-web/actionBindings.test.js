@@ -238,6 +238,7 @@ describe("actionBindings", () => {
 
     createActionBindingsModule(deps).wireActions();
     expect(backdropOptions).toBeTruthy();
+    expect(backdropOptions.closeEvent).toBe("pointerup");
 
     backdropOptions.onClose();
 

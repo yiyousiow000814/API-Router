@@ -617,23 +617,55 @@ fn parse_history_preview_map(history_path: &Path) -> HashMap<String, String> {
 }
 
 fn fetch_windows_threads_from_sessions() -> Vec<Value> {
-    let Some(codex_dir) = web_codex_rpc_home_override()
-        .map(PathBuf::from)
-        .or_else(default_windows_codex_dir)
-    else {
+    let codex_dirs = windows_thread_index_codex_dirs();
+    if codex_dirs.is_empty() {
         return Vec::new();
     };
-    let sessions_dir = codex_dir.join("sessions");
-    if !sessions_dir.exists() {
-        return Vec::new();
+    let mut items = Vec::new();
+    for codex_dir in codex_dirs {
+        let sessions_dir = codex_dir.join("sessions");
+        if !sessions_dir.exists() {
+            continue;
+        }
+        items = merge_items_without_duplicates(
+            items,
+            build_threads_from_session_dir(
+                &sessions_dir,
+                &codex_dir.join("history.jsonl"),
+                "windows",
+                "windows-session-index",
+                |file| file.to_string_lossy().to_string(),
+            ),
+        );
     }
-    build_threads_from_session_dir(
-        &sessions_dir,
-        &codex_dir.join("history.jsonl"),
-        "windows",
-        "windows-session-index",
-        |file| file.to_string_lossy().to_string(),
-    )
+    items
+}
+
+fn env_text(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: Option<PathBuf>) {
+    let Some(path) = path else {
+        return;
+    };
+    if paths.iter().any(|existing| existing == &path) {
+        return;
+    }
+    paths.push(path);
+}
+
+fn windows_thread_index_codex_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    push_unique_path(&mut dirs, web_codex_rpc_home_override().map(PathBuf::from));
+    let explicit_runtime_home = env_text("API_ROUTER_WEB_CODEX_CODEX_HOME").is_some();
+    if !explicit_runtime_home {
+        push_unique_path(&mut dirs, default_windows_codex_dir());
+    }
+    dirs
 }
 
 fn parse_wsl_thread_scan_output(text: &str) -> Result<Vec<Value>, String> {
@@ -1301,14 +1333,15 @@ fn filter_auxiliary_threads(items: &mut Vec<Value>) {
 mod tests {
     use super::{
         build_threads_from_session_dir, clear_history_preview_map_cache_for_test,
-        clear_session_file_scan_cache_for_test, collect_jsonl_files, filter_auxiliary_threads,
-        find_rollout_path_in_items, merge_items_without_duplicates, overlay_loaded_thread_runtime,
-        parse_history_preview_map, parse_wsl_thread_scan_output, scan_session_file,
-        sort_threads_by_updated_desc, ThreadFilterReason, THREADS_MAX_AGE_SECS,
+        clear_session_file_scan_cache_for_test, collect_jsonl_files,
+        fetch_windows_threads_from_sessions, filter_auxiliary_threads, find_rollout_path_in_items,
+        merge_items_without_duplicates, overlay_loaded_thread_runtime, parse_history_preview_map,
+        parse_wsl_thread_scan_output, scan_session_file, sort_threads_by_updated_desc,
+        ThreadFilterReason, THREADS_MAX_AGE_SECS,
     };
     use crate::codex_app_server;
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::sync::Arc;
 
     struct EnvGuard {
@@ -1428,6 +1461,49 @@ mod tests {
 
         assert!(files.contains(&recent));
         assert!(!files.contains(&old));
+    }
+
+    #[test]
+    fn windows_thread_index_includes_default_codex_home_when_web_runtime_is_isolated() {
+        clear_session_file_scan_cache_for_test();
+        clear_history_preview_map_cache_for_test();
+        let _test_guard = codex_app_server::lock_test_globals();
+        let user_profile = tempfile::tempdir().expect("user profile temp dir");
+        let app_data = tempfile::tempdir().expect("app data temp dir");
+        let codex_home = user_profile.path().join(".codex");
+        let sessions = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("04")
+            .join("24");
+        std::fs::create_dir_all(&sessions).expect("create sessions");
+        std::fs::write(
+            sessions.join("rollout-2026-04-24T04-18-55-thread-main.jsonl"),
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-main\",\"cwd\":\"C:\\\\Users\\\\yiyou\\\\API-Router\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"current api router session\"}]}}\n"
+            ),
+        )
+        .expect("write session");
+
+        let _user_profile_guard =
+            EnvGuard::set("USERPROFILE", &user_profile.path().to_string_lossy());
+        let _app_data_guard = EnvGuard::set(
+            "API_ROUTER_USER_DATA_DIR",
+            &app_data.path().to_string_lossy(),
+        );
+        let _web_home_guard = EnvGuard::set("API_ROUTER_WEB_CODEX_CODEX_HOME", "");
+        let _codex_home_guard = EnvGuard::set(
+            "CODEX_HOME",
+            &app_data.path().join("codex-home").to_string_lossy(),
+        );
+
+        let items = fetch_windows_threads_from_sessions();
+
+        assert!(items.iter().any(|item| {
+            item.get("id").and_then(Value::as_str) == Some("thread-main")
+                && item.get("preview").and_then(Value::as_str) == Some("current api router session")
+        }));
     }
 
     #[test]
