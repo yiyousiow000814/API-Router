@@ -1046,15 +1046,24 @@
       position: sticky;
       top: 0;
       z-index: var(--z-chat-header);
+      isolation: isolate;
       display: grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 4px;
       padding: 5px;
       border: 1px solid rgba(13, 18, 32, 0.1);
       border-radius: 12px;
-      background: rgba(255, 255, 255, 0.92);
-      backdrop-filter: blur(14px);
+      background: #ffffff;
       animation: settings-nav-in var(--motion-base, 220ms) cubic-bezier(.22, 1, .36, 1) both;
+    }
+    .settingsNav::before {
+      content: "";
+      position: absolute;
+      inset: -8px -2px -7px;
+      z-index: -1;
+      border-radius: 14px;
+      background: linear-gradient(180deg, #ffffff 0%, rgba(255, 255, 255, 0.98) 100%);
+      pointer-events: none;
     }
     .settingsNavItem {
       min-height: 34px;
