@@ -1790,6 +1790,7 @@ export function createComposerUiModule(deps) {
     const providerList = byId("settingsProviderList");
     const providerCurrentGrid = byId("settingsProviderCurrentGrid");
     const providerManageBtn = byId("settingsProviderManageBtn");
+    const providerDirectCount = byId("settingsProviderDirectCount");
     const providerConfirmBackdrop = byId("settingsProviderConfirmBackdrop");
     const providerConfirmTitle = byId("settingsProviderConfirmTitle");
     const providerConfirmDetail = byId("settingsProviderConfirmDetail");
@@ -1911,7 +1912,10 @@ export function createComposerUiModule(deps) {
       );
     }
     if (providerManageBtn) {
-      providerManageBtn.textContent = `All providers (${providerRowsAll.length})`;
+      providerManageBtn.textContent = "Manage";
+    }
+    if (providerDirectCount) {
+      providerDirectCount.textContent = `${providerRows.length} enabled · ${providerRowsAll.length} total`;
     }
     if (providerScopeRow) {
       const wslEnabled = state.workspaceAvailability?.wsl2Installed === true;
@@ -1948,7 +1952,7 @@ export function createComposerUiModule(deps) {
               </button>`;
             })
             .join("")
-        : `<span class="settingsSectionNote">No direct providers configured.</span>`;
+        : `<span class="settingsSectionNote">No enabled direct providers. Manage providers to enable one.</span>`;
     }
     providerButtons.forEach(([id, mode]) => {
       const btn = byId(id);

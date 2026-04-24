@@ -1702,11 +1702,34 @@
       font-size: 10px;
       font-weight: 750;
     }
-    .settingsProviderManagerHead {
-      display: flex;
+    .settingsChoiceLabel.settingsProviderManagerHead {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-areas: "title meta";
       align-items: center;
-      justify-content: space-between;
-      gap: 10px;
+      column-gap: 10px;
+    }
+    .settingsProviderDirectCopy {
+      min-width: 180px;
+      display: contents;
+    }
+    .settingsProviderDirectCopy .settingsChoiceTitle {
+      grid-area: title;
+      min-width: 0;
+    }
+    .settingsProviderDirectMeta {
+      grid-area: meta;
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-left: auto;
+    }
+    .settingsProviderDirectCount {
+      color: #687891;
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
     }
     .settingsProviderManageBtn {
       min-height: 30px;
@@ -2003,6 +2026,16 @@
       gap: 8px;
       margin-top: 0;
     }
+    .settingsTogglesSection .settingsChoiceGrid {
+      gap: 12px;
+      align-items: stretch;
+    }
+    .settingsTogglesSection .settingsChoiceGroup {
+      padding: 12px;
+      border: 1px solid rgba(13, 18, 32, 0.09);
+      border-radius: 10px;
+      background: rgba(247, 249, 252, 0.62);
+    }
     .settingsChoiceLabel {
       display: grid;
       gap: 2px;
@@ -2021,6 +2054,9 @@
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 8px;
+    }
+    .settingsTogglesSection .settingsChoiceRow {
+      gap: 6px;
     }
     .settingsChoiceBtn {
       min-width: 0;
@@ -6179,6 +6215,12 @@
       #settingsProviderCurrentMode {
         max-width: 46%;
       }
+      .settingsChoiceLabel.settingsProviderManagerHead {
+        grid-template-columns: minmax(0, 1fr) auto;
+      }
+      .settingsProviderDirectMeta {
+        gap: 6px;
+      }
     }
 
     @media (min-width: 1081px) {
@@ -6402,8 +6444,13 @@
                       </div>
                       <div class="settingsProviderDirectBlock">
                         <div class="settingsChoiceLabel settingsProviderManagerHead">
-                          <span class="settingsChoiceTitle">Direct provider</span>
-                          <button id="settingsProviderManageBtn" class="settingsProviderBtn settingsProviderManageBtn" type="button">All providers</button>
+                          <span class="settingsProviderDirectCopy">
+                            <span class="settingsChoiceTitle">Direct provider</span>
+                          </span>
+                          <span class="settingsProviderDirectMeta">
+                            <span id="settingsProviderDirectCount" class="settingsProviderDirectCount">0 enabled · 0 total</span>
+                            <button id="settingsProviderManageBtn" class="settingsProviderBtn settingsProviderManageBtn" type="button">Manage</button>
+                          </span>
                         </div>
                         <div id="settingsProviderList" class="settingsProviderList"></div>
                       </div>
