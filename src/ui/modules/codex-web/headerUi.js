@@ -359,13 +359,18 @@ export function createHeaderUiModule(deps) {
       return;
     }
     const permission = NotificationRef?.permission || "default";
-    if (node) node.textContent = `Notification: ${permission}`;
+    if (node) {
+      node.textContent =
+        permission === "denied"
+          ? "Notification: blocked in browser settings"
+          : `Notification: ${permission}`;
+    }
     if (!button) return;
     button.disabled = false;
     if (permission === "granted") {
       button.textContent = "Test notification";
     } else if (permission === "denied") {
-      button.textContent = "Notifications blocked";
+      button.textContent = "Blocked by browser";
     } else {
       button.textContent = "Enable notifications";
     }

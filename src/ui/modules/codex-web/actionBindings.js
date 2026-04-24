@@ -781,6 +781,11 @@ export function createActionBindingsModule(deps) {
         return;
       }
       let permission = notificationPermission();
+      if (permission === "denied") {
+        updateNotificationState();
+        setStatus("Notifications are blocked by this browser. Re-enable them in browser or iOS settings.", true);
+        return;
+      }
       try {
         if (permission !== "granted") {
           if (typeof NotificationApi?.requestPermission !== "function") {

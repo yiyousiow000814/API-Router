@@ -109,6 +109,73 @@ describe("actionBindings", () => {
     expect(statusCalls).toEqual([{ message: "Sent a test notification.", isError: false }]);
   });
 
+  it("does not request notification permission again after the browser denied it", async () => {
+    const handlers = new Map();
+    const statusCalls = [];
+    const NotificationRef = {
+      permission: "denied",
+      requestPermission: vi.fn(async () => "denied"),
+    };
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId() { return null; },
+      api: {},
+      bindClick(id, handler) { handlers.set(id, handler); },
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus(message, isError = false) {
+        statusCalls.push({ message, isError });
+      },
+      updateMobileComposerState() {},
+      updateNotificationState: vi.fn(),
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: {
+        Notification: NotificationRef,
+        addEventListener() {},
+      },
+      documentRef: { addEventListener() {} },
+      NotificationRef,
+    };
+
+    createActionBindingsModule(deps).wireActions();
+    await handlers.get("enableNotifBtn")();
+
+    expect(NotificationRef.requestPermission).not.toHaveBeenCalled();
+    expect(deps.updateNotificationState).toHaveBeenCalledTimes(1);
+    expect(statusCalls).toEqual([
+      {
+        message: "Notifications are blocked by this browser. Re-enable them in browser or iOS settings.",
+        isError: true,
+      },
+    ]);
+  });
+
   it("closes the mobile drawer from backdrop taps on phone-like touch viewports", () => {
     let backdropOptions = null;
     const setMobileTabCalls = [];
