@@ -3,6 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
+  <meta name="theme-color" content="#ffffff" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Web Codex" />
+  <link rel="icon" type="image/svg+xml" href="/codex-web/codex-icon.svg" />
+  <link rel="apple-touch-icon" sizes="512x512" href="/codex-web/apple-touch-icon.png" />
+  <link rel="manifest" href="/codex-web/manifest.webmanifest" />
   <title>Web Codex</title>
   <style>
     :root {
@@ -1542,6 +1549,28 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    .settingsProviderIdentityLine {
+      min-width: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .settingsProviderHealthDot {
+      width: 8px;
+      height: 8px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      background: #a8b3c2;
+      box-shadow: 0 0 0 5px rgba(148, 163, 184, 0.1);
+    }
+    .settingsProviderHealthDot.is-good {
+      background: #28c7d9;
+      box-shadow: 0 0 0 5px rgba(40, 199, 217, 0.12);
+    }
+    .settingsProviderHealthDot.is-bad {
+      background: #ff3d66;
+      box-shadow: 0 0 0 5px rgba(255, 61, 102, 0.12);
     }
     .settingsProviderEndsText {
       flex: 0 0 auto;

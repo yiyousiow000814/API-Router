@@ -1192,6 +1192,11 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         .route("/codex-web/app.js", get(codex_web_app_js))
         .route("/codex-web/modules/*path", get(codex_web_module_js))
         .route("/codex-web/codex-icon.svg", get(codex_web_icon_svg))
+        .route(
+            "/codex-web/apple-touch-icon.png",
+            get(codex_web_apple_touch_icon_png),
+        )
+        .route("/codex-web/manifest.webmanifest", get(codex_web_manifest))
         .route("/favicon.ico", get(codex_web_favicon))
         .route("/ao-icon.png", get(codex_web_logo_png))
         .route("/codex/health", get(codex_health))
@@ -1340,8 +1345,8 @@ use self::web_codex_actions::{
     codex_turn_interrupt, codex_turn_start, codex_turn_stream, codex_user_input_resolve,
 };
 use self::web_codex_assets::{
-    codex_web_app_js, codex_web_favicon, codex_web_icon_svg, codex_web_index, codex_web_logo_png,
-    codex_web_module_js,
+    codex_web_app_js, codex_web_apple_touch_icon_png, codex_web_favicon, codex_web_icon_svg,
+    codex_web_index, codex_web_logo_png, codex_web_manifest, codex_web_module_js,
 };
 use self::web_codex_home::web_codex_rpc_home_override_for_target;
 use self::web_codex_hosts::{

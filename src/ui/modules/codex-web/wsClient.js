@@ -70,6 +70,12 @@ export function resolveApiErrorMessage(payload, status) {
   return payload?.error?.detail || payload?.error?.message || `HTTP ${status}`;
 }
 
+export function isExpectedAbortError(error) {
+  const name = String(error?.name || "").trim().toLowerCase();
+  const message = String(error?.message || error || "").trim().toLowerCase();
+  return name === "aborterror" || message.includes("fetch is aborted") || message.includes("aborted without reason");
+}
+
 export function mapUiEventToNotification(record, readString, toRecord) {
   const kind = readString(record?.kind) || "";
   const conversationId = readString(record?.conversationId) || readString(record?.threadId) || "";
@@ -276,6 +282,9 @@ export function createWsClientModule(deps) {
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error || "Network request failed");
+      if (isExpectedAbortError(error)) {
+        throw error;
+      }
       recordApiResult({
         command: route,
         elapsedMs: (Number(nowRef()) || Date.now()) - startedAt,

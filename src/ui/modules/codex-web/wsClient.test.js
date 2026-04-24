@@ -7,6 +7,7 @@ import {
   normalizeLiveWorkspaceTarget,
   resolveLiveWorkspaceSubscription,
   resolveApiErrorMessage,
+  isExpectedAbortError,
   subscriptionIncludesWorkspace,
 } from "./wsClient.js";
 
@@ -56,6 +57,12 @@ describe("wsClient", () => {
   it("prefers structured api errors", () => {
     expect(resolveApiErrorMessage({ error: { detail: "boom" } }, 500)).toBe("boom");
     expect(resolveApiErrorMessage({}, 404)).toBe("HTTP 404");
+  });
+
+  it("recognizes expected abort errors", () => {
+    expect(isExpectedAbortError(new DOMException("The operation was aborted.", "AbortError"))).toBe(true);
+    expect(isExpectedAbortError(new Error("Fetch is aborted"))).toBe(true);
+    expect(isExpectedAbortError(new Error("gateway offline"))).toBe(false);
   });
 
   it("records codex api failures and missing-thread details", async () => {
@@ -273,6 +280,71 @@ describe("wsClient", () => {
         detail: "GET /codex/threads -> network error: gateway offline",
       },
     ]);
+  });
+
+  it("does not record expected aborted codex requests as failures", async () => {
+    const transportEvents = [];
+    const apiResults = [];
+    const module = createWsClientModule({
+      state: {
+        token: "",
+        ws: null,
+        wsReqHandlers: new Map(),
+        pendingApprovals: [],
+        pendingUserInputs: [],
+        wsLastEventId: 0,
+        wsRecentEventIds: new Set(),
+        wsSubscribedEvents: false,
+      },
+      setStatus() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh() {},
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      recordWebTransportEvent(kind, detail) {
+        transportEvents.push({ kind, detail });
+      },
+      recordApiResult(result) {
+        apiResults.push(result);
+      },
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "0"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: class {},
+      fetchRef: async () => {
+        throw new Error("Fetch is aborted");
+      },
+    });
+
+    await expect(module.api("/codex/threads")).rejects.toThrow("Fetch is aborted");
+    expect(transportEvents).toEqual([]);
+    expect(apiResults).toEqual([]);
   });
 
   it("preserves conversation id on ui assistant delta notifications", () => {

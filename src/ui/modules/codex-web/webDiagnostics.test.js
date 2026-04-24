@@ -1,11 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createCodexWebDiagnostics, normalizeCodexWebActivePage } from "./webDiagnostics.js";
+import {
+  createCodexWebDiagnostics,
+  normalizeCodexWebActivePage,
+  shouldReportFrontendError,
+} from "./webDiagnostics.js";
 
 describe("webDiagnostics", () => {
   it("normalizes Codex Web active pages", () => {
     expect(normalizeCodexWebActivePage({ activeMainTab: "chat" })).toBe("codex-web");
     expect(normalizeCodexWebActivePage({ activeMainTab: "settings" })).toBe("codex-web:settings");
+  });
+
+  it("ignores generic cross-origin script errors", () => {
+    expect(shouldReportFrontendError("Script error.")).toBe(false);
+    expect(shouldReportFrontendError("Cannot read properties of undefined")).toBe(true);
   });
 
   it("posts heartbeat and API results to the gateway watchdog endpoint", async () => {

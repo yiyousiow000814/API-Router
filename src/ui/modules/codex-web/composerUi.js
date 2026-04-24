@@ -2,7 +2,7 @@ import { renderMessageRichHtml, renderStructuredToolPreviewHtml, renderToolPrevi
 import { extractPlanUpdate, renderPlanCardHtml } from "./runtimePlan.js";
 import { clearProposedPlanConfirmation } from "./proposedPlan.js";
 import { extractRequestUserInput } from "./runtimeUserInput.js";
-import { isTerminalInterruptedHistory } from "./historyLiveCommentaryState.js";
+import { isTerminalHistoryStatus, isTerminalInterruptedHistory } from "./historyLiveCommentaryState.js";
 import {
   buildBranchPickerItemState,
   buildBranchPickerState,
@@ -239,6 +239,27 @@ export function createComposerUiModule(deps) {
     if (days > 0) return `Ends in ${days}d ${hours}h`;
     if (hours > 0) return `Ends in ${hours}h ${minutes}m`;
     return `Ends in ${minutes}m`;
+  }
+
+  function providerHealthStatus(provider) {
+    const health = provider?.health && typeof provider.health === "object" ? provider.health : {};
+    return String(health.status || provider?.health_status || provider?.status || "unknown").trim().toLowerCase();
+  }
+
+  function providerHealthTone(status) {
+    const value = String(status || "").trim().toLowerCase();
+    if (/^(healthy|effective|yes|ok)$/.test(value)) return "good";
+    if (/^(unhealthy|error|failed|down|no)$/.test(value)) return "bad";
+    return "neutral";
+  }
+
+  function providerHealthLabel(status) {
+    const value = String(status || "").trim().toLowerCase();
+    if (!value || value === "unknown") return "Health unknown";
+    if (value === "cooldown") return "Retrying";
+    if (value === "healthy") return "Healthy";
+    if (value === "unhealthy") return "Unhealthy";
+    return value.replace(/(^|[_\s-])([a-z])/g, (_match, prefix, letter) => `${prefix ? " " : ""}${letter.toUpperCase()}`).trim();
   }
 
   function renderOfficialProfilesHtml(profiles, selectedProfileId = "", disabled = false) {
@@ -1128,7 +1149,8 @@ export function createComposerUiModule(deps) {
     const currentThreadId = resolveCurrentThreadId(state, threadId);
     const suppressSyntheticPending = state.suppressedSyntheticPendingUserInputsByThreadId?.[threadId] === true;
     const suppressIncompleteRuntime = state.suppressedIncompleteHistoryRuntimeByThreadId?.[threadId] === true;
-    const pageIncomplete = !!thread?.page?.incomplete;
+    const terminalHistory = isTerminalHistoryStatus(thread?.status?.type || state.activeThreadHistoryStatusType);
+    const pageIncomplete = !!thread?.page?.incomplete && !terminalHistory;
     const interruptedHistory = isTerminalInterruptedHistory(thread, state);
     const turns = Array.isArray(thread?.turns) ? thread.turns : [];
     const lastTurn = turns.length ? turns[turns.length - 1] : null;
@@ -1935,13 +1957,19 @@ export function createComposerUiModule(deps) {
               const displayName = String(provider.display_name || name).trim();
               const usage = describeProviderUsage(provider.quota, provider.quota_hard_cap);
               const endsText = formatProviderEndsText(provider);
+              const healthStatus = providerHealthStatus(provider);
+              const healthTone = providerHealthTone(healthStatus);
+              const healthLabel = providerHealthLabel(healthStatus);
               const pct = readFiniteNumber(usage.pct);
               const pctStyle = pct == null ? "" : ` style="--provider-usage-pct:${Math.max(0, Math.min(100, pct))}%"`;
               const active = providerDraftTarget === "provider" && providerDraftProvider === name;
               return `<button class="settingsProviderBtn settingsProviderOption${active ? " is-active" : ""}" type="button" data-provider-target="provider" data-provider-name="${escapeHtml(name)}" aria-pressed="${active ? "true" : "false"}">
                 <span class="settingsProviderOptionMain">
                   <span class="settingsProviderNameLine">
-                    <span class="settingsProviderOptionName">${escapeHtml(displayName)}</span>
+                    <span class="settingsProviderIdentityLine">
+                      <span class="settingsProviderHealthDot is-${escapeHtml(healthTone)}" title="${escapeHtml(healthLabel)}" role="img" aria-label="${escapeHtml(healthLabel)}"></span>
+                      <span class="settingsProviderOptionName">${escapeHtml(displayName)}</span>
+                    </span>
                     ${endsText ? `<small class="settingsProviderEndsText">${escapeHtml(endsText)}</small>` : ""}
                   </span>
                   <span>${escapeHtml(usage.headline)}</span>

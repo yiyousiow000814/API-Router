@@ -132,6 +132,82 @@ describe("actionBindings", () => {
     expect(state.providerSwitchboardStatusByScope.windows).toMatchObject({ mode: "gateway" });
   });
 
+  it("keeps provider enabled toggles scoped to the active WSL2 workspace", async () => {
+    const managerList = {
+      __providerManagerClickBound: false,
+      addEventListener(event, handler) {
+        expect(event).toBe("click");
+        this.clickHandler = handler;
+      },
+    };
+    const toggleBtn = {
+      closest(selector) {
+        return selector === "[data-provider-enabled-toggle]" ? this : null;
+      },
+      getAttribute(name) {
+        if (name === "data-provider-name") return "codex-for-me";
+        if (name === "data-provider-enabled-toggle") return "true";
+        return "";
+      },
+    };
+    const apiCalls = [];
+    const state = {
+      providerSwitchboardScope: "wsl2",
+      providerSwitchboardStatusByScope: { windows: null, wsl2: null },
+    };
+    const module = createActionBindingsModule({
+      state,
+      byId(id) {
+        return id === "settingsProviderManagerList" ? managerList : null;
+      },
+      api(path, options) {
+        apiCalls.push({ path, options });
+        return {
+          ok: true,
+          mode: "gateway",
+          model_provider: null,
+          dirs: [{ cli_home: "/home/yiyou/.codex", mode: "gateway", model_provider: null }],
+          provider_options: [],
+          provider_details: [],
+          scope: "wsl2",
+        };
+      },
+      bindClick() {},
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus() {},
+      wireBlurBackdropShield() {},
+      setMobileTab() {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      updateMobileComposerState() {},
+      armSyntheticClickSuppression() {},
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {}, querySelectorAll() { return []; } },
+    });
+
+    module.wireActions();
+    await managerList.clickHandler({ target: toggleBtn });
+
+    expect(apiCalls).toEqual([
+      {
+        path: "/codex/provider-switchboard/provider-enabled",
+        options: {
+          method: "POST",
+          body: { provider: "codex-for-me", enabled: true, scope: "wsl2" },
+        },
+      },
+    ]);
+    expect(state.providerSwitchboardStatus).toMatchObject({ scope: "wsl2" });
+    expect(state.providerSwitchboardStatusByScope.wsl2).toMatchObject({ scope: "wsl2" });
+    expect(state.providerSwitchboardStatusByScope.windows).toBeNull();
+  });
+
   it("sends visible feedback when notifications are already granted", async () => {
     const handlers = new Map();
     const statusCalls = [];

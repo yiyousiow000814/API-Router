@@ -1812,10 +1812,16 @@ fn resolve_windows_accessible_codex_home(codex_home: Option<&str>) -> Option<Pat
 }
 
 fn resolve_rollout_sessions_root(codex_home: Option<&str>) -> Option<PathBuf> {
+    let session_home =
+        crate::orchestrator::gateway::web_codex_home::web_codex_session_home_for_runtime_home(
+            codex_home,
+        );
     let root = {
         #[cfg(target_os = "windows")]
         {
-            resolve_windows_accessible_codex_home(codex_home)
+            resolve_windows_accessible_codex_home(session_home.as_deref())
+                .or_else(|| session_home.as_deref().map(PathBuf::from))
+                .or_else(|| resolve_windows_accessible_codex_home(codex_home))
                 .or_else(|| {
                     codex_home
                         .map(str::trim)
@@ -1826,10 +1832,15 @@ fn resolve_rollout_sessions_root(codex_home: Option<&str>) -> Option<PathBuf> {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            codex_home
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
+            session_home
+                .as_deref()
                 .map(PathBuf::from)
+                .or_else(|| {
+                    codex_home
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(PathBuf::from)
+                })
                 .or_else(resolve_default_codex_home)
         }
     }?;
@@ -4532,6 +4543,11 @@ pub async fn request_in_home(
             }),
         )
         .await;
+        if !key.is_empty() {
+            crate::orchestrator::gateway::web_codex_home::ensure_web_codex_runtime_session_links(
+                Some(key.as_str()),
+            )?;
+        }
         let spawned = AppServer::spawn(if key.is_empty() {
             None
         } else {

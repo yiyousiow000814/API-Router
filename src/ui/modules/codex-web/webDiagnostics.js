@@ -20,6 +20,11 @@ function truncateMessage(value, maxLength = 500) {
   return text.length > maxLength ? text.slice(0, maxLength) : text;
 }
 
+export function shouldReportFrontendError(message) {
+  const text = String(message || "").trim();
+  return text !== "" && text !== "Script error.";
+}
+
 export function createCodexWebDiagnostics(deps) {
   const {
     state,
@@ -213,15 +218,19 @@ export function createCodexWebDiagnostics(deps) {
 
   function installErrorHandlers() {
     windowRef?.addEventListener?.("error", (event) => {
+      const message = truncateMessage(event?.message || event?.error?.message || "frontend error");
+      if (!shouldReportFrontendError(message)) return;
       enqueue("frontendErrors", {
         kind: "error",
-        message: truncateMessage(event?.message || event?.error?.message || "frontend error"),
+        message,
       });
     });
     windowRef?.addEventListener?.("unhandledrejection", (event) => {
+      const message = truncateMessage(event?.reason?.message || event?.reason || "unhandled rejection");
+      if (!shouldReportFrontendError(message)) return;
       enqueue("frontendErrors", {
         kind: "unhandledrejection",
-        message: truncateMessage(event?.reason?.message || event?.reason || "unhandled rejection"),
+        message,
       });
     });
   }

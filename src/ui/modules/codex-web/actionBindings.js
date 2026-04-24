@@ -476,16 +476,20 @@ export function createActionBindingsModule(deps) {
 
   async function setProviderEnabled(provider, enabled) {
     if (typeof api !== "function") return;
+    const scope = normalizeProviderSwitchboardScope(state.providerSwitchboardScope);
     state.providerSwitchboardBusy = true;
     state.providerSwitchboardError = "";
     syncSettingsControlsFromMain();
     try {
       const payload = await api("/codex/provider-switchboard/provider-enabled", {
         method: "POST",
-        body: { provider, enabled },
+        body: { provider, enabled, scope },
       });
-      state.providerSwitchboardStatus = normalizeProviderSwitchboardPayload(payload);
-      cacheProviderSwitchboardStatus(state.providerSwitchboardScope, state.providerSwitchboardStatus);
+      const status = normalizeProviderSwitchboardPayload(payload);
+      cacheProviderSwitchboardStatus(scope, status);
+      if (scope === normalizeProviderSwitchboardScope(state.providerSwitchboardScope)) {
+        state.providerSwitchboardStatus = status;
+      }
       setStatus(`${provider} ${enabled ? "enabled" : "disabled"}.`);
     } catch (error) {
       const message = resolveActionErrorMessage(error, "Failed to update provider.");

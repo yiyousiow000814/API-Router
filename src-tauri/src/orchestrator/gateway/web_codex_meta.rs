@@ -317,6 +317,7 @@ fn provider_switchboard_details(st: &GatewayState) -> Vec<Value> {
     let pricing = st.secrets.list_provider_pricing();
     let quota_hard_caps = st.secrets.list_provider_quota_hard_cap();
     let now = crate::orchestrator::store::unix_ms();
+    let health = st.router.snapshot(now);
     let mut names = cfg
         .provider_order
         .iter()
@@ -350,6 +351,7 @@ fn provider_switchboard_details(st: &GatewayState) -> Vec<Value> {
                 "name": name,
                 "display_name": &provider.display_name,
                 "base_url": &provider.base_url,
+                "health": health.get(&name),
                 "has_key": has_key,
                 "disabled": provider.disabled,
                 "supports_websockets": provider.supports_websockets,
@@ -387,6 +389,8 @@ fn augment_provider_switchboard_status(
 pub(super) struct CodexProviderEnabledRequest {
     provider: String,
     enabled: bool,
+    #[serde(default)]
+    scope: Option<String>,
 }
 
 pub(super) async fn codex_provider_switchboard_provider_enabled(
@@ -428,12 +432,18 @@ pub(super) async fn codex_provider_switchboard_provider_enabled(
         }
     }
     clear_provider_switchboard_cache();
+    let scope = req.scope.clone();
     match provider_switchboard_status_for_request(
         &st,
-        None,
-        provider_switchboard_default_homes(None),
+        scope.as_deref(),
+        provider_switchboard_default_homes(scope.as_deref()),
     ) {
-        Ok(value) => Json(augment_provider_switchboard_status(&st, value, None)).into_response(),
+        Ok(value) => Json(augment_provider_switchboard_status(
+            &st,
+            value,
+            scope.as_deref(),
+        ))
+        .into_response(),
         Err(error) => Json(augment_provider_switchboard_status(
             &st,
             json!({
@@ -444,7 +454,7 @@ pub(super) async fn codex_provider_switchboard_provider_enabled(
                 "provider_options": [],
                 "status_error": error,
             }),
-            None,
+            scope.as_deref(),
         ))
         .into_response(),
     }

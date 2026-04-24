@@ -601,6 +601,36 @@ def replay_notifications(home, since_event_id, max_items):
             break
     return out, first, last, gap
 
+def ensure_web_codex_session_links(codex_home):
+    home = normalize_home(codex_home)
+    if not home:
+        return
+    official = os.path.join(os.path.expanduser("~"), ".codex")
+    if os.path.abspath(home) == os.path.abspath(official):
+        return
+    try:
+        os.makedirs(home, exist_ok=True)
+        os.makedirs(os.path.join(official, "sessions"), exist_ok=True)
+        history = os.path.join(official, "history.jsonl")
+        if not os.path.exists(history):
+            open(history, "a", encoding="utf-8").close()
+        links = [
+            (os.path.join(home, "sessions"), os.path.join(official, "sessions")),
+            (os.path.join(home, "history.jsonl"), history),
+        ]
+        for link, target in links:
+            if os.path.exists(link) or os.path.islink(link):
+                try:
+                    if os.path.realpath(link) == os.path.realpath(target):
+                        continue
+                except Exception:
+                    pass
+                backup = f"{link}.web-codex-backup-{int(time.time())}"
+                os.replace(link, backup)
+            os.symlink(target, link)
+    except Exception as exc:
+        raise RuntimeError(f"failed to link Web Codex session home: {exc}") from exc
+
 class AppServer:
     def __init__(self, codex_home):
         self.codex_home = normalize_home(codex_home)
@@ -620,6 +650,7 @@ class AppServer:
             return
         env = os.environ.copy()
         if self.codex_home:
+            ensure_web_codex_session_links(self.codex_home)
             env["CODEX_HOME"] = self.codex_home
         elif "CODEX_HOME" in env:
             env.pop("CODEX_HOME", None)

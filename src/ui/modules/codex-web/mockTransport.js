@@ -878,6 +878,7 @@ export function createMockCodexTransport(deps) {
             display_name: "AI Gateway",
             base_url: "https://gateway.example/v1",
             has_key: true,
+            health: { status: "cooldown" },
             quota: { kind: "token_stats", remaining: 1220000, today_used: 280000, today_added: 1500000 },
           },
           {
@@ -885,6 +886,7 @@ export function createMockCodexTransport(deps) {
             display_name: "codex-for.me",
             base_url: "https://codex-for.me/v1",
             has_key: true,
+            health: { status: "healthy" },
             disabled: false,
             quota: {
               kind: "budget_info",
@@ -899,6 +901,7 @@ export function createMockCodexTransport(deps) {
             display_name: "RouteAI",
             base_url: "https://route.example/v1",
             has_key: false,
+            health: { status: "unhealthy" },
             disabled: true,
             quota: null,
           },
@@ -949,9 +952,11 @@ export function createMockCodexTransport(deps) {
     if (pathname === "/codex/provider-switchboard/provider-enabled" && method === "POST") {
       const provider = String(options.body?.provider || "").trim();
       const enabled = options.body?.enabled === true;
-      const previous = state.providerSwitchboardStatus || (await api("/codex/provider-switchboard"));
+      const scope = String(options.body?.scope || state.providerSwitchboardStatus?.scope || "windows").trim().toLowerCase();
+      const previous = state.providerSwitchboardStatus || (await api(`/codex/provider-switchboard?scope=${encodeURIComponent(scope)}`));
       state.providerSwitchboardStatus = {
         ...previous,
+        scope,
         provider_details: (previous.provider_details || []).map((item) =>
           item.name === provider ? { ...item, disabled: !enabled } : item
         ),
