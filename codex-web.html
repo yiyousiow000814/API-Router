@@ -1054,6 +1054,7 @@
       border-radius: 12px;
       background: rgba(255, 255, 255, 0.92);
       backdrop-filter: blur(14px);
+      animation: settings-nav-in var(--motion-base, 220ms) cubic-bezier(.22, 1, .36, 1) both;
     }
     .settingsNavItem {
       min-height: 34px;
@@ -1071,11 +1072,15 @@
       text-transform: uppercase;
       text-decoration: none;
       cursor: pointer;
-      transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
+      transition: background-color var(--motion-fast, 160ms) ease,
+        border-color var(--motion-fast, 160ms) ease,
+        color var(--motion-fast, 160ms) ease,
+        transform var(--motion-fast, 160ms) ease;
     }
     .settingsNavItem:hover {
       color: #172235;
       background: rgba(13, 18, 32, 0.04);
+      transform: translateY(-1px);
     }
     .settingsNavItem.is-active {
       color: #0e4b68;
@@ -1098,6 +1103,16 @@
       to {
         opacity: 1;
         transform: translateY(0) scale(1);
+      }
+    }
+    @keyframes settings-nav-in {
+      from {
+        opacity: 0;
+        transform: translateY(-6px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
       }
     }
     .settingsSectionCard {
@@ -1162,6 +1177,9 @@
       color: #2d3b52;
       font-size: 12px;
       font-weight: 800;
+      transition: border-color var(--motion-fast, 160ms) ease,
+        background-color var(--motion-fast, 160ms) ease,
+        transform var(--motion-fast, 160ms) ease;
     }
     .settingsProviderSummaryHeader {
       display: flex;
@@ -1212,6 +1230,9 @@
       border-radius: 10px;
       border: 1px solid rgba(13, 18, 32, 0.1);
       background: rgba(255, 255, 255, 0.8);
+      transition: border-color var(--motion-fast, 160ms) ease,
+        background-color var(--motion-fast, 160ms) ease,
+        transform var(--motion-fast, 160ms) ease;
     }
     .settingsProviderCurrentHead {
       display: flex;
@@ -1297,11 +1318,21 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      transition: background var(--motion-fast, 160ms) ease,
+        border-color var(--motion-fast, 160ms) ease,
+        color var(--motion-fast, 160ms) ease,
+        opacity var(--motion-fast, 160ms) ease,
+        transform var(--motion-fast, 160ms) ease;
+    }
+    .settingsProviderBtn:hover:not(:disabled) {
+      border-color: rgba(40, 199, 217, 0.3);
+      transform: translateY(-1px);
     }
     .settingsProviderBtn.is-active {
       border-color: rgba(40, 199, 217, 0.5);
       background: linear-gradient(135deg, rgba(40, 199, 217, 0.14), rgba(242, 193, 77, 0.12));
       color: #153b5c;
+      animation: settings-provider-active-in var(--motion-base, 220ms) cubic-bezier(.22, 1, .36, 1) both;
     }
     .settingsProviderBtn:disabled {
       opacity: 0.62;
@@ -1386,6 +1417,7 @@
       width: var(--provider-usage-pct, 0%);
       border-radius: inherit;
       background: linear-gradient(90deg, #28c7d9, #f2c14d);
+      transition: width var(--motion-slow, 260ms) cubic-bezier(.22, 1, .36, 1);
     }
     .settingsOfficialProfileList {
       display: grid;
@@ -1412,6 +1444,13 @@
       background: rgba(255, 255, 255, 0.72);
       text-align: left;
       white-space: normal;
+      transition: background var(--motion-fast, 160ms) ease,
+        border-color var(--motion-fast, 160ms) ease,
+        transform var(--motion-fast, 160ms) ease;
+    }
+    .settingsProviderOfficialAccount:hover:not(:disabled) {
+      border-color: rgba(40, 199, 217, 0.28);
+      transform: translateY(-1px);
     }
     .settingsProviderOfficialHead,
     .settingsProviderOfficialMetric {
@@ -1510,7 +1549,7 @@
       background: rgba(13, 18, 32, 0.24);
       opacity: 0;
       pointer-events: none;
-      transition: opacity 140ms ease;
+      transition: opacity var(--motion-fast, 160ms) ease;
       z-index: var(--z-folder-picker-backdrop);
     }
     .settingsProviderModalBackdrop.show {
@@ -1529,12 +1568,15 @@
       background: #ffffff;
       color: #172235;
       overflow: hidden;
-      transform: translateY(8px);
-      transition: transform 160ms ease;
+      opacity: 0;
+      transform: translateY(10px) scale(0.985);
+      transition: opacity var(--motion-fast, 160ms) ease,
+        transform var(--motion-base, 220ms) cubic-bezier(.22, 1, .36, 1);
       z-index: var(--z-folder-picker);
     }
     .settingsProviderModalBackdrop.show .settingsProviderModal {
-      transform: translateY(0);
+      opacity: 1;
+      transform: translateY(0) scale(1);
     }
     .settingsProviderModalTitle {
       font-size: 15px;
@@ -1567,7 +1609,14 @@
       background: rgba(248, 250, 255, 0.88);
       font-size: 12px;
       font-weight: 800;
-      transition: opacity var(--motion-fast, 160ms) ease, background-color var(--motion-fast, 160ms) ease;
+      transition: opacity var(--motion-fast, 160ms) ease,
+        background-color var(--motion-fast, 160ms) ease,
+        border-color var(--motion-fast, 160ms) ease,
+        transform var(--motion-fast, 160ms) ease;
+    }
+    .settingsProviderManagerRow:hover {
+      border-color: rgba(40, 199, 217, 0.22);
+      transform: translateY(-1px);
     }
     .settingsProviderManagerRow.is-disabled {
       opacity: 0.56;
@@ -1588,6 +1637,13 @@
       font-size: 11px;
       font-weight: 850;
       padding: 4px 8px;
+      transition: background-color var(--motion-fast, 160ms) ease,
+        border-color var(--motion-fast, 160ms) ease,
+        color var(--motion-fast, 160ms) ease,
+        transform var(--motion-fast, 160ms) ease;
+    }
+    .settingsProviderManagerToggle:hover {
+      transform: translateY(-1px);
     }
     .settingsProviderManagerToggle.is-enabled {
       color: #9f3146;
@@ -1602,7 +1658,11 @@
       border-radius: 999px;
       background: #a7b0bf;
       box-shadow: inset 0 0 0 1px rgba(13, 18, 32, 0.08);
-      transition: background-color var(--motion-fast, 160ms) ease;
+      transition: background-color var(--motion-fast, 160ms) ease,
+        transform var(--motion-fast, 160ms) ease;
+    }
+    .settingsProviderSwitch:hover {
+      transform: scale(1.04);
     }
     .settingsProviderSwitch.is-on {
       background: #31c676;
@@ -1617,7 +1677,7 @@
       background: #ffffff;
       box-shadow: 0 1px 2px rgba(13, 18, 32, 0.18);
       transform: translateX(0);
-      transition: transform var(--motion-fast, 160ms) ease;
+      transition: transform var(--motion-fast, 160ms) cubic-bezier(.22, 1, .36, 1);
     }
     .settingsProviderSwitch.is-on span {
       transform: translateX(16px);
@@ -1637,6 +1697,29 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      transition: color var(--motion-fast, 160ms) ease;
+    }
+    @keyframes settings-provider-active-in {
+      from { transform: translateY(-1px) scale(0.995); }
+      to { transform: translateY(0) scale(1); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .settingsNav,
+      .settingsSectionCard.settingsPane.is-active,
+      .settingsProviderBtn.is-active {
+        animation: none !important;
+      }
+      .settingsNavItem,
+      .settingsProviderBtn,
+      .settingsProviderSummary,
+      .settingsProviderCurrentCard,
+      .settingsProviderOfficialAccount,
+      .settingsProviderManagerRow,
+      .settingsProviderManagerToggle,
+      .settingsProviderSwitch,
+      .settingsProviderSwitch span {
+        transition: none !important;
+      }
     }
     .settingsUtilityGrid {
       display: grid;
