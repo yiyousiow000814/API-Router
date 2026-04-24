@@ -82,6 +82,7 @@ export function createBootstrapModule(deps) {
     updateWelcomeSelections,
     setMainTab,
     wireActions,
+    refreshProviderSwitchboard = async () => null,
     ensureScrollToBottomBtn,
     stopChatLiveFollow,
     updateScrollToBottomBtn,
@@ -178,6 +179,9 @@ export function createBootstrapModule(deps) {
     updateWelcomeSelections();
     setMainTab(restoreMainTab(savedMainTab));
     wireActions();
+    if (state.activeMainTab === "settings" && state.settingsActiveSection === "provider") {
+      refreshProviderSwitchboard().catch(() => {});
+    }
     refreshSlashCommandsState({ force: true, silent: true })
       .then(() => {
         renderComposerContextLeft();

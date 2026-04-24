@@ -1214,6 +1214,14 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         )
         .route("/codex/models", get(codex_models))
         .route("/codex/cli-config", get(codex_cli_config))
+        .route(
+            "/codex/provider-switchboard",
+            get(codex_provider_switchboard_status).post(codex_provider_switchboard_set),
+        )
+        .route(
+            "/codex/provider-switchboard/provider-enabled",
+            post(codex_provider_switchboard_provider_enabled),
+        )
         .route("/codex/file", get(codex_file))
         .route("/codex/folders", get(codex_folders_list))
         .route("/codex/approvals/pending", get(codex_pending_approvals))
@@ -1341,6 +1349,8 @@ use self::web_codex_hosts::{
 use self::web_codex_meta::{
     codex_cli_config, codex_file, codex_folders_list, codex_health, codex_models,
     codex_pending_approvals, codex_pending_user_inputs,
+    codex_provider_switchboard_provider_enabled, codex_provider_switchboard_set,
+    codex_provider_switchboard_status,
 };
 use self::web_codex_runtime::{codex_runtime_state, codex_terminal_exec, codex_version_info};
 #[cfg(test)]

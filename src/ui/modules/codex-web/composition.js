@@ -498,6 +498,7 @@ export function createCodexWebComposition(deps) {
     updateWelcomeSelections: deps.updateWelcomeSelections,
     setMainTab: deps.setMainTab,
     wireActions: actionBindings.wireActions,
+    refreshProviderSwitchboard: actionBindings.refreshProviderSwitchboard,
     ensureScrollToBottomBtn: chatViewport.ensureScrollToBottomBtn,
     stopChatLiveFollow: chatViewport.stopChatLiveFollow,
     updateScrollToBottomBtn: chatViewport.updateScrollToBottomBtn,

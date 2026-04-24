@@ -20,6 +20,10 @@ function readQuery(path) {
   return new URLSearchParams(search);
 }
 
+function readPathname(path) {
+  return String(path || "").split("?")[0] || "";
+}
+
 function isSafeModePassthroughRoute(method, url) {
   const normalizedMethod = String(method || "").trim().toUpperCase();
   const normalizedUrl = String(url || "").trim();
@@ -29,6 +33,8 @@ function isSafeModePassthroughRoute(method, url) {
     (
       normalizedUrl === "/codex/models" ||
       normalizedUrl === "/codex/version-info" ||
+      normalizedUrl === "/codex/provider-switchboard" ||
+      normalizedUrl.startsWith("/codex/provider-switchboard?") ||
       normalizedUrl === "/codex/hosts" ||
       normalizedUrl === "/codex/approvals/pending" ||
       normalizedUrl === "/codex/user-input/pending" ||
@@ -49,6 +55,8 @@ function isSafeModePassthroughRoute(method, url) {
     normalizedMethod === "POST" &&
     (
       normalizedUrl === "/codex/auth/verify" ||
+      normalizedUrl === "/codex/provider-switchboard" ||
+      normalizedUrl === "/codex/provider-switchboard/provider-enabled" ||
       normalizedUrl === "/codex/git/branch" ||
       /^\/codex\/threads\/[^/]+\/resume(?:\?|$)/.test(normalizedUrl) ||
       /^\/codex\/threads\/[^/]+\/branch(?:\?|$)/.test(normalizedUrl)
@@ -768,6 +776,7 @@ export function createMockCodexTransport(deps) {
     initSeedData();
     const method = String(options.method || "GET").trim().toUpperCase();
     const url = String(path || "");
+    const pathname = readPathname(url);
     const query = readQuery(url);
     const historyMatch = url.match(/^\/codex\/threads\/([^/]+)\/history(?:\?|$)/);
     const historyThreadId = historyMatch ? decodeURIComponent(historyMatch[1] || "") : "";
@@ -779,6 +788,9 @@ export function createMockCodexTransport(deps) {
 
     if (liveRead && url === "/codex/models") return liveRead;
     if (liveRead && url === "/codex/version-info") return liveRead;
+    if (liveRead && pathname === "/codex/provider-switchboard" && method === "GET") return liveRead;
+    if (liveRead && pathname === "/codex/provider-switchboard" && method === "POST") return liveRead;
+    if (liveRead && pathname === "/codex/provider-switchboard/provider-enabled" && method === "POST") return liveRead;
     if (liveRead && url.startsWith("/codex/threads?") && method === "GET") {
       const workspace = normalizeWorkspace(query.get("workspace") || state.workspaceTarget || "windows");
       return mergeSafeThreadList(liveRead, workspace);
@@ -832,6 +844,119 @@ export function createMockCodexTransport(deps) {
         wsl2Installed: true,
         buildStale: false,
       };
+    }
+    if (pathname === "/codex/provider-switchboard" && method === "GET") {
+      const scope = query.get("scope") || state.providerSwitchboardStatus?.scope || "windows";
+      const mockDirs = [
+        scope === "wsl2"
+          ? { cli_home: "/home/yiyou/.codex", mode: state.providerSwitchboardStatus?.mode || "gateway", model_provider: state.providerSwitchboardStatus?.model_provider || null }
+          : { cli_home: "C:\\Users\\yiyou\\API-Router\\user-data\\codex-home", mode: state.providerSwitchboardStatus?.mode || "gateway", model_provider: state.providerSwitchboardStatus?.model_provider || null },
+      ].filter((dir) =>
+        scope === "windows"
+          ? !String(dir.cli_home).toLowerCase().includes("wsl")
+          : scope === "wsl2"
+            ? String(dir.cli_home).toLowerCase().includes("wsl")
+            : true
+      );
+      const previousOfficialProfiles = Array.isArray(state.providerSwitchboardStatus?.official_profiles)
+        ? state.providerSwitchboardStatus.official_profiles
+        : null;
+      const status = {
+        ...(state.providerSwitchboardStatus || {
+          ok: true,
+          mode: "gateway",
+          model_provider: null,
+          provider_options: ["aigateway", "codex-for-me", "routeai"],
+        }),
+        ok: true,
+        scope,
+        dirs: mockDirs,
+        provider_options: ["aigateway", "codex-for-me", "routeai"],
+        provider_details: [
+          {
+            name: "aigateway",
+            display_name: "AI Gateway",
+            base_url: "https://gateway.example/v1",
+            has_key: true,
+            quota: { kind: "token_stats", remaining: 1220000, today_used: 280000, today_added: 1500000 },
+          },
+          {
+            name: "codex-for-me",
+            display_name: "codex-for.me",
+            base_url: "https://codex-for.me/v1",
+            has_key: true,
+            disabled: false,
+            quota: {
+              kind: "budget_info",
+              daily_spent_usd: 2.35,
+              daily_budget_usd: 10,
+              weekly_spent_usd: 11.2,
+              weekly_budget_usd: 50,
+            },
+          },
+          {
+            name: "routeai",
+            display_name: "RouteAI",
+            base_url: "https://route.example/v1",
+            has_key: false,
+            disabled: true,
+            quota: null,
+          },
+        ],
+        official_profiles:
+          previousOfficialProfiles ||
+          [
+            { id: "official-1", label: "Official account 1", email: "account1@example.com", plan_label: "Plus", active: true, limit_5h_remaining: "95%", limit_weekly_remaining: "75%" },
+            { id: "official-2", label: "Official account 2", email: "account2@example.com", plan_label: "Team", active: false, limit_5h_remaining: "68%", limit_weekly_remaining: "42%" },
+          ],
+      };
+      return clone(status);
+    }
+    if (pathname === "/codex/provider-switchboard" && method === "POST") {
+      const target = String(options.body?.target || "").trim().toLowerCase();
+      const provider = String(options.body?.provider || "").trim();
+      const officialProfileId = String(options.body?.officialProfileId || "").trim();
+      const scope = String(options.body?.scope || state.providerSwitchboardStatus?.scope || "windows").trim().toLowerCase();
+      const next =
+        target === "provider"
+          ? { ok: true, mode: "provider", model_provider: provider || "aigateway" }
+          : target === "official"
+            ? { ok: true, mode: "official", model_provider: null }
+            : { ok: true, mode: "gateway", model_provider: null };
+      const previous = state.providerSwitchboardStatus || (await api("/codex/provider-switchboard"));
+      state.providerSwitchboardStatus = {
+        ...previous,
+        ...next,
+        scope,
+        official_profiles: (previous.official_profiles || []).map((profile) => ({
+          ...profile,
+          active: target === "official" ? String(profile.id || "").trim() === officialProfileId : profile.active === true,
+        })),
+        dirs: [
+          scope === "wsl2"
+            ? { cli_home: "/home/yiyou/.codex", mode: next.mode, model_provider: next.model_provider }
+            : { cli_home: "C:\\Users\\yiyou\\API-Router\\user-data\\codex-home", mode: next.mode, model_provider: next.model_provider },
+        ].filter((dir) =>
+          scope === "windows"
+            ? !String(dir.cli_home).toLowerCase().includes("wsl")
+            : scope === "wsl2"
+              ? String(dir.cli_home).toLowerCase().includes("wsl")
+              : true
+        ),
+      };
+      return clone(state.providerSwitchboardStatus);
+    }
+    if (pathname === "/codex/provider-switchboard/provider-enabled" && method === "POST") {
+      const provider = String(options.body?.provider || "").trim();
+      const enabled = options.body?.enabled === true;
+      const previous = state.providerSwitchboardStatus || (await api("/codex/provider-switchboard"));
+      state.providerSwitchboardStatus = {
+        ...previous,
+        provider_details: (previous.provider_details || []).map((item) =>
+          item.name === provider ? { ...item, disabled: !enabled } : item
+        ),
+      };
+      return clone(state.providerSwitchboardStatus);
     }
     if (url.startsWith("/codex/threads?") && method === "GET") {
       const workspace = normalizeWorkspace(query.get("workspace") || state.workspaceTarget || "windows");

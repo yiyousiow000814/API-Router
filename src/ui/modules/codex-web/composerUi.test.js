@@ -300,7 +300,7 @@ describe("composerUi", () => {
 
     syncSettingsControlsFromMain();
 
-    expect(nodes.get("settingsDefaultsWorkspace")?.textContent).toBe("Applies to current WSL2 chat");
+    expect(nodes.get("settingsDefaultsWorkspace")?.textContent).toBe("Global");
     expect(nodes.get("previewUpdatedPlanBtn")?.textContent).toBe("Plan Preview: On");
     expect(nodes.get("previewPendingBtn")?.textContent).toBe("Pending Preview: On");
     expect(nodes.get("settingsFullAccessOnBtn")?.classList.contains("is-active")).toBe(true);

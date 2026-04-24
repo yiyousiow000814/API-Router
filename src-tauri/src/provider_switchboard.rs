@@ -5,6 +5,22 @@ use crate::orchestrator::store::unix_ms;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
+pub struct ProviderSwitchboardRuntime<'a> {
+    pub config_path: &'a Path,
+    pub gateway: &'a crate::orchestrator::gateway::GatewayState,
+    pub secrets: &'a crate::orchestrator::secrets::SecretStore,
+}
+
+impl<'a> ProviderSwitchboardRuntime<'a> {
+    fn from_app_state(state: &'a AppState) -> Self {
+        Self {
+            config_path: &state.config_path,
+            gateway: &state.gateway,
+            secrets: &state.secrets,
+        }
+    }
+}
+
 fn dedup_key(cli_home: &Path) -> String {
     let mut s = cli_home.to_string_lossy().to_string();
     if cfg!(windows) {
@@ -247,15 +263,6 @@ fn save_switchboard_state_to_config_path(
     write_json(&switchboard_state_path_from_config_path(config_path), &v)
 }
 
-fn save_switchboard_state(
-    state: &tauri::State<'_, AppState>,
-    homes: &[PathBuf],
-    target: &str,
-    provider: Option<&str>,
-) -> Result<(), String> {
-    save_switchboard_state_to_config_path(&state.config_path, homes, target, provider)
-}
-
 fn load_switchboard_state_from_config_path(config_path: &Path) -> Option<serde_json::Value> {
     read_json(&switchboard_state_path_from_config_path(config_path)).ok()
 }
@@ -423,15 +430,18 @@ fn read_cfg_base_text(config_path: &Path, cli_home: &Path) -> Result<String, Str
     Ok(normalize_cfg_for_switchboard_base(&current))
 }
 
-fn switch_to_gateway_home_impl(state: &AppState, cli_home: &Path) -> Result<(), String> {
-    let gateway_token = state.secrets.ensure_gateway_token()?;
+fn switch_to_gateway_home_impl(
+    runtime: &ProviderSwitchboardRuntime<'_>,
+    cli_home: &Path,
+) -> Result<(), String> {
+    let gateway_token = runtime.secrets.ensure_gateway_token()?;
     if gateway_token.trim().is_empty() {
         return Err("Gateway token is empty. Generate it in Dashboard first.".to_string());
     }
 
-    let base_cfg = read_cfg_base_text(&state.config_path, cli_home)?;
-    if let Err(e) = save_switchboard_base_cfg(&state.config_path, cli_home, &base_cfg) {
-        state.gateway.store.events().emit(
+    let base_cfg = read_cfg_base_text(runtime.config_path, cli_home)?;
+    if let Err(e) = save_switchboard_base_cfg(runtime.config_path, cli_home, &base_cfg) {
+        runtime.gateway.store.events().emit(
             "codex",
             crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_BASE_SAVE_FAILED,
             &format!("Provider switchboard base save failed: {e}"),
@@ -441,8 +451,8 @@ fn switch_to_gateway_home_impl(state: &AppState, cli_home: &Path) -> Result<(), 
             }),
         );
     }
-    if let Err(e) = save_switchboard_base_meta(&state.config_path, cli_home, &base_cfg) {
-        state.gateway.store.events().emit(
+    if let Err(e) = save_switchboard_base_meta(runtime.config_path, cli_home, &base_cfg) {
+        runtime.gateway.store.events().emit(
             "codex",
             crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_BASE_META_SAVE_FAILED,
             &format!("Provider switchboard base meta save failed: {e}"),
@@ -453,9 +463,9 @@ fn switch_to_gateway_home_impl(state: &AppState, cli_home: &Path) -> Result<(), 
         );
     }
 
-    let listen_port = state.gateway.cfg.read().listen.port;
+    let listen_port = runtime.gateway.cfg.read().listen.port;
     let wsl_gateway_host =
-        crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(Some(&state.config_path));
+        crate::platform::wsl_gateway_host::resolve_wsl_gateway_host(Some(runtime.config_path));
     let gateway_host = if is_wsl_unc_home(cli_home) {
         wsl_gateway_host.as_str()
     } else {
@@ -470,7 +480,7 @@ fn switch_to_gateway_home_impl(state: &AppState, cli_home: &Path) -> Result<(), 
         None,
     );
     let next_auth = auth_with_openai_key(gateway_token.trim());
-    write_swapped_files(&state.config_path, cli_home, &next_auth, &next_cfg)
+    write_swapped_files(runtime.config_path, cli_home, &next_auth, &next_cfg)
 }
 
 fn is_wsl_unc_home(cli_home: &Path) -> bool {
@@ -858,8 +868,15 @@ pub fn get_status(
     state: &tauri::State<'_, AppState>,
     cli_homes: Vec<String>,
 ) -> Result<serde_json::Value, String> {
+    get_status_for_gateway(&state.gateway, cli_homes)
+}
+
+pub fn get_status_for_gateway(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    cli_homes: Vec<String>,
+) -> Result<serde_json::Value, String> {
     let homes = resolve_cli_homes(cli_homes)?;
-    let app_cfg = state.gateway.cfg.read().clone();
+    let app_cfg = gateway.cfg.read().clone();
     let dirs = collect_status_dirs(&homes, &app_cfg)?;
     let provider_options = app_cfg
         .provider_order
@@ -1078,7 +1095,9 @@ fn sync_gateway_target_for_rotated_token_impl(
         if mode != "gateway" {
             continue;
         }
-        if let Err(e) = switch_to_gateway_home_impl(state, h) {
+        if let Err(e) =
+            switch_to_gateway_home_impl(&ProviderSwitchboardRuntime::from_app_state(state), h)
+        {
             failed_targets.push(format!(
                 "{} (rewrite gateway target failed: {e})",
                 h.to_string_lossy()

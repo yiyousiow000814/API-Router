@@ -322,7 +322,16 @@ pub(super) fn web_codex_rpc_home_override() -> Option<String> {
     if explicit.is_some() {
         return explicit;
     }
-    default_windows_codex_dir().map(|p| p.to_string_lossy().to_string())
+    let process_home = std::env::var("CODEX_HOME")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if process_home.is_some() {
+        return process_home;
+    }
+    std::env::var_os("API_ROUTER_USER_DATA_DIR")
+        .map(PathBuf::from)
+        .map(|path| path.join("codex-home").to_string_lossy().to_string())
 }
 
 pub(super) fn web_codex_rpc_home_override_for_target(
