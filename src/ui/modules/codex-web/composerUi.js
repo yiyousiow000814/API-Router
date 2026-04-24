@@ -104,8 +104,15 @@ export function createComposerUiModule(deps) {
     return new Intl.NumberFormat("en", { maximumFractionDigits: 2 }).format(number);
   }
 
-  function describeProviderUsage(quota) {
+  function describeProviderUsage(quota, hardCap = null) {
     const q = quota && typeof quota === "object" ? quota : {};
+    const caps = hardCap && typeof hardCap === "object"
+      ? {
+          daily: hardCap.daily !== false,
+          weekly: hardCap.weekly !== false,
+          monthly: hardCap.monthly !== false,
+        }
+      : { daily: true, weekly: true, monthly: true };
     const kind = String(q.kind || "none").trim();
     if (kind === "token_stats") {
       const total = readFiniteNumber(q.today_added);
@@ -121,36 +128,56 @@ export function createComposerUiModule(deps) {
       };
     }
     if (kind === "budget_info") {
-      const dailySpent = readFiniteNumber(q.daily_spent_usd);
-      const dailyBudget = readFiniteNumber(q.daily_budget_usd);
-      const dailyLeft = dailySpent != null && dailyBudget != null ? Math.max(0, dailyBudget - dailySpent) : null;
-      const dailyLeftPct = pctOf(dailyLeft, dailyBudget);
-      const hasDaily = dailySpent != null && dailyBudget != null;
-      let sub = "";
-      if (q.weekly_spent_usd != null && q.weekly_budget_usd != null) {
-        sub = `Weekly $${fmtUsd(q.weekly_spent_usd)} / $${fmtUsd(q.weekly_budget_usd)}`;
-      } else if (q.monthly_spent_usd != null || q.monthly_budget_usd != null) {
-        sub = q.monthly_spent_usd != null && q.monthly_budget_usd != null
-          ? `Monthly $${fmtUsd(q.monthly_spent_usd)} / $${fmtUsd(q.monthly_budget_usd)}`
-          : q.monthly_spent_usd != null
-            ? `Used $${fmtUsd(q.monthly_spent_usd)}`
-            : `Monthly budget $${fmtUsd(q.monthly_budget_usd)}`;
-      }
+      const periods = [
+        ["daily", "Daily", readFiniteNumber(q.daily_spent_usd), readFiniteNumber(q.daily_budget_usd)],
+        ["weekly", "Weekly", readFiniteNumber(q.weekly_spent_usd), readFiniteNumber(q.weekly_budget_usd)],
+        ["monthly", "Monthly", readFiniteNumber(q.monthly_spent_usd), readFiniteNumber(q.monthly_budget_usd)],
+      ]
+        .filter(([period]) => caps[period] !== false)
+        .map(([period, label, spent, budget]) => {
+          const hasBudget = spent != null && budget != null;
+          const left = hasBudget ? Math.max(0, budget - spent) : null;
+          return {
+            period,
+            label,
+            spent,
+            budget,
+            left,
+            leftPct: pctOf(left, budget),
+            hasAny:
+              (budget != null && budget > 0) ||
+              (spent != null && spent > 0),
+            hasBudget,
+          };
+        })
+        .filter((period) => period.hasAny);
+      const primary = periods.find((period) => period.hasBudget) || periods[0] || null;
+      const sub = periods
+        .filter((period) => period !== primary)
+        .slice(0, 1)
+        .map((period) =>
+          period.hasBudget
+            ? `${period.label} $${fmtUsd(period.spent)} / $${fmtUsd(period.budget)}`
+            : period.spent != null
+              ? `${period.label} used $${fmtUsd(period.spent)}`
+              : `${period.label} budget $${fmtUsd(period.budget)}`
+        )
+        .join("");
       return {
-        headline: hasDaily
-          ? `Remaining ${fmtPct(dailyLeftPct)}`
+        headline: primary?.hasBudget
+          ? `Remaining ${fmtPct(primary.leftPct)}`
           : q.remaining != null
             ? `Balance $${fmtUsd(q.remaining)}`
             : "Usage available",
-        detail: hasDaily
-          ? `Daily $${fmtUsd(dailySpent)} / $${fmtUsd(dailyBudget)}`
-          : dailySpent != null
-            ? `Daily $${fmtUsd(dailySpent)}`
-            : dailyBudget != null
-              ? `Daily budget $${fmtUsd(dailyBudget)}`
+        detail: primary?.hasBudget
+          ? `${primary.label} $${fmtUsd(primary.spent)} / $${fmtUsd(primary.budget)}`
+          : primary?.spent != null
+            ? `${primary.label} $${fmtUsd(primary.spent)}`
+            : primary?.budget != null
+              ? `${primary.label} budget $${fmtUsd(primary.budget)}`
               : "Refresh after first request",
         sub,
-        pct: dailyLeftPct,
+        pct: primary?.leftPct ?? null,
       };
     }
     return {
@@ -241,11 +268,13 @@ export function createComposerUiModule(deps) {
         return `<button class="settingsProviderBtn settingsProviderOfficialAccount${selected ? " is-active" : ""}" type="button" data-provider-target="official" data-official-profile-id="${escapeHtml(id)}" aria-pressed="${selected ? "true" : "false"}"${disabled ? " disabled" : ""}>
           <div class="settingsProviderOfficialHead">
             <span class="settingsProviderOfficialIdentity">
-              <span class="settingsProviderOfficialEmail">${escapeHtml(email || label)}</span>
+              <span class="settingsProviderOfficialEmailLine">
+                <span class="settingsProviderOfficialEmail">${escapeHtml(email || label)}</span>
+                ${planLabel ? `<small class="settingsProviderPlanBadge">${escapeHtml(planLabel)}</small>` : ""}
+              </span>
               <span class="settingsProviderOfficialLabel">${escapeHtml(email ? label : "Official account")}</span>
             </span>
             <span class="settingsProviderOfficialBadges">
-              ${planLabel ? `<small class="settingsProviderPlanBadge">${escapeHtml(planLabel)}</small>` : ""}
               ${profile.active ? '<small class="settingsProviderActiveBadge">Active</small>' : ""}
             </span>
           </div>
@@ -1748,7 +1777,6 @@ export function createComposerUiModule(deps) {
   function syncSettingsControlsFromMain() {
     const toggleBtn = byId("toggleLiveInspectorBtn");
     const stateNode = byId("liveInspectorState");
-    const workspaceNode = byId("settingsDefaultsWorkspace");
     const previewPlanBtn = byId("previewUpdatedPlanBtn");
     const previewPendingBtn = byId("previewPendingBtn");
     const fullAccessOnBtn = byId("settingsFullAccessOnBtn");
@@ -1789,7 +1817,6 @@ export function createComposerUiModule(deps) {
     const previewPendingOpen = !!win.__webCodexDebug?.isPreviewPendingActive?.();
     if (toggleBtn) toggleBtn.textContent = `Live inspector: ${enabled ? "On" : "Off"}`;
     if (stateNode) stateNode.textContent = open ? "Visible" : "Hidden";
-    if (workspaceNode) workspaceNode.textContent = "Global";
     if (previewPlanBtn) previewPlanBtn.textContent = `Plan Preview: ${previewPlanOpen ? "On" : "Off"}`;
     if (previewPendingBtn) previewPendingBtn.textContent = `Pending Preview: ${previewPendingOpen ? "On" : "Off"}`;
     if (fullAccessOnBtn) {
@@ -1902,8 +1929,7 @@ export function createComposerUiModule(deps) {
             .map((provider) => {
               const name = String(provider.name || "").trim();
               const displayName = String(provider.display_name || name).trim();
-              const baseUrl = String(provider.base_url || "").trim();
-              const usage = describeProviderUsage(provider.quota);
+              const usage = describeProviderUsage(provider.quota, provider.quota_hard_cap);
               const endsText = formatProviderEndsText(provider);
               const pct = readFiniteNumber(usage.pct);
               const pctStyle = pct == null ? "" : ` style="--provider-usage-pct:${Math.max(0, Math.min(100, pct))}%"`;
@@ -1914,9 +1940,6 @@ export function createComposerUiModule(deps) {
                     <span class="settingsProviderOptionName">${escapeHtml(displayName)}</span>
                     ${endsText ? `<small class="settingsProviderEndsText">${escapeHtml(endsText)}</small>` : ""}
                   </span>
-                  <span class="settingsProviderOptionMeta">${escapeHtml(baseUrl || name)}</span>
-                </span>
-                <span class="settingsProviderUsage">
                   <span>${escapeHtml(usage.headline)}</span>
                   <span>${escapeHtml(usage.detail)}</span>
                   ${usage.sub ? `<span>${escapeHtml(usage.sub)}</span>` : ""}

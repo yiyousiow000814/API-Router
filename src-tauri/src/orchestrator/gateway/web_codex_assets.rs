@@ -110,6 +110,8 @@ const WEB_CODEX_TURN_ACTIONS_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/turnActions.js");
 const WEB_CODEX_UI_HELPERS_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/uiHelpers.js");
+const WEB_CODEX_WEB_DIAGNOSTICS_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/webDiagnostics.js");
 const WEB_CODEX_WORKSPACE_UI_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/workspaceUi.js");
 const WEB_CODEX_WS_CLIENT_JS: &str =
@@ -174,6 +176,7 @@ fn resolve_web_codex_module_body(module_path: &str) -> Option<&'static str> {
         "codex-web/transportMode.js" => Some(WEB_CODEX_TRANSPORT_MODE_JS),
         "codex-web/turnActions.js" => Some(WEB_CODEX_TURN_ACTIONS_JS),
         "codex-web/uiHelpers.js" => Some(WEB_CODEX_UI_HELPERS_JS),
+        "codex-web/webDiagnostics.js" => Some(WEB_CODEX_WEB_DIAGNOSTICS_JS),
         "codex-web/workspaceUi.js" => Some(WEB_CODEX_WORKSPACE_UI_JS),
         "codex-web/wsClient.js" => Some(WEB_CODEX_WS_CLIENT_JS),
         _ => None,

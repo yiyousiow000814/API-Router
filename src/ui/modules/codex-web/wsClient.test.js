@@ -138,6 +138,78 @@ describe("wsClient", () => {
     ]);
   });
 
+  it("records codex api timing results", async () => {
+    const apiResults = [];
+    let now = 1000;
+    const module = createWsClientModule({
+      state: {
+        token: "",
+        ws: null,
+        wsReqHandlers: new Map(),
+        pendingApprovals: [],
+        pendingUserInputs: [],
+        wsLastEventId: 0,
+        wsRecentEventIds: new Set(),
+        wsSubscribedEvents: false,
+      },
+      setStatus() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh() {},
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      recordApiResult(result) {
+        apiResults.push(result);
+      },
+      LAST_EVENT_ID_KEY: "test-last-event-id",
+      windowRef: { document: { visibilityState: "visible", addEventListener() {} }, addEventListener() {} },
+      WebSocketRef: class {},
+      localStorageRef: { getItem: () => null, setItem() {}, removeItem() {} },
+      fetchRef: async () => {
+        now = 1041;
+        return {
+          ok: true,
+          json: async () => ({ ok: true }),
+        };
+      },
+      nowRef: () => now,
+    });
+
+    await expect(module.api("/codex/threads")).resolves.toEqual({ ok: true });
+    expect(apiResults).toEqual([
+      {
+        command: "GET /codex/threads",
+        elapsedMs: 41,
+        ok: true,
+        errorMessage: null,
+      },
+    ]);
+  });
+
   it("records network-level codex api failures", async () => {
     const transportEvents = [];
     const module = createWsClientModule({

@@ -253,7 +253,6 @@ describe("composerUi", () => {
       "liveInspectorState",
       "previewUpdatedPlanBtn",
       "previewPendingBtn",
-      "settingsDefaultsWorkspace",
       "settingsFullAccessOnBtn",
       "settingsFullAccessOffBtn",
       "settingsFastOnBtn",
@@ -300,7 +299,6 @@ describe("composerUi", () => {
 
     syncSettingsControlsFromMain();
 
-    expect(nodes.get("settingsDefaultsWorkspace")?.textContent).toBe("Global");
     expect(nodes.get("previewUpdatedPlanBtn")?.textContent).toBe("Plan Preview: On");
     expect(nodes.get("previewPendingBtn")?.textContent).toBe("Pending Preview: On");
     expect(nodes.get("settingsFullAccessOnBtn")?.classList.contains("is-active")).toBe(true);

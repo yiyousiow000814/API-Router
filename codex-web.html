@@ -1189,6 +1189,9 @@
       grid-template-columns: minmax(0, 1fr);
       gap: 12px;
       align-items: start;
+      width: 100%;
+      max-width: 620px;
+      margin: 0 auto;
     }
     .settingsProviderDeck.is-loading .settingsProviderSummary {
       border-color: rgba(40, 199, 217, 0.24);
@@ -1205,13 +1208,13 @@
     .settingsProviderSummary {
       position: relative;
       display: grid;
-      gap: 8px;
+      gap: 10px;
       min-height: 0;
       align-content: start;
-      padding: 10px 12px;
+      padding: 14px 16px;
       border: 1px solid rgba(13, 18, 32, 0.1);
       border-radius: 10px;
-      background: rgba(255, 255, 255, 0.72);
+      background: rgba(255, 255, 255, 0.86);
       color: #2d3b52;
       font-size: 12px;
       font-weight: 800;
@@ -1235,9 +1238,22 @@
     }
     .settingsProviderSummaryHeader {
       display: flex;
-      align-items: baseline;
+      align-items: center;
       justify-content: space-between;
-      gap: 10px;
+      gap: 12px;
+    }
+    .settingsProviderSummaryTitleBlock {
+      min-width: 0;
+      display: grid;
+      gap: 5px;
+    }
+    .settingsProviderSummaryLabel {
+      color: #6f7f98;
+      font-size: 10px;
+      font-weight: 850;
+      letter-spacing: .1em;
+      line-height: 1;
+      text-transform: uppercase;
     }
     .settingsProviderSummary span {
       min-width: 0;
@@ -1245,16 +1261,26 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .settingsProviderSummary span:first-child {
-      color: #6f7f98;
-      font-size: 10px;
-      letter-spacing: .1em;
-      text-transform: uppercase;
-    }
     #settingsProviderCurrentTarget {
       color: #152338;
-      font-size: 15px;
+      font-size: 16px;
+      line-height: 1.12;
       letter-spacing: 0;
+    }
+    #settingsProviderCurrentMode {
+      flex: 0 0 auto;
+      max-width: 42%;
+      padding: 4px 8px;
+      border: 1px solid rgba(13, 18, 32, 0.1);
+      border-radius: 8px;
+      background: #f7f9fc;
+      color: #51637e;
+      font-size: 10px;
+      font-weight: 850;
+      letter-spacing: .08em;
+      line-height: 1;
+      text-align: center;
+      text-transform: uppercase;
     }
     .settingsProviderCurrentGrid {
       display: grid;
@@ -1263,6 +1289,13 @@
     }
     .settingsProviderCurrentGrid.is-single {
       grid-template-columns: 1fr;
+    }
+    .settingsProviderIntro {
+      color: #687891;
+      font-size: 11px;
+      font-weight: 650;
+      line-height: 1.45;
+      margin: -2px 0 2px;
     }
     .settingsProviderCurrentHome {
       min-width: 0;
@@ -1273,6 +1306,10 @@
       color: #7f8da4;
       font-size: 11px;
       font-weight: 750;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
     }
     .settingsProviderCurrentCard {
       min-width: 0;
@@ -1313,7 +1350,6 @@
       white-space: nowrap;
     }
     .settingsProviderModeRow,
-    .settingsProviderList,
     .settingsChoiceGrid,
     .settingsVersionGrid {
       display: grid;
@@ -1323,16 +1359,25 @@
     .settingsProviderModeRow {
       grid-template-columns: 1fr;
     }
+    .settingsProviderList {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+    }
     .settingsProviderDirectBlock,
+    .settingsProviderGatewayBlock,
     .settingsProviderOfficialBlock {
       display: grid;
       gap: 8px;
       padding-top: 8px;
       border-top: 1px solid rgba(13, 18, 32, 0.08);
     }
-    .settingsProviderOfficialBlock {
+    .settingsProviderGatewayBlock {
       padding-top: 0;
       border-top: none;
+    }
+    .settingsProviderOfficialBlock {
+      padding-top: 8px;
     }
     .settingsProviderControls {
       min-width: 0;
@@ -1429,12 +1474,35 @@
       opacity: 0.62;
       cursor: progress;
     }
-    .settingsProviderOption {
+    .settingsProviderGatewayBtn {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(128px, 0.62fr);
+      grid-template-columns: minmax(0, 1fr) auto;
       align-items: center;
       gap: 10px;
-      min-height: 64px;
+      min-height: 48px;
+      text-align: left;
+    }
+    .settingsProviderGatewayBtn > span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .settingsProviderGatewayBtn > small {
+      color: #7a879d;
+      font-size: 10px;
+      font-weight: 850;
+      text-transform: none;
+    }
+    .settingsProviderGatewayBtn.is-active > small {
+      color: #0a7082;
+    }
+    .settingsProviderOption {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      align-items: start;
+      gap: 6px;
+      min-height: 0;
       text-align: left;
       white-space: normal;
     }
@@ -1465,6 +1533,9 @@
       gap: 6px;
       width: 100%;
     }
+    .settingsProviderOption .settingsProviderNameLine {
+      margin-bottom: 3px;
+    }
     .settingsProviderNameLine .settingsProviderOptionName,
     .settingsProviderManagerNameLine > span {
       min-width: 0;
@@ -1480,7 +1551,12 @@
       line-height: 1.2;
       white-space: nowrap;
     }
+    .settingsProviderOptionMain > span:not(.settingsProviderNameLine):first-of-type {
+      color: #24364f;
+      font-weight: 850;
+    }
     .settingsProviderOptionMeta,
+    .settingsProviderOptionMain > span:not(.settingsProviderNameLine),
     .settingsProviderUsage span {
       min-width: 0;
       overflow: hidden;
@@ -1558,6 +1634,13 @@
       min-width: 0;
       display: grid;
       gap: 2px;
+    }
+    .settingsProviderOfficialEmailLine {
+      min-width: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 100%;
     }
     .settingsProviderOfficialEmail,
     .settingsProviderOfficialLabel {
@@ -6093,6 +6176,9 @@
         margin-inline: 2px;
         border-radius: 14px;
       }
+      #settingsProviderCurrentMode {
+        max-width: 46%;
+      }
     }
 
     @media (min-width: 1081px) {
@@ -6277,23 +6363,36 @@
                       <div class="settingsSectionEyebrow">Provider</div>
                       <div id="settingsProviderError" class="settingsInlineError" style="display:none;"></div>
                     </div>
-                    <div id="settingsDefaultsWorkspace" class="settingsSectionNote">Global</div>
                   </div>
                   <div id="settingsProviderDeck" class="settingsProviderDeck">
                     <div class="settingsProviderSummary">
                       <div class="settingsProviderSummaryHeader">
+                        <div class="settingsProviderSummaryTitleBlock">
+                          <span class="settingsProviderSummaryLabel">Current provider</span>
+                          <span id="settingsProviderCurrentTarget">-</span>
+                        </div>
                         <span id="settingsProviderCurrentMode">Loading...</span>
-                        <span id="settingsProviderCurrentTarget">-</span>
                       </div>
                       <div id="settingsProviderCurrentGrid" class="settingsProviderCurrentGrid"></div>
                     </div>
                     <div class="settingsProviderControls">
+                      <div class="settingsProviderIntro">
+                        Provider changes apply to future Web Codex messages in this workspace.
+                      </div>
                       <div id="settingsProviderScopeRow" class="settingsProviderScopeRow" aria-label="Web Codex workspace provider">
                         <button id="settingsProviderScopeWindowsBtn" class="settingsProviderBtn is-active" type="button" aria-pressed="true">Windows</button>
                         <button id="settingsProviderScopeWslBtn" class="settingsProviderBtn" type="button" aria-pressed="false">WSL2</button>
                       </div>
-                      <div class="settingsProviderModeRow">
-                        <button id="settingsProviderGatewayBtn" class="settingsProviderBtn" type="button" aria-pressed="false">Gateway</button>
+                      <div class="settingsProviderGatewayBlock">
+                        <div class="settingsChoiceLabel">
+                          <span class="settingsChoiceTitle">Gateway</span>
+                        </div>
+                        <div class="settingsProviderModeRow">
+                          <button id="settingsProviderGatewayBtn" class="settingsProviderBtn settingsProviderGatewayBtn" type="button" aria-pressed="false">
+                            <span>Gateway</span>
+                            <small>Auto-routes enabled direct providers</small>
+                          </button>
+                        </div>
                       </div>
                       <div class="settingsProviderOfficialBlock">
                         <div class="settingsChoiceLabel">

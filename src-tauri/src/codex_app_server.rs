@@ -85,6 +85,7 @@ struct NotificationState {
         HashMap<(String, String), GatewayTerminalFailureSignature>,
     active_turn_threads: HashSet<String>,
     provider_refresh_pending: bool,
+    provider_refresh_in_progress: bool,
 }
 
 impl Default for NotificationState {
@@ -95,6 +96,7 @@ impl Default for NotificationState {
             last_gateway_terminal_failure_by_thread_method: HashMap::new(),
             active_turn_threads: HashSet::new(),
             provider_refresh_pending: false,
+            provider_refresh_in_progress: false,
         }
     }
 }
@@ -188,11 +190,61 @@ fn update_provider_refresh_state(st: &mut NotificationState, value: &Value) -> b
             _ => {}
         }
     }
-    if st.provider_refresh_pending && st.active_turn_threads.is_empty() {
+    if st.provider_refresh_pending
+        && st.active_turn_threads.is_empty()
+        && !st.provider_refresh_in_progress
+    {
         st.provider_refresh_pending = false;
+        st.provider_refresh_in_progress = true;
         return true;
     }
     false
+}
+
+async fn finish_provider_refresh(key: &str) -> bool {
+    let map = notification_state_map();
+    let mut guard = map.lock().await;
+    let st = guard.entry(key.to_string()).or_default();
+    st.provider_refresh_in_progress = false;
+    if st.provider_refresh_pending && st.active_turn_threads.is_empty() {
+        st.provider_refresh_pending = false;
+        st.provider_refresh_in_progress = true;
+        return true;
+    }
+    false
+}
+
+async fn reserve_provider_refresh_for_home(key: &str) -> (bool, usize) {
+    let map = notification_state_map();
+    let mut guard = map.lock().await;
+    let st = guard.entry(key.to_string()).or_default();
+    let running_threads = st.active_turn_threads.len();
+    if running_threads > 0 || st.provider_refresh_in_progress {
+        st.provider_refresh_pending = true;
+        return (false, running_threads);
+    }
+    st.provider_refresh_pending = false;
+    st.provider_refresh_in_progress = true;
+    (true, 0)
+}
+
+pub async fn wait_for_provider_refresh_idle(codex_home: Option<&str>) {
+    let key = normalize_home_key(codex_home).to_string();
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(5) {
+        let in_progress = {
+            let map = notification_state_map();
+            let guard = map.lock().await;
+            guard
+                .get(&key)
+                .map(|st| st.provider_refresh_in_progress)
+                .unwrap_or(false)
+        };
+        if !in_progress {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 }
 
 #[derive(Default)]
@@ -1908,16 +1960,25 @@ async fn push_notification(codex_home: Option<&str>, value: Value) {
     let (event_id, queue_len, dropped) = push_notification_into_state(st, value);
     drop(guard);
     if refresh_provider_runtime {
-        let refresh_result = refresh_server_in_home(codex_home).await;
-        push_debug_event(
-            "app.server.provider_refresh.deferred_complete",
-            serde_json::json!({
-                "home": key.as_ref(),
-                "ok": refresh_result.is_ok(),
-                "message": refresh_result.err().unwrap_or_default(),
-            }),
-        )
-        .await;
+        loop {
+            let refresh_result = refresh_server_in_home(codex_home).await;
+            let ok = refresh_result.is_ok();
+            let message = refresh_result.err().unwrap_or_default();
+            let refresh_again = finish_provider_refresh(key.as_ref()).await;
+            push_debug_event(
+                "app.server.provider_refresh.deferred_complete",
+                serde_json::json!({
+                    "home": key.as_ref(),
+                    "ok": ok,
+                    "message": message,
+                    "refreshAgain": refresh_again,
+                }),
+            )
+            .await;
+            if !refresh_again {
+                break;
+            }
+        }
     }
     crate::orchestrator::gateway::web_codex_session_manager::record_app_notification_thread_state_for_home(
         codex_home,
@@ -2247,20 +2308,8 @@ pub async fn refresh_server_after_provider_switch(
 ) -> Result<ProviderRuntimeRefresh, String> {
     ensure_notification_home_state(codex_home).await;
     let key = normalize_home_key(codex_home).to_string();
-    let running_threads = {
-        let map = notification_state_map();
-        let mut guard = map.lock().await;
-        let st = guard.entry(key.clone()).or_default();
-        let running_threads = st.active_turn_threads.len();
-        if running_threads > 0 {
-            st.provider_refresh_pending = true;
-            running_threads
-        } else {
-            st.provider_refresh_pending = false;
-            0
-        }
-    };
-    if running_threads > 0 {
+    let (reserved, running_threads) = reserve_provider_refresh_for_home(&key).await;
+    if !reserved {
         push_debug_event(
             "app.server.provider_refresh.deferred",
             serde_json::json!({
@@ -2274,11 +2323,19 @@ pub async fn refresh_server_after_provider_switch(
             running_threads,
         });
     }
-    refresh_server_in_home(codex_home).await?;
+    let refresh_result = refresh_server_in_home(codex_home).await;
+    let refresh_again = finish_provider_refresh(&key).await;
+    refresh_result?;
+    if refresh_again {
+        let second_result = refresh_server_in_home(codex_home).await;
+        let _ = finish_provider_refresh(&key).await;
+        second_result?;
+    }
     push_debug_event(
         "app.server.provider_refresh.immediate",
         serde_json::json!({
             "home": key,
+            "refreshAgain": refresh_again,
         }),
     )
     .await;
@@ -3234,6 +3291,7 @@ mod tests {
         let state = guard.get(home_text.as_str()).expect("home state");
         assert!(state.active_turn_threads.is_empty());
         assert!(!state.provider_refresh_pending);
+        assert!(!state.provider_refresh_in_progress);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3255,6 +3313,43 @@ mod tests {
         let state = guard.get(home_text.as_str()).expect("home state");
         assert!(state.active_turn_threads.is_empty());
         assert!(!state.provider_refresh_pending);
+        assert!(!state.provider_refresh_in_progress);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn provider_refresh_reservation_defers_overlapping_refreshes() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+        let temp = tempfile::tempdir().expect("temp dir");
+        let home = temp.path().join(".codex");
+        let home_text = home.to_string_lossy().to_string();
+
+        let (reserved, running_threads) = reserve_provider_refresh_for_home(&home_text).await;
+        assert!(reserved);
+        assert_eq!(running_threads, 0);
+
+        let (second_reserved, second_running_threads) =
+            reserve_provider_refresh_for_home(&home_text).await;
+        assert!(!second_reserved);
+        assert_eq!(second_running_threads, 0);
+
+        {
+            let map = notification_state_map();
+            let guard = map.lock().await;
+            let state = guard.get(home_text.as_str()).expect("home state");
+            assert!(state.provider_refresh_pending);
+            assert!(state.provider_refresh_in_progress);
+        }
+
+        assert!(finish_provider_refresh(&home_text).await);
+        assert!(!finish_provider_refresh(&home_text).await);
+
+        let map = notification_state_map();
+        let guard = map.lock().await;
+        let state = guard.get(home_text.as_str()).expect("home state");
+        assert!(state.active_turn_threads.is_empty());
+        assert!(!state.provider_refresh_pending);
+        assert!(!state.provider_refresh_in_progress);
     }
 
     #[tokio::test(flavor = "current_thread")]

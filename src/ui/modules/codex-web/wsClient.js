@@ -138,6 +138,7 @@ export function createWsClientModule(deps) {
     applyPendingPayloads,
     upsertProvisionalThreadItem = () => false,
     recordWebTransportEvent = () => {},
+    recordApiResult = () => {},
     LAST_EVENT_ID_KEY,
     windowRef = window,
     WebSocketRef = WebSocket,
@@ -264,6 +265,7 @@ export function createWsClientModule(deps) {
     };
     if (state.token.trim()) headers.Authorization = `Bearer ${state.token.trim()}`;
     const route = `${String(options.method || "GET").toUpperCase()} ${String(path || "")}`.trim();
+    const startedAt = Number(nowRef()) || Date.now();
     let res;
     try {
       res = await fetchRef(path, {
@@ -274,18 +276,36 @@ export function createWsClientModule(deps) {
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error || "Network request failed");
+      recordApiResult({
+        command: route,
+        elapsedMs: (Number(nowRef()) || Date.now()) - startedAt,
+        ok: false,
+        errorMessage: detail,
+      });
       recordWebTransportEvent("api_request_failed", `${route} -> network error: ${detail}`);
       throw error;
     }
     const payload = await res.json().catch(() => ({}));
     if (!res.ok) {
       const detail = resolveApiErrorMessage(payload, res.status);
+      recordApiResult({
+        command: route,
+        elapsedMs: (Number(nowRef()) || Date.now()) - startedAt,
+        ok: false,
+        errorMessage: detail,
+      });
       recordWebTransportEvent("api_request_failed", `${route} -> HTTP ${String(res.status)}: ${detail}`);
       if (/thread not found/i.test(detail)) {
         recordWebTransportEvent("thread_missing_observed", detail);
       }
       throw new Error(detail);
     }
+    recordApiResult({
+      command: route,
+      elapsedMs: (Number(nowRef()) || Date.now()) - startedAt,
+      ok: true,
+      errorMessage: null,
+    });
     return payload;
   }
 

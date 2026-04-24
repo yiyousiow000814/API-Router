@@ -3,6 +3,61 @@ use crate::orchestrator::gateway::web_codex_auth::{
     api_error, api_error_detail, require_codex_auth,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+const PROVIDER_SWITCHBOARD_CACHE_TTL: Duration = Duration::from_secs(5);
+
+#[derive(Clone)]
+struct ProviderSwitchboardStatusCacheEntry {
+    cached_at: Instant,
+    result: Result<Value, String>,
+}
+
+#[derive(Clone)]
+struct ProviderSwitchboardHomesCacheEntry {
+    cached_at: Instant,
+    homes: Vec<String>,
+}
+
+static PROVIDER_SWITCHBOARD_STATUS_CACHE: OnceLock<
+    Mutex<HashMap<String, ProviderSwitchboardStatusCacheEntry>>,
+> = OnceLock::new();
+static PROVIDER_SWITCHBOARD_HOMES_CACHE: OnceLock<
+    Mutex<HashMap<String, ProviderSwitchboardHomesCacheEntry>>,
+> = OnceLock::new();
+
+fn provider_switchboard_status_cache(
+) -> &'static Mutex<HashMap<String, ProviderSwitchboardStatusCacheEntry>> {
+    PROVIDER_SWITCHBOARD_STATUS_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn provider_switchboard_homes_cache(
+) -> &'static Mutex<HashMap<String, ProviderSwitchboardHomesCacheEntry>> {
+    PROVIDER_SWITCHBOARD_HOMES_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn provider_switchboard_cache_key(scope: &str, homes: &[String]) -> String {
+    let mut normalized = homes
+        .iter()
+        .map(|home| home.trim().replace('/', "\\").to_ascii_lowercase())
+        .filter(|home| !home.is_empty())
+        .collect::<Vec<_>>();
+    normalized.sort();
+    format!("{scope}:{}", normalized.join("|"))
+}
+
+pub(super) fn clear_provider_switchboard_cache() {
+    provider_switchboard_status_cache()
+        .lock()
+        .expect("provider switchboard status cache poisoned")
+        .clear();
+    provider_switchboard_homes_cache()
+        .lock()
+        .expect("provider switchboard homes cache poisoned")
+        .clear();
+}
 
 fn is_all_candidate_rpc_methods_unsupported(error: &str) -> bool {
     error
@@ -137,6 +192,17 @@ fn normalize_provider_switch_scope(scope: Option<&str>) -> &'static str {
 
 fn provider_switchboard_default_homes(scope: Option<&str>) -> Vec<String> {
     let scope = normalize_provider_switch_scope(scope);
+    if let Some(entry) = provider_switchboard_homes_cache()
+        .lock()
+        .expect("provider switchboard homes cache poisoned")
+        .get(scope)
+        .cloned()
+    {
+        if entry.cached_at.elapsed() < PROVIDER_SWITCHBOARD_CACHE_TTL {
+            return entry.homes;
+        }
+    }
+
     let mut homes = Vec::new();
     let mut push_if_ready = |home: Option<PathBuf>| {
         let Some(home) = home else {
@@ -169,6 +235,16 @@ fn provider_switchboard_default_homes(scope: Option<&str>) -> Vec<String> {
             homes.push(home.to_string_lossy().to_string());
         }
     }
+    provider_switchboard_homes_cache()
+        .lock()
+        .expect("provider switchboard homes cache poisoned")
+        .insert(
+            scope.to_string(),
+            ProviderSwitchboardHomesCacheEntry {
+                cached_at: Instant::now(),
+                homes: homes.clone(),
+            },
+        );
     homes
 }
 
@@ -188,10 +264,58 @@ fn provider_switchboard_homes_for_request(
     }
 }
 
+fn provider_switchboard_status_for_request(
+    st: &GatewayState,
+    scope: Option<&str>,
+    homes: Vec<String>,
+) -> Result<Value, String> {
+    let scope = normalize_provider_switch_scope(scope);
+    let cache_key = provider_switchboard_cache_key(scope, &homes);
+    if let Some(entry) = provider_switchboard_status_cache()
+        .lock()
+        .expect("provider switchboard status cache poisoned")
+        .get(&cache_key)
+        .cloned()
+    {
+        if entry.cached_at.elapsed() < PROVIDER_SWITCHBOARD_CACHE_TTL {
+            return entry.result;
+        }
+    }
+
+    let started = Instant::now();
+    let result = crate::provider_switchboard::get_status_for_gateway(st, homes);
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    if elapsed_ms >= 100 {
+        st.store.events().app().ui_frame_stall_at(
+            "codex-web",
+            "provider switchboard status was slow",
+            json!({
+                "endpoint": "/codex/provider-switchboard",
+                "scope": scope,
+                "durationMs": elapsed_ms,
+                "source": "backend.provider_switchboard_status",
+            }),
+            crate::orchestrator::store::unix_ms(),
+        );
+    }
+    provider_switchboard_status_cache()
+        .lock()
+        .expect("provider switchboard status cache poisoned")
+        .insert(
+            cache_key,
+            ProviderSwitchboardStatusCacheEntry {
+                cached_at: Instant::now(),
+                result: result.clone(),
+            },
+        );
+    result
+}
+
 fn provider_switchboard_details(st: &GatewayState) -> Vec<Value> {
     let cfg = st.cfg.read().clone();
     let quota = st.store.list_quota_snapshots();
     let pricing = st.secrets.list_provider_pricing();
+    let quota_hard_caps = st.secrets.list_provider_quota_hard_cap();
     let now = crate::orchestrator::store::unix_ms();
     let mut names = cfg
         .provider_order
@@ -214,6 +338,7 @@ fn provider_switchboard_details(st: &GatewayState) -> Vec<Value> {
         .filter_map(|name| {
             let provider = cfg.providers.get(&name)?;
             let quota_value = quota.get(&name).cloned().unwrap_or(Value::Null);
+            let quota_hard_cap = quota_hard_caps.get(&name).copied().unwrap_or_default();
             let manual_pricing_expires_at_unix_ms =
                 crate::commands::active_package_period(pricing.get(&name), now)
                     .and_then(|(_, expires)| expires);
@@ -229,6 +354,7 @@ fn provider_switchboard_details(st: &GatewayState) -> Vec<Value> {
                 "disabled": provider.disabled,
                 "supports_websockets": provider.supports_websockets,
                 "usage_adapter": &provider.usage_adapter,
+                "quota_hard_cap": quota_hard_cap,
                 "manual_pricing_expires_at_unix_ms": manual_pricing_expires_at_unix_ms,
                 "quota": quota_value,
             }))
@@ -301,8 +427,10 @@ pub(super) async fn codex_provider_switchboard_provider_enabled(
             );
         }
     }
-    match crate::provider_switchboard::get_status_for_gateway(
+    clear_provider_switchboard_cache();
+    match provider_switchboard_status_for_request(
         &st,
+        None,
         provider_switchboard_default_homes(None),
     ) {
         Ok(value) => Json(augment_provider_switchboard_status(&st, value, None)).into_response(),
@@ -332,7 +460,7 @@ pub(super) async fn codex_provider_switchboard_status(
     }
     let scope = query.scope.clone();
     let homes = provider_switchboard_homes_for_request(query.cli_homes, scope.as_deref());
-    match crate::provider_switchboard::get_status_for_gateway(&st, homes) {
+    match provider_switchboard_status_for_request(&st, scope.as_deref(), homes) {
         Ok(value) => Json(augment_provider_switchboard_status(
             &st,
             value,
@@ -466,9 +594,19 @@ pub(super) async fn codex_provider_switchboard_set(
         official_auth,
     ) {
         Ok(value) => {
+            clear_provider_switchboard_cache();
             let mut response = augment_provider_switchboard_status(&st, value, scope.as_deref());
             let refreshes = refresh_provider_switchboard_runtimes(homes_for_refresh).await;
             if let Some(obj) = response.as_object_mut() {
+                if refreshes
+                    .iter()
+                    .any(|item| item.get("status").and_then(Value::as_str) == Some("error"))
+                {
+                    obj.insert(
+                        "refresh_warning".to_string(),
+                        json!("Some Web Codex runtimes failed to refresh."),
+                    );
+                }
                 obj.insert("runtime_refresh".to_string(), Value::Array(refreshes));
             }
             Json(response).into_response()
@@ -785,11 +923,14 @@ pub(super) async fn codex_models(
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_model_and_effort_from_toml, resolve_codex_file_path_with_wsl_distro,
-        CodexModelsQuery,
+        clear_provider_switchboard_cache, extract_model_and_effort_from_toml,
+        provider_switchboard_cache_key, provider_switchboard_homes_cache,
+        resolve_codex_file_path_with_wsl_distro, CodexModelsQuery,
+        ProviderSwitchboardHomesCacheEntry, PROVIDER_SWITCHBOARD_CACHE_TTL,
     };
     #[cfg(target_os = "windows")]
     use std::path::PathBuf;
+    use std::time::Instant;
 
     #[test]
     fn parses_model_and_effort() {
@@ -817,6 +958,45 @@ model_reasoning_effort = "medium"
         }
         .refresh_requested());
         assert!(!CodexModelsQuery { refresh: None }.refresh_requested());
+    }
+
+    #[test]
+    fn provider_switchboard_cache_key_normalizes_home_order() {
+        let left = provider_switchboard_cache_key(
+            "wsl2",
+            &[
+                "\\\\wsl.localhost\\Ubuntu\\home\\yiyou\\.codex".to_string(),
+                "C:/Users/yiyou/API-Router/user-data/codex-home".to_string(),
+            ],
+        );
+        let right = provider_switchboard_cache_key(
+            "wsl2",
+            &[
+                "c:\\users\\yiyou\\api-router\\user-data\\codex-home".to_string(),
+                "\\\\WSL.LOCALHOST\\Ubuntu\\home\\yiyou\\.codex".to_string(),
+            ],
+        );
+        assert_eq!(left, right);
+    }
+
+    #[test]
+    fn provider_switchboard_cache_clear_removes_cached_homes() {
+        clear_provider_switchboard_cache();
+        provider_switchboard_homes_cache()
+            .lock()
+            .expect("cache")
+            .insert(
+                "wsl2".to_string(),
+                ProviderSwitchboardHomesCacheEntry {
+                    cached_at: Instant::now() - PROVIDER_SWITCHBOARD_CACHE_TTL,
+                    homes: vec!["cached".to_string()],
+                },
+            );
+        clear_provider_switchboard_cache();
+        assert!(provider_switchboard_homes_cache()
+            .lock()
+            .expect("cache")
+            .is_empty());
     }
 
     #[test]

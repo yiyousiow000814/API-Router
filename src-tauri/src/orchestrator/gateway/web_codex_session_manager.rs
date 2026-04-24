@@ -284,6 +284,7 @@ impl CodexSessionManager {
     }
 
     pub(super) async fn ensure_server(&self) -> Result<(), String> {
+        crate::codex_app_server::wait_for_provider_refresh_idle(self.home_override()).await;
         crate::codex_app_server::ensure_server_in_home(self.home_override()).await?;
         mark_workspace_runtime_connected(self.workspace_target, self.home_override());
         Ok(())

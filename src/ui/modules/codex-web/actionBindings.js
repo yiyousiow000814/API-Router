@@ -28,6 +28,16 @@ export function resolveActionErrorMessage(error, fallback) {
   return error?.message || String(error || fallback || "Action failed");
 }
 
+export function providerRuntimeRefreshErrorMessage(workspaceLabel, refreshErrors) {
+  const details = (Array.isArray(refreshErrors) ? refreshErrors : [])
+    .map((item) => String(item?.error || item?.home || "").trim())
+    .filter(Boolean)
+    .join("; ");
+  return details
+    ? `Web Codex ${workspaceLabel} provider saved, but runtime refresh failed: ${details}`
+    : `Web Codex ${workspaceLabel} provider saved, but runtime refresh failed.`;
+}
+
 export function createActionBindingsModule(deps) {
   const {
     state,
@@ -104,9 +114,20 @@ export function createActionBindingsModule(deps) {
       : typeof globalThis.setTimeout === "function"
         ? globalThis.setTimeout.bind(globalThis)
         : (callback) => callback();
+  const scheduleInterval =
+    typeof win?.setInterval === "function"
+      ? win.setInterval.bind(win)
+      : typeof globalThis.setInterval === "function"
+        ? globalThis.setInterval.bind(globalThis)
+        : null;
     const PENDING_FREEFORM_EXIT_MS = 180;
 
   let pendingBlockedBranchSwitch = null;
+  const providerSwitchboardRefreshInFlight = new Map();
+  let providerSwitchboardRefreshSeq = 0;
+  let providerSwitchboardLoadingSeq = 0;
+  let providerSwitchboardLastRefreshMs = 0;
+  let providerSwitchboardAutoRefreshBound = false;
 
   function normalizeSettingsSection(section) {
     const value = String(section || "").trim().toLowerCase();
@@ -132,8 +153,9 @@ export function createActionBindingsModule(deps) {
     if (state.activeMainTab !== "settings") return;
     if (state.settingsActiveSection !== "provider") return;
     if (state.providerSwitchboardLoading || state.providerSwitchboardBusy) return;
-    if (state.providerSwitchboardStatus && !state.providerSwitchboardError) return;
-    refreshProviderSwitchboard();
+    const stale = Date.now() - providerSwitchboardLastRefreshMs > 2_500;
+    if (state.providerSwitchboardStatus && !state.providerSwitchboardError && !stale) return;
+    refreshProviderSwitchboard({ showLoading: !state.providerSwitchboardStatus });
   }
 
   function notificationPermission(fallback = "") {
@@ -291,20 +313,35 @@ export function createActionBindingsModule(deps) {
     if (typeof api !== "function") return null;
     const showLoading = options?.showLoading !== false;
     const scope = normalizeProviderSwitchboardScope(options?.scope || state.providerSwitchboardScope);
-    if (showLoading) state.providerSwitchboardLoading = true;
-    state.providerSwitchboardError = "";
+    const activeRequestSeq = ++providerSwitchboardRefreshSeq;
+    let request = providerSwitchboardRefreshInFlight.get(scope);
+    if (!request) {
+      request = api(`/codex/provider-switchboard?scope=${encodeURIComponent(scope)}`).finally(() => {
+        if (providerSwitchboardRefreshInFlight.get(scope) === request) {
+          providerSwitchboardRefreshInFlight.delete(scope);
+        }
+      });
+      providerSwitchboardRefreshInFlight.set(scope, request);
+    }
+    const isCurrentScope = () => scope === normalizeProviderSwitchboardScope(state.providerSwitchboardScope);
+    if (showLoading && isCurrentScope()) {
+      providerSwitchboardLoadingSeq = activeRequestSeq;
+      state.providerSwitchboardLoading = true;
+    }
+    if (isCurrentScope()) state.providerSwitchboardError = "";
     syncSettingsControlsFromMain();
     try {
-      const payload = await api(`/codex/provider-switchboard?scope=${encodeURIComponent(scope)}`);
+      const payload = await request;
       const status = normalizeProviderSwitchboardPayload(payload);
+      providerSwitchboardLastRefreshMs = Date.now();
       cacheProviderSwitchboardStatus(scope, status);
-      if (scope === normalizeProviderSwitchboardScope(state.providerSwitchboardScope)) {
+      if (isCurrentScope() && activeRequestSeq === providerSwitchboardRefreshSeq) {
         state.providerSwitchboardStatus = status;
         ensureProviderSwitchboardDraft(status);
       }
       return status;
     } catch (error) {
-      if (scope === normalizeProviderSwitchboardScope(state.providerSwitchboardScope)) {
+      if (isCurrentScope() && activeRequestSeq === providerSwitchboardRefreshSeq) {
         state.providerSwitchboardError = resolveActionErrorMessage(
           error,
           "Failed to load provider switchboard."
@@ -312,7 +349,10 @@ export function createActionBindingsModule(deps) {
       }
       return null;
     } finally {
-      if (showLoading) state.providerSwitchboardLoading = false;
+      if (showLoading && providerSwitchboardLoadingSeq === activeRequestSeq) {
+        state.providerSwitchboardLoading = false;
+        providerSwitchboardLoadingSeq = 0;
+      }
       syncSettingsControlsFromMain();
     }
   }
@@ -407,12 +447,15 @@ export function createActionBindingsModule(deps) {
         ? state.providerSwitchboardStatus.runtime_refresh
         : [];
       const hasDeferredRefresh = runtimeRefresh.some((item) => item?.deferred === true);
-      const hasRefreshError = runtimeRefresh.some((item) => String(item?.status || "") === "error");
+      const refreshErrors = runtimeRefresh.filter((item) => String(item?.status || "") === "error");
+      const hasRefreshError = refreshErrors.length > 0;
       const workspaceLabel = body.scope === "wsl2" ? "WSL2" : "Windows";
       if (hasDeferredRefresh) {
         setStatus(`Web Codex ${workspaceLabel} provider will apply after the current turn finishes: ${label}.`);
       } else if (hasRefreshError) {
-        setStatus(`Web Codex ${workspaceLabel} provider saved, but runtime refresh failed.`, true);
+        const message = providerRuntimeRefreshErrorMessage(workspaceLabel, refreshErrors);
+        state.providerSwitchboardError = message;
+        setStatus(message, true);
       } else {
         setStatus(`Web Codex ${workspaceLabel} provider applied: ${label}. Future messages will use it.`);
       }
@@ -564,6 +607,12 @@ export function createActionBindingsModule(deps) {
   }
 
   function wireActions() {
+    if (!providerSwitchboardAutoRefreshBound && scheduleInterval) {
+      providerSwitchboardAutoRefreshBound = true;
+      scheduleInterval(() => {
+        refreshSettingsProviderSwitchboardIfNeeded();
+      }, 2500);
+    }
     bindClick("addHostBtn", () => addHost().catch((e) => setStatus(resolveActionErrorMessage(e), true)));
     bindClick("resolveApprovalBtn", () =>
       resolveApproval().catch((e) => setStatus(resolveActionErrorMessage(e), true))
@@ -1000,6 +1049,14 @@ export function createActionBindingsModule(deps) {
     bindClick("settingsProviderConfirmCancelBtn", () => closeProviderSwitchboardConfirm());
     bindClick("settingsProviderManageBtn", () => setProviderSwitchboardProvidersModalOpen(true));
     bindClick("settingsProviderManagerCloseBtn", () => setProviderSwitchboardProvidersModalOpen(false));
+    const settingsProviderManagerBackdrop = byId("settingsProviderManagerBackdrop");
+    if (settingsProviderManagerBackdrop && !settingsProviderManagerBackdrop.__providerManagerBackdropClickBound) {
+      settingsProviderManagerBackdrop.__providerManagerBackdropClickBound = true;
+      settingsProviderManagerBackdrop.addEventListener("click", (event) => {
+        if (event.target !== settingsProviderManagerBackdrop) return;
+        setProviderSwitchboardProvidersModalOpen(false);
+      });
+    }
     bindClick("settingsProviderScopeWindowsBtn", () => setProviderSwitchboardScope("windows"));
     bindClick("settingsProviderScopeWslBtn", () => setProviderSwitchboardScope("wsl2"));
     doc?.querySelectorAll?.("[data-settings-section]").forEach((btn) => {

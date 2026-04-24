@@ -46,6 +46,7 @@ export function createCodexWebComposition(deps) {
     addChat: (...args) => addChat(...args),
     upsertProvisionalThreadItem: (...args) => upsertProvisionalThreadItem(...args),
     recordWebTransportEvent: deps.recordWebTransportEvent,
+    recordApiResult: deps.recordApiResult,
     LAST_EVENT_ID_KEY: deps.LAST_EVENT_ID_KEY,
     transportMode: deps.transportMode,
   });

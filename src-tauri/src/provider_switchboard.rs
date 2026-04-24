@@ -852,16 +852,20 @@ fn provider_name_by_base_url(
     }
 }
 
-fn home_mode(cli_home: &Path) -> Result<(String, Option<String>), String> {
-    let cfg = read_text(&cli_cfg_path(cli_home))?;
-    let provider = model_provider_id(&cfg);
+fn home_mode_from_config_text(cfg: &str) -> (String, Option<String>) {
+    let provider = model_provider_id(cfg);
     if let Some(p) = provider.clone() {
         if p.eq_ignore_ascii_case(GATEWAY_MODEL_PROVIDER_ID) {
-            return Ok(("gateway".to_string(), None));
+            return ("gateway".to_string(), None);
         }
-        return Ok(("provider".to_string(), Some(p)));
+        return ("provider".to_string(), Some(p));
     }
-    Ok(("official".to_string(), None))
+    ("official".to_string(), None)
+}
+
+fn home_mode(cli_home: &Path) -> Result<(String, Option<String>), String> {
+    let cfg = read_text(&cli_cfg_path(cli_home))?;
+    Ok(home_mode_from_config_text(&cfg))
 }
 
 pub fn get_status(
@@ -896,7 +900,7 @@ fn collect_status_dirs(
     for h in homes {
         ensure_cli_files_exist_read_only(h)?;
         let cfg_txt = read_text(&cli_cfg_path(h))?;
-        let (mode, provider_raw) = home_mode(h)?;
+        let (mode, provider_raw) = home_mode_from_config_text(&cfg_txt);
         let provider = if mode == "provider" {
             provider_raw.and_then(|pid| {
                 model_provider_section_base_url(&cfg_txt, &pid)
