@@ -1607,9 +1607,11 @@
       border: 1px solid rgba(13, 18, 32, 0.1);
       border-radius: 8px;
       background: rgba(248, 250, 255, 0.88);
+      color: #33445f;
       font-size: 12px;
       font-weight: 800;
       transition: opacity var(--motion-fast, 160ms) ease,
+        color var(--motion-fast, 160ms) ease,
         background-color var(--motion-fast, 160ms) ease,
         border-color var(--motion-fast, 160ms) ease,
         transform var(--motion-fast, 160ms) ease;
@@ -1619,8 +1621,14 @@
       transform: translateY(-1px);
     }
     .settingsProviderManagerRow.is-disabled {
-      opacity: 0.56;
-      background: rgba(241, 245, 249, 0.9);
+      opacity: 1;
+      color: #94a0b4;
+      border-color: rgba(148, 160, 180, 0.18);
+      background: rgba(241, 245, 249, 0.72);
+    }
+    .settingsProviderManagerRow.is-disabled .settingsProviderManagerNameLine > span,
+    .settingsProviderManagerRow.is-disabled .settingsProviderEndsText {
+      color: #9aa6b9;
     }
     .settingsProviderManagerRow > span {
       min-width: 0;
