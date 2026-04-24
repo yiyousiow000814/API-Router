@@ -136,6 +136,28 @@ export function createActionBindingsModule(deps) {
     refreshProviderSwitchboard();
   }
 
+  function notificationPermission(fallback = "") {
+    return String(NotificationApi?.permission || win?.Notification?.permission || fallback || "").trim();
+  }
+
+  function notificationsSupported() {
+    return !!NotificationApi || "Notification" in win;
+  }
+
+  function showTestNotification() {
+    if (notificationPermission() !== "granted" || typeof NotificationApi !== "function") return false;
+    try {
+      const notification = new NotificationApi("API Router notifications enabled", {
+        body: "Web Codex notifications are working.",
+        tag: "api-router-web-codex-test",
+      });
+      scheduleTimeout(() => notification?.close?.(), 4000);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function setSettingsSection(section) {
     state.settingsActiveSection = normalizeSettingsSection(section);
     syncSettingsSectionVisibility();
@@ -754,14 +776,39 @@ export function createActionBindingsModule(deps) {
       sendTurn().catch((e) => setStatus(resolveActionErrorMessage(e), true));
     });
     bindClick("enableNotifBtn", async () => {
-      if (!("Notification" in win)) {
+      if (!notificationsSupported()) {
         setStatus("Notifications are not supported.", true);
         return;
       }
+      let permission = notificationPermission();
       try {
-        await NotificationApi.requestPermission();
-      } catch {}
+        if (permission !== "granted") {
+          if (typeof NotificationApi?.requestPermission !== "function") {
+            setStatus("Notifications cannot be requested in this browser.", true);
+            updateNotificationState();
+            return;
+          }
+          permission = notificationPermission(await NotificationApi.requestPermission());
+        }
+      } catch (error) {
+        setStatus(resolveActionErrorMessage(error, "Failed to request notifications."), true);
+        updateNotificationState();
+        return;
+      }
       updateNotificationState();
+      if (permission === "granted") {
+        setStatus(
+          showTestNotification()
+            ? "Sent a test notification."
+            : "Notifications are enabled."
+        );
+        return;
+      }
+      if (permission === "denied") {
+        setStatus("Notifications are blocked in this browser.", true);
+        return;
+      }
+      setStatus("Notification permission was not changed.", true);
     });
     bindClick("toggleLiveInspectorBtn", async () => {
       const current =

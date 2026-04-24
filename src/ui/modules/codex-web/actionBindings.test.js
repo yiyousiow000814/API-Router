@@ -29,6 +29,86 @@ describe("actionBindings", () => {
     expect(resolveActionErrorMessage(null, "fallback")).toBe("fallback");
   });
 
+  it("sends visible feedback when notifications are already granted", async () => {
+    const handlers = new Map();
+    const statusCalls = [];
+    const notifications = [];
+    const timeouts = [];
+    function NotificationRef(title, options) {
+      notifications.push({ title, options });
+      this.close = vi.fn();
+    }
+    NotificationRef.permission = "granted";
+    NotificationRef.requestPermission = vi.fn(async () => "granted");
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId() { return null; },
+      api: {},
+      bindClick(id, handler) { handlers.set(id, handler); },
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus(message, isError = false) {
+        statusCalls.push({ message, isError });
+      },
+      updateMobileComposerState() {},
+      updateNotificationState: vi.fn(),
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: {
+        Notification: NotificationRef,
+        addEventListener() {},
+        setTimeout(callback, delay) {
+          timeouts.push({ callback, delay });
+          return timeouts.length;
+        },
+      },
+      documentRef: { addEventListener() {} },
+      NotificationRef,
+    };
+
+    createActionBindingsModule(deps).wireActions();
+    await handlers.get("enableNotifBtn")();
+
+    expect(NotificationRef.requestPermission).not.toHaveBeenCalled();
+    expect(notifications).toEqual([
+      {
+        title: "API Router notifications enabled",
+        options: {
+          body: "Web Codex notifications are working.",
+          tag: "api-router-web-codex-test",
+        },
+      },
+    ]);
+    expect(timeouts).toHaveLength(1);
+    expect(deps.updateNotificationState).toHaveBeenCalledTimes(1);
+    expect(statusCalls).toEqual([{ message: "Sent a test notification.", isError: false }]);
+  });
+
   it("closes the mobile drawer from backdrop taps on phone-like touch viewports", () => {
     let backdropOptions = null;
     const setMobileTabCalls = [];
