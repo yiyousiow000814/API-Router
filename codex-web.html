@@ -1046,6 +1046,7 @@
       position: sticky;
       top: 0;
       z-index: var(--z-chat-header);
+      isolation: isolate;
       display: grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 4px;
@@ -1055,6 +1056,17 @@
       background: rgba(255, 255, 255, 0.92);
       backdrop-filter: blur(14px);
       animation: settings-nav-in var(--motion-base, 220ms) cubic-bezier(.22, 1, .36, 1) both;
+    }
+    .settingsNav::before {
+      content: "";
+      position: absolute;
+      left: -14px;
+      right: -14px;
+      bottom: calc(100% - 1px);
+      height: 24px;
+      z-index: -1;
+      background: #ffffff;
+      pointer-events: none;
     }
     .settingsNavItem {
       min-height: 34px;
