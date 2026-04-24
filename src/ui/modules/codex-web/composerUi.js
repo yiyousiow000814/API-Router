@@ -1760,7 +1760,6 @@ export function createComposerUiModule(deps) {
     const providerError = byId("settingsProviderError");
     const providerList = byId("settingsProviderList");
     const providerCurrentGrid = byId("settingsProviderCurrentGrid");
-    const providerDraftLabel = byId("settingsProviderDraftLabel");
     const providerManageBtn = byId("settingsProviderManageBtn");
     const providerConfirmBackdrop = byId("settingsProviderConfirmBackdrop");
     const providerConfirmTitle = byId("settingsProviderConfirmTitle");
@@ -1868,15 +1867,6 @@ export function createComposerUiModule(deps) {
               })
               .join("")
         : `<span class="settingsSectionNote">Web Codex provider state is not loaded.</span>`;
-    }
-    if (providerDraftLabel) {
-      const selectedOfficial = officialProfiles.find((profile) => String(profile?.id || "").trim() === providerDraftOfficialProfileId);
-      const officialLabel = String(selectedOfficial?.email || selectedOfficial?.label || "").trim();
-      providerDraftLabel.textContent = `Selected: ${
-        providerDraftTarget === "official" && officialLabel
-          ? officialLabel
-          : providerModeLabel(providerDraftTarget, providerDraftProvider)
-      }`;
     }
     if (officialProfileList) {
       const selectedOfficialProfileId =

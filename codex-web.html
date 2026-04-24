@@ -1286,6 +1286,7 @@
       min-width: 0;
       display: grid;
       gap: 10px;
+      padding-bottom: max(18px, calc(env(safe-area-inset-bottom, 0px) + 14px));
     }
     .settingsProviderScopeRow {
       display: inline-grid;
@@ -1699,16 +1700,6 @@
       justify-content: space-between;
       gap: 10px;
       padding-top: 2px;
-    }
-    .settingsProviderApplyHint {
-      min-width: 0;
-      color: #6f7f98;
-      font-size: 11px;
-      font-weight: 750;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      transition: color var(--motion-fast, 160ms) ease;
     }
     @keyframes settings-provider-active-in {
       from { transform: translateY(-1px) scale(0.995); }
@@ -6216,7 +6207,6 @@
                         </div>
                         <div id="settingsProviderList" class="settingsProviderList"></div>
                       </div>
-                      <span id="settingsProviderDraftLabel" class="settingsProviderApplyHint">Selected: Gateway</span>
                     </div>
                   </div>
                 </section>
