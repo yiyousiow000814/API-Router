@@ -1549,7 +1549,7 @@
       background: rgba(13, 18, 32, 0.24);
       opacity: 0;
       pointer-events: none;
-      transition: opacity var(--motion-fast, 160ms) ease;
+      transition: opacity var(--motion-base, 220ms) ease;
       z-index: var(--z-folder-picker-backdrop);
     }
     .settingsProviderModalBackdrop.show {
@@ -1557,6 +1557,7 @@
       pointer-events: auto;
     }
     .settingsProviderModal {
+      --settings-provider-modal-closed-y: 22px;
       width: min(420px, 92vw);
       max-height: min(76vh, 560px);
       display: grid;
@@ -1569,14 +1570,16 @@
       color: #172235;
       overflow: hidden;
       opacity: 0;
-      transform: translateY(10px) scale(0.985);
-      transition: opacity var(--motion-fast, 160ms) ease,
-        transform var(--motion-base, 220ms) cubic-bezier(.22, 1, .36, 1);
+      transform: translate3d(0, var(--settings-provider-modal-closed-y), 0) scale(0.94);
+      transform-origin: center center;
+      transition: opacity var(--motion-base, 220ms) ease,
+        transform var(--motion-slow, 260ms) cubic-bezier(.22, 1, .36, 1);
+      will-change: opacity, transform;
       z-index: var(--z-folder-picker);
     }
     .settingsProviderModalBackdrop.show .settingsProviderModal {
       opacity: 1;
-      transform: translateY(0) scale(1);
+      transform: translate3d(0, 0, 0) scale(1);
     }
     .settingsProviderModalTitle {
       font-size: 15px;
@@ -1724,6 +1727,8 @@
       .settingsProviderOfficialAccount,
       .settingsProviderManagerRow,
       .settingsProviderManagerToggle,
+      .settingsProviderModalBackdrop,
+      .settingsProviderModal,
       .settingsProviderSwitch,
       .settingsProviderSwitch span {
         transition: none !important;
