@@ -1165,7 +1165,20 @@
       gap: 12px;
       align-items: start;
     }
+    .settingsProviderDeck.is-loading .settingsProviderSummary {
+      border-color: rgba(40, 199, 217, 0.24);
+    }
+    .settingsProviderDeck.is-loading .settingsProviderSummary::after {
+      opacity: 1;
+      animation: settings-provider-loading-bar var(--motion-enter, 360ms) ease-in-out infinite alternate;
+    }
+    .settingsProviderDeck.is-loading .settingsProviderControls {
+      opacity: 0.58;
+      transform: translate3d(0, 4px, 0);
+      pointer-events: none;
+    }
     .settingsProviderSummary {
+      position: relative;
       display: grid;
       gap: 8px;
       min-height: 0;
@@ -1180,6 +1193,20 @@
       transition: border-color var(--motion-fast, 160ms) ease,
         background-color var(--motion-fast, 160ms) ease,
         transform var(--motion-fast, 160ms) ease;
+      overflow: hidden;
+    }
+    .settingsProviderSummary::after {
+      content: "";
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      top: 0;
+      height: 2px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(40, 199, 217, 0), #28c7d9, #f2c14d, rgba(242, 193, 77, 0));
+      opacity: 0;
+      transform: translateX(-36%);
+      transition: opacity var(--motion-fast, 160ms) ease;
     }
     .settingsProviderSummaryHeader {
       display: flex;
@@ -1286,8 +1313,13 @@
       min-width: 0;
       display: grid;
       gap: 10px;
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+      transition: opacity var(--motion-base, 220ms) ease,
+        transform var(--motion-base, 220ms) cubic-bezier(.22, 1, .36, 1);
     }
     .settingsProviderScopeRow {
+      position: relative;
       display: inline-grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 4px;
@@ -1296,14 +1328,42 @@
       border: 1px solid rgba(13, 18, 32, 0.1);
       border-radius: 999px;
       background: rgba(255, 255, 255, 0.68);
+      overflow: hidden;
+    }
+    .settingsProviderScopeRow::before {
+      content: "";
+      position: absolute;
+      top: 3px;
+      bottom: 3px;
+      left: 3px;
+      width: calc((100% - 10px) / 2);
+      border: 1px solid rgba(40, 199, 217, 0.42);
+      border-radius: 999px;
+      background: linear-gradient(135deg, rgba(40, 199, 217, 0.16), rgba(242, 193, 77, 0.12));
+      transform: translate3d(0, 0, 0);
+      transition: transform var(--motion-base, 220ms) cubic-bezier(.22, 1, .36, 1),
+        border-color var(--motion-fast, 160ms) ease,
+        background-color var(--motion-fast, 160ms) ease;
+      will-change: transform;
+      pointer-events: none;
+    }
+    .settingsProviderScopeRow.is-wsl2::before {
+      transform: translate3d(calc(100% + 4px), 0, 0);
     }
     .settingsProviderScopeRow .settingsProviderBtn {
+      position: relative;
+      z-index: 1;
       min-height: 28px;
       border-radius: 999px;
       border-color: transparent;
       padding: 5px 9px;
       font-size: 10px;
       background: transparent;
+    }
+    .settingsProviderScopeRow .settingsProviderBtn.is-active {
+      border-color: transparent;
+      background: transparent;
+      animation: none;
     }
     .settingsProviderBtn {
       min-width: 0;
@@ -1704,15 +1764,23 @@
       from { transform: translateY(-1px) scale(0.995); }
       to { transform: translateY(0) scale(1); }
     }
+    @keyframes settings-provider-loading-bar {
+      from { transform: translateX(-36%); }
+      to { transform: translateX(36%); }
+    }
     @media (prefers-reduced-motion: reduce) {
       .settingsNav,
       .settingsSectionCard.settingsPane.is-active,
-      .settingsProviderBtn.is-active {
+      .settingsProviderBtn.is-active,
+      .settingsProviderDeck.is-loading .settingsProviderSummary::after {
         animation: none !important;
       }
       .settingsNavItem,
       .settingsProviderBtn,
+      .settingsProviderControls,
       .settingsProviderSummary,
+      .settingsProviderSummary::after,
+      .settingsProviderScopeRow::before,
       .settingsProviderCurrentCard,
       .settingsProviderOfficialAccount,
       .settingsProviderManagerRow,
@@ -6177,7 +6245,7 @@
                     </div>
                     <div id="settingsDefaultsWorkspace" class="settingsSectionNote">Global</div>
                   </div>
-                  <div class="settingsProviderDeck">
+                  <div id="settingsProviderDeck" class="settingsProviderDeck">
                     <div class="settingsProviderSummary">
                       <div class="settingsProviderSummaryHeader">
                         <span id="settingsProviderCurrentMode">Loading...</span>

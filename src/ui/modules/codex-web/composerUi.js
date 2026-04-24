@@ -1758,6 +1758,7 @@ export function createComposerUiModule(deps) {
     const providerCurrentMode = byId("settingsProviderCurrentMode");
     const providerCurrentTarget = byId("settingsProviderCurrentTarget");
     const providerError = byId("settingsProviderError");
+    const providerDeck = byId("settingsProviderDeck");
     const providerList = byId("settingsProviderList");
     const providerCurrentGrid = byId("settingsProviderCurrentGrid");
     const providerManageBtn = byId("settingsProviderManageBtn");
@@ -1827,6 +1828,9 @@ export function createComposerUiModule(deps) {
       ? providerDetails
       : providerOptionsFallback.map((name) => ({ name, display_name: name, base_url: "", has_key: false, disabled: false, quota: null }));
     const providerRows = providerRowsAll.filter((provider) => provider.disabled !== true);
+    if (providerDeck) {
+      providerDeck.classList.toggle("is-loading", state.providerSwitchboardLoading === true);
+    }
     if (providerCurrentMode) {
       providerCurrentMode.textContent = state.providerSwitchboardLoading
         ? "Loading..."
@@ -1884,6 +1888,7 @@ export function createComposerUiModule(deps) {
     }
     if (providerScopeRow) {
       const wslEnabled = state.workspaceAvailability?.wsl2Installed === true;
+      providerScopeRow.classList.toggle("is-wsl2", providerScope === "wsl2");
       providerScopeRow.style.display = wslEnabled ? "" : "none";
     }
     if (providerError) {
