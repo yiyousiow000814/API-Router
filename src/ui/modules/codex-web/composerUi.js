@@ -187,6 +187,33 @@ export function createComposerUiModule(deps) {
     return `Reset in ${minutes}m`;
   }
 
+  function formatProviderEndsText(provider) {
+    const quota = provider?.quota && typeof provider.quota === "object" ? provider.quota : {};
+    const value =
+      quota.package_expires_at_unix_ms ??
+      provider?.manual_pricing_expires_at_unix_ms ??
+      provider?.package_expires_at_unix_ms ??
+      "";
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const numeric = Number(raw);
+    const endsMs = Number.isFinite(numeric)
+      ? numeric > 10_000_000_000
+        ? numeric
+        : numeric * 1000
+      : Date.parse(raw);
+    if (!Number.isFinite(endsMs)) return "";
+    const remainingMs = endsMs - Date.now();
+    if (remainingMs <= 0) return "Ended";
+    const totalMinutes = Math.ceil(remainingMs / 60000);
+    const days = Math.floor(totalMinutes / 1440);
+    const hours = Math.floor((totalMinutes % 1440) / 60);
+    const minutes = totalMinutes % 60;
+    if (days > 0) return `Ends in ${days}d ${hours}h`;
+    if (hours > 0) return `Ends in ${hours}h ${minutes}m`;
+    return `Ends in ${minutes}m`;
+  }
+
   function renderOfficialProfilesHtml(profiles, selectedProfileId = "", disabled = false) {
     const items = Array.isArray(profiles) ? profiles.filter((profile) => profile && typeof profile === "object") : [];
     if (!items.length) {
@@ -200,10 +227,14 @@ export function createComposerUiModule(deps) {
         const planLabel = String(profile.plan_label || "").trim();
         const fiveHour = String(profile.limit_5h_remaining || "").trim();
         const weekly = String(profile.limit_weekly_remaining || "").trim();
-        const fiveHourReset = formatProviderResetText(profile.limit_5h_reset_at);
-        const weeklyReset = formatProviderResetText(profile.limit_weekly_reset_at);
         const fiveHourPct = readPercentText(fiveHour);
         const weeklyPct = readPercentText(weekly);
+        const fiveHourReset = fiveHourPct != null && fiveHourPct < 100
+          ? formatProviderResetText(profile.limit_5h_reset_at)
+          : "";
+        const weeklyReset = weeklyPct != null && weeklyPct < 100
+          ? formatProviderResetText(profile.limit_weekly_reset_at)
+          : "";
         const fiveHourStyle = fiveHourPct == null ? "" : ` style="--provider-usage-pct:${Math.max(0, Math.min(100, fiveHourPct))}%"`;
         const weeklyStyle = weeklyPct == null ? "" : ` style="--provider-usage-pct:${Math.max(0, Math.min(100, weeklyPct))}%"`;
         const selected = String(selectedProfileId || "").trim() === id;
@@ -1878,12 +1909,16 @@ export function createComposerUiModule(deps) {
               const displayName = String(provider.display_name || name).trim();
               const baseUrl = String(provider.base_url || "").trim();
               const usage = describeProviderUsage(provider.quota);
+              const endsText = formatProviderEndsText(provider);
               const pct = readFiniteNumber(usage.pct);
               const pctStyle = pct == null ? "" : ` style="--provider-usage-pct:${Math.max(0, Math.min(100, pct))}%"`;
               const active = providerDraftTarget === "provider" && providerDraftProvider === name;
               return `<button class="settingsProviderBtn settingsProviderOption${active ? " is-active" : ""}" type="button" data-provider-target="provider" data-provider-name="${escapeHtml(name)}" aria-pressed="${active ? "true" : "false"}">
                 <span class="settingsProviderOptionMain">
-                  <span class="settingsProviderOptionName">${escapeHtml(displayName)}</span>
+                  <span class="settingsProviderNameLine">
+                    <span class="settingsProviderOptionName">${escapeHtml(displayName)}</span>
+                    ${endsText ? `<small class="settingsProviderEndsText">${escapeHtml(endsText)}</small>` : ""}
+                  </span>
                   <span class="settingsProviderOptionMeta">${escapeHtml(baseUrl || name)}</span>
                 </span>
                 <span class="settingsProviderUsage">
@@ -1950,8 +1985,12 @@ export function createComposerUiModule(deps) {
               const name = String(provider.name || "").trim();
               const displayName = String(provider.display_name || name).trim();
               const enabled = provider.disabled !== true;
+              const endsText = enabled ? formatProviderEndsText(provider) : "";
               return `<div class="settingsProviderManagerRow${enabled ? "" : " is-disabled"}">
-                <span>${escapeHtml(displayName)}</span>
+                <span class="settingsProviderManagerNameLine">
+                  <span>${escapeHtml(displayName)}</span>
+                  ${endsText ? `<small class="settingsProviderEndsText">${escapeHtml(endsText)}</small>` : ""}
+                </span>
                 <button class="settingsProviderSwitch${enabled ? " is-on" : ""}" type="button" aria-pressed="${enabled ? "true" : "false"}" aria-label="${enabled ? "Disable" : "Enable"} ${escapeHtml(displayName)}" data-provider-enabled-toggle="${enabled ? "false" : "true"}" data-provider-name="${escapeHtml(name)}">
                   <span aria-hidden="true"></span>
                 </button>

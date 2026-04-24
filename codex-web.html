@@ -1334,6 +1334,30 @@
       font-size: 13px;
       font-weight: 850;
     }
+    .settingsProviderNameLine,
+    .settingsProviderManagerNameLine {
+      min-width: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      width: 100%;
+    }
+    .settingsProviderNameLine .settingsProviderOptionName,
+    .settingsProviderManagerNameLine > span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .settingsProviderEndsText {
+      flex: 0 0 auto;
+      color: #64748b;
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
     .settingsProviderOptionMeta,
     .settingsProviderUsage span {
       min-width: 0;
@@ -1549,7 +1573,7 @@
       opacity: 0.56;
       background: rgba(241, 245, 249, 0.9);
     }
-    .settingsProviderManagerRow span {
+    .settingsProviderManagerRow > span {
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;

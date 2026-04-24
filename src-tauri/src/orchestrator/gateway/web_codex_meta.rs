@@ -191,6 +191,8 @@ fn provider_switchboard_homes_for_request(
 fn provider_switchboard_details(st: &GatewayState) -> Vec<Value> {
     let cfg = st.cfg.read().clone();
     let quota = st.store.list_quota_snapshots();
+    let pricing = st.secrets.list_provider_pricing();
+    let now = crate::orchestrator::store::unix_ms();
     let mut names = cfg
         .provider_order
         .iter()
@@ -212,6 +214,9 @@ fn provider_switchboard_details(st: &GatewayState) -> Vec<Value> {
         .filter_map(|name| {
             let provider = cfg.providers.get(&name)?;
             let quota_value = quota.get(&name).cloned().unwrap_or(Value::Null);
+            let manual_pricing_expires_at_unix_ms =
+                crate::commands::active_package_period(pricing.get(&name), now)
+                    .and_then(|(_, expires)| expires);
             let has_key = st
                 .secrets
                 .get_provider_key(&name)
@@ -224,6 +229,7 @@ fn provider_switchboard_details(st: &GatewayState) -> Vec<Value> {
                 "disabled": provider.disabled,
                 "supports_websockets": provider.supports_websockets,
                 "usage_adapter": &provider.usage_adapter,
+                "manual_pricing_expires_at_unix_ms": manual_pricing_expires_at_unix_ms,
                 "quota": quota_value,
             }))
         })
