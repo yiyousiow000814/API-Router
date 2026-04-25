@@ -554,8 +554,7 @@ fn notification_is_subagent(notification: &Value) -> bool {
                 let has_subagent = map
                     .get("subagent")
                     .or_else(|| map.get("subAgent"))
-                    .and_then(Value::as_object)
-                    .is_some();
+                    .is_some_and(|value| !value.is_null());
                 has_subagent || map.values().any(|child| scan(child, depth + 1))
             }
             Value::Array(items) => items.iter().take(40).any(|child| scan(child, depth + 1)),
@@ -1234,6 +1233,43 @@ mod tests {
                 .iter()
                 .all(|item| item.get("id").and_then(Value::as_str) != Some("thread-subagent")),
             "subagent live notification thread items should stay out of the sidebar"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_notification_hint_drops_string_subagent_threads() {
+        let _test_guard = codex_app_server::lock_test_globals();
+        invalidate_thread_list_cache_all();
+
+        upsert_thread_notification_hint(
+            WorkspaceTarget::Windows,
+            &serde_json::json!({
+                "method": "codex/event/response_item",
+                "params": {
+                    "rolloutPath": "C:\\Users\\yiyou\\.codex\\sessions\\rollout-review.jsonl",
+                    "cwd": "C:\\Users\\yiyou\\API-Router",
+                    "source": {
+                        "subagent": "review"
+                    },
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "thread_id": "thread-string-subagent",
+                        "content": [{
+                            "type": "output_text",
+                            "text": "review finding"
+                        }]
+                    }
+                }
+            }),
+        );
+
+        let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Windows), false).await;
+        assert!(
+            snapshot.items.iter().all(|item| {
+                item.get("id").and_then(Value::as_str) != Some("thread-string-subagent")
+            }),
+            "string-shaped subagent live notifications should stay out of the sidebar"
         );
     }
 
