@@ -531,6 +531,7 @@ impl Store {
     const EVENTS_SQLITE_SCHEMA_VERSION: &'static str = "1";
     const EVENTS_SQLITE_MIGRATED_FROM_SLED_KEY: &'static str = "migrated_from_sled_v1";
     const EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY: &'static str = "merged_legacy_sqlite_v1";
+    const RUNTIME_LISTENER_SKIP_COMPACTED_KEY: &'static str = "runtime_listener_skip_compacted_v1";
     // Day-count index rebuild marker. Bump this when the rules for event inclusion change.
     const EVENT_DAY_COUNTS_INDEX_VERSION_KEY: &'static str = "event_day_counts_index_version";
     const EVENT_DAY_COUNTS_INDEX_VERSION: &'static str = "4";
@@ -940,6 +941,11 @@ impl Store {
             conn.execute(
                 "INSERT INTO event_meta(key, value) VALUES(?1, '0')
                  ON CONFLICT(key) DO UPDATE SET value='0'",
+                [Self::RUNTIME_LISTENER_SKIP_COMPACTED_KEY],
+            )?;
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES(?1, '0')
+                 ON CONFLICT(key) DO UPDATE SET value='0'",
                 [Self::USAGE_REQUESTS_SQLITE_MIGRATED_FROM_SLED_KEY],
             )?;
             conn.execute(
@@ -957,6 +963,11 @@ impl Store {
             "INSERT INTO event_meta(key, value) VALUES(?1, '0')
              ON CONFLICT(key) DO NOTHING",
             [Self::EVENTS_SQLITE_MERGED_LEGACY_SQLITE_KEY],
+        )?;
+        conn.execute(
+            "INSERT INTO event_meta(key, value) VALUES(?1, '0')
+             ON CONFLICT(key) DO NOTHING",
+            [Self::RUNTIME_LISTENER_SKIP_COMPACTED_KEY],
         )?;
         conn.execute(
             "INSERT INTO event_meta(key, value) VALUES(?1, '0')
@@ -1053,6 +1064,17 @@ impl Store {
 
     fn compact_runtime_listener_skip_events(&self) -> anyhow::Result<()> {
         let conn = self.events_db.lock();
+        let compacted: Option<String> = conn
+            .query_row(
+                "SELECT value FROM event_meta WHERE key=?1",
+                [Self::RUNTIME_LISTENER_SKIP_COMPACTED_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if compacted.as_deref() == Some("1") {
+            return Ok(());
+        }
+
         let deleted = conn.execute(
             "DELETE FROM events
              WHERE code = 'gateway.runtime_listener_skipped'
@@ -1080,6 +1102,11 @@ impl Store {
                 [Self::EVENT_DAY_COUNTS_INDEX_VERSION_KEY],
             )?;
         }
+        conn.execute(
+            "INSERT INTO event_meta(key, value) VALUES(?1, '1')
+             ON CONFLICT(key) DO UPDATE SET value='1'",
+            [Self::RUNTIME_LISTENER_SKIP_COMPACTED_KEY],
+        )?;
         Ok(())
     }
 

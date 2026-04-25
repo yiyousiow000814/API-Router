@@ -426,6 +426,12 @@ mod tests {
                 )
                 .unwrap();
             }
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES(?1, '0')
+                 ON CONFLICT(key) DO UPDATE SET value='0'",
+                [Store::RUNTIME_LISTENER_SKIP_COMPACTED_KEY],
+            )
+            .unwrap();
         }
 
         let store = Store::open(tmp.path()).unwrap();
@@ -438,6 +444,48 @@ mod tests {
         assert_eq!(ids.len(), 2);
         assert!(ids.contains("runtime-listener-skip-1"));
         assert!(ids.contains("runtime-listener-skip-3"));
+        assert_eq!(
+            store
+                .get_event_meta(Store::RUNTIME_LISTENER_SKIP_COMPACTED_KEY)
+                .unwrap()
+                .as_deref(),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn runtime_listener_skip_history_compaction_runs_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        {
+            let store = Store::open(tmp.path()).unwrap();
+            store
+                .set_event_meta(Store::RUNTIME_LISTENER_SKIP_COMPACTED_KEY, "1")
+                .unwrap();
+            let conn = store.events_db.lock();
+            for idx in 1..=2 {
+                conn.execute(
+                    "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                     VALUES (?1, ?2, 'gateway', 'info', 'gateway.runtime_listener_skipped', ?3, '{}')",
+                    rusqlite::params![
+                        format!("runtime-listener-skip-post-marker-{idx}"),
+                        idx * 1_000_i64,
+                        "Skipped runtime gateway listener bind for 172.26.144.1:4000: os error 10049",
+                    ],
+                )
+                .unwrap();
+            }
+        }
+
+        let store = Store::open(tmp.path()).unwrap();
+
+        let raw = store.list_events_range(None, None, Some(10));
+        let ids = raw
+            .iter()
+            .filter_map(|value| value.get("id").and_then(|id| id.as_str()))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains("runtime-listener-skip-post-marker-1"));
+        assert!(ids.contains("runtime-listener-skip-post-marker-2"));
     }
 
     #[test]
