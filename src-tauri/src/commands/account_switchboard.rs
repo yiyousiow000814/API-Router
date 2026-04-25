@@ -151,6 +151,34 @@ pub(crate) fn codex_cli_default_wsl_home() -> Result<String, String> {
 }
 
 #[tauri::command]
+pub(crate) fn codex_cli_directories_get(
+    state: tauri::State<'_, app_state::AppState>,
+) -> Result<crate::codex_cli_swap::CodexCliDirectories, String> {
+    Ok(crate::codex_cli_swap::load_cli_directories_for_config(
+        &state.config_path,
+    ))
+}
+
+#[tauri::command]
+pub(crate) fn codex_cli_directories_set(
+    state: tauri::State<'_, app_state::AppState>,
+    windows_enabled: bool,
+    windows_home: String,
+    wsl2_enabled: bool,
+    wsl2_home: String,
+) -> Result<(), String> {
+    crate::codex_cli_swap::save_cli_directories_for_config(
+        &state.config_path,
+        &crate::codex_cli_swap::CodexCliDirectories {
+            windows_enabled,
+            windows_home,
+            wsl2_enabled,
+            wsl2_home,
+        },
+    )
+}
+
+#[tauri::command]
 pub(crate) fn codex_cli_swap_status(
     cli_homes: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {

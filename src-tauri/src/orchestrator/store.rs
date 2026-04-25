@@ -979,6 +979,7 @@ impl Store {
         self.migrate_usage_requests_from_sled_if_needed()?;
         self.migrate_spend_history_from_sled_if_needed()?;
         self.backfill_usage_request_daily_index_if_needed()?;
+        self.compact_runtime_listener_skip_events()?;
         self.rebuild_event_day_counts_index_if_needed()?;
         Ok(())
     }
@@ -1047,6 +1048,38 @@ impl Store {
              ON usage_requests(lower(node_name))",
             [],
         )?;
+        Ok(())
+    }
+
+    fn compact_runtime_listener_skip_events(&self) -> anyhow::Result<()> {
+        let conn = self.events_db.lock();
+        let deleted = conn.execute(
+            "DELETE FROM events
+             WHERE code = 'gateway.runtime_listener_skipped'
+               AND id NOT IN (
+                 SELECT first.id
+                 FROM events first
+                 WHERE first.code = 'gateway.runtime_listener_skipped'
+                   AND first.id = (
+                     SELECT candidate.id
+                     FROM events candidate
+                     WHERE candidate.provider = first.provider
+                       AND candidate.code = first.code
+                       AND strftime('%Y-%m-%d', candidate.unix_ms / 1000, 'unixepoch', 'localtime')
+                         = strftime('%Y-%m-%d', first.unix_ms / 1000, 'unixepoch', 'localtime')
+                     ORDER BY candidate.unix_ms ASC, candidate.id ASC
+                     LIMIT 1
+                   )
+               )",
+            [],
+        )?;
+        if deleted > 0 {
+            conn.execute(
+                "INSERT INTO event_meta(key, value) VALUES(?1, '0')
+                 ON CONFLICT(key) DO UPDATE SET value='0'",
+                [Self::EVENT_DAY_COUNTS_INDEX_VERSION_KEY],
+            )?;
+        }
         Ok(())
     }
 
@@ -1540,7 +1573,9 @@ impl Store {
         let level = level.trim();
         let code = code.trim();
 
-        let (raw_dedup_window_ms, raw_dedup_scope) = if level.eq_ignore_ascii_case("warning") {
+        let (raw_dedup_window_ms, raw_dedup_scope) = if code == "gateway.runtime_listener_skipped" {
+            (Some(0), EventRawDedupScope::ProviderAndCode)
+        } else if level.eq_ignore_ascii_case("warning") {
             match code {
                 "lan.edit_sync_http_failed"
                 | "lan.usage_sync_http_failed"
@@ -1655,7 +1690,18 @@ impl Store {
         let Some(window_ms) = policy.raw_dedup_window_ms else {
             return Ok(false);
         };
-        let cutoff = ts_i64.saturating_sub(i64::try_from(window_ms).unwrap_or(i64::MAX));
+        let cutoff = if code.trim() == "gateway.runtime_listener_skipped" {
+            u64::try_from(ts_i64)
+                .ok()
+                .and_then(Self::local_day_key_from_unix_ms)
+                .and_then(|day_key| Self::day_start_unix_ms_from_day_key(&day_key))
+                .and_then(|unix_ms| i64::try_from(unix_ms).ok())
+                .unwrap_or_else(|| {
+                    ts_i64.saturating_sub(i64::try_from(window_ms).unwrap_or(i64::MAX))
+                })
+        } else {
+            ts_i64.saturating_sub(i64::try_from(window_ms).unwrap_or(i64::MAX))
+        };
         let row = match policy.raw_dedup_scope {
             EventRawDedupScope::ExactRow => tx.query_row(
                 "SELECT 1

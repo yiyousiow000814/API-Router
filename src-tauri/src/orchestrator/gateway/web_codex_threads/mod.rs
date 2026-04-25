@@ -12,7 +12,7 @@ type JsonMap = serde_json::Map<String, Value>;
 use self::source::{
     find_rollout_path_in_items, has_missing_session_rollout_path, is_auxiliary_thread_preview_text,
     is_filtered_test_thread_cwd, merge_items_without_duplicates, normalize_thread_items_shape,
-    rebuild_workspace_thread_items, sort_threads_by_updated_desc,
+    rebuild_workspace_thread_items, sort_threads_by_updated_desc, thread_item_should_be_visible,
 };
 
 const THREADS_INDEX_STALE_SECS: i64 = 15;
@@ -377,17 +377,13 @@ fn retained_live_notification_items(items: &[Value]) -> Vec<Value> {
     normalize_thread_items_shape(&mut retained);
     retained
         .into_iter()
+        .filter(thread_item_should_be_visible)
         .filter(|item| {
-            item.get("filterReason")
+            !item
+                .get("preview")
                 .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .is_none()
-                && !item
-                    .get("preview")
-                    .and_then(Value::as_str)
-                    .map(is_auxiliary_thread_preview_text)
-                    .unwrap_or(false)
+                .map(is_auxiliary_thread_preview_text)
+                .unwrap_or(false)
                 && !item
                     .get("cwd")
                     .and_then(Value::as_str)
@@ -511,13 +507,7 @@ pub(super) fn upsert_thread_item_hint(workspace: WorkspaceTarget, item: Value) {
     let Some(item) = normalized.into_iter().next() else {
         return;
     };
-    if item
-        .get("filterReason")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_some()
-    {
+    if !thread_item_should_be_visible(&item) {
         return;
     }
 
@@ -586,6 +576,9 @@ pub(super) fn upsert_thread_notification_hint(workspace: WorkspaceTarget, notifi
         return;
     };
     let is_subagent = notification_is_subagent(notification);
+    if is_subagent {
+        return;
+    }
     if scopes.agent_role().is_some() && !is_subagent {
         return;
     }
@@ -1202,7 +1195,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_notification_hint_keeps_subagent_threads() {
+    async fn live_notification_hint_drops_subagent_threads() {
         let _test_guard = codex_app_server::lock_test_globals();
         invalidate_thread_list_cache_all();
 
@@ -1235,19 +1228,12 @@ mod tests {
         );
 
         let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Windows), false).await;
-        let item = snapshot
-            .items
-            .iter()
-            .find(|item| item.get("id").and_then(Value::as_str) == Some("thread-subagent"))
-            .expect("subagent live notification thread item");
-        assert_eq!(item.get("isSubagent").and_then(Value::as_bool), Some(true));
-        assert_eq!(
-            item.get("agent_parent_session_id").and_then(Value::as_str),
-            Some("parent-thread")
-        );
-        assert_eq!(
-            item.get("agentRole").and_then(Value::as_str),
-            Some("explorer")
+        assert!(
+            snapshot
+                .items
+                .iter()
+                .all(|item| item.get("id").and_then(Value::as_str) != Some("thread-subagent")),
+            "subagent live notification thread items should stay out of the sidebar"
         );
     }
 

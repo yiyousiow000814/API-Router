@@ -4,6 +4,17 @@ use std::path::{Path, PathBuf};
 use crate::app_state::AppState;
 use crate::orchestrator::store::unix_ms;
 
+const CODEX_CLI_DIRECTORIES_FILE: &str = "codex-cli-directories.json";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+#[serde(default)]
+pub struct CodexCliDirectories {
+    pub windows_enabled: bool,
+    pub windows_home: String,
+    pub wsl2_enabled: bool,
+    pub wsl2_home: String,
+}
+
 fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|e| e.to_string())
 }
@@ -123,6 +134,37 @@ fn app_codex_home(state: &tauri::State<'_, AppState>) -> PathBuf {
         .parent()
         .unwrap_or(Path::new("."))
         .join("codex-home")
+}
+
+fn directories_path_from_config(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(CODEX_CLI_DIRECTORIES_FILE)
+}
+
+pub fn load_cli_directories_for_config(config_path: &Path) -> CodexCliDirectories {
+    std::fs::read_to_string(directories_path_from_config(config_path))
+        .ok()
+        .and_then(|text| serde_json::from_str::<CodexCliDirectories>(&text).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_cli_directories_for_config(
+    config_path: &Path,
+    dirs: &CodexCliDirectories,
+) -> Result<(), String> {
+    let path = directories_path_from_config(config_path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let bytes = serde_json::to_vec_pretty(dirs).map_err(|e| e.to_string())?;
+    std::fs::write(path, bytes).map_err(|e| e.to_string())
+}
+
+pub fn wsl2_cli_directory_enabled(config_path: &Path) -> bool {
+    let dirs = load_cli_directories_for_config(config_path);
+    dirs.wsl2_enabled && !dirs.wsl2_home.trim().is_empty()
 }
 
 fn swap_state_dir(cli_home: &Path) -> PathBuf {
@@ -490,5 +532,32 @@ mod tests {
             "[model_providers.{provider}]",
             provider = GATEWAY_MODEL_PROVIDER_ID
         )));
+    }
+
+    #[test]
+    fn cli_directories_persist_wsl2_enabled_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let dirs = CodexCliDirectories {
+            windows_enabled: true,
+            windows_home: "C:\\Users\\syb\\.codex".to_string(),
+            wsl2_enabled: true,
+            wsl2_home: "\\\\wsl.localhost\\Ubuntu\\home\\syb\\.codex".to_string(),
+        };
+
+        save_cli_directories_for_config(&config_path, &dirs).unwrap();
+
+        let loaded = load_cli_directories_for_config(&config_path);
+        assert!(loaded.windows_enabled);
+        assert_eq!(loaded.windows_home, dirs.windows_home);
+        assert!(wsl2_cli_directory_enabled(&config_path));
+    }
+
+    #[test]
+    fn missing_cli_directories_treats_wsl2_as_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("user-data").join("config.toml");
+
+        assert!(!wsl2_cli_directory_enabled(&config_path));
     }
 }

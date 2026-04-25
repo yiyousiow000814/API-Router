@@ -359,6 +359,88 @@ mod tests {
     }
 
     #[test]
+    fn add_event_suppresses_duplicate_runtime_listener_skips_by_provider_and_code() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let old_ts = i64::try_from(unix_ms()).unwrap() - 3 * 24 * 60 * 60_000;
+
+        {
+            let conn = store.events_db.lock();
+            conn.execute(
+                "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                 VALUES ('old-runtime-listener-skip', ?1, 'gateway', 'info', 'gateway.runtime_listener_skipped', ?2, ?3)",
+                rusqlite::params![
+                    old_ts,
+                    "Skipped runtime gateway listener bind for 172.26.144.1:4000: os error 10049",
+                    r#"{"addr":"172.26.144.1:4000"}"#
+                ],
+            )
+            .unwrap();
+        }
+
+        store.events().emit(
+            "gateway",
+            crate::orchestrator::store::EventCode::GATEWAY_RUNTIME_LISTENER_SKIPPED,
+            "Skipped runtime gateway listener bind for 172.26.144.1:58213: os error 10049",
+            serde_json::json!({ "addr": "172.26.144.1:58213" }),
+        );
+        store.events().emit(
+            "gateway",
+            crate::orchestrator::store::EventCode::GATEWAY_RUNTIME_LISTENER_SKIPPED,
+            "Skipped runtime gateway listener bind for 172.26.144.1:4001: os error 10049",
+            serde_json::json!({ "addr": "172.26.144.1:4001" }),
+        );
+
+        let raw = store.list_events_range(None, None, Some(10));
+        assert_eq!(
+            raw.len(),
+            2,
+            "runtime listener skip variants should keep one row per local day"
+        );
+
+        let rows = store.list_event_daily_counts_range(None, None);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("infos").and_then(|value| value.as_u64()), Some(1));
+    }
+
+    #[test]
+    fn opening_store_compacts_existing_runtime_listener_skip_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        {
+            let store = Store::open(tmp.path()).unwrap();
+            let conn = store.events_db.lock();
+            for (idx, unix_ms, addr) in [
+                (1, 1_000_i64, "172.26.144.1:4000"),
+                (2, 2_000_i64, "172.26.144.1:58213"),
+                (3, 86_401_000_i64, "172.26.144.1:4001"),
+            ] {
+                conn.execute(
+                    "INSERT INTO events(id, unix_ms, provider, level, code, message, fields_json)
+                     VALUES (?1, ?2, 'gateway', 'info', 'gateway.runtime_listener_skipped', ?3, ?4)",
+                    rusqlite::params![
+                        format!("runtime-listener-skip-{idx}"),
+                        unix_ms,
+                        format!("Skipped runtime gateway listener bind for {addr}: os error 10049"),
+                        format!(r#"{{"addr":"{addr}"}}"#)
+                    ],
+                )
+                .unwrap();
+            }
+        }
+
+        let store = Store::open(tmp.path()).unwrap();
+
+        let raw = store.list_events_range(None, None, Some(10));
+        let ids = raw
+            .iter()
+            .filter_map(|value| value.get("id").and_then(|id| id.as_str()))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains("runtime-listener-skip-1"));
+        assert!(ids.contains("runtime-listener-skip-3"));
+    }
+
+    #[test]
     fn event_spam_diagnostics_snapshot_reports_exact_and_code_bursts() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path()).unwrap();

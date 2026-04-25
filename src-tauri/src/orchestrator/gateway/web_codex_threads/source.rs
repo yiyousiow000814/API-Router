@@ -16,6 +16,7 @@ const THREADS_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
 const THREADS_MAX_ITEMS: usize = 600;
 const WSL_SCAN_TIMEOUT_SECS: u64 = 5;
 const LOADED_THREAD_OVERLAY_MAX_ITEMS: usize = 48;
+const VISIBLE_SESSION_SOURCES: &[&str] = &["cli", "vscode", "exec"];
 
 #[derive(Clone)]
 struct SessionFileScanCacheEntry {
@@ -253,6 +254,7 @@ struct SessionFileScan {
     id: String,
     cwd: String,
     created_at: i64,
+    session_source: Option<Value>,
     is_subagent: bool,
     agent_parent_session_id: Option<String>,
     agent_role: Option<String>,
@@ -264,9 +266,49 @@ struct ParsedSessionMeta {
     id: String,
     cwd: String,
     created_at: i64,
+    session_source: Option<Value>,
     is_subagent: bool,
     agent_parent_session_id: Option<String>,
     agent_role: Option<String>,
+}
+
+fn is_visible_session_source(value: &Value) -> bool {
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|source| !source.is_empty())
+        .is_some_and(|source| VISIBLE_SESSION_SOURCES.contains(&source))
+}
+
+pub(super) fn thread_item_should_be_visible(item: &Value) -> bool {
+    if item
+        .get("filterReason")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+        .is_some()
+    {
+        return false;
+    }
+
+    if let Some(session_source) = item.get("sessionSource") {
+        return is_visible_session_source(session_source);
+    }
+
+    let is_subagent = item
+        .get("isSubagent")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if is_subagent {
+        return false;
+    }
+
+    item.get("agentRole")
+        .or_else(|| item.get("agent_role"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|role| !role.is_empty())
+        .is_none()
 }
 
 fn session_file_fingerprint(path: &Path) -> Option<(u64, u128)> {
@@ -370,6 +412,7 @@ fn scan_session_file_uncached(path: &Path) -> Option<SessionFileScan> {
                     .and_then(parse_json_i64)
                     .or_else(|| payload.get("createdAt").and_then(parse_json_i64))
                     .unwrap_or(0);
+                let session_source = payload.get("source").cloned();
                 let has_subagent_source = payload
                     .get("source")
                     .and_then(|x| x.get("subagent"))
@@ -409,6 +452,7 @@ fn scan_session_file_uncached(path: &Path) -> Option<SessionFileScan> {
                     id,
                     cwd,
                     created_at,
+                    session_source,
                     is_subagent: has_subagent_source || has_agent_role || has_agent_nickname,
                     agent_parent_session_id,
                     agent_role,
@@ -472,6 +516,7 @@ fn scan_session_file_uncached(path: &Path) -> Option<SessionFileScan> {
         id,
         cwd,
         created_at,
+        session_source,
         is_subagent,
         agent_parent_session_id,
         agent_role,
@@ -489,6 +534,7 @@ fn scan_session_file_uncached(path: &Path) -> Option<SessionFileScan> {
         id,
         cwd,
         created_at,
+        session_source,
         is_subagent,
         agent_parent_session_id,
         agent_role,
@@ -782,6 +828,7 @@ for p in sessions_dir.rglob("*.jsonl"):
     sid = ""
     cwd = ""
     created_at = 0
+    session_source = None
     is_subagent = False
     fallback_preview = None
     first_preview = None
@@ -809,6 +856,7 @@ for p in sessions_dir.rglob("*.jsonl"):
                     cwd = str(payload.get("cwd") or cwd).strip()
                     created_raw = payload.get("created_at") or payload.get("createdAt")
                     source = payload.get("source")
+                    session_source = source
                     source_subagent = source.get("subagent") if isinstance(source, dict) else None
                     thread_spawn = None
                     if isinstance(source_subagent, dict):
@@ -872,6 +920,7 @@ for p in sessions_dir.rglob("*.jsonl"):
         "preview": preview,
         "path": to_windows_path(p),
         "source": "wsl-session-index",
+        "sessionSource": session_source,
         "isSubagent": is_subagent,
         "agent_parent_session_id": parent_thread_id,
         "agentRole": agent_role.strip() if isinstance(agent_role, str) and agent_role.strip() else None,
@@ -948,6 +997,7 @@ where
             id,
             cwd,
             created_at,
+            session_source,
             is_subagent,
             agent_parent_session_id,
             agent_role,
@@ -969,6 +1019,7 @@ where
             "preview": preview,
             "path": path_mapper(&file),
             "source": source,
+            "sessionSource": session_source,
             "isAuxiliary": matches!(filter_reason, Some(ThreadFilterReason::AuxiliaryPromptOnly)),
             "isSubagent": is_subagent,
             "agent_parent_session_id": agent_parent_session_id,
@@ -1192,7 +1243,7 @@ pub(super) fn merge_items_without_duplicates(
                 base_obj.insert("preview".to_string(), Value::String(preview.to_string()));
             }
         }
-        for key in ["path", "source", "workspace", "cwd"] {
+        for key in ["path", "source", "sessionSource", "workspace", "cwd"] {
             let should_replace = !base_obj.contains_key(key) || extra_updated > base_updated;
             if should_replace {
                 if let Some(v) = extra_obj.get(key) {
@@ -1301,13 +1352,7 @@ fn filter_threads_within_last_month(items: &mut Vec<Value>) {
 }
 
 fn filter_auxiliary_threads(items: &mut Vec<Value>) {
-    items.retain(|item| {
-        item.get("filterReason")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|reason| !reason.is_empty())
-            .is_none()
-    });
+    items.retain(thread_item_should_be_visible);
 }
 
 #[cfg(test)]
@@ -1319,7 +1364,7 @@ mod tests {
         fetch_windows_threads_from_sessions, filter_auxiliary_threads, find_rollout_path_in_items,
         merge_items_without_duplicates, overlay_loaded_thread_runtime, parse_history_preview_map,
         parse_wsl_thread_scan_output, scan_session_file, sort_threads_by_updated_desc,
-        ThreadFilterReason, THREADS_MAX_AGE_SECS,
+        thread_item_should_be_visible, ThreadFilterReason, THREADS_MAX_AGE_SECS,
     };
     use crate::codex_app_server;
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
@@ -1718,6 +1763,52 @@ mod tests {
     }
 
     #[test]
+    fn filter_auxiliary_threads_keeps_allowlisted_session_sources_only() {
+        let mut items = vec![
+            json!({
+                "id": "thread-cli",
+                "sessionSource": "cli",
+                "updatedAt": 1742269999
+            }),
+            json!({
+                "id": "thread-vscode",
+                "sessionSource": "vscode",
+                "updatedAt": 1742269998
+            }),
+            json!({
+                "id": "thread-exec",
+                "sessionSource": "exec",
+                "updatedAt": 1742269997
+            }),
+            json!({
+                "id": "thread-subagent",
+                "sessionSource": {
+                    "subagent": {
+                        "thread_spawn": {
+                            "parent_thread_id": "thread-main",
+                            "depth": 1
+                        }
+                    }
+                },
+                "isSubagent": true,
+                "updatedAt": 1742269996
+            }),
+            json!({
+                "id": "thread-unknown",
+                "sessionSource": "desktop",
+                "updatedAt": 1742269995
+            }),
+        ];
+
+        filter_auxiliary_threads(&mut items);
+        let kept_ids = items
+            .iter()
+            .filter_map(|item| item.get("id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(kept_ids, vec!["thread-cli", "thread-vscode", "thread-exec"]);
+    }
+
+    #[test]
     fn filter_auxiliary_threads_drops_review_scaffold_and_diagnostic_prompts() {
         let mut items = vec![
             json!({
@@ -1796,7 +1887,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_session_file_keeps_subagent_threads_visible() {
+    fn scan_session_file_preserves_subagent_metadata_without_marking_it_visible() {
         let temp = tempfile::tempdir().expect("temp dir");
         let session_path = temp.path().join("rollout-subagent.jsonl");
         std::fs::write(
@@ -1822,7 +1913,24 @@ mod tests {
         );
         assert_eq!(
             scan.filter_reason, None,
-            "subagent sessions should stay eligible for the sidebar and Sessions panel"
+            "subagent sessions are filtered by sessionSource allowlist, not filterReason"
+        );
+        let item = json!({
+            "id": "agent-thread",
+            "sessionSource": {
+                "subagent": {
+                    "thread_spawn": {
+                        "parent_thread_id": "main-thread",
+                        "depth": 1
+                    }
+                }
+            },
+            "isSubagent": true,
+            "agentRole": "explorer"
+        });
+        assert!(
+            !thread_item_should_be_visible(&item),
+            "subagent sessions should be excluded from visible thread list items"
         );
     }
 

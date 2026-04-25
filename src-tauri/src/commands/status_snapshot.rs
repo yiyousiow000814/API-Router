@@ -435,6 +435,9 @@ fn maybe_refresh_runtime_wsl_listener(
     listen_port: u16,
     wsl_gateway_host: &str,
 ) -> usize {
+    if !crate::codex_cli_swap::wsl2_cli_directory_enabled(&state.config_path) {
+        return 0;
+    }
     if !should_refresh_runtime_wsl_listener(listen_host, wsl_gateway_host) {
         return 0;
     }
