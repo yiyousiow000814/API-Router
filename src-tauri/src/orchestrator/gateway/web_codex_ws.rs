@@ -14,6 +14,7 @@ use self::web_codex_actions::{
 use self::web_codex_auth::{api_error, is_codex_ws_authorized, require_codex_auth, WsQuery};
 use self::web_codex_home::{parse_workspace_target, WorkspaceTarget};
 use self::web_codex_session_manager::CodexSessionManager;
+use crate::app_state::{UiWatchdogInvokeResult, UiWatchdogPageState, UiWatchdogRuntime};
 
 const BACKEND_LIVE_DEBUG_MAX_EVENTS: usize = 160;
 
@@ -1076,6 +1077,232 @@ pub(super) async fn codex_record_web_transport_event(
     Json(json!({ "ok": true })).into_response()
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct WebCodexUiDiagnosticsRequest {
+    pub heartbeat: Option<WebCodexUiHeartbeatRecord>,
+    #[serde(default)]
+    pub traces: Vec<WebCodexUiTraceRecord>,
+    #[serde(default)]
+    pub invoke_results: Vec<WebCodexUiInvokeResultRecord>,
+    #[serde(default)]
+    pub long_tasks: Vec<WebCodexUiLongTaskRecord>,
+    #[serde(default)]
+    pub frame_stalls: Vec<WebCodexUiFrameStallRecord>,
+    #[serde(default)]
+    pub frontend_errors: Vec<WebCodexUiFrontendErrorRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct WebCodexUiHeartbeatRecord {
+    pub active_page: Option<String>,
+    pub visible: Option<bool>,
+    pub status_in_flight: Option<bool>,
+    pub config_in_flight: Option<bool>,
+    pub provider_switch_in_flight: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct WebCodexUiTraceRecord {
+    pub kind: String,
+    pub active_page: Option<String>,
+    pub visible: Option<bool>,
+    #[serde(default)]
+    pub fields: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct WebCodexUiInvokeResultRecord {
+    pub command: String,
+    pub elapsed_ms: u64,
+    pub ok: bool,
+    pub error_message: Option<String>,
+    pub active_page: Option<String>,
+    pub visible: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct WebCodexUiLongTaskRecord {
+    pub elapsed_ms: u64,
+    pub active_page: Option<String>,
+    pub visible: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct WebCodexUiFrameStallRecord {
+    pub elapsed_ms: u64,
+    pub monitor_kind: Option<String>,
+    pub active_page: Option<String>,
+    pub visible: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct WebCodexUiFrontendErrorRecord {
+    pub kind: Option<String>,
+    pub message: String,
+    pub active_page: Option<String>,
+    pub visible: Option<bool>,
+}
+
+fn normalize_web_codex_page(value: Option<&str>) -> String {
+    let page = value.unwrap_or_default().trim();
+    if page.is_empty() {
+        "codex-web".to_string()
+    } else if page.starts_with("codex-web") {
+        page.to_string()
+    } else {
+        format!("codex-web:{page}")
+    }
+}
+
+pub(super) async fn codex_ui_diagnostics(
+    State(st): State<GatewayState>,
+    headers: HeaderMap,
+    Json(payload): Json<WebCodexUiDiagnosticsRequest>,
+) -> Response {
+    if let Some(resp) = require_codex_auth(&st, &headers) {
+        return resp;
+    }
+    let listen_port = st.cfg.read().listen.port;
+    let Some(watchdog) = crate::lan_sync::current_ui_watchdog_state(listen_port) else {
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "ui watchdog is not registered",
+        );
+    };
+    let diagnostics_dir = crate::diagnostics::current_diagnostics_dir()
+        .unwrap_or_else(|| std::env::temp_dir().join("api-router-diagnostics"));
+    let runtime = UiWatchdogRuntime {
+        store: &st.store,
+        diagnostics_dir: &diagnostics_dir,
+    };
+    let now = unix_ms();
+    let mut accepted = 0usize;
+
+    if let Some(heartbeat) = payload.heartbeat {
+        let active_page = normalize_web_codex_page(heartbeat.active_page.as_deref());
+        watchdog.record_heartbeat(
+            &active_page,
+            heartbeat.visible.unwrap_or(true),
+            heartbeat.status_in_flight.unwrap_or(false),
+            heartbeat.config_in_flight.unwrap_or(false),
+            heartbeat.provider_switch_in_flight.unwrap_or(false),
+            now,
+        );
+        accepted = accepted.saturating_add(1);
+    }
+
+    for trace in payload.traces.into_iter().take(256) {
+        let kind = trace.kind.trim();
+        if kind.is_empty() {
+            continue;
+        }
+        watchdog.record_trace(
+            kind,
+            json!({
+                "active_page": normalize_web_codex_page(trace.active_page.as_deref()),
+                "visible": trace.visible.unwrap_or(true),
+                "fields": trace.fields,
+            }),
+            now,
+        );
+        accepted = accepted.saturating_add(1);
+    }
+
+    for item in payload.invoke_results.into_iter().take(256) {
+        let command = item.command.trim().to_string();
+        if command.is_empty() {
+            continue;
+        }
+        let active_page = normalize_web_codex_page(item.active_page.as_deref());
+        watchdog.record_invoke_result(
+            UiWatchdogRuntime {
+                store: runtime.store,
+                diagnostics_dir: runtime.diagnostics_dir,
+            },
+            UiWatchdogInvokeResult {
+                command: &command,
+                elapsed_ms: item.elapsed_ms,
+                ok: item.ok,
+                error_message: item.error_message.as_deref(),
+            },
+            UiWatchdogPageState {
+                active_page: &active_page,
+                visible: item.visible.unwrap_or(true),
+            },
+            now,
+        );
+        accepted = accepted.saturating_add(1);
+    }
+
+    for item in payload.long_tasks.into_iter().take(64) {
+        let active_page = normalize_web_codex_page(item.active_page.as_deref());
+        watchdog.record_long_task(
+            UiWatchdogRuntime {
+                store: runtime.store,
+                diagnostics_dir: runtime.diagnostics_dir,
+            },
+            item.elapsed_ms,
+            UiWatchdogPageState {
+                active_page: &active_page,
+                visible: item.visible.unwrap_or(true),
+            },
+            now,
+        );
+        accepted = accepted.saturating_add(1);
+    }
+
+    for item in payload.frame_stalls.into_iter().take(64) {
+        let active_page = normalize_web_codex_page(item.active_page.as_deref());
+        let monitor_kind = item.monitor_kind.unwrap_or_else(|| "unknown".to_string());
+        watchdog.record_frame_stall(
+            UiWatchdogRuntime {
+                store: runtime.store,
+                diagnostics_dir: runtime.diagnostics_dir,
+            },
+            item.elapsed_ms,
+            &monitor_kind,
+            UiWatchdogPageState {
+                active_page: &active_page,
+                visible: item.visible.unwrap_or(true),
+            },
+            now,
+        );
+        accepted = accepted.saturating_add(1);
+    }
+
+    for item in payload.frontend_errors.into_iter().take(64) {
+        let message = item.message.trim().to_string();
+        if message.is_empty() {
+            continue;
+        }
+        let active_page = normalize_web_codex_page(item.active_page.as_deref());
+        let kind = item.kind.unwrap_or_else(|| "error".to_string());
+        watchdog.record_frontend_error(
+            UiWatchdogRuntime {
+                store: runtime.store,
+                diagnostics_dir: runtime.diagnostics_dir,
+            },
+            &kind,
+            &message,
+            UiWatchdogPageState {
+                active_page: &active_page,
+                visible: item.visible.unwrap_or(true),
+            },
+            now,
+        );
+        accepted = accepted.saturating_add(1);
+    }
+
+    Json(json!({ "ok": true, "accepted": accepted })).into_response()
+}
+
 pub(super) async fn codex_live_debug(
     State(st): State<GatewayState>,
     headers: HeaderMap,
@@ -1179,6 +1406,56 @@ mod tests {
             .expect("open rollout");
         writeln!(file, "{value}").expect("append rollout line");
         file.flush().expect("flush rollout");
+    }
+
+    #[tokio::test]
+    async fn codex_ui_diagnostics_records_web_codex_watchdog_heartbeat() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = build_test_gateway_state(&tmp);
+        let listen_port = state.cfg.read().listen.port;
+        crate::lan_sync::register_ui_watchdog_state(
+            listen_port,
+            crate::app_state::UiWatchdogState::default(),
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer test-token".parse().expect("auth header"),
+        );
+
+        let response = codex_ui_diagnostics(
+            State(state),
+            headers,
+            Json(WebCodexUiDiagnosticsRequest {
+                heartbeat: Some(WebCodexUiHeartbeatRecord {
+                    active_page: Some("settings".to_string()),
+                    visible: Some(true),
+                    status_in_flight: Some(false),
+                    config_in_flight: Some(false),
+                    provider_switch_in_flight: Some(true),
+                }),
+                traces: vec![],
+                invoke_results: vec![WebCodexUiInvokeResultRecord {
+                    command: "GET /codex/provider-switchboard".to_string(),
+                    elapsed_ms: 42,
+                    ok: true,
+                    error_message: None,
+                    active_page: Some("settings".to_string()),
+                    visible: Some(true),
+                }],
+                long_tasks: vec![],
+                frame_stalls: vec![],
+                frontend_errors: vec![],
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let snapshot = crate::lan_sync::current_ui_watchdog_live_snapshot(listen_port, unix_ms())
+            .expect("watchdog snapshot");
+        assert_eq!(snapshot.frontend.active_page, "codex-web:settings");
+        assert!(snapshot.frontend.provider_switch_in_flight);
+        assert!(!snapshot.frontend.stalled);
     }
 
     async fn recv_ws_json(

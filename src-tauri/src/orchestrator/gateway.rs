@@ -1192,6 +1192,11 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         .route("/codex-web/app.js", get(codex_web_app_js))
         .route("/codex-web/modules/*path", get(codex_web_module_js))
         .route("/codex-web/codex-icon.svg", get(codex_web_icon_svg))
+        .route(
+            "/codex-web/apple-touch-icon.png",
+            get(codex_web_apple_touch_icon_png),
+        )
+        .route("/codex-web/manifest.webmanifest", get(codex_web_manifest))
         .route("/favicon.ico", get(codex_web_favicon))
         .route("/ao-icon.png", get(codex_web_logo_png))
         .route("/codex/health", get(codex_health))
@@ -1202,6 +1207,7 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
             "/codex/transport/events",
             post(codex_record_web_transport_event),
         )
+        .route("/codex/ui-diagnostics", post(codex_ui_diagnostics))
         .route("/codex/debug/live", get(codex_live_debug))
         .route("/codex/debug/live/client", post(codex_live_debug_client))
         .route(
@@ -1214,6 +1220,14 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         )
         .route("/codex/models", get(codex_models))
         .route("/codex/cli-config", get(codex_cli_config))
+        .route(
+            "/codex/provider-switchboard",
+            get(codex_provider_switchboard_status).post(codex_provider_switchboard_set),
+        )
+        .route(
+            "/codex/provider-switchboard/provider-enabled",
+            post(codex_provider_switchboard_provider_enabled),
+        )
         .route("/codex/file", get(codex_file))
         .route("/codex/folders", get(codex_folders_list))
         .route("/codex/approvals/pending", get(codex_pending_approvals))
@@ -1331,8 +1345,8 @@ use self::web_codex_actions::{
     codex_turn_interrupt, codex_turn_start, codex_turn_stream, codex_user_input_resolve,
 };
 use self::web_codex_assets::{
-    codex_web_app_js, codex_web_favicon, codex_web_icon_svg, codex_web_index, codex_web_logo_png,
-    codex_web_module_js,
+    codex_web_app_js, codex_web_apple_touch_icon_png, codex_web_favicon, codex_web_icon_svg,
+    codex_web_index, codex_web_logo_png, codex_web_manifest, codex_web_module_js,
 };
 use self::web_codex_home::web_codex_rpc_home_override_for_target;
 use self::web_codex_hosts::{
@@ -1341,7 +1355,13 @@ use self::web_codex_hosts::{
 use self::web_codex_meta::{
     codex_cli_config, codex_file, codex_folders_list, codex_health, codex_models,
     codex_pending_approvals, codex_pending_user_inputs,
+    codex_provider_switchboard_provider_enabled, codex_provider_switchboard_set,
+    codex_provider_switchboard_status,
 };
+
+pub(crate) fn clear_web_codex_provider_switchboard_cache() {
+    web_codex_meta::clear_provider_switchboard_cache();
+}
 use self::web_codex_runtime::{codex_runtime_state, codex_terminal_exec, codex_version_info};
 #[cfg(test)]
 use self::web_codex_thread_routes::codex_test_block_history;
@@ -1351,7 +1371,7 @@ use self::web_codex_thread_routes::{
 };
 use self::web_codex_ws::{
     codex_app_server_ws, codex_auth_verify, codex_live_debug, codex_live_debug_client,
-    codex_record_web_transport_event, codex_ws,
+    codex_record_web_transport_event, codex_ui_diagnostics, codex_ws,
 };
 const SESSION_HISTORY_FLUSH_RETRY_DELAY_MS: u64 = 120;
 

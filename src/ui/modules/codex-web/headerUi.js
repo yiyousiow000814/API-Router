@@ -349,12 +349,31 @@ export function createHeaderUiModule(deps) {
 
   function updateNotificationState() {
     const node = byId("notifState");
-    if (!node) return;
+    const button = byId("enableNotifBtn");
     if (!("Notification" in window)) {
-      node.textContent = "Notification: unsupported";
+      if (node) node.textContent = "Notification: unsupported";
+      if (button) {
+        button.textContent = "Notifications unavailable";
+        button.disabled = true;
+      }
       return;
     }
-    node.textContent = `Notification: ${NotificationRef?.permission || "default"}`;
+    const permission = NotificationRef?.permission || "default";
+    if (node) {
+      node.textContent =
+        permission === "denied"
+          ? "Notification: blocked in browser settings"
+          : `Notification: ${permission}`;
+    }
+    if (!button) return;
+    button.disabled = false;
+    if (permission === "granted") {
+      button.textContent = "Test notification";
+    } else if (permission === "denied") {
+      button.textContent = "Blocked by browser";
+    } else {
+      button.textContent = "Enable notifications";
+    }
   }
 
   function maybeNotifyTurnDone(text) {

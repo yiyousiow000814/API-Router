@@ -253,7 +253,6 @@ describe("composerUi", () => {
       "liveInspectorState",
       "previewUpdatedPlanBtn",
       "previewPendingBtn",
-      "settingsDefaultsWorkspace",
       "settingsFullAccessOnBtn",
       "settingsFullAccessOffBtn",
       "settingsFastOnBtn",
@@ -300,13 +299,149 @@ describe("composerUi", () => {
 
     syncSettingsControlsFromMain();
 
-    expect(nodes.get("settingsDefaultsWorkspace")?.textContent).toBe("Applies to current WSL2 chat");
     expect(nodes.get("previewUpdatedPlanBtn")?.textContent).toBe("Plan Preview: On");
     expect(nodes.get("previewPendingBtn")?.textContent).toBe("Pending Preview: On");
     expect(nodes.get("settingsFullAccessOnBtn")?.classList.contains("is-active")).toBe(true);
     expect(nodes.get("settingsFullAccessOffBtn")?.classList.contains("is-active")).toBe(false);
     expect(nodes.get("settingsFastOnBtn")?.classList.contains("is-active")).toBe(true);
     expect(nodes.get("settingsFastOffBtn")?.classList.contains("is-active")).toBe(false);
+  });
+
+  it("renders direct provider health dots from switchboard status", () => {
+    const nodes = new Map();
+    for (const id of [
+      "settingsProviderList",
+      "settingsProviderDirectCount",
+    ]) {
+      nodes.set(id, makeNode());
+    }
+    const deps = {
+      state: {
+        activeThreadTokenUsage: null,
+        activeMainTab: "settings",
+        settingsActiveSection: "provider",
+        providerSwitchboardScope: "windows",
+        providerSwitchboardDraftTarget: "provider",
+        providerSwitchboardDraftProvider: "codex-for-me",
+        providerSwitchboardStatus: {
+          ok: true,
+          scope: "windows",
+          mode: "provider",
+          model_provider: "codex-for-me",
+          provider_details: [
+            {
+              name: "codex-for-me",
+              display_name: "codex-for.me",
+              disabled: false,
+              health: { status: "healthy" },
+              quota: { kind: "budget_info", daily_spent_usd: 1, daily_budget_usd: 10 },
+            },
+            {
+              name: "retry-provider",
+              display_name: "retry-provider",
+              disabled: false,
+              health: { status: "cooldown" },
+              quota: { kind: "budget_info", daily_spent_usd: 0, daily_budget_usd: 10 },
+            },
+            {
+              name: "bad-provider",
+              display_name: "bad-provider",
+              disabled: false,
+              health: { status: "unhealthy" },
+              quota: { kind: "budget_info", daily_spent_usd: 0, daily_budget_usd: 10 },
+            },
+          ],
+          official_profiles: [],
+        },
+        workspaceAvailability: { wsl2Installed: false },
+        permissionPresetByWorkspace: {},
+      },
+      byId(id) {
+        return nodes.get(id) || null;
+      },
+      readPromptValue() {
+        return "";
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      updateHeaderUi() {},
+      localStorageRef: { getItem() { return ""; } },
+      documentRef: { querySelector() { return null; }, getElementById() { return null; } },
+      windowRef: { innerHeight: 900, addEventListener() {} },
+    };
+    const { syncSettingsControlsFromMain } = createComposerUiModule(deps);
+
+    syncSettingsControlsFromMain();
+
+    const html = nodes.get("settingsProviderList")?.innerHTML || "";
+    expect(html).toContain("settingsProviderHealthDot is-good");
+    expect(html).toContain("settingsProviderHealthDot is-neutral");
+    expect(html).toContain("settingsProviderHealthDot is-bad");
+    expect(html).toContain('title="Healthy"');
+    expect(html).toContain('title="Retrying"');
+    expect(html).toContain('title="Unhealthy"');
+  });
+
+  it("shows the provider workspace switch only when both workspaces are available", () => {
+    function renderWithAvailability(workspaceAvailability) {
+      const nodes = new Map();
+      for (const id of [
+        "settingsProviderCurrentMode",
+        "settingsProviderScopeRow",
+        "settingsProviderScopeWindowsBtn",
+        "settingsProviderScopeWslBtn",
+      ]) {
+        nodes.set(id, makeNode());
+      }
+      const deps = {
+        state: {
+          activeMainTab: "settings",
+          settingsActiveSection: "provider",
+          providerSwitchboardScope: "windows",
+          providerSwitchboardStatus: {
+            ok: true,
+            scope: "windows",
+            mode: "gateway",
+            provider_details: [],
+            official_profiles: [],
+          },
+          workspaceAvailability,
+          permissionPresetByWorkspace: {},
+        },
+        byId(id) {
+          return nodes.get(id) || null;
+        },
+        readPromptValue() {
+          return "";
+        },
+        clearPromptInput() {},
+        resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+        renderComposerContextLeftInNode() {},
+        updateHeaderUi() {},
+        localStorageRef: { getItem() { return ""; } },
+        documentRef: { querySelector() { return null; }, getElementById() { return null; } },
+        windowRef: { innerHeight: 900, addEventListener() {} },
+      };
+      createComposerUiModule(deps).syncSettingsControlsFromMain();
+      return {
+        display: nodes.get("settingsProviderScopeRow").style.display,
+        currentMode: nodes.get("settingsProviderCurrentMode").textContent,
+      };
+    }
+
+    expect(renderWithAvailability({ windowsInstalled: true, wsl2Installed: false })).toMatchObject({
+      display: "none",
+      currentMode: "Windows",
+    });
+    expect(renderWithAvailability({ windowsInstalled: false, wsl2Installed: true })).toMatchObject({
+      display: "none",
+      currentMode: "WSL2",
+    });
+    expect(renderWithAvailability({ windowsInstalled: true, wsl2Installed: true })).toMatchObject({
+      display: "",
+      currentMode: "Windows",
+    });
   });
 
   it("updates mobile composer actions for running turns", () => {

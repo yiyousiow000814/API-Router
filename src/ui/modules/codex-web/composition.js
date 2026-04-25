@@ -46,6 +46,7 @@ export function createCodexWebComposition(deps) {
     addChat: (...args) => addChat(...args),
     upsertProvisionalThreadItem: (...args) => upsertProvisionalThreadItem(...args),
     recordWebTransportEvent: deps.recordWebTransportEvent,
+    recordApiResult: deps.recordApiResult,
     LAST_EVENT_ID_KEY: deps.LAST_EVENT_ID_KEY,
     transportMode: deps.transportMode,
   });
@@ -498,6 +499,7 @@ export function createCodexWebComposition(deps) {
     updateWelcomeSelections: deps.updateWelcomeSelections,
     setMainTab: deps.setMainTab,
     wireActions: actionBindings.wireActions,
+    refreshProviderSwitchboard: actionBindings.refreshProviderSwitchboard,
     ensureScrollToBottomBtn: chatViewport.ensureScrollToBottomBtn,
     stopChatLiveFollow: chatViewport.stopChatLiveFollow,
     updateScrollToBottomBtn: chatViewport.updateScrollToBottomBtn,

@@ -110,12 +110,32 @@ const WEB_CODEX_TURN_ACTIONS_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/turnActions.js");
 const WEB_CODEX_UI_HELPERS_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/uiHelpers.js");
+const WEB_CODEX_WEB_DIAGNOSTICS_JS: &str =
+    include_str!("../../../../src/ui/modules/codex-web/webDiagnostics.js");
 const WEB_CODEX_WORKSPACE_UI_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/workspaceUi.js");
 const WEB_CODEX_WS_CLIENT_JS: &str =
     include_str!("../../../../src/ui/modules/codex-web/wsClient.js");
 const WEB_CODEX_ICON_SVG: &str = include_str!("../../../../src/ui/assets/codex-color.svg");
+const WEB_CODEX_ICON_PNG: &[u8] = include_bytes!("../../../../public/codex-web-icon.png");
 const AO_ICON_PNG: &[u8] = include_bytes!("../../../../public/ao-icon.png");
+const WEB_CODEX_MANIFEST: &str = r##"{
+  "name": "Web Codex",
+  "short_name": "Codex",
+  "start_url": "/codex-web",
+  "scope": "/codex-web",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [
+    {
+      "src": "/codex-web/apple-touch-icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}"##;
 
 fn resolve_web_codex_module_body(module_path: &str) -> Option<&'static str> {
     match module_path {
@@ -174,6 +194,7 @@ fn resolve_web_codex_module_body(module_path: &str) -> Option<&'static str> {
         "codex-web/transportMode.js" => Some(WEB_CODEX_TRANSPORT_MODE_JS),
         "codex-web/turnActions.js" => Some(WEB_CODEX_TURN_ACTIONS_JS),
         "codex-web/uiHelpers.js" => Some(WEB_CODEX_UI_HELPERS_JS),
+        "codex-web/webDiagnostics.js" => Some(WEB_CODEX_WEB_DIAGNOSTICS_JS),
         "codex-web/workspaceUi.js" => Some(WEB_CODEX_WORKSPACE_UI_JS),
         "codex-web/wsClient.js" => Some(WEB_CODEX_WS_CLIENT_JS),
         _ => None,
@@ -241,6 +262,33 @@ pub(super) async fn codex_web_favicon() -> Response {
             (header::CACHE_CONTROL, "public, max-age=86400"),
         ],
         WEB_CODEX_ICON_SVG,
+    )
+        .into_response()
+}
+
+pub(super) async fn codex_web_apple_touch_icon_png() -> Response {
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        WEB_CODEX_ICON_PNG,
+    )
+        .into_response()
+}
+
+pub(super) async fn codex_web_manifest() -> Response {
+    (
+        StatusCode::OK,
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/manifest+json; charset=utf-8",
+            ),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        WEB_CODEX_MANIFEST,
     )
         .into_response()
 }
@@ -318,5 +366,13 @@ mod tests {
     #[test]
     fn rejects_unknown_web_codex_modules() {
         assert!(resolve_web_codex_module_body("codex-web/unknown.js").is_none());
+    }
+
+    #[test]
+    fn exposes_web_codex_home_screen_assets() {
+        assert!(WEB_CODEX_INDEX_HTML.contains(r#"rel="apple-touch-icon""#));
+        assert!(WEB_CODEX_INDEX_HTML.contains("/codex-web/manifest.webmanifest"));
+        assert!(WEB_CODEX_MANIFEST.contains("/codex-web/apple-touch-icon.png"));
+        assert_eq!(&WEB_CODEX_ICON_PNG[..8], b"\x89PNG\r\n\x1a\n");
     }
 }

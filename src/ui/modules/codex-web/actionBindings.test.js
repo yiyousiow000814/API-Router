@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createActionBindingsModule,
+  providerRuntimeRefreshErrorMessage,
   resolveActionErrorMessage,
   shouldSteerPromptKey,
   shouldSubmitPromptKey,
@@ -27,6 +28,364 @@ describe("actionBindings", () => {
   it("normalizes action error messages", () => {
     expect(resolveActionErrorMessage(new Error("boom"))).toBe("boom");
     expect(resolveActionErrorMessage(null, "fallback")).toBe("fallback");
+  });
+
+  it("includes runtime refresh error details in provider switch feedback", () => {
+    expect(
+      providerRuntimeRefreshErrorMessage("WSL2", [
+        { home: "\\\\wsl.localhost\\Ubuntu\\home\\yiyou\\.codex", error: "bridge failed" },
+      ])
+    ).toBe("Web Codex WSL2 provider saved, but runtime refresh failed: bridge failed");
+    expect(providerRuntimeRefreshErrorMessage("Windows", [])).toBe(
+      "Web Codex Windows provider saved, but runtime refresh failed."
+    );
+  });
+
+  it("reuses in-flight provider switchboard refreshes for the same scope", async () => {
+    let apiCalls = 0;
+    let resolveRequest;
+    const request = new Promise((resolve) => {
+      resolveRequest = resolve;
+    });
+    const state = {
+      providerSwitchboardScope: "windows",
+      providerSwitchboardStatusByScope: { windows: null, wsl2: null },
+    };
+    const module = createActionBindingsModule({
+      state,
+      api(path) {
+        apiCalls += 1;
+        expect(path).toBe("/codex/provider-switchboard?scope=windows");
+        return request;
+      },
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+    });
+
+    const first = module.refreshProviderSwitchboard({ scope: "windows" });
+    const second = module.refreshProviderSwitchboard({ scope: "windows" });
+    resolveRequest({
+      ok: true,
+      mode: "gateway",
+      model_provider: null,
+      dirs: [],
+      provider_options: [],
+    });
+
+    await expect(first).resolves.toMatchObject({ mode: "gateway" });
+    await expect(second).resolves.toMatchObject({ mode: "gateway" });
+    expect(apiCalls).toBe(1);
+    expect(state.providerSwitchboardStatus).toMatchObject({ mode: "gateway" });
+  });
+
+  it("uses the only available workspace for provider switchboard refreshes", async () => {
+    const apiCalls = [];
+    const state = {
+      providerSwitchboardScope: "windows",
+      providerSwitchboardStatusByScope: { windows: null, wsl2: null },
+      workspaceAvailability: { windowsInstalled: false, wsl2Installed: true },
+    };
+    const module = createActionBindingsModule({
+      state,
+      async api(path) {
+        apiCalls.push(path);
+        return {
+          ok: true,
+          mode: "official",
+          model_provider: null,
+          dirs: [],
+          provider_options: [],
+          scope: "wsl2",
+        };
+      },
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+    });
+
+    await module.refreshProviderSwitchboard();
+
+    expect(apiCalls).toEqual(["/codex/provider-switchboard?scope=wsl2"]);
+    expect(state.providerSwitchboardScope).toBe("wsl2");
+    expect(state.providerSwitchboardStatus).toMatchObject({ mode: "official", scope: "wsl2" });
+  });
+
+  it("does not let stale provider switchboard responses replace the active scope", async () => {
+    let resolveWindows;
+    let resolveWsl2;
+    const requests = {
+      windows: new Promise((resolve) => {
+        resolveWindows = resolve;
+      }),
+      wsl2: new Promise((resolve) => {
+        resolveWsl2 = resolve;
+      }),
+    };
+    const state = {
+      providerSwitchboardScope: "windows",
+      providerSwitchboardStatusByScope: { windows: null, wsl2: null },
+    };
+    const module = createActionBindingsModule({
+      state,
+      api(path) {
+        return path.includes("scope=wsl2") ? requests.wsl2 : requests.windows;
+      },
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+    });
+
+    const windowsRefresh = module.refreshProviderSwitchboard({ scope: "windows" });
+    state.providerSwitchboardScope = "wsl2";
+    const wslRefresh = module.refreshProviderSwitchboard({ scope: "wsl2" });
+    resolveWsl2({
+      ok: true,
+      mode: "official",
+      model_provider: null,
+      dirs: [],
+      provider_options: [],
+      scope: "wsl2",
+    });
+    await wslRefresh;
+    resolveWindows({
+      ok: true,
+      mode: "gateway",
+      model_provider: null,
+      dirs: [],
+      provider_options: [],
+      scope: "windows",
+    });
+    await windowsRefresh;
+
+    expect(state.providerSwitchboardStatus).toMatchObject({ mode: "official", scope: "wsl2" });
+    expect(state.providerSwitchboardStatusByScope.windows).toMatchObject({ mode: "gateway" });
+  });
+
+  it("keeps provider enabled toggles scoped to the active WSL2 workspace", async () => {
+    const managerList = {
+      __providerManagerClickBound: false,
+      addEventListener(event, handler) {
+        expect(event).toBe("click");
+        this.clickHandler = handler;
+      },
+    };
+    const toggleBtn = {
+      closest(selector) {
+        return selector === "[data-provider-enabled-toggle]" ? this : null;
+      },
+      getAttribute(name) {
+        if (name === "data-provider-name") return "codex-for-me";
+        if (name === "data-provider-enabled-toggle") return "true";
+        return "";
+      },
+    };
+    const apiCalls = [];
+    const state = {
+      providerSwitchboardScope: "wsl2",
+      providerSwitchboardStatusByScope: { windows: null, wsl2: null },
+    };
+    const module = createActionBindingsModule({
+      state,
+      byId(id) {
+        return id === "settingsProviderManagerList" ? managerList : null;
+      },
+      api(path, options) {
+        apiCalls.push({ path, options });
+        return {
+          ok: true,
+          mode: "gateway",
+          model_provider: null,
+          dirs: [{ cli_home: "/home/yiyou/.codex", mode: "gateway", model_provider: null }],
+          provider_options: [],
+          provider_details: [],
+          scope: "wsl2",
+        };
+      },
+      bindClick() {},
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus() {},
+      wireBlurBackdropShield() {},
+      setMobileTab() {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      updateMobileComposerState() {},
+      armSyntheticClickSuppression() {},
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {}, querySelectorAll() { return []; } },
+    });
+
+    module.wireActions();
+    await managerList.clickHandler({ target: toggleBtn });
+
+    expect(apiCalls).toEqual([
+      {
+        path: "/codex/provider-switchboard/provider-enabled",
+        options: {
+          method: "POST",
+          body: { provider: "codex-for-me", enabled: true, scope: "wsl2" },
+        },
+      },
+    ]);
+    expect(state.providerSwitchboardStatus).toMatchObject({ scope: "wsl2" });
+    expect(state.providerSwitchboardStatusByScope.wsl2).toMatchObject({ scope: "wsl2" });
+    expect(state.providerSwitchboardStatusByScope.windows).toBeNull();
+  });
+
+  it("sends visible feedback when notifications are already granted", async () => {
+    const handlers = new Map();
+    const statusCalls = [];
+    const notifications = [];
+    const timeouts = [];
+    function NotificationRef(title, options) {
+      notifications.push({ title, options });
+      this.close = vi.fn();
+    }
+    NotificationRef.permission = "granted";
+    NotificationRef.requestPermission = vi.fn(async () => "granted");
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId() { return null; },
+      api: {},
+      bindClick(id, handler) { handlers.set(id, handler); },
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus(message, isError = false) {
+        statusCalls.push({ message, isError });
+      },
+      updateMobileComposerState() {},
+      updateNotificationState: vi.fn(),
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: {
+        Notification: NotificationRef,
+        addEventListener() {},
+        setTimeout(callback, delay) {
+          timeouts.push({ callback, delay });
+          return timeouts.length;
+        },
+      },
+      documentRef: { addEventListener() {} },
+      NotificationRef,
+    };
+
+    createActionBindingsModule(deps).wireActions();
+    await handlers.get("enableNotifBtn")();
+
+    expect(NotificationRef.requestPermission).not.toHaveBeenCalled();
+    expect(notifications).toEqual([
+      {
+        title: "API Router notifications enabled",
+        options: {
+          body: "Web Codex notifications are working.",
+          tag: "api-router-web-codex-test",
+        },
+      },
+    ]);
+    expect(timeouts).toHaveLength(1);
+    expect(deps.updateNotificationState).toHaveBeenCalledTimes(1);
+    expect(statusCalls).toEqual([{ message: "Sent a test notification.", isError: false }]);
+  });
+
+  it("does not request notification permission again after the browser denied it", async () => {
+    const handlers = new Map();
+    const statusCalls = [];
+    const NotificationRef = {
+      permission: "denied",
+      requestPermission: vi.fn(async () => "denied"),
+    };
+    const deps = {
+      state: { folderPickerOpen: false, modelOptionsLoading: false, threadItems: [] },
+      byId() { return null; },
+      api: {},
+      bindClick(id, handler) { handlers.set(id, handler); },
+      bindResponsiveClick() {},
+      bindInput() {},
+      setStatus(message, isError = false) {
+        statusCalls.push({ message, isError });
+      },
+      updateMobileComposerState() {},
+      updateNotificationState: vi.fn(),
+      armSyntheticClickSuppression() {},
+      wireBlurBackdropShield() {},
+      closeFolderPicker() {},
+      refreshFolderPicker: async () => {},
+      renderFolderPicker() {},
+      confirmFolderPickerCurrentPath() {},
+      resetFolderPickerPath() {},
+      switchFolderPickerWorkspace: async () => {},
+      openFolderPicker: async () => {},
+      newThread: async () => {},
+      setMainTab() {},
+      setMobileTab() {},
+      refreshCodexVersions: async () => {},
+      setWorkspaceTarget: async () => {},
+      setHeaderModelMenuOpen() {},
+      closeInlineEffortOverlay() {},
+      shouldSuppressSyntheticClick() { return false; },
+      renderThreads() {},
+      wireThreadPullToRefresh() {},
+      addHost: async () => {},
+      resolveApproval: async () => {},
+      resolveUserInput: async () => {},
+      refreshPending: async () => {},
+      uploadAttachment: async () => {},
+      sendTurn: async () => {},
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: {
+        Notification: NotificationRef,
+        addEventListener() {},
+      },
+      documentRef: { addEventListener() {} },
+      NotificationRef,
+    };
+
+    createActionBindingsModule(deps).wireActions();
+    await handlers.get("enableNotifBtn")();
+
+    expect(NotificationRef.requestPermission).not.toHaveBeenCalled();
+    expect(deps.updateNotificationState).toHaveBeenCalledTimes(1);
+    expect(statusCalls).toEqual([
+      {
+        message: "Notifications are blocked by this browser. Re-enable them in browser or iOS settings.",
+        isError: true,
+      },
+    ]);
   });
 
   it("closes the mobile drawer from backdrop taps on phone-like touch viewports", () => {
@@ -91,6 +450,7 @@ describe("actionBindings", () => {
 
     createActionBindingsModule(deps).wireActions();
     expect(backdropOptions).toBeTruthy();
+    expect(backdropOptions.closeEvent).toBe("pointerup");
 
     backdropOptions.onClose();
 

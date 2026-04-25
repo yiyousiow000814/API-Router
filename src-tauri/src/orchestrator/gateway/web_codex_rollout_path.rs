@@ -17,16 +17,16 @@ pub(super) fn is_imported_session_path(raw: &str) -> bool {
     let Some(path) = normalize_session_path_like(raw) else {
         return false;
     };
-    path.contains("/.codex/sessions/imported/") && path.ends_with(".jsonl")
+    path.contains("/sessions/imported/") && path.ends_with(".jsonl")
 }
 
 pub(super) fn is_live_session_rollout_path(raw: &str) -> bool {
     let Some(path) = normalize_session_path_like(raw) else {
         return false;
     };
-    path.contains("/.codex/sessions/")
+    path.contains("/sessions/")
         && path.contains("/rollout-")
-        && !path.contains("/.codex/sessions/imported/")
+        && !path.contains("/sessions/imported/")
         && path.ends_with(".jsonl")
 }
 
@@ -99,6 +99,9 @@ mod tests {
         assert!(is_imported_session_path(
             r"C:\Users\yiyou\.codex\sessions\imported\thread-1.jsonl"
         ));
+        assert!(is_imported_session_path(
+            r"C:\Users\yiyou\API-Router\user-data\codex-home\sessions\imported\thread-1.jsonl"
+        ));
         assert!(!is_imported_session_path(
             "/home/yiyou/.codex/sessions/2026/03/20/rollout-thread-1.jsonl"
         ));
@@ -132,6 +135,9 @@ mod tests {
         ));
         assert!(is_live_session_rollout_path(
             "/home/yiyou/.codex/sessions/2026/03/20/rollout-thread-1.jsonl"
+        ));
+        assert!(is_live_session_rollout_path(
+            r"C:\Users\yiyou\API-Router\user-data\codex-home\sessions\2026\03\20\rollout-thread-1.jsonl"
         ));
     }
 

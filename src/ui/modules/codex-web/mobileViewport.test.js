@@ -40,7 +40,7 @@ describe("mobileViewport", () => {
     expect(isEditableElement({ tagName: "BUTTON" })).toBe(false);
   });
 
-  it("uses a compact-width fallback in addition to touch heuristics for floating composer mode", () => {
+  it("uses compact width, not touch capability, for floating composer mode", () => {
     expect(shouldUseFloatingComposerLayout({
       innerWidth: 900,
       matchMedia() {
@@ -54,14 +54,22 @@ describe("mobileViewport", () => {
       },
       innerWidth: 1400,
       navigator: { maxTouchPoints: 0 },
-    })).toBe(true);
+    })).toBe(false);
     expect(shouldUseFloatingComposerLayout({
       matchMedia() {
         return { matches: false };
       },
       innerWidth: 1400,
       navigator: { maxTouchPoints: 5 },
-    })).toBe(true);
+    })).toBe(false);
+    expect(shouldUseFloatingComposerLayout({
+      innerWidth: 1366,
+      document: { documentElement: { clientWidth: 1366 } },
+      matchMedia(query) {
+        return { matches: query === "(pointer: coarse)" || query === "(hover: none)" };
+      },
+      navigator: { maxTouchPoints: 5 },
+    })).toBe(false);
     expect(shouldUseFloatingComposerLayout({
       matchMedia() {
         return { matches: false };
@@ -92,6 +100,7 @@ describe("mobileViewport", () => {
     };
     const windowRef = {
       innerHeight: 820,
+      innerWidth: 390,
       visualViewport,
       addEventListener(event, handler) { winHandlers.set(event, handler); },
       removeEventListener(event) { winHandlers.delete(event); },

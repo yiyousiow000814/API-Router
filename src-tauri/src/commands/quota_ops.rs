@@ -542,6 +542,7 @@ pub(crate) fn set_provider_quota_hard_cap(
     state
         .secrets
         .set_provider_quota_hard_cap(&provider, hard_cap)?;
+    crate::orchestrator::gateway::clear_web_codex_provider_switchboard_cache();
     state.gateway.store.events().emit(
         &provider,
         crate::orchestrator::store::EventCode::CONFIG_PROVIDER_QUOTA_HARD_CAP_UPDATED,
@@ -569,6 +570,7 @@ pub(crate) fn set_provider_quota_hard_cap_field(
     let hard_cap = state
         .secrets
         .set_provider_quota_hard_cap_field(&provider, normalized_field.as_str(), enabled)?;
+    crate::orchestrator::gateway::clear_web_codex_provider_switchboard_cache();
     state.gateway.store.events().emit(
         &provider,
         crate::orchestrator::store::EventCode::CONFIG_PROVIDER_QUOTA_HARD_CAP_UPDATED,

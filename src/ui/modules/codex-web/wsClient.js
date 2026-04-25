@@ -70,6 +70,12 @@ export function resolveApiErrorMessage(payload, status) {
   return payload?.error?.detail || payload?.error?.message || `HTTP ${status}`;
 }
 
+export function isExpectedAbortError(error) {
+  const name = String(error?.name || "").trim().toLowerCase();
+  const message = String(error?.message || error || "").trim().toLowerCase();
+  return name === "aborterror" || message.includes("fetch is aborted") || message.includes("aborted without reason");
+}
+
 export function mapUiEventToNotification(record, readString, toRecord) {
   const kind = readString(record?.kind) || "";
   const conversationId = readString(record?.conversationId) || readString(record?.threadId) || "";
@@ -138,6 +144,7 @@ export function createWsClientModule(deps) {
     applyPendingPayloads,
     upsertProvisionalThreadItem = () => false,
     recordWebTransportEvent = () => {},
+    recordApiResult = () => {},
     LAST_EVENT_ID_KEY,
     windowRef = window,
     WebSocketRef = WebSocket,
@@ -264,6 +271,7 @@ export function createWsClientModule(deps) {
     };
     if (state.token.trim()) headers.Authorization = `Bearer ${state.token.trim()}`;
     const route = `${String(options.method || "GET").toUpperCase()} ${String(path || "")}`.trim();
+    const startedAt = Number(nowRef()) || Date.now();
     let res;
     try {
       res = await fetchRef(path, {
@@ -274,18 +282,39 @@ export function createWsClientModule(deps) {
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error || "Network request failed");
+      if (isExpectedAbortError(error)) {
+        throw error;
+      }
+      recordApiResult({
+        command: route,
+        elapsedMs: (Number(nowRef()) || Date.now()) - startedAt,
+        ok: false,
+        errorMessage: detail,
+      });
       recordWebTransportEvent("api_request_failed", `${route} -> network error: ${detail}`);
       throw error;
     }
     const payload = await res.json().catch(() => ({}));
     if (!res.ok) {
       const detail = resolveApiErrorMessage(payload, res.status);
+      recordApiResult({
+        command: route,
+        elapsedMs: (Number(nowRef()) || Date.now()) - startedAt,
+        ok: false,
+        errorMessage: detail,
+      });
       recordWebTransportEvent("api_request_failed", `${route} -> HTTP ${String(res.status)}: ${detail}`);
       if (/thread not found/i.test(detail)) {
         recordWebTransportEvent("thread_missing_observed", detail);
       }
       throw new Error(detail);
     }
+    recordApiResult({
+      command: route,
+      elapsedMs: (Number(nowRef()) || Date.now()) - startedAt,
+      ok: true,
+      errorMessage: null,
+    });
     return payload;
   }
 

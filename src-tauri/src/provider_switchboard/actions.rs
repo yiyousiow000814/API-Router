@@ -98,16 +98,42 @@ pub fn set_target(
     target: String,
     provider: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let runtime = ProviderSwitchboardRuntime::from_app_state(state);
+    set_target_for_runtime(&runtime, cli_homes, target, provider)
+}
+
+pub fn set_target_for_runtime(
+    runtime: &ProviderSwitchboardRuntime<'_>,
+    cli_homes: Vec<String>,
+    target: String,
+    provider: Option<String>,
+) -> Result<serde_json::Value, String> {
+    set_target_for_runtime_with_official_auth(runtime, cli_homes, target, provider, None)
+}
+
+pub fn set_target_for_runtime_with_official_auth(
+    runtime: &ProviderSwitchboardRuntime<'_>,
+    cli_homes: Vec<String>,
+    target: String,
+    provider: Option<String>,
+    official_auth_override: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
     let homes = resolve_cli_homes(cli_homes)?;
     let target = target.trim().to_ascii_lowercase();
 
-    let app_cfg = state.gateway.cfg.read().clone();
+    let app_cfg = runtime.gateway.cfg.read().clone();
     let app_auth = if target == "official" {
-        let auth = resolve_selected_official_auth(state)?;
-        crate::commands::write_selected_official_account_to_app(
-            &state.config_path,
-            &state.secrets,
-        )?;
+        let auth = if let Some(auth) = official_auth_override {
+            ensure_signed_in(&auth)?;
+            auth
+        } else {
+            let auth = resolve_selected_official_auth_from_secrets(runtime.secrets)?;
+            crate::commands::write_selected_official_account_to_app(
+                runtime.config_path,
+                runtime.secrets,
+            )?;
+            auth
+        };
         Some(auth)
     } else {
         None
@@ -132,7 +158,7 @@ pub fn set_target(
         if base_url.is_empty() {
             return Err(format!("provider base_url is empty: {name}"));
         }
-        let key = state
+        let key = runtime
             .secrets
             .get_provider_key(&name)
             .ok_or_else(|| format!("provider key is missing: {name}"))?;
@@ -147,14 +173,14 @@ pub fn set_target(
     let mut applied: Vec<PathBuf> = Vec::new();
     for h in &homes {
         let res = match target.as_str() {
-            "gateway" => switch_to_gateway_home_impl(state, h),
+            "gateway" => switch_to_gateway_home_impl(runtime, h),
             "official" => (|| {
-                let orig_cfg = read_cfg_base_text(&state.config_path, h)?;
+                let orig_cfg = read_cfg_base_text(runtime.config_path, h)?;
                 let next_cfg = strip_model_provider_line(&orig_cfg);
                 let auth = app_auth.as_ref().ok_or_else(|| {
                     "Missing app Codex auth.json. Try logging in first.".to_string()
                 })?;
-                write_swapped_files(&state.config_path, h, auth, &next_cfg)
+                write_swapped_files(runtime.config_path, h, auth, &next_cfg)
             })(),
             "provider" => (|| {
                 let name = direct_name
@@ -168,8 +194,8 @@ pub fn set_target(
                 let key = direct_key
                     .as_deref()
                     .ok_or_else(|| "provider key is missing".to_string())?;
-                let orig_cfg = read_cfg_base_text(&state.config_path, h)?;
-                let storage_mode = state.secrets.get_provider_key_storage_mode(name);
+                let orig_cfg = read_cfg_base_text(runtime.config_path, h)?;
+                let storage_mode = runtime.secrets.get_provider_key_storage_mode(name);
                 let use_config_storage = provider_key_storage_uses_config(&storage_mode);
                 let next_cfg = build_direct_provider_cfg(
                     &orig_cfg,
@@ -183,14 +209,14 @@ pub fn set_target(
                 } else {
                     auth_with_openai_key(key.trim())
                 };
-                write_swapped_files(&state.config_path, h, &next_auth, &next_cfg)
+                write_swapped_files(runtime.config_path, h, &next_auth, &next_cfg)
             })(),
             _ => Err("target must be one of: gateway | official | provider".to_string()),
         };
         if let Err(e) = res {
             if target != "gateway" {
                 for p in applied.iter().rev() {
-                    let _ = restore_home_original(&state.config_path, p);
+                    let _ = restore_home_original(runtime.config_path, p);
                 }
             }
             return Err(e);
@@ -202,8 +228,10 @@ pub fn set_target(
     // If we can't persist the state (disk full / permission issues), the switch still
     // took effect; we log an event so the user can troubleshoot, and future key-sync
     // may not work until state can be saved.
-    if let Err(e) = save_switchboard_state(state, &homes, &target, provider_name.as_deref()) {
-        state.gateway.store.events().emit(
+    if let Err(e) =
+        save_switchboard_state_to_config_path(runtime.config_path, &homes, &target, provider_name.as_deref())
+    {
+        runtime.gateway.store.events().emit(
             "codex",
             crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_STATE_SAVE_FAILED,
             &format!("Provider switchboard state save failed: {e}"),
@@ -216,7 +244,7 @@ pub fn set_target(
         );
     }
 
-    state.gateway.store.events().emit(
+    runtime.gateway.store.events().emit(
         "codex",
         crate::orchestrator::store::EventCode::CODEX_PROVIDER_SWITCHBOARD_UPDATED,
         "Provider switchboard target updated",
@@ -228,8 +256,8 @@ pub fn set_target(
         }),
     );
 
-    get_status(
-        state,
+    get_status_for_gateway(
+        runtime.gateway,
         homes
             .iter()
             .map(|p| p.to_string_lossy().to_string())
@@ -237,11 +265,17 @@ pub fn set_target(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn resolve_selected_official_auth(
     state: &AppState,
 ) -> Result<serde_json::Value, String> {
-    let auth = state
-        .secrets
+    resolve_selected_official_auth_from_secrets(&state.secrets)
+}
+
+fn resolve_selected_official_auth_from_secrets(
+    secrets: &crate::orchestrator::secrets::SecretStore,
+) -> Result<serde_json::Value, String> {
+    let auth = secrets
         .active_official_account_profile_auth_json()
         .ok_or_else(|| "Missing selected official Codex auth profile. Try logging in first.".to_string())?;
     ensure_signed_in(&auth)?;

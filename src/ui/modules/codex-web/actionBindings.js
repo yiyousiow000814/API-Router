@@ -28,6 +28,16 @@ export function resolveActionErrorMessage(error, fallback) {
   return error?.message || String(error || fallback || "Action failed");
 }
 
+export function providerRuntimeRefreshErrorMessage(workspaceLabel, refreshErrors) {
+  const details = (Array.isArray(refreshErrors) ? refreshErrors : [])
+    .map((item) => String(item?.error || item?.home || "").trim())
+    .filter(Boolean)
+    .join("; ");
+  return details
+    ? `Web Codex ${workspaceLabel} provider saved, but runtime refresh failed: ${details}`
+    : `Web Codex ${workspaceLabel} provider saved, but runtime refresh failed.`;
+}
+
 export function createActionBindingsModule(deps) {
   const {
     state,
@@ -104,9 +114,409 @@ export function createActionBindingsModule(deps) {
       : typeof globalThis.setTimeout === "function"
         ? globalThis.setTimeout.bind(globalThis)
         : (callback) => callback();
+  const scheduleInterval =
+    typeof win?.setInterval === "function"
+      ? win.setInterval.bind(win)
+      : typeof globalThis.setInterval === "function"
+        ? globalThis.setInterval.bind(globalThis)
+        : null;
     const PENDING_FREEFORM_EXIT_MS = 180;
 
   let pendingBlockedBranchSwitch = null;
+  const providerSwitchboardRefreshInFlight = new Map();
+  let providerSwitchboardRefreshSeq = 0;
+  let providerSwitchboardLoadingSeq = 0;
+  let providerSwitchboardLastRefreshMs = 0;
+  let providerSwitchboardAutoRefreshBound = false;
+
+  function normalizeSettingsSection(section) {
+    const value = String(section || "").trim().toLowerCase();
+    return ["provider", "chat", "system", "alerts", "debug"].includes(value) ? value : "provider";
+  }
+
+  function syncSettingsSectionVisibility() {
+    const active = normalizeSettingsSection(state.settingsActiveSection);
+    state.settingsActiveSection = active;
+    doc?.querySelectorAll?.("[data-settings-section]").forEach((btn) => {
+      const selected = String(btn.getAttribute("data-settings-section") || "") === active;
+      btn.classList.toggle("is-active", selected);
+      btn.setAttribute("aria-selected", selected ? "true" : "false");
+    });
+    doc?.querySelectorAll?.("[data-settings-pane]").forEach((pane) => {
+      const selected = String(pane.getAttribute("data-settings-pane") || "") === active;
+      pane.classList.toggle("is-active", selected);
+      pane.setAttribute("aria-hidden", selected ? "false" : "true");
+    });
+  }
+
+  function refreshSettingsProviderSwitchboardIfNeeded() {
+    if (state.activeMainTab !== "settings") return;
+    if (state.settingsActiveSection !== "provider") return;
+    if (state.providerSwitchboardLoading || state.providerSwitchboardBusy) return;
+    const stale = Date.now() - providerSwitchboardLastRefreshMs > 2_500;
+    if (state.providerSwitchboardStatus && !state.providerSwitchboardError && !stale) return;
+    refreshProviderSwitchboard({ showLoading: !state.providerSwitchboardStatus });
+  }
+
+  function notificationPermission(fallback = "") {
+    return String(NotificationApi?.permission || win?.Notification?.permission || fallback || "").trim();
+  }
+
+  function notificationsSupported() {
+    return !!NotificationApi || "Notification" in win;
+  }
+
+  function showTestNotification() {
+    if (notificationPermission() !== "granted" || typeof NotificationApi !== "function") return false;
+    try {
+      const notification = new NotificationApi("API Router notifications enabled", {
+        body: "Web Codex notifications are working.",
+        tag: "api-router-web-codex-test",
+      });
+      scheduleTimeout(() => notification?.close?.(), 4000);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function setSettingsSection(section) {
+    state.settingsActiveSection = normalizeSettingsSection(section);
+    syncSettingsSectionVisibility();
+    refreshSettingsProviderSwitchboardIfNeeded();
+  }
+
+  function normalizeProviderSwitchboardPayload(payload) {
+    if (!payload || typeof payload !== "object") return null;
+    const providerDetails = Array.isArray(payload.provider_details)
+      ? payload.provider_details
+          .map((item) => ({
+            ...(item && typeof item === "object" ? item : {}),
+            name: String(item?.name || "").trim(),
+            display_name: String(item?.display_name || item?.name || "").trim(),
+            base_url: String(item?.base_url || "").trim(),
+            has_key: item?.has_key === true,
+            disabled: item?.disabled === true,
+            quota: item?.quota && typeof item.quota === "object" ? item.quota : null,
+          }))
+          .filter((item) => item.name)
+      : [];
+    const officialProfiles = Array.isArray(payload.official_profiles)
+      ? payload.official_profiles
+          .map((item, index) => ({
+            ...(item && typeof item === "object" ? item : {}),
+            id: String(item?.id || item?.email || item?.label || `official-${index + 1}`).trim(),
+            label: String(item?.label || "").trim(),
+            email: String(item?.email || "").trim(),
+            plan_label: String(item?.plan_label || "").trim(),
+            active: item?.active === true,
+          }))
+          .filter((item) => item.id)
+      : [];
+    const runtimeRefresh = Array.isArray(payload.runtime_refresh)
+      ? payload.runtime_refresh
+          .map((item) => ({
+            ...(item && typeof item === "object" ? item : {}),
+            home: String(item?.home || "").trim(),
+            status: String(item?.status || "").trim(),
+            deferred: item?.deferred === true,
+            running_threads: Number.isFinite(Number(item?.running_threads))
+              ? Number(item.running_threads)
+              : 0,
+            error: String(item?.error || "").trim(),
+          }))
+          .filter((item) => item.home)
+      : [];
+    return {
+      ...payload,
+      mode: String(payload.mode || "").trim(),
+      model_provider: payload.model_provider == null ? "" : String(payload.model_provider || "").trim(),
+      provider_options: Array.isArray(payload.provider_options)
+        ? payload.provider_options.map((name) => String(name || "").trim()).filter(Boolean)
+        : [],
+      provider_details: providerDetails,
+      dirs: Array.isArray(payload.dirs)
+        ? payload.dirs.map((item) => (item && typeof item === "object" ? item : {}))
+        : [],
+      scope: normalizeProviderSwitchboardScope(payload.scope || state.providerSwitchboardScope || "windows"),
+      official_profiles: officialProfiles,
+      runtime_refresh: runtimeRefresh,
+    };
+  }
+
+  function normalizeProviderSwitchboardScope(scope) {
+    const value = String(scope || "").trim().toLowerCase();
+    return value === "wsl2" ? "wsl2" : "windows";
+  }
+
+  function resolveAvailableProviderSwitchboardScope(scope) {
+    const normalizedScope = normalizeProviderSwitchboardScope(scope);
+    const availability = state.workspaceAvailability || {};
+    const windowsAvailable = availability.windowsInstalled === true;
+    const wsl2Available = availability.wsl2Installed === true;
+    if (windowsAvailable && !wsl2Available) return "windows";
+    if (!windowsAvailable && wsl2Available) return "wsl2";
+    return normalizedScope;
+  }
+
+  function cacheProviderSwitchboardStatus(scope, status) {
+    const normalizedScope = normalizeProviderSwitchboardScope(scope);
+    if (!state.providerSwitchboardStatusByScope || typeof state.providerSwitchboardStatusByScope !== "object") {
+      state.providerSwitchboardStatusByScope = { windows: null, wsl2: null };
+    }
+    state.providerSwitchboardStatusByScope[normalizedScope] = status || null;
+  }
+
+  function activeOfficialProfileId(status = state.providerSwitchboardStatus) {
+    const profiles = Array.isArray(status?.official_profiles) ? status.official_profiles : [];
+    const active = profiles.find((profile) => profile?.active === true) || profiles[0] || null;
+    return String(active?.id || "").trim();
+  }
+
+  function officialProfileLabel(profileId, status = state.providerSwitchboardStatus) {
+    const id = String(profileId || "").trim();
+    const profiles = Array.isArray(status?.official_profiles) ? status.official_profiles : [];
+    const profile = profiles.find((item) => String(item?.id || "").trim() === id) || profiles.find((item) => item?.active === true) || null;
+    const email = String(profile?.email || "").trim();
+    const label = String(profile?.label || "").trim();
+    return email || label || "Official";
+  }
+
+  function currentProviderSwitchboardSelection(status = state.providerSwitchboardStatus) {
+    const mode = String(status?.mode || "").trim().toLowerCase();
+    const target = mode === "official" || mode === "provider" || mode === "gateway" ? mode : "gateway";
+    return {
+      target,
+      provider: target === "provider" ? String(status?.model_provider || "").trim() : "",
+      officialProfileId: target === "official" ? activeOfficialProfileId(status) : "",
+    };
+  }
+
+  function providerSwitchboardSelectionsMatch(left, right) {
+    const leftTarget = String(left?.target || "").trim().toLowerCase();
+    const rightTarget = String(right?.target || "").trim().toLowerCase();
+    if (leftTarget !== rightTarget) return false;
+    if (leftTarget === "provider") {
+      return String(left?.provider || "").trim() === String(right?.provider || "").trim();
+    }
+    if (leftTarget === "official") {
+      return String(left?.officialProfileId || "").trim() === String(right?.officialProfileId || "").trim();
+    }
+    return true;
+  }
+
+  function ensureProviderSwitchboardDraft(status = state.providerSwitchboardStatus) {
+    if (!status) return;
+    if (state.providerSwitchboardDraftTarget) return;
+    const mode = String(status.mode || "").trim().toLowerCase();
+    state.providerSwitchboardDraftTarget =
+      mode === "official" || mode === "provider" || mode === "gateway" ? mode : "gateway";
+    state.providerSwitchboardDraftProvider =
+      state.providerSwitchboardDraftTarget === "provider"
+        ? String(status.model_provider || "").trim()
+        : "";
+    state.providerSwitchboardDraftOfficialProfileId =
+      state.providerSwitchboardDraftTarget === "official" ? activeOfficialProfileId(status) : "";
+  }
+
+  async function refreshProviderSwitchboard(options = {}) {
+    if (typeof api !== "function") return null;
+    const showLoading = options?.showLoading !== false;
+    const scope = resolveAvailableProviderSwitchboardScope(options?.scope || state.providerSwitchboardScope);
+    if (scope !== normalizeProviderSwitchboardScope(state.providerSwitchboardScope)) {
+      state.providerSwitchboardScope = scope;
+      state.providerSwitchboardDraftTarget = "";
+      state.providerSwitchboardDraftProvider = "";
+      state.providerSwitchboardDraftOfficialProfileId = "";
+      state.providerSwitchboardStatus = state.providerSwitchboardStatusByScope?.[scope] || null;
+    }
+    const activeRequestSeq = ++providerSwitchboardRefreshSeq;
+    let request = providerSwitchboardRefreshInFlight.get(scope);
+    if (!request) {
+      request = api(`/codex/provider-switchboard?scope=${encodeURIComponent(scope)}`).finally(() => {
+        if (providerSwitchboardRefreshInFlight.get(scope) === request) {
+          providerSwitchboardRefreshInFlight.delete(scope);
+        }
+      });
+      providerSwitchboardRefreshInFlight.set(scope, request);
+    }
+    const isCurrentScope = () => scope === normalizeProviderSwitchboardScope(state.providerSwitchboardScope);
+    if (showLoading && isCurrentScope()) {
+      providerSwitchboardLoadingSeq = activeRequestSeq;
+      state.providerSwitchboardLoading = true;
+    }
+    if (isCurrentScope()) state.providerSwitchboardError = "";
+    syncSettingsControlsFromMain();
+    try {
+      const payload = await request;
+      const status = normalizeProviderSwitchboardPayload(payload);
+      providerSwitchboardLastRefreshMs = Date.now();
+      cacheProviderSwitchboardStatus(scope, status);
+      if (isCurrentScope() && activeRequestSeq === providerSwitchboardRefreshSeq) {
+        state.providerSwitchboardStatus = status;
+        ensureProviderSwitchboardDraft(status);
+      }
+      return status;
+    } catch (error) {
+      if (isCurrentScope() && activeRequestSeq === providerSwitchboardRefreshSeq) {
+        state.providerSwitchboardError = resolveActionErrorMessage(
+          error,
+          "Failed to load provider switchboard."
+        );
+      }
+      return null;
+    } finally {
+      if (showLoading && providerSwitchboardLoadingSeq === activeRequestSeq) {
+        state.providerSwitchboardLoading = false;
+        providerSwitchboardLoadingSeq = 0;
+      }
+      syncSettingsControlsFromMain();
+    }
+  }
+
+  function setProviderSwitchboardDraft(target, provider = "", officialProfileId = "") {
+    const normalizedTarget = String(target || "").trim().toLowerCase();
+    const nextTarget =
+      normalizedTarget === "official" || normalizedTarget === "provider" ? normalizedTarget : "gateway";
+    const nextSelection = {
+      target: nextTarget,
+      provider: nextTarget === "provider" ? String(provider || "").trim() : "",
+      officialProfileId:
+        nextTarget === "official" ? String(officialProfileId || activeOfficialProfileId()).trim() : "",
+    };
+    const currentSelection = currentProviderSwitchboardSelection();
+    state.providerSwitchboardError = "";
+    state.providerSwitchboardConfirm = providerSwitchboardSelectionsMatch(currentSelection, nextSelection)
+      ? null
+      : {
+          ...nextSelection,
+          scope: normalizeProviderSwitchboardScope(state.providerSwitchboardScope),
+        };
+    syncSettingsControlsFromMain();
+  }
+
+  async function setProviderSwitchboardScope(scope) {
+    const nextScope = resolveAvailableProviderSwitchboardScope(scope);
+    if (nextScope === normalizeProviderSwitchboardScope(state.providerSwitchboardScope)) return;
+    state.providerSwitchboardScope = nextScope;
+    state.providerSwitchboardDraftTarget = "";
+    state.providerSwitchboardDraftProvider = "";
+    state.providerSwitchboardDraftOfficialProfileId = "";
+    const cachedStatus = state.providerSwitchboardStatusByScope?.[nextScope] || null;
+    state.providerSwitchboardStatus = cachedStatus;
+    if (cachedStatus) ensureProviderSwitchboardDraft(cachedStatus);
+    syncSettingsControlsFromMain();
+    await refreshProviderSwitchboard({ showLoading: false, scope: nextScope });
+  }
+
+  function closeProviderSwitchboardConfirm() {
+    state.providerSwitchboardConfirm = null;
+    syncSettingsControlsFromMain();
+  }
+
+  async function applyProviderSwitchboardDraft() {
+    if (typeof api !== "function") return;
+    const pending = state.providerSwitchboardConfirm || {};
+    const target = String(pending.target || state.providerSwitchboardDraftTarget || "gateway").trim().toLowerCase();
+    const provider = String(pending.provider || state.providerSwitchboardDraftProvider || "").trim();
+    const officialProfileId = String(pending.officialProfileId || state.providerSwitchboardDraftOfficialProfileId || "").trim();
+    if (target === "provider" && !provider) {
+      const message = "Select a direct provider before Apply.";
+      state.providerSwitchboardError = message;
+      syncSettingsControlsFromMain();
+      setStatus(message, true);
+      return;
+    }
+    if (target === "official" && !officialProfileId) {
+      const message = "Select an official account before Apply.";
+      state.providerSwitchboardError = message;
+      syncSettingsControlsFromMain();
+      setStatus(message, true);
+      return;
+    }
+    state.providerSwitchboardBusy = true;
+    state.providerSwitchboardError = "";
+    syncSettingsControlsFromMain();
+    try {
+      const body = {
+        target,
+        scope: normalizeProviderSwitchboardScope(pending.scope || state.providerSwitchboardScope),
+      };
+      if (provider) body.provider = provider;
+      if (target === "official") body.officialProfileId = officialProfileId;
+      const payload = await api("/codex/provider-switchboard", {
+        method: "POST",
+        body,
+      });
+      state.providerSwitchboardStatus = normalizeProviderSwitchboardPayload(payload);
+      cacheProviderSwitchboardStatus(body.scope, state.providerSwitchboardStatus);
+      state.providerSwitchboardDraftTarget = target;
+      state.providerSwitchboardDraftProvider = target === "provider" ? provider : "";
+      state.providerSwitchboardDraftOfficialProfileId = target === "official" ? officialProfileId : "";
+      state.providerSwitchboardConfirm = null;
+      const label =
+        target === "provider" && provider
+          ? provider
+          : target === "gateway"
+            ? "Gateway"
+            : officialProfileLabel(officialProfileId);
+      const runtimeRefresh = Array.isArray(state.providerSwitchboardStatus?.runtime_refresh)
+        ? state.providerSwitchboardStatus.runtime_refresh
+        : [];
+      const hasDeferredRefresh = runtimeRefresh.some((item) => item?.deferred === true);
+      const refreshErrors = runtimeRefresh.filter((item) => String(item?.status || "") === "error");
+      const hasRefreshError = refreshErrors.length > 0;
+      const workspaceLabel = body.scope === "wsl2" ? "WSL2" : "Windows";
+      if (hasDeferredRefresh) {
+        setStatus(`Web Codex ${workspaceLabel} provider will apply after the current turn finishes: ${label}.`);
+      } else if (hasRefreshError) {
+        const message = providerRuntimeRefreshErrorMessage(workspaceLabel, refreshErrors);
+        state.providerSwitchboardError = message;
+        setStatus(message, true);
+      } else {
+        setStatus(`Web Codex ${workspaceLabel} provider applied: ${label}. Future messages will use it.`);
+      }
+    } catch (error) {
+      const message = resolveActionErrorMessage(error, "Failed to switch provider.");
+      state.providerSwitchboardError = message;
+      setStatus(message, true);
+    } finally {
+      state.providerSwitchboardBusy = false;
+      syncSettingsControlsFromMain();
+    }
+  }
+
+  function setProviderSwitchboardProvidersModalOpen(open) {
+    state.providerSwitchboardProvidersModalOpen = open === true;
+    syncSettingsControlsFromMain();
+  }
+
+  async function setProviderEnabled(provider, enabled) {
+    if (typeof api !== "function") return;
+    const scope = normalizeProviderSwitchboardScope(state.providerSwitchboardScope);
+    state.providerSwitchboardBusy = true;
+    state.providerSwitchboardError = "";
+    syncSettingsControlsFromMain();
+    try {
+      const payload = await api("/codex/provider-switchboard/provider-enabled", {
+        method: "POST",
+        body: { provider, enabled, scope },
+      });
+      const status = normalizeProviderSwitchboardPayload(payload);
+      cacheProviderSwitchboardStatus(scope, status);
+      if (scope === normalizeProviderSwitchboardScope(state.providerSwitchboardScope)) {
+        state.providerSwitchboardStatus = status;
+      }
+      setStatus(`${provider} ${enabled ? "enabled" : "disabled"}.`);
+    } catch (error) {
+      const message = resolveActionErrorMessage(error, "Failed to update provider.");
+      state.providerSwitchboardError = message;
+      setStatus(message, true);
+    } finally {
+      state.providerSwitchboardBusy = false;
+      syncSettingsControlsFromMain();
+    }
+  }
 
   function showBranchSwitchBlockedDialog(uncommittedFileCount, branch) {
     pendingBlockedBranchSwitch = branch;
@@ -218,6 +628,12 @@ export function createActionBindingsModule(deps) {
   }
 
   function wireActions() {
+    if (!providerSwitchboardAutoRefreshBound && scheduleInterval) {
+      providerSwitchboardAutoRefreshBound = true;
+      scheduleInterval(() => {
+        refreshSettingsProviderSwitchboardIfNeeded();
+      }, 2500);
+    }
     bindClick("addHostBtn", () => addHost().catch((e) => setStatus(resolveActionErrorMessage(e), true)));
     bindClick("resolveApprovalBtn", () =>
       resolveApproval().catch((e) => setStatus(resolveActionErrorMessage(e), true))
@@ -451,14 +867,44 @@ export function createActionBindingsModule(deps) {
       sendTurn().catch((e) => setStatus(resolveActionErrorMessage(e), true));
     });
     bindClick("enableNotifBtn", async () => {
-      if (!("Notification" in win)) {
+      if (!notificationsSupported()) {
         setStatus("Notifications are not supported.", true);
         return;
       }
+      let permission = notificationPermission();
+      if (permission === "denied") {
+        updateNotificationState();
+        setStatus("Notifications are blocked by this browser. Re-enable them in browser or iOS settings.", true);
+        return;
+      }
       try {
-        await NotificationApi.requestPermission();
-      } catch {}
+        if (permission !== "granted") {
+          if (typeof NotificationApi?.requestPermission !== "function") {
+            setStatus("Notifications cannot be requested in this browser.", true);
+            updateNotificationState();
+            return;
+          }
+          permission = notificationPermission(await NotificationApi.requestPermission());
+        }
+      } catch (error) {
+        setStatus(resolveActionErrorMessage(error, "Failed to request notifications."), true);
+        updateNotificationState();
+        return;
+      }
       updateNotificationState();
+      if (permission === "granted") {
+        setStatus(
+          showTestNotification()
+            ? "Sent a test notification."
+            : "Notifications are enabled."
+        );
+        return;
+      }
+      if (permission === "denied") {
+        setStatus("Notifications are blocked in this browser.", true);
+        return;
+      }
+      setStatus("Notification permission was not changed.", true);
     });
     bindClick("toggleLiveInspectorBtn", async () => {
       const current =
@@ -619,6 +1065,62 @@ export function createActionBindingsModule(deps) {
         })
         .catch((e) => setStatus(resolveActionErrorMessage(e, "Failed to update fast mode."), true))
     );
+    bindClick("settingsProviderGatewayBtn", () => setProviderSwitchboardDraft("gateway"));
+    bindClick("settingsProviderConfirmApplyBtn", () => applyProviderSwitchboardDraft());
+    bindClick("settingsProviderConfirmCancelBtn", () => closeProviderSwitchboardConfirm());
+    bindClick("settingsProviderManageBtn", () => setProviderSwitchboardProvidersModalOpen(true));
+    bindClick("settingsProviderManagerCloseBtn", () => setProviderSwitchboardProvidersModalOpen(false));
+    const settingsProviderManagerBackdrop = byId("settingsProviderManagerBackdrop");
+    if (settingsProviderManagerBackdrop && !settingsProviderManagerBackdrop.__providerManagerBackdropClickBound) {
+      settingsProviderManagerBackdrop.__providerManagerBackdropClickBound = true;
+      settingsProviderManagerBackdrop.addEventListener("click", (event) => {
+        if (event.target !== settingsProviderManagerBackdrop) return;
+        setProviderSwitchboardProvidersModalOpen(false);
+      });
+    }
+    bindClick("settingsProviderScopeWindowsBtn", () => setProviderSwitchboardScope("windows"));
+    bindClick("settingsProviderScopeWslBtn", () => setProviderSwitchboardScope("wsl2"));
+    doc?.querySelectorAll?.("[data-settings-section]").forEach((btn) => {
+      if (btn.__settingsSectionClickBound) return;
+      btn.__settingsSectionClickBound = true;
+      btn.addEventListener("click", () => {
+        setSettingsSection(btn.getAttribute("data-settings-section"));
+      });
+    });
+    const settingsProviderList = byId("settingsProviderList");
+    if (settingsProviderList && !settingsProviderList.__providerSwitchboardClickBound) {
+      settingsProviderList.__providerSwitchboardClickBound = true;
+      settingsProviderList.addEventListener("click", (event) => {
+        const btn = event.target?.closest?.("[data-provider-target='provider']");
+        if (!btn) return;
+        const provider = String(btn.getAttribute("data-provider-name") || "").trim();
+        if (!provider) return;
+        setProviderSwitchboardDraft("provider", provider);
+      });
+    }
+    const settingsOfficialProfileList = byId("settingsOfficialProfileList");
+    if (settingsOfficialProfileList && !settingsOfficialProfileList.__officialProfileClickBound) {
+      settingsOfficialProfileList.__officialProfileClickBound = true;
+      settingsOfficialProfileList.addEventListener("click", (event) => {
+        const btn = event.target?.closest?.("[data-official-profile-id]");
+        if (!btn) return;
+        const profileId = String(btn.getAttribute("data-official-profile-id") || "").trim();
+        if (!profileId) return;
+        setProviderSwitchboardDraft("official", "", profileId);
+      });
+    }
+    const settingsProviderManagerList = byId("settingsProviderManagerList");
+    if (settingsProviderManagerList && !settingsProviderManagerList.__providerManagerClickBound) {
+      settingsProviderManagerList.__providerManagerClickBound = true;
+      settingsProviderManagerList.addEventListener("click", (event) => {
+        const btn = event.target?.closest?.("[data-provider-enabled-toggle]");
+        if (!btn) return;
+        const provider = String(btn.getAttribute("data-provider-name") || "").trim();
+        if (!provider) return;
+        const enabled = btn.getAttribute("data-provider-enabled-toggle") === "true";
+        setProviderEnabled(provider, enabled);
+      });
+    }
     bindClick("dismissGuideBtn", () => {
       localStorage.setItem("web_codex_guide_dismissed_v2", "1");
       if (byId("guideList")) byId("guideList").style.display = "none";
@@ -645,6 +1147,7 @@ export function createActionBindingsModule(deps) {
       const backdrop = byId("mobileDrawerBackdrop");
       wireBlurBackdropShield(backdrop, {
         onClose: () => setMobileTab("chat"),
+        closeEvent: "pointerup",
         suppressMs: 420,
       });
     }
@@ -694,13 +1197,17 @@ export function createActionBindingsModule(deps) {
     });
     bindClick("leftSettingsBtn", () => {
       setMainTab("settings");
+      syncSettingsSectionVisibility();
       syncSettingsControlsFromMain();
+      refreshSettingsProviderSwitchboardIfNeeded();
       refreshCodexVersions().catch(() => {});
       setMobileTab("chat");
     });
     bindClick("openToolsBtn", () => {
       setMainTab("settings");
+      setSettingsSection("debug");
       syncSettingsControlsFromMain();
+      refreshProviderSwitchboard();
       refreshPending().catch(() => {});
       setMobileTab("chat");
     });
@@ -927,5 +1434,5 @@ export function createActionBindingsModule(deps) {
     });
   }
 
-  return { wireActions };
+  return { wireActions, refreshProviderSwitchboard };
 }

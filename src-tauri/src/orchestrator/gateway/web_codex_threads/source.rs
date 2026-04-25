@@ -1,8 +1,5 @@
 use super::current_unix_secs;
-use crate::orchestrator::gateway::web_codex_home::{
-    default_windows_codex_dir, web_codex_rpc_home_override, web_codex_wsl_linux_home_override,
-    WorkspaceTarget,
-};
+use crate::orchestrator::gateway::web_codex_home::{default_windows_codex_dir, WorkspaceTarget};
 use crate::orchestrator::gateway::web_codex_rollout_path::session_candidate_should_replace_existing;
 use crate::orchestrator::gateway::web_codex_session_manager::{
     overlay_runtime_thread_item, runtime_thread_payload, CodexSessionManager,
@@ -617,23 +614,44 @@ fn parse_history_preview_map(history_path: &Path) -> HashMap<String, String> {
 }
 
 fn fetch_windows_threads_from_sessions() -> Vec<Value> {
-    let Some(codex_dir) = web_codex_rpc_home_override()
-        .map(PathBuf::from)
-        .or_else(default_windows_codex_dir)
-    else {
+    let codex_dirs = windows_thread_index_codex_dirs();
+    if codex_dirs.is_empty() {
         return Vec::new();
     };
-    let sessions_dir = codex_dir.join("sessions");
-    if !sessions_dir.exists() {
-        return Vec::new();
+    let mut items = Vec::new();
+    for codex_dir in codex_dirs {
+        let sessions_dir = codex_dir.join("sessions");
+        if !sessions_dir.exists() {
+            continue;
+        }
+        items = merge_items_without_duplicates(
+            items,
+            build_threads_from_session_dir(
+                &sessions_dir,
+                &codex_dir.join("history.jsonl"),
+                "windows",
+                "windows-session-index",
+                |file| file.to_string_lossy().to_string(),
+            ),
+        );
     }
-    build_threads_from_session_dir(
-        &sessions_dir,
-        &codex_dir.join("history.jsonl"),
-        "windows",
-        "windows-session-index",
-        |file| file.to_string_lossy().to_string(),
-    )
+    items
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: Option<PathBuf>) {
+    let Some(path) = path else {
+        return;
+    };
+    if paths.iter().any(|existing| existing == &path) {
+        return;
+    }
+    paths.push(path);
+}
+
+fn windows_thread_index_codex_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    push_unique_path(&mut dirs, default_windows_codex_dir());
+    dirs
 }
 
 fn parse_wsl_thread_scan_output(text: &str) -> Result<Vec<Value>, String> {
@@ -646,11 +664,8 @@ fn parse_wsl_thread_scan_output(text: &str) -> Result<Vec<Value>, String> {
 }
 
 fn wsl_thread_scan_script() -> String {
-    let export_home = web_codex_wsl_linux_home_override()
-        .map(|home| format!("export CODEX_HOME='{}'\n", home.replace('\'', "'\"'\"'")))
-        .unwrap_or_default();
     format!(
-        r###"{export_home}python3 - <<'PY'
+        r###"python3 - <<'PY'
 import json
 import re
 from pathlib import Path
@@ -717,14 +732,14 @@ def normalize_session_path_like(raw):
 
 def is_imported_session_path(raw):
     path = normalize_session_path_like(raw)
-    return "/.codex/sessions/imported/" in path and path.endswith(".jsonl")
+    return "/sessions/imported/" in path and path.endswith(".jsonl")
 
 def is_live_session_rollout_path(raw):
     path = normalize_session_path_like(raw)
     return (
-        "/.codex/sessions/" in path
+        "/sessions/" in path
         and "/rollout-" in path
-        and "/.codex/sessions/imported/" not in path
+        and "/sessions/imported/" not in path
         and path.endswith(".jsonl")
     )
 
@@ -746,8 +761,7 @@ def classify_filter_reason(preview, cwd, is_subagent, auxiliary_prompt_only):
         return "synthetic-probe"
     return None
 
-codex_home = (os.environ.get("CODEX_HOME") or "").strip()
-root = Path(codex_home) if codex_home else (Path.home() / ".codex")
+root = Path.home() / ".codex"
 sessions_dir = root / "sessions"
 distro = (os.environ.get("WSL_DISTRO_NAME") or "").strip()
 
@@ -1301,14 +1315,15 @@ fn filter_auxiliary_threads(items: &mut Vec<Value>) {
 mod tests {
     use super::{
         build_threads_from_session_dir, clear_history_preview_map_cache_for_test,
-        clear_session_file_scan_cache_for_test, collect_jsonl_files, filter_auxiliary_threads,
-        find_rollout_path_in_items, merge_items_without_duplicates, overlay_loaded_thread_runtime,
-        parse_history_preview_map, parse_wsl_thread_scan_output, scan_session_file,
-        sort_threads_by_updated_desc, ThreadFilterReason, THREADS_MAX_AGE_SECS,
+        clear_session_file_scan_cache_for_test, collect_jsonl_files,
+        fetch_windows_threads_from_sessions, filter_auxiliary_threads, find_rollout_path_in_items,
+        merge_items_without_duplicates, overlay_loaded_thread_runtime, parse_history_preview_map,
+        parse_wsl_thread_scan_output, scan_session_file, sort_threads_by_updated_desc,
+        ThreadFilterReason, THREADS_MAX_AGE_SECS,
     };
     use crate::codex_app_server;
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::sync::Arc;
 
     struct EnvGuard {
@@ -1431,6 +1446,56 @@ mod tests {
     }
 
     #[test]
+    fn windows_thread_index_uses_default_codex_home_when_web_runtime_is_isolated() {
+        clear_session_file_scan_cache_for_test();
+        clear_history_preview_map_cache_for_test();
+        let _test_guard = codex_app_server::lock_test_globals();
+        let user_profile = tempfile::tempdir().expect("user profile temp dir");
+        let app_data = tempfile::tempdir().expect("app data temp dir");
+        let codex_home = user_profile.path().join(".codex");
+        let sessions = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("04")
+            .join("24");
+        std::fs::create_dir_all(&sessions).expect("create sessions");
+        std::fs::write(
+            sessions.join("rollout-2026-04-24T04-18-55-thread-main.jsonl"),
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-main\",\"cwd\":\"C:\\\\Users\\\\yiyou\\\\API-Router\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"current api router session\"}]}}\n"
+            ),
+        )
+        .expect("write session");
+
+        let _user_profile_guard =
+            EnvGuard::set("USERPROFILE", &user_profile.path().to_string_lossy());
+        let _app_data_guard = EnvGuard::set(
+            "API_ROUTER_USER_DATA_DIR",
+            &app_data.path().to_string_lossy(),
+        );
+        let _web_home_guard = EnvGuard::set("API_ROUTER_WEB_CODEX_CODEX_HOME", "");
+        let _codex_home_guard = EnvGuard::set(
+            "CODEX_HOME",
+            &app_data.path().join("codex-home").to_string_lossy(),
+        );
+
+        let items = fetch_windows_threads_from_sessions();
+
+        assert!(items.iter().any(|item| {
+            item.get("id").and_then(Value::as_str) == Some("thread-main")
+                && item.get("preview").and_then(Value::as_str) == Some("current api router session")
+        }));
+        assert!(!items.iter().any(|item| {
+            item.get("path")
+                .and_then(Value::as_str)
+                .is_some_and(|path| {
+                    path.contains("codex-home") || path.contains("sessions\\imported")
+                })
+        }));
+    }
+
+    #[test]
     fn scan_session_file_cache_invalidates_when_file_changes() {
         clear_session_file_scan_cache_for_test();
         let temp = tempfile::tempdir().expect("temp dir");
@@ -1467,7 +1532,7 @@ mod tests {
     #[test]
     fn build_threads_from_session_dir_prefers_live_rollout_over_imported_copy_for_same_thread() {
         let temp = tempfile::tempdir().expect("temp dir");
-        let sessions_dir = temp.path().join(".codex").join("sessions");
+        let sessions_dir = temp.path().join("codex-home").join("sessions");
         let imported_dir = sessions_dir.join("imported");
         let live_dir = sessions_dir.join("2026").join("03").join("20");
         std::fs::create_dir_all(&imported_dir).expect("imported dir");

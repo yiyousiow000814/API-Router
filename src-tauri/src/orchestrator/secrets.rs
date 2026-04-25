@@ -1049,6 +1049,21 @@ impl SecretStore {
             .map(|profile| profile.auth_json.clone())
     }
 
+    pub fn official_account_profile_auth_json(
+        &self,
+        profile_id: &str,
+    ) -> Result<serde_json::Value, String> {
+        let mut data = self.inner.lock();
+        if merge_official_account_profiles(&mut data) {
+            let _ = self.persist(&data);
+        }
+        let id = profile_id.trim();
+        data.official_account_profiles
+            .get(id)
+            .map(|profile| profile.auth_json.clone())
+            .ok_or_else(|| format!("unknown official account profile: {id}"))
+    }
+
     pub fn remove_official_account_profile(&self, profile_id: &str) -> Result<(), String> {
         let mut data = self.inner.lock();
         merge_official_account_profiles(&mut data);

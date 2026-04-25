@@ -2,7 +2,7 @@ import { renderMessageRichHtml, renderStructuredToolPreviewHtml, renderToolPrevi
 import { extractPlanUpdate, renderPlanCardHtml } from "./runtimePlan.js";
 import { clearProposedPlanConfirmation } from "./proposedPlan.js";
 import { extractRequestUserInput } from "./runtimeUserInput.js";
-import { isTerminalInterruptedHistory } from "./historyLiveCommentaryState.js";
+import { isTerminalHistoryStatus, isTerminalInterruptedHistory } from "./historyLiveCommentaryState.js";
 import {
   buildBranchPickerItemState,
   buildBranchPickerState,
@@ -73,6 +73,271 @@ export function createComposerUiModule(deps) {
 
   function readText(value) {
     return value == null ? "" : String(value).trim();
+  }
+
+  function readFiniteNumber(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function pctOf(value, total) {
+    const v = readFiniteNumber(value);
+    const t = readFiniteNumber(total);
+    if (v == null || t == null || t <= 0) return null;
+    return Math.max(0, Math.min(100, (v / t) * 100));
+  }
+
+  function fmtPct(value) {
+    const number = readFiniteNumber(value);
+    return number == null ? "-" : `${Math.round(number)}%`;
+  }
+
+  function fmtAmount(value) {
+    const number = readFiniteNumber(value);
+    if (number == null) return "-";
+    return new Intl.NumberFormat("en", { maximumFractionDigits: 0 }).format(number);
+  }
+
+  function fmtUsd(value) {
+    const number = readFiniteNumber(value);
+    if (number == null) return "-";
+    return new Intl.NumberFormat("en", { maximumFractionDigits: 2 }).format(number);
+  }
+
+  function describeProviderUsage(quota, hardCap = null) {
+    const q = quota && typeof quota === "object" ? quota : {};
+    const caps = hardCap && typeof hardCap === "object"
+      ? {
+          daily: hardCap.daily !== false,
+          weekly: hardCap.weekly !== false,
+          monthly: hardCap.monthly !== false,
+        }
+      : { daily: true, weekly: true, monthly: true };
+    const kind = String(q.kind || "none").trim();
+    if (kind === "token_stats") {
+      const total = readFiniteNumber(q.today_added);
+      const remaining = readFiniteNumber(q.remaining);
+      const used = readFiniteNumber(q.today_used) ?? (total != null && remaining != null ? total - remaining : null);
+      const remainingPct = pctOf(remaining, total);
+      const usedPct = pctOf(used, total);
+      return {
+        headline: `Remaining ${fmtPct(remainingPct)}`,
+        detail: `Today ${fmtAmount(used)} / ${fmtAmount(total)}`,
+        sub: usedPct == null ? "" : `Used ${fmtPct(usedPct)}`,
+        pct: remainingPct,
+      };
+    }
+    if (kind === "budget_info") {
+      const periods = [
+        ["daily", "Daily", readFiniteNumber(q.daily_spent_usd), readFiniteNumber(q.daily_budget_usd)],
+        ["weekly", "Weekly", readFiniteNumber(q.weekly_spent_usd), readFiniteNumber(q.weekly_budget_usd)],
+        ["monthly", "Monthly", readFiniteNumber(q.monthly_spent_usd), readFiniteNumber(q.monthly_budget_usd)],
+      ]
+        .filter(([period]) => caps[period] !== false)
+        .map(([period, label, spent, budget]) => {
+          const hasBudget = spent != null && budget != null;
+          const left = hasBudget ? Math.max(0, budget - spent) : null;
+          return {
+            period,
+            label,
+            spent,
+            budget,
+            left,
+            leftPct: pctOf(left, budget),
+            hasAny:
+              (budget != null && budget > 0) ||
+              (spent != null && spent > 0),
+            hasBudget,
+          };
+        })
+        .filter((period) => period.hasAny);
+      const primary = periods.find((period) => period.hasBudget) || periods[0] || null;
+      const sub = periods
+        .filter((period) => period !== primary)
+        .slice(0, 1)
+        .map((period) =>
+          period.hasBudget
+            ? `${period.label} $${fmtUsd(period.spent)} / $${fmtUsd(period.budget)}`
+            : period.spent != null
+              ? `${period.label} used $${fmtUsd(period.spent)}`
+              : `${period.label} budget $${fmtUsd(period.budget)}`
+        )
+        .join("");
+      return {
+        headline: primary?.hasBudget
+          ? `Remaining ${fmtPct(primary.leftPct)}`
+          : q.remaining != null
+            ? `Balance $${fmtUsd(q.remaining)}`
+            : "Usage available",
+        detail: primary?.hasBudget
+          ? `${primary.label} $${fmtUsd(primary.spent)} / $${fmtUsd(primary.budget)}`
+          : primary?.spent != null
+            ? `${primary.label} $${fmtUsd(primary.spent)}`
+            : primary?.budget != null
+              ? `${primary.label} budget $${fmtUsd(primary.budget)}`
+              : "Refresh after first request",
+        sub,
+        pct: primary?.leftPct ?? null,
+      };
+    }
+    return {
+      headline: "No usage data",
+      detail: "Refresh after first request",
+      sub: "",
+      pct: null,
+    };
+  }
+
+  function readPercentText(value) {
+    const match = String(value || "").trim().match(/(\d+(?:\.\d+)?)%/);
+    return match ? readFiniteNumber(match[1]) : null;
+  }
+
+  function formatProviderResetText(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const numeric = Number(raw);
+    const resetMs = Number.isFinite(numeric)
+      ? numeric > 10_000_000_000
+        ? numeric
+        : numeric * 1000
+      : Date.parse(raw);
+    if (!Number.isFinite(resetMs)) return "";
+    const remainingMs = resetMs - Date.now();
+    if (remainingMs <= 0) return "Reset now";
+    const totalMinutes = Math.ceil(remainingMs / 60000);
+    const days = Math.floor(totalMinutes / 1440);
+    const hours = Math.floor((totalMinutes % 1440) / 60);
+    const minutes = totalMinutes % 60;
+    if (days > 0) return `Reset in ${days}d ${hours}h`;
+    if (hours > 0) return `Reset in ${hours}h ${minutes}m`;
+    return `Reset in ${minutes}m`;
+  }
+
+  function formatProviderEndsText(provider) {
+    const quota = provider?.quota && typeof provider.quota === "object" ? provider.quota : {};
+    const value =
+      quota.package_expires_at_unix_ms ??
+      provider?.manual_pricing_expires_at_unix_ms ??
+      provider?.package_expires_at_unix_ms ??
+      "";
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const numeric = Number(raw);
+    const endsMs = Number.isFinite(numeric)
+      ? numeric > 10_000_000_000
+        ? numeric
+        : numeric * 1000
+      : Date.parse(raw);
+    if (!Number.isFinite(endsMs)) return "";
+    const remainingMs = endsMs - Date.now();
+    if (remainingMs <= 0) return "Ended";
+    const totalMinutes = Math.ceil(remainingMs / 60000);
+    const days = Math.floor(totalMinutes / 1440);
+    const hours = Math.floor((totalMinutes % 1440) / 60);
+    const minutes = totalMinutes % 60;
+    if (days > 0) return `Ends in ${days}d ${hours}h`;
+    if (hours > 0) return `Ends in ${hours}h ${minutes}m`;
+    return `Ends in ${minutes}m`;
+  }
+
+  function providerHealthStatus(provider) {
+    const health = provider?.health && typeof provider.health === "object" ? provider.health : {};
+    return String(health.status || provider?.health_status || provider?.status || "unknown").trim().toLowerCase();
+  }
+
+  function providerHealthTone(status) {
+    const value = String(status || "").trim().toLowerCase();
+    if (/^(healthy|effective|yes|ok)$/.test(value)) return "good";
+    if (/^(unhealthy|error|failed|down|no)$/.test(value)) return "bad";
+    return "neutral";
+  }
+
+  function providerHealthLabel(status) {
+    const value = String(status || "").trim().toLowerCase();
+    if (!value || value === "unknown") return "Health unknown";
+    if (value === "cooldown") return "Retrying";
+    if (value === "healthy") return "Healthy";
+    if (value === "unhealthy") return "Unhealthy";
+    return value.replace(/(^|[_\s-])([a-z])/g, (_match, prefix, letter) => `${prefix ? " " : ""}${letter.toUpperCase()}`).trim();
+  }
+
+  function renderOfficialProfilesHtml(profiles, selectedProfileId = "", disabled = false) {
+    const items = Array.isArray(profiles) ? profiles.filter((profile) => profile && typeof profile === "object") : [];
+    if (!items.length) {
+      return '<span class="settingsProviderOfficialEmpty">No account</span>';
+    }
+    return items
+      .map((profile, index) => {
+        const id = String(profile.id || profile.email || profile.label || `official-${index + 1}`).trim();
+        const email = String(profile.email || "").trim();
+        const label = String(profile.label || `Official account ${index + 1}`).trim();
+        const planLabel = String(profile.plan_label || "").trim();
+        const fiveHour = String(profile.limit_5h_remaining || "").trim();
+        const weekly = String(profile.limit_weekly_remaining || "").trim();
+        const fiveHourPct = readPercentText(fiveHour);
+        const weeklyPct = readPercentText(weekly);
+        const fiveHourReset = fiveHourPct != null && fiveHourPct < 100
+          ? formatProviderResetText(profile.limit_5h_reset_at)
+          : "";
+        const weeklyReset = weeklyPct != null && weeklyPct < 100
+          ? formatProviderResetText(profile.limit_weekly_reset_at)
+          : "";
+        const fiveHourStyle = fiveHourPct == null ? "" : ` style="--provider-usage-pct:${Math.max(0, Math.min(100, fiveHourPct))}%"`;
+        const weeklyStyle = weeklyPct == null ? "" : ` style="--provider-usage-pct:${Math.max(0, Math.min(100, weeklyPct))}%"`;
+        const selected = String(selectedProfileId || "").trim() === id;
+        return `<button class="settingsProviderBtn settingsProviderOfficialAccount${selected ? " is-active" : ""}" type="button" data-provider-target="official" data-official-profile-id="${escapeHtml(id)}" aria-pressed="${selected ? "true" : "false"}"${disabled ? " disabled" : ""}>
+          <div class="settingsProviderOfficialHead">
+            <span class="settingsProviderOfficialIdentity">
+              <span class="settingsProviderOfficialEmailLine">
+                <span class="settingsProviderOfficialEmail">${escapeHtml(email || label)}</span>
+                ${planLabel ? `<small class="settingsProviderPlanBadge">${escapeHtml(planLabel)}</small>` : ""}
+              </span>
+              <span class="settingsProviderOfficialLabel">${escapeHtml(email ? label : "Official account")}</span>
+            </span>
+            <span class="settingsProviderOfficialBadges">
+              ${profile.active ? '<small class="settingsProviderActiveBadge">Active</small>' : ""}
+            </span>
+          </div>
+          <div class="settingsProviderOfficialMetric">
+            <span>5-hour${fiveHourReset ? ` <small>(${escapeHtml(fiveHourReset)})</small>` : ""}</span>
+            <strong>${escapeHtml(fiveHour || "-")}</strong>
+          </div>
+          <span class="settingsProviderUsageTrack"${fiveHourStyle}></span>
+          <div class="settingsProviderOfficialMetric">
+            <span>Weekly${weeklyReset ? ` <small>(${escapeHtml(weeklyReset)})</small>` : ""}</span>
+            <strong>${escapeHtml(weekly || "-")}</strong>
+          </div>
+          <span class="settingsProviderUsageTrack"${weeklyStyle}></span>
+        </button>`;
+      })
+      .join("");
+  }
+
+  function providerModeLabel(mode, provider = "") {
+    const value = String(mode || "").trim().toLowerCase();
+    if (value === "provider") return provider ? provider : "Direct provider";
+    if (value === "gateway") return "Gateway";
+    if (value === "official") return "Official";
+    if (value === "mixed") return "Mixed";
+    if (value === "unavailable") return "Config only";
+    return "-";
+  }
+
+  function providerScopeLabel(scope) {
+    const value = String(scope || "").trim().toLowerCase();
+    if (value === "windows") return "Windows";
+    if (value === "wsl2") return "WSL2";
+    return "Windows";
+  }
+
+  function providerDirLabel(dir, index) {
+    const raw = String(dir?.cli_home || "").replace(/\//g, "\\").toLowerCase();
+    if (raw.includes("\\\\wsl.localhost\\") || raw.includes("\\\\wsl$\\")) return "WSL2";
+    if (raw.includes("/home/") || raw.startsWith("/")) return "WSL2";
+    if (raw.includes("\\user-data\\codex-home") || raw.endsWith("\\codex-home")) return "Windows";
+    if (index === 1) return "WSL2";
+    return "Windows";
   }
 
   function readQueuedTurns() {
@@ -884,7 +1149,8 @@ export function createComposerUiModule(deps) {
     const currentThreadId = resolveCurrentThreadId(state, threadId);
     const suppressSyntheticPending = state.suppressedSyntheticPendingUserInputsByThreadId?.[threadId] === true;
     const suppressIncompleteRuntime = state.suppressedIncompleteHistoryRuntimeByThreadId?.[threadId] === true;
-    const pageIncomplete = !!thread?.page?.incomplete;
+    const terminalHistory = isTerminalHistoryStatus(thread?.status?.type || state.activeThreadHistoryStatusType);
+    const pageIncomplete = !!thread?.page?.incomplete && !terminalHistory;
     const interruptedHistory = isTerminalInterruptedHistory(thread, state);
     const turns = Array.isArray(thread?.turns) ? thread.turns : [];
     const lastTurn = turns.length ? turns[turns.length - 1] : null;
@@ -1533,13 +1799,31 @@ export function createComposerUiModule(deps) {
   function syncSettingsControlsFromMain() {
     const toggleBtn = byId("toggleLiveInspectorBtn");
     const stateNode = byId("liveInspectorState");
-    const workspaceNode = byId("settingsDefaultsWorkspace");
     const previewPlanBtn = byId("previewUpdatedPlanBtn");
     const previewPendingBtn = byId("previewPendingBtn");
     const fullAccessOnBtn = byId("settingsFullAccessOnBtn");
     const fullAccessOffBtn = byId("settingsFullAccessOffBtn");
     const fastOnBtn = byId("settingsFastOnBtn");
     const fastOffBtn = byId("settingsFastOffBtn");
+    const providerCurrentMode = byId("settingsProviderCurrentMode");
+    const providerCurrentTarget = byId("settingsProviderCurrentTarget");
+    const providerError = byId("settingsProviderError");
+    const providerDeck = byId("settingsProviderDeck");
+    const providerList = byId("settingsProviderList");
+    const providerCurrentGrid = byId("settingsProviderCurrentGrid");
+    const providerManageBtn = byId("settingsProviderManageBtn");
+    const providerDirectCount = byId("settingsProviderDirectCount");
+    const providerConfirmBackdrop = byId("settingsProviderConfirmBackdrop");
+    const providerConfirmTitle = byId("settingsProviderConfirmTitle");
+    const providerConfirmDetail = byId("settingsProviderConfirmDetail");
+    const providerConfirmApplyBtn = byId("settingsProviderConfirmApplyBtn");
+    const providerManagerBackdrop = byId("settingsProviderManagerBackdrop");
+    const providerManagerList = byId("settingsProviderManagerList");
+    const officialProfileList = byId("settingsOfficialProfileList");
+    const providerScopeRow = byId("settingsProviderScopeRow");
+    const providerButtons = [
+      ["settingsProviderGatewayBtn", "gateway", ""],
+    ];
     const open = !!doc?.getElementById?.("webCodexLiveInspector");
     let enabled = false;
     try {
@@ -1549,7 +1833,6 @@ export function createComposerUiModule(deps) {
       String(state.activeThreadWorkspace || state.workspaceTarget || "windows").trim().toLowerCase() === "wsl2"
         ? "wsl2"
         : "windows";
-    const workspaceLabel = workspace === "wsl2" ? "WSL2" : "Windows";
     const permissionPreset = String(state.permissionPresetByWorkspace?.[workspace] || "").trim().toLowerCase();
     const fullAccessEnabled = permissionPreset === "/permission full-access";
     const fastEnabled = state.fastModeEnabled === true;
@@ -1557,7 +1840,6 @@ export function createComposerUiModule(deps) {
     const previewPendingOpen = !!win.__webCodexDebug?.isPreviewPendingActive?.();
     if (toggleBtn) toggleBtn.textContent = `Live inspector: ${enabled ? "On" : "Off"}`;
     if (stateNode) stateNode.textContent = open ? "Visible" : "Hidden";
-    if (workspaceNode) workspaceNode.textContent = `Applies to current ${workspaceLabel} chat`;
     if (previewPlanBtn) previewPlanBtn.textContent = `Plan Preview: ${previewPlanOpen ? "On" : "Off"}`;
     if (previewPendingBtn) previewPendingBtn.textContent = `Pending Preview: ${previewPendingOpen ? "On" : "Off"}`;
     if (fullAccessOnBtn) {
@@ -1576,6 +1858,209 @@ export function createComposerUiModule(deps) {
       fastOffBtn.classList.toggle("is-active", !fastEnabled);
       fastOffBtn.setAttribute("aria-pressed", !fastEnabled ? "true" : "false");
     }
+    const providerStatus = state.providerSwitchboardStatus || null;
+    const providerWorkspaceAvailability = state.workspaceAvailability || {};
+    const providerWindowsAvailable = providerWorkspaceAvailability.windowsInstalled === true;
+    const providerWsl2Available = providerWorkspaceAvailability.wsl2Installed === true;
+    const providerCanSwitchWorkspace = providerWindowsAvailable && providerWsl2Available;
+    const providerMode = String(providerStatus?.mode || "").trim();
+    const providerName = String(providerStatus?.model_provider || "").trim();
+    const providerRawScope = String(state.providerSwitchboardScope || providerStatus?.scope || "windows").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
+    const providerScope =
+      providerWindowsAvailable && !providerWsl2Available
+        ? "windows"
+        : !providerWindowsAvailable && providerWsl2Available
+          ? "wsl2"
+          : providerRawScope;
+    const providerDraftTarget = String(state.providerSwitchboardDraftTarget || providerMode || "gateway").trim().toLowerCase();
+    const providerDraftProvider = String(state.providerSwitchboardDraftProvider || "").trim();
+    const providerDraftOfficialProfileId = String(state.providerSwitchboardDraftOfficialProfileId || "").trim();
+    const providerDetails = Array.isArray(providerStatus?.provider_details)
+      ? providerStatus.provider_details
+      : [];
+    const officialProfiles = Array.isArray(providerStatus?.official_profiles)
+      ? providerStatus.official_profiles
+      : [];
+    const providerOptionsFallback = Array.isArray(providerStatus?.provider_options)
+      ? providerStatus.provider_options.map((name) => String(name || "").trim()).filter(Boolean)
+      : [];
+    const providerRowsAll = providerDetails.length
+      ? providerDetails
+      : providerOptionsFallback.map((name) => ({ name, display_name: name, base_url: "", has_key: false, disabled: false, quota: null }));
+    const providerRows = providerRowsAll.filter((provider) => provider.disabled !== true);
+    if (providerDeck) {
+      providerDeck.classList.toggle("is-loading", state.providerSwitchboardLoading === true);
+    }
+    if (providerCurrentMode) {
+      providerCurrentMode.textContent = state.providerSwitchboardLoading
+        ? "Loading..."
+        : providerScopeLabel(providerScope);
+    }
+    if (providerCurrentTarget) {
+      providerCurrentTarget.textContent =
+        state.providerSwitchboardLoading
+          ? "Loading..."
+          : providerMode === "unavailable"
+            ? `${providerScopeLabel(providerScope)} provider unavailable`
+            : providerMode === "mixed"
+              ? "Mixed current targets"
+              : providerMode
+                ? providerModeLabel(providerMode, providerName)
+                : "Not loaded";
+    }
+    if (providerCurrentGrid) {
+      const dirs = Array.isArray(providerStatus?.dirs) ? providerStatus.dirs : [];
+      providerCurrentGrid.classList.toggle("is-single", dirs.length <= 1);
+      providerCurrentGrid.innerHTML = dirs.length
+        ? dirs.length === 1
+          ? `<small class="settingsProviderCurrentHome">${escapeHtml(String(dirs[0]?.cli_home || "").trim() || "-")}</small>`
+          : dirs
+              .map((dir, index) => {
+                const mode = String(dir?.mode || "").trim();
+                const modelProvider = String(dir?.model_provider || "").trim();
+                const home = String(dir?.cli_home || "").trim();
+                return `
+                <div class="settingsProviderCurrentCard">
+                  <div class="settingsProviderCurrentHead">
+                    <span>${escapeHtml(providerDirLabel(dir, index))}</span>
+                    <span>${escapeHtml(mode || "unknown")}</span>
+                  </div>
+                  <strong>${escapeHtml(providerModeLabel(mode, modelProvider))}</strong>
+                  <small>${escapeHtml(home || "-")}</small>
+                </div>`;
+              })
+              .join("")
+        : `<span class="settingsSectionNote">Web Codex provider state is not loaded.</span>`;
+    }
+    if (officialProfileList) {
+      const selectedOfficialProfileId =
+        providerDraftTarget === "official"
+          ? providerDraftOfficialProfileId || String(officialProfiles.find((profile) => profile?.active)?.id || officialProfiles[0]?.id || "").trim()
+          : "";
+      officialProfileList.innerHTML = renderOfficialProfilesHtml(
+        officialProfiles,
+        selectedOfficialProfileId,
+        state.providerSwitchboardBusy === true
+      );
+    }
+    if (providerManageBtn) {
+      providerManageBtn.textContent = "Manage";
+    }
+    if (providerDirectCount) {
+      providerDirectCount.textContent = `${providerRows.length} enabled · ${providerRowsAll.length} total`;
+    }
+    if (providerScopeRow) {
+      providerScopeRow.classList.toggle("is-wsl2", providerScope === "wsl2");
+      providerScopeRow.style.display = providerCanSwitchWorkspace ? "" : "none";
+    }
+    if (providerError) {
+      const error = String(state.providerSwitchboardError || "").trim();
+      providerError.textContent = error;
+      providerError.style.display = error ? "" : "none";
+    }
+    if (providerList) {
+      providerList.innerHTML = providerRows.length
+        ? providerRows
+            .map((provider) => {
+              const name = String(provider.name || "").trim();
+              const displayName = String(provider.display_name || name).trim();
+              const usage = describeProviderUsage(provider.quota, provider.quota_hard_cap);
+              const endsText = formatProviderEndsText(provider);
+              const healthStatus = providerHealthStatus(provider);
+              const healthTone = providerHealthTone(healthStatus);
+              const healthLabel = providerHealthLabel(healthStatus);
+              const pct = readFiniteNumber(usage.pct);
+              const pctStyle = pct == null ? "" : ` style="--provider-usage-pct:${Math.max(0, Math.min(100, pct))}%"`;
+              const active = providerDraftTarget === "provider" && providerDraftProvider === name;
+              return `<button class="settingsProviderBtn settingsProviderOption${active ? " is-active" : ""}" type="button" data-provider-target="provider" data-provider-name="${escapeHtml(name)}" aria-pressed="${active ? "true" : "false"}">
+                <span class="settingsProviderOptionMain">
+                  <span class="settingsProviderNameLine">
+                    <span class="settingsProviderIdentityLine">
+                      <span class="settingsProviderHealthDot is-${escapeHtml(healthTone)}" title="${escapeHtml(healthLabel)}" role="img" aria-label="${escapeHtml(healthLabel)}"></span>
+                      <span class="settingsProviderOptionName">${escapeHtml(displayName)}</span>
+                    </span>
+                    ${endsText ? `<small class="settingsProviderEndsText">${escapeHtml(endsText)}</small>` : ""}
+                  </span>
+                  <span>${escapeHtml(usage.headline)}</span>
+                  <span>${escapeHtml(usage.detail)}</span>
+                  ${usage.sub ? `<span>${escapeHtml(usage.sub)}</span>` : ""}
+                  <span class="settingsProviderUsageTrack"${pctStyle}></span>
+                </span>
+              </button>`;
+            })
+            .join("")
+        : `<span class="settingsSectionNote">No enabled direct providers. Manage providers to enable one.</span>`;
+    }
+    providerButtons.forEach(([id, mode]) => {
+      const btn = byId(id);
+      if (!btn) return;
+      const active = providerDraftTarget === mode;
+      btn.classList.toggle("is-active", active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+      btn.disabled = state.providerSwitchboardBusy === true;
+    });
+    [
+      ["settingsProviderScopeWindowsBtn", "windows"],
+      ["settingsProviderScopeWslBtn", "wsl2"],
+    ].forEach(([id, scope]) => {
+      const btn = byId(id);
+      if (!btn) return;
+      const active = providerScope === scope || (scope === "windows" && providerScope !== "wsl2");
+      btn.classList.toggle("is-active", active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+      btn.disabled = state.providerSwitchboardBusy === true || state.providerSwitchboardLoading === true;
+    });
+    if (providerConfirmBackdrop) {
+      const confirm = state.providerSwitchboardConfirm;
+      const show = !!confirm;
+      providerConfirmBackdrop.classList.toggle("show", show);
+      providerConfirmBackdrop.setAttribute("aria-hidden", show ? "false" : "true");
+      if (providerConfirmTitle) {
+        providerConfirmTitle.textContent = show ? `Apply Web Codex ${providerScopeLabel(confirm.scope)} provider` : "Apply provider change";
+      }
+      if (providerConfirmDetail) {
+        providerConfirmDetail.textContent = show
+          ? `Switch Web Codex ${providerScopeLabel(confirm.scope)} to ${
+              confirm.target === "official"
+                ? String(officialProfiles.find((profile) => String(profile?.id || "").trim() === String(confirm.officialProfileId || "").trim())?.email || "Official")
+                : providerModeLabel(confirm.target, confirm.provider)
+            }. This only changes Web Codex ${providerScopeLabel(confirm.scope)} and will not change the Codex CLI provider on this PC.`
+          : "";
+      }
+      if (providerConfirmApplyBtn) {
+        providerConfirmApplyBtn.disabled = state.providerSwitchboardBusy === true;
+        providerConfirmApplyBtn.textContent = state.providerSwitchboardBusy === true ? "Applying..." : "Apply";
+      }
+    }
+    if (providerManagerBackdrop) {
+      const show = state.providerSwitchboardProvidersModalOpen === true;
+      providerManagerBackdrop.classList.toggle("show", show);
+      providerManagerBackdrop.setAttribute("aria-hidden", show ? "false" : "true");
+    }
+    if (providerManagerList) {
+      providerManagerList.innerHTML = providerRowsAll.length
+        ? providerRowsAll
+            .map((provider) => {
+              const name = String(provider.name || "").trim();
+              const displayName = String(provider.display_name || name).trim();
+              const enabled = provider.disabled !== true;
+              const endsText = enabled ? formatProviderEndsText(provider) : "";
+              return `<div class="settingsProviderManagerRow${enabled ? "" : " is-disabled"}">
+                <span class="settingsProviderManagerNameLine">
+                  <span>${escapeHtml(displayName)}</span>
+                  ${endsText ? `<small class="settingsProviderEndsText">${escapeHtml(endsText)}</small>` : ""}
+                </span>
+                <button class="settingsProviderSwitch${enabled ? " is-on" : ""}" type="button" aria-pressed="${enabled ? "true" : "false"}" aria-label="${enabled ? "Disable" : "Enable"} ${escapeHtml(displayName)}" data-provider-enabled-toggle="${enabled ? "false" : "true"}" data-provider-name="${escapeHtml(name)}">
+                  <span aria-hidden="true"></span>
+                </button>
+              </div>`;
+            })
+            .join("")
+        : `<span class="settingsSectionNote">No providers configured.</span>`;
+    }
+    documentRef.querySelectorAll?.("[data-provider-target]").forEach((btn) => {
+      btn.disabled = state.providerSwitchboardBusy === true;
+    });
   }
 
   try {

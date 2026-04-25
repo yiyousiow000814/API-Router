@@ -12,14 +12,7 @@ export function shouldUseFloatingComposerLayout(windowRef = globalThis.window) {
     Number(windowRef.innerWidth || 0),
     Number(windowRef.document?.documentElement?.clientWidth || 0)
   );
-  if (viewportWidth > 0 && viewportWidth <= FLOATING_COMPOSER_BREAKPOINT_PX) return true;
-  try {
-    if (typeof windowRef.matchMedia === "function") {
-      if (windowRef.matchMedia("(pointer: coarse)").matches) return true;
-      if (windowRef.matchMedia("(hover: none)").matches) return true;
-    }
-  } catch {}
-  return Math.max(0, Number(windowRef.navigator?.maxTouchPoints || 0)) > 0;
+  return viewportWidth > 0 && viewportWidth <= FLOATING_COMPOSER_BREAKPOINT_PX;
 }
 
 export function isEditableElement(node) {

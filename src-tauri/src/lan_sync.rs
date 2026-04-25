@@ -154,6 +154,12 @@ pub(crate) fn current_ui_watchdog_live_snapshot(
         .map(|watchdog| watchdog.live_snapshot(now_unix_ms))
 }
 
+pub(crate) fn current_ui_watchdog_state(
+    listen_port: u16,
+) -> Option<crate::app_state::UiWatchdogState> {
+    ui_watchdog_runtime().read().get(&listen_port).cloned()
+}
+
 fn lan_peer_diagnostics_log_path() -> Option<std::path::PathBuf> {
     crate::diagnostics::diagnostics_file_path("lan-peer-diagnostics.log")
 }

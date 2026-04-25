@@ -143,7 +143,8 @@ mod tests {
         std::fs::write(backup_auth_path(&cli_home), r#"{"tokens":{"t":"x"}}"#).unwrap();
         std::fs::write(backup_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
 
-        switch_to_gateway_home_impl(&state, &cli_home).expect("switch gateway");
+        let runtime = ProviderSwitchboardRuntime::from_app_state(&state);
+        switch_to_gateway_home_impl(&runtime, &cli_home).expect("switch gateway");
 
         let switched_cfg = std::fs::read_to_string(cli_cfg_path(&cli_home)).unwrap();
         assert!(switched_cfg.contains("model_provider = \"api_router\""));
@@ -178,7 +179,8 @@ mod tests {
         std::fs::create_dir_all(&cli_home).unwrap();
         std::fs::write(cli_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
 
-        switch_to_gateway_home_impl(&state, &cli_home).expect("switch gateway");
+        let runtime = ProviderSwitchboardRuntime::from_app_state(&state);
+        switch_to_gateway_home_impl(&runtime, &cli_home).expect("switch gateway");
 
         let backup_auth = read_json(&backup_auth_path(&cli_home)).expect("backup auth");
         assert_eq!(backup_auth, app_auth);

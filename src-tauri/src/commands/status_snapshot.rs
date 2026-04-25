@@ -5830,7 +5830,7 @@ fn package_total_window_total_by_day_slots(
     total
 }
 
-fn active_package_period(
+pub(crate) fn active_package_period(
     pricing_cfg: Option<&crate::orchestrator::secrets::ProviderPricingConfig>,
     now_unix_ms: u64,
 ) -> Option<(f64, Option<u64>)> {

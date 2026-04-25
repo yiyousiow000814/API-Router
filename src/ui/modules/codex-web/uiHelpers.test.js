@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createUiHelpersModule, shouldSuppressSyntheticClickEvent } from "./uiHelpers.js";
 
@@ -23,5 +23,44 @@ describe("uiHelpers", () => {
       },
     });
     expect(helpers.getEmbeddedToken()).toBe("token-123");
+  });
+
+  it("can close a backdrop on pointer release instead of pointer press", () => {
+    const handlers = new Map();
+    const backdrop = {
+      __wiredBlurBackdropShield: false,
+      addEventListener(name, handler) {
+        handlers.set(name, handler);
+      },
+    };
+    const onClose = vi.fn();
+    const event = {
+      target: backdrop,
+      type: "pointerup",
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    };
+    const module = createUiHelpersModule({
+      state: { suppressSyntheticClickUntil: 0 },
+      threadAnimDebug: { enabled: false, seq: 0, events: [] },
+      normalizeWorkspaceTarget(value) {
+        return value;
+      },
+      setStatus() {},
+      documentRef: { body: { classList: { contains() { return false; } } } },
+      performanceRef: { now() { return 0; } },
+      windowRef: {},
+    });
+
+    module.wireBlurBackdropShield(backdrop, { closeEvent: "pointerup", onClose });
+
+    expect(handlers.has("pointerdown")).toBe(false);
+    expect(handlers.has("pointerup")).toBe(true);
+
+    handlers.get("pointerup")(event);
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(event.stopPropagation).toHaveBeenCalledTimes(1);
   });
 });

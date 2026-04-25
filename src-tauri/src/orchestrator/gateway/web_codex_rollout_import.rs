@@ -136,6 +136,9 @@ pub(super) fn import_rollout_file_into_codex_home(
     if !is_jsonl || !file_name.contains(thread_id) {
         return Ok(false);
     }
+    crate::orchestrator::gateway::web_codex_home::ensure_web_codex_runtime_session_links(
+        codex_home,
+    )?;
     let dst_dir = codex_home_dir_for_override(codex_home)?
         .join("sessions")
         .join("imported");
@@ -213,6 +216,13 @@ pub(super) fn import_rollout_from_known_path(
     rollout_path: &str,
 ) -> Result<bool, String> {
     if rollout_path_is_already_in_codex_home(codex_home, rollout_path) {
+        return Ok(false);
+    }
+    let session_home =
+        crate::orchestrator::gateway::web_codex_home::web_codex_session_home_for_runtime_home(
+            codex_home,
+        );
+    if rollout_path_is_already_in_codex_home(session_home.as_deref(), rollout_path) {
         return Ok(false);
     }
     match workspace_hint {
@@ -351,5 +361,53 @@ mod tests {
             .join("imported")
             .join("thread-1.jsonl")
             .exists());
+    }
+
+    #[test]
+    fn import_rollout_from_known_path_skips_copy_when_runtime_home_uses_session_home() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        let user_profile = tempfile::tempdir().expect("user profile");
+        let app_data = tempfile::tempdir().expect("app data");
+        let codex_home = user_profile.path().join(".codex");
+        let runtime_home = app_data.path().join("codex-home");
+        let rollout = codex_home
+            .join("sessions")
+            .join("2026")
+            .join("03")
+            .join("20")
+            .join("rollout-thread-1.jsonl");
+        std::fs::create_dir_all(rollout.parent().expect("rollout parent"))
+            .expect("create rollout parent");
+        std::fs::write(
+            &rollout,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-1\"}}\n",
+        )
+        .expect("write rollout");
+        unsafe {
+            std::env::set_var("USERPROFILE", user_profile.path());
+            std::env::set_var("API_ROUTER_USER_DATA_DIR", app_data.path());
+            std::env::remove_var("API_ROUTER_WEB_CODEX_CODEX_HOME");
+            std::env::remove_var("CODEX_HOME");
+        }
+
+        let imported = import_rollout_from_known_path(
+            Some(runtime_home.to_string_lossy().as_ref()),
+            "thread-1",
+            Some(WorkspaceTarget::Windows),
+            rollout.to_string_lossy().as_ref(),
+        )
+        .expect("import");
+
+        assert!(!imported);
+        assert!(!runtime_home
+            .join("sessions")
+            .join("imported")
+            .join("thread-1.jsonl")
+            .exists());
+
+        unsafe {
+            std::env::remove_var("USERPROFILE");
+            std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        }
     }
 }

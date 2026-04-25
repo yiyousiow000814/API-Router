@@ -3,6 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
+  <meta name="theme-color" content="#ffffff" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Web Codex" />
+  <link rel="icon" type="image/svg+xml" href="/codex-web/codex-icon.svg" />
+  <link rel="apple-touch-icon" sizes="512x512" href="/codex-web/apple-touch-icon.png" />
+  <link rel="manifest" href="/codex-web/manifest.webmanifest" />
   <title>Web Codex</title>
   <style>
     :root {
@@ -979,17 +986,19 @@
       to { opacity: 1; transform: translateY(0); }
     }
     .settingsTab {
+      grid-row: 2;
       min-height: 0;
-      overflow: auto;
-      padding: 14px 14px 18px;
+      height: 100%;
+      overflow: hidden;
+      padding: 0 14px 0;
       display: none;
       background: rgba(255, 255, 255, 0.56);
       border-top: none;
       border-bottom: none;
     }
     .settingsTab.show {
-      display: grid;
-      align-content: start;
+      display: flex;
+      flex-direction: column;
       gap: 12px;
     }
     .settingsTab.show .settingsCard {
@@ -1030,24 +1039,126 @@
       z-index: var(--z-chat-header);
     }
     .settingsCard {
-      border: 1px solid rgba(13, 18, 32, 0.12);
-      border-radius: 18px;
-      background: rgba(255, 255, 255, 0.94);
-      padding: 14px;
-      display: grid;
-      gap: 12px;
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-width: 0;
+      min-height: 0;
+      height: 100%;
     }
     #settingsInfoSection {
-      display: grid;
+      min-width: 0;
+      min-height: 0;
+      height: 100%;
+    }
+    .settingsShell {
+      display: flex;
+      flex-direction: column;
       gap: 12px;
+      min-height: 0;
+      height: 100%;
+    }
+    .settingsStickyHeader {
+      position: relative;
+      flex: 0 0 auto;
+      z-index: var(--z-chat-header);
+      background: transparent;
+    }
+    .settingsNav {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 4px;
+      padding: 7px;
+      border: 1px solid rgba(13, 18, 32, 0.1);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(14px);
+      animation: settings-nav-in var(--motion-base, 220ms) cubic-bezier(.22, 1, .36, 1) both;
+    }
+    .settingsNavItem {
+      min-height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      padding: 7px 9px;
+      background: transparent;
+      color: #53627a;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      text-decoration: none;
+      cursor: pointer;
+      transition: background-color var(--motion-fast, 160ms) ease,
+        border-color var(--motion-fast, 160ms) ease,
+        color var(--motion-fast, 160ms) ease,
+        transform var(--motion-fast, 160ms) ease;
+    }
+    .settingsNavItem:hover {
+      color: #172235;
+      background: rgba(13, 18, 32, 0.04);
+      transform: translateY(-1px);
+    }
+    .settingsNavItem.is-active {
+      color: #0e4b68;
+      border-color: rgba(40, 199, 217, 0.28);
+      background: rgba(40, 199, 217, 0.09);
+    }
+    .settingsNavItem:active {
+      transform: translateY(1px);
+    }
+    .settingsContent {
+      min-width: 0;
+      min-height: 0;
+      flex: 1 1 auto;
+      overflow: auto;
+      display: grid;
+      align-items: start;
+      gap: 12px;
+      padding-bottom: 18px;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    .settingsContent::-webkit-scrollbar {
+      width: 0;
+      height: 0;
+    }
+    @keyframes settings-pane-in {
+      from {
+        opacity: 0;
+        transform: translateY(8px) scale(0.992);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+    }
+    @keyframes settings-nav-in {
+      from {
+        opacity: 0;
+        transform: translateY(-6px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
     .settingsSectionCard {
       display: grid;
-      gap: 10px;
-      padding: 12px 12px 10px;
-      border-radius: 16px;
+      align-content: start;
+      gap: 12px;
+      padding: 14px;
+      border-radius: 12px;
       border: 1px solid rgba(13, 18, 32, 0.1);
-      background: #ffffff;
+      background: rgba(255, 255, 255, 0.86);
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.82) inset;
+    }
+    .settingsProviderSection {
+      border-color: rgba(40, 199, 217, 0.24);
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(247, 251, 255, 0.88));
     }
     .settingsSectionHeader {
       display: flex;
@@ -1066,6 +1177,802 @@
       color: #7f8da4;
       font-size: 11px;
       font-weight: 600;
+    }
+    .settingsSectionTitleBlock {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+    .settingsInlineError {
+      margin-top: 4px;
+      color: #b4233e;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+    .settingsProviderDeck {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+      width: 100%;
+      max-width: 620px;
+      margin: 0 auto;
+    }
+    .settingsProviderDeck.is-loading .settingsProviderSummary {
+      border-color: rgba(40, 199, 217, 0.24);
+    }
+    .settingsProviderDeck.is-loading .settingsProviderSummary::after {
+      opacity: 1;
+      animation: settings-provider-loading-bar var(--motion-enter, 360ms) ease-in-out infinite alternate;
+    }
+    .settingsProviderDeck.is-loading .settingsProviderControls {
+      opacity: 0.58;
+      transform: translate3d(0, 4px, 0);
+      pointer-events: none;
+    }
+    .settingsProviderSummary {
+      position: relative;
+      display: grid;
+      gap: 10px;
+      min-height: 0;
+      align-content: start;
+      padding: 14px 16px;
+      border: 1px solid rgba(13, 18, 32, 0.1);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.86);
+      color: #2d3b52;
+      font-size: 12px;
+      font-weight: 800;
+      transition: border-color var(--motion-fast, 160ms) ease,
+        background-color var(--motion-fast, 160ms) ease,
+        transform var(--motion-fast, 160ms) ease;
+      overflow: hidden;
+    }
+    .settingsProviderSummary::after {
+      content: "";
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      top: 0;
+      height: 2px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(40, 199, 217, 0), #28c7d9, #f2c14d, rgba(242, 193, 77, 0));
+      opacity: 0;
+      transform: translateX(-36%);
+      transition: opacity var(--motion-fast, 160ms) ease;
+    }
+    .settingsProviderSummaryHeader {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .settingsProviderSummaryTitleBlock {
+      min-width: 0;
+      display: grid;
+      gap: 5px;
+    }
+    .settingsProviderSummaryLabel {
+      color: #6f7f98;
+      font-size: 10px;
+      font-weight: 850;
+      letter-spacing: .1em;
+      line-height: 1;
+      text-transform: uppercase;
+    }
+    .settingsProviderSummary span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #settingsProviderCurrentTarget {
+      color: #152338;
+      font-size: 16px;
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+    #settingsProviderCurrentMode {
+      flex: 0 0 auto;
+      max-width: 42%;
+      padding: 4px 8px;
+      border: 1px solid rgba(13, 18, 32, 0.1);
+      border-radius: 8px;
+      background: #f7f9fc;
+      color: #51637e;
+      font-size: 10px;
+      font-weight: 850;
+      letter-spacing: .08em;
+      line-height: 1;
+      text-align: center;
+      text-transform: uppercase;
+    }
+    .settingsProviderCurrentGrid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .settingsProviderCurrentGrid.is-single {
+      grid-template-columns: 1fr;
+    }
+    .settingsProviderIntro {
+      color: #687891;
+      font-size: 11px;
+      font-weight: 650;
+      line-height: 1.45;
+      margin: -2px 0 2px;
+    }
+    .settingsProviderCurrentHome {
+      min-width: 0;
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #7f8da4;
+      font-size: 11px;
+      font-weight: 750;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+    }
+    .settingsProviderCurrentCard {
+      min-width: 0;
+      display: grid;
+      gap: 6px;
+      padding: 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(13, 18, 32, 0.1);
+      background: rgba(255, 255, 255, 0.8);
+      transition: border-color var(--motion-fast, 160ms) ease,
+        background-color var(--motion-fast, 160ms) ease,
+        transform var(--motion-fast, 160ms) ease;
+    }
+    .settingsProviderCurrentHead {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      color: #6f7f98;
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+    .settingsProviderCurrentCard strong {
+      min-width: 0;
+      color: #152338;
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .settingsProviderCurrentCard small {
+      min-width: 0;
+      color: #7f8da4;
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .settingsProviderModeRow,
+    .settingsChoiceGrid,
+    .settingsVersionGrid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .settingsProviderModeRow {
+      grid-template-columns: 1fr;
+    }
+    .settingsProviderList {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+    }
+    .settingsProviderDirectBlock,
+    .settingsProviderGatewayBlock,
+    .settingsProviderOfficialBlock {
+      display: grid;
+      gap: 8px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(13, 18, 32, 0.08);
+    }
+    .settingsProviderGatewayBlock {
+      padding-top: 0;
+      border-top: none;
+    }
+    .settingsProviderOfficialBlock {
+      padding-top: 8px;
+    }
+    .settingsProviderControls {
+      min-width: 0;
+      display: grid;
+      gap: 10px;
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+      transition: opacity var(--motion-base, 220ms) ease,
+        transform var(--motion-base, 220ms) cubic-bezier(.22, 1, .36, 1);
+    }
+    .settingsProviderScopeRow {
+      position: relative;
+      display: inline-grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 4px;
+      width: 100%;
+      padding: 4px;
+      border: 1px solid rgba(13, 18, 32, 0.1);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.68);
+      overflow: hidden;
+    }
+    .settingsProviderScopeRow::before {
+      content: "";
+      position: absolute;
+      top: 4px;
+      bottom: 4px;
+      left: 4px;
+      width: calc(50% - 6px - 2px);
+      border: 1px solid rgba(40, 199, 217, 0.42);
+      border-radius: 999px;
+      background: linear-gradient(135deg, rgba(40, 199, 217, 0.16), rgba(242, 193, 77, 0.12));
+      transform: translate3d(0, 0, 0);
+      transition: transform var(--motion-base, 220ms) cubic-bezier(.22, 1, .36, 1),
+        border-color var(--motion-fast, 160ms) ease,
+        background-color var(--motion-fast, 160ms) ease;
+      will-change: transform;
+      pointer-events: none;
+    }
+    .settingsProviderScopeRow.is-wsl2::before {
+      transform: translate3d(calc(100% + 4px), 0, 0);
+    }
+    .settingsProviderScopeRow .settingsProviderBtn {
+      position: relative;
+      z-index: 1;
+      min-height: 28px;
+      border-radius: 999px;
+      border-color: transparent;
+      padding: 5px 9px;
+      font-size: 10px;
+      background: transparent;
+    }
+    .settingsProviderScopeRow .settingsProviderBtn.is-active {
+      border-color: transparent;
+      background: transparent;
+      animation: none;
+    }
+    .settingsProviderScopeRow .settingsProviderBtn:hover:not(:disabled),
+    .settingsProviderScopeRow .settingsProviderBtn:active {
+      border-color: transparent;
+      background: transparent;
+      transform: none;
+    }
+    .settingsProviderBtn {
+      min-width: 0;
+      min-height: 42px;
+      border: 1px solid rgba(13, 18, 32, 0.14);
+      border-radius: 10px;
+      background: #ffffff;
+      color: #32425a;
+      padding: 8px 10px;
+      font-size: 12px;
+      font-weight: 800;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      transition: background var(--motion-fast, 160ms) ease,
+        border-color var(--motion-fast, 160ms) ease,
+        color var(--motion-fast, 160ms) ease,
+        opacity var(--motion-fast, 160ms) ease,
+        transform var(--motion-fast, 160ms) ease;
+    }
+    .settingsProviderBtn:hover:not(:disabled) {
+      border-color: rgba(40, 199, 217, 0.3);
+      transform: translateY(-1px);
+    }
+    .settingsProviderBtn.is-active {
+      border-color: rgba(40, 199, 217, 0.5);
+      background: linear-gradient(135deg, rgba(40, 199, 217, 0.14), rgba(242, 193, 77, 0.12));
+      color: #153b5c;
+      animation: settings-provider-active-in var(--motion-base, 220ms) cubic-bezier(.22, 1, .36, 1) both;
+    }
+    .settingsProviderBtn:disabled {
+      opacity: 0.62;
+      cursor: progress;
+    }
+    .settingsProviderGatewayBtn {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      min-height: 48px;
+      text-align: left;
+    }
+    .settingsProviderGatewayBtn > span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .settingsProviderGatewayBtn > small {
+      color: #7a879d;
+      font-size: 10px;
+      font-weight: 850;
+      text-transform: none;
+    }
+    .settingsProviderGatewayBtn.is-active > small {
+      color: #0a7082;
+    }
+    .settingsProviderOption {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      align-items: start;
+      gap: 6px;
+      min-height: 0;
+      text-align: left;
+      white-space: normal;
+    }
+    .settingsProviderOption.is-disabled-provider {
+      opacity: 0.72;
+    }
+    .settingsProviderOptionMain,
+    .settingsProviderUsage {
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+    }
+    .settingsProviderOptionName {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #1a2940;
+      font-size: 13px;
+      font-weight: 850;
+    }
+    .settingsProviderNameLine,
+    .settingsProviderManagerNameLine {
+      min-width: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      width: 100%;
+    }
+    .settingsProviderOption .settingsProviderNameLine {
+      margin-bottom: 3px;
+    }
+    .settingsProviderNameLine .settingsProviderOptionName,
+    .settingsProviderManagerNameLine > span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .settingsProviderIdentityLine {
+      min-width: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .settingsProviderHealthDot {
+      width: 8px;
+      height: 8px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      background: #a8b3c2;
+      box-shadow: 0 0 0 5px rgba(148, 163, 184, 0.1);
+    }
+    .settingsProviderHealthDot.is-good {
+      background: #28c7d9;
+      box-shadow: 0 0 0 5px rgba(40, 199, 217, 0.12);
+    }
+    .settingsProviderHealthDot.is-bad {
+      background: #ff3d66;
+      box-shadow: 0 0 0 5px rgba(255, 61, 102, 0.12);
+    }
+    .settingsProviderEndsText {
+      flex: 0 0 auto;
+      color: #64748b;
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+    .settingsProviderOptionMain > span:not(.settingsProviderNameLine):first-of-type {
+      color: #24364f;
+      font-weight: 850;
+    }
+    .settingsProviderOptionMeta,
+    .settingsProviderOptionMain > span:not(.settingsProviderNameLine),
+    .settingsProviderUsage span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #7a879d;
+      font-size: 11px;
+      font-weight: 650;
+    }
+    .settingsProviderUsage span:first-child {
+      color: #24364f;
+      font-weight: 850;
+    }
+    .settingsProviderUsageTrack {
+      position: relative;
+      height: 5px;
+      border-radius: 999px;
+      background: rgba(13, 18, 32, 0.1);
+      overflow: hidden;
+    }
+    .settingsProviderUsageTrack::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: var(--provider-usage-pct, 0%);
+      border-radius: inherit;
+      background: linear-gradient(90deg, #28c7d9, #f2c14d);
+      transition: width var(--motion-slow, 260ms) cubic-bezier(.22, 1, .36, 1);
+    }
+    .settingsOfficialProfileList {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+      width: 100%;
+    }
+    .settingsProviderOfficialEmpty {
+      color: #7a879d;
+      font-size: 10px;
+      font-weight: 650;
+      text-align: center;
+    }
+    .settingsProviderOfficialAccount {
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+      width: 100%;
+      min-height: 0;
+      height: auto;
+      padding: 10px;
+      border: 1px solid rgba(13, 18, 32, 0.1);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.72);
+      text-align: left;
+      white-space: normal;
+      transition: background var(--motion-fast, 160ms) ease,
+        border-color var(--motion-fast, 160ms) ease,
+        transform var(--motion-fast, 160ms) ease;
+    }
+    .settingsProviderOfficialAccount:hover:not(:disabled) {
+      border-color: rgba(40, 199, 217, 0.28);
+      transform: translateY(-1px);
+    }
+    .settingsProviderOfficialHead,
+    .settingsProviderOfficialMetric {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+      color: #64748b;
+      font-size: 10px;
+      font-weight: 750;
+    }
+    .settingsProviderOfficialIdentity {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
+    .settingsProviderOfficialEmailLine {
+      min-width: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 100%;
+    }
+    .settingsProviderOfficialEmail,
+    .settingsProviderOfficialLabel {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      text-align: left;
+    }
+    .settingsProviderOfficialEmail {
+      color: #24364f;
+      font-size: 12px;
+      font-weight: 850;
+    }
+    .settingsProviderOfficialLabel {
+      color: #7a879d;
+      font-size: 10px;
+      font-weight: 750;
+    }
+    .settingsProviderOfficialBadges {
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 5px;
+      flex-wrap: wrap;
+      flex: 0 0 auto;
+    }
+    .settingsProviderOfficialHead small {
+      border: 1px solid rgba(13, 18, 32, 0.1);
+      border-radius: 999px;
+      background: rgba(248, 250, 253, 0.95);
+      padding: 3px 6px;
+      color: #0a7082;
+      font-size: 9px;
+      font-weight: 850;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .settingsProviderPlanBadge {
+      color: #24364f;
+    }
+    .settingsProviderActiveBadge {
+      border-color: rgba(40, 199, 217, 0.34) !important;
+      background: rgba(40, 199, 217, 0.12) !important;
+    }
+    .settingsProviderOfficialMetric strong {
+      color: #24364f;
+      font-size: 10px;
+      font-weight: 850;
+    }
+    .settingsProviderOfficialMetric > span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .settingsProviderOfficialMetric > span small {
+      color: #7a879d;
+      font-size: 10px;
+      font-weight: 750;
+    }
+    .settingsChoiceLabel.settingsProviderManagerHead {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-areas: "title meta";
+      align-items: center;
+      column-gap: 10px;
+    }
+    .settingsProviderDirectCopy {
+      min-width: 180px;
+      display: contents;
+    }
+    .settingsProviderDirectCopy .settingsChoiceTitle {
+      grid-area: title;
+      min-width: 0;
+    }
+    .settingsProviderDirectMeta {
+      grid-area: meta;
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-left: auto;
+    }
+    .settingsProviderDirectCount {
+      color: #687891;
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .settingsProviderManageBtn {
+      min-height: 30px;
+      padding: 5px 9px;
+      border-radius: 8px;
+    }
+    .settingsProviderModalBackdrop {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      background: rgba(13, 18, 32, 0.24);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity var(--motion-base, 220ms) ease;
+      z-index: var(--z-folder-picker-backdrop);
+    }
+    .settingsProviderModalBackdrop.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .settingsProviderModal {
+      --settings-provider-modal-closed-y: 22px;
+      width: min(420px, 92vw);
+      max-height: min(76vh, 560px);
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 12px;
+      padding: 16px;
+      border-radius: 12px;
+      border: 1px solid rgba(13, 18, 32, 0.14);
+      background: #ffffff;
+      color: #172235;
+      overflow: hidden;
+      opacity: 0;
+      transform: translate3d(0, var(--settings-provider-modal-closed-y), 0) scale(0.94);
+      transform-origin: center center;
+      transition: opacity var(--motion-base, 220ms) ease,
+        transform var(--motion-slow, 260ms) cubic-bezier(.22, 1, .36, 1);
+      will-change: opacity, transform;
+      z-index: var(--z-folder-picker);
+    }
+    .settingsProviderModalBackdrop.show .settingsProviderModal {
+      opacity: 1;
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+    .settingsProviderModalTitle {
+      font-size: 15px;
+      font-weight: 850;
+    }
+    .settingsProviderModalBody {
+      min-height: 0;
+      overflow: auto;
+      color: #506079;
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .settingsProviderModalActions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .settingsProviderManagerList {
+      display: grid;
+      gap: 6px;
+    }
+    .settingsProviderManagerRow {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 9px;
+      border: 1px solid rgba(13, 18, 32, 0.1);
+      border-radius: 8px;
+      background: rgba(248, 250, 255, 0.88);
+      color: #33445f;
+      font-size: 12px;
+      font-weight: 800;
+      transition: opacity var(--motion-fast, 160ms) ease,
+        color var(--motion-fast, 160ms) ease,
+        background-color var(--motion-fast, 160ms) ease,
+        border-color var(--motion-fast, 160ms) ease,
+        transform var(--motion-fast, 160ms) ease;
+    }
+    .settingsProviderManagerRow:hover {
+      border-color: rgba(40, 199, 217, 0.22);
+      transform: translateY(-1px);
+    }
+    .settingsProviderManagerRow.is-disabled {
+      opacity: 1;
+      color: #94a0b4;
+      border-color: rgba(148, 160, 180, 0.18);
+      background: rgba(241, 245, 249, 0.72);
+    }
+    .settingsProviderManagerRow.is-disabled .settingsProviderManagerNameLine > span,
+    .settingsProviderManagerRow.is-disabled .settingsProviderEndsText {
+      color: #9aa6b9;
+    }
+    .settingsProviderManagerRow > span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .settingsProviderManagerToggle {
+      min-height: 28px;
+      border-radius: 8px;
+      border: 1px solid rgba(13, 18, 32, 0.12);
+      background: #ffffff;
+      color: #34455e;
+      font-size: 11px;
+      font-weight: 850;
+      padding: 4px 8px;
+      transition: background-color var(--motion-fast, 160ms) ease,
+        border-color var(--motion-fast, 160ms) ease,
+        color var(--motion-fast, 160ms) ease,
+        transform var(--motion-fast, 160ms) ease;
+    }
+    .settingsProviderManagerToggle:hover {
+      transform: translateY(-1px);
+    }
+    .settingsProviderManagerToggle.is-enabled {
+      color: #9f3146;
+      border-color: rgba(176, 61, 78, 0.2);
+    }
+    .settingsProviderSwitch {
+      position: relative;
+      width: 38px;
+      height: 22px;
+      padding: 0;
+      border: none;
+      border-radius: 999px;
+      background: #a7b0bf;
+      box-shadow: inset 0 0 0 1px rgba(13, 18, 32, 0.08);
+      transition: background-color var(--motion-fast, 160ms) ease,
+        transform var(--motion-fast, 160ms) ease;
+    }
+    .settingsProviderSwitch:hover {
+      transform: scale(1.04);
+    }
+    .settingsProviderSwitch.is-on {
+      background: #31c676;
+    }
+    .settingsProviderSwitch span {
+      position: absolute;
+      left: 3px;
+      top: 3px;
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      background: #ffffff;
+      box-shadow: 0 1px 2px rgba(13, 18, 32, 0.18);
+      transform: translateX(0);
+      transition: transform var(--motion-fast, 160ms) cubic-bezier(.22, 1, .36, 1);
+    }
+    .settingsProviderSwitch.is-on span {
+      transform: translateX(16px);
+    }
+    .settingsProviderApplyRow {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding-top: 2px;
+    }
+    @keyframes settings-provider-active-in {
+      from { transform: translateY(-1px) scale(0.995); }
+      to { transform: translateY(0) scale(1); }
+    }
+    @keyframes settings-provider-loading-bar {
+      from { transform: translateX(-36%); }
+      to { transform: translateX(36%); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .settingsNav,
+      .settingsSectionCard.settingsPane.is-active,
+      .settingsProviderBtn.is-active,
+      .settingsProviderDeck.is-loading .settingsProviderSummary::after {
+        animation: none !important;
+      }
+      .settingsNavItem,
+      .settingsProviderBtn,
+      .settingsProviderControls,
+      .settingsProviderSummary,
+      .settingsProviderSummary::after,
+      .settingsProviderScopeRow::before,
+      .settingsProviderCurrentCard,
+      .settingsProviderOfficialAccount,
+      .settingsProviderManagerRow,
+      .settingsProviderManagerToggle,
+      .settingsProviderModalBackdrop,
+      .settingsProviderModal,
+      .settingsProviderSwitch,
+      .settingsProviderSwitch span {
+        transition: none !important;
+      }
+    }
+    .settingsUtilityGrid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .settingsSectionCard.is-compact {
+      align-content: start;
+    }
+    .settingsSectionCard.settingsPane {
+      display: none;
+      min-width: 0;
+    }
+    .settingsSectionCard.settingsPane.is-active {
+      display: grid;
+      animation: settings-pane-in var(--motion-base, 220ms) cubic-bezier(.22, 1, .36, 1) both;
     }
     .settingsVersionValue.is-text-swap {
       animation: settings-version-text-swap 200ms ease both;
@@ -1145,8 +2052,18 @@
     }
     .settingsChoiceGroup {
       display: grid;
-      gap: 10px;
+      gap: 8px;
       margin-top: 0;
+    }
+    .settingsTogglesSection .settingsChoiceGrid {
+      gap: 12px;
+      align-items: stretch;
+    }
+    .settingsTogglesSection .settingsChoiceGroup {
+      padding: 12px;
+      border: 1px solid rgba(13, 18, 32, 0.09);
+      border-radius: 10px;
+      background: rgba(247, 249, 252, 0.62);
     }
     .settingsChoiceLabel {
       display: grid;
@@ -1163,12 +2080,15 @@
       font-weight: 600;
     }
     .settingsChoiceRow {
-      display: flex;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 8px;
-      flex-wrap: wrap;
+    }
+    .settingsTogglesSection .settingsChoiceRow {
+      gap: 6px;
     }
     .settingsChoiceBtn {
-      min-width: 92px;
+      min-width: 0;
       border: 1px solid rgba(13, 18, 32, 0.14);
       border-radius: 999px;
       background: #ffffff;
@@ -5045,8 +5965,42 @@
       .settingsTab {
         border-top: none;
         border-bottom: none;
-        padding-top: 8px;
-        padding-bottom: 8px;
+        padding-top: 0;
+        padding-bottom: 0;
+      }
+      .settingsContent {
+        padding-bottom: max(44px, calc(env(safe-area-inset-bottom, 0px) + 30px));
+      }
+      .settingsProviderDeck,
+      .settingsProviderModeRow,
+      .settingsProviderList,
+      .settingsProviderCurrentGrid,
+      .settingsChoiceGrid,
+      .settingsVersionGrid,
+      .settingsUtilityGrid {
+        grid-template-columns: 1fr;
+      }
+      .settingsProviderOption {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .settingsStickyHeader {
+        margin: 0;
+        padding: 0;
+      }
+      .settingsNav {
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 3px;
+        padding: 4px;
+        overflow-x: hidden;
+      }
+      .settingsNavItem {
+        justify-content: center;
+        min-width: 0;
+        min-height: 32px;
+        padding: 6px 5px;
+        font-size: 10px;
+        letter-spacing: .06em;
+        white-space: nowrap;
       }
       .chatPanel .panelHeader {
         border-bottom: none;
@@ -5287,6 +6241,15 @@
         margin-inline: 2px;
         border-radius: 14px;
       }
+      #settingsProviderCurrentMode {
+        max-width: 46%;
+      }
+      .settingsChoiceLabel.settingsProviderManagerHead {
+        grid-template-columns: minmax(0, 1fr) auto;
+      }
+      .settingsProviderDirectMeta {
+        gap: 6px;
+      }
     }
 
     @media (min-width: 1081px) {
@@ -5337,11 +6300,7 @@
           Number(root?.clientWidth || 0),
           0
         );
-        const coarsePointer =
-          typeof window.matchMedia === "function" &&
-          (window.matchMedia("(pointer: coarse)").matches || window.matchMedia("(hover: none)").matches);
-        const touchCapable = Math.max(0, Number(window.navigator?.maxTouchPoints || 0)) > 0;
-        if ((viewportWidth > 0 && viewportWidth <= 1080) || coarsePointer || touchCapable) {
+        if (viewportWidth > 0 && viewportWidth <= 1080) {
           body.classList.add("floating-composer-layout");
         }
         const viewportHeight = Math.max(
@@ -5458,46 +6417,118 @@
         </button>
         <div id="settingsTab" class="settingsTab">
             <div class="settingsCard">
-              <div id="settingsInfoSection">
-                <section class="settingsSectionCard">
+              <div id="settingsInfoSection" class="settingsShell">
+                <div class="settingsStickyHeader">
+                  <nav class="settingsNav" aria-label="Settings sections">
+                    <button class="settingsNavItem is-active" type="button" data-settings-section="provider">Provider</button>
+                    <button class="settingsNavItem" type="button" data-settings-section="chat">Chat</button>
+                    <button class="settingsNavItem" type="button" data-settings-section="system">System</button>
+                    <button class="settingsNavItem" type="button" data-settings-section="alerts">Alerts</button>
+                    <button class="settingsNavItem" type="button" data-settings-section="debug">Debug</button>
+                  </nav>
+                </div>
+                <div class="settingsContent">
+                <section id="settingsProviderSection" class="settingsPane is-active settingsSectionCard settingsProviderSection" data-settings-pane="provider">
+                  <div class="settingsSectionHeader">
+                    <div class="settingsSectionTitleBlock">
+                      <div class="settingsSectionEyebrow">Provider</div>
+                      <div id="settingsProviderError" class="settingsInlineError" style="display:none;"></div>
+                    </div>
+                  </div>
+                  <div id="settingsProviderDeck" class="settingsProviderDeck">
+                    <div class="settingsProviderSummary">
+                      <div class="settingsProviderSummaryHeader">
+                        <div class="settingsProviderSummaryTitleBlock">
+                          <span class="settingsProviderSummaryLabel">Current provider</span>
+                          <span id="settingsProviderCurrentTarget">-</span>
+                        </div>
+                        <span id="settingsProviderCurrentMode">Loading...</span>
+                      </div>
+                      <div id="settingsProviderCurrentGrid" class="settingsProviderCurrentGrid"></div>
+                    </div>
+                    <div class="settingsProviderControls">
+                      <div class="settingsProviderIntro">
+                        Provider changes apply to future Web Codex messages in this workspace.
+                      </div>
+                      <div id="settingsProviderScopeRow" class="settingsProviderScopeRow" aria-label="Web Codex workspace provider">
+                        <button id="settingsProviderScopeWindowsBtn" class="settingsProviderBtn is-active" type="button" aria-pressed="true">Windows</button>
+                        <button id="settingsProviderScopeWslBtn" class="settingsProviderBtn" type="button" aria-pressed="false">WSL2</button>
+                      </div>
+                      <div class="settingsProviderGatewayBlock">
+                        <div class="settingsChoiceLabel">
+                          <span class="settingsChoiceTitle">Gateway</span>
+                        </div>
+                        <div class="settingsProviderModeRow">
+                          <button id="settingsProviderGatewayBtn" class="settingsProviderBtn settingsProviderGatewayBtn" type="button" aria-pressed="false">
+                            <span>Gateway</span>
+                            <small>Auto-routes enabled direct providers</small>
+                          </button>
+                        </div>
+                      </div>
+                      <div class="settingsProviderOfficialBlock">
+                        <div class="settingsChoiceLabel">
+                          <span class="settingsChoiceTitle">Official</span>
+                        </div>
+                        <div id="settingsOfficialProfileList" class="settingsOfficialProfileList"></div>
+                      </div>
+                      <div class="settingsProviderDirectBlock">
+                        <div class="settingsChoiceLabel settingsProviderManagerHead">
+                          <span class="settingsProviderDirectCopy">
+                            <span class="settingsChoiceTitle">Direct provider</span>
+                          </span>
+                          <span class="settingsProviderDirectMeta">
+                            <span id="settingsProviderDirectCount" class="settingsProviderDirectCount">0 enabled · 0 total</span>
+                            <button id="settingsProviderManageBtn" class="settingsProviderBtn settingsProviderManageBtn" type="button">Manage</button>
+                          </span>
+                        </div>
+                        <div id="settingsProviderList" class="settingsProviderList"></div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+                <section id="settingsChatSection" class="settingsPane settingsSectionCard settingsTogglesSection" data-settings-pane="chat">
+                  <div class="settingsSectionHeader">
+                    <div class="settingsSectionEyebrow">Chat Behavior</div>
+                    <div class="settingsSectionNote">Session</div>
+                  </div>
+                  <div class="settingsChoiceGrid">
+                    <div class="settingsChoiceGroup">
+                      <div class="settingsChoiceLabel">
+                        <span class="settingsChoiceTitle">Permissions (Full Access)</span>
+                      </div>
+                      <div class="settingsChoiceRow">
+                        <button id="settingsFullAccessOnBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">On</button>
+                        <button id="settingsFullAccessOffBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">Off</button>
+                      </div>
+                    </div>
+                    <div class="settingsChoiceGroup">
+                      <div class="settingsChoiceLabel">
+                        <span class="settingsChoiceTitle">Fast mode</span>
+                      </div>
+                      <div class="settingsChoiceRow">
+                        <button id="settingsFastOnBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">On</button>
+                        <button id="settingsFastOffBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">Off</button>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+                <section id="settingsSystemSection" class="settingsPane settingsSectionCard is-compact" data-settings-pane="system">
                   <div class="settingsSectionHeader">
                     <div class="settingsSectionEyebrow">Environment</div>
                     <div class="settingsSectionNote">Detected locally</div>
                   </div>
-                  <div class="settingsRow">
-                    <div class="muted">Codex Version (Windows)</div>
-                    <div id="windowsCodexVersion" class="mono settingsVersionValue">Detecting...</div>
-                  </div>
-                  <div class="settingsRow">
-                    <div class="muted">Codex Version (WSL2)</div>
-                    <div id="wslCodexVersion" class="mono settingsVersionValue">Detecting...</div>
-                  </div>
-                </section>
-                <section class="settingsSectionCard">
-                  <div class="settingsSectionHeader">
-                    <div class="settingsSectionEyebrow">Current Chat</div>
-                    <div id="settingsDefaultsWorkspace" class="settingsSectionNote">Applies to current Windows chat</div>
-                  </div>
-                  <div class="settingsChoiceGroup">
-                    <div class="settingsChoiceLabel">
-                      <span class="settingsChoiceTitle">Permissions (Full Access)</span>
-                      <span class="settingsChoiceHint">Only changes this Web chat.</span>
+                  <div class="settingsVersionGrid">
+                    <div class="settingsRow">
+                      <div class="muted">Codex Version (Windows)</div>
+                      <div id="windowsCodexVersion" class="mono settingsVersionValue">Detecting...</div>
                     </div>
-                    <div class="settingsChoiceRow">
-                      <button id="settingsFullAccessOnBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">On</button>
-                      <button id="settingsFullAccessOffBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">Off</button>
-                    </div>
-                    <div class="settingsChoiceLabel">
-                      <span class="settingsChoiceTitle">Fast mode</span>
-                      <span class="settingsChoiceHint">Only changes this Web chat.</span>
-                    </div>
-                    <div class="settingsChoiceRow">
-                      <button id="settingsFastOnBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">On</button>
-                      <button id="settingsFastOffBtn" class="settingsChoiceBtn" type="button" aria-pressed="false">Off</button>
+                    <div class="settingsRow">
+                      <div class="muted">Codex Version (WSL2)</div>
+                      <div id="wslCodexVersion" class="mono settingsVersionValue">Detecting...</div>
                     </div>
                   </div>
                 </section>
-                <section class="settingsSectionCard">
+                <section id="settingsAlertsSection" class="settingsPane settingsSectionCard is-compact" data-settings-pane="alerts">
                   <div class="settingsSectionHeader">
                     <div class="settingsSectionEyebrow">Alerts</div>
                     <div class="settingsSectionNote">Browser notifications</div>
@@ -5507,7 +6538,7 @@
                     <span id="notifState" class="muted">Notification: off</span>
                   </div>
                 </section>
-                <section class="settingsSectionCard">
+                <section id="settingsDebugSection" class="settingsPane settingsSectionCard" data-settings-pane="debug">
                   <div class="settingsSectionHeader">
                     <div class="settingsSectionEyebrow">Debug</div>
                     <div class="settingsSectionNote">Web-only diagnostics</div>
@@ -5520,6 +6551,7 @@
                     <span id="liveInspectorState" class="muted">Hidden</span>
                   </div>
                 </section>
+                </div>
               </div>
             </div>
           </div>
@@ -5670,6 +6702,25 @@
       <div class="branchSwitchBlockedHint">Please commit your changes to continue.</div>
       <div class="branchSwitchBlockedActions">
         <button id="branchSwitchBlockedCancelBtn" class="branchSwitchBlockedBtn secondary">Okay</button>
+      </div>
+    </div>
+  </div>
+  <div id="settingsProviderConfirmBackdrop" class="settingsProviderModalBackdrop" aria-hidden="true">
+    <div class="settingsProviderModal" role="dialog" aria-modal="true" aria-labelledby="settingsProviderConfirmTitle">
+      <div id="settingsProviderConfirmTitle" class="settingsProviderModalTitle">Apply provider change</div>
+      <div id="settingsProviderConfirmDetail" class="settingsProviderModalBody"></div>
+      <div class="settingsProviderModalActions">
+        <button id="settingsProviderConfirmCancelBtn" class="settingsProviderManagerToggle" type="button">Cancel</button>
+        <button id="settingsProviderConfirmApplyBtn" class="settingsProviderManagerToggle is-enabled" type="button">Apply</button>
+      </div>
+    </div>
+  </div>
+  <div id="settingsProviderManagerBackdrop" class="settingsProviderModalBackdrop" aria-hidden="true">
+    <div class="settingsProviderModal" role="dialog" aria-modal="true" aria-labelledby="settingsProviderManagerTitle">
+      <div id="settingsProviderManagerTitle" class="settingsProviderModalTitle">All providers</div>
+      <div id="settingsProviderManagerList" class="settingsProviderModalBody settingsProviderManagerList"></div>
+      <div class="settingsProviderModalActions">
+        <button id="settingsProviderManagerCloseBtn" class="settingsProviderManagerToggle" type="button">Close</button>
       </div>
     </div>
   </div>

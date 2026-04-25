@@ -65,6 +65,7 @@ import { createDebugToolsModule } from "./modules/codex-web/debugTools.js";
 import { createThreadLiveModule } from "./modules/codex-web/threadLive.js";
 import { createBootstrapModule } from "./modules/codex-web/bootstrapApp.js";
 import { createCodexWebComposition } from "./modules/codex-web/composition.js";
+import { createCodexWebDiagnostics } from "./modules/codex-web/webDiagnostics.js";
 import { installMobileViewportSync } from "./modules/codex-web/mobileViewport.js";
 import {
   ACTIVE_MAIN_TAB_KEY,
@@ -300,6 +301,14 @@ async function recordWebTransportEventToGateway(eventType, detail) {
   } catch {}
 }
 
+const webDiagnostics = createCodexWebDiagnostics({
+  state,
+  windowRef: window,
+  documentRef: document,
+  fetchRef: fetch,
+});
+webDiagnostics.install();
+
 function setActiveThread(id) {
   const prev = state.activeThreadId || "";
   state.activeThreadId = id || "";
@@ -513,6 +522,7 @@ const composition = createCodexWebComposition({
   createThreadLiveModule,
   createBootstrapModule,
   recordWebTransportEvent: (...args) => recordWebTransportEventToGateway(...args),
+  recordApiResult: (...args) => webDiagnostics.recordApiResult(...args),
   installMobileViewportSync: () => installMobileViewportSync({
     windowRef: window,
     documentRef: document,
