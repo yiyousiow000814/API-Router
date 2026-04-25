@@ -28,6 +28,7 @@ import {
   finalizeHistoryLoad,
   runHistoryLoad,
 } from "./historyLoadFlow.js";
+import { normalizeDisplayedAssistantText } from "./messageData.js";
 import {
   captureLiveCommentarySnapshot as captureLiveCommentarySnapshotImpl,
   createCommentarySnapshotFromHistory,
@@ -115,7 +116,7 @@ export function normalizeSessionAssistantText(content, deps = {}) {
     const text = stripCodexImageBlocksRef(String(part.text || "")).trim();
     if (text) lines.push(text);
   }
-  return lines.join("\n").trim();
+  return normalizeDisplayedAssistantText(lines.join("\n").trim());
 }
 
 export function isVisibleAssistantHistoryPhase(phase) {

@@ -788,6 +788,26 @@ describe("historyLoader", () => {
     ).toBe("first\nsecond");
   });
 
+  it("strips Codex desktop git directives from session assistant history", () => {
+    expect(
+      normalizeSessionAssistantText(
+        [
+          {
+            type: "output_text",
+            text: `已推送
+::git-stage{cwd="C:\\Users\\yiyou\\API-Router"}
+::git-commit{cwd="C:\\Users\\yiyou\\API-Router"}
+::git-push{cwd="C:\\Users\\yiyou\\API-Router" branch="fix/thread-source-allowlist"}`,
+          },
+        ],
+        {
+          normalizeType: (value) => String(value || "").replace(/[^a-z]/gi, "").toLowerCase(),
+          stripCodexImageBlocks: (value) => value,
+        }
+      )
+    ).toBe("已推送");
+  });
+
   it("omits commentary-phase assistant messages from session history", async () => {
     const module = createHistoryLoaderModule({
       state: { liveDebugEvents: [] },

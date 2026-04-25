@@ -107,6 +107,15 @@ export function normalizeDisplayedUserText(text) {
   return request || source;
 }
 
+export function normalizeDisplayedAssistantText(text) {
+  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  const kept = lines.filter((line) => {
+    const trimmed = String(line || "").trim();
+    return !/^::git-(?:stage|commit|push|create-branch|create-pr)\{.*\}$/.test(trimmed);
+  });
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 export function normalizeType(value) {
   return String(value || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
 }
@@ -829,7 +838,7 @@ export function normalizeThreadItemText(item) {
   const type = String(item.type || "").trim();
   if (!type) return "";
   if (type === "agentMessage" || type === "assistantMessage") {
-    return stripCodexImageBlocks(String(item.text || "")).trim();
+    return normalizeDisplayedAssistantText(stripCodexImageBlocks(String(item.text || "")).trim());
   }
   if (type !== "userMessage") return toolItemToMessage(item, options) || "";
   return parseUserMessageParts(item).text;

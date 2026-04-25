@@ -1,3 +1,5 @@
+import { normalizeDisplayedAssistantText } from "./messageData.js";
+
 export function escapeHtml(input) {
   return String(input)
     .replace(/&/g, "&amp;")
@@ -323,6 +325,69 @@ export function renderInlineMessageText(text) {
   return html;
 }
 
+function parseCodeCommentAttributes(source) {
+  const attrs = {};
+  const body = String(source || "").trim().replace(/^::code-comment\{/, "").replace(/\}\s*$/, "");
+  const pattern = /([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(?:"((?:\\.|[^"\\])*)"|([^\s}]+))/g;
+  for (const match of body.matchAll(pattern)) {
+    const key = String(match[1] || "").trim();
+    if (!key) continue;
+    const raw = match[2] != null ? String(match[2]) : String(match[3] || "");
+    attrs[key] = raw.replace(/\\(["\\])/g, "$1");
+  }
+  return attrs;
+}
+
+function normalizePriorityLabel(value, title) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric >= 0) return `P${String(Math.trunc(numeric))}`;
+  const match = String(title || "").match(/^\s*\[(P[0-3])\]/i);
+  return match ? String(match[1] || "").toUpperCase() : "";
+}
+
+function stripPriorityFromTitle(title) {
+  return String(title || "").replace(/^\s*\[P[0-3]\]\s*/i, "").trim();
+}
+
+function formatCodeCommentLocation(attrs) {
+  const file = String(attrs.file || "").trim();
+  if (!file) return "";
+  const start = String(attrs.start || "").trim();
+  const end = String(attrs.end || "").trim();
+  const labelBase = fileRefDisplayLabel(file);
+  const suffix = start && end && end !== start
+    ? `:${start}-${end}`
+    : start
+      ? `:${start}`
+      : "";
+  return `${labelBase}${suffix}`;
+}
+
+function renderCodeCommentDirectiveHtml(line) {
+  const attrs = parseCodeCommentAttributes(line);
+  const rawTitle = String(attrs.title || "Code review finding").trim();
+  const priority = normalizePriorityLabel(attrs.priority, rawTitle);
+  const title = stripPriorityFromTitle(rawTitle) || "Code review finding";
+  const body = String(attrs.body || "").trim();
+  const location = formatCodeCommentLocation(attrs);
+  const priorityHtml = priority
+    ? `<span class="msgCodeCommentPriority">${escapeHtml(priority)}</span>`
+    : "";
+  const bodyHtml = body
+    ? `<div class="msgCodeCommentBody">${renderInlineMessageText(body)}</div>`
+    : "";
+  const locationHtml = location
+    ? `<div class="msgCodeCommentLocation">${renderInlineCodeSpan(location)}</div>`
+    : "";
+  return (
+    `<div class="msgCodeCommentCard">` +
+      `<div class="msgCodeCommentHeader">${priorityHtml}<strong>${renderInlineMessageText(title)}</strong></div>` +
+      bodyHtml +
+      locationHtml +
+    `</div>`
+  );
+}
+
 export function renderMessageRichHtml(text) {
   const source = String(text || "").replace(/\r\n/g, "\n");
   if (!source.trim()) return "";
@@ -501,6 +566,12 @@ export function renderMessageRichHtml(text) {
       continue;
     }
     flushBlankLines();
+    if (/^::code-comment\{[\s\S]*\}\s*$/.test(String(line || "").trim())) {
+      flushParagraph();
+      flushList();
+      html += renderCodeCommentDirectiveHtml(String(line || "").trim());
+      continue;
+    }
     if (heading) {
       flushParagraph();
       flushList();
@@ -778,7 +849,8 @@ export function renderStructuredToolPreviewHtml(text, options = {}) {
 
 export function renderMessageBody(role, text, options = {}) {
   if (options && options.kind === "tool") return renderToolSummaryHtml(text);
-  if (role === "assistant" || role === "system" || role === "user") return renderMessageRichHtml(text);
+  const displayText = role === "assistant" ? normalizeDisplayedAssistantText(text) : text;
+  if (role === "assistant" || role === "system" || role === "user") return renderMessageRichHtml(displayText);
   return `<p>${escapeHtml(text || "").replace(/\n/g, "<br>")}</p>`;
 }
 

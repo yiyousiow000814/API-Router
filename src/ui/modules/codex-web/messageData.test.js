@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   isBootstrapAgentsPrompt,
+  normalizeDisplayedAssistantText,
   normalizeTextPayload,
   parseUserMessageParts,
   stripCodexImageBlocks,
   toolItemToMessage,
+  normalizeThreadItemText,
 } from "./messageData.js";
 
 describe("messageData", () => {
@@ -79,6 +81,26 @@ vscode: 150 条
       ],
     });
     expect(parsed.text).toBe("这里就能分辨哪一些应该被隐藏了");
+  });
+
+  it("strips Codex desktop git directives from assistant display text", () => {
+    expect(
+      normalizeDisplayedAssistantText(`已推送到 fix/thread-source-allowlist。
+
+::git-stage{cwd="C:\\Users\\yiyou\\API-Router"}
+::git-commit{cwd="C:\\Users\\yiyou\\API-Router"}
+::git-push{cwd="C:\\Users\\yiyou\\API-Router" branch="fix/thread-source-allowlist"}`)
+    ).toBe("已推送到 fix/thread-source-allowlist。");
+  });
+
+  it("strips Codex desktop git directives from thread assistant items", () => {
+    expect(
+      normalizeThreadItemText({
+        type: "assistantMessage",
+        text: `完成
+::git-stage{cwd="C:\\Users\\yiyou\\API-Router"}`,
+      })
+    ).toBe("完成");
   });
 
   it("detects bootstrap prompts", () => {

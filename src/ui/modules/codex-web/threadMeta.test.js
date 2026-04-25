@@ -39,13 +39,33 @@ describe("threadMeta", () => {
     expect(sorted.map((item) => item.id)).toEqual(["c", "b", "a"]);
   });
 
+  it("sorts by status updates before creation time when updatedAt is absent", () => {
+    const sorted = sortThreadsByNewest([
+      { id: "created-newer", createdAt: "2026-03-09T00:00:00Z" },
+      {
+        id: "status-newer",
+        createdAt: "2026-03-08T00:00:00Z",
+        statusUpdatedAt: "2026-03-10T00:00:00Z",
+      },
+    ]);
+
+    expect(sorted.map((item) => item.id)).toEqual(["status-newer", "created-newer"]);
+  });
+
   it("builds stable render signatures from sorted thread data", () => {
     expect(
       buildThreadRenderSig([
         { id: "a", updatedAt: "2026-03-08T00:00:00Z", status: "done", preview: "older" },
         { id: "b", updatedAt: "2026-03-09T00:00:00Z", status: { type: "running" }, title: "newer" },
       ])
-    ).toBe("b:2026-03-09T00:00:00Z:running:newer|a:2026-03-08T00:00:00Z:done:older");
+    ).toBe("b:2026-03-09T00:00:00Z:running:newer:repo|a:2026-03-08T00:00:00Z:done:older:repo");
+  });
+
+  it("tracks status timestamp changes in the render signature", () => {
+    const before = buildThreadRenderSig([{ id: "a", statusUpdatedAt: "2026-03-08T00:00:00Z" }]);
+    const after = buildThreadRenderSig([{ id: "a", statusUpdatedAt: "2026-03-09T00:00:00Z" }]);
+
+    expect(before).not.toBe(after);
   });
 
   it("reads thread ids from both supported field names", () => {
