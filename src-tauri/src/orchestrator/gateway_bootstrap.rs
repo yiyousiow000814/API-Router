@@ -180,7 +180,7 @@ fn gateway_listen_addrs_with_overlays(
 fn gateway_listen_addrs(
     listen_host: &str,
     listen_port: u16,
-    config_path: Option<&std::path::Path>,
+    #[cfg_attr(not(windows), allow(unused_variables))] config_path: Option<&std::path::Path>,
 ) -> anyhow::Result<Vec<SocketAddr>> {
     write_gateway_bootstrap_diag(
         "gateway_listen_addrs_start",

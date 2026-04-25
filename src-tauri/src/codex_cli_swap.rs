@@ -162,6 +162,7 @@ pub fn save_cli_directories_for_config(
     std::fs::write(path, bytes).map_err(|e| e.to_string())
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn wsl2_cli_directory_enabled(config_path: &Path) -> bool {
     let dirs = load_cli_directories_for_config(config_path);
     dirs.wsl2_enabled && !dirs.wsl2_home.trim().is_empty()
