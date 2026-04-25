@@ -80,6 +80,39 @@ describe("actionBindings", () => {
     expect(state.providerSwitchboardStatus).toMatchObject({ mode: "gateway" });
   });
 
+  it("uses the only available workspace for provider switchboard refreshes", async () => {
+    const apiCalls = [];
+    const state = {
+      providerSwitchboardScope: "windows",
+      providerSwitchboardStatusByScope: { windows: null, wsl2: null },
+      workspaceAvailability: { windowsInstalled: false, wsl2Installed: true },
+    };
+    const module = createActionBindingsModule({
+      state,
+      async api(path) {
+        apiCalls.push(path);
+        return {
+          ok: true,
+          mode: "official",
+          model_provider: null,
+          dirs: [],
+          provider_options: [],
+          scope: "wsl2",
+        };
+      },
+      syncSettingsControlsFromMain() {},
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      windowRef: { addEventListener() {} },
+      documentRef: { addEventListener() {} },
+    });
+
+    await module.refreshProviderSwitchboard();
+
+    expect(apiCalls).toEqual(["/codex/provider-switchboard?scope=wsl2"]);
+    expect(state.providerSwitchboardScope).toBe("wsl2");
+    expect(state.providerSwitchboardStatus).toMatchObject({ mode: "official", scope: "wsl2" });
+  });
+
   it("does not let stale provider switchboard responses replace the active scope", async () => {
     let resolveWindows;
     let resolveWsl2;

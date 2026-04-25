@@ -383,6 +383,67 @@ describe("composerUi", () => {
     expect(html).toContain('title="Unhealthy"');
   });
 
+  it("shows the provider workspace switch only when both workspaces are available", () => {
+    function renderWithAvailability(workspaceAvailability) {
+      const nodes = new Map();
+      for (const id of [
+        "settingsProviderCurrentMode",
+        "settingsProviderScopeRow",
+        "settingsProviderScopeWindowsBtn",
+        "settingsProviderScopeWslBtn",
+      ]) {
+        nodes.set(id, makeNode());
+      }
+      const deps = {
+        state: {
+          activeMainTab: "settings",
+          settingsActiveSection: "provider",
+          providerSwitchboardScope: "windows",
+          providerSwitchboardStatus: {
+            ok: true,
+            scope: "windows",
+            mode: "gateway",
+            provider_details: [],
+            official_profiles: [],
+          },
+          workspaceAvailability,
+          permissionPresetByWorkspace: {},
+        },
+        byId(id) {
+          return nodes.get(id) || null;
+        },
+        readPromptValue() {
+          return "";
+        },
+        clearPromptInput() {},
+        resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+        renderComposerContextLeftInNode() {},
+        updateHeaderUi() {},
+        localStorageRef: { getItem() { return ""; } },
+        documentRef: { querySelector() { return null; }, getElementById() { return null; } },
+        windowRef: { innerHeight: 900, addEventListener() {} },
+      };
+      createComposerUiModule(deps).syncSettingsControlsFromMain();
+      return {
+        display: nodes.get("settingsProviderScopeRow").style.display,
+        currentMode: nodes.get("settingsProviderCurrentMode").textContent,
+      };
+    }
+
+    expect(renderWithAvailability({ windowsInstalled: true, wsl2Installed: false })).toMatchObject({
+      display: "none",
+      currentMode: "Windows",
+    });
+    expect(renderWithAvailability({ windowsInstalled: false, wsl2Installed: true })).toMatchObject({
+      display: "none",
+      currentMode: "WSL2",
+    });
+    expect(renderWithAvailability({ windowsInstalled: true, wsl2Installed: true })).toMatchObject({
+      display: "",
+      currentMode: "Windows",
+    });
+  });
+
   it("updates mobile composer actions for running turns", () => {
     const nodes = new Map();
     const wrap = makeNode();

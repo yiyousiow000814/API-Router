@@ -1859,9 +1859,19 @@ export function createComposerUiModule(deps) {
       fastOffBtn.setAttribute("aria-pressed", !fastEnabled ? "true" : "false");
     }
     const providerStatus = state.providerSwitchboardStatus || null;
+    const providerWorkspaceAvailability = state.workspaceAvailability || {};
+    const providerWindowsAvailable = providerWorkspaceAvailability.windowsInstalled === true;
+    const providerWsl2Available = providerWorkspaceAvailability.wsl2Installed === true;
+    const providerCanSwitchWorkspace = providerWindowsAvailable && providerWsl2Available;
     const providerMode = String(providerStatus?.mode || "").trim();
     const providerName = String(providerStatus?.model_provider || "").trim();
-    const providerScope = String(state.providerSwitchboardScope || providerStatus?.scope || "windows").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
+    const providerRawScope = String(state.providerSwitchboardScope || providerStatus?.scope || "windows").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
+    const providerScope =
+      providerWindowsAvailable && !providerWsl2Available
+        ? "windows"
+        : !providerWindowsAvailable && providerWsl2Available
+          ? "wsl2"
+          : providerRawScope;
     const providerDraftTarget = String(state.providerSwitchboardDraftTarget || providerMode || "gateway").trim().toLowerCase();
     const providerDraftProvider = String(state.providerSwitchboardDraftProvider || "").trim();
     const providerDraftOfficialProfileId = String(state.providerSwitchboardDraftOfficialProfileId || "").trim();
@@ -1940,9 +1950,8 @@ export function createComposerUiModule(deps) {
       providerDirectCount.textContent = `${providerRows.length} enabled · ${providerRowsAll.length} total`;
     }
     if (providerScopeRow) {
-      const wslEnabled = state.workspaceAvailability?.wsl2Installed === true;
       providerScopeRow.classList.toggle("is-wsl2", providerScope === "wsl2");
-      providerScopeRow.style.display = wslEnabled ? "" : "none";
+      providerScopeRow.style.display = providerCanSwitchWorkspace ? "" : "none";
     }
     if (providerError) {
       const error = String(state.providerSwitchboardError || "").trim();

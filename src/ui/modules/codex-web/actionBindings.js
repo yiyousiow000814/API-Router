@@ -249,6 +249,16 @@ export function createActionBindingsModule(deps) {
     return value === "wsl2" ? "wsl2" : "windows";
   }
 
+  function resolveAvailableProviderSwitchboardScope(scope) {
+    const normalizedScope = normalizeProviderSwitchboardScope(scope);
+    const availability = state.workspaceAvailability || {};
+    const windowsAvailable = availability.windowsInstalled === true;
+    const wsl2Available = availability.wsl2Installed === true;
+    if (windowsAvailable && !wsl2Available) return "windows";
+    if (!windowsAvailable && wsl2Available) return "wsl2";
+    return normalizedScope;
+  }
+
   function cacheProviderSwitchboardStatus(scope, status) {
     const normalizedScope = normalizeProviderSwitchboardScope(scope);
     if (!state.providerSwitchboardStatusByScope || typeof state.providerSwitchboardStatusByScope !== "object") {
@@ -312,7 +322,14 @@ export function createActionBindingsModule(deps) {
   async function refreshProviderSwitchboard(options = {}) {
     if (typeof api !== "function") return null;
     const showLoading = options?.showLoading !== false;
-    const scope = normalizeProviderSwitchboardScope(options?.scope || state.providerSwitchboardScope);
+    const scope = resolveAvailableProviderSwitchboardScope(options?.scope || state.providerSwitchboardScope);
+    if (scope !== normalizeProviderSwitchboardScope(state.providerSwitchboardScope)) {
+      state.providerSwitchboardScope = scope;
+      state.providerSwitchboardDraftTarget = "";
+      state.providerSwitchboardDraftProvider = "";
+      state.providerSwitchboardDraftOfficialProfileId = "";
+      state.providerSwitchboardStatus = state.providerSwitchboardStatusByScope?.[scope] || null;
+    }
     const activeRequestSeq = ++providerSwitchboardRefreshSeq;
     let request = providerSwitchboardRefreshInFlight.get(scope);
     if (!request) {
@@ -379,7 +396,7 @@ export function createActionBindingsModule(deps) {
   }
 
   async function setProviderSwitchboardScope(scope) {
-    const nextScope = normalizeProviderSwitchboardScope(scope);
+    const nextScope = resolveAvailableProviderSwitchboardScope(scope);
     if (nextScope === normalizeProviderSwitchboardScope(state.providerSwitchboardScope)) return;
     state.providerSwitchboardScope = nextScope;
     state.providerSwitchboardDraftTarget = "";
