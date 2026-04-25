@@ -218,9 +218,14 @@ fn provider_switchboard_default_homes(scope: Option<&str>) -> Vec<String> {
     };
 
     if scope == "windows" {
+        let _ = super::web_codex_home::ensure_web_codex_provider_overlay_ready(
+            WorkspaceTarget::Windows,
+        );
         push_if_ready(web_codex_switchboard_home(WorkspaceTarget::Windows));
     }
     if scope == "wsl2" {
+        let _ =
+            super::web_codex_home::ensure_web_codex_provider_overlay_ready(WorkspaceTarget::Wsl2);
         push_if_ready(web_codex_switchboard_home(WorkspaceTarget::Wsl2));
     }
     if homes.is_empty() && scope == "wsl2" {

@@ -481,6 +481,37 @@ fn ensure_windows_overlay_session_links(
     Ok(())
 }
 
+fn copy_if_missing(src: &Path, dst: &Path) -> Result<(), String> {
+    if dst.exists() || !src.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    std::fs::copy(src, dst)
+        .map(|_| ())
+        .map_err(|err| err.to_string())
+}
+
+fn ensure_windows_provider_overlay_files(
+    overlay_home: &Path,
+    session_home: &Path,
+) -> Result<(), String> {
+    if paths_refer_to_same_target(overlay_home, session_home) {
+        return Ok(());
+    }
+    std::fs::create_dir_all(overlay_home).map_err(|err| err.to_string())?;
+    copy_if_missing(
+        &session_home.join("config.toml"),
+        &overlay_home.join("config.toml"),
+    )?;
+    copy_if_missing(
+        &session_home.join("auth.json"),
+        &overlay_home.join("auth.json"),
+    )?;
+    Ok(())
+}
+
 pub(crate) fn ensure_web_codex_runtime_session_links(
     codex_home: Option<&str>,
 ) -> Result<(), String> {
@@ -503,6 +534,85 @@ pub(crate) fn ensure_web_codex_runtime_session_links(
         return Ok(());
     };
     ensure_windows_overlay_session_links(&overlay_home, &session_home)
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_wsl_provider_overlay_ready(overlay_home: &str) -> Result<(), String> {
+    let session_home = web_codex_wsl_session_home().ok_or_else(|| {
+        "failed to resolve WSL Codex session home for Web Codex provider overlay".to_string()
+    })?;
+    if normalize_wsl_linux_path(overlay_home) == normalize_wsl_linux_path(&session_home) {
+        return Ok(());
+    }
+    let script = format!(
+        r#"
+set -e
+overlay={overlay}
+official={official}
+mkdir -p "$overlay"
+if [ ! -e "$overlay/config.toml" ] && [ -e "$official/config.toml" ]; then cp "$official/config.toml" "$overlay/config.toml"; fi
+if [ ! -e "$overlay/auth.json" ] && [ -e "$official/auth.json" ]; then cp "$official/auth.json" "$overlay/auth.json"; fi
+mkdir -p "$official/sessions"
+touch "$official/history.jsonl"
+if [ -e "$overlay/sessions" ] || [ -L "$overlay/sessions" ]; then
+  if [ "$(readlink -f "$overlay/sessions" 2>/dev/null || true)" != "$(readlink -f "$official/sessions" 2>/dev/null || true)" ]; then
+    mv "$overlay/sessions" "$overlay/sessions.web-codex-backup-$(date +%s)"
+  fi
+fi
+if [ ! -e "$overlay/sessions" ] && [ ! -L "$overlay/sessions" ]; then ln -s "$official/sessions" "$overlay/sessions"; fi
+if [ -e "$overlay/history.jsonl" ] || [ -L "$overlay/history.jsonl" ]; then
+  if [ "$(readlink -f "$overlay/history.jsonl" 2>/dev/null || true)" != "$(readlink -f "$official/history.jsonl" 2>/dev/null || true)" ]; then
+    mv "$overlay/history.jsonl" "$overlay/history.jsonl.web-codex-backup-$(date +%s)"
+  fi
+fi
+if [ ! -e "$overlay/history.jsonl" ] && [ ! -L "$overlay/history.jsonl" ]; then ln -s "$official/history.jsonl" "$overlay/history.jsonl"; fi
+"#,
+        overlay = shell_single_quote(overlay_home),
+        official = shell_single_quote(&session_home),
+    );
+    let mut cmd = std::process::Command::new("wsl.exe");
+    cmd.arg("-e").arg("bash").arg("-lc").arg(script);
+    cmd.creation_flags(0x08000000);
+    let output = cmd.output().map_err(|err| err.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Err(if stderr.is_empty() { stdout } else { stderr })
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn ensure_wsl_provider_overlay_ready(_overlay_home: &str) -> Result<(), String> {
+    Ok(())
+}
+
+pub(super) fn ensure_web_codex_provider_overlay_ready(
+    target: WorkspaceTarget,
+) -> Result<(), String> {
+    match target {
+        WorkspaceTarget::Windows => {
+            let Some(overlay_home) = web_codex_rpc_home_override().map(PathBuf::from) else {
+                return Ok(());
+            };
+            let Some(session_home) = web_codex_windows_session_home() else {
+                return Ok(());
+            };
+            ensure_windows_provider_overlay_files(&overlay_home, &session_home)?;
+            ensure_windows_overlay_session_links(&overlay_home, &session_home)
+        }
+        WorkspaceTarget::Wsl2 => {
+            let Some(overlay_home) = web_codex_wsl_linux_home_override() else {
+                return Ok(());
+            };
+            ensure_wsl_provider_overlay_ready(&overlay_home)
+        }
+    }
 }
 
 pub(crate) fn web_codex_session_home_for_runtime_home(codex_home: Option<&str>) -> Option<String> {
@@ -529,9 +639,9 @@ pub(crate) fn web_codex_session_home_for_runtime_home(codex_home: Option<&str>) 
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_web_codex_runtime_session_links, linux_path_join, linux_path_parent,
-        normalize_wsl_linux_path, parse_workspace_target, web_codex_rpc_home_override_for_target,
-        web_codex_session_home_for_target, WorkspaceTarget,
+        ensure_web_codex_provider_overlay_ready, ensure_web_codex_runtime_session_links,
+        linux_path_join, linux_path_parent, normalize_wsl_linux_path, parse_workspace_target,
+        web_codex_rpc_home_override_for_target, web_codex_session_home_for_target, WorkspaceTarget,
     };
 
     #[test]
@@ -668,6 +778,43 @@ mod tests {
                     .to_string_lossy()
                     .contains("sessions.web-codex-backup-")),
             "existing overlay sessions should be preserved outside the active CODEX_HOME"
+        );
+
+        unsafe {
+            std::env::remove_var("USERPROFILE");
+            std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        }
+    }
+
+    #[test]
+    fn windows_provider_overlay_initializes_provider_files_without_owning_sessions() {
+        let _test_guard = crate::codex_app_server::lock_test_globals();
+        let user_profile = tempfile::tempdir().expect("user profile");
+        let app_data = tempfile::tempdir().expect("app data");
+        let official_home = user_profile.path().join(".codex");
+        let overlay_home = app_data.path().join("codex-home");
+        std::fs::create_dir_all(&official_home).expect("official home");
+        std::fs::write(
+            official_home.join("config.toml"),
+            "model_provider = \"openai\"\n",
+        )
+        .expect("official config");
+        std::fs::write(official_home.join("auth.json"), "{}\n").expect("official auth");
+        unsafe {
+            std::env::set_var("USERPROFILE", user_profile.path());
+            std::env::set_var("API_ROUTER_USER_DATA_DIR", app_data.path());
+            std::env::remove_var("API_ROUTER_WEB_CODEX_CODEX_HOME");
+            std::env::remove_var("CODEX_HOME");
+        }
+
+        ensure_web_codex_provider_overlay_ready(WorkspaceTarget::Windows)
+            .expect("provider overlay ready");
+
+        assert!(overlay_home.join("config.toml").exists());
+        assert!(overlay_home.join("auth.json").exists());
+        assert_eq!(
+            std::fs::canonicalize(overlay_home.join("sessions")).expect("linked sessions"),
+            std::fs::canonicalize(official_home.join("sessions")).expect("official sessions")
         );
 
         unsafe {
