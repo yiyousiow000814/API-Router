@@ -536,6 +536,7 @@ pub(crate) fn ensure_web_codex_runtime_session_links(
     ensure_windows_overlay_session_links(&overlay_home, &session_home)
 }
 
+#[cfg(target_os = "windows")]
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
