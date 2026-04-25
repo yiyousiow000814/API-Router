@@ -906,6 +906,11 @@ requires_openai_auth = true`}
               setCodexSwapDir2(wslDir)
               setCodexSwapUseWindows(draftCodexSwapUseWindows)
               setCodexSwapUseWsl(draftCodexSwapUseWsl)
+              setCodexSwapModalOpen(false)
+              if (reopenGettingStartedAfterDirs) {
+                setInstructionModalOpen(true)
+                setReopenGettingStartedAfterDirs(false)
+              }
               if (!isDevPreview) {
                 const homes = resolveCliHomes(
                   windowsDir,
@@ -916,11 +921,6 @@ requires_openai_auth = true`}
                 await toggleCodexSwap(homes)
               } else {
                 flashToast('[TEST] Applied directories in preview mode.')
-              }
-              setCodexSwapModalOpen(false)
-              if (reopenGettingStartedAfterDirs) {
-                setInstructionModalOpen(true)
-                setReopenGettingStartedAfterDirs(false)
               }
             } catch (e) {
               flashToast(String(e), 'error')
