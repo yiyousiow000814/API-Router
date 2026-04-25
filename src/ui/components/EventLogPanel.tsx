@@ -130,8 +130,20 @@ export function resolveFocusedEvent(
   focusRequest: EventLogFocusRequest,
 ): EventLogEntry | null {
   const eventIdNeedle = focusRequest.eventId?.trim() ?? ''
-  if (!eventIdNeedle) return null
-  return sourceEvents.find((event) => event.id?.trim() === eventIdNeedle) ?? null
+  if (eventIdNeedle) {
+    return sourceEvents.find((event) => event.id?.trim() === eventIdNeedle) ?? null
+  }
+  const providerNeedle = focusRequest.provider.trim()
+  const messageNeedle = focusRequest.message.trim()
+  const unixMsNeedle = Number(focusRequest.unixMs)
+  return (
+    sourceEvents.find(
+      (event) =>
+        event.provider.trim() === providerNeedle &&
+        Number(event.unix_ms) === unixMsNeedle &&
+        event.message.trim() === messageNeedle,
+    ) ?? null
+  )
 }
 
 function parseDateInputToDayStart(dateText: string): number | null {
