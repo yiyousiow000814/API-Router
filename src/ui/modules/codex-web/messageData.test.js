@@ -42,6 +42,45 @@ describe("messageData", () => {
     expect(parsed.text).toBe("line 1\n\nline 2");
   });
 
+  it("displays only the typed request from Codex review context wrappers", () => {
+    const parsed = parseUserMessageParts({
+      content: [
+        {
+          type: "input_text",
+          text: `# Review findings:
+
+## Finding 1 (src-tauri/src/orchestrator/store.rs:1054-1075) [added]
+[P3] Startup compaction reruns every open
+
+compact_runtime_listener_skip_events runs on every Store::open.
+
+## My request for Codex:
+推送最新的上去，然后build exe`,
+        },
+      ],
+    });
+    expect(parsed.text).toBe("推送最新的上去，然后build exe");
+  });
+
+  it("displays only the typed request from Codex selected-text wrappers", () => {
+    const parsed = parseUserMessageParts({
+      content: [
+        {
+          type: "input_text",
+          text: `# Selected text:
+
+## Selection 1
+cli: 295 条
+vscode: 150 条
+
+## My request for Codex:
+这里就能分辨哪一些应该被隐藏了`,
+        },
+      ],
+    });
+    expect(parsed.text).toBe("这里就能分辨哪一些应该被隐藏了");
+  });
+
   it("detects bootstrap prompts", () => {
     expect(
       isBootstrapAgentsPrompt("# AGENTS.md instructions for repo\n<INSTRUCTIONS>Agent Defaults</INSTRUCTIONS>")
