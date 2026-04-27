@@ -66,6 +66,32 @@ export function subscriptionIncludesWorkspace(subscription, target) {
   return items.map((value) => normalizeLiveWorkspaceTarget(value, "windows")).includes(normalizedTarget);
 }
 
+function normalizeSubscriptionTargets(workspace, workspaces) {
+  const rawTargets = Array.isArray(workspaces) && workspaces.length ? workspaces : [workspace];
+  return Array.from(
+    new Set(rawTargets.map((value) => normalizeLiveWorkspaceTarget(value, "windows")))
+  ).sort();
+}
+
+function subscriptionPayloadMatchesState(state, payload) {
+  const requestedWorkspace = String(state?.wsRequestedWorkspaceTarget || "").trim().toLowerCase();
+  const subscribedWorkspace = String(state?.wsSubscribedWorkspaceTarget || "").trim().toLowerCase();
+  const nextWorkspace = String(payload?.workspace || "windows").trim().toLowerCase();
+  if (requestedWorkspace !== nextWorkspace && subscribedWorkspace !== nextWorkspace) return false;
+  const nextTargets = normalizeSubscriptionTargets(payload?.workspace, payload?.workspaces);
+  const requestedTargets = normalizeSubscriptionTargets(
+    state?.wsRequestedWorkspaceTarget,
+    state?.wsRequestedWorkspaceTargets
+  );
+  const subscribedTargets = normalizeSubscriptionTargets(
+    state?.wsSubscribedWorkspaceTarget,
+    state?.wsSubscribedWorkspaceTargets
+  );
+  const sameTargets = (left, right) =>
+    left.length === right.length && left.every((value, index) => value === right[index]);
+  return sameTargets(nextTargets, requestedTargets) || sameTargets(nextTargets, subscribedTargets);
+}
+
 export function resolveApiErrorMessage(payload, status) {
   return payload?.error?.detail || payload?.error?.message || `HTTP ${status}`;
 }
@@ -145,6 +171,7 @@ export function createWsClientModule(deps) {
     upsertProvisionalThreadItem = () => false,
     recordWebTransportEvent = () => {},
     recordApiResult = () => {},
+    recordApiPending = () => {},
     LAST_EVENT_ID_KEY,
     windowRef = window,
     WebSocketRef = WebSocket,
@@ -160,6 +187,7 @@ export function createWsClientModule(deps) {
     WS_RECONNECT_MAX_MS = 15000,
     WS_RECONNECT_MAX_ATTEMPTS = 5,
     WS_RESUME_SILENCE_MS = 1200,
+    API_PENDING_AFTER_MS = 3000,
     transportMode = "live",
     seedDefaultThreads = false,
   } = deps;
@@ -272,6 +300,25 @@ export function createWsClientModule(deps) {
     if (state.token.trim()) headers.Authorization = `Bearer ${state.token.trim()}`;
     const route = `${String(options.method || "GET").toUpperCase()} ${String(path || "")}`.trim();
     const startedAt = Number(nowRef()) || Date.now();
+    let pendingTimer = 0;
+    let pendingReported = false;
+    const pendingAfterMs = Math.max(0, Number(API_PENDING_AFTER_MS || 0));
+    if (pendingAfterMs > 0) {
+      pendingTimer = setTimeoutRef(() => {
+        pendingTimer = 0;
+        pendingReported = true;
+        const elapsedMs = (Number(nowRef()) || Date.now()) - startedAt;
+        recordApiPending({
+          command: route,
+          elapsedMs,
+          fields: {
+            path: String(path || ""),
+            method: String(options.method || "GET").toUpperCase(),
+          },
+        });
+        recordWebTransportEvent("api_request_pending", `${route} pending ${Math.round(elapsedMs)}ms`);
+      }, pendingAfterMs);
+    }
     let res;
     try {
       res = await fetchRef(path, {
@@ -281,6 +328,7 @@ export function createWsClientModule(deps) {
         signal: options.signal,
       });
     } catch (error) {
+      if (pendingTimer) clearTimeoutRef(pendingTimer);
       const detail = error instanceof Error ? error.message : String(error || "Network request failed");
       if (isExpectedAbortError(error)) {
         throw error;
@@ -294,6 +342,7 @@ export function createWsClientModule(deps) {
       recordWebTransportEvent("api_request_failed", `${route} -> network error: ${detail}`);
       throw error;
     }
+    if (pendingTimer) clearTimeoutRef(pendingTimer);
     const payload = await res.json().catch(() => ({}));
     if (!res.ok) {
       const detail = resolveApiErrorMessage(payload, res.status);
@@ -313,7 +362,7 @@ export function createWsClientModule(deps) {
       command: route,
       elapsedMs: (Number(nowRef()) || Date.now()) - startedAt,
       ok: true,
-      errorMessage: null,
+      errorMessage: pendingReported ? "completed after pending warning" : null,
     });
     return payload;
   }
@@ -796,6 +845,14 @@ export function createWsClientModule(deps) {
     try {
       lastEventId = Number(localStorageRef.getItem(LAST_EVENT_ID_KEY) || 0) || 0;
     } catch {}
+    const payload = subscribePayload(lastEventId);
+    if (state.wsSubscribedEvents === true && subscriptionPayloadMatchesState(state, payload)) {
+      pushLiveDebugEvent("ws.subscribe:skip_unchanged", {
+        workspace: String(payload.workspace || "windows"),
+        workspaces: Array.isArray(payload.workspaces) ? payload.workspaces.slice() : [],
+      });
+      return false;
+    }
     sendSubscribeEvents(lastEventId);
     return true;
   }

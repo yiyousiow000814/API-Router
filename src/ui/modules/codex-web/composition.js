@@ -47,6 +47,12 @@ export function createCodexWebComposition(deps) {
     upsertProvisionalThreadItem: (...args) => upsertProvisionalThreadItem(...args),
     recordWebTransportEvent: deps.recordWebTransportEvent,
     recordApiResult: deps.recordApiResult,
+    recordApiPending: ({ command, elapsedMs, fields } = {}) =>
+      deps.recordLocalTask?.({
+        command: `pending ${String(command || "").trim()}`.trim(),
+        elapsedMs,
+        fields,
+      }),
     LAST_EVENT_ID_KEY: deps.LAST_EVENT_ID_KEY,
     transportMode: deps.transportMode,
   });

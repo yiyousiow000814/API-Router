@@ -54,6 +54,76 @@ describe("wsClient", () => {
     expect(subscriptionIncludesWorkspace("all", "windows")).toBe(true);
   });
 
+  it("skips unchanged dual-workspace event subscriptions", () => {
+    const sent = [];
+    class TestWebSocket {
+      static OPEN = 1;
+    }
+    const state = {
+      token: "",
+      ws: {
+        readyState: TestWebSocket.OPEN,
+        send(value) {
+          sent.push(JSON.parse(value));
+        },
+      },
+      wsReqHandlers: new Map(),
+      pendingApprovals: [],
+      pendingUserInputs: [],
+      wsLastEventId: 0,
+      wsRecentEventIds: new Set(),
+      wsSubscribedEvents: true,
+      wsRequestedWorkspaceTarget: "all",
+      wsRequestedWorkspaceTargets: ["windows", "wsl2"],
+      wsSubscribedWorkspaceTarget: "all",
+      wsSubscribedWorkspaceTargets: ["windows", "wsl2"],
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      workspaceTarget: "wsl2",
+    };
+    const module = createWsClientModule({
+      state,
+      setStatus() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh() {},
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { getItem() { return "0"; }, setItem() {} },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: TestWebSocket,
+      fetchRef: async () => ({ ok: true, json: async () => ({}) }),
+    });
+
+    expect(module.syncEventSubscription()).toBe(false);
+    expect(sent).toEqual([]);
+  });
+
   it("prefers structured api errors", () => {
     expect(resolveApiErrorMessage({ error: { detail: "boom" } }, 500)).toBe("boom");
     expect(resolveApiErrorMessage({}, 404)).toBe("HTTP 404");
@@ -213,6 +283,103 @@ describe("wsClient", () => {
         elapsedMs: 41,
         ok: true,
         errorMessage: null,
+      },
+    ]);
+  });
+
+  it("reports codex api requests while they are still pending", async () => {
+    const pendingResults = [];
+    const transportEvents = [];
+    let pendingTimer = null;
+    let now = 1000;
+    let resolveFetch;
+    const module = createWsClientModule({
+      state: {
+        token: "",
+        ws: null,
+        wsReqHandlers: new Map(),
+        pendingApprovals: [],
+        pendingUserInputs: [],
+        wsLastEventId: 0,
+        wsRecentEventIds: new Set(),
+        wsSubscribedEvents: false,
+      },
+      setStatus() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh() {},
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      recordApiPending(result) {
+        pendingResults.push(result);
+      },
+      recordWebTransportEvent(kind, detail) {
+        transportEvents.push({ kind, detail });
+      },
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "0"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: class {},
+      fetchRef: () =>
+        new Promise((resolve) => {
+          resolveFetch = resolve;
+        }),
+      nowRef: () => now,
+      setTimeoutRef(fn) {
+        pendingTimer = fn;
+        return 1;
+      },
+      clearTimeoutRef() {
+        pendingTimer = null;
+      },
+      API_PENDING_AFTER_MS: 3000,
+    });
+
+    const request = module.api("/codex/threads?workspace=windows");
+    now = 4300;
+    pendingTimer();
+    resolveFetch({ ok: true, json: async () => ({ ok: true }) });
+    await expect(request).resolves.toEqual({ ok: true });
+
+    expect(pendingResults).toEqual([
+      {
+        command: "GET /codex/threads?workspace=windows",
+        elapsedMs: 3300,
+        fields: {
+          path: "/codex/threads?workspace=windows",
+          method: "GET",
+        },
+      },
+    ]);
+    expect(transportEvents).toEqual([
+      {
+        kind: "api_request_pending",
+        detail: "GET /codex/threads?workspace=windows pending 3300ms",
       },
     ]);
   });
