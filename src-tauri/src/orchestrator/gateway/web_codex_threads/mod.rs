@@ -813,6 +813,26 @@ async fn ensure_workspace_index_fresh(target: WorkspaceTarget, force: bool) {
         }
     }
 
+    if target == WorkspaceTarget::Wsl2 {
+        let wait_started = std::time::Instant::now();
+        loop {
+            let should_wait = {
+                let index = lock_threads_workspace_index();
+                let bucket = workspace_bucket_ref(&index, target);
+                bucket.items.is_empty()
+                    && bucket.refreshing
+                    && !bucket_refresh_is_stuck(bucket, current_unix_secs())
+            };
+            if !should_wait
+                || wait_started.elapsed()
+                    >= std::time::Duration::from_millis(THREADS_FORCE_WAIT_MAX_MS)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
     let now = current_unix_secs();
     enum Action {
         None,

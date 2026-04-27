@@ -41,6 +41,10 @@ const BRIDGE_LOG_PATH: &str = "/tmp/api-router-wsl-codex-bridge.log";
 static BRIDGES: OnceLock<Mutex<HashMap<String, std::sync::Arc<Mutex<BridgeRuntime>>>>> =
     OnceLock::new();
 
+#[cfg(target_os = "windows")]
+static BRIDGE_START_LOCKS: OnceLock<Mutex<HashMap<String, std::sync::Arc<Mutex<()>>>>> =
+    OnceLock::new();
+
 #[cfg(all(test, target_os = "windows"))]
 type TestRpcHandler =
     std::sync::Arc<dyn Fn(Option<&str>, &str, Value) -> Result<Value, String> + Send + Sync>;
@@ -93,6 +97,20 @@ impl BridgeRuntime {
 #[cfg(target_os = "windows")]
 fn bridge_map() -> &'static Mutex<HashMap<String, std::sync::Arc<Mutex<BridgeRuntime>>>> {
     BRIDGES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(target_os = "windows")]
+fn bridge_start_lock_map() -> &'static Mutex<HashMap<String, std::sync::Arc<Mutex<()>>>> {
+    BRIDGE_START_LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(target_os = "windows")]
+async fn bridge_start_lock_for_key(key: &str) -> std::sync::Arc<Mutex<()>> {
+    let mut guard = bridge_start_lock_map().lock().await;
+    guard
+        .entry(key.to_string())
+        .or_insert_with(|| std::sync::Arc::new(Mutex::new(())))
+        .clone()
 }
 
 #[cfg(any(test, target_os = "windows"))]
@@ -1094,6 +1112,37 @@ async fn ensure_bridge(target: &BridgeTarget) -> Result<BridgeEndpoint, String> 
             continue;
         }
 
+        let start_lock = bridge_start_lock_for_key(&key).await;
+        let _start_guard = start_lock.lock().await;
+
+        let existing = {
+            let guard = lock.lock().await;
+            guard.get(&key).cloned()
+        };
+        if let Some(runtime) = existing {
+            let (dead, endpoint) = {
+                let mut rt = runtime.lock().await;
+                let dead = rt.is_dead().unwrap_or(true);
+                let endpoint = rt.endpoint.clone();
+                (dead, endpoint)
+            };
+            if !dead
+                && healthcheck(&endpoint.base_url, &endpoint.client)
+                    .await
+                    .unwrap_or(false)
+            {
+                return Ok(endpoint);
+            }
+            let mut guard = lock.lock().await;
+            if guard
+                .get(&key)
+                .is_some_and(|current| std::sync::Arc::ptr_eq(current, &runtime))
+            {
+                guard.remove(&key);
+            }
+            continue;
+        }
+
         let runtime = start_bridge(target).await?;
         let runtime_arc = std::sync::Arc::new(Mutex::new(runtime));
         let mut guard = lock.lock().await;
@@ -1324,6 +1373,21 @@ mod tests {
         assert!(script.contains("fuser -k \"${port}/tcp\""));
         assert!(script.contains("ss -ltnp \"sport = :${port}\""));
         assert!(!script.contains("pkill"));
+    }
+
+    #[tokio::test]
+    async fn bridge_start_locks_are_key_scoped() {
+        let first = bridge_start_lock_for_key("Ubuntu").await;
+        let second = bridge_start_lock_for_key("Ubuntu").await;
+        let other = bridge_start_lock_for_key("Debian").await;
+
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert!(!std::sync::Arc::ptr_eq(&first, &other));
+
+        let held = first.try_lock().expect("first lock should be available");
+        assert!(second.try_lock().is_err());
+        drop(held);
+        assert!(second.try_lock().is_ok());
     }
 
     #[test]

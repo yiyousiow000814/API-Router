@@ -15,6 +15,7 @@ use tokio::process::Command;
 const THREADS_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
 const THREADS_MAX_ITEMS: usize = 600;
 const WSL_SCAN_TIMEOUT_SECS: u64 = 5;
+const LOADED_THREAD_OVERLAY_TIMEOUT_MS: u64 = 750;
 const LOADED_THREAD_OVERLAY_MAX_ITEMS: usize = 48;
 const VISIBLE_SESSION_SOURCES: &[&str] = &["cli", "vscode", "exec"];
 
@@ -81,9 +82,14 @@ pub(super) async fn rebuild_workspace_thread_items(
 
 async fn overlay_loaded_thread_runtime(target: WorkspaceTarget, items: &mut Vec<Value>) {
     let manager = CodexSessionManager::new(Some(target));
-    let loaded_ids = match manager.loaded_thread_ids().await {
-        Ok(ids) => ids,
-        Err(_) => return,
+    let loaded_ids = match tokio::time::timeout(
+        std::time::Duration::from_millis(LOADED_THREAD_OVERLAY_TIMEOUT_MS),
+        manager.loaded_thread_ids(),
+    )
+    .await
+    {
+        Ok(Ok(ids)) => ids,
+        Ok(Err(_)) | Err(_) => return,
     };
     if loaded_ids.is_empty() {
         return;
@@ -705,7 +711,15 @@ fn parse_wsl_thread_scan_output(text: &str) -> Result<Vec<Value>, String> {
     if trimmed.is_empty() {
         return Ok(Vec::new());
     }
-    serde_json::from_str::<Vec<Value>>(trimmed)
+    let json_text = if trimmed.starts_with('[') {
+        trimmed
+    } else {
+        let start = trimmed
+            .find('[')
+            .ok_or_else(|| "invalid WSL thread scan JSON: missing array".to_string())?;
+        &trimmed[start..]
+    };
+    serde_json::from_str::<Vec<Value>>(json_text)
         .map_err(|err| format!("invalid WSL thread scan JSON: {err}"))
 }
 
@@ -1492,6 +1506,17 @@ mod tests {
 
         assert!(files.contains(&recent));
         assert!(!files.contains(&old));
+    }
+
+    #[test]
+    fn parses_wsl_thread_scan_output_with_wsl_stdout_noise() {
+        let items = parse_wsl_thread_scan_output(
+            "your 131072x1 screen size is bogus. expect trouble\n[{\"id\":\"thread-1\"}]\n",
+        )
+        .expect("parse noisy WSL output");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["id"], "thread-1");
     }
 
     #[test]
