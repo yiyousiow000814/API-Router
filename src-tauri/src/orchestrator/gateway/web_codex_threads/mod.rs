@@ -17,6 +17,7 @@ use self::source::{
 
 const THREADS_INDEX_STALE_SECS: i64 = 15;
 const THREADS_REFRESH_STUCK_SECS: i64 = 12;
+const THREADS_REFRESH_FAILURE_BACKOFF_SECS: i64 = 15;
 const THREADS_FORCE_WAIT_MAX_MS: u64 = 1500;
 
 #[derive(Default)]
@@ -25,6 +26,7 @@ struct WorkspaceThreadsBucket {
     updated_at_unix_secs: i64,
     refreshing: bool,
     refresh_started_at_unix_secs: i64,
+    last_failed_at_unix_secs: i64,
     last_rebuild_ms: i64,
     revision: u64,
 }
@@ -58,6 +60,7 @@ pub(super) struct ThreadListSnapshot {
     pub(super) items: Vec<Value>,
     pub(super) cache_hit: bool,
     pub(super) rebuild_ms: i64,
+    pub(super) refreshing: bool,
 }
 
 #[derive(Clone)]
@@ -494,6 +497,15 @@ fn bucket_refresh_is_stuck(bucket: &WorkspaceThreadsBucket, now_unix_secs: i64) 
                 >= THREADS_REFRESH_STUCK_SECS)
 }
 
+fn bucket_refresh_failure_backoff_active(
+    bucket: &WorkspaceThreadsBucket,
+    now_unix_secs: i64,
+) -> bool {
+    bucket.last_failed_at_unix_secs > 0
+        && now_unix_secs.saturating_sub(bucket.last_failed_at_unix_secs)
+            < THREADS_REFRESH_FAILURE_BACKOFF_SECS
+}
+
 pub(super) fn invalidate_thread_list_cache_all() {
     let mut index = lock_threads_workspace_index();
     index.windows = WorkspaceThreadsBucket::default();
@@ -671,7 +683,10 @@ pub(crate) fn cached_threads_snapshot_stale_while_revalidate() -> CachedThreadIn
             let has_items = !bucket.items.is_empty();
             let stale = now.saturating_sub(bucket.updated_at_unix_secs) >= THREADS_INDEX_STALE_SECS;
             let has_missing_rollout = has_missing_session_rollout_path(&bucket.items);
-            if (!has_items || stale || has_missing_rollout) && !bucket.refreshing {
+            if (!has_items || stale || has_missing_rollout)
+                && !bucket.refreshing
+                && !bucket_refresh_failure_backoff_active(bucket, now)
+            {
                 mark_bucket_refreshing(bucket);
                 refresh_targets.push(target);
             }
@@ -708,6 +723,15 @@ pub(super) async fn list_threads_snapshot(
 ) -> ThreadListSnapshot {
     match workspace {
         Some(target) => list_workspace_snapshot(target, force).await,
+        None if !force => {
+            let snapshot = cached_threads_snapshot_stale_while_revalidate();
+            ThreadListSnapshot {
+                items: snapshot.items.as_ref().clone(),
+                cache_hit: snapshot.fresh,
+                rebuild_ms: 0,
+                refreshing: !snapshot.fresh,
+            }
+        }
         None => {
             let (windows, wsl2) = tokio::join!(
                 list_workspace_snapshot(WorkspaceTarget::Windows, force),
@@ -719,6 +743,7 @@ pub(super) async fn list_threads_snapshot(
                 items: merged,
                 cache_hit: windows.cache_hit && wsl2.cache_hit,
                 rebuild_ms: windows.rebuild_ms.max(wsl2.rebuild_ms),
+                refreshing: windows.refreshing || wsl2.refreshing,
             }
         }
     }
@@ -750,6 +775,7 @@ async fn list_workspace_snapshot(target: WorkspaceTarget, force: bool) -> Thread
         items: bucket.items.clone(),
         cache_hit: !force && bucket.updated_at_unix_secs > 0,
         rebuild_ms: bucket.last_rebuild_ms,
+        refreshing: bucket.refreshing,
     }
 }
 
@@ -774,13 +800,16 @@ async fn refresh_workspace_thread_index(target: WorkspaceTarget) {
             }
             bucket.items = next_items;
             bucket.updated_at_unix_secs = current_unix_secs();
+            bucket.last_failed_at_unix_secs = 0;
             log_thread_index_rebuild_delta(target, &previous_items, &bucket.items, rebuild_ms);
         }
         Ok(Err(err)) => {
             log::warn!("failed to rebuild {:?} Codex thread index: {err}", target);
+            bucket.last_failed_at_unix_secs = current_unix_secs();
         }
         Err(_) => {
             log::warn!("timed out rebuilding {:?} Codex thread index", target);
+            bucket.last_failed_at_unix_secs = current_unix_secs();
         }
     }
     clear_bucket_refreshing(bucket);
@@ -813,26 +842,6 @@ async fn ensure_workspace_index_fresh(target: WorkspaceTarget, force: bool) {
         }
     }
 
-    if target == WorkspaceTarget::Wsl2 {
-        let wait_started = std::time::Instant::now();
-        loop {
-            let should_wait = {
-                let index = lock_threads_workspace_index();
-                let bucket = workspace_bucket_ref(&index, target);
-                bucket.items.is_empty()
-                    && bucket.refreshing
-                    && !bucket_refresh_is_stuck(bucket, current_unix_secs())
-            };
-            if !should_wait
-                || wait_started.elapsed()
-                    >= std::time::Duration::from_millis(THREADS_FORCE_WAIT_MAX_MS)
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    }
-
     let now = current_unix_secs();
     enum Action {
         None,
@@ -848,10 +857,15 @@ async fn ensure_workspace_index_fresh(target: WorkspaceTarget, force: bool) {
         let has_items = !bucket.items.is_empty();
         let stale = now.saturating_sub(bucket.updated_at_unix_secs) >= THREADS_INDEX_STALE_SECS;
         let has_missing_rollout = has_missing_session_rollout_path(&bucket.items);
-        if (!has_items || has_missing_rollout) && !bucket.refreshing {
+        let in_failure_backoff = bucket_refresh_failure_backoff_active(bucket, now);
+        if (!has_items || has_missing_rollout) && !bucket.refreshing && !in_failure_backoff {
             mark_bucket_refreshing(bucket);
-            Action::SyncRefresh
-        } else if stale && !bucket.refreshing {
+            if target == WorkspaceTarget::Wsl2 {
+                Action::AsyncRefresh
+            } else {
+                Action::SyncRefresh
+            }
+        } else if stale && !bucket.refreshing && !in_failure_backoff {
             mark_bucket_refreshing(bucket);
             Action::AsyncRefresh
         } else {
@@ -1663,6 +1677,89 @@ mod tests {
         assert!(
             !bucket.refreshing,
             "stale refresh lock should be cleared after rebuild"
+        );
+    }
+
+    #[tokio::test]
+    async fn merged_thread_snapshot_does_not_wait_for_wsl_refreshing_empty_bucket() {
+        let _test_guard = codex_app_server::lock_test_globals();
+        invalidate_thread_list_cache_all();
+        upsert_thread_item_hint(
+            WorkspaceTarget::Windows,
+            serde_json::json!({
+                "id": "thread-win",
+                "workspace": "windows",
+                "source": "session-index",
+                "updatedAt": 1742331000
+            }),
+        );
+        {
+            let mut index = lock_threads_workspace_index();
+            let bucket = workspace_bucket_mut(&mut index, WorkspaceTarget::Wsl2);
+            bucket.items.clear();
+            bucket.refreshing = true;
+            bucket.refresh_started_at_unix_secs = super::current_unix_secs();
+        }
+
+        let snapshot = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            list_threads_snapshot(None, false),
+        )
+        .await
+        .expect("merged snapshot should not wait for WSL2 background refresh");
+
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(
+            snapshot.items[0].get("id").and_then(Value::as_str),
+            Some("thread-win")
+        );
+    }
+
+    #[tokio::test]
+    async fn wsl2_thread_snapshot_does_not_wait_for_existing_background_refresh() {
+        let _test_guard = codex_app_server::lock_test_globals();
+        invalidate_thread_list_cache_all();
+        {
+            let mut index = lock_threads_workspace_index();
+            let bucket = workspace_bucket_mut(&mut index, WorkspaceTarget::Wsl2);
+            bucket.items.clear();
+            bucket.refreshing = true;
+            bucket.refresh_started_at_unix_secs = super::current_unix_secs();
+        }
+
+        let snapshot = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            list_threads_snapshot(Some(WorkspaceTarget::Wsl2), false),
+        )
+        .await
+        .expect("WSL2 snapshot should return cache while refresh runs in background");
+
+        assert!(snapshot.items.is_empty());
+        let index = lock_threads_workspace_index();
+        let bucket = workspace_bucket_ref(&index, WorkspaceTarget::Wsl2);
+        assert!(bucket.refreshing);
+    }
+
+    #[test]
+    fn cached_thread_snapshot_respects_wsl2_failure_backoff() {
+        let _test_guard = codex_app_server::lock_test_globals();
+        invalidate_thread_list_cache_all();
+        {
+            let mut index = lock_threads_workspace_index();
+            let bucket = workspace_bucket_mut(&mut index, WorkspaceTarget::Wsl2);
+            bucket.items.clear();
+            bucket.refreshing = false;
+            bucket.last_failed_at_unix_secs = super::current_unix_secs();
+        }
+
+        let snapshot = super::cached_threads_snapshot_stale_while_revalidate();
+
+        assert!(snapshot.items.is_empty());
+        let index = lock_threads_workspace_index();
+        let bucket = workspace_bucket_ref(&index, WorkspaceTarget::Wsl2);
+        assert!(
+            !bucket.refreshing,
+            "recent WSL2 failure should not immediately start another refresh"
         );
     }
 }

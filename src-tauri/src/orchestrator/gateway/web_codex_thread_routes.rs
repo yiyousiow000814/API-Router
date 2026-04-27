@@ -113,6 +113,10 @@ fn workspace_option_for_item(item: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+fn workspace_label_is_wsl2(value: &str) -> bool {
+    value.trim().eq_ignore_ascii_case("wsl2")
+}
+
 fn worktree_probe_request_for_item(
     item: &Value,
     workspace_hint: Option<&str>,
@@ -131,6 +135,13 @@ fn worktree_probe_request_for_item(
         .filter(|value| !value.trim().is_empty())
         .map(str::to_string)
         .or_else(|| workspace_option_for_item(item));
+    if workspace
+        .as_deref()
+        .map(workspace_label_is_wsl2)
+        .unwrap_or(false)
+    {
+        return None;
+    }
     Some((workspace, cwd))
 }
 
@@ -571,6 +582,7 @@ pub(super) async fn codex_threads_list(
         json!({
             "workspace": workspace_meta,
             "cacheHit": snapshot.cache_hit,
+            "refreshing": snapshot.refreshing,
             "source": "session-index",
             "rebuildMs": snapshot.rebuild_ms,
             "totalMs": total_ms
@@ -1240,11 +1252,17 @@ mod tests {
 
         assert_eq!(
             requests,
-            vec![
-                (Some("windows".to_string()), "C:\\repo-a".to_string()),
-                (Some("wsl2".to_string()), "/repo-b".to_string()),
-            ]
+            vec![(Some("windows".to_string()), "C:\\repo-a".to_string())]
         );
+    }
+
+    #[test]
+    fn collect_worktree_probe_requests_skips_wsl2_without_explicit_workspace_hint() {
+        let items = vec![json!({ "workspace": "wsl2", "cwd": "/repo-b" })];
+
+        let requests = collect_worktree_probe_requests(&items, None);
+
+        assert!(requests.is_empty());
     }
 
     #[test]
@@ -1254,12 +1272,21 @@ mod tests {
             json!({ "workspace": "wsl2", "cwd": "C:\\repo-a" }),
         ];
 
-        let requests = collect_worktree_probe_requests(&items, Some("wsl2"));
+        let requests = collect_worktree_probe_requests(&items, Some("windows"));
 
         assert_eq!(
             requests,
-            vec![(Some("wsl2".to_string()), "C:\\repo-a".to_string())]
+            vec![(Some("windows".to_string()), "C:\\repo-a".to_string())]
         );
+    }
+
+    #[test]
+    fn collect_worktree_probe_requests_skips_wsl2_even_with_explicit_workspace_hint() {
+        let items = vec![json!({ "workspace": "wsl2", "cwd": "/repo-b" })];
+
+        let requests = collect_worktree_probe_requests(&items, Some("wsl2"));
+
+        assert!(requests.is_empty());
     }
 
     #[test]

@@ -148,4 +148,70 @@ describe("threadListRefresh", () => {
     expect(rendered).toEqual([["thread-live"]]);
     expect(persisted).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps stale WSL2 threads when backend refresh is still pending", async () => {
+    const rendered = [];
+    const persisted = vi.fn();
+    const previous = [{ id: "thread-wsl", workspace: "wsl2", cwd: "/home/yiyou/repo", updatedAt: 1742340000 }];
+    const state = {
+      threadItemsAll: previous,
+      threadItems: previous,
+      threadItemsByWorkspace: { windows: [], wsl2: previous },
+      threadWorkspaceHydratedByWorkspace: { windows: false, wsl2: true },
+      threadRefreshAbortByWorkspace: { windows: null, wsl2: null },
+      threadRefreshReqSeqByWorkspace: { windows: 0, wsl2: 0 },
+      threadListRenderSigByWorkspace: { windows: "", wsl2: "thread-wsl" },
+      threadListDeferredRenderTimerByWorkspace: { windows: 0, wsl2: 0 },
+      threadListAnimationHoldUntilByWorkspace: { windows: 0, wsl2: 0 },
+      threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+      workspaceAvailability: { windowsInstalled: false, wsl2Installed: true },
+    };
+    const listNode = {
+      isConnected: true,
+      querySelector: () => ({ nodeType: 1 }),
+      closest: () => null,
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 320, bottom: 480, width: 320, height: 480 }),
+    };
+    const module = createThreadListRefreshModule({
+      state,
+      byId: (id) => (id === "threadList" ? listNode : null),
+      windowRef: { getComputedStyle: () => ({ display: "block", visibility: "visible" }), innerWidth: 1280, innerHeight: 720 },
+      documentRef: {
+        documentElement: { clientWidth: 1280, clientHeight: 720 },
+        body: { classList: { contains: () => false } },
+      },
+      api: vi.fn(async () => ({
+        items: { data: [], nextCursor: null },
+        meta: { workspace: "wsl2", cacheHit: false, refreshing: true, totalMs: 0, rebuildMs: 0 },
+      })),
+      ensureArrayItems: (value) => (Array.isArray(value?.data) ? value.data : Array.isArray(value) ? value : []),
+      normalizeWorkspaceTarget: (value) => (value === "wsl2" ? "wsl2" : "windows"),
+      getWorkspaceTarget: () => "wsl2",
+      getStartCwdForWorkspace: () => "",
+      sortThreadsByNewest: (items) => items,
+      filterThreadsForWorkspace: (items) => items,
+      hasDualWorkspaceTargets: () => true,
+      detectWorkspaceAvailabilityFromThreads: () => ({
+        windowsInstalled: false,
+        wsl2Installed: true,
+      }),
+      buildThreadRenderSig: (items) => items.map((item) => item.id).join("|"),
+      persistThreadsCache: persisted,
+      syncActiveThreadMetaFromList: vi.fn(),
+      updateHeaderUi: vi.fn(),
+      pushThreadAnimDebug: vi.fn(),
+      renderThreads: (items) => rendered.push(items.map((entry) => entry.id)),
+      applyWorkspaceUi: vi.fn(),
+      setStatus: vi.fn(),
+      THREAD_FORCE_REFRESH_MIN_INTERVAL_MS: 1800,
+    });
+
+    await module.refreshThreads("wsl2", { silent: true });
+
+    expect(state.threadItemsByWorkspace.wsl2).toBe(previous);
+    expect(state.threadItemsAll).toEqual(previous);
+    expect(state.threadItems.map((item) => item.id)).toEqual(["thread-wsl"]);
+    expect(persisted).not.toHaveBeenCalled();
+    expect(rendered).toEqual([["thread-wsl"]]);
+  });
 });

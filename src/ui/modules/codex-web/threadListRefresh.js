@@ -214,6 +214,21 @@ export function createThreadListRefreshModule(deps) {
           __workspaceQueryTarget: target,
         };
       });
+      const refreshPendingWithEmptyResult =
+        !force && !!meta?.refreshing && items.length === 0 && previousItems.length > 0;
+      if (refreshPendingWithEmptyResult) {
+        pushThreadAnimDebug("refreshThreads:keepStaleWhileRefreshing", {
+          target,
+          previousCount: previousItems.length,
+        });
+        state.threadWorkspaceHydratedByWorkspace[target] = true;
+        if (getWorkspaceTarget() === target) {
+          state.threadItemsAll = previousItems;
+          applyThreadFilter();
+          updateHeaderUi();
+        }
+        return;
+      }
       const nextSig = buildThreadRenderSig(items);
       const nextNewThreadIdSet = new Set();
       for (const item of items) {
