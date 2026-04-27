@@ -145,6 +145,8 @@ struct UiWatchdogDiagnosticsMeta {
     last_frontend_error_log_unix_ms: u64,
     last_invoke_slow_log_unix_ms: u64,
     last_invoke_error_log_unix_ms: u64,
+    last_invoke_slow_log_by_command: HashMap<String, u64>,
+    last_invoke_error_log_by_command: HashMap<String, u64>,
 }
 
 impl UiWatchdogState {
@@ -602,13 +604,21 @@ impl UiWatchdogState {
                 now_unix_ms,
             );
             let mut diagnostics = self.diagnostics_meta.lock();
-            if diagnostics.last_invoke_error_log_unix_ms > 0
-                && now_unix_ms.saturating_sub(diagnostics.last_invoke_error_log_unix_ms)
+            let command_logged_at = diagnostics
+                .last_invoke_error_log_by_command
+                .get(command)
+                .copied()
+                .unwrap_or(0);
+            if command_logged_at > 0
+                && now_unix_ms.saturating_sub(command_logged_at)
                     < UI_WATCHDOG_INVOKE_LOG_COOLDOWN_MS
             {
                 return;
             }
             diagnostics.last_invoke_error_log_unix_ms = now_unix_ms;
+            diagnostics
+                .last_invoke_error_log_by_command
+                .insert(command.to_string(), now_unix_ms);
             let diagnostics_snapshot = diagnostics.clone();
             drop(diagnostics);
             let traces = self.trace_snapshot();
@@ -633,13 +643,20 @@ impl UiWatchdogState {
             return;
         }
         let mut diagnostics = self.diagnostics_meta.lock();
-        if diagnostics.last_invoke_slow_log_unix_ms > 0
-            && now_unix_ms.saturating_sub(diagnostics.last_invoke_slow_log_unix_ms)
-                < UI_WATCHDOG_INVOKE_LOG_COOLDOWN_MS
+        let command_logged_at = diagnostics
+            .last_invoke_slow_log_by_command
+            .get(command)
+            .copied()
+            .unwrap_or(0);
+        if command_logged_at > 0
+            && now_unix_ms.saturating_sub(command_logged_at) < UI_WATCHDOG_INVOKE_LOG_COOLDOWN_MS
         {
             return;
         }
         diagnostics.last_invoke_slow_log_unix_ms = now_unix_ms;
+        diagnostics
+            .last_invoke_slow_log_by_command
+            .insert(command.to_string(), now_unix_ms);
         let diagnostics_snapshot = diagnostics.clone();
         drop(diagnostics);
         let traces = self.trace_snapshot();
@@ -1207,7 +1224,8 @@ fn should_prune_placeholder_provider(cfg: &AppConfig, secrets: &SecretStore, nam
 mod tests {
     use super::{
         build_state, disable_expired_package_providers, load_or_init_config,
-        run_startup_gateway_token_sync, UiWatchdogPageState, UiWatchdogRuntime, UiWatchdogState,
+        run_startup_gateway_token_sync, UiWatchdogInvokeResult, UiWatchdogPageState,
+        UiWatchdogRuntime, UiWatchdogState,
     };
     use crate::orchestrator::config::AppConfig;
     use serde_json::json;
@@ -1689,6 +1707,53 @@ mod tests {
             .filter_map(|entry| entry.ok())
             .count();
         assert!(dump_count >= 2);
+    }
+
+    #[test]
+    fn ui_watchdog_slow_invoke_cooldown_is_per_command() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+
+        let state = build_state(config_path, data_dir).expect("build state");
+        let watchdog = UiWatchdogState::default();
+
+        for (command, now_unix_ms) in [
+            ("GET /codex/threads?workspace=wsl2", 10_000),
+            ("GET /codex/version-info", 10_500),
+            ("GET /codex/threads?workspace=wsl2", 11_000),
+        ] {
+            watchdog.record_invoke_result(
+                UiWatchdogRuntime {
+                    store: &state.gateway.store,
+                    diagnostics_dir: &state.diagnostics_dir,
+                },
+                UiWatchdogInvokeResult {
+                    command,
+                    elapsed_ms: 2_500,
+                    ok: true,
+                    error_message: None,
+                },
+                UiWatchdogPageState {
+                    active_page: "codex-web",
+                    visible: true,
+                },
+                now_unix_ms,
+            );
+        }
+
+        let dump_count = std::fs::read_dir(&state.diagnostics_dir)
+            .expect("diagnostics dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.contains("slow-invoke"))
+            })
+            .count();
+        assert_eq!(dump_count, 2);
     }
 
     #[test]

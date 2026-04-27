@@ -4,6 +4,7 @@ const DEFAULT_BATCH_DELAY_MS = 750;
 const DEFAULT_LONG_TASK_THRESHOLD_MS = 1000;
 const DEFAULT_FRAME_STALL_THRESHOLD_MS = 180;
 const DEFAULT_INTERACTION_SAMPLE_COOLDOWN_MS = 600;
+const DEFAULT_INTERACTION_MONITOR_WINDOW_MS = 8000;
 
 export function normalizeCodexWebActivePage(state) {
   const tab = String(state?.activeMainTab || "").trim();
@@ -46,6 +47,7 @@ export function createCodexWebDiagnostics(deps) {
     longTaskThresholdMs = DEFAULT_LONG_TASK_THRESHOLD_MS,
     frameStallThresholdMs = DEFAULT_FRAME_STALL_THRESHOLD_MS,
     interactionSampleCooldownMs = DEFAULT_INTERACTION_SAMPLE_COOLDOWN_MS,
+    interactionMonitorWindowMs = DEFAULT_INTERACTION_MONITOR_WINDOW_MS,
   } = deps || {};
 
   const queue = {
@@ -59,6 +61,8 @@ export function createCodexWebDiagnostics(deps) {
   let flushTimer = 0;
   let heartbeatTimer = 0;
   let startupFrameMonitorUntil = 0;
+  let interactionFrameMonitorUntil = 0;
+  let interactionFrameMonitorScheduled = false;
   let lastInteractionSampleAt = 0;
 
   function activePage() {
@@ -200,18 +204,37 @@ export function createCodexWebDiagnostics(deps) {
     requestAnimationFrameRef(tick);
   }
 
+  function startInteractionFrameMonitor() {
+    if (!requestAnimationFrameRef || interactionFrameMonitorScheduled) return;
+    interactionFrameMonitorScheduled = true;
+    let lastFrameAt = nowRef();
+    const tick = () => {
+      const now = nowRef();
+      const elapsedMs = now - lastFrameAt;
+      lastFrameAt = now;
+      if (now <= interactionFrameMonitorUntil && visible()) {
+        recordFrameStall(elapsedMs, "interaction");
+        requestAnimationFrameRef(tick);
+        return;
+      }
+      interactionFrameMonitorScheduled = false;
+    };
+    requestAnimationFrameRef(tick);
+  }
+
   function installInteractionFrameMonitor() {
     if (!windowRef || !requestAnimationFrameRef) return;
     const handler = () => {
       const now = nowRef();
       if (now - lastInteractionSampleAt < interactionSampleCooldownMs) return;
       lastInteractionSampleAt = now;
-      const startedAt = nowRef();
-      requestAnimationFrameRef(() => {
-        recordFrameStall(nowRef() - startedAt, "interaction");
-      });
+      interactionFrameMonitorUntil = Math.max(
+        interactionFrameMonitorUntil,
+        now + interactionMonitorWindowMs
+      );
+      startInteractionFrameMonitor();
     };
-    for (const eventName of ["click", "keydown", "pointerup", "touchend"]) {
+    for (const eventName of ["pointerdown", "keydown", "wheel", "touchstart"]) {
       windowRef.addEventListener?.(eventName, handler, { passive: true });
     }
   }
