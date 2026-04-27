@@ -778,6 +778,18 @@ def refresh_server(codex_home):
     if server is not None:
         server.stop()
 
+def bridge_local_rpc_result(method, params):
+    normalized = str(method or "").strip()
+    if normalized in (
+        "bridge/approvals/list",
+        "approvals/list",
+        "bridge/userInput/list",
+        "userInput/list",
+        "request_user_input/list",
+    ):
+        return []
+    return None
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ApiRouterWslCodexBridge/1.0"
 
@@ -795,7 +807,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/health":
-            self._send(200, {"ok": True, "bridge": "api-router-wsl-codex-bridge", "version": 3})
+            self._send(200, {"ok": True, "bridge": "api-router-wsl-codex-bridge", "version": 4})
             return
         if parsed.path != "/notifications":
             self._send(404, {"error": "not found"})
@@ -841,6 +853,10 @@ class Handler(BaseHTTPRequestHandler):
         params = payload.get("params")
         if not isinstance(params, dict):
             params = {}
+        local_result = bridge_local_rpc_result(method, params)
+        if local_result is not None:
+            self._send(200, {"result": local_result})
+            return
         try:
             result = get_server(codex_home).request(method, params)
         except Exception as exc:
@@ -1402,5 +1418,34 @@ mod tests {
             "bridge": BRIDGE_HEALTH_MARKER,
             "version": BRIDGE_SCRIPT_VERSION - 1,
         })));
+    }
+
+    #[test]
+    fn python_bridge_health_reports_current_script_version() {
+        let expected = format!(r#""version": {BRIDGE_SCRIPT_VERSION}"#);
+
+        assert!(
+            python_bridge_script().contains(&expected),
+            "Python bridge /health response must match BRIDGE_SCRIPT_VERSION"
+        );
+    }
+
+    #[test]
+    fn python_bridge_handles_pending_event_lists_locally() {
+        let script = python_bridge_script();
+
+        for method in [
+            "bridge/approvals/list",
+            "approvals/list",
+            "bridge/userInput/list",
+            "userInput/list",
+            "request_user_input/list",
+        ] {
+            assert!(
+                script.contains(method),
+                "Python bridge should handle {method} without forwarding to app-server"
+            );
+        }
+        assert!(script.contains("bridge_local_rpc_result(method, params)"));
     }
 }
