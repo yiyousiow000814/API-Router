@@ -1087,6 +1087,9 @@ pub(super) fn has_missing_session_rollout_path(items: &[Value]) -> bool {
         if source == "live-notification" {
             return false;
         }
+        if source == "wsl-session-index" {
+            return false;
+        }
         if !is_session_cache_source
             && !is_legacy_cache_shape
             && !looks_like_local_session_rollout(path)
@@ -1362,9 +1365,10 @@ mod tests {
         build_threads_from_session_dir, clear_history_preview_map_cache_for_test,
         clear_session_file_scan_cache_for_test, collect_jsonl_files,
         fetch_windows_threads_from_sessions, filter_auxiliary_threads, find_rollout_path_in_items,
-        merge_items_without_duplicates, overlay_loaded_thread_runtime, parse_history_preview_map,
-        parse_wsl_thread_scan_output, scan_session_file, sort_threads_by_updated_desc,
-        thread_item_should_be_visible, ThreadFilterReason, THREADS_MAX_AGE_SECS,
+        has_missing_session_rollout_path, merge_items_without_duplicates,
+        overlay_loaded_thread_runtime, parse_history_preview_map, parse_wsl_thread_scan_output,
+        scan_session_file, sort_threads_by_updated_desc, thread_item_should_be_visible,
+        ThreadFilterReason, THREADS_MAX_AGE_SECS,
     };
     use crate::codex_app_server;
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
@@ -1958,6 +1962,21 @@ mod tests {
             Some("C:\\temp\\b.jsonl")
         );
         assert!(find_rollout_path_in_items(&items, "missing").is_none());
+    }
+
+    #[test]
+    fn missing_rollout_check_trusts_wsl_session_index_paths() {
+        let items = vec![json!({
+            "id": "thread-wsl",
+            "source": "wsl-session-index",
+            "workspace": "wsl2",
+            "path": r"\\wsl.localhost\Ubuntu\home\yiyou\.codex\sessions\missing.jsonl"
+        })];
+
+        assert!(
+            !has_missing_session_rollout_path(&items),
+            "status polling should not probe WSL UNC rollout paths synchronously"
+        );
     }
 
     #[test]

@@ -847,11 +847,6 @@ fn bridge_health_payload_ok(payload: &Value) -> bool {
 
 #[cfg(any(test, target_os = "windows"))]
 fn build_launch_script(target: &BridgeTarget, port: u16) -> String {
-    let encoded = {
-        use base64::engine::general_purpose::STANDARD;
-        use base64::Engine as _;
-        STANDARD.encode(python_bridge_script())
-    };
     let distro = target.distro.as_deref().unwrap_or_default();
     let mut prefix = String::new();
     if !distro.trim().is_empty() {
@@ -866,10 +861,9 @@ fn build_launch_script(target: &BridgeTarget, port: u16) -> String {
 if [ -z \"$PYTHON_BIN\" ]; then echo 'python3 not found in WSL' >&2; exit 127; fi; \
 export API_ROUTER_WSL_BRIDGE_HOST='0.0.0.0'; \
 export API_ROUTER_WSL_BRIDGE_PORT={port}; \
-exec \"$PYTHON_BIN\" -u -c \"import base64; exec(base64.b64decode('{encoded}').decode('utf-8'))\"",
+exec \"$PYTHON_BIN\" -u -",
         prefix = prefix,
         port = port,
-        encoded = encoded,
         log = shell_single_quote(BRIDGE_LOG_PATH),
     )
 }
@@ -886,11 +880,63 @@ fn build_launch_command(target: &BridgeTarget, port: u16) -> Command {
         .arg("sh")
         .arg("-lc")
         .arg(build_launch_script(target, port));
-    cmd.stdin(Stdio::null());
+    cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::null());
     cmd.stderr(Stdio::null());
     cmd.creation_flags(0x08000000);
     cmd
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn build_clear_stale_bridge_port_script(port: u16) -> String {
+    format!(
+        "port={port}; \
+if command -v fuser >/dev/null 2>&1; then fuser -k \"${{port}}/tcp\" >/dev/null 2>&1 || true; exit 0; fi; \
+if command -v ss >/dev/null 2>&1; then \
+ss -ltnp \"sport = :${{port}}\" 2>/dev/null | sed -n 's/.*pid=\\([0-9][0-9]*\\).*/\\1/p' | xargs -r kill >/dev/null 2>&1 || true; \
+fi"
+    )
+}
+
+#[cfg(target_os = "windows")]
+async fn clear_stale_bridge_port(target: &BridgeTarget, port: u16) {
+    let mut cmd = Command::new("wsl.exe");
+    if let Some(distro) = target.distro.as_deref() {
+        if !distro.trim().is_empty() {
+            cmd.arg("-d").arg(distro);
+        }
+    }
+    cmd.arg("-e")
+        .arg("sh")
+        .arg("-lc")
+        .arg(build_clear_stale_bridge_port_script(port));
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+    cmd.creation_flags(0x08000000);
+    let _ = tokio::time::timeout(Duration::from_secs(2), cmd.output()).await;
+}
+
+#[cfg(target_os = "windows")]
+async fn spawn_bridge_child(
+    target: &BridgeTarget,
+    port: u16,
+) -> Result<tokio::process::Child, String> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut child = build_launch_command(target, port)
+        .spawn()
+        .map_err(|e| format!("failed to launch WSL bridge: {e}"))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "failed to open WSL bridge stdin".to_string())?;
+    stdin
+        .write_all(python_bridge_script().as_bytes())
+        .await
+        .map_err(|e| format!("failed to stream WSL bridge script: {e}"))?;
+    drop(stdin);
+    Ok(child)
 }
 
 #[cfg(target_os = "windows")]
@@ -969,9 +1015,8 @@ async fn start_bridge(target: &BridgeTarget) -> Result<BridgeRuntime, String> {
                 });
             }
 
-            let mut child = build_launch_command(target, port)
-                .spawn()
-                .map_err(|e| format!("failed to launch WSL bridge: {e}"))?;
+            clear_stale_bridge_port(target, port).await;
+            let mut child = spawn_bridge_child(target, port).await?;
             let deadline = tokio::time::Instant::now() + BRIDGE_START_TIMEOUT;
             let mut launch_dead = None;
             while tokio::time::Instant::now() < deadline {
@@ -1252,10 +1297,33 @@ mod tests {
         let script = build_launch_script(&target, 42180);
         assert!(script.contains("command -v python3"));
         assert!(script.contains("exec >>"));
-        assert!(script.contains("exec \"$PYTHON_BIN\" -u -c"));
+        assert!(script.contains("exec \"$PYTHON_BIN\" -u -"));
         assert!(!script.contains("nohup "));
         assert!(script.contains("API_ROUTER_WSL_BRIDGE_HOST='0.0.0.0'"));
         assert!(script.contains(BRIDGE_LOG_PATH));
+    }
+
+    #[test]
+    fn launch_script_stays_short_by_streaming_python_over_stdin() {
+        let target = BridgeTarget {
+            distro: Some("Ubuntu".to_string()),
+            codex_home_linux: Some("/home/me/.codex".to_string()),
+        };
+        let script = build_launch_script(&target, 42180);
+
+        assert!(script.len() < 2048);
+        assert!(!script.contains("base64"));
+        assert!(!script.contains(python_bridge_script()));
+    }
+
+    #[test]
+    fn stale_bridge_port_cleanup_targets_one_tcp_port() {
+        let script = build_clear_stale_bridge_port_script(42250);
+
+        assert!(script.contains("port=42250"));
+        assert!(script.contains("fuser -k \"${port}/tcp\""));
+        assert!(script.contains("ss -ltnp \"sport = :${port}\""));
+        assert!(!script.contains("pkill"));
     }
 
     #[test]
