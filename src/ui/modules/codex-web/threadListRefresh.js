@@ -20,10 +20,12 @@ export function createThreadListRefreshModule(deps) {
     syncActiveThreadMetaFromList,
     updateHeaderUi,
     pushThreadAnimDebug,
+    recordLocalTask = () => {},
     renderThreads,
     applyWorkspaceUi,
     setStatus,
     THREAD_FORCE_REFRESH_MIN_INTERVAL_MS,
+    performanceRef = performance,
   } = deps;
 
   function isThreadListActuallyVisible() {
@@ -89,15 +91,29 @@ export function createThreadListRefreshModule(deps) {
   }
 
   function applyThreadFilter() {
+    const startedAt = performanceRef.now();
     const currentTarget = getWorkspaceTarget();
-    state.threadItems = sortThreadsByNewest(
-      filterThreadsForWorkspace(state.threadItemsAll, {
-        hasDualWorkspaceTargets: hasDualWorkspaceTargets(),
-        currentTarget,
-        startCwd: getStartCwdForWorkspace(currentTarget),
-      })
-    );
-    renderThreads(state.threadItems);
+    const sourceCount = Array.isArray(state.threadItemsAll) ? state.threadItemsAll.length : 0;
+    try {
+      state.threadItems = sortThreadsByNewest(
+        filterThreadsForWorkspace(state.threadItemsAll, {
+          hasDualWorkspaceTargets: hasDualWorkspaceTargets(),
+          currentTarget,
+          startCwd: getStartCwdForWorkspace(currentTarget),
+        })
+      );
+      renderThreads(state.threadItems);
+    } finally {
+      recordLocalTask({
+        command: "thread filter render",
+        elapsedMs: performanceRef.now() - startedAt,
+        fields: {
+          workspace: currentTarget,
+          sourceCount,
+          renderedCount: Array.isArray(state.threadItems) ? state.threadItems.length : 0,
+        },
+      });
+    }
   }
 
   function updateWorkspaceAvailabilityFromThreads(items) {

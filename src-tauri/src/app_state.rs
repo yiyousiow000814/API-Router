@@ -16,9 +16,11 @@ use std::sync::atomic::AtomicU64;
 const UI_WATCHDOG_UNRESPONSIVE_AFTER_MS: u64 = 6_000;
 const UI_WATCHDOG_SLOW_REFRESH_AFTER_MS: u64 = 2_000;
 const UI_WATCHDOG_LONG_TASK_AFTER_MS: u64 = 1_000;
+const UI_WATCHDOG_LOCAL_TASK_AFTER_MS: u64 = 250;
 const UI_WATCHDOG_FRAME_STALL_LOG_COOLDOWN_MS: u64 = 10_000;
 const UI_WATCHDOG_SLOW_REFRESH_LOG_COOLDOWN_MS: u64 = 60_000;
 const UI_WATCHDOG_LONG_TASK_LOG_COOLDOWN_MS: u64 = 60_000;
+const UI_WATCHDOG_LOCAL_TASK_LOG_COOLDOWN_MS: u64 = 10_000;
 const UI_WATCHDOG_INVOKE_LOG_COOLDOWN_MS: u64 = 60_000;
 const UI_WATCHDOG_DUMP_WINDOW_MS: u64 = 60_000;
 const UI_WATCHDOG_TRACE_CAPACITY: usize = 512;
@@ -76,6 +78,12 @@ pub struct UiWatchdogInvokeResult<'a> {
     pub elapsed_ms: u64,
     pub ok: bool,
     pub error_message: Option<&'a str>,
+}
+
+pub struct UiWatchdogLocalTask<'a> {
+    pub command: &'a str,
+    pub elapsed_ms: u64,
+    pub fields: serde_json::Value,
 }
 
 type UiWatchdogDumpWriter =
@@ -143,8 +151,10 @@ struct UiWatchdogDiagnosticsMeta {
     last_long_task_log_unix_ms: u64,
     last_frame_stall_log_unix_ms: u64,
     last_frontend_error_log_unix_ms: u64,
+    last_local_task_log_unix_ms: u64,
     last_invoke_slow_log_unix_ms: u64,
     last_invoke_error_log_unix_ms: u64,
+    last_local_task_log_by_command: HashMap<String, u64>,
     last_invoke_slow_log_by_command: HashMap<String, u64>,
     last_invoke_error_log_by_command: HashMap<String, u64>,
 }
@@ -562,6 +572,64 @@ impl UiWatchdogState {
             now_unix_ms,
             &payload,
         );
+    }
+
+    pub fn record_local_task(
+        &self,
+        runtime: UiWatchdogRuntime<'_>,
+        task: UiWatchdogLocalTask<'_>,
+        page: UiWatchdogPageState<'_>,
+        now_unix_ms: u64,
+    ) {
+        let heartbeat = self.heartbeat_snapshot();
+        let backend_status = self.backend_status_snapshot();
+        let command = task.command.trim();
+        if command.is_empty() {
+            return;
+        }
+        let elapsed_ms = task.elapsed_ms;
+        self.append_trace(
+            "local_task",
+            now_unix_ms,
+            serde_json::json!({
+                "command": command,
+                "elapsed_ms": elapsed_ms,
+                "active_page": page.active_page.trim(),
+                "visible": page.visible,
+                "fields": task.fields,
+            }),
+        );
+        if elapsed_ms < UI_WATCHDOG_LOCAL_TASK_AFTER_MS {
+            return;
+        }
+        let mut diagnostics = self.diagnostics_meta.lock();
+        let command_logged_at = diagnostics
+            .last_local_task_log_by_command
+            .get(command)
+            .copied()
+            .unwrap_or(0);
+        if command_logged_at > 0
+            && now_unix_ms.saturating_sub(command_logged_at)
+                < UI_WATCHDOG_LOCAL_TASK_LOG_COOLDOWN_MS
+        {
+            return;
+        }
+        diagnostics.last_local_task_log_unix_ms = now_unix_ms;
+        diagnostics
+            .last_local_task_log_by_command
+            .insert(command.to_string(), now_unix_ms);
+        let diagnostics_snapshot = diagnostics.clone();
+        drop(diagnostics);
+        let traces = self.trace_snapshot();
+        let payload = Self::build_dump_payload(
+            "local-task",
+            now_unix_ms,
+            &heartbeat,
+            &backend_status,
+            &diagnostics_snapshot,
+            &traces,
+        );
+        self.write_dump(runtime.diagnostics_dir, "local-task", now_unix_ms, &payload);
     }
 
     pub fn record_invoke_result(
@@ -1224,8 +1292,8 @@ fn should_prune_placeholder_provider(cfg: &AppConfig, secrets: &SecretStore, nam
 mod tests {
     use super::{
         build_state, disable_expired_package_providers, load_or_init_config,
-        run_startup_gateway_token_sync, UiWatchdogInvokeResult, UiWatchdogPageState,
-        UiWatchdogRuntime, UiWatchdogState,
+        run_startup_gateway_token_sync, UiWatchdogInvokeResult, UiWatchdogLocalTask,
+        UiWatchdogPageState, UiWatchdogRuntime, UiWatchdogState,
     };
     use crate::orchestrator::config::AppConfig;
     use serde_json::json;
@@ -1751,6 +1819,52 @@ mod tests {
                     .file_name()
                     .to_str()
                     .is_some_and(|name| name.contains("slow-invoke"))
+            })
+            .count();
+        assert_eq!(dump_count, 2);
+    }
+
+    #[test]
+    fn ui_watchdog_local_task_captures_codex_web_jank_per_command() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+
+        let state = build_state(config_path, data_dir).expect("build state");
+        let watchdog = UiWatchdogState::default();
+
+        for (command, elapsed_ms, now_unix_ms) in [
+            ("workspace switch sync", 300, 10_000),
+            ("workspace switch sync", 350, 10_500),
+            ("thread list render", 325, 11_000),
+        ] {
+            watchdog.record_local_task(
+                UiWatchdogRuntime {
+                    store: &state.gateway.store,
+                    diagnostics_dir: &state.diagnostics_dir,
+                },
+                UiWatchdogLocalTask {
+                    command,
+                    elapsed_ms,
+                    fields: json!({ "workspace": "wsl2" }),
+                },
+                UiWatchdogPageState {
+                    active_page: "codex-web",
+                    visible: true,
+                },
+                now_unix_ms,
+            );
+        }
+
+        let dump_count = std::fs::read_dir(&state.diagnostics_dir)
+            .expect("diagnostics dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.contains("local-task"))
             })
             .count();
         assert_eq!(dump_count, 2);

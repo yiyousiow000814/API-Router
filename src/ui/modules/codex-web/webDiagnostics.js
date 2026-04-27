@@ -3,6 +3,7 @@ const DEFAULT_HIDDEN_HEARTBEAT_INTERVAL_MS = 30000;
 const DEFAULT_BATCH_DELAY_MS = 750;
 const DEFAULT_LONG_TASK_THRESHOLD_MS = 1000;
 const DEFAULT_FRAME_STALL_THRESHOLD_MS = 180;
+const DEFAULT_LOCAL_TASK_THRESHOLD_MS = 250;
 const DEFAULT_INTERACTION_SAMPLE_COOLDOWN_MS = 600;
 const DEFAULT_INTERACTION_MONITOR_WINDOW_MS = 8000;
 
@@ -46,6 +47,7 @@ export function createCodexWebDiagnostics(deps) {
     batchDelayMs = DEFAULT_BATCH_DELAY_MS,
     longTaskThresholdMs = DEFAULT_LONG_TASK_THRESHOLD_MS,
     frameStallThresholdMs = DEFAULT_FRAME_STALL_THRESHOLD_MS,
+    localTaskThresholdMs = DEFAULT_LOCAL_TASK_THRESHOLD_MS,
     interactionSampleCooldownMs = DEFAULT_INTERACTION_SAMPLE_COOLDOWN_MS,
     interactionMonitorWindowMs = DEFAULT_INTERACTION_MONITOR_WINDOW_MS,
   } = deps || {};
@@ -53,6 +55,7 @@ export function createCodexWebDiagnostics(deps) {
   const queue = {
     traces: [],
     invokeResults: [],
+    localTasks: [],
     longTasks: [],
     frameStalls: [],
     frontendErrors: [],
@@ -124,6 +127,7 @@ export function createCodexWebDiagnostics(deps) {
       ...extra,
       traces: queue.traces.splice(0, 256),
       invokeResults: queue.invokeResults.splice(0, 256),
+      localTasks: queue.localTasks.splice(0, 128),
       longTasks: queue.longTasks.splice(0, 64),
       frameStalls: queue.frameStalls.splice(0, 64),
       frontendErrors: queue.frontendErrors.splice(0, 64),
@@ -131,6 +135,7 @@ export function createCodexWebDiagnostics(deps) {
     const hasQueued =
       body.traces.length ||
       body.invokeResults.length ||
+      body.localTasks.length ||
       body.longTasks.length ||
       body.frameStalls.length ||
       body.frontendErrors.length ||
@@ -161,6 +166,17 @@ export function createCodexWebDiagnostics(deps) {
     if (!normalizedKind) return;
     enqueue("traces", {
       kind: normalizedKind,
+      fields: fields && typeof fields === "object" ? fields : { value: String(fields || "") },
+    });
+  }
+
+  function recordLocalTask({ command, elapsedMs, fields = {} }) {
+    const route = String(command || "").trim();
+    const durationMs = Math.max(0, Math.round(Number(elapsedMs || 0)));
+    if (!route || durationMs < localTaskThresholdMs) return;
+    enqueue("localTasks", {
+      command: route,
+      elapsedMs: durationMs,
       fields: fields && typeof fields === "object" ? fields : { value: String(fields || "") },
     });
   }
@@ -314,6 +330,7 @@ export function createCodexWebDiagnostics(deps) {
     dispose,
     flush,
     recordApiResult,
+    recordLocalTask,
     recordTrace,
   };
 }

@@ -299,6 +299,7 @@ export function createThreadListViewModule(deps) {
     getWorkspaceTarget,
     hasDualWorkspaceTargets,
     pushThreadAnimDebug,
+    recordLocalTask = () => {},
     isThreadListActuallyVisible,
     workspaceKeyOfThread,
     truncateLabel,
@@ -331,10 +332,15 @@ export function createThreadListViewModule(deps) {
   } = deps;
 
   function renderThreads(items) {
+    const startedAt = performanceRef.now();
+    let sourceItems = Array.isArray(items) ? items : [];
+    let currentWorkspaceKey = "";
+    let groupCount = 0;
+    let renderedThreads = 0;
+    try {
     const list = byId("threadList");
     if (!list) return;
-    const sourceItems = Array.isArray(items) ? items : [];
-    const currentWorkspaceKey = normalizeWorkspaceTarget(getWorkspaceTarget());
+    currentWorkspaceKey = normalizeWorkspaceTarget(getWorkspaceTarget());
     const pendingVisibleAnimation =
       !!state.threadListPendingVisibleAnimationByWorkspace?.[currentWorkspaceKey];
     const listActuallyVisible = isThreadListActuallyVisible();
@@ -543,6 +549,7 @@ export function createThreadListViewModule(deps) {
 
     const query = state.threadSearchQuery.trim().toLowerCase();
     const entries = buildWorkspaceEntries(sourceItems, workspaceKeyOfThread);
+    groupCount = entries.length;
     const staggerGroupEnter = shouldStaggerThreadGroupEnter(entries, state.collapsedWorkspaceKeys);
     let threadEnterIndex = 0;
     let groupEnterIndex = 0;
@@ -596,7 +603,7 @@ export function createThreadListViewModule(deps) {
       state.threadGroupCollapseInitializedByWorkspace[collapseInitKey] = true;
     }
 
-    let renderedThreads = 0;
+    renderedThreads = 0;
     const favoriteSet = state.favoriteThreadIds;
     const favoriteItems = sourceItems.filter((thread) => {
       const id = thread.id || thread.threadId || "";
@@ -918,6 +925,18 @@ export function createThreadListViewModule(deps) {
           const maxTop = Math.max(0, list.scrollHeight - list.clientHeight);
           list.scrollTop = Math.min(prevListScrollTop, maxTop);
         }
+      });
+    }
+    } finally {
+      recordLocalTask({
+        command: "thread list render",
+        elapsedMs: performanceRef.now() - startedAt,
+        fields: {
+          workspace: currentWorkspaceKey,
+          sourceCount: sourceItems.length,
+          groupCount,
+          renderedThreads,
+        },
       });
     }
   }

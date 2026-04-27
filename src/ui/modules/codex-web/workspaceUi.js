@@ -102,11 +102,13 @@ export function createWorkspaceUiModule(deps) {
     renderFolderPicker,
     setStatus,
     pushThreadAnimDebug,
+    recordLocalTask = () => {},
     isThreadListActuallyVisible,
     buildThreadRenderSig,
     applyThreadFilter,
     refreshThreads,
     syncEventSubscription = () => false,
+    performanceRef = performance,
   } = deps;
 
   function ensureWorkspaceRuntimeState(target = "windows") {
@@ -284,6 +286,7 @@ export function createWorkspaceUiModule(deps) {
   }
 
   async function setWorkspaceTarget(nextTarget) {
+    const startedAt = performanceRef.now();
     const target = normalizeWorkspaceTarget(nextTarget);
     if (!isWorkspaceAvailable(target)) return;
     if (state.workspaceTarget === target) return;
@@ -303,12 +306,13 @@ export function createWorkspaceUiModule(deps) {
       ? state.threadItemsByWorkspace[target]
       : [];
     const hasHydrated = !!state.threadWorkspaceHydratedByWorkspace[target];
+    const listActuallyVisible = isThreadListActuallyVisible();
     pushThreadAnimDebug("setWorkspaceTarget", {
       target,
       previousTarget,
       hasHydrated,
       cachedCount: cached.length,
-      listActuallyVisible: isThreadListActuallyVisible(),
+      listActuallyVisible,
     });
     if (hasHydrated) {
       state.threadItemsAll = cached;
@@ -336,6 +340,17 @@ export function createWorkspaceUiModule(deps) {
       updateHeaderUi();
       setStatus(`Loading ${target.toUpperCase()} chats...`);
     }
+    recordLocalTask({
+      command: "workspace switch sync",
+      elapsedMs: performanceRef.now() - startedAt,
+      fields: {
+        target,
+        previousTarget,
+        hasHydrated,
+        cachedCount: cached.length,
+        listActuallyVisible,
+      },
+    });
     refreshThreads(target, { force: false, silent: hasHydrated }).catch((e) =>
       setStatus(e.message, true)
     );

@@ -69,6 +69,49 @@ describe("webDiagnostics", () => {
     });
   });
 
+  it("posts slow local UI tasks to the gateway watchdog endpoint", async () => {
+    const requests = [];
+    const timers = [];
+    const diagnostics = createCodexWebDiagnostics({
+      state: {
+        token: "test-token",
+        activeMainTab: "chat",
+      },
+      windowRef: { addEventListener() {} },
+      documentRef: { visibilityState: "visible" },
+      fetchRef: async (path, options) => {
+        requests.push({ path, body: JSON.parse(options.body), headers: options.headers });
+        return { ok: true };
+      },
+      requestAnimationFrameRef: null,
+      PerformanceObserverRef: null,
+      setTimeoutRef: vi.fn((fn) => {
+        timers.push(fn);
+        return timers.length;
+      }),
+      clearTimeoutRef: vi.fn(),
+      setIntervalRef: vi.fn(),
+      clearIntervalRef: vi.fn(),
+      nowRef: () => 1000,
+      localTaskThresholdMs: 10,
+    });
+
+    diagnostics.recordLocalTask({
+      command: "thread list render",
+      elapsedMs: 38,
+      fields: { sourceCount: 116, workspace: "windows" },
+    });
+    await diagnostics.flush();
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0].body.localTasks[0]).toMatchObject({
+      command: "thread list render",
+      elapsedMs: 38,
+      activePage: "codex-web",
+      fields: { sourceCount: 116, workspace: "windows" },
+    });
+  });
+
   it("keeps monitoring frames after scroll-like interactions", async () => {
     const requests = [];
     const timers = [];

@@ -523,6 +523,7 @@ const composition = createCodexWebComposition({
   createBootstrapModule,
   recordWebTransportEvent: (...args) => recordWebTransportEventToGateway(...args),
   recordApiResult: (...args) => webDiagnostics.recordApiResult(...args),
+  recordLocalTask: (...args) => webDiagnostics.recordLocalTask(...args),
   installMobileViewportSync: () => installMobileViewportSync({
     windowRef: window,
     documentRef: document,
