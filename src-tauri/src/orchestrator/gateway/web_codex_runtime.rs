@@ -1,6 +1,7 @@
 use super::*;
 use axum::extract::Query;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::process::Command;
 
 use crate::orchestrator::gateway::web_codex_home::{
@@ -75,6 +76,8 @@ struct CodexVersionInfoCache {
     updated_at_unix_secs: i64,
 }
 
+static CODEX_VERSION_INFO_REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DetectedCodexRuntime {
     version: String,
@@ -95,6 +98,10 @@ fn lock_codex_version_info_cache() -> std::sync::MutexGuard<'static, Option<Code
         Ok(v) => v,
         Err(err) => err.into_inner(),
     }
+}
+
+fn version_info_cache_is_fresh(updated_at_unix_secs: i64, now_unix_secs: i64) -> bool {
+    now_unix_secs.saturating_sub(updated_at_unix_secs) < VERSION_INFO_CACHE_SECS
 }
 
 pub(super) fn truncate_output(value: &[u8]) -> (String, bool) {
@@ -171,9 +178,8 @@ fn windows_codex_shell_candidates(subcommand: &str) -> Vec<String> {
 }
 
 async fn detect_windows_codex_runtime() -> DetectedCodexRuntime {
+    let started = std::time::Instant::now();
     let mut version = "Not installed".to_string();
-    let mut app_server_supported = false;
-    let mut remote_tui_supported = false;
     for candidate in windows_codex_shell_candidates("--version") {
         if let Some(found) = run_windows_shell_stdout(&candidate).await {
             if let Some(line) = first_nonempty_line(&found) {
@@ -183,24 +189,32 @@ async fn detect_windows_codex_runtime() -> DetectedCodexRuntime {
         }
     }
     let installed = version != "Not installed";
-    if installed {
-        for candidate in windows_codex_shell_candidates("--help") {
-            if let Some(help) = run_windows_shell_stdout(&candidate).await {
-                remote_tui_supported = help_text_supports_remote_tui(&help);
-                if remote_tui_supported {
-                    break;
+    let (remote_tui_supported, app_server_supported) = if installed {
+        let remote = async {
+            for candidate in windows_codex_shell_candidates("--help") {
+                if let Some(help) = run_windows_shell_stdout(&candidate).await {
+                    if help_text_supports_remote_tui(&help) {
+                        return true;
+                    }
                 }
             }
-        }
-        for candidate in windows_codex_shell_candidates("app-server --help") {
-            if let Some(help) = run_windows_shell_stdout(&candidate).await {
-                app_server_supported = help_text_supports_app_server(&help);
-                if app_server_supported {
-                    break;
+            false
+        };
+        let app_server = async {
+            for candidate in windows_codex_shell_candidates("app-server --help") {
+                if let Some(help) = run_windows_shell_stdout(&candidate).await {
+                    if help_text_supports_app_server(&help) {
+                        return true;
+                    }
                 }
             }
-        }
-    }
+            false
+        };
+        tokio::join!(remote, app_server)
+    } else {
+        (false, false)
+    };
+    log_codex_version_detect_timing("windows", started.elapsed().as_millis());
     DetectedCodexRuntime {
         version,
         installed,
@@ -210,31 +224,44 @@ async fn detect_windows_codex_runtime() -> DetectedCodexRuntime {
 }
 
 async fn detect_wsl_codex_runtime() -> DetectedCodexRuntime {
-    let version = run_wsl_shell_stdout("codex --version")
-        .await
+    let started = std::time::Instant::now();
+    let (version_output, help_output, app_server_help_output) = tokio::join!(
+        run_wsl_shell_stdout("codex --version"),
+        run_wsl_shell_stdout("codex --help"),
+        run_wsl_shell_stdout("codex app-server --help")
+    );
+    let version = version_output
         .and_then(|found| first_nonempty_line(&found))
         .unwrap_or_else(|| "Not installed".to_string());
     let installed = version != "Not installed";
-    let remote_tui_supported = if installed {
-        run_wsl_shell_stdout("codex --help")
-            .await
-            .is_some_and(|help| help_text_supports_remote_tui(&help))
-    } else {
-        false
-    };
-    let app_server_supported = if installed {
-        run_wsl_shell_stdout("codex app-server --help")
-            .await
-            .is_some_and(|help| help_text_supports_app_server(&help))
-    } else {
-        false
-    };
+    let remote_tui_supported = installed
+        && help_output
+            .as_deref()
+            .is_some_and(help_text_supports_remote_tui);
+    let app_server_supported = installed
+        && app_server_help_output
+            .as_deref()
+            .is_some_and(help_text_supports_app_server);
+    log_codex_version_detect_timing("wsl2", started.elapsed().as_millis());
     DetectedCodexRuntime {
         version,
         installed,
         app_server_supported,
         remote_tui_supported,
     }
+}
+
+fn log_codex_version_detect_timing(workspace: &str, elapsed_ms: u128) {
+    let _ =
+        crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(&json!({
+            "source": "backend.version_info",
+            "entry": {
+                "at": current_unix_secs() * 1000,
+                "kind": "version_info.detect_runtime",
+                "workspace": workspace,
+                "elapsedMs": elapsed_ms,
+            }
+        }));
 }
 
 fn resolve_repo_root_for_git() -> Option<PathBuf> {
@@ -309,6 +336,55 @@ fn build_version_payload(
     }
 }
 
+async fn detect_codex_version_info_payload() -> CodexVersionInfo {
+    let started = std::time::Instant::now();
+    let (windows, wsl2) = tokio::join!(detect_windows_codex_runtime(), detect_wsl_codex_runtime());
+    let build_git_sha = option_env!("API_ROUTER_BUILD_GIT_SHA")
+        .unwrap_or("unknown")
+        .to_string();
+    let build_git_short_sha = option_env!("API_ROUTER_BUILD_GIT_SHORT_SHA")
+        .unwrap_or("unknown")
+        .to_string();
+    let repo_git_sha = detect_repo_git_sha();
+    let payload = build_version_payload(
+        windows,
+        wsl2,
+        build_git_sha,
+        build_git_short_sha,
+        repo_git_sha,
+    );
+    {
+        let mut cache = lock_codex_version_info_cache();
+        *cache = Some(CodexVersionInfoCache {
+            value: payload.clone(),
+            updated_at_unix_secs: current_unix_secs(),
+        });
+    }
+    let _ =
+        crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(&json!({
+            "source": "backend.version_info",
+            "entry": {
+                "at": current_unix_secs() * 1000,
+                "kind": "version_info.refresh_complete",
+                "elapsedMs": started.elapsed().as_millis(),
+            }
+        }));
+    payload
+}
+
+fn spawn_codex_version_info_refresh_if_idle() {
+    if CODEX_VERSION_INFO_REFRESH_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    tauri::async_runtime::spawn(async {
+        let _ = detect_codex_version_info_payload().await;
+        CODEX_VERSION_INFO_REFRESH_IN_FLIGHT.store(false, Ordering::Release);
+    });
+}
+
 fn normalize_runtime_home_override(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -357,33 +433,14 @@ pub(super) async fn codex_version_info(
     }
     let now = current_unix_secs();
     if let Some(cached) = lock_codex_version_info_cache().clone() {
-        if now.saturating_sub(cached.updated_at_unix_secs) < VERSION_INFO_CACHE_SECS {
+        if version_info_cache_is_fresh(cached.updated_at_unix_secs, now) {
             return Json(cached.value).into_response();
         }
+        spawn_codex_version_info_refresh_if_idle();
+        return Json(cached.value).into_response();
     }
 
-    let (windows, wsl2) = tokio::join!(detect_windows_codex_runtime(), detect_wsl_codex_runtime());
-    let build_git_sha = option_env!("API_ROUTER_BUILD_GIT_SHA")
-        .unwrap_or("unknown")
-        .to_string();
-    let build_git_short_sha = option_env!("API_ROUTER_BUILD_GIT_SHORT_SHA")
-        .unwrap_or("unknown")
-        .to_string();
-    let repo_git_sha = detect_repo_git_sha();
-    let payload = build_version_payload(
-        windows,
-        wsl2,
-        build_git_sha,
-        build_git_short_sha,
-        repo_git_sha,
-    );
-    {
-        let mut cache = lock_codex_version_info_cache();
-        *cache = Some(CodexVersionInfoCache {
-            value: payload.clone(),
-            updated_at_unix_secs: now,
-        });
-    }
+    let payload = detect_codex_version_info_payload().await;
     Json(payload).into_response()
 }
 
@@ -522,6 +579,18 @@ mod tests {
         assert!(help_text_supports_app_server(help));
         assert!(help_text_supports_remote_tui(help));
         assert!(!help_text_supports_remote_tui("Usage: codex [OPTIONS]"));
+    }
+
+    #[test]
+    fn version_info_cache_distinguishes_fresh_from_stale() {
+        assert!(version_info_cache_is_fresh(
+            1_000,
+            1_000 + VERSION_INFO_CACHE_SECS - 1
+        ));
+        assert!(!version_info_cache_is_fresh(
+            1_000,
+            1_000 + VERSION_INFO_CACHE_SECS
+        ));
     }
 
     #[test]
