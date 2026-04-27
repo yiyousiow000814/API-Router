@@ -845,7 +845,6 @@ async fn ensure_workspace_index_fresh(target: WorkspaceTarget, force: bool) {
     let now = current_unix_secs();
     enum Action {
         None,
-        SyncRefresh,
         AsyncRefresh,
     }
     let action = {
@@ -858,14 +857,11 @@ async fn ensure_workspace_index_fresh(target: WorkspaceTarget, force: bool) {
         let stale = now.saturating_sub(bucket.updated_at_unix_secs) >= THREADS_INDEX_STALE_SECS;
         let has_missing_rollout = has_missing_session_rollout_path(&bucket.items);
         let in_failure_backoff = bucket_refresh_failure_backoff_active(bucket, now);
-        if (!has_items || has_missing_rollout) && !bucket.refreshing && !in_failure_backoff {
-            mark_bucket_refreshing(bucket);
-            if target == WorkspaceTarget::Wsl2 {
-                Action::AsyncRefresh
-            } else {
-                Action::SyncRefresh
-            }
-        } else if stale && !bucket.refreshing && !in_failure_backoff {
+        let needs_refresh = !bucket.refreshing
+            && !in_failure_backoff
+            && (!has_items || has_missing_rollout || stale);
+
+        if needs_refresh {
             mark_bucket_refreshing(bucket);
             Action::AsyncRefresh
         } else {
@@ -875,7 +871,6 @@ async fn ensure_workspace_index_fresh(target: WorkspaceTarget, force: bool) {
 
     match action {
         Action::None => {}
-        Action::SyncRefresh => refresh_workspace_thread_index(target).await,
         Action::AsyncRefresh => spawn_thread_index_refresh(target),
     }
 }
@@ -915,6 +910,18 @@ mod tests {
             } else {
                 std::env::remove_var(self.key);
             }
+        }
+    }
+
+    async fn wait_for_workspace_refresh_to_finish(target: WorkspaceTarget) {
+        for _ in 0..40 {
+            {
+                let index = lock_threads_workspace_index();
+                if !workspace_bucket_ref(&index, target).refreshing {
+                    return;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
     }
 
@@ -1376,7 +1383,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_threads_snapshot_rebuilds_when_cached_session_rollout_is_missing() {
+    async fn list_threads_snapshot_refreshes_cached_missing_rollout_in_background() {
         let _test_guard = codex_app_server::lock_test_globals();
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_home = temp.path().join(".codex");
@@ -1422,16 +1429,22 @@ mod tests {
         )))
         .await;
         let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Windows), false).await;
+        wait_for_workspace_refresh_to_finish(WorkspaceTarget::Windows).await;
         codex_app_server::_set_test_request_handler(None).await;
-        assert!(
-            snapshot.items.is_empty(),
-            "missing session rollout path should force rebuild and drop stale cached item: {:?}",
-            snapshot.items
+        invalidate_thread_list_cache_all();
+        assert!(snapshot.refreshing);
+        assert_eq!(
+            snapshot
+                .items
+                .first()
+                .and_then(|item| item.get("id"))
+                .and_then(Value::as_str),
+            Some("missing-thread")
         );
     }
 
     #[tokio::test]
-    async fn list_threads_snapshot_rebuilds_when_hint_rollout_is_missing() {
+    async fn list_threads_snapshot_refreshes_missing_hint_rollout_in_background() {
         let _test_guard = codex_app_server::lock_test_globals();
         let temp = tempfile::tempdir().expect("tempdir");
         let codex_home = temp.path().join(".codex");
@@ -1477,12 +1490,57 @@ mod tests {
         )))
         .await;
         let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Windows), false).await;
+        wait_for_workspace_refresh_to_finish(WorkspaceTarget::Windows).await;
         codex_app_server::_set_test_request_handler(None).await;
-        assert!(
-            snapshot.items.is_empty(),
-            "missing hinted rollout path should force rebuild and drop stale cached item: {:?}",
-            snapshot.items
+        invalidate_thread_list_cache_all();
+        assert!(snapshot.refreshing);
+        assert_eq!(
+            snapshot
+                .items
+                .first()
+                .and_then(|item| item.get("id"))
+                .and_then(Value::as_str),
+            Some("missing-hint-thread")
         );
+    }
+
+    #[tokio::test]
+    async fn cold_non_force_workspace_snapshot_returns_before_rebuild_finishes() {
+        let _test_guard = codex_app_server::lock_test_globals();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_home = temp.path().join(".codex");
+        std::fs::create_dir_all(codex_home.join("sessions")).expect("sessions dir");
+        let _guard = EnvGuard::set(
+            "API_ROUTER_WEB_CODEX_CODEX_HOME",
+            &codex_home.to_string_lossy(),
+        );
+        invalidate_thread_list_cache_all();
+
+        codex_app_server::_set_test_request_handler(Some(Arc::new(
+            move |_home, method, _params| {
+                if method == "thread/loaded/list" {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    return Ok(serde_json::json!({ "data": [] }));
+                }
+                Err(format!("{method} should not be called for cold list"))
+            },
+        )))
+        .await;
+
+        let started = std::time::Instant::now();
+        let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Windows), false).await;
+        let elapsed = started.elapsed();
+        wait_for_workspace_refresh_to_finish(WorkspaceTarget::Windows).await;
+        codex_app_server::_set_test_request_handler(None).await;
+        invalidate_thread_list_cache_all();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "cold non-force list should return without waiting for rebuild"
+        );
+        assert!(snapshot.items.is_empty());
+        assert!(snapshot.refreshing);
+        assert!(!snapshot.cache_hit);
     }
 
     #[test]
