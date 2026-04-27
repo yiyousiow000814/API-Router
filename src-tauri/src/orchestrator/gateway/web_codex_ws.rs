@@ -118,6 +118,23 @@ fn backend_live_debug_subscribe(
             "workspaces": workspaces,
         }),
     );
+    let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+        "/codex/ws",
+        if workspace_targets.len() > 1 {
+            "all"
+        } else {
+            workspace_targets
+                .first()
+                .map(|target| workspace_target_label(*target))
+                .unwrap_or("windows")
+        },
+        "ws_subscribe",
+        0,
+    );
+    pipeline.source = Some("client-subscribe".to_string());
+    pipeline.item_count = Some(workspace_targets.len());
+    pipeline.ok = Some(true);
+    crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
 }
 
 fn backend_live_debug_push_send(client_id: u64, notif: &Value, delivered: bool) {

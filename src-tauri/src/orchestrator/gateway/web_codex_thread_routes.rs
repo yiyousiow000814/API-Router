@@ -577,6 +577,19 @@ pub(super) async fn codex_threads_list(
         crate::orchestrator::gateway::web_codex_history::spawn_wsl_history_prewarm(&items);
     }
     let total_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+    let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+        "/codex/threads",
+        &workspace_meta,
+        "gateway_handler",
+        u64::try_from(total_ms).unwrap_or(u64::MAX),
+    );
+    pipeline.cache_hit = Some(snapshot.cache_hit);
+    pipeline.refreshing = Some(snapshot.refreshing);
+    pipeline.force = Some(force);
+    pipeline.item_count = Some(items.len());
+    pipeline.rebuild_ms = Some(snapshot.rebuild_ms);
+    pipeline.source = Some("session-index".to_string());
+    crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
     build_threads_response_with_meta(
         items,
         json!({

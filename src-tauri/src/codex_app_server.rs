@@ -2459,6 +2459,14 @@ fn resolve_launch_spec(codex_home: Option<&str>) -> LaunchSpec {
     LaunchSpec::Native { codex_home: home }
 }
 
+fn pipeline_workspace_label_for_home(codex_home: Option<&str>) -> &'static str {
+    match resolve_launch_spec(codex_home) {
+        #[cfg(any(test, target_os = "windows"))]
+        LaunchSpec::Wsl { .. } => "wsl2",
+        LaunchSpec::Native { .. } => "windows",
+    }
+}
+
 fn build_codex_command(codex_home: Option<&str>) -> Command {
     match resolve_launch_spec(codex_home) {
         LaunchSpec::Native { codex_home } => {
@@ -2879,6 +2887,20 @@ mod tests {
             Some("codex-cli 0.124.0".to_string())
         );
         assert_eq!(normalize_runtime_fingerprint_stdout(b"\n\t\n"), None);
+    }
+
+    #[test]
+    fn pipeline_workspace_label_distinguishes_native_and_wsl_homes() {
+        assert_eq!(pipeline_workspace_label_for_home(None), "windows");
+        assert_eq!(
+            pipeline_workspace_label_for_home(Some(r"C:\Users\yiyou\.codex")),
+            "windows"
+        );
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            pipeline_workspace_label_for_home(Some(r"\\wsl.localhost\Ubuntu\home\me\.codex")),
+            "wsl2"
+        );
     }
 
     struct TestCodexHomeGuard {
@@ -4452,6 +4474,7 @@ pub async fn request_in_home(
     }
 
     let home = normalize_home_key(codex_home).to_string();
+    let pipeline_workspace = pipeline_workspace_label_for_home(codex_home);
     ensure_notification_home_state(codex_home).await;
     let thread_id = extract_thread_id_for_debug(&serde_json::json!({
         "params": params.clone(),
@@ -4467,10 +4490,22 @@ pub async fn request_in_home(
     )
     .await;
 
+    let bridge_started = std::time::Instant::now();
     if let Some(result) =
         crate::codex_wsl_bridge::try_request_in_home(codex_home, method, params.clone()).await
     {
         let is_ok = result.is_ok();
+        let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+            "codex-app-server-rpc",
+            pipeline_workspace,
+            "app_server_rpc",
+            crate::diagnostics::codex_web_pipeline::elapsed_ms_u64(bridge_started),
+        );
+        pipeline.method = Some(method.to_string());
+        pipeline.transport = Some("wsl-bridge".to_string());
+        pipeline.ok = Some(is_ok);
+        pipeline.detail = result.as_ref().err().cloned();
+        crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
         push_debug_event(
             if is_ok {
                 "app.request.bridge.ok"
@@ -4491,6 +4526,8 @@ pub async fn request_in_home(
     let key = home.clone();
     let lock = APP_SERVERS.get_or_init(|| Mutex::new(HashMap::new()));
 
+    let resolve_started = std::time::Instant::now();
+    let mut reused_existing = false;
     let server_arc = loop {
         let existing = {
             let guard = lock.lock().await;
@@ -4522,6 +4559,7 @@ pub async fn request_in_home(
                     }
                     continue;
                 }
+                reused_existing = true;
                 break server;
             }
             let mut guard = lock.lock().await;
@@ -4562,9 +4600,37 @@ pub async fn request_in_home(
             .clone();
         break entry;
     };
+    let resolve_elapsed_ms =
+        crate::diagnostics::codex_web_pipeline::elapsed_ms_u64(resolve_started);
+    if resolve_elapsed_ms >= 50 {
+        let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+            "codex-app-server-rpc",
+            pipeline_workspace,
+            "app_server_resolve",
+            resolve_elapsed_ms,
+        );
+        pipeline.method = Some(method.to_string());
+        pipeline.transport = Some("native-app-server".to_string());
+        pipeline.cache_hit = Some(reused_existing);
+        pipeline.ok = Some(true);
+        crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
+    }
 
     let mut server = server_arc.lock().await;
-    match server.request(method, params).await {
+    let rpc_started = std::time::Instant::now();
+    let request_result = server.request(method, params).await;
+    let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+        "codex-app-server-rpc",
+        pipeline_workspace,
+        "app_server_rpc",
+        crate::diagnostics::codex_web_pipeline::elapsed_ms_u64(rpc_started),
+    );
+    pipeline.method = Some(method.to_string());
+    pipeline.transport = Some("native-app-server".to_string());
+    pipeline.ok = Some(request_result.is_ok());
+    pipeline.detail = request_result.as_ref().err().cloned();
+    crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
+    match request_result {
         Ok(mut result) => {
             if method == "thread/read"
                 && sanitize_failed_turn_thread_payload_in_home(codex_home, &thread_id, &mut result)

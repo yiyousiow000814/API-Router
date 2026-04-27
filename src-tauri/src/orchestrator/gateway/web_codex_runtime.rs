@@ -252,6 +252,15 @@ async fn detect_wsl_codex_runtime() -> DetectedCodexRuntime {
 }
 
 fn log_codex_version_detect_timing(workspace: &str, elapsed_ms: u128) {
+    let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+        "/codex/version-info",
+        workspace,
+        "runtime_detect",
+        u64::try_from(elapsed_ms).unwrap_or(u64::MAX),
+    );
+    pipeline.source = Some("codex-version-command".to_string());
+    pipeline.ok = Some(true);
+    crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
     let _ =
         crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(&json!({
             "source": "backend.version_info",
@@ -414,6 +423,7 @@ pub(super) async fn codex_runtime_state(
     headers: HeaderMap,
     Query(query): Query<RuntimeStateQuery>,
 ) -> Response {
+    let started = std::time::Instant::now();
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
@@ -421,26 +431,69 @@ pub(super) async fn codex_runtime_state(
     let home_override = normalize_runtime_home_override(query.home.as_deref())
         .or_else(|| web_codex_rpc_home_override_for_target(workspace_target));
     let snapshot = workspace_runtime_snapshot(workspace_target, home_override.as_deref());
-    Json(build_runtime_state_payload(snapshot)).into_response()
+    let payload = build_runtime_state_payload(snapshot);
+    let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+        "/codex/runtime/state",
+        &payload.workspace,
+        "gateway_handler",
+        crate::diagnostics::codex_web_pipeline::elapsed_ms_u64(started),
+    );
+    pipeline.source = Some("runtime-registry".to_string());
+    pipeline.item_count = Some(payload.active_thread_count);
+    pipeline.ok = Some(true);
+    crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
+    Json(payload).into_response()
 }
 
 pub(super) async fn codex_version_info(
     State(st): State<GatewayState>,
     headers: HeaderMap,
 ) -> Response {
+    let started = std::time::Instant::now();
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
     let now = current_unix_secs();
     if let Some(cached) = lock_codex_version_info_cache().clone() {
         if version_info_cache_is_fresh(cached.updated_at_unix_secs, now) {
+            let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+                "/codex/version-info",
+                "all",
+                "gateway_handler",
+                crate::diagnostics::codex_web_pipeline::elapsed_ms_u64(started),
+            );
+            pipeline.cache_hit = Some(true);
+            pipeline.source = Some("fresh-cache".to_string());
+            pipeline.ok = Some(true);
+            crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
             return Json(cached.value).into_response();
         }
         spawn_codex_version_info_refresh_if_idle();
+        let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+            "/codex/version-info",
+            "all",
+            "gateway_handler",
+            crate::diagnostics::codex_web_pipeline::elapsed_ms_u64(started),
+        );
+        pipeline.cache_hit = Some(true);
+        pipeline.refreshing = Some(true);
+        pipeline.source = Some("stale-cache-background-refresh".to_string());
+        pipeline.ok = Some(true);
+        crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
         return Json(cached.value).into_response();
     }
 
     let payload = detect_codex_version_info_payload().await;
+    let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+        "/codex/version-info",
+        "all",
+        "gateway_handler",
+        crate::diagnostics::codex_web_pipeline::elapsed_ms_u64(started),
+    );
+    pipeline.cache_hit = Some(false);
+    pipeline.source = Some("cold-detect".to_string());
+    pipeline.ok = Some(true);
+    crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
     Json(payload).into_response()
 }
 
