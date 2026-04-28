@@ -302,4 +302,74 @@ describe("threadListRefresh", () => {
       parseMs: 2,
     });
   });
+
+  it("coalesces overlapping non-force refreshes for the same workspace", async () => {
+    let resolveApi;
+    const apiCalls = [];
+    const state = {
+      threadItemsAll: [],
+      threadItems: [],
+      threadItemsByWorkspace: { windows: [], wsl2: [] },
+      threadWorkspaceHydratedByWorkspace: { windows: false, wsl2: false },
+      threadRefreshAbortByWorkspace: { windows: null, wsl2: null },
+      threadRefreshReqSeqByWorkspace: { windows: 0, wsl2: 0 },
+      threadListRenderSigByWorkspace: { windows: "", wsl2: "" },
+      threadListDeferredRenderTimerByWorkspace: { windows: 0, wsl2: 0 },
+      threadListAnimationHoldUntilByWorkspace: { windows: 0, wsl2: 0 },
+      threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+    };
+    const module = createThreadListRefreshModule({
+      state,
+      byId: () => ({
+        isConnected: true,
+        querySelector: () => ({ nodeType: 1 }),
+        closest: () => null,
+        getBoundingClientRect: () => ({ left: 0, top: 0, right: 320, bottom: 480, width: 320, height: 480 }),
+      }),
+      windowRef: { getComputedStyle: () => ({ display: "block", visibility: "visible" }), innerWidth: 1280, innerHeight: 720 },
+      documentRef: {
+        documentElement: { clientWidth: 1280, clientHeight: 720 },
+        body: { classList: { contains: () => false } },
+      },
+      api: (path, options) => {
+        apiCalls.push({ path, signal: options?.signal });
+        return new Promise((resolve) => {
+          resolveApi = resolve;
+        });
+      },
+      ensureArrayItems: (value) => (Array.isArray(value?.data) ? value.data : Array.isArray(value) ? value : []),
+      normalizeWorkspaceTarget: (value) => (value === "wsl2" ? "wsl2" : "windows"),
+      getWorkspaceTarget: () => "wsl2",
+      getStartCwdForWorkspace: () => "",
+      sortThreadsByNewest: (items) => items,
+      filterThreadsForWorkspace: (items) => items,
+      hasDualWorkspaceTargets: () => true,
+      detectWorkspaceAvailabilityFromThreads: () => ({
+        windowsInstalled: true,
+        wsl2Installed: true,
+      }),
+      buildThreadRenderSig: (items) => String(items.length),
+      persistThreadsCache: vi.fn(),
+      syncActiveThreadMetaFromList: vi.fn(),
+      updateHeaderUi: vi.fn(),
+      pushThreadAnimDebug: vi.fn(),
+      renderThreads: vi.fn(),
+      applyWorkspaceUi: vi.fn(),
+      setStatus: vi.fn(),
+      THREAD_FORCE_REFRESH_MIN_INTERVAL_MS: 1800,
+    });
+
+    const first = module.refreshThreads("wsl2", { silent: true });
+    const second = module.refreshThreads("wsl2", { silent: true });
+
+    expect(apiCalls).toHaveLength(1);
+
+    resolveApi({
+      items: [{ id: "thread-wsl", workspace: "wsl2", updatedAt: 1 }],
+      meta: { workspace: "wsl2", cacheHit: true, refreshing: false },
+    });
+    await Promise.all([first, second]);
+    expect(state.threadItemsByWorkspace.wsl2.map((item) => item.id)).toEqual(["thread-wsl"]);
+  });
 });

@@ -212,6 +212,29 @@ export function createWorkspaceUiModule(deps) {
   async function refreshWorkspaceRuntimeState(target = getWorkspaceTarget(), options = {}) {
     if (typeof api !== "function") return null;
     const workspace = normalizeRuntimeWorkspaceTarget(target, getWorkspaceTarget());
+    if (!state.workspaceRuntimeRefreshPromiseByWorkspace || typeof state.workspaceRuntimeRefreshPromiseByWorkspace !== "object") {
+      state.workspaceRuntimeRefreshPromiseByWorkspace = {};
+    }
+    const existingRefresh = state.workspaceRuntimeRefreshPromiseByWorkspace[workspace];
+    if (existingRefresh) {
+      pushThreadAnimDebug("runtimeState:coalesce", {
+        workspace,
+        silent: options.silent === true,
+      });
+      return existingRefresh;
+    }
+    const refreshPromise = refreshWorkspaceRuntimeStateUncoalesced(workspace, options);
+    state.workspaceRuntimeRefreshPromiseByWorkspace[workspace] = refreshPromise;
+    try {
+      return await refreshPromise;
+    } finally {
+      if (state.workspaceRuntimeRefreshPromiseByWorkspace?.[workspace] === refreshPromise) {
+        state.workspaceRuntimeRefreshPromiseByWorkspace[workspace] = null;
+      }
+    }
+  }
+
+  async function refreshWorkspaceRuntimeStateUncoalesced(workspace, options) {
     const current = ensureWorkspaceRuntimeState(workspace);
     if (!state.workspaceRuntimeRefreshReqSeqByWorkspace || typeof state.workspaceRuntimeRefreshReqSeqByWorkspace !== "object") {
       state.workspaceRuntimeRefreshReqSeqByWorkspace = { windows: 0, wsl2: 0 };

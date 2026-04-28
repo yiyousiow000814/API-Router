@@ -160,9 +160,32 @@ export function createThreadListRefreshModule(deps) {
   }
 
   async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = {}) {
-    const refreshStartedAt = performanceRef.now();
     const target = normalizeWorkspaceTarget(workspaceTarget);
     const force = options.force === true;
+    if (!state.threadRefreshPromiseByWorkspace || typeof state.threadRefreshPromiseByWorkspace !== "object") {
+      state.threadRefreshPromiseByWorkspace = {};
+    }
+    const existingRefresh = state.threadRefreshPromiseByWorkspace[target];
+    if (!force && existingRefresh) {
+      pushThreadAnimDebug("refreshThreads:coalesce", {
+        target,
+        silent: options.silent === true,
+      });
+      return existingRefresh;
+    }
+    const refreshStartedAt = performanceRef.now();
+    const refreshPromise = refreshThreadsUncoalesced(target, options, force, refreshStartedAt);
+    state.threadRefreshPromiseByWorkspace[target] = refreshPromise;
+    try {
+      return await refreshPromise;
+    } finally {
+      if (state.threadRefreshPromiseByWorkspace?.[target] === refreshPromise) {
+        state.threadRefreshPromiseByWorkspace[target] = null;
+      }
+    }
+  }
+
+  async function refreshThreadsUncoalesced(target, options, force, refreshStartedAt) {
     if (force) {
       const now = Date.now();
       const last = Number(state.threadForceRefreshLastMsByWorkspace[target] || 0);

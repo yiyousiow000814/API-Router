@@ -46,6 +46,74 @@ describe("workspaceUi", () => {
     });
   });
 
+  it("coalesces overlapping runtime-state refreshes for the same workspace", async () => {
+    let resolveApi;
+    const apiCalls = [];
+    const state = {
+      workspaceTarget: "windows",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      workspaceRuntimeByTarget: {},
+      collapsedWorkspaceKeys: new Set(),
+      collapsedWorkspaceKeysByWorkspace: { windows: new Set(), wsl2: new Set() },
+      threadItemsByWorkspace: { windows: [], wsl2: [] },
+      threadWorkspaceHydratedByWorkspace: { windows: false, wsl2: false },
+      threadListRenderSigByWorkspace: { windows: "", wsl2: "" },
+      threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+      startCwdByWorkspace: { windows: "", wsl2: "" },
+      threadItemsAll: [],
+      threadItems: [],
+      folderPickerOpen: false,
+    };
+    const module = createWorkspaceUiModule({
+      state,
+      byId() {
+        return null;
+      },
+      api(path) {
+        apiCalls.push(path);
+        return new Promise((resolve) => {
+          resolveApi = resolve;
+        });
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      localStorageRef: { setItem() {} },
+      WORKSPACE_TARGET_KEY: "workspace",
+      START_CWD_BY_WORKSPACE_KEY: "cwd",
+      detectThreadWorkspaceTarget() {
+        return "unknown";
+      },
+      updateHeaderUi() {},
+      renderFolderPicker() {},
+      setStatus() {},
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return true;
+      },
+      buildThreadRenderSig(items) {
+        return String(items.length);
+      },
+      applyThreadFilter() {},
+      refreshThreads() {
+        return Promise.resolve();
+      },
+      syncEventSubscription() {
+        return true;
+      },
+      renderThreads() {},
+    });
+
+    const first = module.refreshWorkspaceRuntimeState("wsl2", { silent: true });
+    const second = module.refreshWorkspaceRuntimeState("wsl2", { silent: true });
+
+    expect(apiCalls).toEqual(["/codex/runtime/state?workspace=wsl2"]);
+
+    resolveApi({ workspace: "wsl2", connected: true });
+    await Promise.all([first, second]);
+    expect(state.workspaceRuntimeByTarget.wsl2.connected).toBe(true);
+  });
+
   it("resubscribes live events when switching workspace target", async () => {
     const statuses = [];
     let subscriptionSyncCount = 0;
