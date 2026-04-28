@@ -33,6 +33,21 @@ struct HistoryPreviewMapCacheEntry {
     previews: HashMap<String, String>,
 }
 
+pub(super) struct ThreadRebuildResult {
+    pub(super) items: Vec<Value>,
+    pub(super) metrics: Option<Value>,
+}
+
+struct ThreadFetchResult {
+    items: Vec<Value>,
+    metrics: Option<Value>,
+}
+
+struct WslThreadScanResult {
+    items: Vec<Value>,
+    metrics: Option<Value>,
+}
+
 fn session_file_scan_cache() -> &'static Mutex<HashMap<PathBuf, SessionFileScanCacheEntry>> {
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, SessionFileScanCacheEntry>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -62,12 +77,15 @@ impl ThreadFilterReason {
 
 pub(super) async fn rebuild_workspace_thread_items(
     target: WorkspaceTarget,
-) -> Result<Vec<Value>, String> {
-    let items = match target {
-        WorkspaceTarget::Windows => Ok(fetch_windows_threads_from_sessions()),
+) -> Result<ThreadRebuildResult, String> {
+    let fetched = match target {
+        WorkspaceTarget::Windows => Ok(ThreadFetchResult {
+            items: fetch_windows_threads_from_sessions(),
+            metrics: None,
+        }),
         WorkspaceTarget::Wsl2 => fetch_wsl2_threads_from_sessions().await,
     };
-    let mut items = items?;
+    let ThreadFetchResult { mut items, metrics } = fetched?;
     overlay_loaded_thread_runtime(target, &mut items).await;
     normalize_thread_items_shape(&mut items);
     hydrate_missing_previews_from_session_files(&mut items);
@@ -77,7 +95,7 @@ pub(super) async fn rebuild_workspace_thread_items(
     if items.len() > THREADS_MAX_ITEMS {
         items.truncate(THREADS_MAX_ITEMS);
     }
-    Ok(items)
+    Ok(ThreadRebuildResult { items, metrics })
 }
 
 async fn overlay_loaded_thread_runtime(target: WorkspaceTarget, items: &mut Vec<Value>) {
@@ -706,21 +724,47 @@ fn windows_thread_index_codex_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+#[cfg(test)]
 fn parse_wsl_thread_scan_output(text: &str) -> Result<Vec<Value>, String> {
+    parse_wsl_thread_scan_result(text).map(|result| result.items)
+}
+
+fn parse_wsl_thread_scan_result(text: &str) -> Result<WslThreadScanResult, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return Ok(Vec::new());
+        return Ok(WslThreadScanResult {
+            items: Vec::new(),
+            metrics: None,
+        });
     }
-    let json_text = if trimmed.starts_with('[') {
-        trimmed
-    } else {
-        let start = trimmed
-            .find('[')
-            .ok_or_else(|| "invalid WSL thread scan JSON: missing array".to_string())?;
-        &trimmed[start..]
+    let array_start = trimmed.find('[');
+    let object_start = trimmed.find('{');
+    let start = match (array_start, object_start) {
+        (Some(array), Some(object)) => array.min(object),
+        (Some(array), None) => array,
+        (None, Some(object)) => object,
+        (None, None) => {
+            return Err("invalid WSL thread scan JSON: missing JSON payload".to_string())
+        }
     };
-    serde_json::from_str::<Vec<Value>>(json_text)
-        .map_err(|err| format!("invalid WSL thread scan JSON: {err}"))
+    let json_text = &trimmed[start..];
+    let value: Value = serde_json::from_str(json_text)
+        .map_err(|err| format!("invalid WSL thread scan JSON: {err}"))?;
+    match value {
+        Value::Array(items) => Ok(WslThreadScanResult {
+            items,
+            metrics: None,
+        }),
+        Value::Object(mut obj) => {
+            let items = obj
+                .remove("items")
+                .and_then(|value| value.as_array().cloned())
+                .ok_or_else(|| "invalid WSL thread scan JSON: missing items array".to_string())?;
+            let metrics = obj.remove("metrics");
+            Ok(WslThreadScanResult { items, metrics })
+        }
+        _ => Err("invalid WSL thread scan JSON: expected array or object".to_string()),
+    }
 }
 
 fn wsl_thread_scan_script() -> String {
@@ -734,6 +778,8 @@ import time
 
 MAX_ITEMS = {THREADS_MAX_ITEMS}
 MAX_AGE_SECS = {THREADS_MAX_AGE_SECS}
+CACHE_VERSION = 1
+CACHE_FILE_NAME = "api-router-thread-index-cache-v1.json"
 
 def normalize_preview_text(raw):
     text = " ".join(str(raw).split()).strip()
@@ -821,15 +867,78 @@ def classify_filter_reason(preview, cwd, is_subagent, auxiliary_prompt_only):
         return "synthetic-probe"
     return None
 
+def int_or_none(raw):
+    try:
+        return int(raw)
+    except Exception:
+        return None
+
+def file_mtime_ns(stat_result):
+    return int(getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1000000000)))
+
+def empty_metrics(started_ms, cache_path):
+    return {{
+        "scanVersion": CACHE_VERSION,
+        "cachePath": str(cache_path),
+        "manifestCount": 0,
+        "cacheHitCount": 0,
+        "cacheMissCount": 0,
+        "parsedFileCount": 0,
+        "cacheEntryCount": 0,
+        "removedCacheEntryCount": 0,
+        "outputItemCount": 0,
+        "cacheReadOk": False,
+        "cacheWriteOk": False,
+        "elapsedMs": int(time.time() * 1000) - started_ms,
+    }}
+
+def load_cache(cache_path):
+    try:
+        with cache_path.open("r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+        if not isinstance(raw, dict) or raw.get("version") != CACHE_VERSION:
+            return {{}}, False
+        files = raw.get("files")
+        return (files if isinstance(files, dict) else {{}}), True
+    except FileNotFoundError:
+        return {{}}, True
+    except Exception:
+        return {{}}, False
+
+def write_cache(cache_path, files):
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+        with tmp_path.open("w", encoding="utf-8") as fh:
+            json.dump({{"version": CACHE_VERSION, "files": files}}, fh, ensure_ascii=False, separators=(",", ":"))
+        tmp_path.replace(cache_path)
+        return True
+    except Exception:
+        return False
+
+def cache_entry_matches(entry, stat_result):
+    if not isinstance(entry, dict):
+        return False
+    cached_size = int_or_none(entry.get("size"))
+    cached_mtime_ns = int_or_none(entry.get("mtimeNs"))
+    return cached_size == int(stat_result.st_size) and cached_mtime_ns == file_mtime_ns(stat_result)
+
 root = Path.home() / ".codex"
 sessions_dir = root / "sessions"
+cache_path = root / CACHE_FILE_NAME
 distro = (os.environ.get("WSL_DISTRO_NAME") or "").strip()
+started_ms = int(time.time() * 1000)
+metrics = empty_metrics(started_ms, cache_path)
 
 if not sessions_dir.exists():
-    print("[]")
+    print(json.dumps({{"items": [], "metrics": metrics}}, ensure_ascii=False))
     raise SystemExit(0)
 
+cached_files, cache_read_ok = load_cache(cache_path)
+metrics["cacheReadOk"] = cache_read_ok
 items_by_id = {{}}
+next_cache_files = {{}}
+seen_cache_keys = set()
 id_re = re.compile(r"([0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}})", re.IGNORECASE)
 
 def to_windows_path(path_obj: Path) -> str:
@@ -838,20 +947,34 @@ def to_windows_path(path_obj: Path) -> str:
         return "\\\\wsl.localhost\\{{}}\\{{}}".format(distro, text.lstrip("/").replace("/", "\\\\"))
     return text
 
-for p in sessions_dir.rglob("*.jsonl"):
+def cached_candidate(path_key, path_obj, stat_result):
+    entry = cached_files.get(path_key)
+    if not cache_entry_matches(entry, stat_result):
+        return False, None
+    item = entry.get("item")
+    if item is None:
+        return True, None
+    if not isinstance(item, dict):
+        return False, None
+    candidate = dict(item)
+    candidate["path"] = to_windows_path(path_obj)
+    candidate["updatedAt"] = int(stat_result.st_mtime)
+    return True, candidate
+
+def parse_session_candidate(p, stat_result):
     sid = ""
     cwd = ""
     created_at = 0
     session_source = None
     is_subagent = False
+    parent_thread_id = None
+    agent_role = None
     fallback_preview = None
     first_preview = None
     first_non_aux_preview = None
     saw_aux_prompt = False
     saw_non_aux_prompt = False
-    updated_at = int(p.stat().st_mtime)
-    if updated_at > 0 and int(time.time()) - updated_at > MAX_AGE_SECS:
-        continue
+    updated_at = int(stat_result.st_mtime)
     try:
         with p.open("r", encoding="utf-8", errors="ignore") as fh:
             for idx, line in enumerate(fh):
@@ -916,18 +1039,18 @@ for p in sessions_dir.rglob("*.jsonl"):
                         saw_non_aux_prompt = True
                     break
     except Exception:
-        continue
+        return None
 
     if not sid:
         m = id_re.search(p.name)
         if m:
             sid = m.group(1)
     if not sid or not cwd:
-        continue
+        return None
 
     preview = first_non_aux_preview or first_preview or fallback_preview or ""
     filter_reason = classify_filter_reason(preview, cwd, is_subagent, saw_aux_prompt and not saw_non_aux_prompt)
-    candidate = {{
+    return {{
         "id": sid,
         "cwd": cwd,
         "workspace": "wsl2",
@@ -944,19 +1067,65 @@ for p in sessions_dir.rglob("*.jsonl"):
         "createdAt": created_at or updated_at,
         "updatedAt": updated_at,
     }}
-    existing = items_by_id.get(sid)
-    if existing is None or should_replace_existing_thread(existing, candidate):
-        items_by_id[sid] = candidate
+
+for p in sessions_dir.rglob("*.jsonl"):
+    try:
+        stat_result = p.stat()
+    except Exception:
+        continue
+    updated_at = int(stat_result.st_mtime)
+    if updated_at > 0 and int(time.time()) - updated_at > MAX_AGE_SECS:
+        continue
+    path_key = str(p)
+    seen_cache_keys.add(path_key)
+    metrics["manifestCount"] += 1
+
+    hit, candidate = cached_candidate(path_key, p, stat_result)
+    if hit:
+        metrics["cacheHitCount"] += 1
+        next_cache_files[path_key] = cached_files.get(path_key)
+        if candidate is not None:
+            sid = str(candidate.get("id") or "").strip()
+            if sid:
+                existing = items_by_id.get(sid)
+                if existing is None or should_replace_existing_thread(existing, candidate):
+                    items_by_id[sid] = candidate
+        continue
+
+    metrics["cacheMissCount"] += 1
+    metrics["parsedFileCount"] += 1
+    candidate = parse_session_candidate(p, stat_result)
+    next_cache_files[path_key] = {{
+        "size": int(stat_result.st_size),
+        "mtimeNs": file_mtime_ns(stat_result),
+        "item": candidate,
+    }}
+    if candidate is None:
+        continue
+    sid = str(candidate.get("id") or "").strip()
+    if sid:
+        existing = items_by_id.get(sid)
+        if existing is None or should_replace_existing_thread(existing, candidate):
+            items_by_id[sid] = candidate
 
 items = sorted(items_by_id.values(), key=lambda x: int(x.get("updatedAt", 0)), reverse=True)
-print(json.dumps(items[:MAX_ITEMS], ensure_ascii=False))
+items = items[:MAX_ITEMS]
+metrics["removedCacheEntryCount"] = max(0, len(cached_files) - len(seen_cache_keys))
+metrics["cacheEntryCount"] = len(next_cache_files)
+metrics["outputItemCount"] = len(items)
+metrics["elapsedMs"] = int(time.time() * 1000) - started_ms
+metrics["cacheWriteOk"] = write_cache(cache_path, next_cache_files)
+print(json.dumps({{"items": items, "metrics": metrics}}, ensure_ascii=False))
 PY"###
     )
 }
 
-async fn fetch_wsl2_threads_from_sessions() -> Result<Vec<Value>, String> {
+async fn fetch_wsl2_threads_from_sessions() -> Result<ThreadFetchResult, String> {
     if !cfg!(target_os = "windows") {
-        return Ok(Vec::new());
+        return Ok(ThreadFetchResult {
+            items: Vec::new(),
+            metrics: None,
+        });
     }
     let script = wsl_thread_scan_script();
     let mut cmd = Command::new("wsl.exe");
@@ -985,7 +1154,11 @@ async fn fetch_wsl2_threads_from_sessions() -> Result<Vec<Value>, String> {
         Ok(Err(err)) => return Err(format!("failed to launch WSL thread scan: {err}")),
         Err(_) => return Err("WSL thread scan timed out".to_string()),
     };
-    parse_wsl_thread_scan_output(&String::from_utf8_lossy(&output.stdout))
+    let result = parse_wsl_thread_scan_result(&String::from_utf8_lossy(&output.stdout))?;
+    Ok(ThreadFetchResult {
+        items: result.items,
+        metrics: result.metrics,
+    })
 }
 
 fn build_threads_from_session_dir<F>(
@@ -1382,7 +1555,7 @@ mod tests {
         has_missing_session_rollout_path, merge_items_without_duplicates,
         overlay_loaded_thread_runtime, parse_history_preview_map, parse_wsl_thread_scan_output,
         scan_session_file, sort_threads_by_updated_desc, thread_item_should_be_visible,
-        ThreadFilterReason, THREADS_MAX_AGE_SECS,
+        wsl_thread_scan_script, ThreadFilterReason, THREADS_MAX_AGE_SECS,
     };
     use crate::codex_app_server;
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
@@ -1517,6 +1690,27 @@ mod tests {
 
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["id"], "thread-1");
+    }
+
+    #[test]
+    fn parses_wsl_thread_scan_output_envelope() {
+        let items = parse_wsl_thread_scan_output(
+            r#"{"items":[{"id":"thread-1"}],"metrics":{"cacheHitCount":1,"parsedFileCount":0}}"#,
+        )
+        .expect("parse WSL scan envelope");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["id"], "thread-1");
+    }
+
+    #[test]
+    fn wsl_thread_scan_script_uses_incremental_cache_metrics() {
+        let script = wsl_thread_scan_script();
+
+        assert!(script.contains("api-router-thread-index-cache-v1.json"));
+        assert!(script.contains("cacheHitCount"));
+        assert!(script.contains("parsedFileCount"));
+        assert!(script.contains("removedCacheEntryCount"));
     }
 
     #[test]

@@ -814,13 +814,16 @@ async fn refresh_workspace_thread_index(target: WorkspaceTarget) {
     )
     .await;
     let rebuild_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
-    let (ok, item_count, detail) = {
+    let (ok, item_count, detail, metrics) = {
         let mut index = lock_threads_workspace_index();
         let bucket = workspace_bucket_mut(&mut index, target);
         let mut ok = true;
         let mut detail = None;
+        let mut metrics = None;
         match rebuilt_items {
-            Ok(Ok(rebuilt_items)) => {
+            Ok(Ok(rebuilt)) => {
+                metrics = rebuilt.metrics;
+                let rebuilt_items = rebuilt.items;
                 let previous_items = bucket.items.clone();
                 let retained_live_items = retained_live_notification_items(&bucket.items);
                 let mut next_items =
@@ -849,7 +852,7 @@ async fn refresh_workspace_thread_index(target: WorkspaceTarget) {
         }
         clear_bucket_refreshing(bucket);
         bucket.last_rebuild_ms = rebuild_ms;
-        (ok, bucket.items.len(), detail)
+        (ok, bucket.items.len(), detail, metrics)
     };
     let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
         "/codex/threads",
@@ -861,6 +864,7 @@ async fn refresh_workspace_thread_index(target: WorkspaceTarget) {
     pipeline.item_count = Some(item_count);
     pipeline.ok = Some(ok);
     pipeline.detail = detail;
+    pipeline.metrics = metrics;
     crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
 }
 

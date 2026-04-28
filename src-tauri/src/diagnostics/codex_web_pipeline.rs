@@ -61,6 +61,8 @@ pub(crate) struct CodexWebPipelineEvent {
     pub ok: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<Value>,
 }
 
 impl CodexWebPipelineEvent {
@@ -91,6 +93,7 @@ impl CodexWebPipelineEvent {
             rebuild_ms: None,
             ok: None,
             detail: None,
+            metrics: None,
         }
     }
 }
