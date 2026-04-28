@@ -280,6 +280,7 @@ pub fn watchdog_summary() -> serde_json::Value {
         .collect();
     let recent_signals: Vec<serde_json::Value> = activity_records
         .iter()
+        .filter(|record| !record.actionable)
         .rev()
         .take(5)
         .map(watchdog_incident_json)
@@ -816,6 +817,81 @@ mod tests {
                 .get("impact")
                 .and_then(|value| value.as_str()),
             Some("background")
+        );
+    }
+
+    #[test]
+    fn watchdog_summary_treats_minor_startup_frame_stall_as_signal() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let diag_dir = tmp.path().join("diagnostics");
+        std::fs::create_dir_all(&diag_dir).expect("create diag dir");
+        let now = unix_ms();
+
+        write_watchdog_dump(
+            &diag_dir,
+            now.saturating_sub(30_000),
+            "ui-freeze-",
+            "frame-stall",
+            serde_json::json!({
+                "recent_traces": [
+                    {
+                        "kind": "frame_stall",
+                        "fields": {
+                            "active_page": "codex-web",
+                            "elapsed_ms": 102,
+                            "monitor_kind": "startup",
+                            "visible": true
+                        },
+                        "unix_ms": now.saturating_sub(30_000)
+                    }
+                ],
+                "snapshot": {
+                    "active_page": "codex-web",
+                    "visible": true
+                }
+            }),
+        );
+
+        let result = watchdog_summary_for_user_data_dir(tmp.path());
+
+        assert_eq!(
+            result
+                .get("incident_count")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(99),
+            0
+        );
+        assert!(result.get("last_incident_kind").unwrap().is_null());
+        assert_eq!(
+            result
+                .get("background_signal_count")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+            1
+        );
+        assert_eq!(
+            result
+                .get("recent_incidents")
+                .and_then(|value| value.as_array())
+                .map(Vec::len)
+                .unwrap_or(99),
+            0
+        );
+        let recent_signals = result
+            .get("recent_signals")
+            .and_then(|value| value.as_array())
+            .expect("recent signals");
+        assert_eq!(
+            recent_signals[0]
+                .get("severity")
+                .and_then(|value| value.as_str()),
+            Some("info")
+        );
+        assert_eq!(
+            recent_signals[0]
+                .get("impact")
+                .and_then(|value| value.as_str()),
+            Some("startup")
         );
     }
 

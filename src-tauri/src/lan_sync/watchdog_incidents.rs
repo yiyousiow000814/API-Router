@@ -1,5 +1,7 @@
 use serde_json::Value;
 
+const STARTUP_FRAME_STALL_WARNING_MS: u64 = 250;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WatchdogIncidentSeverity {
     Info,
@@ -164,6 +166,12 @@ fn classify_frame_stall_incident(payload: &Value) -> WatchdogIncidentClassificat
     let monitor_kind = fields
         .and_then(|fields| json_field_str(fields, "monitor_kind"))
         .unwrap_or_default();
+    if monitor_kind == "startup" && elapsed_ms < STARTUP_FRAME_STALL_WARNING_MS {
+        return WatchdogIncidentClassification {
+            severity: WatchdogIncidentSeverity::Info,
+            impact: "startup",
+        };
+    }
     WatchdogIncidentClassification {
         severity,
         impact: if monitor_kind == "startup" {
