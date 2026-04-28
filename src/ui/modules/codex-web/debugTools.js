@@ -52,9 +52,23 @@ export function collectPendingLiveTraceEvents(state, limit = 40) {
     .filter((event) => {
       if (!event || event.__traceUploaded === true) return false;
       if (uploadAll) return true;
-      return event.__tracePersist === true;
+      return shouldAutoUploadPersistedLiveTraceEvent(event);
     })
     .slice(0, max);
+}
+
+export function shouldAutoUploadPersistedLiveTraceEvent(event) {
+  if (!event || event.__tracePersist !== true) return false;
+  const kind = String(event.kind || "").trim();
+  if (!kind.startsWith("api.request:")) return true;
+  if (event.ok === false || event.error) return true;
+  const status = Number(event.status || 0);
+  if (Number.isFinite(status) && status >= 400) return true;
+  if (kind === "api.request:finish") {
+    const elapsedMs = Number(event.elapsedMs || 0);
+    return Number.isFinite(elapsedMs) && elapsedMs >= 1000;
+  }
+  return false;
 }
 
 function normalizeDebugText(value) {

@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 
 const PROVIDER_SWITCHBOARD_CACHE_TTL: Duration = Duration::from_secs(5);
 const CODEX_MODELS_CACHE_TTL: Duration = Duration::from_secs(30);
+const CODEX_MODELS_PERSISTED_CACHE_VERSION: u64 = 1;
+const CODEX_MODELS_PERSISTED_CACHE_FILE: &str = "codex-web-models-cache-v1.json";
 
 #[derive(Clone)]
 struct ProviderSwitchboardStatusCacheEntry {
@@ -56,12 +58,18 @@ fn codex_models_refresh_lock() -> &'static tokio::sync::Mutex<()> {
 }
 
 fn cached_codex_models_payload() -> Option<Value> {
-    codex_models_cache()
+    if let Some(payload) = codex_models_cache()
         .lock()
         .expect("codex models cache poisoned")
         .as_ref()
         .filter(|entry| entry.cached_at.elapsed() < CODEX_MODELS_CACHE_TTL)
         .map(|entry| entry.payload.clone())
+    {
+        return Some(payload);
+    }
+    let payload = read_persisted_codex_models_payload()?;
+    store_codex_models_payload(payload.clone());
+    Some(payload)
 }
 
 fn store_codex_models_payload(payload: Value) {
@@ -71,6 +79,53 @@ fn store_codex_models_payload(payload: Value) {
         cached_at: Instant::now(),
         payload,
     });
+}
+
+fn codex_models_persisted_cache_path() -> Option<std::path::PathBuf> {
+    Some(
+        crate::diagnostics::current_user_data_dir()?
+            .join("data")
+            .join(CODEX_MODELS_PERSISTED_CACHE_FILE),
+    )
+}
+
+fn read_persisted_codex_models_payload() -> Option<Value> {
+    let path = codex_models_persisted_cache_path()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let value = serde_json::from_str::<Value>(&raw).ok()?;
+    if value.get("version").and_then(Value::as_u64) != Some(CODEX_MODELS_PERSISTED_CACHE_VERSION) {
+        return None;
+    }
+    let payload = value.get("payload")?.clone();
+    if payload.get("items").and_then(Value::as_array)?.is_empty() {
+        return None;
+    }
+    Some(payload)
+}
+
+fn write_persisted_codex_models_payload(payload: &Value) {
+    let Some(path) = codex_models_persisted_cache_path() else {
+        return;
+    };
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let body = json!({
+        "version": CODEX_MODELS_PERSISTED_CACHE_VERSION,
+        "updatedAtUnixSecs": current_unix_secs(),
+        "payload": payload,
+    });
+    let tmp_path = path.with_extension("json.tmp");
+    if std::fs::write(&tmp_path, body.to_string()).is_err() {
+        return;
+    }
+    if std::fs::rename(&tmp_path, &path).is_err() {
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::rename(tmp_path, path);
+    }
 }
 
 fn provider_switchboard_cache_key(scope: &str, homes: &[String]) -> String {
@@ -971,6 +1026,7 @@ async fn codex_models_payload(refresh_requested: bool) -> Result<(Value, bool), 
     }
     let payload = fetch_codex_models_payload().await?;
     store_codex_models_payload(payload.clone());
+    write_persisted_codex_models_payload(&payload);
     Ok((payload, false))
 }
 
@@ -1020,7 +1076,8 @@ mod tests {
     use super::{
         cached_codex_models_payload, clear_provider_switchboard_cache, codex_models_cache,
         extract_model_and_effort_from_toml, provider_switchboard_cache_key,
-        provider_switchboard_homes_cache, resolve_codex_file_path_with_wsl_distro,
+        provider_switchboard_homes_cache, read_persisted_codex_models_payload,
+        resolve_codex_file_path_with_wsl_distro, write_persisted_codex_models_payload,
         CodexModelsCacheEntry, CodexModelsQuery, ProviderSwitchboardHomesCacheEntry,
         CODEX_MODELS_CACHE_TTL, PROVIDER_SWITCHBOARD_CACHE_TTL,
     };
@@ -1098,6 +1155,8 @@ model_reasoning_effort = "medium"
 
     #[test]
     fn codex_models_cache_respects_ttl() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let previous = crate::diagnostics::set_test_user_data_dir_override(Some(temp.path()));
         *codex_models_cache().lock().expect("models cache") = Some(CodexModelsCacheEntry {
             cached_at: Instant::now(),
             payload: json!({ "items": [{ "id": "gpt-5.4-codex" }] }),
@@ -1113,6 +1172,28 @@ model_reasoning_effort = "medium"
         });
         assert!(cached_codex_models_payload().is_none());
         *codex_models_cache().lock().expect("models cache") = None;
+        crate::diagnostics::set_test_user_data_dir_override(previous.as_deref());
+    }
+
+    #[test]
+    fn codex_models_cache_hydrates_from_persisted_payload() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let previous = crate::diagnostics::set_test_user_data_dir_override(Some(temp.path()));
+        *codex_models_cache().lock().expect("models cache") = None;
+        let payload = json!({ "items": [{ "id": "gpt-5.4-codex" }] });
+
+        write_persisted_codex_models_payload(&payload);
+        assert_eq!(
+            read_persisted_codex_models_payload().expect("persisted models")["items"][0]["id"],
+            "gpt-5.4-codex"
+        );
+        assert_eq!(
+            cached_codex_models_payload().expect("hydrated models")["items"][0]["id"],
+            "gpt-5.4-codex"
+        );
+
+        *codex_models_cache().lock().expect("models cache") = None;
+        crate::diagnostics::set_test_user_data_dir_override(previous.as_deref());
     }
 
     #[test]

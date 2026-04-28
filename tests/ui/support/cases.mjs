@@ -166,11 +166,73 @@ export async function tauriInvoke(driver, cmd, args = {}) {
   return out.res
 }
 
+export function selectDirectProviderName(names) {
+  const normalized = Array.from(
+    new Set(
+      (names ?? [])
+        .map((name) => String(name ?? '').trim())
+        .filter(Boolean),
+    ),
+  )
+  return normalized.find((name) => name !== 'official') || normalized[0] || 'official'
+}
+
+async function providerNamesFromDom(driver) {
+  const names = await driver.executeScript(`
+    const values = [];
+    const seen = new Set();
+    const push = (value) => {
+      const name = String(value ?? '').trim();
+      if (!name || seen.has(name)) return;
+      seen.add(name);
+      values.push(name);
+    };
+
+    document
+      .querySelectorAll('.aoProviderConfigCard[data-provider]')
+      .forEach((el) => push(el.getAttribute('data-provider')));
+
+    document
+      .querySelectorAll('.aoTableFixed tbody tr td:first-child')
+      .forEach((cell) => push(cell.textContent));
+
+    return values;
+  `)
+  return Array.isArray(names) ? names : []
+}
+
+async function waitForUiBodyContent(driver, timeoutMs = 45000) {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    const snapshot = await driver.executeScript(`
+      return {
+        readyState: document.readyState,
+        bodyTextLen:
+          document.body && document.body.innerText
+            ? document.body.innerText.trim().length
+            : 0,
+      };
+    `)
+    if (
+      snapshot &&
+      snapshot.readyState === 'complete' &&
+      Number(snapshot.bodyTextLen) >= 40
+    ) {
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200))
+  }
+  throw new Error('UI body content did not become ready before provider selection')
+}
+
 export async function pickDirectProvider(driver) {
+  await waitForUiBodyContent(driver)
+  const domProvider = selectDirectProviderName(await providerNamesFromDom(driver))
+  if (domProvider !== 'official') {
+    return domProvider
+  }
   const cfg = await tauriInvoke(driver, 'get_config', {})
-  const names = Object.keys((cfg && cfg.providers) || {})
-  const nonOfficial = names.find((name) => name !== 'official')
-  return nonOfficial || names[0] || 'official'
+  return selectDirectProviderName(Object.keys((cfg && cfg.providers) || {}))
 }
 
 export async function seedHistoryRows(driver, provider, rowCount = 40) {

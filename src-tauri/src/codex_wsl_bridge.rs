@@ -880,6 +880,20 @@ fn bridge_health_payload_ok(payload: &Value) -> bool {
 }
 
 #[cfg(any(test, target_os = "windows"))]
+fn should_clear_stale_bridge_candidate(
+    selected_port: u16,
+    candidate_port: u16,
+    payload: &Value,
+) -> bool {
+    if selected_port == candidate_port {
+        return false;
+    }
+    let is_bridge = payload.get("bridge").and_then(|v| v.as_str()) == Some(BRIDGE_HEALTH_MARKER)
+        && payload.get("ok").and_then(|v| v.as_bool()) == Some(true);
+    is_bridge && !bridge_health_payload_ok(payload)
+}
+
+#[cfg(any(test, target_os = "windows"))]
 fn build_launch_script(target: &BridgeTarget, port: u16) -> String {
     let distro = target.distro.as_deref().unwrap_or_default();
     let mut prefix = String::new();
@@ -974,17 +988,38 @@ async fn spawn_bridge_child(
 }
 
 #[cfg(target_os = "windows")]
-async fn healthcheck(base_url: &str, client: &Client) -> Result<bool, String> {
+async fn health_payload(base_url: &str, client: &Client) -> Result<Value, String> {
     let response = client
         .get(format!("{base_url}/health"))
         .send()
         .await
         .map_err(|e| e.to_string())?;
     if !response.status().is_success() {
-        return Ok(false);
+        return Err(format!("bridge healthcheck returned {}", response.status()));
     }
-    let payload = response.json::<Value>().await.map_err(|e| e.to_string())?;
+    response.json::<Value>().await.map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "windows")]
+async fn healthcheck(base_url: &str, client: &Client) -> Result<bool, String> {
+    let payload = health_payload(base_url, client).await?;
     Ok(bridge_health_payload_ok(&payload))
+}
+
+#[cfg(target_os = "windows")]
+async fn clear_stale_candidate_bridges(target: &BridgeTarget, selected_port: u16, client: &Client) {
+    for candidate_port in bridge_ports_for_target(target) {
+        if candidate_port == selected_port {
+            continue;
+        }
+        let base_url = format!("http://127.0.0.1:{candidate_port}");
+        let Ok(payload) = health_payload(&base_url, client).await else {
+            continue;
+        };
+        if should_clear_stale_bridge_candidate(selected_port, candidate_port, &payload) {
+            clear_stale_bridge_port(target, candidate_port).await;
+        }
+    }
 }
 
 #[cfg(all(test, target_os = "windows"))]
@@ -1043,6 +1078,7 @@ async fn start_bridge(target: &BridgeTarget) -> Result<BridgeRuntime, String> {
         for port in bridge_ports_for_target(target) {
             let base_url = format!("http://127.0.0.1:{port}");
             if healthcheck(&base_url, &client).await.unwrap_or(false) {
+                clear_stale_candidate_bridges(target, port, &client).await;
                 return Ok(BridgeRuntime {
                     endpoint: BridgeEndpoint { base_url, client },
                     child: None,
@@ -1055,6 +1091,7 @@ async fn start_bridge(target: &BridgeTarget) -> Result<BridgeRuntime, String> {
             let mut launch_dead = None;
             while tokio::time::Instant::now() < deadline {
                 if healthcheck(&base_url, &client).await.unwrap_or(false) {
+                    clear_stale_candidate_bridges(target, port, &client).await;
                     return Ok(BridgeRuntime {
                         endpoint: BridgeEndpoint { base_url, client },
                         child: Some(child),
@@ -1418,6 +1455,32 @@ mod tests {
             "bridge": BRIDGE_HEALTH_MARKER,
             "version": BRIDGE_SCRIPT_VERSION - 1,
         })));
+    }
+
+    #[test]
+    fn stale_bridge_candidate_cleanup_ignores_selected_and_current_ports() {
+        let current = serde_json::json!({
+            "ok": true,
+            "bridge": BRIDGE_HEALTH_MARKER,
+            "version": BRIDGE_SCRIPT_VERSION,
+        });
+        let stale = serde_json::json!({
+            "ok": true,
+            "bridge": BRIDGE_HEALTH_MARKER,
+            "version": BRIDGE_SCRIPT_VERSION - 1,
+        });
+        let unrelated = serde_json::json!({
+            "ok": true,
+            "bridge": "other",
+            "version": BRIDGE_SCRIPT_VERSION - 1,
+        });
+
+        assert!(!should_clear_stale_bridge_candidate(42250, 42250, &stale));
+        assert!(!should_clear_stale_bridge_candidate(42250, 42251, &current));
+        assert!(should_clear_stale_bridge_candidate(42250, 42252, &stale));
+        assert!(!should_clear_stale_bridge_candidate(
+            42250, 42253, &unrelated
+        ));
     }
 
     #[test]

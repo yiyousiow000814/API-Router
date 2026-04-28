@@ -40,7 +40,7 @@ pub(super) struct CodexRuntimeStatePayload {
     active_thread_count: usize,
 }
 
-#[derive(Clone, Serialize, Debug, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub(super) struct CodexVersionInfo {
     windows: String,
     wsl2: String,
@@ -89,6 +89,8 @@ struct DetectedCodexRuntime {
 const WSL_CODEX_VERSION_MARKER: &str = "__API_ROUTER_CODEX_VERSION__";
 const WSL_CODEX_HELP_MARKER: &str = "__API_ROUTER_CODEX_HELP__";
 const WSL_CODEX_APP_SERVER_HELP_MARKER: &str = "__API_ROUTER_CODEX_APP_SERVER_HELP__";
+const CODEX_VERSION_INFO_PERSISTED_CACHE_VERSION: u64 = 1;
+const CODEX_VERSION_INFO_PERSISTED_CACHE_FILE: &str = "codex-web-version-info-cache-v1.json";
 
 fn codex_version_info_cache() -> &'static std::sync::Mutex<Option<CodexVersionInfoCache>> {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<CodexVersionInfoCache>>> =
@@ -106,6 +108,64 @@ fn lock_codex_version_info_cache() -> std::sync::MutexGuard<'static, Option<Code
 
 fn version_info_cache_is_fresh(updated_at_unix_secs: i64, now_unix_secs: i64) -> bool {
     now_unix_secs.saturating_sub(updated_at_unix_secs) < VERSION_INFO_CACHE_SECS
+}
+
+fn codex_version_info_persisted_cache_path() -> Option<PathBuf> {
+    Some(
+        crate::diagnostics::current_user_data_dir()?
+            .join("data")
+            .join(CODEX_VERSION_INFO_PERSISTED_CACHE_FILE),
+    )
+}
+
+fn read_persisted_codex_version_info() -> Option<CodexVersionInfo> {
+    let path = codex_version_info_persisted_cache_path()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let value = serde_json::from_str::<Value>(&raw).ok()?;
+    if value.get("version").and_then(Value::as_u64)
+        != Some(CODEX_VERSION_INFO_PERSISTED_CACHE_VERSION)
+    {
+        return None;
+    }
+    serde_json::from_value(value.get("value")?.clone()).ok()
+}
+
+fn write_persisted_codex_version_info(value: &CodexVersionInfo) {
+    let Some(path) = codex_version_info_persisted_cache_path() else {
+        return;
+    };
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let body = json!({
+        "version": CODEX_VERSION_INFO_PERSISTED_CACHE_VERSION,
+        "updatedAtUnixSecs": current_unix_secs(),
+        "value": value,
+    });
+    let tmp_path = path.with_extension("json.tmp");
+    if std::fs::write(&tmp_path, body.to_string()).is_err() {
+        return;
+    }
+    if std::fs::rename(&tmp_path, &path).is_err() {
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::rename(tmp_path, path);
+    }
+}
+
+fn cached_codex_version_info() -> Option<CodexVersionInfoCache> {
+    if let Some(cached) = lock_codex_version_info_cache().clone() {
+        return Some(cached);
+    }
+    let value = read_persisted_codex_version_info()?;
+    let cached = CodexVersionInfoCache {
+        value,
+        updated_at_unix_secs: current_unix_secs(),
+    };
+    *lock_codex_version_info_cache() = Some(cached.clone());
+    Some(cached)
 }
 
 pub(super) fn truncate_output(value: &[u8]) -> (String, bool) {
@@ -414,6 +474,7 @@ async fn detect_codex_version_info_payload() -> CodexVersionInfo {
             updated_at_unix_secs: current_unix_secs(),
         });
     }
+    write_persisted_codex_version_info(&payload);
     let _ =
         crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(&json!({
             "source": "backend.version_info",
@@ -499,7 +560,7 @@ pub(super) async fn codex_version_info(
         return resp;
     }
     let now = current_unix_secs();
-    if let Some(cached) = lock_codex_version_info_cache().clone() {
+    if let Some(cached) = cached_codex_version_info() {
         if version_info_cache_is_fresh(cached.updated_at_unix_secs, now) {
             let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
                 "/codex/version-info",
@@ -725,6 +786,42 @@ mod tests {
             1_000,
             1_000 + VERSION_INFO_CACHE_SECS
         ));
+    }
+
+    #[test]
+    fn persisted_version_info_hydrates_memory_cache_without_runtime_probe() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let previous = crate::diagnostics::set_test_user_data_dir_override(Some(temp.path()));
+        *lock_codex_version_info_cache() = None;
+        let payload = build_version_payload(
+            DetectedCodexRuntime {
+                version: "codex-cli 1.0.0".to_string(),
+                installed: true,
+                app_server_supported: true,
+                remote_tui_supported: true,
+            },
+            DetectedCodexRuntime {
+                version: "codex-cli 1.0.0-wsl".to_string(),
+                installed: true,
+                app_server_supported: true,
+                remote_tui_supported: true,
+            },
+            "abc12345".to_string(),
+            "abc12345".to_string(),
+            Some("abc12345".to_string()),
+        );
+
+        write_persisted_codex_version_info(&payload);
+        *lock_codex_version_info_cache() = None;
+        let cached = cached_codex_version_info().expect("persisted version cache");
+
+        assert_eq!(cached.value, payload);
+        assert!(version_info_cache_is_fresh(
+            cached.updated_at_unix_secs,
+            current_unix_secs()
+        ));
+        *lock_codex_version_info_cache() = None;
+        crate::diagnostics::set_test_user_data_dir_override(previous.as_deref());
     }
 
     #[test]

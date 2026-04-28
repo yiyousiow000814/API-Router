@@ -102,7 +102,43 @@ fn ui_watchdog_process_resources_snapshot() -> serde_json::Value {
     static SNAPSHOT_CACHE: std::sync::OnceLock<
         std::sync::Mutex<Option<(std::time::Instant, serde_json::Value)>>,
     > = std::sync::OnceLock::new();
+    static SNAPSHOT_CAPTURE_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+        std::sync::OnceLock::new();
     let cache = SNAPSHOT_CACHE.get_or_init(|| std::sync::Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((updated_at, snapshot)) = guard.as_ref() {
+            if updated_at.elapsed().as_millis() < u128::from(UI_WATCHDOG_PROCESS_SNAPSHOT_CACHE_MS)
+            {
+                let mut cached = snapshot.clone();
+                if let Some(obj) = cached.as_object_mut() {
+                    obj.insert("cache_hit".to_string(), serde_json::Value::Bool(true));
+                }
+                return cached;
+            }
+        }
+    }
+    let capture_lock = SNAPSHOT_CAPTURE_LOCK.get_or_init(|| std::sync::Mutex::new(()));
+    let Ok(_capture_guard) = capture_lock.try_lock() else {
+        if let Ok(guard) = cache.lock() {
+            if let Some((_updated_at, snapshot)) = guard.as_ref() {
+                let mut cached = snapshot.clone();
+                if let Some(obj) = cached.as_object_mut() {
+                    obj.insert("cache_hit".to_string(), serde_json::Value::Bool(true));
+                    obj.insert(
+                        "capture_in_progress".to_string(),
+                        serde_json::Value::Bool(true),
+                    );
+                }
+                return cached;
+            }
+        }
+        return serde_json::json!({
+            "available": false,
+            "source": "tasklist",
+            "capture_in_progress": true,
+            "error": "process resource snapshot already in progress",
+        });
+    };
     if let Ok(guard) = cache.lock() {
         if let Some((updated_at, snapshot)) = guard.as_ref() {
             if updated_at.elapsed().as_millis() < u128::from(UI_WATCHDOG_PROCESS_SNAPSHOT_CACHE_MS)

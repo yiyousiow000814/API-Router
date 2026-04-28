@@ -3,6 +3,7 @@ use crate::orchestrator::gateway::web_codex_session_runtime::workspace_thread_ru
 use chrono::DateTime;
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 mod source;
@@ -20,6 +21,8 @@ const THREADS_WSL2_INDEX_STALE_SECS: i64 = 180;
 const THREADS_REFRESH_STUCK_SECS: i64 = 12;
 const THREADS_REFRESH_FAILURE_BACKOFF_SECS: i64 = 15;
 const THREADS_FORCE_WAIT_MAX_MS: u64 = 1500;
+const THREADS_WSL2_PERSISTED_SNAPSHOT_VERSION: u64 = 1;
+const THREADS_WSL2_PERSISTED_SNAPSHOT_FILE: &str = "codex-web-wsl2-thread-index-snapshot-v1.json";
 
 #[derive(Default)]
 struct WorkspaceThreadsBucket {
@@ -90,6 +93,108 @@ fn workspace_bucket_is_stale(
     now_unix_secs: i64,
 ) -> bool {
     now_unix_secs.saturating_sub(bucket.updated_at_unix_secs) >= thread_index_stale_secs(target)
+}
+
+fn workspace_allows_stale_auto_refresh(target: WorkspaceTarget) -> bool {
+    !matches!(target, WorkspaceTarget::Wsl2)
+}
+
+fn workspace_bucket_needs_auto_refresh(
+    target: WorkspaceTarget,
+    bucket: &WorkspaceThreadsBucket,
+    now_unix_secs: i64,
+) -> bool {
+    let has_items = !bucket.items.is_empty();
+    let stale = workspace_bucket_is_stale(target, bucket, now_unix_secs);
+    let stale_requires_refresh = stale && workspace_allows_stale_auto_refresh(target);
+    !has_items || has_missing_session_rollout_path(&bucket.items) || stale_requires_refresh
+}
+
+fn workspace_bucket_is_effectively_fresh(
+    target: WorkspaceTarget,
+    bucket: &WorkspaceThreadsBucket,
+    now_unix_secs: i64,
+) -> bool {
+    if bucket.updated_at_unix_secs <= 0 || has_missing_session_rollout_path(&bucket.items) {
+        return false;
+    }
+    !workspace_bucket_is_stale(target, bucket, now_unix_secs)
+        || !workspace_allows_stale_auto_refresh(target)
+}
+
+fn persisted_wsl2_thread_snapshot_path() -> Option<PathBuf> {
+    let raw = std::env::var("API_ROUTER_USER_DATA_DIR").ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(
+        PathBuf::from(trimmed)
+            .join("data")
+            .join(THREADS_WSL2_PERSISTED_SNAPSHOT_FILE),
+    )
+}
+
+fn read_persisted_wsl2_thread_snapshot() -> Option<(Vec<Value>, i64)> {
+    let path = persisted_wsl2_thread_snapshot_path()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let value = serde_json::from_str::<Value>(&raw).ok()?;
+    if value.get("version").and_then(Value::as_u64) != Some(THREADS_WSL2_PERSISTED_SNAPSHOT_VERSION)
+    {
+        return None;
+    }
+    let items = value.get("items").and_then(Value::as_array)?.clone();
+    if items.is_empty() {
+        return None;
+    }
+    let updated_at = value
+        .get("updatedAtUnixSecs")
+        .and_then(Value::as_i64)
+        .filter(|value| *value > 0)
+        .unwrap_or_else(current_unix_secs);
+    Some((items, updated_at))
+}
+
+fn write_persisted_wsl2_thread_snapshot(items: &[Value], updated_at_unix_secs: i64) {
+    let Some(path) = persisted_wsl2_thread_snapshot_path() else {
+        return;
+    };
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let body = json!({
+        "version": THREADS_WSL2_PERSISTED_SNAPSHOT_VERSION,
+        "updatedAtUnixSecs": updated_at_unix_secs,
+        "items": items,
+    });
+    let tmp_path = path.with_extension("json.tmp");
+    if std::fs::write(&tmp_path, body.to_string()).is_err() {
+        return;
+    }
+    let _ = std::fs::rename(tmp_path, path);
+}
+
+fn hydrate_workspace_bucket_from_persisted_snapshot(
+    target: WorkspaceTarget,
+    bucket: &mut WorkspaceThreadsBucket,
+) -> bool {
+    if !matches!(target, WorkspaceTarget::Wsl2) {
+        return false;
+    }
+    if bucket.updated_at_unix_secs > 0 || !bucket.items.is_empty() {
+        return false;
+    }
+    let Some((items, updated_at)) = read_persisted_wsl2_thread_snapshot() else {
+        return false;
+    };
+    bucket.items = items;
+    bucket.updated_at_unix_secs = updated_at;
+    bucket.last_rebuild_ms = 0;
+    mark_bucket_items_changed(bucket);
+    true
 }
 
 fn parse_timestamp_secs(value: &Value) -> Option<i64> {
@@ -680,6 +785,7 @@ pub(super) fn spawn_thread_index_prewarm() {
         let should_spawn = {
             let mut index = lock_threads_workspace_index();
             let bucket = workspace_bucket_mut(&mut index, target);
+            hydrate_workspace_bucket_from_persisted_snapshot(target, bucket);
             if bucket.refreshing || !bucket.items.is_empty() {
                 false
             } else {
@@ -700,13 +806,11 @@ pub(crate) fn cached_threads_snapshot_stale_while_revalidate() -> CachedThreadIn
         let mut index = lock_threads_workspace_index();
         for target in [WorkspaceTarget::Windows, WorkspaceTarget::Wsl2] {
             let bucket = workspace_bucket_mut(&mut index, target);
+            hydrate_workspace_bucket_from_persisted_snapshot(target, bucket);
             if bucket_refresh_is_stuck(bucket, now) {
                 clear_bucket_refreshing(bucket);
             }
-            let has_items = !bucket.items.is_empty();
-            let stale = workspace_bucket_is_stale(target, bucket, now);
-            let has_missing_rollout = has_missing_session_rollout_path(&bucket.items);
-            if (!has_items || stale || has_missing_rollout)
+            if workspace_bucket_needs_auto_refresh(target, bucket, now)
                 && !bucket.refreshing
                 && !bucket_refresh_failure_backoff_active(bucket, now)
             {
@@ -729,9 +833,7 @@ pub(crate) fn cached_threads_snapshot_stale_while_revalidate() -> CachedThreadIn
         (WorkspaceTarget::Wsl2, wsl2),
     ]
     .into_iter()
-    .all(|(target, bucket)| {
-        bucket.updated_at_unix_secs > 0 && !workspace_bucket_is_stale(target, bucket, now)
-    });
+    .all(|(target, bucket)| workspace_bucket_is_effectively_fresh(target, bucket, now));
     CachedThreadIndexSnapshot {
         items: merged,
         fresh,
@@ -814,12 +916,13 @@ async fn refresh_workspace_thread_index(target: WorkspaceTarget) {
     )
     .await;
     let rebuild_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
-    let (ok, item_count, detail, metrics) = {
+    let (ok, item_count, detail, metrics, persisted_wsl2_snapshot) = {
         let mut index = lock_threads_workspace_index();
         let bucket = workspace_bucket_mut(&mut index, target);
         let mut ok = true;
         let mut detail = None;
         let mut metrics = None;
+        let mut persisted_wsl2_snapshot = None;
         match rebuilt_items {
             Ok(Ok(rebuilt)) => {
                 metrics = rebuilt.metrics;
@@ -835,6 +938,10 @@ async fn refresh_workspace_thread_index(target: WorkspaceTarget) {
                 bucket.items = next_items;
                 bucket.updated_at_unix_secs = current_unix_secs();
                 bucket.last_failed_at_unix_secs = 0;
+                if matches!(target, WorkspaceTarget::Wsl2) {
+                    persisted_wsl2_snapshot =
+                        Some((bucket.items.clone(), bucket.updated_at_unix_secs));
+                }
                 log_thread_index_rebuild_delta(target, &previous_items, &bucket.items, rebuild_ms);
             }
             Ok(Err(err)) => {
@@ -852,8 +959,17 @@ async fn refresh_workspace_thread_index(target: WorkspaceTarget) {
         }
         clear_bucket_refreshing(bucket);
         bucket.last_rebuild_ms = rebuild_ms;
-        (ok, bucket.items.len(), detail, metrics)
+        (
+            ok,
+            bucket.items.len(),
+            detail,
+            metrics,
+            persisted_wsl2_snapshot,
+        )
     };
+    if let Some((items, updated_at_unix_secs)) = persisted_wsl2_snapshot {
+        write_persisted_wsl2_thread_snapshot(&items, updated_at_unix_secs);
+    }
     let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
         "/codex/threads",
         workspace_target_label(target),
@@ -902,16 +1018,14 @@ async fn ensure_workspace_index_fresh(target: WorkspaceTarget, force: bool) {
     let action = {
         let mut index = lock_threads_workspace_index();
         let bucket = workspace_bucket_mut(&mut index, target);
+        hydrate_workspace_bucket_from_persisted_snapshot(target, bucket);
         if bucket_refresh_is_stuck(bucket, now) {
             clear_bucket_refreshing(bucket);
         }
-        let has_items = !bucket.items.is_empty();
-        let stale = workspace_bucket_is_stale(target, bucket, now);
-        let has_missing_rollout = has_missing_session_rollout_path(&bucket.items);
         let in_failure_backoff = bucket_refresh_failure_backoff_active(bucket, now);
         let needs_refresh = !bucket.refreshing
             && !in_failure_backoff
-            && (!has_items || has_missing_rollout || stale);
+            && workspace_bucket_needs_auto_refresh(target, bucket, now);
 
         if needs_refresh {
             mark_bucket_refreshing(bucket);
@@ -933,8 +1047,9 @@ mod tests {
     use super::{
         find_rollout_path_in_items, has_missing_session_rollout_path,
         invalidate_thread_list_cache_all, list_threads_snapshot, lock_threads_workspace_index,
-        thread_index_stale_secs, upsert_thread_item_hint, upsert_thread_notification_hint,
-        workspace_bucket_is_stale, workspace_bucket_mut, workspace_bucket_ref, NotificationScopes,
+        read_persisted_wsl2_thread_snapshot, thread_index_stale_secs, upsert_thread_item_hint,
+        upsert_thread_notification_hint, workspace_bucket_is_stale, workspace_bucket_mut,
+        workspace_bucket_ref, write_persisted_wsl2_thread_snapshot, NotificationScopes,
         WorkspaceThreadsBucket, THREADS_REFRESH_STUCK_SECS, THREADS_WINDOWS_INDEX_STALE_SECS,
         THREADS_WSL2_INDEX_STALE_SECS,
     };
@@ -1878,6 +1993,130 @@ mod tests {
         let index = lock_threads_workspace_index();
         let bucket = workspace_bucket_ref(&index, WorkspaceTarget::Wsl2);
         assert!(bucket.refreshing);
+    }
+
+    #[tokio::test]
+    async fn wsl2_stale_cached_thread_list_does_not_auto_rebuild_on_non_force() {
+        let _test_guard = codex_app_server::lock_test_globals();
+        invalidate_thread_list_cache_all();
+        upsert_thread_item_hint(
+            WorkspaceTarget::Wsl2,
+            serde_json::json!({
+                "id": "thread-wsl-cached",
+                "workspace": "wsl2",
+                "preview": "cached",
+                "path": "/home/yiyou/.codex/sessions/rollout-thread-wsl-cached.jsonl",
+                "source": "wsl-session-index",
+                "updatedAt": 1742331000
+            }),
+        );
+        {
+            let mut index = lock_threads_workspace_index();
+            let bucket = workspace_bucket_mut(&mut index, WorkspaceTarget::Wsl2);
+            bucket.updated_at_unix_secs =
+                super::current_unix_secs() - THREADS_WSL2_INDEX_STALE_SECS - 1;
+            bucket.refreshing = false;
+        }
+
+        let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Wsl2), false).await;
+
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(
+            snapshot.items[0].get("id").and_then(Value::as_str),
+            Some("thread-wsl-cached")
+        );
+        assert!(
+            !snapshot.refreshing,
+            "cached WSL2 list should not launch background WSL work during normal polling"
+        );
+        let index = lock_threads_workspace_index();
+        let bucket = workspace_bucket_ref(&index, WorkspaceTarget::Wsl2);
+        assert!(
+            !bucket.refreshing,
+            "normal WSL2 cache reads must not leave a background rebuild running"
+        );
+    }
+
+    #[tokio::test]
+    async fn wsl2_thread_snapshot_hydrates_from_persisted_cache_without_refresh() {
+        let _test_guard = codex_app_server::lock_test_globals();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let user_data_dir = temp.path().join("user-data");
+        let cache_dir = user_data_dir.join("data");
+        std::fs::create_dir_all(&cache_dir).expect("cache dir");
+        std::fs::write(
+            cache_dir.join("codex-web-wsl2-thread-index-snapshot-v1.json"),
+            serde_json::json!({
+                "version": 1,
+                "updatedAtUnixSecs": super::current_unix_secs() - THREADS_WSL2_INDEX_STALE_SECS - 60,
+                "items": [{
+                    "id": "persisted-wsl-thread",
+                    "workspace": "wsl2",
+                    "preview": "persisted",
+                    "path": "\\\\wsl.localhost\\Ubuntu\\home\\yiyou\\.codex\\sessions\\rollout-persisted-wsl-thread.jsonl",
+                    "source": "wsl-session-index",
+                    "updatedAt": 1742331000
+                }]
+            })
+            .to_string(),
+        )
+        .expect("write persisted snapshot");
+        let _guard = EnvGuard::set("API_ROUTER_USER_DATA_DIR", &user_data_dir.to_string_lossy());
+        invalidate_thread_list_cache_all();
+
+        let snapshot = list_threads_snapshot(Some(WorkspaceTarget::Wsl2), false).await;
+
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(
+            snapshot.items[0].get("id").and_then(Value::as_str),
+            Some("persisted-wsl-thread")
+        );
+        assert!(
+            !snapshot.refreshing,
+            "persisted WSL2 cache should avoid launching WSL during reload"
+        );
+        let index = lock_threads_workspace_index();
+        let bucket = workspace_bucket_ref(&index, WorkspaceTarget::Wsl2);
+        assert!(
+            !bucket.refreshing,
+            "hydrating WSL2 cache should not leave background WSL work running"
+        );
+    }
+
+    #[test]
+    fn persisted_wsl2_thread_snapshot_replaces_existing_file() {
+        let _test_guard = codex_app_server::lock_test_globals();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let user_data_dir = temp.path().join("user-data");
+        let _guard = EnvGuard::set("API_ROUTER_USER_DATA_DIR", &user_data_dir.to_string_lossy());
+
+        write_persisted_wsl2_thread_snapshot(
+            &[serde_json::json!({
+                "id": "first",
+                "workspace": "wsl2",
+                "path": "\\\\wsl.localhost\\Ubuntu\\home\\yiyou\\.codex\\sessions\\first.jsonl"
+            })],
+            100,
+        );
+        write_persisted_wsl2_thread_snapshot(
+            &[serde_json::json!({
+                "id": "second",
+                "workspace": "wsl2",
+                "path": "\\\\wsl.localhost\\Ubuntu\\home\\yiyou\\.codex\\sessions\\second.jsonl"
+            })],
+            200,
+        );
+
+        let (items, updated_at) =
+            read_persisted_wsl2_thread_snapshot().expect("persisted snapshot");
+        assert_eq!(updated_at, 200);
+        assert_eq!(
+            items
+                .first()
+                .and_then(|item| item.get("id"))
+                .and_then(Value::as_str),
+            Some("second")
+        );
     }
 
     #[test]

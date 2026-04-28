@@ -173,4 +173,56 @@ describe("webDiagnostics", () => {
     );
     expect(rafCallbacks.length).toBeGreaterThan(0);
   });
+
+  it("captures visible sub-second animation jank by default", async () => {
+    const requests = [];
+    const listeners = {};
+    const rafCallbacks = [];
+    let now = 1000;
+    const diagnostics = createCodexWebDiagnostics({
+      state: {
+        token: "test-token",
+        activeMainTab: "chat",
+      },
+      windowRef: {
+        addEventListener(name, handler) {
+          listeners[name] = handler;
+        },
+      },
+      documentRef: { visibilityState: "visible" },
+      fetchRef: async (path, options) => {
+        requests.push({ path, body: JSON.parse(options.body), headers: options.headers });
+        return { ok: true };
+      },
+      requestAnimationFrameRef: vi.fn((fn) => {
+        rafCallbacks.push(fn);
+        return rafCallbacks.length;
+      }),
+      PerformanceObserverRef: null,
+      setTimeoutRef: vi.fn(),
+      clearTimeoutRef: vi.fn(),
+      setIntervalRef: vi.fn(),
+      clearIntervalRef: vi.fn(),
+      nowRef: () => now,
+      interactionSampleCooldownMs: 0,
+      interactionMonitorWindowMs: 1000,
+    });
+
+    diagnostics.install();
+    requests.length = 0;
+    listeners.pointerdown();
+    now += 100;
+    rafCallbacks.shift()();
+    await diagnostics.flush();
+
+    expect(requests.at(-1).body.frameStalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          activePage: "codex-web",
+          elapsedMs: 100,
+          monitorKind: "startup",
+        }),
+      ])
+    );
+  });
 });

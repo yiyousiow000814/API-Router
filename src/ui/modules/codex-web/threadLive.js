@@ -43,7 +43,6 @@ export function shouldPollActiveThreadLive({
   if (String(activeThreadPendingUserMessage || "").trim()) return true;
   if (String(activeThreadPendingAssistantMessage || "").trim()) return true;
   if (activeThreadOpenState?.resumeRequired === true) return true;
-  if (activeThreadStarted === true) return true;
   return false;
 }
 
