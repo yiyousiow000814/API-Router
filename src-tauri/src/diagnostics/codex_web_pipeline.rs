@@ -2,12 +2,15 @@ use crate::diagnostics::{current_diagnostics_dir, ensure_parent_dir};
 use crate::orchestrator::store::unix_ms;
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{mpsc, Mutex, OnceLock};
 
 const PIPELINE_EVENTS_FILE: &str = "codex_web_pipeline.ndjson";
 const PIPELINE_MAX_BYTES: usize = 2 * 1024 * 1024;
+const PIPELINE_WATCHDOG_SLOW_AFTER_MS: u64 = 750;
+const PIPELINE_WATCHDOG_COOLDOWN_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -132,6 +135,7 @@ pub(crate) fn append_pipeline_event(event: CodexWebPipelineEvent) {
         Err(_) => return,
     };
     enqueue_pipeline_line(path, line.clone());
+    maybe_write_pipeline_watchdog_dump(&payload);
     let _ =
         crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(&json!({
             "source": "codex.pipeline",
@@ -189,6 +193,111 @@ fn enqueue_pipeline_line(path: PathBuf, line: String) {
     }
 }
 
+fn pipeline_watchdog_log_times() -> &'static Mutex<HashMap<String, u64>> {
+    static TIMES: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    TIMES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn pipeline_watchdog_event_key(payload: &serde_json::Map<String, Value>) -> String {
+    let route = payload
+        .get("route")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let stage = payload
+        .get("stage")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let workspace = payload
+        .get("workspace")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let method = payload
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    format!("{stage}|{route}|{workspace}|{method}")
+}
+
+fn pipeline_stage_is_watchdog_relevant(stage: &str) -> bool {
+    matches!(
+        stage,
+        "runtime_detect"
+            | "app_server_resolve"
+            | "app_server_rpc"
+            | "session_index_rebuild"
+            | "gateway_handler"
+            | "gateway_response_out"
+            | "git_command"
+            | "gh_command"
+            | "git_meta_snapshot"
+    )
+}
+
+fn pipeline_event_elapsed_ms(payload: &serde_json::Map<String, Value>) -> u64 {
+    payload
+        .get("elapsedMs")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
+
+fn should_write_pipeline_watchdog_dump(
+    payload: &serde_json::Map<String, Value>,
+    now_ms: u64,
+) -> bool {
+    if pipeline_event_elapsed_ms(payload) < PIPELINE_WATCHDOG_SLOW_AFTER_MS {
+        return false;
+    }
+    let stage = payload
+        .get("stage")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !pipeline_stage_is_watchdog_relevant(stage) {
+        return false;
+    }
+    let key = pipeline_watchdog_event_key(payload);
+    let mut times = match pipeline_watchdog_log_times().lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    let previous = times.get(&key).copied().unwrap_or(0);
+    if previous > 0 && now_ms.saturating_sub(previous) < PIPELINE_WATCHDOG_COOLDOWN_MS {
+        return false;
+    }
+    times.insert(key, now_ms);
+    true
+}
+
+fn maybe_write_pipeline_watchdog_dump(payload: &serde_json::Map<String, Value>) {
+    let now_ms = payload
+        .get("at")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(unix_ms);
+    if !should_write_pipeline_watchdog_dump(payload, now_ms) {
+        return;
+    }
+    let Some(dir) = current_diagnostics_dir() else {
+        return;
+    };
+    let path = dir.join(format!("ui-freeze-{now_ms}-backend-pipeline.json"));
+    let pipeline_event = Value::Object(payload.clone());
+    let dump = json!({
+        "trigger": "backend-pipeline",
+        "captured_at_unix_ms": now_ms,
+        "window_ms": 60_000,
+        "pipeline_event": pipeline_event,
+        "recent_traces": [
+            {
+                "at": now_ms,
+                "kind": "backend_pipeline",
+                "fields": Value::Object(payload.clone()),
+            }
+        ],
+    });
+    std::thread::spawn(move || {
+        let _ = crate::diagnostics::write_pretty_json(&path, &dump);
+    });
+}
+
 fn append_ndjson_line_capped(path: &Path, line: &str, max_bytes: usize) {
     if let Err(err) = ensure_parent_dir(path) {
         log::warn!("failed to create pipeline diagnostics parent dir: {err}");
@@ -213,6 +322,7 @@ fn append_ndjson_line_capped(path: &Path, line: &str, max_bytes: usize) {
 mod tests {
     use super::{append_pipeline_event, CodexWebPipelineEvent};
     use crate::diagnostics::{current_diagnostics_dir, set_test_user_data_dir_override};
+    use serde_json::json;
     use std::time::{Duration, Instant};
 
     fn wait_for_text(path: &std::path::Path, needle: &str) -> String {
@@ -227,6 +337,26 @@ mod tests {
                 started.elapsed() < Duration::from_secs(2),
                 "timed out waiting for {needle} in {}",
                 path.display()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wait_for_watchdog_file(dir: &std::path::Path) -> String {
+        let started = Instant::now();
+        loop {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.filter_map(|entry| entry.ok()) {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.ends_with("-backend-pipeline.json") {
+                        return std::fs::read_to_string(entry.path()).expect("read watchdog dump");
+                    }
+                }
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for backend pipeline watchdog dump in {}",
+                dir.display()
             );
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -273,6 +403,54 @@ mod tests {
 
         let text = wait_for_text(&path, r#""workspace":"wsl2""#);
         assert!(text.len() <= super::PIPELINE_MAX_BYTES);
+        set_test_user_data_dir_override(prev.as_deref());
+    }
+
+    #[test]
+    fn slow_pipeline_event_writes_watchdog_dump() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let prev = set_test_user_data_dir_override(Some(temp.path()));
+        let mut event =
+            CodexWebPipelineEvent::new("/codex/version-info", "wsl2", "runtime_detect", 901);
+        event.source = Some("codex-version-command".to_string());
+        append_pipeline_event(event);
+
+        let dir = current_diagnostics_dir().expect("diagnostics dir");
+        let text = wait_for_watchdog_file(&dir);
+        assert!(text.contains(r#""trigger": "backend-pipeline""#));
+        assert!(text.contains(r#""route": "/codex/version-info""#));
+        assert!(text.contains(r#""workspace": "wsl2""#));
+        assert!(text.contains(r#""stage": "runtime_detect""#));
+        set_test_user_data_dir_override(prev.as_deref());
+    }
+
+    #[test]
+    fn historical_thread_rebuild_metric_does_not_write_watchdog_dump_for_fast_response() {
+        let mut payload = serde_json::Map::new();
+        payload.insert("route".to_string(), json!("/codex/threads"));
+        payload.insert("workspace".to_string(), json!("wsl2"));
+        payload.insert("stage".to_string(), json!("gateway_handler"));
+        payload.insert("elapsedMs".to_string(), json!(0));
+        payload.insert("rebuildMs".to_string(), json!(1_050));
+
+        assert!(!super::should_write_pipeline_watchdog_dump(
+            &payload,
+            1_777_000_000_000
+        ));
+    }
+
+    #[test]
+    fn slow_session_index_rebuild_writes_watchdog_dump() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let prev = set_test_user_data_dir_override(Some(temp.path()));
+        let event =
+            CodexWebPipelineEvent::new("/codex/threads", "wsl2", "session_index_rebuild", 1_050);
+        append_pipeline_event(event);
+
+        let dir = current_diagnostics_dir().expect("diagnostics dir");
+        let text = wait_for_watchdog_file(&dir);
+        assert!(text.contains(r#""route": "/codex/threads""#));
+        assert!(text.contains(r#""elapsedMs": 1050"#));
         set_test_user_data_dir_override(prev.as_deref());
     }
 

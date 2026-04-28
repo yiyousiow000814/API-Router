@@ -86,6 +86,10 @@ struct DetectedCodexRuntime {
     remote_tui_supported: bool,
 }
 
+const WSL_CODEX_VERSION_MARKER: &str = "__API_ROUTER_CODEX_VERSION__";
+const WSL_CODEX_HELP_MARKER: &str = "__API_ROUTER_CODEX_HELP__";
+const WSL_CODEX_APP_SERVER_HELP_MARKER: &str = "__API_ROUTER_CODEX_APP_SERVER_HELP__";
+
 fn codex_version_info_cache() -> &'static std::sync::Mutex<Option<CodexVersionInfoCache>> {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<CodexVersionInfoCache>>> =
         std::sync::OnceLock::new();
@@ -166,6 +170,43 @@ async fn run_wsl_shell_stdout(command: &str) -> Option<String> {
     run_stdout_cmd(cmd).await
 }
 
+fn wsl_codex_runtime_probe_command() -> &'static str {
+    "printf '%s\n' '__API_ROUTER_CODEX_VERSION__'; codex --version 2>/dev/null || true; printf '%s\n' '__API_ROUTER_CODEX_HELP__'; codex --help 2>/dev/null || true; printf '%s\n' '__API_ROUTER_CODEX_APP_SERVER_HELP__'; codex app-server --help 2>/dev/null || true"
+}
+
+fn marker_section<'a>(output: &'a str, marker: &str) -> &'a str {
+    let Some(start) = output.find(marker).map(|index| index + marker.len()) else {
+        return "";
+    };
+    let rest = &output[start..];
+    let end = [
+        WSL_CODEX_VERSION_MARKER,
+        WSL_CODEX_HELP_MARKER,
+        WSL_CODEX_APP_SERVER_HELP_MARKER,
+    ]
+    .iter()
+    .filter(|candidate| **candidate != marker)
+    .filter_map(|candidate| rest.find(candidate))
+    .min()
+    .unwrap_or(rest.len());
+    rest[..end].trim()
+}
+
+fn parse_wsl_codex_runtime_probe(output: Option<&str>) -> DetectedCodexRuntime {
+    let output = output.unwrap_or_default();
+    let version = first_nonempty_line(marker_section(output, WSL_CODEX_VERSION_MARKER))
+        .unwrap_or_else(|| "Not installed".to_string());
+    let installed = version != "Not installed";
+    let help_output = marker_section(output, WSL_CODEX_HELP_MARKER);
+    let app_server_help_output = marker_section(output, WSL_CODEX_APP_SERVER_HELP_MARKER);
+    DetectedCodexRuntime {
+        version,
+        installed,
+        remote_tui_supported: installed && help_text_supports_remote_tui(help_output),
+        app_server_supported: installed && help_text_supports_app_server(app_server_help_output),
+    }
+}
+
 fn windows_codex_shell_candidates(subcommand: &str) -> Vec<String> {
     let mut candidates = vec![format!("codex {subcommand}")];
     if let Ok(appdata) = std::env::var("APPDATA") {
@@ -225,30 +266,10 @@ async fn detect_windows_codex_runtime() -> DetectedCodexRuntime {
 
 async fn detect_wsl_codex_runtime() -> DetectedCodexRuntime {
     let started = std::time::Instant::now();
-    let (version_output, help_output, app_server_help_output) = tokio::join!(
-        run_wsl_shell_stdout("codex --version"),
-        run_wsl_shell_stdout("codex --help"),
-        run_wsl_shell_stdout("codex app-server --help")
-    );
-    let version = version_output
-        .and_then(|found| first_nonempty_line(&found))
-        .unwrap_or_else(|| "Not installed".to_string());
-    let installed = version != "Not installed";
-    let remote_tui_supported = installed
-        && help_output
-            .as_deref()
-            .is_some_and(help_text_supports_remote_tui);
-    let app_server_supported = installed
-        && app_server_help_output
-            .as_deref()
-            .is_some_and(help_text_supports_app_server);
+    let output = run_wsl_shell_stdout(wsl_codex_runtime_probe_command()).await;
+    let detected = parse_wsl_codex_runtime_probe(output.as_deref());
     log_codex_version_detect_timing("wsl2", started.elapsed().as_millis());
-    DetectedCodexRuntime {
-        version,
-        installed,
-        app_server_supported,
-        remote_tui_supported,
-    }
+    detected
 }
 
 fn log_codex_version_detect_timing(workspace: &str, elapsed_ms: u128) {
@@ -668,6 +689,30 @@ mod tests {
         assert!(help_text_supports_app_server(help));
         assert!(help_text_supports_remote_tui(help));
         assert!(!help_text_supports_remote_tui("Usage: codex [OPTIONS]"));
+    }
+
+    #[test]
+    fn parses_wsl_codex_runtime_from_single_probe_output() {
+        let output = format!(
+            "{WSL_CODEX_VERSION_MARKER}\ncodex-cli 0.124.0\n{WSL_CODEX_HELP_MARKER}\nUsage: codex [OPTIONS]\n  --remote <ADDR>\n{WSL_CODEX_APP_SERVER_HELP_MARKER}\nUsage: codex app-server\n"
+        );
+
+        let detected = parse_wsl_codex_runtime_probe(Some(&output));
+
+        assert_eq!(detected.version, "codex-cli 0.124.0");
+        assert!(detected.installed);
+        assert!(detected.remote_tui_supported);
+        assert!(detected.app_server_supported);
+    }
+
+    #[test]
+    fn missing_wsl_codex_probe_output_marks_runtime_not_installed() {
+        let detected = parse_wsl_codex_runtime_probe(None);
+
+        assert_eq!(detected.version, "Not installed");
+        assert!(!detected.installed);
+        assert!(!detected.remote_tui_supported);
+        assert!(!detected.app_server_supported);
     }
 
     #[test]

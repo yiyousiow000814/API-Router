@@ -15,7 +15,8 @@ use self::source::{
     rebuild_workspace_thread_items, sort_threads_by_updated_desc, thread_item_should_be_visible,
 };
 
-const THREADS_INDEX_STALE_SECS: i64 = 15;
+const THREADS_WINDOWS_INDEX_STALE_SECS: i64 = 45;
+const THREADS_WSL2_INDEX_STALE_SECS: i64 = 180;
 const THREADS_REFRESH_STUCK_SECS: i64 = 12;
 const THREADS_REFRESH_FAILURE_BACKOFF_SECS: i64 = 15;
 const THREADS_FORCE_WAIT_MAX_MS: u64 = 1500;
@@ -74,6 +75,21 @@ fn current_unix_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|v| v.as_secs() as i64)
         .unwrap_or(0)
+}
+
+fn thread_index_stale_secs(target: WorkspaceTarget) -> i64 {
+    match target {
+        WorkspaceTarget::Windows => THREADS_WINDOWS_INDEX_STALE_SECS,
+        WorkspaceTarget::Wsl2 => THREADS_WSL2_INDEX_STALE_SECS,
+    }
+}
+
+fn workspace_bucket_is_stale(
+    target: WorkspaceTarget,
+    bucket: &WorkspaceThreadsBucket,
+    now_unix_secs: i64,
+) -> bool {
+    now_unix_secs.saturating_sub(bucket.updated_at_unix_secs) >= thread_index_stale_secs(target)
 }
 
 fn parse_timestamp_secs(value: &Value) -> Option<i64> {
@@ -366,6 +382,13 @@ fn workspace_bucket_mut(
     match target {
         WorkspaceTarget::Windows => &mut index.windows,
         WorkspaceTarget::Wsl2 => &mut index.wsl2,
+    }
+}
+
+fn workspace_target_label(target: WorkspaceTarget) -> &'static str {
+    match target {
+        WorkspaceTarget::Windows => "windows",
+        WorkspaceTarget::Wsl2 => "wsl2",
     }
 }
 
@@ -681,7 +704,7 @@ pub(crate) fn cached_threads_snapshot_stale_while_revalidate() -> CachedThreadIn
                 clear_bucket_refreshing(bucket);
             }
             let has_items = !bucket.items.is_empty();
-            let stale = now.saturating_sub(bucket.updated_at_unix_secs) >= THREADS_INDEX_STALE_SECS;
+            let stale = workspace_bucket_is_stale(target, bucket, now);
             let has_missing_rollout = has_missing_session_rollout_path(&bucket.items);
             if (!has_items || stale || has_missing_rollout)
                 && !bucket.refreshing
@@ -701,9 +724,13 @@ pub(crate) fn cached_threads_snapshot_stale_while_revalidate() -> CachedThreadIn
     let merged = merged_thread_items_snapshot(&mut index);
     let windows = workspace_bucket_ref(&index, WorkspaceTarget::Windows);
     let wsl2 = workspace_bucket_ref(&index, WorkspaceTarget::Wsl2);
-    let fresh = [windows, wsl2].into_iter().all(|bucket| {
-        bucket.updated_at_unix_secs > 0
-            && now.saturating_sub(bucket.updated_at_unix_secs) < THREADS_INDEX_STALE_SECS
+    let fresh = [
+        (WorkspaceTarget::Windows, windows),
+        (WorkspaceTarget::Wsl2, wsl2),
+    ]
+    .into_iter()
+    .all(|(target, bucket)| {
+        bucket.updated_at_unix_secs > 0 && !workspace_bucket_is_stale(target, bucket, now)
     });
     CachedThreadIndexSnapshot {
         items: merged,
@@ -787,33 +814,54 @@ async fn refresh_workspace_thread_index(target: WorkspaceTarget) {
     )
     .await;
     let rebuild_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
-    let mut index = lock_threads_workspace_index();
-    let bucket = workspace_bucket_mut(&mut index, target);
-    match rebuilt_items {
-        Ok(Ok(rebuilt_items)) => {
-            let previous_items = bucket.items.clone();
-            let retained_live_items = retained_live_notification_items(&bucket.items);
-            let mut next_items = merge_items_without_duplicates(rebuilt_items, retained_live_items);
-            sort_threads_by_updated_desc(&mut next_items);
-            if previous_items != next_items {
-                mark_bucket_items_changed(bucket);
+    let (ok, item_count, detail) = {
+        let mut index = lock_threads_workspace_index();
+        let bucket = workspace_bucket_mut(&mut index, target);
+        let mut ok = true;
+        let mut detail = None;
+        match rebuilt_items {
+            Ok(Ok(rebuilt_items)) => {
+                let previous_items = bucket.items.clone();
+                let retained_live_items = retained_live_notification_items(&bucket.items);
+                let mut next_items =
+                    merge_items_without_duplicates(rebuilt_items, retained_live_items);
+                sort_threads_by_updated_desc(&mut next_items);
+                if previous_items != next_items {
+                    mark_bucket_items_changed(bucket);
+                }
+                bucket.items = next_items;
+                bucket.updated_at_unix_secs = current_unix_secs();
+                bucket.last_failed_at_unix_secs = 0;
+                log_thread_index_rebuild_delta(target, &previous_items, &bucket.items, rebuild_ms);
             }
-            bucket.items = next_items;
-            bucket.updated_at_unix_secs = current_unix_secs();
-            bucket.last_failed_at_unix_secs = 0;
-            log_thread_index_rebuild_delta(target, &previous_items, &bucket.items, rebuild_ms);
+            Ok(Err(err)) => {
+                log::warn!("failed to rebuild {:?} Codex thread index: {err}", target);
+                bucket.last_failed_at_unix_secs = current_unix_secs();
+                ok = false;
+                detail = Some(err);
+            }
+            Err(_) => {
+                log::warn!("timed out rebuilding {:?} Codex thread index", target);
+                bucket.last_failed_at_unix_secs = current_unix_secs();
+                ok = false;
+                detail = Some("thread index rebuild timed out".to_string());
+            }
         }
-        Ok(Err(err)) => {
-            log::warn!("failed to rebuild {:?} Codex thread index: {err}", target);
-            bucket.last_failed_at_unix_secs = current_unix_secs();
-        }
-        Err(_) => {
-            log::warn!("timed out rebuilding {:?} Codex thread index", target);
-            bucket.last_failed_at_unix_secs = current_unix_secs();
-        }
-    }
-    clear_bucket_refreshing(bucket);
-    bucket.last_rebuild_ms = rebuild_ms;
+        clear_bucket_refreshing(bucket);
+        bucket.last_rebuild_ms = rebuild_ms;
+        (ok, bucket.items.len(), detail)
+    };
+    let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+        "/codex/threads",
+        workspace_target_label(target),
+        "session_index_rebuild",
+        u64::try_from(rebuild_ms).unwrap_or(u64::MAX),
+    );
+    pipeline.source = Some("session-index".to_string());
+    pipeline.item_count = Some(item_count);
+    pipeline.ok = Some(ok);
+    pipeline.detail = detail;
+    crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
 }
 
 async fn ensure_workspace_index_fresh(target: WorkspaceTarget, force: bool) {
@@ -854,7 +902,7 @@ async fn ensure_workspace_index_fresh(target: WorkspaceTarget, force: bool) {
             clear_bucket_refreshing(bucket);
         }
         let has_items = !bucket.items.is_empty();
-        let stale = now.saturating_sub(bucket.updated_at_unix_secs) >= THREADS_INDEX_STALE_SECS;
+        let stale = workspace_bucket_is_stale(target, bucket, now);
         let has_missing_rollout = has_missing_session_rollout_path(&bucket.items);
         let in_failure_backoff = bucket_refresh_failure_backoff_active(bucket, now);
         let needs_refresh = !bucket.refreshing
@@ -881,8 +929,10 @@ mod tests {
     use super::{
         find_rollout_path_in_items, has_missing_session_rollout_path,
         invalidate_thread_list_cache_all, list_threads_snapshot, lock_threads_workspace_index,
-        upsert_thread_item_hint, upsert_thread_notification_hint, workspace_bucket_mut,
-        workspace_bucket_ref, NotificationScopes, THREADS_REFRESH_STUCK_SECS,
+        thread_index_stale_secs, upsert_thread_item_hint, upsert_thread_notification_hint,
+        workspace_bucket_is_stale, workspace_bucket_mut, workspace_bucket_ref, NotificationScopes,
+        WorkspaceThreadsBucket, THREADS_REFRESH_STUCK_SECS, THREADS_WINDOWS_INDEX_STALE_SECS,
+        THREADS_WSL2_INDEX_STALE_SECS,
     };
     use crate::codex_app_server;
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
@@ -923,6 +973,34 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
+    }
+
+    #[test]
+    fn wsl_thread_index_stays_fresh_longer_than_windows_index() {
+        assert!(
+            thread_index_stale_secs(WorkspaceTarget::Wsl2)
+                > thread_index_stale_secs(WorkspaceTarget::Windows)
+        );
+        let bucket = WorkspaceThreadsBucket {
+            updated_at_unix_secs: 1_000,
+            ..WorkspaceThreadsBucket::default()
+        };
+
+        assert!(workspace_bucket_is_stale(
+            WorkspaceTarget::Windows,
+            &bucket,
+            1_000 + THREADS_WINDOWS_INDEX_STALE_SECS
+        ));
+        assert!(!workspace_bucket_is_stale(
+            WorkspaceTarget::Wsl2,
+            &bucket,
+            1_000 + THREADS_WINDOWS_INDEX_STALE_SECS
+        ));
+        assert!(workspace_bucket_is_stale(
+            WorkspaceTarget::Wsl2,
+            &bucket,
+            1_000 + THREADS_WSL2_INDEX_STALE_SECS
+        ));
     }
 
     #[tokio::test]

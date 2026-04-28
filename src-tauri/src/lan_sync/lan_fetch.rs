@@ -460,6 +460,59 @@ fn describe_watchdog_incident(prefix: &str, trigger: &str, payload: &Value) -> O
             }
             Some(detail)
         }
+        "backend-pipeline" => {
+            let event = payload.get("pipeline_event")?;
+            let route = event
+                .get("route")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("Codex Web pipeline");
+            let stage = event
+                .get("stage")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("backend");
+            let workspace = event
+                .get("workspace")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("unknown");
+            let elapsed_ms = event
+                .get("elapsedMs")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let rebuild_ms = event
+                .get("rebuildMs")
+                .and_then(|value| value.as_i64())
+                .and_then(|value| u64::try_from(value).ok())
+                .unwrap_or(0);
+            let method = event
+                .get("method")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let route_label = method
+                .map(|method| format!("{method} via {route}"))
+                .unwrap_or_else(|| route.to_string());
+            let workspace_label = match workspace {
+                "wsl2" => "WSL2".to_string(),
+                "windows" => "Windows".to_string(),
+                _ => humanize_watchdog_trigger("", workspace),
+            };
+            let effective_ms = elapsed_ms.max(rebuild_ms);
+            let stage_label = if rebuild_ms > elapsed_ms {
+                format!("{stage} rebuild")
+            } else {
+                stage.to_string()
+            };
+            Some(format!(
+                "{} {} took {}ms in {}",
+                workspace_label, stage_label, effective_ms, route_label
+            ))
+        }
         _ => None,
     }
 }
@@ -731,6 +784,47 @@ mod tests {
         assert_eq!(
             detail.as_deref(),
             Some("UI heartbeat stalled after backend status refresh stopped making progress at Client Sessions")
+        );
+    }
+
+    #[test]
+    fn describe_watchdog_incident_includes_backend_pipeline_event() {
+        let payload = serde_json::json!({
+            "pipeline_event": {
+                "route": "/codex/version-info",
+                "workspace": "wsl2",
+                "stage": "runtime_detect",
+                "elapsedMs": 1273
+            },
+            "recent_traces": []
+        });
+
+        let detail = describe_watchdog_incident("ui-freeze", "backend-pipeline", &payload);
+
+        assert_eq!(
+            detail.as_deref(),
+            Some("WSL2 runtime_detect took 1273ms in /codex/version-info")
+        );
+    }
+
+    #[test]
+    fn describe_watchdog_incident_uses_backend_pipeline_rebuild_time() {
+        let payload = serde_json::json!({
+            "pipeline_event": {
+                "route": "/codex/threads",
+                "workspace": "wsl2",
+                "stage": "gateway_handler",
+                "elapsedMs": 0,
+                "rebuildMs": 1283
+            },
+            "recent_traces": []
+        });
+
+        let detail = describe_watchdog_incident("ui-freeze", "backend-pipeline", &payload);
+
+        assert_eq!(
+            detail.as_deref(),
+            Some("WSL2 gateway_handler rebuild took 1283ms in /codex/threads")
         );
     }
 

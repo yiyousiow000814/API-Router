@@ -737,6 +737,8 @@ export function formatIncidentKind(kind: string | null | undefined): string {
       return 'Remote diagnostics request failed'
     case 'frame-stall':
       return 'UI main thread stalled'
+    case 'backend-pipeline':
+      return 'Backend pipeline slow'
     case 'status':
       return 'Status snapshot issue'
     default:

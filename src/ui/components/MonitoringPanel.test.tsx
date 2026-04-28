@@ -341,6 +341,7 @@ describe('MonitoringPanel', () => {
     expect(formatIncidentKind('heartbeat-stall')).toBe('UI heartbeat stalled')
     expect(formatIncidentKind('slow-refresh')).toBe('Remote diagnostics refresh too slow')
     expect(formatIncidentKind('invoke-error')).toBe('Remote diagnostics request failed')
+    expect(formatIncidentKind('backend-pipeline')).toBe('Backend pipeline slow')
     expect(formatIncidentKind('custom-case')).toBe('Custom Case')
   })
 

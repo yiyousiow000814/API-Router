@@ -748,10 +748,10 @@ export function createConnectionFlowsModule(deps) {
     await api("/codex/auth/verify", { method: "POST", body: {} });
     connectWs();
     setStatus("Connected.");
-    refreshModels().catch((e) => setStatus(e.message, true));
-    refreshCodexVersions().catch((e) => setStatus(e.message, true));
     await refreshAll();
     if (options.switchToChat !== false) setMainTab("chat");
+    refreshModels().catch((e) => setStatus(e.message, true));
+    refreshCodexVersions().catch((e) => setStatus(e.message, true));
   }
 
   return {
