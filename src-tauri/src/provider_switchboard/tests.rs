@@ -418,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn build_direct_provider_cfg_can_embed_experimental_bearer_token() {
+    fn build_direct_provider_cfg_with_experimental_bearer_token_omits_openai_auth() {
         let cfg = "model = \"gpt-5.2\"\n";
         let out = build_direct_provider_cfg(
             cfg,
@@ -428,6 +428,20 @@ mod tests {
             Some("sk-config"),
         );
         assert!(out.contains("experimental_bearer_token = \"sk-config\""));
+        assert!(!out.contains("requires_openai_auth = true"));
+    }
+
+    #[test]
+    fn build_direct_provider_cfg_with_auth_json_keeps_openai_auth() {
+        let cfg = "model = \"gpt-5.2\"\n";
+        let out = build_direct_provider_cfg(
+            cfg,
+            "ppchat",
+            "https://code.ppchat.vip/v1",
+            false,
+            None,
+        );
+        assert!(!out.contains("experimental_bearer_token"));
         assert!(out.contains("requires_openai_auth = true"));
     }
 
