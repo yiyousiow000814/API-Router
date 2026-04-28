@@ -98,6 +98,81 @@ export function unescapeMarkdownText(value) {
   return String(value || "").replace(/\\([\\!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/g, "$1");
 }
 
+function splitMarkdownTableRow(line) {
+  const text = String(line || "").trim();
+  if (!text.includes("|")) return null;
+  let source = text;
+  if (source.startsWith("|")) source = source.slice(1);
+  if (source.endsWith("|")) source = source.slice(0, -1);
+  const cells = [];
+  let cell = "";
+  let codeFenceLen = 0;
+  for (let idx = 0; idx < source.length; idx += 1) {
+    const ch = source[idx];
+    if (ch === "`" && !isMarkdownEscapedAt(source, idx)) {
+      let fenceLen = 1;
+      while (source[idx + fenceLen] === "`") fenceLen += 1;
+      if (codeFenceLen === 0) {
+        codeFenceLen = fenceLen;
+      } else if (fenceLen === codeFenceLen) {
+        codeFenceLen = 0;
+      }
+      cell += source.slice(idx, idx + fenceLen);
+      idx += fenceLen - 1;
+      continue;
+    }
+    if (ch === "|" && codeFenceLen === 0 && !isMarkdownEscapedAt(source, idx)) {
+      cells.push(cell.trim());
+      cell = "";
+      continue;
+    }
+    cell += ch;
+  }
+  cells.push(cell.trim());
+  if (cells.length < 2) return null;
+  return cells;
+}
+
+function parseMarkdownTableSeparator(line) {
+  const cells = splitMarkdownTableRow(line);
+  if (!cells) return null;
+  const alignments = [];
+  for (const cell of cells) {
+    const text = String(cell || "").trim();
+    if (!/^:?-{3,}:?$/.test(text)) return null;
+    const left = text.startsWith(":");
+    const right = text.endsWith(":");
+    alignments.push(left && right ? "center" : right ? "right" : left ? "left" : "");
+  }
+  return alignments;
+}
+
+function isMarkdownTableStart(lines, index) {
+  const header = splitMarkdownTableRow(lines[index]);
+  const alignments = parseMarkdownTableSeparator(lines[index + 1]);
+  if (!header || !alignments) return false;
+  return header.length === alignments.length;
+}
+
+function renderMarkdownTable(rows, alignments) {
+  const renderCellAttrs = (index) => {
+    const align = alignments[index] || "";
+    return align ? ` style="text-align:${align}"` : "";
+  };
+  const header = rows[0] || [];
+  const bodyRows = rows.slice(1);
+  const headerHtml = header
+    .map((cell, index) => `<th${renderCellAttrs(index)}>${renderInlineMessageText(cell)}</th>`)
+    .join("");
+  const bodyHtml = bodyRows
+    .map((row) => {
+      const cells = header.map((_, index) => row[index] || "");
+      return `<tr>${cells.map((cell, index) => `<td${renderCellAttrs(index)}>${renderInlineMessageText(cell)}</td>`).join("")}</tr>`;
+    })
+    .join("");
+  return `<div class="msgTableWrap"><table class="msgTable"><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`;
+}
+
 export function fileRefDisplayLabel(value) {
   const text = String(value || "").trim();
   if (!text) return "";
@@ -530,6 +605,23 @@ export function renderMessageRichHtml(text) {
     html += `<pre class="msgCodeBlock"><code>${escapeHtml(code)}</code></pre>`;
     codeLines = [];
   };
+  const readTableAt = (startIndex) => {
+    if (!isMarkdownTableStart(lines, startIndex)) return null;
+    const header = splitMarkdownTableRow(lines[startIndex]);
+    const alignments = parseMarkdownTableSeparator(lines[startIndex + 1]);
+    const rows = [header];
+    let nextIndex = startIndex + 2;
+    while (nextIndex < lines.length) {
+      const row = splitMarkdownTableRow(lines[nextIndex]);
+      if (!row || row.length !== header.length) break;
+      rows.push(row);
+      nextIndex += 1;
+    }
+    return {
+      html: renderMarkdownTable(rows, alignments),
+      nextIndex,
+    };
+  };
   for (let lineIdx = 0; lineIdx < lines.length; lineIdx += 1) {
     const line = lines[lineIdx];
     const trimmedStart = String(line || "").trimStart();
@@ -576,6 +668,14 @@ export function renderMessageRichHtml(text) {
       flushParagraph();
       flushList();
       html += `<h${String(heading.level)}>${renderInlineMessageText(heading.text)}</h${String(heading.level)}>`;
+      continue;
+    }
+    const table = readTableAt(lineIdx);
+    if (table) {
+      flushParagraph();
+      flushList();
+      html += table.html;
+      lineIdx = table.nextIndex - 1;
       continue;
     }
     if (isListLine(line)) {

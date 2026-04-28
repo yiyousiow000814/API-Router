@@ -255,6 +255,44 @@ Checked`
     expect(html).toContain("<p>Keep the plan card readable.</p>");
   });
 
+  it("renders markdown pipe tables as scrollable tables", () => {
+    const html = renderMessageRichHtml(
+      [
+        "Yearly Distribution",
+        "",
+        "| year | net_pips | trades | avg/trade | contribution |",
+        "| --- | ---: | ---: | ---: | ---: |",
+        "| 2024 | 14567.0 | 31 | 469.9 | 13.2% |",
+        "| 2025 | 10567.0 | 28 | 377.4 | 9.6% |",
+        "",
+        "Conclusion",
+      ].join("\n")
+    );
+
+    expect(html).toContain('<div class="msgTableWrap">');
+    expect(html).toContain("<table");
+    expect(html).toContain("<thead>");
+    expect(html).toContain("<th>year</th>");
+    expect(html).toContain('style="text-align:right">14567.0</td>');
+    expect(html).not.toContain("| year | net_pips");
+    expect(html).toContain("<p>Conclusion</p>");
+  });
+
+  it("keeps pipe characters inside inline code table cells", () => {
+    const html = renderMessageRichHtml(
+      [
+        "| expr | value |",
+        "| --- | --- |",
+        "| `a|b` | yes |",
+      ].join("\n")
+    );
+
+    expect(html).toContain('<div class="msgTableWrap">');
+    expect(html).toContain('<code class="msgInlineCode">a|b</code>');
+    expect(html).toContain("<td>yes</td>");
+    expect(html).not.toContain("<tbody></tbody>");
+  });
+
   it("does not create a phantom outer ordered item for indented top-level numbering", () => {
     const html = renderMessageRichHtml(
       [

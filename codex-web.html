@@ -3290,6 +3290,8 @@
       background: rgba(255, 255, 255, 0.72);
       padding: 10px 12px;
       overflow-x: auto;
+      touch-action: pan-x pan-y;
+      -webkit-overflow-scrolling: touch;
     }
     .msgCodeBlock code {
       font-family: ui-monospace, "Cascadia Mono", "Consolas", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans Mono CJK SC", "Noto Sans CJK SC", monospace;
@@ -3298,6 +3300,38 @@
       white-space: pre;
       display: block;
       color: #18233a;
+    }
+    .msgTableWrap {
+      margin: 8px 0 12px;
+      overflow-x: auto;
+      touch-action: pan-x pan-y;
+      -webkit-overflow-scrolling: touch;
+      border: 1px solid rgba(13, 18, 32, 0.14);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.72);
+    }
+    .msgTable {
+      width: max-content;
+      min-width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #18233a;
+    }
+    .msgTable th,
+    .msgTable td {
+      padding: 7px 10px;
+      border-bottom: 1px solid rgba(13, 18, 32, 0.10);
+      white-space: nowrap;
+      text-align: left;
+    }
+    .msgTable th {
+      font-weight: 700;
+      background: rgba(13, 18, 32, 0.045);
+      color: #111827;
+    }
+    .msgTable tbody tr:last-child td {
+      border-bottom: 0;
     }
     .msgLink {
       color: #0b5bd3;

@@ -5,6 +5,11 @@ export function shouldOpenDrawerWithAnimation(tab, wasThreadsOpen) {
 const EDGE_SWIPE_COMMIT_DELTA_PX = 12;
 const EDGE_SWIPE_VERTICAL_TOLERANCE_PX = 40;
 const EDGE_SWIPE_HORIZONTAL_LOCK_PX = 16;
+const HORIZONTAL_SCROLL_PRIORITY_SELECTORS = [
+  "msgCodeBlock",
+  "msgTableWrap",
+  "runtimeToolItemPreview",
+];
 
 function readTouchPoint(event) {
   const touch =
@@ -48,6 +53,30 @@ export function shouldStartDrawerCloseSwipe({ startX, body, panelRect, windowRef
 export function shouldCommitDrawerClose({ deltaX, drawerWidth }) {
   if (!Number.isFinite(deltaX) || deltaX >= 0) return false;
   return shouldCommitDrawerOpen({ deltaX: Math.abs(deltaX), drawerWidth });
+}
+
+function classListContainsAny(classList, names) {
+  if (!classList?.contains) return false;
+  return names.some((name) => classList.contains(name));
+}
+
+function canScrollHorizontally(node, windowRef) {
+  const scrollWidth = Number(node?.scrollWidth || 0);
+  const clientWidth = Number(node?.clientWidth || 0);
+  if (scrollWidth <= clientWidth + 1) return false;
+  const overflowX = String(windowRef?.getComputedStyle?.(node)?.overflowX || "").toLowerCase();
+  return !overflowX || overflowX === "auto" || overflowX === "scroll" || overflowX === "overlay";
+}
+
+export function shouldUseHorizontalScrollPriority(target, windowRef) {
+  let node = target;
+  while (node) {
+    const isPriorityContainer = classListContainsAny(node.classList, HORIZONTAL_SCROLL_PRIORITY_SELECTORS);
+    if (canScrollHorizontally(node, windowRef)) return true;
+    if (isPriorityContainer) return false;
+    node = node.parentElement || null;
+  }
+  return false;
 }
 
 export function createMobileShellModule(deps) {
@@ -182,6 +211,14 @@ export function createMobileShellModule(deps) {
         if (!point) {
           swipeStart = null;
           swipeLastPoint = null;
+          return;
+        }
+        if (shouldUseHorizontalScrollPriority(event.target, windowRef)) {
+          swipeStart = null;
+          swipeLastPoint = null;
+          swipeDrawerWidth = 0;
+          swipeMode = "open";
+          swipeHorizontalLocked = false;
           return;
         }
         if (
