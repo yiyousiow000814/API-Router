@@ -5,17 +5,17 @@ use serde_json::json;
 use serde_json::Value;
 #[cfg(any(test, target_os = "windows"))]
 use std::borrow::Cow;
-#[cfg(target_os = "windows")]
+#[cfg(any(test, target_os = "windows"))]
 use std::collections::HashMap;
 #[cfg(target_os = "windows")]
 use std::process::Stdio;
-#[cfg(target_os = "windows")]
+#[cfg(any(test, target_os = "windows"))]
 use std::sync::OnceLock;
 #[cfg(target_os = "windows")]
 use std::time::Duration;
 #[cfg(target_os = "windows")]
 use tokio::process::Command;
-#[cfg(target_os = "windows")]
+#[cfg(any(test, target_os = "windows"))]
 use tokio::sync::Mutex;
 
 #[cfg(target_os = "windows")]
@@ -41,7 +41,7 @@ const BRIDGE_LOG_PATH: &str = "/tmp/api-router-wsl-codex-bridge.log";
 static BRIDGES: OnceLock<Mutex<HashMap<String, std::sync::Arc<Mutex<BridgeRuntime>>>>> =
     OnceLock::new();
 
-#[cfg(target_os = "windows")]
+#[cfg(any(test, target_os = "windows"))]
 static BRIDGE_START_LOCKS: OnceLock<Mutex<HashMap<String, std::sync::Arc<Mutex<()>>>>> =
     OnceLock::new();
 
@@ -99,12 +99,12 @@ fn bridge_map() -> &'static Mutex<HashMap<String, std::sync::Arc<Mutex<BridgeRun
     BRIDGES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(test, target_os = "windows"))]
 fn bridge_start_lock_map() -> &'static Mutex<HashMap<String, std::sync::Arc<Mutex<()>>>> {
     BRIDGE_START_LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(test, target_os = "windows"))]
 async fn bridge_start_lock_for_key(key: &str) -> std::sync::Arc<Mutex<()>> {
     let mut guard = bridge_start_lock_map().lock().await;
     guard
