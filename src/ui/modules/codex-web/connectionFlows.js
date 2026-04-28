@@ -739,6 +739,14 @@ export function createConnectionFlowsModule(deps) {
     await refreshPending();
   }
 
+  function hasCachedModelMetadata() {
+    return Array.isArray(state.modelOptions) && state.modelOptions.length > 0;
+  }
+
+  function hasCachedVersionMetadata() {
+    return state.codexVersionInfoRestoredFromCache === true;
+  }
+
   async function connect(options = {}) {
     const inputToken = byId("tokenInput")?.value?.trim() || "";
     const managedToken = getEmbeddedToken();
@@ -750,8 +758,12 @@ export function createConnectionFlowsModule(deps) {
     setStatus("Connected.");
     await refreshAll();
     if (options.switchToChat !== false) setMainTab("chat");
-    refreshModels().catch((e) => setStatus(e.message, true));
-    refreshCodexVersions().catch((e) => setStatus(e.message, true));
+    if (!hasCachedModelMetadata()) {
+      refreshModels().catch((e) => setStatus(e.message, true));
+    }
+    if (!hasCachedVersionMetadata()) {
+      refreshCodexVersions().catch((e) => setStatus(e.message, true));
+    }
   }
 
   return {

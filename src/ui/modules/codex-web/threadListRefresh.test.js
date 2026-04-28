@@ -215,6 +215,71 @@ describe("threadListRefresh", () => {
     expect(rendered).toEqual([["thread-wsl"]]);
   });
 
+  it("does not synchronously repaint cached active threads before a background refresh", async () => {
+    const rendered = [];
+    const previous = [{ id: "thread-a", workspace: "windows", cwd: "C:\\repo", updatedAt: 1 }];
+    const state = {
+      threadItemsAll: previous,
+      threadItems: previous,
+      threadItemsByWorkspace: { windows: previous, wsl2: [] },
+      threadWorkspaceHydratedByWorkspace: { windows: true, wsl2: false },
+      threadRefreshAbortByWorkspace: { windows: null, wsl2: null },
+      threadRefreshReqSeqByWorkspace: { windows: 0, wsl2: 0 },
+      threadListRenderSigByWorkspace: { windows: "thread-a", wsl2: "" },
+      threadListDeferredRenderTimerByWorkspace: { windows: 0, wsl2: 0 },
+      threadListAnimationHoldUntilByWorkspace: { windows: 0, wsl2: 0 },
+      threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: false },
+    };
+    const listNode = {
+      isConnected: true,
+      querySelector(selector) {
+        if (String(selector || "").includes(".groupCard")) return { nodeType: 1 };
+        return null;
+      },
+      closest: () => null,
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 320, bottom: 480, width: 320, height: 480 }),
+    };
+    const module = createThreadListRefreshModule({
+      state,
+      byId: (id) => (id === "threadList" ? listNode : null),
+      windowRef: { getComputedStyle: () => ({ display: "block", visibility: "visible" }), innerWidth: 1280, innerHeight: 720 },
+      documentRef: {
+        documentElement: { clientWidth: 1280, clientHeight: 720 },
+        body: { classList: { contains: () => false } },
+      },
+      api: vi.fn(async () => ({
+        items: previous,
+        meta: { workspace: "windows", cacheHit: true, refreshing: false },
+      })),
+      ensureArrayItems: (value) => (Array.isArray(value?.data) ? value.data : Array.isArray(value) ? value : []),
+      normalizeWorkspaceTarget: (value) => (value === "wsl2" ? "wsl2" : "windows"),
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      sortThreadsByNewest: (items) => items,
+      filterThreadsForWorkspace: (items) => items,
+      hasDualWorkspaceTargets: () => true,
+      detectWorkspaceAvailabilityFromThreads: () => ({
+        windowsInstalled: true,
+        wsl2Installed: false,
+      }),
+      buildThreadRenderSig: (items) => items.map((item) => item.id).join("|"),
+      persistThreadsCache: vi.fn(),
+      syncActiveThreadMetaFromList: vi.fn(),
+      updateHeaderUi: vi.fn(),
+      pushThreadAnimDebug: vi.fn(),
+      renderThreads: (items) => rendered.push(items.map((entry) => entry.id)),
+      applyWorkspaceUi: vi.fn(),
+      setStatus: vi.fn(),
+      THREAD_FORCE_REFRESH_MIN_INTERVAL_MS: 1800,
+    });
+
+    await module.refreshThreads("windows", { silent: false });
+
+    expect(rendered).toEqual([]);
+    expect(state.threadListLoading).toBe(false);
+  });
+
   it("records thread refresh fetch, processing, cache, and render timings", async () => {
     const localTasks = [];
     let now = 0;

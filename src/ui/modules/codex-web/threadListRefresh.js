@@ -91,6 +91,14 @@ export function createThreadListRefreshModule(deps) {
     }, waitMs);
   }
 
+  function cancelThreadListDeferredRender(workspaceTarget) {
+    const target = normalizeWorkspaceTarget(workspaceTarget);
+    const existingTimer = Number(state.threadListDeferredRenderTimerByWorkspace?.[target] || 0);
+    if (!existingTimer) return;
+    clearTimeout(existingTimer);
+    state.threadListDeferredRenderTimerByWorkspace[target] = 0;
+  }
+
   function applyThreadFilter() {
     const startedAt = performanceRef.now();
     const currentTarget = getWorkspaceTarget();
@@ -217,8 +225,15 @@ export function createThreadListRefreshModule(deps) {
     if (activeBefore && !silent) {
       state.threadListLoading = true;
       state.threadListLoadingTarget = target;
-      if (!state.threadListPreferLoadingPlaceholder) {
+      const hasCachedActiveThreads =
+        Array.isArray(state.threadItems) &&
+        state.threadItems.length > 0 &&
+        state.threadWorkspaceHydratedByWorkspace?.[target] === true;
+      const hasRenderedThreadDom = !!byId("threadList")?.querySelector?.(".groupCard, .itemCard");
+      if (!state.threadListPreferLoadingPlaceholder && !hasCachedActiveThreads) {
         renderThreads(state.threadItems);
+      } else if (!state.threadListPreferLoadingPlaceholder && hasCachedActiveThreads && !hasRenderedThreadDom) {
+        scheduleThreadListDeferredRender(target, 16);
       }
     }
 
@@ -394,6 +409,7 @@ export function createThreadListRefreshModule(deps) {
       }
       updateWorkspaceAvailabilityFromThreads(items);
       syncActiveThreadMetaFromList();
+      cancelThreadListDeferredRender(target);
       applyThreadFilter();
       updateHeaderUi();
     } finally {

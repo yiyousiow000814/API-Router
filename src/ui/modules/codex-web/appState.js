@@ -10,6 +10,7 @@ export const FAVORITE_THREADS_KEY = "web_codex_favorite_threads_v1";
 export const SELECTED_MODEL_KEY = "web_codex_selected_model_v1";
 export const ACTIVE_MAIN_TAB_KEY = "web_codex_active_main_tab_v1";
 export const MODELS_CACHE_KEY = "web_codex_models_cache_v1";
+export const CODEX_VERSION_CACHE_KEY = "web_codex_version_cache_v1";
 export const THREADS_CACHE_KEY = "web_codex_threads_cache_v1";
 export const REASONING_EFFORT_KEY = "web_codex_reasoning_effort_v1";
 export const LAST_EVENT_ID_KEY = "web_codex_last_event_id_v1";

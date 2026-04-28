@@ -47,6 +47,10 @@ describe("bootstrapApp", () => {
       normalizeWorkspaceTarget(value) { return value === "wsl2" ? "wsl2" : "windows"; },
       normalizeStartCwd(value) { return value; },
       restoreModelsCache() { return false; },
+      restoreCodexVersionCache() {
+        calls.push("versions-cache");
+        return true;
+      },
       restoreThreadsCache() { return false; },
       updateWorkspaceAvailability() {},
       applyWorkspaceUi() {},
@@ -103,6 +107,7 @@ describe("bootstrapApp", () => {
     expect(calls.filter((entry) => entry === "settings").length).toBeGreaterThan(0);
     expect(calls).toContain("tab:settings");
     expect(calls).toContain('connect:{"switchToChat":false}');
+    expect(calls.indexOf("versions-cache")).toBeLessThan(calls.indexOf('connect:{"switchToChat":false}'));
     expect(state.fastModeEnabled).toBe(true);
   });
 

@@ -63,6 +63,7 @@ export function createBootstrapModule(deps) {
     getEmbeddedToken,
     normalizeWorkspaceTarget,
     normalizeStartCwd,
+    restoreCodexVersionCache = () => false,
     restoreModelsCache,
     restoreThreadsCache,
     updateWorkspaceAvailability,
@@ -144,6 +145,7 @@ export function createBootstrapModule(deps) {
     state.permissionPresetByWorkspace = restorePermissionPresetByWorkspace(savedPermissionPreset);
 
     restoreModelsCache();
+    restoreCodexVersionCache();
     restoreThreadsCache(state.workspaceTarget);
 
     applyWorkspaceUi();

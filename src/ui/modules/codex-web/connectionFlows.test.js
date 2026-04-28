@@ -401,6 +401,66 @@ describe("connectionFlows", () => {
     }
   });
 
+  it("skips immediate model and version metadata when bootstrap restored cached values", async () => {
+    const refreshModels = vi.fn(async () => {});
+    const refreshCodexVersions = vi.fn(async () => {});
+    const originalLocalStorage = globalThis.localStorage;
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: { getItem() { return ""; }, setItem() {}, removeItem() {} },
+    });
+    try {
+      const module = createConnectionFlowsModule({
+        state: {
+          activeHostId: "",
+          activeThreadWorkspace: "",
+          codexVersionInfoRestoredFromCache: true,
+          modelOptions: [{ id: "gpt-5", label: "GPT-5" }],
+          pendingApprovals: [],
+          pendingUserInputs: [],
+          token: "",
+        },
+        byId: (id) => (id === "tokenInput" ? { value: "" } : null),
+        api: async (path) => {
+          if (path === "/codex/auth/verify") return { ok: true };
+          if (path === "/codex/hosts") return { items: [] };
+          if (path === "/codex/approvals/pending?workspace=windows") return { items: [] };
+          if (path === "/codex/user-input/pending?workspace=windows") return { items: [] };
+          return { items: [] };
+        },
+        wsSend: () => false,
+        nextReqId: () => "req-1",
+        connectWs: () => {},
+        ensureArrayItems: (value) =>
+          Array.isArray(value) ? value : Array.isArray(value?.items) ? value.items : value ? [value] : [],
+        escapeHtml: (value) => String(value || ""),
+        blockInSandbox: () => false,
+        TOKEN_STORAGE_KEY: "token",
+        getEmbeddedToken: () => "",
+        refreshModels,
+        refreshCodexVersions,
+        refreshThreads: async () => {},
+        refreshWorkspaceRuntimeState: async () => null,
+        getWorkspaceTarget: () => "windows",
+        setStatus: () => {},
+        setMainTab: () => {},
+        setMobileTab: () => {},
+        addChat: () => {},
+        renderPendingInline: () => {},
+      });
+
+      await module.connect({ switchToChat: false });
+
+      expect(refreshModels).not.toHaveBeenCalled();
+      expect(refreshCodexVersions).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, "localStorage", {
+        configurable: true,
+        value: originalLocalStorage,
+      });
+    }
+  });
+
   it("refreshes only the active workspace during full connection refresh", async () => {
     const refreshThreadCalls = [];
     const runtimeCalls = [];
