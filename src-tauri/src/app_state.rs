@@ -34,7 +34,7 @@ const UI_WATCHDOG_PROCESS_SNAPSHOT_CACHE_MS: u64 = 30_000;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-#[cfg(any(test, windows))]
+#[cfg(windows)]
 const UI_WATCHDOG_PROCESS_NAMES: &[&str] = &[
     "api router.exe",
     "api_router.exe",
