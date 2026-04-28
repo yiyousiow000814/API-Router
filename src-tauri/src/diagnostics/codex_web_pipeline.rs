@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -15,6 +16,9 @@ const PIPELINE_WATCHDOG_SLOW_AFTER_MS: u64 = 750;
 const PIPELINE_WATCHDOG_COOLDOWN_MS: u64 = 30_000;
 const PIPELINE_FILE_LOCK_WAIT_MS: u64 = 2_000;
 const PIPELINE_FILE_LOCK_STALE_MS: u64 = 30_000;
+const PIPELINE_WRITER_QUEUE_CAPACITY: usize = 1024;
+
+static PIPELINE_DROPPED_WRITE_JOBS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -141,7 +145,9 @@ pub(crate) fn append_pipeline_event(event: CodexWebPipelineEvent) {
         Ok(line) => line,
         Err(_) => return,
     };
-    enqueue_pipeline_line(path, line.clone());
+    if let Some(dropped_count) = enqueue_pipeline_line(path, line) {
+        payload.insert("droppedPipelineWriteJobs".to_string(), json!(dropped_count));
+    }
     maybe_write_pipeline_watchdog_dump(&payload);
     let _ =
         crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(&json!({
@@ -150,8 +156,8 @@ pub(crate) fn append_pipeline_event(event: CodexWebPipelineEvent) {
         }));
 }
 
-fn pipeline_writer_sender() -> &'static Mutex<Option<mpsc::Sender<PipelineWriteJob>>> {
-    static SENDER: OnceLock<Mutex<Option<mpsc::Sender<PipelineWriteJob>>>> = OnceLock::new();
+fn pipeline_writer_sender() -> &'static Mutex<Option<mpsc::SyncSender<PipelineWriteJob>>> {
+    static SENDER: OnceLock<Mutex<Option<mpsc::SyncSender<PipelineWriteJob>>>> = OnceLock::new();
     SENDER.get_or_init(|| Mutex::new(None))
 }
 
@@ -161,7 +167,7 @@ fn run_pipeline_writer(rx: mpsc::Receiver<PipelineWriteJob>) {
     }
 }
 
-fn pipeline_writer() -> Option<mpsc::Sender<PipelineWriteJob>> {
+fn pipeline_writer() -> Option<mpsc::SyncSender<PipelineWriteJob>> {
     let sender_cell = pipeline_writer_sender();
     let mut sender_guard = match sender_cell.lock() {
         Ok(guard) => guard,
@@ -171,7 +177,7 @@ fn pipeline_writer() -> Option<mpsc::Sender<PipelineWriteJob>> {
         return Some(sender.clone());
     }
 
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(PIPELINE_WRITER_QUEUE_CAPACITY);
     if std::thread::Builder::new()
         .name("codex-pipeline-writer".to_string())
         .spawn(move || run_pipeline_writer(rx))
@@ -183,20 +189,32 @@ fn pipeline_writer() -> Option<mpsc::Sender<PipelineWriteJob>> {
     Some(tx)
 }
 
-fn enqueue_pipeline_line(path: PathBuf, line: String) {
+fn record_pipeline_write_drop() -> u64 {
+    let count = PIPELINE_DROPPED_WRITE_JOBS.fetch_add(1, Ordering::Relaxed) + 1;
+    if count == 1 || count.is_power_of_two() {
+        log::warn!("dropped {count} codex pipeline diagnostic write jobs");
+    }
+    count
+}
+
+fn enqueue_pipeline_line(path: PathBuf, line: String) -> Option<u64> {
     let Some(sender) = pipeline_writer() else {
         append_ndjson_line_capped(&path, &line, PIPELINE_MAX_BYTES);
-        return;
+        return None;
     };
-    if let Err(err) = sender.send(PipelineWriteJob { path, line }) {
-        let sender_cell = pipeline_writer_sender();
-        let mut sender_guard = match sender_cell.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        *sender_guard = None;
-        let job = err.0;
-        append_ndjson_line_capped(&job.path, &job.line, PIPELINE_MAX_BYTES);
+    match sender.try_send(PipelineWriteJob { path, line }) {
+        Ok(()) => None,
+        Err(mpsc::TrySendError::Full(_job)) => Some(record_pipeline_write_drop()),
+        Err(mpsc::TrySendError::Disconnected(job)) => {
+            let sender_cell = pipeline_writer_sender();
+            let mut sender_guard = match sender_cell.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            *sender_guard = None;
+            append_ndjson_line_capped(&job.path, &job.line, PIPELINE_MAX_BYTES);
+            None
+        }
     }
 }
 
@@ -526,6 +544,38 @@ mod tests {
             indexes.insert(value["index"].as_u64().expect("index"));
         }
         assert_eq!(indexes.len(), writer_count);
+    }
+
+    #[test]
+    fn pipeline_write_drop_counter_is_observable() {
+        super::PIPELINE_DROPPED_WRITE_JOBS.store(0, std::sync::atomic::Ordering::Relaxed);
+
+        assert_eq!(super::record_pipeline_write_drop(), 1);
+        assert_eq!(super::record_pipeline_write_drop(), 2);
+        assert_eq!(
+            super::PIPELINE_DROPPED_WRITE_JOBS.load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+    }
+
+    #[test]
+    fn enqueue_pipeline_line_reports_full_queue_drop() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("codex_web_pipeline.ndjson");
+        let (tx, _rx) = std::sync::mpsc::sync_channel(0);
+        *super::pipeline_writer_sender().lock().expect("sender") = Some(tx);
+        super::PIPELINE_DROPPED_WRITE_JOBS.store(0, std::sync::atomic::Ordering::Relaxed);
+
+        assert_eq!(
+            super::enqueue_pipeline_line(path, r#"{"route":"/codex/threads"}"#.to_string()),
+            Some(1)
+        );
+        assert_eq!(
+            super::PIPELINE_DROPPED_WRITE_JOBS.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+
+        *super::pipeline_writer_sender().lock().expect("sender") = None;
     }
 
     #[test]

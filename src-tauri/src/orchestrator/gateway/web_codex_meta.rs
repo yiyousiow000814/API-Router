@@ -30,6 +30,14 @@ struct CodexModelsCacheEntry {
     payload: Value,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedCodexModelsPayload {
+    version: u64,
+    updated_at_unix_secs: i64,
+    payload: Value,
+}
+
 static PROVIDER_SWITCHBOARD_STATUS_CACHE: OnceLock<
     Mutex<HashMap<String, ProviderSwitchboardStatusCacheEntry>>,
 > = OnceLock::new();
@@ -58,6 +66,7 @@ fn codex_models_refresh_lock() -> &'static tokio::sync::Mutex<()> {
 }
 
 fn cached_codex_models_payload() -> Option<Value> {
+    let now = current_unix_secs();
     if let Some(payload) = codex_models_cache()
         .lock()
         .expect("codex models cache poisoned")
@@ -67,7 +76,7 @@ fn cached_codex_models_payload() -> Option<Value> {
     {
         return Some(payload);
     }
-    let payload = read_persisted_codex_models_payload()?;
+    let payload = read_persisted_codex_models_payload(now)?;
     store_codex_models_payload(payload.clone());
     Some(payload)
 }
@@ -89,14 +98,26 @@ fn codex_models_persisted_cache_path() -> Option<std::path::PathBuf> {
     )
 }
 
-fn read_persisted_codex_models_payload() -> Option<Value> {
+fn persisted_cache_is_fresh(updated_at_unix_secs: i64, now_unix_secs: i64, ttl: Duration) -> bool {
+    let age_secs = now_unix_secs.saturating_sub(updated_at_unix_secs);
+    age_secs <= 0 || age_secs < i64::try_from(ttl.as_secs()).unwrap_or(i64::MAX)
+}
+
+fn read_persisted_codex_models_payload(now_unix_secs: i64) -> Option<Value> {
     let path = codex_models_persisted_cache_path()?;
     let raw = std::fs::read_to_string(path).ok()?;
-    let value = serde_json::from_str::<Value>(&raw).ok()?;
-    if value.get("version").and_then(Value::as_u64) != Some(CODEX_MODELS_PERSISTED_CACHE_VERSION) {
+    let persisted = serde_json::from_str::<PersistedCodexModelsPayload>(&raw).ok()?;
+    if persisted.version != CODEX_MODELS_PERSISTED_CACHE_VERSION {
         return None;
     }
-    let payload = value.get("payload")?.clone();
+    if !persisted_cache_is_fresh(
+        persisted.updated_at_unix_secs,
+        now_unix_secs,
+        CODEX_MODELS_CACHE_TTL,
+    ) {
+        return None;
+    }
+    let payload = persisted.payload;
     if payload.get("items").and_then(Value::as_array)?.is_empty() {
         return None;
     }
@@ -1184,13 +1205,45 @@ model_reasoning_effort = "medium"
 
         write_persisted_codex_models_payload(&payload);
         assert_eq!(
-            read_persisted_codex_models_payload().expect("persisted models")["items"][0]["id"],
+            read_persisted_codex_models_payload(super::current_unix_secs())
+                .expect("persisted models")["items"][0]["id"],
             "gpt-5.4-codex"
         );
         assert_eq!(
             cached_codex_models_payload().expect("hydrated models")["items"][0]["id"],
             "gpt-5.4-codex"
         );
+
+        *codex_models_cache().lock().expect("models cache") = None;
+        crate::diagnostics::set_test_user_data_dir_override(previous.as_deref());
+    }
+
+    #[test]
+    fn codex_models_cache_rejects_stale_persisted_payload() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let previous = crate::diagnostics::set_test_user_data_dir_override(Some(temp.path()));
+        *codex_models_cache().lock().expect("models cache") = None;
+        let path = temp
+            .path()
+            .join("data")
+            .join(super::CODEX_MODELS_PERSISTED_CACHE_FILE);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("cache dir");
+        std::fs::write(
+            &path,
+            json!({
+                "version": super::CODEX_MODELS_PERSISTED_CACHE_VERSION,
+                "updatedAtUnixSecs": 1,
+                "payload": { "items": [{ "id": "stale-model" }] }
+            })
+            .to_string(),
+        )
+        .expect("write stale persisted cache");
+
+        assert!(read_persisted_codex_models_payload(
+            1 + i64::try_from(CODEX_MODELS_CACHE_TTL.as_secs()).expect("ttl") + 1
+        )
+        .is_none());
+        assert!(cached_codex_models_payload().is_none());
 
         *codex_models_cache().lock().expect("models cache") = None;
         crate::diagnostics::set_test_user_data_dir_override(previous.as_deref());

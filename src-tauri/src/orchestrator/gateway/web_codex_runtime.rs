@@ -76,6 +76,14 @@ struct CodexVersionInfoCache {
     updated_at_unix_secs: i64,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedCodexVersionInfo {
+    version: u64,
+    updated_at_unix_secs: i64,
+    value: CodexVersionInfo,
+}
+
 static CODEX_VERSION_INFO_REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,16 +126,17 @@ fn codex_version_info_persisted_cache_path() -> Option<PathBuf> {
     )
 }
 
-fn read_persisted_codex_version_info() -> Option<CodexVersionInfo> {
+fn read_persisted_codex_version_info() -> Option<CodexVersionInfoCache> {
     let path = codex_version_info_persisted_cache_path()?;
     let raw = std::fs::read_to_string(path).ok()?;
-    let value = serde_json::from_str::<Value>(&raw).ok()?;
-    if value.get("version").and_then(Value::as_u64)
-        != Some(CODEX_VERSION_INFO_PERSISTED_CACHE_VERSION)
-    {
+    let persisted = serde_json::from_str::<PersistedCodexVersionInfo>(&raw).ok()?;
+    if persisted.version != CODEX_VERSION_INFO_PERSISTED_CACHE_VERSION {
         return None;
     }
-    serde_json::from_value(value.get("value")?.clone()).ok()
+    Some(CodexVersionInfoCache {
+        value: persisted.value,
+        updated_at_unix_secs: persisted.updated_at_unix_secs,
+    })
 }
 
 fn write_persisted_codex_version_info(value: &CodexVersionInfo) {
@@ -159,11 +168,7 @@ fn cached_codex_version_info() -> Option<CodexVersionInfoCache> {
     if let Some(cached) = lock_codex_version_info_cache().clone() {
         return Some(cached);
     }
-    let value = read_persisted_codex_version_info()?;
-    let cached = CodexVersionInfoCache {
-        value,
-        updated_at_unix_secs: current_unix_secs(),
-    };
+    let cached = read_persisted_codex_version_info()?;
     *lock_codex_version_info_cache() = Some(cached.clone());
     Some(cached)
 }
@@ -820,6 +825,39 @@ mod tests {
             cached.updated_at_unix_secs,
             current_unix_secs()
         ));
+        *lock_codex_version_info_cache() = None;
+        crate::diagnostics::set_test_user_data_dir_override(previous.as_deref());
+    }
+
+    #[test]
+    fn persisted_version_info_preserves_original_cache_age() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let previous = crate::diagnostics::set_test_user_data_dir_override(Some(temp.path()));
+        *lock_codex_version_info_cache() = None;
+        let payload = build_version_info_placeholder();
+        let path = temp
+            .path()
+            .join("data")
+            .join(super::CODEX_VERSION_INFO_PERSISTED_CACHE_FILE);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("cache dir");
+        std::fs::write(
+            &path,
+            json!({
+                "version": super::CODEX_VERSION_INFO_PERSISTED_CACHE_VERSION,
+                "updatedAtUnixSecs": 1,
+                "value": payload
+            })
+            .to_string(),
+        )
+        .expect("write persisted version cache");
+
+        let cached = cached_codex_version_info().expect("persisted version cache");
+        assert_eq!(cached.updated_at_unix_secs, 1);
+        assert!(!version_info_cache_is_fresh(
+            cached.updated_at_unix_secs,
+            1 + VERSION_INFO_CACHE_SECS
+        ));
+
         *lock_codex_version_info_cache() = None;
         crate::diagnostics::set_test_user_data_dir_override(previous.as_deref());
     }
