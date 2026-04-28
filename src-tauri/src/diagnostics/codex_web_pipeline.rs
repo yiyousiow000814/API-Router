@@ -3,14 +3,18 @@ use crate::orchestrator::store::unix_ms;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{mpsc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const PIPELINE_EVENTS_FILE: &str = "codex_web_pipeline.ndjson";
 const PIPELINE_MAX_BYTES: usize = 2 * 1024 * 1024;
 const PIPELINE_WATCHDOG_SLOW_AFTER_MS: u64 = 750;
 const PIPELINE_WATCHDOG_COOLDOWN_MS: u64 = 30_000;
+const PIPELINE_FILE_LOCK_WAIT_MS: u64 = 2_000;
+const PIPELINE_FILE_LOCK_STALE_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -301,11 +305,93 @@ fn maybe_write_pipeline_watchdog_dump(payload: &serde_json::Map<String, Value>) 
     });
 }
 
+struct PipelineFileLock {
+    path: PathBuf,
+}
+
+impl Drop for PipelineFileLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn pipeline_file_lock_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("codex_web_pipeline.ndjson");
+    path.with_file_name(format!("{file_name}.lock"))
+}
+
+fn remove_stale_pipeline_file_lock(lock_path: &Path) {
+    let Ok(metadata) = std::fs::metadata(lock_path) else {
+        return;
+    };
+    let Ok(modified_at) = metadata.modified() else {
+        return;
+    };
+    let Ok(age) = modified_at.elapsed() else {
+        return;
+    };
+    if age >= Duration::from_millis(PIPELINE_FILE_LOCK_STALE_MS) {
+        let _ = std::fs::remove_file(lock_path);
+    }
+}
+
+fn acquire_pipeline_file_lock(path: &Path) -> Option<PipelineFileLock> {
+    let lock_path = pipeline_file_lock_path(path);
+    if let Some(parent) = lock_path.parent() {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+            log::warn!("failed to create pipeline lock parent dir: {err}");
+            return None;
+        }
+    }
+    let started = Instant::now();
+    let mut checked_stale_lock = false;
+    loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(mut file) => {
+                let _ = writeln!(file, "pid={} at={}", std::process::id(), unix_ms());
+                return Some(PipelineFileLock { path: lock_path });
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                if !checked_stale_lock {
+                    checked_stale_lock = true;
+                    remove_stale_pipeline_file_lock(&lock_path);
+                    continue;
+                }
+                if started.elapsed() >= Duration::from_millis(PIPELINE_FILE_LOCK_WAIT_MS) {
+                    log::warn!(
+                        "timed out waiting for pipeline diagnostics lock: {}",
+                        lock_path.display()
+                    );
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(err) => {
+                log::warn!(
+                    "failed to acquire pipeline diagnostics lock {}: {err}",
+                    lock_path.display()
+                );
+                return None;
+            }
+        }
+    }
+}
+
 fn append_ndjson_line_capped(path: &Path, line: &str, max_bytes: usize) {
     if let Err(err) = ensure_parent_dir(path) {
         log::warn!("failed to create pipeline diagnostics parent dir: {err}");
         return;
     }
+    let Some(_lock) = acquire_pipeline_file_lock(path) else {
+        return;
+    };
     let mut bytes = std::fs::read(path).unwrap_or_default();
     bytes.extend_from_slice(line.as_bytes());
     bytes.push(b'\n');
@@ -326,6 +412,8 @@ mod tests {
     use super::{append_pipeline_event, CodexWebPipelineEvent};
     use crate::diagnostics::{current_diagnostics_dir, set_test_user_data_dir_override};
     use serde_json::json;
+    use std::collections::HashSet;
+    use std::sync::{Arc, Barrier};
     use std::time::{Duration, Instant};
 
     fn wait_for_text(path: &std::path::Path, needle: &str) -> String {
@@ -407,6 +495,37 @@ mod tests {
         let text = wait_for_text(&path, r#""workspace":"wsl2""#);
         assert!(text.len() <= super::PIPELINE_MAX_BYTES);
         set_test_user_data_dir_override(prev.as_deref());
+    }
+
+    #[test]
+    fn capped_ndjson_append_serializes_concurrent_writers() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("codex_web_pipeline.ndjson");
+        let writer_count = 16;
+        let barrier = Arc::new(Barrier::new(writer_count));
+        let mut workers = Vec::new();
+        for index in 0..writer_count {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                let line = format!(r#"{{"index":{index}}}"#);
+                barrier.wait();
+                super::append_ndjson_line_capped(&path, &line, 16 * 1024);
+            }));
+        }
+        for worker in workers {
+            worker.join().expect("writer joined");
+        }
+
+        let text = std::fs::read_to_string(&path).expect("read pipeline log");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), writer_count);
+        let mut indexes = HashSet::new();
+        for line in lines {
+            let value: serde_json::Value = serde_json::from_str(line).expect("valid ndjson line");
+            indexes.insert(value["index"].as_u64().expect("index"));
+        }
+        assert_eq!(indexes.len(), writer_count);
     }
 
     #[test]

@@ -518,4 +518,65 @@ describe("threadLive", () => {
       Date.now = realNow;
     }
   });
+
+  it("pauses thread list auto refresh while the Codex Web document is hidden", async () => {
+    const callbacks = [];
+    const refreshThreadCalls = [];
+    let now = 10_000;
+    const documentRef = { visibilityState: "hidden" };
+    const realNow = Date.now;
+    Date.now = () => now;
+    const module = createThreadLiveModule({
+      state: {
+        workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+        codexVersionRefreshLastMs: 0,
+        codexVersionRefreshInFlight: false,
+        threadAutoRefreshInFlight: false,
+        threadRefreshAbortByWorkspace: { windows: null, wsl2: null },
+        threadAutoRefreshLastMsByWorkspace: { windows: 0, wsl2: 0 },
+        ws: { readyState: 1 },
+        wsSubscribedEvents: true,
+      },
+      byId() {
+        return null;
+      },
+      waitMs: async () => {},
+      setStatus() {},
+      refreshThreads: async (...args) => {
+        refreshThreadCalls.push(args);
+      },
+      refreshCodexVersions: async () => {},
+      getWorkspaceTarget() {
+        return "windows";
+      },
+      loadThreadMessages: async () => {},
+      THREAD_PULL_REFRESH_TRIGGER_PX: 44,
+      THREAD_PULL_REFRESH_MAX_PX: 84,
+      THREAD_PULL_REFRESH_MIN_MS: 520,
+      THREAD_PULL_HINT_CLEAR_DELAY_MS: 160,
+      THREAD_AUTO_REFRESH_CONNECTED_MS: 20000,
+      THREAD_AUTO_REFRESH_DISCONNECTED_MS: 3500,
+      ACTIVE_THREAD_LIVE_POLL_MS: 1500,
+      WebSocketRef: { OPEN: 1 },
+      documentRef,
+      setIntervalRef(callback) {
+        callbacks.push(callback);
+        return 1;
+      },
+    });
+
+    try {
+      module.startThreadAutoRefreshLoop();
+      now += 20_001;
+      await callbacks[0]();
+      expect(refreshThreadCalls).toHaveLength(0);
+
+      documentRef.visibilityState = "visible";
+      await callbacks[0]();
+      expect(refreshThreadCalls).toHaveLength(1);
+      expect(refreshThreadCalls[0][0]).toBe("windows");
+    } finally {
+      Date.now = realNow;
+    }
+  });
 });

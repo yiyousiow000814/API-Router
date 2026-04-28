@@ -65,8 +65,13 @@ export function createThreadLiveModule(deps) {
     ACTIVE_THREAD_LIVE_POLL_MS,
     ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS = 0,
     WebSocketRef = WebSocket,
+    documentRef = typeof document === "undefined" ? null : document,
     setIntervalRef = setInterval,
   } = deps;
+
+  function isThreadAutoRefreshVisible() {
+    return String(documentRef?.visibilityState || "visible").trim().toLowerCase() !== "hidden";
+  }
 
   function shouldRecoverWorkspaceAvailability() {
     const availability = state.workspaceAvailability || {};
@@ -226,6 +231,7 @@ export function createThreadLiveModule(deps) {
 
   function startThreadAutoRefreshLoop() {
     setIntervalRef(() => {
+      if (!isThreadAutoRefreshVisible()) return;
       if (state.threadAutoRefreshInFlight) return;
       const refreshTargets = resolveThreadAutoRefreshTargets(
         getWorkspaceTarget(),

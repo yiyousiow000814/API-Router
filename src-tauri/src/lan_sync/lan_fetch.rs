@@ -3,7 +3,13 @@ use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
+use super::watchdog_incidents::{
+    classify_watchdog_incident, default_watchdog_incident_classification,
+    describe_watchdog_incident, WatchdogIncidentSeverity,
+};
 use crate::diagnostics::current_diagnostics_dir;
 use crate::diagnostics::WATCHDOG_DUMP_PREFIXES;
 use crate::lan_sync::authorize_lan_sync_http_request;
@@ -14,6 +20,25 @@ const WATCHDOG_ACTIVITY_WINDOW_MS: u64 = WATCHDOG_ACTIVITY_WINDOW_MINUTES * 60_0
 const WATCHDOG_ACTIVITY_BUCKET_MS: u64 = WATCHDOG_ACTIVITY_BUCKET_MINUTES * 60_000;
 const WATCHDOG_ACTIVITY_BUCKETS: usize =
     (WATCHDOG_ACTIVITY_WINDOW_MS / WATCHDOG_ACTIVITY_BUCKET_MS) as usize;
+
+#[derive(Debug, Clone)]
+struct WatchdogFileEntry {
+    ts: u64,
+    trigger: String,
+    prefix: String,
+    file_name: String,
+}
+
+#[derive(Debug, Clone)]
+struct WatchdogIncidentRecord {
+    ts: u64,
+    trigger: String,
+    file_name: String,
+    detail: Option<String>,
+    severity: WatchdogIncidentSeverity,
+    impact: &'static str,
+    actionable: bool,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LanDiagnosticsRequestPacket {
@@ -167,7 +192,7 @@ pub fn watchdog_summary() -> serde_json::Value {
         }
     };
 
-    let mut watchdog_files: Vec<(u64, String, String, String)> = Vec::new();
+    let mut watchdog_files: Vec<WatchdogFileEntry> = Vec::new();
     for entry in entries.filter_map(|e| e.ok()) {
         let file_name = entry.file_name();
         let file_name_str = file_name.to_string_lossy();
@@ -184,12 +209,12 @@ pub fn watchdog_summary() -> serde_json::Value {
                     if file_name_str.ends_with(".json") {
                         let trigger_end = file_name_str.len() - 5; // strip ".json"
                         let trigger = &file_name_str[(*prefix).len() + dash_pos + 1..trigger_end];
-                        watchdog_files.push((
+                        watchdog_files.push(WatchdogFileEntry {
                             ts,
-                            trigger.to_string(),
-                            prefix.trim_end_matches('-').to_string(),
-                            file_name_str.to_string(),
-                        ));
+                            trigger: trigger.to_string(),
+                            prefix: prefix.trim_end_matches('-').to_string(),
+                            file_name: file_name_str.to_string(),
+                        });
                     }
                 }
             }
@@ -200,14 +225,18 @@ pub fn watchdog_summary() -> serde_json::Value {
         return empty_watchdog_summary(empty_buckets);
     }
 
-    watchdog_files.sort_by_key(|(ts, _, _, _)| *ts);
+    watchdog_files.sort_by_key(|entry| entry.ts);
     let activity_cutoff = now_ms.saturating_sub(WATCHDOG_ACTIVITY_WINDOW_MS);
-    let activity_watchdog_files: Vec<(u64, String, String, String)> = watchdog_files
+    let activity_watchdog_files: Vec<WatchdogFileEntry> = watchdog_files
         .iter()
-        .filter(|(ts, _, _, _)| *ts >= activity_cutoff)
+        .filter(|entry| entry.ts >= activity_cutoff)
         .cloned()
         .collect();
-    let activity_buckets = build_watchdog_activity_buckets(now_ms, &activity_watchdog_files);
+    let activity_records: Vec<WatchdogIncidentRecord> = activity_watchdog_files
+        .iter()
+        .map(|entry| read_watchdog_incident_record(&diag_dir, entry))
+        .collect();
+    let activity_buckets = build_watchdog_activity_buckets(now_ms, &activity_records);
     let latest_bucket_count = activity_buckets
         .last()
         .and_then(|bucket| bucket.get("count"))
@@ -215,41 +244,69 @@ pub fn watchdog_summary() -> serde_json::Value {
         .unwrap_or(0);
     let is_healthy = latest_bucket_count == 0;
 
-    if activity_watchdog_files.is_empty() {
+    if activity_records.is_empty() {
         return empty_watchdog_summary(activity_buckets);
     }
 
-    let (last_ts, last_trigger, last_prefix, last_file) = activity_watchdog_files
-        .last()
-        .cloned()
-        .unwrap_or_else(|| (0, String::new(), String::new(), String::new()));
-    let incident_count = activity_watchdog_files.len() as u32;
-    let recent_incidents: Vec<serde_json::Value> = activity_watchdog_files
+    let actionable_records: Vec<&WatchdogIncidentRecord> = activity_records
+        .iter()
+        .filter(|record| record.actionable)
+        .collect();
+    let last_actionable = actionable_records.last().copied();
+    let last_signal = activity_records.last();
+    let incident_count = actionable_records.len() as u32;
+    let signal_count = activity_records.len() as u32;
+    let background_signal_count = activity_records
+        .iter()
+        .filter(|record| record.severity == WatchdogIncidentSeverity::Info)
+        .count() as u32;
+    let warning_count = activity_records
+        .iter()
+        .filter(|record| record.severity == WatchdogIncidentSeverity::Warning)
+        .count() as u32;
+    let error_count = activity_records
+        .iter()
+        .filter(|record| record.severity == WatchdogIncidentSeverity::Error)
+        .count() as u32;
+    let critical_count = activity_records
+        .iter()
+        .filter(|record| record.severity == WatchdogIncidentSeverity::Critical)
+        .count() as u32;
+    let recent_incidents: Vec<serde_json::Value> = actionable_records
         .iter()
         .rev()
         .take(5)
-        .map(|(ts, trigger, prefix, file_name)| {
-            let detail = read_watchdog_incident_detail(&diag_dir.join(file_name), prefix, trigger);
-            serde_json::json!({
-                "unix_ms": ts,
-                "kind": trigger,
-                "file": file_name,
-                "detail": detail,
-            })
-        })
+        .map(|record| watchdog_incident_json(record))
         .collect();
-
-    let last_incident_detail =
-        read_watchdog_incident_detail(&diag_dir.join(&last_file), &last_prefix, &last_trigger);
+    let recent_signals: Vec<serde_json::Value> = activity_records
+        .iter()
+        .rev()
+        .take(5)
+        .map(watchdog_incident_json)
+        .collect();
 
     serde_json::json!({
         "healthy": is_healthy,
-        "last_incident_kind": last_trigger,
-        "last_incident_unix_ms": last_ts,
-        "last_incident_file": last_file,
-        "last_incident_detail": last_incident_detail,
+        "last_incident_kind": last_actionable.map(|record| record.trigger.as_str()),
+        "last_incident_unix_ms": last_actionable.map(|record| record.ts),
+        "last_incident_file": last_actionable.map(|record| record.file_name.as_str()),
+        "last_incident_detail": last_actionable.and_then(|record| record.detail.as_deref()),
+        "last_incident_severity": last_actionable.map(|record| record.severity.as_str()),
+        "last_incident_impact": last_actionable.map(|record| record.impact),
+        "last_signal_kind": last_signal.map(|record| record.trigger.as_str()),
+        "last_signal_unix_ms": last_signal.map(|record| record.ts),
+        "last_signal_file": last_signal.map(|record| record.file_name.as_str()),
+        "last_signal_detail": last_signal.and_then(|record| record.detail.as_deref()),
+        "last_signal_severity": last_signal.map(|record| record.severity.as_str()),
+        "last_signal_impact": last_signal.map(|record| record.impact),
         "incident_count": incident_count,
+        "signal_count": signal_count,
+        "background_signal_count": background_signal_count,
+        "warning_count": warning_count,
+        "error_count": error_count,
+        "critical_count": critical_count,
         "recent_incidents": recent_incidents,
+        "recent_signals": recent_signals,
         "health_window_minutes": WATCHDOG_ACTIVITY_BUCKET_MINUTES,
         "activity_window_minutes": WATCHDOG_ACTIVITY_WINDOW_MINUTES,
         "activity_bucket_minutes": WATCHDOG_ACTIVITY_BUCKET_MINUTES,
@@ -264,8 +321,22 @@ fn empty_watchdog_summary(activity_buckets: Vec<serde_json::Value>) -> serde_jso
         "last_incident_unix_ms": serde_json::Value::Null,
         "last_incident_file": serde_json::Value::Null,
         "last_incident_detail": serde_json::Value::Null,
+        "last_incident_severity": serde_json::Value::Null,
+        "last_incident_impact": serde_json::Value::Null,
+        "last_signal_kind": serde_json::Value::Null,
+        "last_signal_unix_ms": serde_json::Value::Null,
+        "last_signal_file": serde_json::Value::Null,
+        "last_signal_detail": serde_json::Value::Null,
+        "last_signal_severity": serde_json::Value::Null,
+        "last_signal_impact": serde_json::Value::Null,
         "incident_count": 0,
+        "signal_count": 0,
+        "background_signal_count": 0,
+        "warning_count": 0,
+        "error_count": 0,
+        "critical_count": 0,
         "recent_incidents": [],
+        "recent_signals": [],
         "health_window_minutes": WATCHDOG_ACTIVITY_BUCKET_MINUTES,
         "activity_window_minutes": WATCHDOG_ACTIVITY_WINDOW_MINUTES,
         "activity_bucket_minutes": WATCHDOG_ACTIVITY_BUCKET_MINUTES,
@@ -275,295 +346,122 @@ fn empty_watchdog_summary(activity_buckets: Vec<serde_json::Value>) -> serde_jso
 
 fn build_watchdog_activity_buckets(
     now_ms: u64,
-    incidents: &[(u64, String, String, String)],
+    incidents: &[WatchdogIncidentRecord],
 ) -> Vec<serde_json::Value> {
     let window_start = now_ms.saturating_sub(WATCHDOG_ACTIVITY_WINDOW_MS);
     let bucket_count = WATCHDOG_ACTIVITY_BUCKETS;
-    let mut counts = vec![0u64; bucket_count];
+    let mut incident_counts = vec![0u64; bucket_count];
+    let mut signal_counts = vec![0u64; bucket_count];
+    let mut background_counts = vec![0u64; bucket_count];
+    let mut warning_counts = vec![0u64; bucket_count];
+    let mut error_counts = vec![0u64; bucket_count];
+    let mut critical_counts = vec![0u64; bucket_count];
 
-    for (incident_ts, _, _, _) in incidents {
-        if *incident_ts < window_start {
+    for incident in incidents {
+        if incident.ts < window_start {
             continue;
         }
-        let bucket_index = ((*incident_ts - window_start) / WATCHDOG_ACTIVITY_BUCKET_MS) as usize;
+        let bucket_index = ((incident.ts - window_start) / WATCHDOG_ACTIVITY_BUCKET_MS) as usize;
         let clamped_index = bucket_index.min(bucket_count.saturating_sub(1));
-        counts[clamped_index] += 1;
+        signal_counts[clamped_index] += 1;
+        if incident.actionable {
+            incident_counts[clamped_index] += 1;
+        } else {
+            background_counts[clamped_index] += 1;
+        }
+        match incident.severity {
+            WatchdogIncidentSeverity::Info => {}
+            WatchdogIncidentSeverity::Warning => warning_counts[clamped_index] += 1,
+            WatchdogIncidentSeverity::Error => error_counts[clamped_index] += 1,
+            WatchdogIncidentSeverity::Critical => critical_counts[clamped_index] += 1,
+        }
     }
 
-    counts
-        .into_iter()
+    incident_counts
+        .iter()
         .enumerate()
         .map(|(index, count)| {
             let bucket_start = window_start + (index as u64 * WATCHDOG_ACTIVITY_BUCKET_MS);
             serde_json::json!({
                 "bucket_start_unix_ms": bucket_start,
                 "bucket_end_unix_ms": bucket_start + WATCHDOG_ACTIVITY_BUCKET_MS,
-                "count": count,
+                "count": *count,
+                "signal_count": signal_counts[index],
+                "background_signal_count": background_counts[index],
+                "warning_count": warning_counts[index],
+                "error_count": error_counts[index],
+                "critical_count": critical_counts[index],
             })
         })
         .collect()
 }
 
-fn read_watchdog_incident_detail(
-    path: &std::path::Path,
-    prefix: &str,
-    trigger: &str,
-) -> Option<String> {
-    let payload = std::fs::read(path)
+fn read_watchdog_incident_record(
+    diag_dir: &std::path::Path,
+    entry: &WatchdogFileEntry,
+) -> WatchdogIncidentRecord {
+    let path = diag_dir.join(&entry.file_name);
+    let cache_key = path.to_string_lossy().to_string();
+    {
+        let cache = match watchdog_record_cache().lock() {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        };
+        if let Some(record) = cache.get(&cache_key) {
+            return record.clone();
+        }
+    }
+
+    let payload = std::fs::read(&path)
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())?;
-    describe_watchdog_incident(prefix, trigger, &payload)
-}
-
-fn describe_watchdog_incident(prefix: &str, trigger: &str, payload: &Value) -> Option<String> {
-    let recent_traces = payload.get("recent_traces")?.as_array()?;
-    match trigger {
-        "slow-refresh" | "status" | "config" | "provider_switch" => {
-            let refresh_source = recent_traces.iter().rev().find_map(|trace| {
-                if trace.get("kind").and_then(|v| v.as_str()) == Some("status_refresh_requested") {
-                    return trace
-                        .get("fields")
-                        .and_then(|fields| fields.get("fields"))
-                        .and_then(|fields| fields.get("source"))
-                        .and_then(|v| v.as_str())
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(ToString::to_string);
-                }
-                None
-            });
-            let source_label = refresh_source
-                .as_deref()
-                .map(humanize_watchdog_source)
-                .unwrap_or_else(|| humanize_watchdog_trigger(prefix, trigger));
-            Some(format!("{source_label} refresh too slow"))
-        }
-        "slow-invoke" => {
-            let command = recent_traces.iter().rev().find_map(|trace| {
-                if trace.get("kind").and_then(|v| v.as_str()) == Some("invoke") {
-                    return trace
-                        .get("fields")
-                        .and_then(|fields| fields.get("command"))
-                        .and_then(|v| v.as_str())
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(ToString::to_string);
-                }
-                None
-            });
-            let label = command
-                .as_deref()
-                .map(humanize_watchdog_command)
-                .unwrap_or_else(|| humanize_watchdog_trigger(prefix, trigger));
-            Some(format!("{label} request too slow"))
-        }
-        "invoke-error" => {
-            let command = recent_traces.iter().rev().find_map(|trace| {
-                if trace.get("kind").and_then(|v| v.as_str()) == Some("invoke") {
-                    return trace
-                        .get("fields")
-                        .and_then(|fields| fields.get("command"))
-                        .and_then(|v| v.as_str())
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(ToString::to_string);
-                }
-                None
-            });
-            let label = command
-                .as_deref()
-                .map(humanize_watchdog_command)
-                .unwrap_or_else(|| humanize_watchdog_trigger(prefix, trigger));
-            Some(format!("{label} request failed"))
-        }
-        "frame-stall" => {
-            let monitor_kind = recent_traces.iter().rev().find_map(|trace| {
-                if trace.get("kind").and_then(|v| v.as_str()) == Some("frame_stall") {
-                    return trace
-                        .get("fields")
-                        .and_then(|fields| fields.get("monitor_kind"))
-                        .and_then(|v| v.as_str())
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(ToString::to_string);
-                }
-                None
-            });
-            let label = monitor_kind
-                .as_deref()
-                .map(humanize_watchdog_source)
-                .unwrap_or_else(|| "UI frame".to_string());
-            Some(format!("{label} stalled"))
-        }
-        "heartbeat-stall" => {
-            let snapshot = payload.get("snapshot");
-            let mut detail = String::from("UI heartbeat stalled");
-            let backend_status = snapshot.and_then(|value| value.get("backend_status"));
-            let backend_in_flight = backend_status
-                .and_then(|value| value.get("in_flight"))
-                .and_then(|value| value.as_bool())
-                == Some(true);
-            let backend_stalled = backend_status
-                .and_then(|value| value.get("stalled"))
-                .and_then(|value| value.as_bool())
-                == Some(true);
-            let backend_phase = backend_status
-                .and_then(|value| value.get("phase"))
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(|value| humanize_watchdog_trigger("", value));
-            if backend_in_flight {
-                if backend_stalled {
-                    detail.push_str(" after backend status refresh stopped making progress");
-                } else {
-                    detail.push_str(" while backend status refresh was active");
-                }
-                if let Some(phase) = backend_phase {
-                    detail.push_str(" at ");
-                    detail.push_str(&phase);
-                }
-            } else if snapshot
-                .and_then(|value| value.get("status_in_flight"))
-                .and_then(|value| value.as_bool())
-                == Some(true)
-            {
-                detail.push_str(" while UI status refresh was active");
-            } else if snapshot
-                .and_then(|value| value.get("config_in_flight"))
-                .and_then(|value| value.as_bool())
-                == Some(true)
-            {
-                detail.push_str(" while config refresh was active");
-            } else if snapshot
-                .and_then(|value| value.get("provider_switch_in_flight"))
-                .and_then(|value| value.as_bool())
-                == Some(true)
-            {
-                detail.push_str(" while provider switch was active");
-            }
-            Some(detail)
-        }
-        "backend-status-stall" => {
-            let snapshot = payload.get("snapshot");
-            let phase = snapshot
-                .and_then(|value| value.get("backend_status"))
-                .and_then(|value| value.get("phase"))
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(|value| humanize_watchdog_trigger("", value));
-            let mut detail = String::from("Backend status refresh stalled");
-            if let Some(phase) = phase {
-                detail.push_str(" at ");
-                detail.push_str(&phase);
-            }
-            Some(detail)
-        }
-        "backend-pipeline" => {
-            let event = payload.get("pipeline_event")?;
-            let route = event
-                .get("route")
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or("Codex Web pipeline");
-            let stage = event
-                .get("stage")
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or("backend");
-            let workspace = event
-                .get("workspace")
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or("unknown");
-            let elapsed_ms = event
-                .get("elapsedMs")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(0);
-            let rebuild_ms = event
-                .get("rebuildMs")
-                .and_then(|value| value.as_i64())
-                .and_then(|value| u64::try_from(value).ok())
-                .unwrap_or(0);
-            let method = event
-                .get("method")
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty());
-            let route_label = method
-                .map(|method| format!("{method} via {route}"))
-                .unwrap_or_else(|| route.to_string());
-            let workspace_label = match workspace {
-                "wsl2" => "WSL2".to_string(),
-                "windows" => "Windows".to_string(),
-                _ => humanize_watchdog_trigger("", workspace),
-            };
-            let effective_ms = elapsed_ms.max(rebuild_ms);
-            let stage_label = if rebuild_ms > elapsed_ms {
-                format!("{stage} rebuild")
-            } else {
-                stage.to_string()
-            };
-            Some(format!(
-                "{} {} took {}ms in {}",
-                workspace_label, stage_label, effective_ms, route_label
-            ))
-        }
-        _ => None,
-    }
-}
-
-fn humanize_watchdog_source(source: &str) -> String {
-    match source {
-        "status_poll_interval" => "Status poll interval".to_string(),
-        "manual_refresh" => "Manual refresh".to_string(),
-        "status" => "Status snapshot".to_string(),
-        "config" => "Config".to_string(),
-        "provider_switch" => "Provider switch".to_string(),
-        other => humanize_watchdog_trigger("", other),
-    }
-}
-
-fn humanize_watchdog_command(command: &str) -> String {
-    match command {
-        "get_status" => "Status snapshot".to_string(),
-        "get_local_diagnostics" => "Local diagnostics".to_string(),
-        "get_remote_peer_diagnostics" => "Remote peer diagnostics".to_string(),
-        other => humanize_watchdog_trigger("", other),
-    }
-}
-
-fn humanize_watchdog_trigger(prefix: &str, trigger: &str) -> String {
-    let raw = if prefix.is_empty() {
-        trigger
-    } else if trigger.is_empty() {
-        prefix
-    } else {
-        trigger
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    let detail = payload
+        .as_ref()
+        .and_then(|payload| describe_watchdog_incident(&entry.prefix, &entry.trigger, payload));
+    let classification = payload
+        .as_ref()
+        .map(|payload| classify_watchdog_incident(&entry.trigger, payload))
+        .unwrap_or_else(|| default_watchdog_incident_classification(&entry.trigger));
+    let record = WatchdogIncidentRecord {
+        ts: entry.ts,
+        trigger: entry.trigger.clone(),
+        file_name: entry.file_name.clone(),
+        detail,
+        severity: classification.severity,
+        impact: classification.impact,
+        actionable: classification.severity.is_actionable(),
     };
-    raw.replace(['-', '_'], " ")
-        .split_whitespace()
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut cache = match watchdog_record_cache().lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    cache.insert(cache_key, record.clone());
+    record
+}
+
+fn watchdog_record_cache() -> &'static Mutex<HashMap<String, WatchdogIncidentRecord>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, WatchdogIncidentRecord>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn watchdog_incident_json(record: &WatchdogIncidentRecord) -> serde_json::Value {
+    serde_json::json!({
+        "unix_ms": record.ts,
+        "kind": record.trigger.as_str(),
+        "file": record.file_name.as_str(),
+        "detail": record.detail.as_deref(),
+        "severity": record.severity.as_str(),
+        "impact": record.impact,
+        "actionable": record.actionable,
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::describe_watchdog_incident;
     use super::local_diagnostics_snapshot;
     use super::watchdog_summary;
     use crate::app_state::UiWatchdogState;
+    use crate::lan_sync::watchdog_incidents::describe_watchdog_incident;
     use crate::orchestrator::store::unix_ms;
     use std::sync::{Mutex, OnceLock};
 
@@ -825,6 +723,167 @@ mod tests {
         assert_eq!(
             detail.as_deref(),
             Some("WSL2 gateway_handler rebuild took 1283ms in /codex/threads")
+        );
+    }
+
+    #[test]
+    fn watchdog_summary_classifies_background_pipeline_signals_as_info() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let diag_dir = tmp.path().join("diagnostics");
+        std::fs::create_dir_all(&diag_dir).expect("create diag dir");
+        let now = unix_ms();
+
+        write_watchdog_dump(
+            &diag_dir,
+            now.saturating_sub(60_000),
+            "ui-freeze-",
+            "backend-pipeline",
+            serde_json::json!({
+                "pipeline_event": {
+                    "route": "/codex/version-info",
+                    "workspace": "wsl2",
+                    "stage": "runtime_detect",
+                    "source": "codex-version-command",
+                    "elapsedMs": 1147,
+                    "ok": true
+                },
+                "recent_traces": []
+            }),
+        );
+        write_watchdog_dump(
+            &diag_dir,
+            now.saturating_sub(30_000),
+            "ui-freeze-",
+            "backend-pipeline",
+            serde_json::json!({
+                "pipeline_event": {
+                    "route": "codex-app-server-rpc",
+                    "workspace": "windows",
+                    "stage": "app_server_rpc",
+                    "method": "account/rateLimits/read",
+                    "elapsedMs": 1099,
+                    "ok": true
+                },
+                "recent_traces": []
+            }),
+        );
+
+        let result = watchdog_summary_for_user_data_dir(tmp.path());
+
+        assert_eq!(
+            result
+                .get("incident_count")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(99),
+            0
+        );
+        assert_eq!(
+            result
+                .get("signal_count")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+            2
+        );
+        assert_eq!(
+            result
+                .get("background_signal_count")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+            2
+        );
+        assert!(result.get("last_incident_kind").unwrap().is_null());
+        assert_eq!(
+            result
+                .get("recent_incidents")
+                .and_then(|value| value.as_array())
+                .map(Vec::len)
+                .unwrap_or(99),
+            0
+        );
+        let recent_signals = result
+            .get("recent_signals")
+            .and_then(|value| value.as_array())
+            .expect("recent signals");
+        assert_eq!(recent_signals.len(), 2);
+        assert_eq!(
+            recent_signals[0]
+                .get("severity")
+                .and_then(|value| value.as_str()),
+            Some("info")
+        );
+        assert_eq!(
+            recent_signals[0]
+                .get("impact")
+                .and_then(|value| value.as_str()),
+            Some("background")
+        );
+    }
+
+    #[test]
+    fn watchdog_summary_keeps_visible_thread_fetch_delay_as_warning() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let diag_dir = tmp.path().join("diagnostics");
+        std::fs::create_dir_all(&diag_dir).expect("create diag dir");
+        let now = unix_ms();
+
+        write_watchdog_dump(
+            &diag_dir,
+            now.saturating_sub(30_000),
+            "ui-freeze-",
+            "local-task",
+            serde_json::json!({
+                "recent_traces": [
+                    {
+                        "kind": "local_task",
+                        "fields": {
+                            "active_page": "codex-web",
+                            "command": "thread refresh fetch",
+                            "elapsed_ms": 1732,
+                            "visible": true,
+                            "fields": {
+                                "workspace": "windows",
+                                "headersMs": 1730,
+                                "bodyReadMs": 1,
+                                "parseMs": 1
+                            }
+                        },
+                        "unix_ms": now.saturating_sub(30_000)
+                    }
+                ],
+                "snapshot": {
+                    "active_page": "codex-web",
+                    "visible": true
+                }
+            }),
+        );
+
+        let result = watchdog_summary_for_user_data_dir(tmp.path());
+
+        assert_eq!(
+            result
+                .get("incident_count")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+            1
+        );
+        let recent = result
+            .get("recent_incidents")
+            .and_then(|value| value.as_array())
+            .expect("recent incidents");
+        assert_eq!(
+            recent[0].get("severity").and_then(|value| value.as_str()),
+            Some("warning")
+        );
+        assert_eq!(
+            recent[0].get("impact").and_then(|value| value.as_str()),
+            Some("transport")
+        );
+        assert_eq!(
+            recent[0]
+                .get("detail")
+                .and_then(|value| value.as_str())
+                .map(|value| value.contains("waited 1730ms for Windows headers")),
+            Some(true)
         );
     }
 

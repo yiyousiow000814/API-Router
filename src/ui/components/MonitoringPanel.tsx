@@ -13,19 +13,49 @@ export interface WatchdogSummary {
   last_incident_detail?: string | null
   last_incident_unix_ms?: number | null
   last_incident_file?: string | null
+  last_incident_severity?: WatchdogIncidentSeverity | null
+  last_incident_impact?: string | null
+  last_signal_kind?: string | null
+  last_signal_detail?: string | null
+  last_signal_unix_ms?: number | null
+  last_signal_file?: string | null
+  last_signal_severity?: WatchdogIncidentSeverity | null
+  last_signal_impact?: string | null
   incident_count: number
+  signal_count?: number
+  background_signal_count?: number
+  warning_count?: number
+  error_count?: number
+  critical_count?: number
   activity_window_minutes?: number
   activity_bucket_minutes?: number
   activity_buckets?: Array<{
     bucket_start_unix_ms: number
     bucket_end_unix_ms: number
     count: number
+    signal_count?: number
+    background_signal_count?: number
+    warning_count?: number
+    error_count?: number
+    critical_count?: number
   }>
   recent_incidents?: Array<{
     unix_ms: number
     kind: string
     file: string
     detail?: string | null
+    severity?: WatchdogIncidentSeverity | null
+    impact?: string | null
+    actionable?: boolean
+  }>
+  recent_signals?: Array<{
+    unix_ms: number
+    kind: string
+    file: string
+    detail?: string | null
+    severity?: WatchdogIncidentSeverity | null
+    impact?: string | null
+    actionable?: boolean
   }>
   live_frontend?: {
     last_heartbeat_unix_ms: number
@@ -48,6 +78,8 @@ export interface WatchdogSummary {
     stalled: boolean
   }
 }
+
+type WatchdogIncidentSeverity = 'info' | 'warning' | 'error' | 'critical'
 
 export interface EventCount {
   last_unix_ms: number
@@ -214,8 +246,7 @@ function formatWatchdogActivityWindow(minutes: number): string {
 }
 
 function formatWatchdogActivityBucketAriaLabel(bucket: WatchdogActivityBucket): string {
-  const incidentLabel =
-    bucket.count === 0 ? 'No incidents' : `${bucket.count} incident${bucket.count === 1 ? '' : 's'}`
+  const incidentLabel = formatWatchdogActivityBucketDetail(bucket)
   return `Watchdog activity bucket, ${incidentLabel}, ${formatWatchdogActivityBucketTimeRange(bucket.bucket_start_unix_ms, bucket.bucket_end_unix_ms)}`
 }
 
@@ -235,8 +266,19 @@ function formatWatchdogActivityBucketTimeRange(startUnixMs: number, endUnixMs: n
 }
 
 function formatWatchdogActivityBucketDetail(bucket: WatchdogActivityBucket): string {
-  if (bucket.count === 0) return 'No incidents'
-  return `${bucket.count} incident${bucket.count === 1 ? '' : 's'}`
+  const signalCount = bucket.signal_count ?? bucket.count
+  const backgroundCount = bucket.background_signal_count ?? 0
+  if (bucket.count === 0) {
+    if (signalCount > 0) {
+      return `${signalCount} background signal${signalCount === 1 ? '' : 's'}`
+    }
+    return 'No incidents'
+  }
+  const incidentLabel = `${bucket.count} incident${bucket.count === 1 ? '' : 's'}`
+  if (backgroundCount > 0) {
+    return `${incidentLabel}, ${backgroundCount} background signal${backgroundCount === 1 ? '' : 's'}`
+  }
+  return incidentLabel
 }
 
 function getWatchdogLatestActivityBucketCount(summary: WatchdogSummary | null | undefined): number | null {
@@ -254,17 +296,29 @@ function makeWatchdogActivityCounts(spikes: Array<[number, number]>): number[] {
   return counts
 }
 
-function getWatchdogActivityTone(count: number): { background: string; boxShadow: string } {
-  if (count >= 5) {
+function getWatchdogActivityTone(bucket: WatchdogActivityBucket): { background: string; boxShadow: string } {
+  if ((bucket.critical_count ?? 0) > 0 || bucket.count >= 5) {
     return {
       background: 'rgba(255,94,125,0.88)',
       boxShadow: 'inset 0 0 0 1px rgba(255,94,125,0.14)',
     }
   }
-  if (count > 0) {
+  if ((bucket.error_count ?? 0) > 0) {
+    return {
+      background: 'rgba(255,124,88,0.9)',
+      boxShadow: 'inset 0 0 0 1px rgba(255,124,88,0.16)',
+    }
+  }
+  if (bucket.count > 0) {
     return {
       background: 'rgba(255,182,72,0.92)',
       boxShadow: 'inset 0 0 0 1px rgba(255,182,72,0.16)',
+    }
+  }
+  if ((bucket.signal_count ?? 0) > 0) {
+    return {
+      background: 'rgba(72,132,255,0.28)',
+      boxShadow: 'inset 0 0 0 1px rgba(72,132,255,0.14)',
     }
   }
   return {
@@ -748,6 +802,66 @@ export function formatIncidentKind(kind: string | null | undefined): string {
     }
 }
 
+function formatWatchdogIncidentMeta(
+  severity: WatchdogIncidentSeverity | null | undefined,
+  impact: string | null | undefined,
+): string {
+  const severityLabel = formatWatchdogIncidentSeverity(severity)
+  const impactLabel = formatWatchdogIncidentImpact(impact)
+  return impactLabel ? `${severityLabel} · ${impactLabel}` : severityLabel
+}
+
+function formatWatchdogIncidentSeverity(severity: WatchdogIncidentSeverity | null | undefined): string {
+  switch (severity) {
+    case 'critical':
+      return 'critical'
+    case 'error':
+      return 'error'
+    case 'warning':
+      return 'warning'
+    case 'info':
+      return 'info'
+    default:
+      return 'warning'
+  }
+}
+
+function formatWatchdogIncidentImpact(impact: string | null | undefined): string {
+  switch (impact) {
+    case 'visible-ui':
+      return 'visible UI'
+    case 'transport':
+      return 'transport/WebView'
+    case 'startup':
+      return 'startup'
+    case 'request':
+      return 'request path'
+    case 'background':
+      return 'background'
+    case 'backend-status':
+      return 'backend status'
+    case 'backend':
+      return 'backend'
+    default:
+      return ''
+  }
+}
+
+function getWatchdogIncidentAccent(severity: WatchdogIncidentSeverity | null | undefined): string {
+  switch (severity) {
+    case 'critical':
+      return 'rgba(255,94,125,0.92)'
+    case 'error':
+      return 'rgba(255,124,88,0.9)'
+    case 'warning':
+      return 'rgba(255,182,72,0.94)'
+    case 'info':
+      return 'rgba(72,132,255,0.56)'
+    default:
+      return 'rgba(255,182,72,0.78)'
+  }
+}
+
 export function peerSupportsLanDiagnostics(peer: LanPeerStatus): boolean {
   return Boolean(peer.trusted && (peer.capabilities ?? []).includes(LAN_DIAGNOSTICS_CAPABILITY))
 }
@@ -1025,6 +1139,10 @@ interface WatchdogSectionProps {
 
 function WatchdogSection({ summary, loading, showIncidents = true }: WatchdogSectionProps) {
   const recentIncidents = summary?.recent_incidents ?? []
+  const recentSignals = summary?.recent_signals ?? []
+  const backgroundSignals = recentSignals
+    .filter((signal) => signal.actionable === false || signal.severity === 'info')
+    .slice(0, 3)
   const activityBuckets = summary?.activity_buckets ?? []
   const activityWindowMinutes = summary?.activity_window_minutes ?? WATCHDOG_ACTIVITY_WINDOW_MINUTES
   const activityBucketMinutes = summary?.activity_bucket_minutes ?? WATCHDOG_ACTIVITY_BUCKET_MINUTES
@@ -1044,6 +1162,18 @@ function WatchdogSection({ summary, loading, showIncidents = true }: WatchdogSec
           <div className="aoKvp">
             <span className="aoKey">incidents</span>
             <span className="aoVal">{summary.incident_count}</span>
+            {typeof summary.signal_count === 'number' ? (
+              <>
+                <span className="aoKey">signals</span>
+                <span className="aoVal">{summary.signal_count}</span>
+              </>
+            ) : null}
+            {typeof summary.background_signal_count === 'number' && summary.background_signal_count > 0 ? (
+              <>
+                <span className="aoKey">background</span>
+                <span className="aoVal">{summary.background_signal_count}</span>
+              </>
+            ) : null}
             {liveHeadline ? (
               <>
                 <span className="aoKey">live status</span>
@@ -1082,7 +1212,7 @@ function WatchdogSection({ summary, loading, showIncidents = true }: WatchdogSec
                 aria-label={`Watchdog activity over the last ${activityWindowLabel}`}
               >
                 {activityBuckets.map((bucket) => {
-                  const tone = getWatchdogActivityTone(bucket.count)
+                  const tone = getWatchdogActivityTone(bucket)
                   return (
                     <div
                       key={bucket.bucket_start_unix_ms}
@@ -1126,6 +1256,7 @@ function WatchdogSection({ summary, loading, showIncidents = true }: WatchdogSec
                     padding: '8px 10px',
                     borderRadius: 10,
                     border: '1px solid rgba(13,18,32,0.08)',
+                    borderLeft: `3px solid ${getWatchdogIncidentAccent(incident.severity)}`,
                     background: 'rgba(255,255,255,0.52)',
                   }}
                 >
@@ -1135,7 +1266,38 @@ function WatchdogSection({ summary, loading, showIncidents = true }: WatchdogSec
                     </span>
                     <span className="aoHint" style={{ fontSize: 10 }}>{fmtDateTime(incident.unix_ms)}</span>
                   </div>
-                  <div className="aoHint" style={{ fontSize: 10 }}>{incident.file}</div>
+                  <div className="aoHint" style={{ fontSize: 10 }}>
+                    {formatWatchdogIncidentMeta(incident.severity, incident.impact)} · {incident.file}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {showIncidents && backgroundSignals.length > 0 ? (
+            <div style={{ display: 'grid', gap: 6, marginTop: 10 }}>
+              <div className="aoHint" style={{ fontSize: 11, fontWeight: 700 }}>Recent background signals</div>
+              {backgroundSignals.map((signal) => (
+                <div
+                  key={`signal-${signal.file}`}
+                  style={{
+                    display: 'grid',
+                    gap: 2,
+                    padding: '7px 10px',
+                    borderRadius: 10,
+                    border: '1px solid rgba(72,132,255,0.16)',
+                    borderLeft: `3px solid ${getWatchdogIncidentAccent(signal.severity)}`,
+                    background: 'rgba(255,255,255,0.38)',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={{ fontSize: 12, fontWeight: 650, color: 'rgba(13,18,32,0.78)' }}>
+                      {signal.detail ?? formatIncidentKind(signal.kind)}
+                    </span>
+                    <span className="aoHint" style={{ fontSize: 10 }}>{fmtDateTime(signal.unix_ms)}</span>
+                  </div>
+                  <div className="aoHint" style={{ fontSize: 10 }}>
+                    {formatWatchdogIncidentMeta(signal.severity, signal.impact)} · {signal.file}
+                  </div>
                 </div>
               ))}
             </div>
