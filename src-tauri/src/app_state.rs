@@ -34,6 +34,7 @@ const UI_WATCHDOG_PROCESS_SNAPSHOT_CACHE_MS: u64 = 30_000;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+#[cfg(any(test, windows))]
 const UI_WATCHDOG_PROCESS_NAMES: &[&str] = &[
     "api router.exe",
     "api_router.exe",
@@ -66,6 +67,7 @@ fn mask_key_preview(key: &str) -> String {
     format!("{start}******{end}")
 }
 
+#[cfg(any(test, windows))]
 fn parse_tasklist_csv_line(line: &str) -> Vec<String> {
     let mut values = Vec::new();
     let mut current = String::new();
@@ -89,6 +91,7 @@ fn parse_tasklist_csv_line(line: &str) -> Vec<String> {
     values
 }
 
+#[cfg(any(test, windows))]
 fn parse_tasklist_mem_kb(value: &str) -> Option<u64> {
     let digits: String = value.chars().filter(|ch| ch.is_ascii_digit()).collect();
     digits.parse::<u64>().ok()
