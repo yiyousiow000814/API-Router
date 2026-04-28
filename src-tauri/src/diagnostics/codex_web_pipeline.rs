@@ -3,6 +3,8 @@ use crate::orchestrator::store::unix_ms;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::Path;
+use std::path::PathBuf;
+use std::sync::{mpsc, Mutex, OnceLock};
 
 const PIPELINE_EVENTS_FILE: &str = "codex_web_pipeline.ndjson";
 const PIPELINE_MAX_BYTES: usize = 2 * 1024 * 1024;
@@ -94,6 +96,12 @@ tokio::task_local! {
     static CODEX_WEB_REQUEST_ID: String;
 }
 
+#[derive(Debug)]
+struct PipelineWriteJob {
+    path: PathBuf,
+    line: String,
+}
+
 pub(crate) fn current_request_id() -> Option<String> {
     CODEX_WEB_REQUEST_ID.try_with(Clone::clone).ok()
 }
@@ -123,12 +131,62 @@ pub(crate) fn append_pipeline_event(event: CodexWebPipelineEvent) {
         Ok(line) => line,
         Err(_) => return,
     };
-    append_ndjson_line_capped(&path, &line, PIPELINE_MAX_BYTES);
+    enqueue_pipeline_line(path, line.clone());
     let _ =
         crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(&json!({
             "source": "codex.pipeline",
             "entry": Value::Object(payload),
         }));
+}
+
+fn pipeline_writer_sender() -> &'static Mutex<Option<mpsc::Sender<PipelineWriteJob>>> {
+    static SENDER: OnceLock<Mutex<Option<mpsc::Sender<PipelineWriteJob>>>> = OnceLock::new();
+    SENDER.get_or_init(|| Mutex::new(None))
+}
+
+fn run_pipeline_writer(rx: mpsc::Receiver<PipelineWriteJob>) {
+    for job in rx {
+        append_ndjson_line_capped(&job.path, &job.line, PIPELINE_MAX_BYTES);
+    }
+}
+
+fn pipeline_writer() -> Option<mpsc::Sender<PipelineWriteJob>> {
+    let sender_cell = pipeline_writer_sender();
+    let mut sender_guard = match sender_cell.lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    if let Some(sender) = sender_guard.as_ref() {
+        return Some(sender.clone());
+    }
+
+    let (tx, rx) = mpsc::channel();
+    if std::thread::Builder::new()
+        .name("codex-pipeline-writer".to_string())
+        .spawn(move || run_pipeline_writer(rx))
+        .is_err()
+    {
+        return None;
+    }
+    *sender_guard = Some(tx.clone());
+    Some(tx)
+}
+
+fn enqueue_pipeline_line(path: PathBuf, line: String) {
+    let Some(sender) = pipeline_writer() else {
+        append_ndjson_line_capped(&path, &line, PIPELINE_MAX_BYTES);
+        return;
+    };
+    if let Err(err) = sender.send(PipelineWriteJob { path, line }) {
+        let sender_cell = pipeline_writer_sender();
+        let mut sender_guard = match sender_cell.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *sender_guard = None;
+        let job = err.0;
+        append_ndjson_line_capped(&job.path, &job.line, PIPELINE_MAX_BYTES);
+    }
 }
 
 fn append_ndjson_line_capped(path: &Path, line: &str, max_bytes: usize) {
@@ -155,6 +213,24 @@ fn append_ndjson_line_capped(path: &Path, line: &str, max_bytes: usize) {
 mod tests {
     use super::{append_pipeline_event, CodexWebPipelineEvent};
     use crate::diagnostics::{current_diagnostics_dir, set_test_user_data_dir_override};
+    use std::time::{Duration, Instant};
+
+    fn wait_for_text(path: &std::path::Path, needle: &str) -> String {
+        let started = Instant::now();
+        loop {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                if text.contains(needle) {
+                    return text;
+                }
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "timed out waiting for {needle} in {}",
+                path.display()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 
     #[test]
     fn append_pipeline_event_writes_ndjson() {
@@ -168,10 +244,35 @@ mod tests {
         let path = current_diagnostics_dir()
             .expect("diagnostics dir")
             .join("codex_web_pipeline.ndjson");
-        let text = std::fs::read_to_string(path).expect("pipeline log");
+        let text = wait_for_text(&path, r#""route":"/codex/threads""#);
         assert!(text.contains(r#""route":"/codex/threads""#));
         assert!(text.contains(r#""workspace":"windows""#));
         assert!(text.contains(r#""cacheHit":true"#));
+        set_test_user_data_dir_override(prev.as_deref());
+    }
+
+    #[test]
+    fn append_pipeline_event_returns_before_large_file_rewrite_finishes() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let prev = set_test_user_data_dir_override(Some(temp.path()));
+        let path = current_diagnostics_dir()
+            .expect("diagnostics dir")
+            .join("codex_web_pipeline.ndjson");
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("diagnostics dir");
+        let seed_line = format!("{{\"seed\":\"{}\"}}\n", "x".repeat(256));
+        let repeats = (super::PIPELINE_MAX_BYTES / seed_line.len()).saturating_add(128);
+        std::fs::write(&path, seed_line.repeat(repeats)).expect("seed pipeline log");
+
+        let event = CodexWebPipelineEvent::new("/codex/threads", "wsl2", "gateway_handler", 7);
+        let started = Instant::now();
+        append_pipeline_event(event);
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "pipeline append should enqueue instead of rewriting the capped log inline"
+        );
+
+        let text = wait_for_text(&path, r#""workspace":"wsl2""#);
+        assert!(text.len() <= super::PIPELINE_MAX_BYTES);
         set_test_user_data_dir_override(prev.as_deref());
     }
 
@@ -196,7 +297,7 @@ mod tests {
         let path = current_diagnostics_dir()
             .expect("diagnostics dir")
             .join("codex_web_pipeline.ndjson");
-        let text = std::fs::read_to_string(path).expect("pipeline log");
+        let text = wait_for_text(&path, r#""requestId":"req-test-1""#);
         assert!(text.contains(r#""requestId":"req-test-1""#));
         assert!(text.contains(r#""statusCode":200"#));
         assert!(text.contains(r#""requestBytes":12"#));
