@@ -159,7 +159,6 @@ export function createConnectionFlowsModule(deps) {
     refreshThreads,
     refreshWorkspaceRuntimeState = async () => null,
     getWorkspaceTarget,
-    isWorkspaceAvailable,
     setStatus,
     setMainTab,
     setMobileTab,
@@ -731,18 +730,21 @@ export function createConnectionFlowsModule(deps) {
 
   async function refreshAll() {
     const currentTarget = getWorkspaceTarget();
-    const otherTarget = currentTarget === "wsl2" ? "windows" : "wsl2";
     const tasks = [
       refreshThreads(currentTarget, { force: false, silent: false }),
       refreshHosts(),
       refreshWorkspaceRuntimeState(currentTarget, { silent: true }),
     ];
-    if (isWorkspaceAvailable(otherTarget)) {
-      tasks.push(refreshThreads(otherTarget, { force: false, silent: true }).catch(() => null));
-      tasks.push(refreshWorkspaceRuntimeState(otherTarget, { silent: true }).catch(() => null));
-    }
     await Promise.all(tasks);
     await refreshPending();
+  }
+
+  function hasCachedModelMetadata() {
+    return Array.isArray(state.modelOptions) && state.modelOptions.length > 0;
+  }
+
+  function hasCachedVersionMetadata() {
+    return state.codexVersionInfoRestoredFromCache === true;
   }
 
   async function connect(options = {}) {
@@ -754,10 +756,14 @@ export function createConnectionFlowsModule(deps) {
     await api("/codex/auth/verify", { method: "POST", body: {} });
     connectWs();
     setStatus("Connected.");
-    await refreshModels().catch((e) => setStatus(e.message, true));
-    await refreshCodexVersions().catch((e) => setStatus(e.message, true));
     await refreshAll();
     if (options.switchToChat !== false) setMainTab("chat");
+    if (!hasCachedModelMetadata()) {
+      refreshModels().catch((e) => setStatus(e.message, true));
+    }
+    if (!hasCachedVersionMetadata()) {
+      refreshCodexVersions().catch((e) => setStatus(e.message, true));
+    }
   }
 
   return {

@@ -3,6 +3,14 @@ export function truncateLabel(label, max = 28) {
   return text.length > max ? `${text.slice(0, max - 1)}...` : text;
 }
 
+export function shouldApplyVersionAvailabilityPayload(data) {
+  if (!data || typeof data !== "object") return false;
+  const windows = String(data.windows || "").trim().toLowerCase();
+  const wsl2 = String(data.wsl2 || "").trim().toLowerCase();
+  if (windows === "detecting" || wsl2 === "detecting") return false;
+  return typeof data.windowsInstalled === "boolean" || typeof data.wsl2Installed === "boolean";
+}
+
 export function relativeTimeLabel(input) {
   if (!input) return "";
   let ts = Number.NaN;
@@ -35,6 +43,8 @@ export function relativeTimeLabel(input) {
   return `${Math.floor(dayDiff / 365)}y`;
 }
 
+const THREADS_CACHE_WRITE_DELAY_MS = 250;
+
 export function createAppPersistenceModule(deps) {
   const {
     state,
@@ -50,11 +60,49 @@ export function createAppPersistenceModule(deps) {
     sortThreadsByNewest,
     isThreadListActuallyVisible,
     MODELS_CACHE_KEY,
+    CODEX_VERSION_CACHE_KEY,
     THREADS_CACHE_KEY,
     REASONING_EFFORT_KEY,
+    recordLocalTask = () => {},
+    setTimeoutRef = setTimeout,
+    clearTimeoutRef = clearTimeout,
+    performanceRef = performance,
     localStorageRef = localStorage,
     documentRef = document,
   } = deps;
+  let codexVersionInfoRequestInFlight = null;
+  let threadsCachePersistTimer = 0;
+
+  function animateVersionNode(node, nextText) {
+    if (!node) return;
+    const text = String(nextText || "");
+    if (String(node.textContent || "") === text) return;
+    node.textContent = text;
+    node.classList?.remove?.("is-text-swap");
+    try {
+      void node.offsetWidth;
+    } catch {}
+    node.classList?.add?.("is-text-swap");
+  }
+
+  function applyCodexVersionInfoPayload(data) {
+    const winNode = byId("windowsCodexVersion");
+    const wslNode = byId("wslCodexVersion");
+    animateVersionNode(winNode, String(data?.windows || "Not detected"));
+    animateVersionNode(wslNode, String(data?.wsl2 || "Not detected"));
+    if (shouldApplyVersionAvailabilityPayload(data)) {
+      updateWorkspaceAvailability(data?.windowsInstalled, data?.wsl2Installed);
+    }
+    const buildStale = !!data?.buildStale;
+    if (buildStale && !state.gatewayBuildStaleWarned) {
+      const buildShort = String(data?.buildGitShortSha || "").trim() || "unknown";
+      const repoShort = String(data?.repoGitShortSha || "").trim() || "latest";
+      setStatus(`Gateway EXE outdated (${buildShort} -> ${repoShort}). Please build exe.`, true);
+      state.gatewayBuildStaleWarned = true;
+    } else if (!buildStale) {
+      state.gatewayBuildStaleWarned = false;
+    }
+  }
 
   function persistModelsCache() {
     try {
@@ -71,6 +119,8 @@ export function createAppPersistenceModule(deps) {
       const items = ensureArrayItems(parsed?.items).map(normalizeModelOption).filter(Boolean);
       if (!items.length) return false;
       state.modelOptions = items;
+      state.modelOptionsLoading = false;
+      state.modelOptionsLoadingStartedAt = 0;
       if (!String(state.selectedModel || "").trim()) {
         state.selectedModel =
           pickLatestModelId(items) || items.find((item) => item?.isDefault)?.id || items[0]?.id || "";
@@ -95,7 +145,38 @@ export function createAppPersistenceModule(deps) {
     }
   }
 
-  function persistThreadsCache() {
+  function persistCodexVersionCache(data) {
+    if (!CODEX_VERSION_CACHE_KEY || !data || typeof data !== "object") return;
+    try {
+      localStorageRef.setItem(
+        CODEX_VERSION_CACHE_KEY,
+        JSON.stringify({ value: data, updatedAt: Date.now() })
+      );
+    } catch {}
+  }
+
+  function restoreCodexVersionCache() {
+    if (!CODEX_VERSION_CACHE_KEY) return false;
+    try {
+      const raw = String(localStorageRef.getItem(CODEX_VERSION_CACHE_KEY) || "").trim();
+      if (!raw) return false;
+      const parsed = JSON.parse(raw);
+      const data = parsed?.value;
+      if (!data || typeof data !== "object") return false;
+      const windows = String(data.windows || "").trim();
+      const wsl2 = String(data.wsl2 || "").trim();
+      if (!windows && !wsl2) return false;
+      applyCodexVersionInfoPayload(data);
+      state.codexVersionInfoRestoredFromCache = true;
+      state.codexVersionInfoUpdatedAt = Number(parsed?.updatedAt || Date.now());
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function writeThreadsCache() {
+    const startedAt = performanceRef.now();
     try {
       localStorageRef.setItem(
         THREADS_CACHE_KEY,
@@ -105,7 +186,32 @@ export function createAppPersistenceModule(deps) {
           updatedAt: Date.now(),
         })
       );
-    } catch {}
+    } catch {
+    } finally {
+      recordLocalTask({
+        command: "thread cache persist write",
+        elapsedMs: performanceRef.now() - startedAt,
+        fields: {
+          windowsCount: ensureArrayItems(state.threadItemsByWorkspace.windows).length,
+          wsl2Count: ensureArrayItems(state.threadItemsByWorkspace.wsl2).length,
+        },
+      });
+    }
+  }
+
+  function persistThreadsCache(options = {}) {
+    if (threadsCachePersistTimer) {
+      clearTimeoutRef(threadsCachePersistTimer);
+      threadsCachePersistTimer = 0;
+    }
+    if (options.immediate === true) {
+      writeThreadsCache();
+      return;
+    }
+    threadsCachePersistTimer = setTimeoutRef(() => {
+      threadsCachePersistTimer = 0;
+      writeThreadsCache();
+    }, THREADS_CACHE_WRITE_DELAY_MS);
   }
 
   function restoreThreadsCache(target) {
@@ -139,42 +245,28 @@ export function createAppPersistenceModule(deps) {
     const winNode = byId("windowsCodexVersion");
     const wslNode = byId("wslCodexVersion");
     if (!winNode && !wslNode) return;
-    const animateVersionNode = (node, nextText) => {
-      if (!node) return;
-      const text = String(nextText || "");
-      if (String(node.textContent || "") === text) return;
-      node.textContent = text;
-      node.classList?.remove?.("is-text-swap");
-      try {
-        void node.offsetWidth;
-      } catch {}
-      node.classList?.add?.("is-text-swap");
-    };
     animateVersionNode(winNode, "Detecting...");
     animateVersionNode(wslNode, "Detecting...");
     try {
-      const data = await api("/codex/version-info");
-      animateVersionNode(winNode, String(data?.windows || "Not detected"));
-      animateVersionNode(wslNode, String(data?.wsl2 || "Not detected"));
-      updateWorkspaceAvailability(data?.windowsInstalled, data?.wsl2Installed);
-      const buildStale = !!data?.buildStale;
-      if (buildStale && !state.gatewayBuildStaleWarned) {
-        const buildShort = String(data?.buildGitShortSha || "").trim() || "unknown";
-        const repoShort = String(data?.repoGitShortSha || "").trim() || "latest";
-        setStatus(`Gateway EXE outdated (${buildShort} -> ${repoShort}). Please build exe.`, true);
-        state.gatewayBuildStaleWarned = true;
-      } else if (!buildStale) {
-        state.gatewayBuildStaleWarned = false;
+      if (!codexVersionInfoRequestInFlight) {
+        codexVersionInfoRequestInFlight = api("/codex/version-info").finally(() => {
+          codexVersionInfoRequestInFlight = null;
+        });
       }
+      const data = await codexVersionInfoRequestInFlight;
+      applyCodexVersionInfoPayload(data);
+      persistCodexVersionCache(data);
+      state.codexVersionInfoRestoredFromCache = true;
+      state.codexVersionInfoUpdatedAt = Date.now();
     } catch (error) {
       const msg = String(error?.message || "").toLowerCase();
-        const label =
-          msg.includes("unauthorized") || msg.includes("forbidden") || msg.includes("token")
-            ? "Connect first"
-            : "Gateway offline";
-        animateVersionNode(winNode, label);
-        animateVersionNode(wslNode, label);
-      }
+      const label =
+        msg.includes("unauthorized") || msg.includes("forbidden") || msg.includes("token")
+          ? "Connect first"
+          : "Gateway offline";
+      animateVersionNode(winNode, label);
+      animateVersionNode(wslNode, label);
+    }
   }
 
   function applyManagedTokenUi() {
@@ -208,6 +300,7 @@ export function createAppPersistenceModule(deps) {
     refreshCodexVersions,
     relativeTimeLabel,
     renderAttachmentPills,
+    restoreCodexVersionCache,
     restoreModelsCache,
     restoreThreadsCache,
     truncateLabel,

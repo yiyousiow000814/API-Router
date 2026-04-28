@@ -47,6 +47,12 @@ export function createCodexWebComposition(deps) {
     upsertProvisionalThreadItem: (...args) => upsertProvisionalThreadItem(...args),
     recordWebTransportEvent: deps.recordWebTransportEvent,
     recordApiResult: deps.recordApiResult,
+    recordApiPending: ({ command, elapsedMs, fields } = {}) =>
+      deps.recordLocalTask?.({
+        command: `pending ${String(command || "").trim()}`.trim(),
+        elapsedMs,
+        fields,
+      }),
     LAST_EVENT_ID_KEY: deps.LAST_EVENT_ID_KEY,
     transportMode: deps.transportMode,
   });
@@ -63,6 +69,7 @@ export function createCodexWebComposition(deps) {
     renderFolderPicker: (...args) => renderFolderPicker(...args),
     setStatus: deps.setStatus,
     pushThreadAnimDebug: deps.pushThreadAnimDebug,
+    recordLocalTask: deps.recordLocalTask,
     isThreadListActuallyVisible: (...args) => isThreadListActuallyVisible(...args),
       buildThreadRenderSig: deps.buildThreadRenderSig,
       applyThreadFilter: (...args) => applyThreadFilter(...args),
@@ -178,6 +185,7 @@ export function createCodexWebComposition(deps) {
     syncActiveThreadMetaFromList: workspaceUi.syncActiveThreadMetaFromList,
     updateHeaderUi: deps.updateHeaderUi,
     pushThreadAnimDebug: deps.pushThreadAnimDebug,
+    recordLocalTask: deps.recordLocalTask,
     renderThreads: (...args) => renderThreads(...args),
     applyWorkspaceUi: workspaceUi.applyWorkspaceUi,
     setStatus: deps.setStatus,
@@ -193,6 +201,7 @@ export function createCodexWebComposition(deps) {
     getWorkspaceTarget: workspaceUi.getWorkspaceTarget,
     hasDualWorkspaceTargets: workspaceUi.hasDualWorkspaceTargets,
     pushThreadAnimDebug: deps.pushThreadAnimDebug,
+    recordLocalTask: deps.recordLocalTask,
     isThreadListActuallyVisible: threadListRefresh.isThreadListActuallyVisible,
     workspaceKeyOfThread: deps.workspaceKeyOfThread,
     truncateLabel: deps.truncateLabel,
@@ -466,6 +475,7 @@ export function createCodexWebComposition(deps) {
     THREAD_AUTO_REFRESH_DISCONNECTED_MS: deps.THREAD_AUTO_REFRESH_DISCONNECTED_MS,
     ACTIVE_THREAD_LIVE_POLL_MS: deps.ACTIVE_THREAD_LIVE_POLL_MS,
     ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS: deps.ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS,
+    documentRef,
   }));
 
   const bootstrapApp = deps.createBootstrapModule({

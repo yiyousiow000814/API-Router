@@ -63,7 +63,7 @@ export function detectThreadWorkspaceTarget(thread) {
 }
 
 export function pickThreadTimestamp(thread) {
-  return thread?.updatedAt ?? thread?.createdAt ?? thread?.statusUpdatedAt ?? "";
+  return thread?.updatedAt ?? thread?.statusUpdatedAt ?? thread?.createdAt ?? "";
 }
 
 export function readThreadItemId(thread) {
@@ -168,7 +168,7 @@ export function buildThreadRenderSig(items) {
   return sortThreadsByNewest(ensureArrayItems(items).slice())
     .map((item) => {
       const id = item?.id || item?.threadId || "";
-      const ts = item?.updatedAt ?? item?.createdAt ?? "";
+      const ts = pickThreadTimestamp(item);
       const status = String(item?.status?.type || item?.status || item?.state || "").trim();
       const preview = String(item?.preview || item?.title || item?.name || "").trim();
       const isWorktree = item?.isWorktree === true ? "wt" : "repo";

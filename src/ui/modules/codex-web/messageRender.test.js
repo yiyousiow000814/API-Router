@@ -44,6 +44,39 @@ describe("messageRender", () => {
     );
   });
 
+  it("does not render Codex desktop git directives in assistant messages", () => {
+    const html = renderMessageBody(
+      "assistant",
+      `已推送
+::git-stage{cwd="C:\\Users\\yiyou\\API-Router"}
+::git-commit{cwd="C:\\Users\\yiyou\\API-Router"}
+::git-push{cwd="C:\\Users\\yiyou\\API-Router" branch="fix/thread-source-allowlist"}`
+    );
+    expect(html).toContain("已推送");
+    expect(html).not.toContain("git-stage");
+    expect(html).not.toContain("git-commit");
+    expect(html).not.toContain("git-push");
+  });
+
+  it("renders Codex code-comment directives as review finding cards", () => {
+    const html = renderMessageBody(
+      "assistant",
+      `Findings
+::code-comment{title="[P2] String subagent sources still leak" body="notification_is_subagent only returns true when subagent/subAgent is an object." file="C:/Users/yiyou/API-Router/src-tauri/src/orchestrator/gateway/web_codex_threads/mod.rs" start=554 end=558 priority=2 confidence=0.88}
+
+Checked`
+    );
+    expect(html).toContain("msgCodeCommentCard");
+    expect(html).toContain("msgCodeCommentPriority");
+    expect(html).toContain("P2");
+    expect(html).toContain("String subagent sources still leak");
+    expect(html).toContain("notification_is_subagent only returns true");
+    expect(html).toContain("mod.rs:554-558");
+    expect(html).not.toContain("::code-comment");
+    expect(html).toContain("<p>Findings</p>");
+    expect(html).toContain("<p>Checked</p>");
+  });
+
   it("keeps explicit markdown link labels instead of replacing them with href file names", () => {
     expect(
       renderInlineMessageText(

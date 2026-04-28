@@ -63,6 +63,7 @@ export function createBootstrapModule(deps) {
     getEmbeddedToken,
     normalizeWorkspaceTarget,
     normalizeStartCwd,
+    restoreCodexVersionCache = () => false,
     restoreModelsCache,
     restoreThreadsCache,
     updateWorkspaceAvailability,
@@ -144,15 +145,8 @@ export function createBootstrapModule(deps) {
     state.permissionPresetByWorkspace = restorePermissionPresetByWorkspace(savedPermissionPreset);
 
     restoreModelsCache();
+    restoreCodexVersionCache();
     restoreThreadsCache(state.workspaceTarget);
-    updateWorkspaceAvailability(false, false);
-    if (state.threadItemsByWorkspace.windows.length || state.threadItemsByWorkspace.wsl2.length) {
-      updateWorkspaceAvailability(
-        state.threadItemsByWorkspace.windows.length > 0,
-        state.threadItemsByWorkspace.wsl2.length > 0,
-        { applyFilter: false }
-      );
-    }
 
     applyWorkspaceUi();
     syncHeaderModelPicker();
@@ -182,14 +176,6 @@ export function createBootstrapModule(deps) {
     if (state.activeMainTab === "settings" && state.settingsActiveSection === "provider") {
       refreshProviderSwitchboard().catch(() => {});
     }
-    refreshSlashCommandsState({ force: true, silent: true })
-      .then(() => {
-        renderComposerContextLeft();
-        syncSettingsControlsFromMain();
-        updateMobileComposerState();
-      })
-      .catch(() => {});
-
     try {
       const chatBox = byId("chatBox");
       if (chatBox && !chatBox.__wiredScrollToBottom) {

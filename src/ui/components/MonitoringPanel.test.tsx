@@ -341,6 +341,7 @@ describe('MonitoringPanel', () => {
     expect(formatIncidentKind('heartbeat-stall')).toBe('UI heartbeat stalled')
     expect(formatIncidentKind('slow-refresh')).toBe('Remote diagnostics refresh too slow')
     expect(formatIncidentKind('invoke-error')).toBe('Remote diagnostics request failed')
+    expect(formatIncidentKind('backend-pipeline')).toBe('Backend pipeline slow')
     expect(formatIncidentKind('custom-case')).toBe('Custom Case')
   })
 
@@ -476,6 +477,9 @@ describe('MonitoringPanel', () => {
     expect(source).toContain('formatWatchdogActivityWindow')
     expect(source).toContain('formatWatchdogActivityBucketAriaLabel')
     expect(source).toContain('formatWatchdogActivityBucketTimeRange')
+    expect(source).toContain('Recent background signals')
+    expect(source).toContain('background_signal_count')
+    expect(source).toContain('formatWatchdogIncidentMeta')
     expect(source).toContain('WebTransportMetricCard')
     expect(source).toContain('getWebTransportStatusPresentation')
     expect(source).toContain('getWebTransportStatusDetail')

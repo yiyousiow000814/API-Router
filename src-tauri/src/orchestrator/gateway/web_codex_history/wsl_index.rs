@@ -1,8 +1,11 @@
 use super::ThreadHistoryPage;
+use crate::diagnostics::codex_web_pipeline::{
+    append_pipeline_event, elapsed_ms_u64, CodexWebPipelineEvent,
+};
 use crate::orchestrator::gateway::web_codex_home::{
     linux_path_join, parse_wsl_unc_to_linux_path, web_codex_wsl_linux_home_override,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -100,7 +103,23 @@ pub(super) fn load_wsl_history_page(
 }
 
 pub(super) fn spawn_wsl_history_prewarm(items: &[Value]) {
-    for linux_rollout_path in wsl_history_prewarm_paths(items) {
+    let started = Instant::now();
+    let jobs = wsl_history_prewarm_jobs_to_start(items);
+    if !jobs.is_empty() {
+        let mut pipeline = CodexWebPipelineEvent::new(
+            "/codex/threads",
+            "wsl2",
+            "wsl_history_prewarm",
+            elapsed_ms_u64(started),
+        );
+        pipeline.source = Some("wsl-history".to_string());
+        pipeline.item_count = Some(jobs.len());
+        pipeline.metrics = Some(json!({
+            "startedCount": jobs.len(),
+        }));
+        append_pipeline_event(pipeline);
+    }
+    for linux_rollout_path in jobs {
         spawn_wsl_history_build(linux_rollout_path);
     }
 }
@@ -284,11 +303,25 @@ fn spawn_wsl_history_build(linux_rollout_path: String) {
     });
 }
 
-fn wsl_history_prewarm_paths(items: &[Value]) -> Vec<String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WslHistoryPrewarmCandidate {
+    linux_rollout_path: String,
+    revision: i64,
+}
+
+fn wsl_history_item_revision(item: &Value) -> i64 {
+    match item.get("updatedAt") {
+        Some(Value::Number(number)) => number.as_i64().unwrap_or(0),
+        Some(Value::String(text)) => text.trim().parse::<i64>().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn wsl_history_prewarm_candidates(items: &[Value]) -> Vec<WslHistoryPrewarmCandidate> {
     let mut seen = HashSet::new();
-    let mut rollout_paths = Vec::new();
+    let mut candidates = Vec::new();
     for item in items {
-        if rollout_paths.len() >= WSL_HISTORY_PREWARM_ITEMS {
+        if candidates.len() >= WSL_HISTORY_PREWARM_ITEMS {
             break;
         }
         let workspace = item
@@ -310,10 +343,56 @@ fn wsl_history_prewarm_paths(items: &[Value]) -> Vec<String> {
             continue;
         };
         if seen.insert(linux_path.clone()) {
-            rollout_paths.push(linux_path);
+            candidates.push(WslHistoryPrewarmCandidate {
+                linux_rollout_path: linux_path,
+                revision: wsl_history_item_revision(item),
+            });
         }
     }
-    rollout_paths
+    candidates
+}
+
+#[cfg(test)]
+fn wsl_history_prewarm_paths(items: &[Value]) -> Vec<String> {
+    wsl_history_prewarm_candidates(items)
+        .into_iter()
+        .map(|candidate| candidate.linux_rollout_path)
+        .collect()
+}
+
+fn wsl_history_prewarm_revisions() -> &'static Mutex<HashMap<String, i64>> {
+    static REVISIONS: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
+    REVISIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn wsl_history_prewarm_jobs_to_start(items: &[Value]) -> Vec<String> {
+    let candidates = wsl_history_prewarm_candidates(items);
+    let mut revisions = match wsl_history_prewarm_revisions().lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            let previous = revisions
+                .get(&candidate.linux_rollout_path)
+                .copied()
+                .unwrap_or(i64::MIN);
+            if previous >= candidate.revision {
+                return None;
+            }
+            revisions.insert(candidate.linux_rollout_path.clone(), candidate.revision);
+            Some(candidate.linux_rollout_path)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn clear_wsl_history_prewarm_registry_for_test() {
+    match wsl_history_prewarm_revisions().lock() {
+        Ok(mut guard) => guard.clear(),
+        Err(err) => err.into_inner().clear(),
+    }
 }
 
 struct WslHistoryBuildJobState {
@@ -420,8 +499,9 @@ fn log_wsl_history_meta(meta: Option<&Value>, raw_rollout_path: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_wsl_history_python_args, estimate_wsl_launch_len, should_wait_for_wsl_history_build,
-        wait_for_child_output, wsl_history_cache_root, wsl_history_prewarm_paths,
+        build_wsl_history_python_args, clear_wsl_history_prewarm_registry_for_test,
+        estimate_wsl_launch_len, should_wait_for_wsl_history_build, wait_for_child_output,
+        wsl_history_cache_root, wsl_history_prewarm_jobs_to_start, wsl_history_prewarm_paths,
     };
     use serde_json::json;
     use std::path::PathBuf;
@@ -497,6 +577,37 @@ mod tests {
                 "/home/test/.codex/sessions/d.jsonl".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn wsl_history_prewarm_jobs_to_start_skips_already_requested_revision() {
+        let _test_guard = crate::codex_app_server::lock_test_globals();
+        clear_wsl_history_prewarm_registry_for_test();
+        let items = vec![json!({
+            "workspace": "wsl2",
+            "path": r"\\wsl.localhost\Ubuntu\home\test\.codex\sessions\a.jsonl",
+            "updatedAt": 1742331000
+        })];
+
+        assert_eq!(
+            wsl_history_prewarm_jobs_to_start(&items),
+            vec!["/home/test/.codex/sessions/a.jsonl".to_string()]
+        );
+        assert!(
+            wsl_history_prewarm_jobs_to_start(&items).is_empty(),
+            "unchanged WSL history prewarm should not relaunch wsl.exe on every thread poll"
+        );
+
+        let newer_items = vec![json!({
+            "workspace": "wsl2",
+            "path": r"\\wsl.localhost\Ubuntu\home\test\.codex\sessions\a.jsonl",
+            "updatedAt": 1742331001
+        })];
+        assert_eq!(
+            wsl_history_prewarm_jobs_to_start(&newer_items),
+            vec!["/home/test/.codex/sessions/a.jsonl".to_string()]
+        );
+        clear_wsl_history_prewarm_registry_for_test();
     }
 
     #[test]

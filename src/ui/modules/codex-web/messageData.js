@@ -88,6 +88,34 @@ export function stripStandaloneImageRefs(text) {
     .trim();
 }
 
+export function normalizeDisplayedUserText(text) {
+  const source = String(text || "").trim();
+  if (!source) return "";
+  const startsWithCodexContext =
+    /^#\s*(?:Review findings|Selected text)\s*:/i.test(source);
+  if (!startsWithCodexContext) return source;
+
+  const marker = /^#{1,6}\s*My request for Codex\s*:\s*$/gim;
+  let match = null;
+  let current = marker.exec(source);
+  while (current) {
+    match = current;
+    current = marker.exec(source);
+  }
+  if (!match) return source;
+  const request = source.slice(match.index + match[0].length).trim();
+  return request || source;
+}
+
+export function normalizeDisplayedAssistantText(text) {
+  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  const kept = lines.filter((line) => {
+    const trimmed = String(line || "").trim();
+    return !/^::git-(?:stage|commit|push|create-branch|create-pr)\{.*\}$/.test(trimmed);
+  });
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 export function normalizeType(value) {
   return String(value || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
 }
@@ -800,6 +828,7 @@ export function parseUserMessageParts(item) {
   }
   let text = lines.join("\n").trim();
   if (images.length) text = stripStandaloneImageRefs(text);
+  text = normalizeDisplayedUserText(text);
   return { text, images, mentions };
 }
 
@@ -809,7 +838,7 @@ export function normalizeThreadItemText(item) {
   const type = String(item.type || "").trim();
   if (!type) return "";
   if (type === "agentMessage" || type === "assistantMessage") {
-    return stripCodexImageBlocks(String(item.text || "")).trim();
+    return normalizeDisplayedAssistantText(stripCodexImageBlocks(String(item.text || "")).trim());
   }
   if (type !== "userMessage") return toolItemToMessage(item, options) || "";
   return parseUserMessageParts(item).text;

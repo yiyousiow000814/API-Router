@@ -53,6 +53,9 @@ pub(crate) fn wsl_overlay_listener_addr(
     if primary.ip().to_string() != crate::constants::GATEWAY_WINDOWS_HOST {
         return Ok(None);
     }
+    if wsl_host.trim().is_empty() {
+        return Ok(None);
+    }
     let parsed_wsl_ip: std::net::IpAddr = wsl_host.parse()?;
     if parsed_wsl_ip == primary.ip() {
         return Ok(None);
@@ -174,18 +177,27 @@ fn gateway_listen_addrs_with_overlays(
     Ok(vec![primary])
 }
 
-fn gateway_listen_addrs(listen_host: &str, listen_port: u16) -> anyhow::Result<Vec<SocketAddr>> {
+fn gateway_listen_addrs(
+    listen_host: &str,
+    listen_port: u16,
+    #[cfg_attr(not(windows), allow(unused_variables))] config_path: Option<&std::path::Path>,
+) -> anyhow::Result<Vec<SocketAddr>> {
     write_gateway_bootstrap_diag(
         "gateway_listen_addrs_start",
         Some(&format!("host={listen_host} port={listen_port}")),
     );
     #[cfg(windows)]
     {
-        let wsl_host = crate::platform::wsl_gateway_host::cached_or_default_wsl_gateway_host(None);
         let lan_ip = crate::lan_sync::detect_local_listen_ip();
         // Keep startup cheap, but still bind the current Tailscale IPv4 overlay when it is already
         // available so Web Codex QR access works immediately without a manual restart.
         let extra_ips = detected_tailscale_ipv4_addrs();
+        let wsl_host = config_path
+            .filter(|path| crate::codex_cli_swap::wsl2_cli_directory_enabled(path))
+            .map(|path| {
+                crate::platform::wsl_gateway_host::cached_or_default_wsl_gateway_host(Some(path))
+            })
+            .unwrap_or_default();
         let addrs = gateway_listen_addrs_with_overlays(
             listen_host,
             listen_port,
@@ -225,8 +237,9 @@ fn gateway_listen_addrs(listen_host: &str, listen_port: u16) -> anyhow::Result<V
 fn gateway_listener_bind_plan(
     listen_host: &str,
     listen_port: u16,
+    config_path: Option<&std::path::Path>,
 ) -> anyhow::Result<GatewayListenerBindPlan> {
-    let mut addrs = gateway_listen_addrs(listen_host, listen_port)?;
+    let mut addrs = gateway_listen_addrs(listen_host, listen_port, config_path)?;
     let primary = addrs
         .first()
         .copied()
@@ -288,12 +301,13 @@ fn persist_gateway_runtime_port(
 fn try_bind_gateway_listeners(
     listen_host: &str,
     listen_port: u16,
+    config_path: Option<&std::path::Path>,
 ) -> anyhow::Result<Vec<(SocketAddr, std::net::TcpListener)>> {
     write_gateway_bootstrap_diag(
         "try_bind_gateway_listeners_start",
         Some(&format!("host={listen_host} port={listen_port}")),
     );
-    let plan = gateway_listener_bind_plan(listen_host, listen_port)?;
+    let plan = gateway_listener_bind_plan(listen_host, listen_port, config_path)?;
     let listeners = bind_listener_addrs_with_policy(plan.primary, plan.optional, |addr| {
         let listener = std::net::TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
@@ -314,11 +328,12 @@ fn try_bind_gateway_listeners(
 
 fn bind_fallback_gateway_listeners(
     listen_host: &str,
+    config_path: Option<&std::path::Path>,
 ) -> anyhow::Result<Vec<(SocketAddr, std::net::TcpListener)>> {
     let primary = std::net::TcpListener::bind(format!("{listen_host}:0"))?;
     let primary_addr = primary.local_addr()?;
     primary.set_nonblocking(true)?;
-    let plan = gateway_listener_bind_plan(listen_host, primary_addr.port())?;
+    let plan = gateway_listener_bind_plan(listen_host, primary_addr.port(), config_path)?;
     let mut primary_listener = Some(primary);
     bind_listener_addrs_with_policy(plan.primary, plan.optional, |addr| {
         if addr == primary_addr {
@@ -338,7 +353,11 @@ pub(crate) fn prepare_gateway_listeners(
 ) -> anyhow::Result<PreparedGatewayListeners> {
     write_gateway_bootstrap_diag("prepare_gateway_listeners_enter", None);
     let cfg = state.gateway.cfg.read().clone();
-    let bound = match try_bind_gateway_listeners(&cfg.listen.host, cfg.listen.port) {
+    let bound = match try_bind_gateway_listeners(
+        &cfg.listen.host,
+        cfg.listen.port,
+        Some(&state.config_path),
+    ) {
         Ok(listeners) => listeners,
         Err(err)
             if err
@@ -349,7 +368,8 @@ pub(crate) fn prepare_gateway_listeners(
                 "prepare_gateway_listeners_addr_in_use",
                 Some(&format!("configured_port={}", cfg.listen.port)),
             );
-            let listeners = bind_fallback_gateway_listeners(&cfg.listen.host)?;
+            let listeners =
+                bind_fallback_gateway_listeners(&cfg.listen.host, Some(&state.config_path))?;
             let next_port = listeners
                 .first()
                 .map(|(addr, _)| addr.port())
@@ -395,9 +415,51 @@ mod tests {
 
     #[test]
     fn local_bind_keeps_primary_listener() {
-        let addrs = gateway_listen_addrs("127.0.0.1", 4000).unwrap();
+        let addrs = gateway_listen_addrs("127.0.0.1", 4000, None).unwrap();
         assert!(!addrs.is_empty());
         assert_eq!(addrs[0].to_string(), "127.0.0.1:4000");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn gateway_listen_addrs_omits_wsl_overlay_when_wsl2_directory_is_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("user-data").join("config.toml");
+
+        let addrs = gateway_listen_addrs("127.0.0.1", 4000, Some(&config_path)).unwrap();
+        let wsl_host = crate::platform::wsl_gateway_host::cached_or_default_wsl_gateway_host(Some(
+            &config_path,
+        ));
+
+        assert!(!addrs
+            .iter()
+            .any(|addr| addr.to_string() == format!("{wsl_host}:4000")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn gateway_listen_addrs_includes_wsl_overlay_when_wsl2_directory_is_enabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        crate::codex_cli_swap::save_cli_directories_for_config(
+            &config_path,
+            &crate::codex_cli_swap::CodexCliDirectories {
+                windows_enabled: true,
+                windows_home: "C:\\Users\\syb\\.codex".to_string(),
+                wsl2_enabled: true,
+                wsl2_home: "\\\\wsl.localhost\\Ubuntu\\home\\syb\\.codex".to_string(),
+            },
+        )
+        .unwrap();
+
+        let addrs = gateway_listen_addrs("127.0.0.1", 4000, Some(&config_path)).unwrap();
+        let wsl_host = crate::platform::wsl_gateway_host::cached_or_default_wsl_gateway_host(Some(
+            &config_path,
+        ));
+
+        assert!(addrs
+            .iter()
+            .any(|addr| addr.to_string() == format!("{wsl_host}:4000")));
     }
 
     #[cfg(windows)]
@@ -429,6 +491,10 @@ mod tests {
         assert_eq!(
             wsl_overlay_listener_addr("127.0.0.1", 4000, "172.26.144.1").unwrap(),
             Some("172.26.144.1:4000".parse().unwrap())
+        );
+        assert_eq!(
+            wsl_overlay_listener_addr("127.0.0.1", 4000, "").unwrap(),
+            None
         );
         assert_eq!(
             wsl_overlay_listener_addr("172.26.144.1", 4000, "172.26.144.1").unwrap(),

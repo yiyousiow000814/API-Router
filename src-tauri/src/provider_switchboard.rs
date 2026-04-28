@@ -626,12 +626,18 @@ fn build_direct_provider_cfg(
     } else {
         String::new()
     };
+    let openai_auth_line = if experimental_bearer_token.is_some() {
+        String::new()
+    } else {
+        format!("requires_openai_auth = true{eol}")
+    };
     let provider_section = format!(
-        "[model_providers.\"{provider}\"]{eol}name = \"{provider}\"{eol}base_url = \"{base_url}\"{eol}wire_api = \"responses\"{eol}{supports_websockets_line}{bearer_line}requires_openai_auth = true{eol}",
+        "[model_providers.\"{provider}\"]{eol}name = \"{provider}\"{eol}base_url = \"{base_url}\"{eol}wire_api = \"responses\"{eol}{supports_websockets_line}{bearer_line}{openai_auth_line}",
         provider = provider_esc,
         base_url = base_url_esc,
         supports_websockets_line = supports_websockets_line,
         bearer_line = bearer_line,
+        openai_auth_line = openai_auth_line,
         eol = eol
     );
     let base_with_section = insert_provider_section_near_top(&base, &provider_section);

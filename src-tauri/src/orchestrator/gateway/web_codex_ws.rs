@@ -14,7 +14,9 @@ use self::web_codex_actions::{
 use self::web_codex_auth::{api_error, is_codex_ws_authorized, require_codex_auth, WsQuery};
 use self::web_codex_home::{parse_workspace_target, WorkspaceTarget};
 use self::web_codex_session_manager::CodexSessionManager;
-use crate::app_state::{UiWatchdogInvokeResult, UiWatchdogPageState, UiWatchdogRuntime};
+use crate::app_state::{
+    UiWatchdogInvokeResult, UiWatchdogLocalTask, UiWatchdogPageState, UiWatchdogRuntime,
+};
 
 const BACKEND_LIVE_DEBUG_MAX_EVENTS: usize = 160;
 
@@ -116,6 +118,23 @@ fn backend_live_debug_subscribe(
             "workspaces": workspaces,
         }),
     );
+    let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+        "/codex/ws",
+        if workspace_targets.len() > 1 {
+            "all"
+        } else {
+            workspace_targets
+                .first()
+                .map(|target| workspace_target_label(*target))
+                .unwrap_or("windows")
+        },
+        "ws_subscribe",
+        0,
+    );
+    pipeline.source = Some("client-subscribe".to_string());
+    pipeline.item_count = Some(workspace_targets.len());
+    pipeline.ok = Some(true);
+    crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
 }
 
 fn backend_live_debug_push_send(client_id: u64, notif: &Value, delivered: bool) {
@@ -1086,6 +1105,8 @@ pub(super) struct WebCodexUiDiagnosticsRequest {
     #[serde(default)]
     pub invoke_results: Vec<WebCodexUiInvokeResultRecord>,
     #[serde(default)]
+    pub local_tasks: Vec<WebCodexUiLocalTaskRecord>,
+    #[serde(default)]
     pub long_tasks: Vec<WebCodexUiLongTaskRecord>,
     #[serde(default)]
     pub frame_stalls: Vec<WebCodexUiFrameStallRecord>,
@@ -1120,6 +1141,17 @@ pub(super) struct WebCodexUiInvokeResultRecord {
     pub elapsed_ms: u64,
     pub ok: bool,
     pub error_message: Option<String>,
+    pub active_page: Option<String>,
+    pub visible: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct WebCodexUiLocalTaskRecord {
+    pub command: String,
+    pub elapsed_ms: u64,
+    #[serde(default)]
+    pub fields: Value,
     pub active_page: Option<String>,
     pub visible: Option<bool>,
 }
@@ -1231,6 +1263,31 @@ pub(super) async fn codex_ui_diagnostics(
                 elapsed_ms: item.elapsed_ms,
                 ok: item.ok,
                 error_message: item.error_message.as_deref(),
+            },
+            UiWatchdogPageState {
+                active_page: &active_page,
+                visible: item.visible.unwrap_or(true),
+            },
+            now,
+        );
+        accepted = accepted.saturating_add(1);
+    }
+
+    for item in payload.local_tasks.into_iter().take(128) {
+        let command = item.command.trim().to_string();
+        if command.is_empty() {
+            continue;
+        }
+        let active_page = normalize_web_codex_page(item.active_page.as_deref());
+        watchdog.record_local_task(
+            UiWatchdogRuntime {
+                store: runtime.store,
+                diagnostics_dir: runtime.diagnostics_dir,
+            },
+            UiWatchdogLocalTask {
+                command: &command,
+                elapsed_ms: item.elapsed_ms,
+                fields: item.fields,
             },
             UiWatchdogPageState {
                 active_page: &active_page,
@@ -1443,6 +1500,7 @@ mod tests {
                     active_page: Some("settings".to_string()),
                     visible: Some(true),
                 }],
+                local_tasks: vec![],
                 long_tasks: vec![],
                 frame_stalls: vec![],
                 frontend_errors: vec![],

@@ -75,6 +75,7 @@ import {
   CHAT_LIVE_FOLLOW_BTN_THROTTLE_MS,
   CHAT_LIVE_FOLLOW_MAX_STEP_PX,
   CHAT_STICKY_BOTTOM_PX,
+  CODEX_VERSION_CACHE_KEY,
   EFFORT_USER_SELECTED_KEY,
   FAVORITE_THREADS_KEY,
   FAST_MODE_DEVICE_DEFAULT_KEY,
@@ -157,6 +158,7 @@ let syncSettingsControlsFromMain = () => {};
 let updateWelcomeSelections = () => {};
 let persistModelsCache = () => {};
 let restoreModelsCache = () => false;
+let restoreCodexVersionCache = () => false;
 let persistThreadsCache = () => {};
 let restoreThreadsCache = () => false;
 let refreshCodexVersions = async () => {};
@@ -467,6 +469,7 @@ const composition = createCodexWebComposition({
   threadAnimDebug,
   WEB_CODEX_DEV_DEBUG_VERSION,
   normalizeStartCwd,
+  restoreCodexVersionCache: (...args) => restoreCodexVersionCache(...args),
   restoreModelsCache: (...args) => restoreModelsCache(...args),
   restoreThreadsCache: (...args) => restoreThreadsCache(...args),
   applyManagedTokenUi: (...args) => applyManagedTokenUi(...args),
@@ -523,6 +526,7 @@ const composition = createCodexWebComposition({
   createBootstrapModule,
   recordWebTransportEvent: (...args) => recordWebTransportEventToGateway(...args),
   recordApiResult: (...args) => webDiagnostics.recordApiResult(...args),
+  recordLocalTask: (...args) => webDiagnostics.recordLocalTask(...args),
   installMobileViewportSync: () => installMobileViewportSync({
     windowRef: window,
     documentRef: document,
@@ -640,6 +644,7 @@ const renderPendingInline = (...args) => renderPendingInlineFromComposition(...a
   normalizeType,
   escapeHtml,
   api,
+  detectThreadWorkspaceTarget,
   updateHeaderUi: (...args) => updateHeaderUi(...args),
   setSyntheticPendingUserInputs: (...args) => setSyntheticPendingUserInputs(...args),
   upsertSyntheticPendingUserInput: (...args) => upsertSyntheticPendingUserInput(...args),
@@ -656,6 +661,7 @@ const renderPendingInline = (...args) => renderPendingInlineFromComposition(...a
   refreshCodexVersions,
   relativeTimeLabel,
   renderAttachmentPills,
+  restoreCodexVersionCache,
   restoreModelsCache,
   restoreThreadsCache,
   truncateLabel,
@@ -673,8 +679,10 @@ const renderPendingInline = (...args) => renderPendingInlineFromComposition(...a
   sortThreadsByNewest,
   isThreadListActuallyVisible: (...args) => isThreadListActuallyVisible(...args),
   MODELS_CACHE_KEY,
+  CODEX_VERSION_CACHE_KEY,
   THREADS_CACHE_KEY,
   REASONING_EFFORT_KEY,
+  recordLocalTask: (...args) => webDiagnostics.recordLocalTask(...args),
   localStorageRef: localStorage,
   documentRef: document,
 }));

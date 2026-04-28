@@ -1,7 +1,12 @@
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::PathBuf;
+#[cfg(windows)]
+use std::process::Command;
 use std::sync::Arc;
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 use parking_lot::{Mutex, RwLock};
 
@@ -16,12 +21,32 @@ use std::sync::atomic::AtomicU64;
 const UI_WATCHDOG_UNRESPONSIVE_AFTER_MS: u64 = 6_000;
 const UI_WATCHDOG_SLOW_REFRESH_AFTER_MS: u64 = 2_000;
 const UI_WATCHDOG_LONG_TASK_AFTER_MS: u64 = 1_000;
+const UI_WATCHDOG_LOCAL_TASK_AFTER_MS: u64 = 250;
 const UI_WATCHDOG_FRAME_STALL_LOG_COOLDOWN_MS: u64 = 10_000;
 const UI_WATCHDOG_SLOW_REFRESH_LOG_COOLDOWN_MS: u64 = 60_000;
 const UI_WATCHDOG_LONG_TASK_LOG_COOLDOWN_MS: u64 = 60_000;
+const UI_WATCHDOG_LOCAL_TASK_LOG_COOLDOWN_MS: u64 = 10_000;
 const UI_WATCHDOG_INVOKE_LOG_COOLDOWN_MS: u64 = 60_000;
 const UI_WATCHDOG_DUMP_WINDOW_MS: u64 = 60_000;
 const UI_WATCHDOG_TRACE_CAPACITY: usize = 512;
+#[cfg(windows)]
+const UI_WATCHDOG_PROCESS_SNAPSHOT_CACHE_MS: u64 = 30_000;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(windows)]
+const UI_WATCHDOG_PROCESS_NAMES: &[&str] = &[
+    "api router.exe",
+    "api_router.exe",
+    "codex.exe",
+    "msedgewebview2.exe",
+    "vmmem",
+    "vmmemwsl",
+    "wsl.exe",
+    "wslhost.exe",
+    "wslrelay.exe",
+    "wslservice.exe",
+];
 
 fn mask_key_preview(key: &str) -> String {
     let k = key.trim();
@@ -40,6 +65,201 @@ fn mask_key_preview(key: &str) -> String {
         .rev()
         .collect();
     format!("{start}******{end}")
+}
+
+#[cfg(any(test, windows))]
+fn parse_tasklist_csv_line(line: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' if in_quotes && chars.peek() == Some(&'"') => {
+                current.push('"');
+                chars.next();
+            }
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => {
+                values.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    values.push(current.trim().to_string());
+    values
+}
+
+#[cfg(any(test, windows))]
+fn parse_tasklist_mem_kb(value: &str) -> Option<u64> {
+    let digits: String = value.chars().filter(|ch| ch.is_ascii_digit()).collect();
+    digits.parse::<u64>().ok()
+}
+
+#[cfg(windows)]
+fn ui_watchdog_process_resources_snapshot() -> serde_json::Value {
+    static SNAPSHOT_CACHE: std::sync::OnceLock<
+        std::sync::Mutex<Option<(std::time::Instant, serde_json::Value)>>,
+    > = std::sync::OnceLock::new();
+    static SNAPSHOT_CAPTURE_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+        std::sync::OnceLock::new();
+    let cache = SNAPSHOT_CACHE.get_or_init(|| std::sync::Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((updated_at, snapshot)) = guard.as_ref() {
+            if updated_at.elapsed().as_millis() < u128::from(UI_WATCHDOG_PROCESS_SNAPSHOT_CACHE_MS)
+            {
+                let mut cached = snapshot.clone();
+                if let Some(obj) = cached.as_object_mut() {
+                    obj.insert("cache_hit".to_string(), serde_json::Value::Bool(true));
+                }
+                return cached;
+            }
+        }
+    }
+    let capture_lock = SNAPSHOT_CAPTURE_LOCK.get_or_init(|| std::sync::Mutex::new(()));
+    let Ok(_capture_guard) = capture_lock.try_lock() else {
+        if let Ok(guard) = cache.lock() {
+            if let Some((_updated_at, snapshot)) = guard.as_ref() {
+                let mut cached = snapshot.clone();
+                if let Some(obj) = cached.as_object_mut() {
+                    obj.insert("cache_hit".to_string(), serde_json::Value::Bool(true));
+                    obj.insert(
+                        "capture_in_progress".to_string(),
+                        serde_json::Value::Bool(true),
+                    );
+                }
+                return cached;
+            }
+        }
+        return serde_json::json!({
+            "available": false,
+            "source": "tasklist",
+            "capture_in_progress": true,
+            "error": "process resource snapshot already in progress",
+        });
+    };
+    if let Ok(guard) = cache.lock() {
+        if let Some((updated_at, snapshot)) = guard.as_ref() {
+            if updated_at.elapsed().as_millis() < u128::from(UI_WATCHDOG_PROCESS_SNAPSHOT_CACHE_MS)
+            {
+                let mut cached = snapshot.clone();
+                if let Some(obj) = cached.as_object_mut() {
+                    obj.insert("cache_hit".to_string(), serde_json::Value::Bool(true));
+                }
+                return cached;
+            }
+        }
+    }
+
+    let started = std::time::Instant::now();
+    let output = Command::new("tasklist.exe")
+        .args(["/fo", "csv", "/nh"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    let output = match output {
+        Ok(output) if output.status.success() => output,
+        Ok(output) => {
+            return serde_json::json!({
+                "available": false,
+                "source": "tasklist",
+                "error": format!("tasklist exited with {}", output.status),
+            });
+        }
+        Err(error) => {
+            return serde_json::json!({
+                "available": false,
+                "source": "tasklist",
+                "error": error.to_string(),
+            });
+        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut processes = Vec::new();
+    let mut totals_by_image: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut total_working_set_kb = 0_u64;
+    for line in stdout.lines() {
+        let columns = parse_tasklist_csv_line(line);
+        if columns.len() < 5 {
+            continue;
+        }
+        let image_name = columns[0].trim();
+        let normalized_image = image_name.to_ascii_lowercase();
+        if !UI_WATCHDOG_PROCESS_NAMES
+            .iter()
+            .any(|name| normalized_image == *name)
+        {
+            continue;
+        }
+        let pid = columns[1].trim().parse::<u32>().unwrap_or(0);
+        let working_set_kb = parse_tasklist_mem_kb(&columns[4]).unwrap_or(0);
+        total_working_set_kb = total_working_set_kb.saturating_add(working_set_kb);
+        processes.push(serde_json::json!({
+            "image": image_name,
+            "pid": pid,
+            "session": columns[2].trim(),
+            "session_number": columns[3].trim(),
+            "working_set_kb": working_set_kb,
+        }));
+        let entry = totals_by_image
+            .entry(normalized_image.clone())
+            .or_insert_with(|| {
+                serde_json::json!({
+                    "image": image_name,
+                    "count": 0_u64,
+                    "working_set_kb": 0_u64,
+                })
+            });
+        if let Some(map) = entry.as_object_mut() {
+            let count = map
+                .get("count")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0)
+                + 1;
+            let total = map
+                .get("working_set_kb")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0)
+                .saturating_add(working_set_kb);
+            map.insert("count".to_string(), serde_json::json!(count));
+            map.insert("working_set_kb".to_string(), serde_json::json!(total));
+        }
+    }
+    let mut totals: Vec<serde_json::Value> = totals_by_image.into_values().collect();
+    totals.sort_by(|a, b| {
+        let a_total = a
+            .get("working_set_kb")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let b_total = b
+            .get("working_set_kb")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        b_total.cmp(&a_total)
+    });
+    let snapshot = serde_json::json!({
+        "available": true,
+        "source": "tasklist",
+        "cache_hit": false,
+        "elapsed_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        "total_working_set_kb": total_working_set_kb,
+        "process_count": processes.len(),
+        "totals_by_image": totals,
+        "processes": processes,
+    });
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((std::time::Instant::now(), snapshot.clone()));
+    }
+    snapshot
+}
+
+#[cfg(not(windows))]
+fn ui_watchdog_process_resources_snapshot() -> serde_json::Value {
+    serde_json::json!({
+        "available": false,
+        "source": "tasklist",
+        "error": "process resource snapshot is only implemented on Windows",
+    })
 }
 
 pub struct AppState {
@@ -76,6 +296,12 @@ pub struct UiWatchdogInvokeResult<'a> {
     pub elapsed_ms: u64,
     pub ok: bool,
     pub error_message: Option<&'a str>,
+}
+
+pub struct UiWatchdogLocalTask<'a> {
+    pub command: &'a str,
+    pub elapsed_ms: u64,
+    pub fields: serde_json::Value,
 }
 
 type UiWatchdogDumpWriter =
@@ -143,8 +369,21 @@ struct UiWatchdogDiagnosticsMeta {
     last_long_task_log_unix_ms: u64,
     last_frame_stall_log_unix_ms: u64,
     last_frontend_error_log_unix_ms: u64,
+    last_local_task_log_unix_ms: u64,
     last_invoke_slow_log_unix_ms: u64,
     last_invoke_error_log_unix_ms: u64,
+    last_local_task_log_by_command: HashMap<String, u64>,
+    last_invoke_slow_log_by_command: HashMap<String, u64>,
+    last_invoke_error_log_by_command: HashMap<String, u64>,
+}
+
+struct UiWatchdogDumpJob {
+    trigger: String,
+    now_unix_ms: u64,
+    heartbeat: UiWatchdogHeartbeatState,
+    backend_status: UiWatchdogBackendStatusState,
+    diagnostics: UiWatchdogDiagnosticsMeta,
+    traces: Vec<serde_json::Value>,
 }
 
 impl UiWatchdogState {
@@ -284,6 +523,7 @@ impl UiWatchdogState {
                 "unresponsive_since_unix_ms": diagnostics.unresponsive_since_unix_ms,
                 "backend_status": live_snapshot.backend_status,
             },
+            "process_resources": ui_watchdog_process_resources_snapshot(),
             "recent_traces": traces,
         });
         payload
@@ -297,16 +537,23 @@ impl UiWatchdogState {
         }
     }
 
-    fn write_dump(
-        &self,
-        diagnostics_dir: &std::path::Path,
-        trigger: &str,
-        now_unix_ms: u64,
-        payload: &serde_json::Value,
-    ) {
-        let filename = format!("ui-freeze-{now_unix_ms}-{trigger}.json");
+    fn write_dump(&self, diagnostics_dir: &std::path::Path, job: UiWatchdogDumpJob) {
+        let filename = format!("ui-freeze-{}-{}.json", job.now_unix_ms, job.trigger);
         let path = diagnostics_dir.join(filename);
-        let _ = (self.dump_writer)(&path, payload);
+        let dump_writer = self.dump_writer.clone();
+        std::thread::spawn(move || {
+            let _ =
+                std::fs::create_dir_all(path.parent().unwrap_or_else(|| std::path::Path::new(".")));
+            let payload = Self::build_dump_payload(
+                &job.trigger,
+                job.now_unix_ms,
+                &job.heartbeat,
+                &job.backend_status,
+                &job.diagnostics,
+                &job.traces,
+            );
+            let _ = dump_writer(&path, &payload);
+        });
     }
 
     pub fn record_heartbeat(
@@ -386,19 +633,16 @@ impl UiWatchdogState {
         let diagnostics_snapshot = diagnostics.clone();
         drop(diagnostics);
         let traces = self.trace_snapshot();
-        let payload = Self::build_dump_payload(
-            "slow-refresh",
-            now_unix_ms,
-            &heartbeat,
-            &backend_status,
-            &diagnostics_snapshot,
-            &traces,
-        );
         self.write_dump(
             runtime.diagnostics_dir,
-            "slow-refresh",
-            now_unix_ms,
-            &payload,
+            UiWatchdogDumpJob {
+                trigger: "slow-refresh".to_string(),
+                now_unix_ms,
+                heartbeat,
+                backend_status,
+                diagnostics: diagnostics_snapshot,
+                traces,
+            },
         );
     }
 
@@ -434,15 +678,17 @@ impl UiWatchdogState {
         let diagnostics_snapshot = diagnostics.clone();
         drop(diagnostics);
         let traces = self.trace_snapshot();
-        let payload = Self::build_dump_payload(
-            "long-task",
-            now_unix_ms,
-            &heartbeat,
-            &backend_status,
-            &diagnostics_snapshot,
-            &traces,
+        self.write_dump(
+            runtime.diagnostics_dir,
+            UiWatchdogDumpJob {
+                trigger: "long-task".to_string(),
+                now_unix_ms,
+                heartbeat,
+                backend_status,
+                diagnostics: diagnostics_snapshot,
+                traces,
+            },
         );
-        self.write_dump(runtime.diagnostics_dir, "long-task", now_unix_ms, &payload);
     }
 
     pub fn record_frame_stall(
@@ -488,19 +734,16 @@ impl UiWatchdogState {
         let diagnostics_snapshot = diagnostics.clone();
         drop(diagnostics);
         let traces = self.trace_snapshot();
-        let payload = Self::build_dump_payload(
-            "frame-stall",
-            now_unix_ms,
-            &heartbeat,
-            &backend_status,
-            &diagnostics_snapshot,
-            &traces,
-        );
         self.write_dump(
             runtime.diagnostics_dir,
-            "frame-stall",
-            now_unix_ms,
-            &payload,
+            UiWatchdogDumpJob {
+                trigger: "frame-stall".to_string(),
+                now_unix_ms,
+                heartbeat,
+                backend_status,
+                diagnostics: diagnostics_snapshot,
+                traces,
+            },
         );
     }
 
@@ -546,19 +789,76 @@ impl UiWatchdogState {
         let diagnostics_snapshot = diagnostics.clone();
         drop(diagnostics);
         let traces = self.trace_snapshot();
-        let payload = Self::build_dump_payload(
-            "frontend-error",
-            now_unix_ms,
-            &heartbeat,
-            &backend_status,
-            &diagnostics_snapshot,
-            &traces,
-        );
         self.write_dump(
             runtime.diagnostics_dir,
-            "frontend-error",
+            UiWatchdogDumpJob {
+                trigger: "frontend-error".to_string(),
+                now_unix_ms,
+                heartbeat,
+                backend_status,
+                diagnostics: diagnostics_snapshot,
+                traces,
+            },
+        );
+    }
+
+    pub fn record_local_task(
+        &self,
+        runtime: UiWatchdogRuntime<'_>,
+        task: UiWatchdogLocalTask<'_>,
+        page: UiWatchdogPageState<'_>,
+        now_unix_ms: u64,
+    ) {
+        let heartbeat = self.heartbeat_snapshot();
+        let backend_status = self.backend_status_snapshot();
+        let command = task.command.trim();
+        if command.is_empty() {
+            return;
+        }
+        let elapsed_ms = task.elapsed_ms;
+        self.append_trace(
+            "local_task",
             now_unix_ms,
-            &payload,
+            serde_json::json!({
+                "command": command,
+                "elapsed_ms": elapsed_ms,
+                "active_page": page.active_page.trim(),
+                "visible": page.visible,
+                "fields": task.fields,
+            }),
+        );
+        if elapsed_ms < UI_WATCHDOG_LOCAL_TASK_AFTER_MS {
+            return;
+        }
+        let mut diagnostics = self.diagnostics_meta.lock();
+        let command_logged_at = diagnostics
+            .last_local_task_log_by_command
+            .get(command)
+            .copied()
+            .unwrap_or(0);
+        if command_logged_at > 0
+            && now_unix_ms.saturating_sub(command_logged_at)
+                < UI_WATCHDOG_LOCAL_TASK_LOG_COOLDOWN_MS
+        {
+            return;
+        }
+        diagnostics.last_local_task_log_unix_ms = now_unix_ms;
+        diagnostics
+            .last_local_task_log_by_command
+            .insert(command.to_string(), now_unix_ms);
+        let diagnostics_snapshot = diagnostics.clone();
+        drop(diagnostics);
+        let traces = self.trace_snapshot();
+        self.write_dump(
+            runtime.diagnostics_dir,
+            UiWatchdogDumpJob {
+                trigger: "local-task".to_string(),
+                now_unix_ms,
+                heartbeat,
+                backend_status,
+                diagnostics: diagnostics_snapshot,
+                traces,
+            },
         );
     }
 
@@ -602,29 +902,34 @@ impl UiWatchdogState {
                 now_unix_ms,
             );
             let mut diagnostics = self.diagnostics_meta.lock();
-            if diagnostics.last_invoke_error_log_unix_ms > 0
-                && now_unix_ms.saturating_sub(diagnostics.last_invoke_error_log_unix_ms)
+            let command_logged_at = diagnostics
+                .last_invoke_error_log_by_command
+                .get(command)
+                .copied()
+                .unwrap_or(0);
+            if command_logged_at > 0
+                && now_unix_ms.saturating_sub(command_logged_at)
                     < UI_WATCHDOG_INVOKE_LOG_COOLDOWN_MS
             {
                 return;
             }
             diagnostics.last_invoke_error_log_unix_ms = now_unix_ms;
+            diagnostics
+                .last_invoke_error_log_by_command
+                .insert(command.to_string(), now_unix_ms);
             let diagnostics_snapshot = diagnostics.clone();
             drop(diagnostics);
             let traces = self.trace_snapshot();
-            let payload = Self::build_dump_payload(
-                "invoke-error",
-                now_unix_ms,
-                &heartbeat,
-                &backend_status,
-                &diagnostics_snapshot,
-                &traces,
-            );
             self.write_dump(
                 runtime.diagnostics_dir,
-                "invoke-error",
-                now_unix_ms,
-                &payload,
+                UiWatchdogDumpJob {
+                    trigger: "invoke-error".to_string(),
+                    now_unix_ms,
+                    heartbeat,
+                    backend_status,
+                    diagnostics: diagnostics_snapshot,
+                    traces,
+                },
             );
             return;
         }
@@ -633,29 +938,33 @@ impl UiWatchdogState {
             return;
         }
         let mut diagnostics = self.diagnostics_meta.lock();
-        if diagnostics.last_invoke_slow_log_unix_ms > 0
-            && now_unix_ms.saturating_sub(diagnostics.last_invoke_slow_log_unix_ms)
-                < UI_WATCHDOG_INVOKE_LOG_COOLDOWN_MS
+        let command_logged_at = diagnostics
+            .last_invoke_slow_log_by_command
+            .get(command)
+            .copied()
+            .unwrap_or(0);
+        if command_logged_at > 0
+            && now_unix_ms.saturating_sub(command_logged_at) < UI_WATCHDOG_INVOKE_LOG_COOLDOWN_MS
         {
             return;
         }
         diagnostics.last_invoke_slow_log_unix_ms = now_unix_ms;
+        diagnostics
+            .last_invoke_slow_log_by_command
+            .insert(command.to_string(), now_unix_ms);
         let diagnostics_snapshot = diagnostics.clone();
         drop(diagnostics);
         let traces = self.trace_snapshot();
-        let payload = Self::build_dump_payload(
-            "slow-invoke",
-            now_unix_ms,
-            &heartbeat,
-            &backend_status,
-            &diagnostics_snapshot,
-            &traces,
-        );
         self.write_dump(
             runtime.diagnostics_dir,
-            "slow-invoke",
-            now_unix_ms,
-            &payload,
+            UiWatchdogDumpJob {
+                trigger: "slow-invoke".to_string(),
+                now_unix_ms,
+                heartbeat,
+                backend_status,
+                diagnostics: diagnostics_snapshot,
+                traces,
+            },
         );
     }
 
@@ -701,15 +1010,17 @@ impl UiWatchdogState {
             let diagnostics_snapshot = diagnostics.clone();
             drop(diagnostics);
             let traces = self.trace_snapshot();
-            let payload = Self::build_dump_payload(
-                "heartbeat-stall",
-                now_unix_ms,
-                &heartbeat,
-                &backend_status,
-                &diagnostics_snapshot,
-                &traces,
+            self.write_dump(
+                diagnostics_dir,
+                UiWatchdogDumpJob {
+                    trigger: "heartbeat-stall".to_string(),
+                    now_unix_ms,
+                    heartbeat,
+                    backend_status,
+                    diagnostics: diagnostics_snapshot,
+                    traces,
+                },
             );
-            self.write_dump(diagnostics_dir, "heartbeat-stall", now_unix_ms, &payload);
             return;
         }
         if !diagnostics.unresponsive_logged {
@@ -764,19 +1075,16 @@ impl UiWatchdogState {
             let diagnostics_snapshot = diagnostics.clone();
             drop(diagnostics);
             let traces = self.trace_snapshot();
-            let payload = Self::build_dump_payload(
-                "backend-status-stall",
-                now_unix_ms,
-                &heartbeat,
-                &backend_status,
-                &diagnostics_snapshot,
-                &traces,
-            );
             self.write_dump(
                 diagnostics_dir,
-                "backend-status-stall",
-                now_unix_ms,
-                &payload,
+                UiWatchdogDumpJob {
+                    trigger: "backend-status-stall".to_string(),
+                    now_unix_ms,
+                    heartbeat,
+                    backend_status,
+                    diagnostics: diagnostics_snapshot,
+                    traces,
+                },
             );
             return;
         }
@@ -1207,10 +1515,52 @@ fn should_prune_placeholder_provider(cfg: &AppConfig, secrets: &SecretStore, nam
 mod tests {
     use super::{
         build_state, disable_expired_package_providers, load_or_init_config,
-        run_startup_gateway_token_sync, UiWatchdogPageState, UiWatchdogRuntime, UiWatchdogState,
+        parse_tasklist_csv_line, parse_tasklist_mem_kb, run_startup_gateway_token_sync,
+        UiWatchdogInvokeResult, UiWatchdogLocalTask, UiWatchdogPageState, UiWatchdogRuntime,
+        UiWatchdogState, UI_WATCHDOG_SLOW_REFRESH_AFTER_MS,
     };
     use crate::orchestrator::config::AppConfig;
     use serde_json::json;
+
+    fn wait_for_dump_count(
+        diagnostics_dir: &std::path::Path,
+        name_contains: &str,
+        expected: usize,
+    ) -> usize {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if !diagnostics_dir.is_dir() {
+                if std::time::Instant::now() >= deadline {
+                    return 0;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                continue;
+            }
+            let count = std::fs::read_dir(diagnostics_dir)
+                .expect("diagnostics dir")
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| name.contains(name_contains))
+                })
+                .count();
+            if count >= expected || std::time::Instant::now() >= deadline {
+                return count;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn ui_watchdog_parses_tasklist_rows_for_process_snapshots() {
+        let columns =
+            parse_tasklist_csv_line(r#""msedgewebview2.exe","1234","Console","1","221,112 K""#);
+        assert_eq!(columns[0], "msedgewebview2.exe");
+        assert_eq!(columns[1], "1234");
+        assert_eq!(parse_tasklist_mem_kb(&columns[4]), Some(221_112));
+    }
 
     #[test]
     fn build_state_syncs_gateway_token_to_gateway_targets() {
@@ -1486,10 +1836,7 @@ mod tests {
                 .count(),
             1
         );
-        let dump_count = std::fs::read_dir(&state.diagnostics_dir)
-            .expect("diagnostics dir")
-            .filter_map(|entry| entry.ok())
-            .count();
+        let dump_count = wait_for_dump_count(&state.diagnostics_dir, "heartbeat-stall", 1);
         assert!(dump_count >= 1);
 
         let ui_unresponsive_event = events
@@ -1607,16 +1954,7 @@ mod tests {
         assert_eq!(backend_unresponsive_events, 1);
         assert_eq!(backend_recovered_events, 1);
 
-        let dump_count = std::fs::read_dir(&state.diagnostics_dir)
-            .expect("diagnostics dir")
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .is_some_and(|name| name.contains("backend-status-stall"))
-            })
-            .count();
+        let dump_count = wait_for_dump_count(&state.diagnostics_dir, "backend-status-stall", 1);
         assert_eq!(dump_count, 1);
     }
 
@@ -1684,11 +2022,83 @@ mod tests {
             .count();
 
         assert_eq!(slow_refresh_events, 0);
-        let dump_count = std::fs::read_dir(&state.diagnostics_dir)
-            .expect("diagnostics dir")
-            .filter_map(|entry| entry.ok())
-            .count();
+        let dump_count = wait_for_dump_count(&state.diagnostics_dir, "slow-refresh", 2);
         assert!(dump_count >= 2);
+    }
+
+    #[test]
+    fn ui_watchdog_slow_invoke_cooldown_is_per_command() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+
+        let state = build_state(config_path, data_dir).expect("build state");
+        let watchdog = UiWatchdogState::default();
+
+        for (command, now_unix_ms) in [
+            ("GET /codex/threads?workspace=wsl2", 10_000),
+            ("GET /codex/version-info", 10_500),
+            ("GET /codex/threads?workspace=wsl2", 11_000),
+        ] {
+            watchdog.record_invoke_result(
+                UiWatchdogRuntime {
+                    store: &state.gateway.store,
+                    diagnostics_dir: &state.diagnostics_dir,
+                },
+                UiWatchdogInvokeResult {
+                    command,
+                    elapsed_ms: 2_500,
+                    ok: true,
+                    error_message: None,
+                },
+                UiWatchdogPageState {
+                    active_page: "codex-web",
+                    visible: true,
+                },
+                now_unix_ms,
+            );
+        }
+
+        let dump_count = wait_for_dump_count(&state.diagnostics_dir, "slow-invoke", 2);
+        assert_eq!(dump_count, 2);
+    }
+
+    #[test]
+    fn ui_watchdog_local_task_captures_codex_web_jank_per_command() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+
+        let state = build_state(config_path, data_dir).expect("build state");
+        let watchdog = UiWatchdogState::default();
+
+        for (command, elapsed_ms, now_unix_ms) in [
+            ("workspace switch sync", 300, 10_000),
+            ("workspace switch sync", 350, 10_500),
+            ("thread list render", 325, 11_000),
+        ] {
+            watchdog.record_local_task(
+                UiWatchdogRuntime {
+                    store: &state.gateway.store,
+                    diagnostics_dir: &state.diagnostics_dir,
+                },
+                UiWatchdogLocalTask {
+                    command,
+                    elapsed_ms,
+                    fields: json!({ "workspace": "wsl2" }),
+                },
+                UiWatchdogPageState {
+                    active_page: "codex-web",
+                    visible: true,
+                },
+                now_unix_ms,
+            );
+        }
+
+        let dump_count = wait_for_dump_count(&state.diagnostics_dir, "local-task", 2);
+        assert_eq!(dump_count, 2);
     }
 
     #[test]
@@ -1751,16 +2161,7 @@ mod tests {
             .count();
         assert_eq!(frame_stall_events, 2);
 
-        let dump_count = std::fs::read_dir(&state.diagnostics_dir)
-            .expect("diagnostics dir")
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .is_some_and(|name| name.contains("frame-stall"))
-            })
-            .count();
+        let dump_count = wait_for_dump_count(&state.diagnostics_dir, "frame-stall", 2);
         assert_eq!(dump_count, 2);
     }
 
@@ -1842,5 +2243,61 @@ mod tests {
             })
             .count();
         assert_eq!(unresponsive_events, 0);
+    }
+
+    #[test]
+    fn ui_watchdog_slow_refresh_returns_before_dump_writer_finishes() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+
+        let state = build_state(config_path, data_dir).expect("build state");
+        let dump_started = Arc::new(AtomicBool::new(false));
+        let release_dump = Arc::new(AtomicBool::new(false));
+        let dump_started_for_writer = dump_started.clone();
+        let release_dump_for_writer = release_dump.clone();
+        let watchdog = UiWatchdogState::with_dump_writer(Arc::new(move |path, payload| {
+            dump_started_for_writer.store(true, Ordering::SeqCst);
+            while !release_dump_for_writer.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            crate::diagnostics::write_pretty_json(path, payload)
+        }));
+        watchdog.record_heartbeat("dashboard", true, false, false, false, 1_000);
+
+        let started = Instant::now();
+        watchdog.record_slow_refresh(
+            UiWatchdogRuntime {
+                store: &state.gateway.store,
+                diagnostics_dir: &state.diagnostics_dir,
+            },
+            "status",
+            UI_WATCHDOG_SLOW_REFRESH_AFTER_MS + 1,
+            UiWatchdogPageState {
+                active_page: "dashboard",
+                visible: true,
+            },
+            2_000,
+        );
+
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "slow refresh diagnostics should be scheduled, not written synchronously"
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !dump_started.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(dump_started.load(Ordering::SeqCst));
+        release_dump.store(true, Ordering::SeqCst);
+        assert_eq!(
+            wait_for_dump_count(&state.diagnostics_dir, "slow-refresh", 1),
+            1
+        );
     }
 }

@@ -2,8 +2,10 @@ const DEFAULT_VISIBLE_HEARTBEAT_INTERVAL_MS = 5000;
 const DEFAULT_HIDDEN_HEARTBEAT_INTERVAL_MS = 30000;
 const DEFAULT_BATCH_DELAY_MS = 750;
 const DEFAULT_LONG_TASK_THRESHOLD_MS = 1000;
-const DEFAULT_FRAME_STALL_THRESHOLD_MS = 180;
+const DEFAULT_FRAME_STALL_THRESHOLD_MS = 80;
+const DEFAULT_LOCAL_TASK_THRESHOLD_MS = 80;
 const DEFAULT_INTERACTION_SAMPLE_COOLDOWN_MS = 600;
+const DEFAULT_INTERACTION_MONITOR_WINDOW_MS = 8000;
 
 export function normalizeCodexWebActivePage(state) {
   const tab = String(state?.activeMainTab || "").trim();
@@ -45,12 +47,15 @@ export function createCodexWebDiagnostics(deps) {
     batchDelayMs = DEFAULT_BATCH_DELAY_MS,
     longTaskThresholdMs = DEFAULT_LONG_TASK_THRESHOLD_MS,
     frameStallThresholdMs = DEFAULT_FRAME_STALL_THRESHOLD_MS,
+    localTaskThresholdMs = DEFAULT_LOCAL_TASK_THRESHOLD_MS,
     interactionSampleCooldownMs = DEFAULT_INTERACTION_SAMPLE_COOLDOWN_MS,
+    interactionMonitorWindowMs = DEFAULT_INTERACTION_MONITOR_WINDOW_MS,
   } = deps || {};
 
   const queue = {
     traces: [],
     invokeResults: [],
+    localTasks: [],
     longTasks: [],
     frameStalls: [],
     frontendErrors: [],
@@ -59,6 +64,8 @@ export function createCodexWebDiagnostics(deps) {
   let flushTimer = 0;
   let heartbeatTimer = 0;
   let startupFrameMonitorUntil = 0;
+  let interactionFrameMonitorUntil = 0;
+  let interactionFrameMonitorScheduled = false;
   let lastInteractionSampleAt = 0;
 
   function activePage() {
@@ -120,6 +127,7 @@ export function createCodexWebDiagnostics(deps) {
       ...extra,
       traces: queue.traces.splice(0, 256),
       invokeResults: queue.invokeResults.splice(0, 256),
+      localTasks: queue.localTasks.splice(0, 128),
       longTasks: queue.longTasks.splice(0, 64),
       frameStalls: queue.frameStalls.splice(0, 64),
       frontendErrors: queue.frontendErrors.splice(0, 64),
@@ -127,6 +135,7 @@ export function createCodexWebDiagnostics(deps) {
     const hasQueued =
       body.traces.length ||
       body.invokeResults.length ||
+      body.localTasks.length ||
       body.longTasks.length ||
       body.frameStalls.length ||
       body.frontendErrors.length ||
@@ -157,6 +166,17 @@ export function createCodexWebDiagnostics(deps) {
     if (!normalizedKind) return;
     enqueue("traces", {
       kind: normalizedKind,
+      fields: fields && typeof fields === "object" ? fields : { value: String(fields || "") },
+    });
+  }
+
+  function recordLocalTask({ command, elapsedMs, fields = {} }) {
+    const route = String(command || "").trim();
+    const durationMs = Math.max(0, Math.round(Number(elapsedMs || 0)));
+    if (!route || durationMs < localTaskThresholdMs) return;
+    enqueue("localTasks", {
+      command: route,
+      elapsedMs: durationMs,
       fields: fields && typeof fields === "object" ? fields : { value: String(fields || "") },
     });
   }
@@ -200,18 +220,37 @@ export function createCodexWebDiagnostics(deps) {
     requestAnimationFrameRef(tick);
   }
 
+  function startInteractionFrameMonitor() {
+    if (!requestAnimationFrameRef || interactionFrameMonitorScheduled) return;
+    interactionFrameMonitorScheduled = true;
+    let lastFrameAt = nowRef();
+    const tick = () => {
+      const now = nowRef();
+      const elapsedMs = now - lastFrameAt;
+      lastFrameAt = now;
+      if (now <= interactionFrameMonitorUntil && visible()) {
+        recordFrameStall(elapsedMs, "interaction");
+        requestAnimationFrameRef(tick);
+        return;
+      }
+      interactionFrameMonitorScheduled = false;
+    };
+    requestAnimationFrameRef(tick);
+  }
+
   function installInteractionFrameMonitor() {
     if (!windowRef || !requestAnimationFrameRef) return;
     const handler = () => {
       const now = nowRef();
       if (now - lastInteractionSampleAt < interactionSampleCooldownMs) return;
       lastInteractionSampleAt = now;
-      const startedAt = nowRef();
-      requestAnimationFrameRef(() => {
-        recordFrameStall(nowRef() - startedAt, "interaction");
-      });
+      interactionFrameMonitorUntil = Math.max(
+        interactionFrameMonitorUntil,
+        now + interactionMonitorWindowMs
+      );
+      startInteractionFrameMonitor();
     };
-    for (const eventName of ["click", "keydown", "pointerup", "touchend"]) {
+    for (const eventName of ["pointerdown", "keydown", "wheel", "touchstart"]) {
       windowRef.addEventListener?.(eventName, handler, { passive: true });
     }
   }
@@ -291,6 +330,7 @@ export function createCodexWebDiagnostics(deps) {
     dispose,
     flush,
     recordApiResult,
+    recordLocalTask,
     recordTrace,
   };
 }

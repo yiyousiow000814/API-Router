@@ -2,10 +2,12 @@ use super::*;
 use axum::extract::{Path as AxumPath, Query};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::orchestrator::gateway::web_codex_git::{
-    current_branch_for_workspace, detect_git_worktree_for_workspace, switch_branch_for_workspace,
-    uncommitted_file_count_for_workspace, visible_branch_options_for_workspace_with_current_branch,
+    detect_git_worktree_for_workspace, git_meta_snapshot_for_workspace,
+    switch_branch_for_workspace, visible_branch_options_for_workspace_from_local_branches,
 };
 use crate::orchestrator::gateway::web_codex_session_manager::{
     merge_runtime_thread_overlay, runtime_thread_path, runtime_thread_payload,
@@ -14,7 +16,19 @@ use crate::orchestrator::gateway::web_codex_session_manager::{
 use crate::orchestrator::gateway::web_codex_thread_options::build_thread_resume_params;
 
 const MAX_CONCURRENT_WORKTREE_PROBES: usize = 4;
+const GIT_META_PAYLOAD_CACHE_TTL: Duration = Duration::from_secs(5);
 type WorktreeProbeOutcome = (Option<String>, String, Result<bool, String>);
+
+#[derive(Clone, Debug)]
+struct GitMetaPayloadCacheEntry {
+    payload: Value,
+    observed_at: Instant,
+}
+
+fn git_meta_payload_cache() -> &'static Mutex<HashMap<String, GitMetaPayloadCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, GitMetaPayloadCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Deserialize)]
 pub(super) struct ThreadsQuery {
@@ -105,12 +119,96 @@ fn workspace_label_for_target(target: WorkspaceTarget) -> &'static str {
     }
 }
 
+fn git_meta_payload_cache_key(workspace: &str, cwd: &str) -> Option<String> {
+    let workspace = workspace.trim().to_ascii_lowercase();
+    let cwd = cwd.trim();
+    if workspace.is_empty() || cwd.is_empty() {
+        return None;
+    }
+    let normalized_cwd = if workspace == "wsl2" {
+        cwd.to_string()
+    } else {
+        cwd.replace('\\', "/").to_ascii_lowercase()
+    };
+    Some(format!("{workspace}:{normalized_cwd}"))
+}
+
+fn read_cached_git_meta_payload(workspace: &str, cwd: &str) -> Option<Value> {
+    let cache_key = git_meta_payload_cache_key(workspace, cwd)?;
+    let guard = match git_meta_payload_cache().lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    let entry = guard.get(&cache_key)?;
+    if Instant::now().duration_since(entry.observed_at) > GIT_META_PAYLOAD_CACHE_TTL {
+        None
+    } else {
+        Some(entry.payload.clone())
+    }
+}
+
+fn store_git_meta_payload(workspace: &str, cwd: &str, payload: &Value) {
+    let Some(cache_key) = git_meta_payload_cache_key(workspace, cwd) else {
+        return;
+    };
+    let mut guard = match git_meta_payload_cache().lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    guard.insert(
+        cache_key,
+        GitMetaPayloadCacheEntry {
+            payload: payload.clone(),
+            observed_at: Instant::now(),
+        },
+    );
+}
+
+fn invalidate_git_meta_payload_cache(workspace: &str, cwd: &str) {
+    let Some(cache_key) = git_meta_payload_cache_key(workspace, cwd) else {
+        return;
+    };
+    let mut guard = match git_meta_payload_cache().lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    guard.remove(&cache_key);
+}
+
+fn attach_thread_id_to_git_meta_payload(mut payload: Value, thread_id: Option<&str>) -> Value {
+    if let Some(thread_id) = thread_id {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("threadId".to_string(), Value::String(thread_id.to_string()));
+        }
+    }
+    payload
+}
+
 fn workspace_option_for_item(item: &Value) -> Option<String> {
     item.get("workspace")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn workspace_label_is_wsl2(value: &str) -> bool {
+    value.trim().eq_ignore_ascii_case("wsl2")
+}
+
+fn worktree_probe_cwd_exists(workspace: Option<&str>, cwd: &str) -> bool {
+    let trimmed = cwd.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if workspace.map(workspace_label_is_wsl2).unwrap_or(false) {
+        return false;
+    }
+    let path = std::path::Path::new(trimmed);
+    if path.is_absolute() {
+        return path.is_dir();
+    }
+    true
 }
 
 fn worktree_probe_request_for_item(
@@ -131,6 +229,16 @@ fn worktree_probe_request_for_item(
         .filter(|value| !value.trim().is_empty())
         .map(str::to_string)
         .or_else(|| workspace_option_for_item(item));
+    if workspace
+        .as_deref()
+        .map(workspace_label_is_wsl2)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    if !worktree_probe_cwd_exists(workspace.as_deref(), &cwd) {
+        return None;
+    }
     Some((workspace, cwd))
 }
 
@@ -289,36 +397,53 @@ async fn git_meta_payload_for_cwd(
     thread_id: Option<&str>,
     cwd: &str,
 ) -> Result<Value, String> {
+    let started = Instant::now();
     let cwd = cwd.trim();
     if cwd.is_empty() {
         return Err("cwd is required".to_string());
     }
     let workspace = workspace_label_for_target(workspace_target);
-    let (current_branch, is_worktree, uncommitted_file_count) = tokio::try_join!(
-        current_branch_for_workspace(Some(workspace), cwd),
-        detect_git_worktree_for_workspace(Some(workspace), cwd),
-        uncommitted_file_count_for_workspace(Some(workspace), cwd)
-    )?;
-    let branches = visible_branch_options_for_workspace_with_current_branch(
+    if let Some(payload) = read_cached_git_meta_payload(workspace, cwd) {
+        let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+            "codex-git-meta",
+            workspace,
+            "gateway_handler",
+            crate::diagnostics::codex_web_pipeline::elapsed_ms_u64(started),
+        );
+        pipeline.cache_hit = Some(true);
+        pipeline.source = Some("git-meta-cache".to_string());
+        pipeline.ok = Some(true);
+        crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
+        return Ok(attach_thread_id_to_git_meta_payload(payload, thread_id));
+    }
+    let snapshot = git_meta_snapshot_for_workspace(Some(workspace), cwd).await?;
+    let branches = visible_branch_options_for_workspace_from_local_branches(
         Some(workspace),
         cwd,
-        &current_branch,
+        &snapshot.current_branch,
+        snapshot.local_branches,
     )
     .await?;
-    let mut payload = json!({
+    let payload = json!({
         "workspace": workspace,
         "cwd": cwd,
-        "currentBranch": current_branch,
+        "currentBranch": snapshot.current_branch,
         "branches": branches,
-        "isWorktree": is_worktree,
-        "uncommittedFileCount": uncommitted_file_count,
+        "isWorktree": snapshot.is_worktree,
+        "uncommittedFileCount": snapshot.uncommitted_file_count,
     });
-    if let Some(thread_id) = thread_id {
-        if let Some(obj) = payload.as_object_mut() {
-            obj.insert("threadId".to_string(), Value::String(thread_id.to_string()));
-        }
-    }
-    Ok(payload)
+    store_git_meta_payload(workspace, cwd, &payload);
+    let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+        "codex-git-meta",
+        workspace,
+        "gateway_handler",
+        crate::diagnostics::codex_web_pipeline::elapsed_ms_u64(started),
+    );
+    pipeline.cache_hit = Some(false);
+    pipeline.source = Some("git-meta-snapshot".to_string());
+    pipeline.ok = Some(true);
+    crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
+    Ok(attach_thread_id_to_git_meta_payload(payload, thread_id))
 }
 
 fn normalize_rollout_query_path(value: Option<&str>) -> Option<String> {
@@ -566,11 +691,25 @@ pub(super) async fn codex_threads_list(
         crate::orchestrator::gateway::web_codex_history::spawn_wsl_history_prewarm(&items);
     }
     let total_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+    let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+        "/codex/threads",
+        &workspace_meta,
+        "gateway_handler",
+        u64::try_from(total_ms).unwrap_or(u64::MAX),
+    );
+    pipeline.cache_hit = Some(snapshot.cache_hit);
+    pipeline.refreshing = Some(snapshot.refreshing);
+    pipeline.force = Some(force);
+    pipeline.item_count = Some(items.len());
+    pipeline.rebuild_ms = Some(snapshot.rebuild_ms);
+    pipeline.source = Some("session-index".to_string());
+    crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
     build_threads_response_with_meta(
         items,
         json!({
             "workspace": workspace_meta,
             "cacheHit": snapshot.cache_hit,
+            "refreshing": snapshot.refreshing,
             "source": "session-index",
             "rebuildMs": snapshot.rebuild_ms,
             "totalMs": total_ms
@@ -700,14 +839,17 @@ pub(super) async fn codex_thread_branch_switch(
         }
     };
     match switch_branch_for_workspace(Some(workspace), &cwd, &req.branch).await {
-        Ok(_) => match thread_git_meta_payload(workspace_target, &id).await {
-            Ok(value) => Json(value).into_response(),
-            Err(error) => api_error_detail(
-                StatusCode::BAD_REQUEST,
-                "branch switched but failed to reload thread git metadata",
-                error,
-            ),
-        },
+        Ok(_) => {
+            invalidate_git_meta_payload_cache(workspace, &cwd);
+            match thread_git_meta_payload(workspace_target, &id).await {
+                Ok(value) => Json(value).into_response(),
+                Err(error) => api_error_detail(
+                    StatusCode::BAD_REQUEST,
+                    "branch switched but failed to reload thread git metadata",
+                    error,
+                ),
+            }
+        }
         Err(error) => api_error_detail(StatusCode::BAD_REQUEST, "failed to switch branch", error),
     }
 }
@@ -729,14 +871,17 @@ pub(super) async fn codex_git_branch_switch(
     }
     let workspace = workspace_label_for_target(workspace_target);
     match switch_branch_for_workspace(Some(workspace), cwd, &req.branch).await {
-        Ok(_) => match git_meta_payload_for_cwd(workspace_target, None, cwd).await {
-            Ok(value) => Json(value).into_response(),
-            Err(error) => api_error_detail(
-                StatusCode::BAD_REQUEST,
-                "branch switched but failed to reload git metadata",
-                error,
-            ),
-        },
+        Ok(_) => {
+            invalidate_git_meta_payload_cache(workspace, cwd);
+            match git_meta_payload_for_cwd(workspace_target, None, cwd).await {
+                Ok(value) => Json(value).into_response(),
+                Err(error) => api_error_detail(
+                    StatusCode::BAD_REQUEST,
+                    "branch switched but failed to reload git metadata",
+                    error,
+                ),
+            }
+        }
         Err(error) => api_error_detail(StatusCode::BAD_REQUEST, "failed to switch branch", error),
     }
 }
@@ -1039,6 +1184,28 @@ mod tests {
     }
 
     #[test]
+    fn cached_git_meta_payload_attaches_current_thread_id() {
+        let base = json!({
+            "workspace": "windows",
+            "cwd": "C:\\repo",
+            "currentBranch": "main",
+            "branches": [],
+            "isWorktree": false,
+            "uncommittedFileCount": 0,
+        });
+        let first = attach_thread_id_to_git_meta_payload(base.clone(), Some("thread-a"));
+        let second = attach_thread_id_to_git_meta_payload(base, Some("thread-b"));
+        assert_eq!(
+            first.get("threadId").and_then(Value::as_str),
+            Some("thread-a")
+        );
+        assert_eq!(
+            second.get("threadId").and_then(Value::as_str),
+            Some("thread-b")
+        );
+    }
+
+    #[test]
     fn attach_rollout_path_to_create_response_keeps_existing_shape() {
         let value = json!({
             "threadId": "thread-1",
@@ -1228,9 +1395,10 @@ mod tests {
 
     #[test]
     fn collect_worktree_probe_requests_deduplicates_workspace_and_cwd() {
+        let repo_a = std::env::temp_dir().to_string_lossy().to_string();
         let items = vec![
-            json!({ "workspace": "windows", "cwd": "C:\\repo-a" }),
-            json!({ "workspace": "windows", "cwd": "C:\\repo-a" }),
+            json!({ "workspace": "windows", "cwd": repo_a.clone() }),
+            json!({ "workspace": "windows", "cwd": repo_a.clone() }),
             json!({ "workspace": "wsl2", "cwd": "/repo-b" }),
             json!({ "workspace": "wsl2", "cwd": "/repo-b" }),
             json!({ "workspace": "windows", "cwd": "   " }),
@@ -1238,28 +1406,53 @@ mod tests {
 
         let requests = collect_worktree_probe_requests(&items, None);
 
-        assert_eq!(
-            requests,
-            vec![
-                (Some("windows".to_string()), "C:\\repo-a".to_string()),
-                (Some("wsl2".to_string()), "/repo-b".to_string()),
-            ]
-        );
+        assert_eq!(requests, vec![(Some("windows".to_string()), repo_a)]);
+    }
+
+    #[test]
+    fn collect_worktree_probe_requests_skips_wsl2_without_explicit_workspace_hint() {
+        let items = vec![json!({ "workspace": "wsl2", "cwd": "/repo-b" })];
+
+        let requests = collect_worktree_probe_requests(&items, None);
+
+        assert!(requests.is_empty());
     }
 
     #[test]
     fn collect_worktree_probe_requests_prefers_workspace_hint() {
+        let repo_a = std::env::temp_dir().to_string_lossy().to_string();
         let items = vec![
-            json!({ "workspace": "windows", "cwd": "C:\\repo-a" }),
-            json!({ "workspace": "wsl2", "cwd": "C:\\repo-a" }),
+            json!({ "workspace": "windows", "cwd": repo_a.clone() }),
+            json!({ "workspace": "wsl2", "cwd": repo_a.clone() }),
         ];
+
+        let requests = collect_worktree_probe_requests(&items, Some("windows"));
+
+        assert_eq!(requests, vec![(Some("windows".to_string()), repo_a)]);
+    }
+
+    #[test]
+    fn collect_worktree_probe_requests_skips_wsl2_even_with_explicit_workspace_hint() {
+        let items = vec![json!({ "workspace": "wsl2", "cwd": "/repo-b" })];
 
         let requests = collect_worktree_probe_requests(&items, Some("wsl2"));
 
-        assert_eq!(
-            requests,
-            vec![(Some("wsl2".to_string()), "C:\\repo-a".to_string())]
-        );
+        assert!(requests.is_empty());
+    }
+
+    #[test]
+    fn collect_worktree_probe_requests_skips_missing_local_cwd() {
+        let missing = std::env::temp_dir()
+            .join(format!(
+                "api-router-missing-worktree-probe-{}",
+                std::process::id()
+            ))
+            .join("repo");
+        let item = json!({ "workspace": "windows", "cwd": missing.to_string_lossy() });
+
+        let requests = collect_worktree_probe_requests(&[item], None);
+
+        assert!(requests.is_empty());
     }
 
     #[test]

@@ -61,6 +61,7 @@ pub(crate) fn ensure_parent_dir(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+pub(crate) mod codex_web_pipeline;
 pub(crate) mod codex_web_transport;
 
 /// Prefixes used to identify watchdog dump files written by `UiWatchdog::write_dump`.

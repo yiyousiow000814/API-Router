@@ -9,6 +9,8 @@ import {
   resolveApiErrorMessage,
   isExpectedAbortError,
   subscriptionIncludesWorkspace,
+  workspaceFromApiPath,
+  detectCodexWebClientType,
 } from "./wsClient.js";
 
 describe("wsClient", () => {
@@ -28,6 +30,29 @@ describe("wsClient", () => {
     expect(normalizeLiveWorkspaceTarget("wsl2")).toBe("wsl2");
     expect(normalizeLiveWorkspaceTarget("windows")).toBe("windows");
     expect(normalizeLiveWorkspaceTarget("")).toBe("windows");
+  });
+
+  it("extracts workspace hints from api paths", () => {
+    expect(workspaceFromApiPath("/codex/threads?workspace=wsl2")).toBe("wsl2");
+    expect(workspaceFromApiPath("/codex/threads?workspace=windows")).toBe("windows");
+    expect(workspaceFromApiPath("/codex/threads")).toBe("unknown");
+  });
+
+  it("detects desktop webview and mobile browser clients", () => {
+    expect(detectCodexWebClientType({ __TAURI_INTERNALS__: {} })).toBe("desktop-webview");
+    expect(
+      detectCodexWebClientType({
+        navigator: { userAgent: "Mozilla/5.0 (iPhone) Mobile Safari/604.1" },
+      })
+    ).toBe("mobile-browser");
+    expect(
+      detectCodexWebClientType({
+        navigator: { userAgent: "Mozilla/5.0 Codex/26.422.30944 Electron/41.2.0" },
+      })
+    ).toBe("desktop-webview");
+    expect(detectCodexWebClientType({ navigator: { userAgent: "Mozilla/5.0" } })).toBe(
+      "desktop-browser"
+    );
   });
 
   it("builds dual-workspace live subscriptions only when both targets are available", () => {
@@ -52,6 +77,76 @@ describe("wsClient", () => {
     });
     expect(subscriptionIncludesWorkspace(["windows", "wsl2"], "wsl2")).toBe(true);
     expect(subscriptionIncludesWorkspace("all", "windows")).toBe(true);
+  });
+
+  it("skips unchanged dual-workspace event subscriptions", () => {
+    const sent = [];
+    class TestWebSocket {
+      static OPEN = 1;
+    }
+    const state = {
+      token: "",
+      ws: {
+        readyState: TestWebSocket.OPEN,
+        send(value) {
+          sent.push(JSON.parse(value));
+        },
+      },
+      wsReqHandlers: new Map(),
+      pendingApprovals: [],
+      pendingUserInputs: [],
+      wsLastEventId: 0,
+      wsRecentEventIds: new Set(),
+      wsSubscribedEvents: true,
+      wsRequestedWorkspaceTarget: "all",
+      wsRequestedWorkspaceTargets: ["windows", "wsl2"],
+      wsSubscribedWorkspaceTarget: "all",
+      wsSubscribedWorkspaceTargets: ["windows", "wsl2"],
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      workspaceTarget: "wsl2",
+    };
+    const module = createWsClientModule({
+      state,
+      setStatus() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh() {},
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      addChat() {},
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { getItem() { return "0"; }, setItem() {} },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
+      WebSocketRef: TestWebSocket,
+      fetchRef: async () => ({ ok: true, json: async () => ({}) }),
+    });
+
+    expect(module.syncEventSubscription()).toBe(false);
+    expect(sent).toEqual([]);
   });
 
   it("prefers structured api errors", () => {
@@ -148,6 +243,120 @@ describe("wsClient", () => {
   it("records codex api timing results", async () => {
     const apiResults = [];
     let now = 1000;
+    let fetchOptions = null;
+    const state = {
+      token: "",
+      ws: null,
+      wsReqHandlers: new Map(),
+      pendingApprovals: [],
+      pendingUserInputs: [],
+      wsLastEventId: 0,
+      wsRecentEventIds: new Set(),
+      wsSubscribedEvents: false,
+      liveDebugEvents: [],
+    };
+    const module = createWsClientModule({
+      state,
+      setStatus() {},
+      toRecord(value) {
+        return value && typeof value === "object" ? value : null;
+      },
+      readString(value) {
+        const text = String(value ?? "").trim();
+        return text || "";
+      },
+      readNumber(value) {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      },
+      resetEventReplayState() {},
+      markEventIdSeen() {},
+      extractNotificationEventId() {
+        return null;
+      },
+      extractNotificationThreadId() {
+        return "";
+      },
+      shouldRefreshThreadsFromNotification() {
+        return false;
+      },
+      shouldRefreshActiveThreadFromNotification() {
+        return false;
+      },
+      scheduleThreadRefresh() {},
+      scheduleActiveThreadRefresh() {},
+      renderLiveNotification() {},
+      applyPendingPayloads() {},
+      recordApiResult(result) {
+        apiResults.push(result);
+      },
+      LAST_EVENT_ID_KEY: "test-last-event-id",
+      windowRef: { document: { visibilityState: "visible", addEventListener() {} }, addEventListener() {} },
+      WebSocketRef: class {},
+      localStorageRef: { getItem: () => null, setItem() {}, removeItem() {} },
+      fetchRef: async (_path, options) => {
+        fetchOptions = options;
+        now = 1041;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ ok: true }),
+        };
+      },
+      nowRef: () => now,
+    });
+
+    await expect(module.api("/codex/threads")).resolves.toEqual({ ok: true });
+    expect(fetchOptions.headers["X-Codex-Web-Request-Id"]).toMatch(/^req_/);
+    expect(fetchOptions.headers["X-Api-Router-Client"]).toBe("desktop-browser");
+    expect(apiResults).toEqual([
+      {
+        command: "GET /codex/threads",
+        elapsedMs: 41,
+        ok: true,
+        errorMessage: null,
+      },
+    ]);
+    expect(state.liveDebugEvents.map((event) => event.kind)).toEqual([
+      "api.request:start",
+      "api.request:headers",
+      "api.request:body",
+      "api.request:finish",
+    ]);
+    expect(state.liveDebugEvents[0]).toMatchObject({
+      __tracePersist: true,
+      route: "GET /codex/threads",
+      clientType: "desktop-browser",
+      requestBytes: 0,
+    });
+    expect(state.liveDebugEvents[1]).toMatchObject({
+      __tracePersist: true,
+      route: "GET /codex/threads",
+      elapsedMs: 41,
+      ok: true,
+      status: 200,
+    });
+    expect(state.liveDebugEvents[2]).toMatchObject({
+      __tracePersist: true,
+      route: "GET /codex/threads",
+      responseBytes: expect.any(Number),
+    });
+    expect(state.liveDebugEvents[3]).toMatchObject({
+      __tracePersist: true,
+      route: "GET /codex/threads",
+      elapsedMs: 41,
+      ok: true,
+      status: 200,
+    });
+    expect(state.liveDebugEvents[3].requestId).toBe(state.liveDebugEvents[0].requestId);
+  });
+
+  it("reports codex api requests while they are still pending", async () => {
+    const pendingResults = [];
+    const transportEvents = [];
+    let pendingTimer = null;
+    let now = 1000;
+    let resolveFetch;
     const module = createWsClientModule({
       state: {
         token: "",
@@ -189,30 +398,54 @@ describe("wsClient", () => {
       scheduleActiveThreadRefresh() {},
       renderLiveNotification() {},
       applyPendingPayloads() {},
-      recordApiResult(result) {
-        apiResults.push(result);
+      addChat() {},
+      recordApiPending(result) {
+        pendingResults.push(result);
       },
-      LAST_EVENT_ID_KEY: "test-last-event-id",
-      windowRef: { document: { visibilityState: "visible", addEventListener() {} }, addEventListener() {} },
+      recordWebTransportEvent(kind, detail) {
+        transportEvents.push({ kind, detail });
+      },
+      LAST_EVENT_ID_KEY: "last",
+      localStorageRef: { setItem() {}, getItem() { return "0"; } },
+      windowRef: { location: { protocol: "http:", host: "example.com" } },
       WebSocketRef: class {},
-      localStorageRef: { getItem: () => null, setItem() {}, removeItem() {} },
-      fetchRef: async () => {
-        now = 1041;
-        return {
-          ok: true,
-          json: async () => ({ ok: true }),
-        };
-      },
+      fetchRef: () =>
+        new Promise((resolve) => {
+          resolveFetch = resolve;
+        }),
       nowRef: () => now,
+      setTimeoutRef(fn) {
+        pendingTimer = fn;
+        return 1;
+      },
+      clearTimeoutRef() {
+        pendingTimer = null;
+      },
+      API_PENDING_AFTER_MS: 3000,
     });
 
-    await expect(module.api("/codex/threads")).resolves.toEqual({ ok: true });
-    expect(apiResults).toEqual([
+    const request = module.api("/codex/threads?workspace=windows");
+    now = 4300;
+    pendingTimer();
+    resolveFetch({ ok: true, json: async () => ({ ok: true }) });
+    await expect(request).resolves.toEqual({ ok: true });
+
+    expect(pendingResults).toEqual([
       {
-        command: "GET /codex/threads",
-        elapsedMs: 41,
-        ok: true,
-        errorMessage: null,
+        command: "GET /codex/threads?workspace=windows",
+        elapsedMs: 3300,
+        fields: {
+          path: "/codex/threads?workspace=windows",
+          method: "GET",
+          requestId: expect.stringMatching(/^req_/),
+          clientType: "desktop-browser",
+        },
+      },
+    ]);
+    expect(transportEvents).toEqual([
+      {
+        kind: "api_request_pending",
+        detail: "GET /codex/threads?workspace=windows pending 3300ms",
       },
     ]);
   });

@@ -53,15 +53,19 @@ describe('resolveFocusedEvent', () => {
     expect(focused).toBeNull()
   })
 
-  it('returns null when no event id is provided', () => {
+  it('falls back to provider, timestamp, and message when no event id is provided', () => {
+    const wrongMessage = buildEvent({
+      id: 'evt-wrong-message',
+      message: 'different failure',
+    })
     const exact = buildEvent({
       id: 'evt-exact',
       unix_ms: 1_717_171_709_000,
     })
 
-    const focused = resolveFocusedEvent([exact], buildFocus({ eventId: null }))
+    const focused = resolveFocusedEvent([wrongMessage, exact], buildFocus({ eventId: null }))
 
-    expect(focused).toBeNull()
+    expect(focused?.id).toBe('evt-exact')
   })
 })
 

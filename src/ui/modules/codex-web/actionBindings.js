@@ -2,6 +2,9 @@ import { applyActiveThreadGitMetaState, activeComposerWorkspace } from "./thread
 import { resolveBranchPickerSelection } from "./branchPickerState.js";
 import { resolveCurrentThreadId } from "./runtimeState.js";
 
+export const PROVIDER_SWITCHBOARD_AUTO_REFRESH_MS = 15_000;
+export const PROVIDER_SWITCHBOARD_STALE_MS = 15_000;
+
 export function shouldSubmitPromptKey(event) {
   return (
     String(event?.key || "") === "Enter" &&
@@ -153,7 +156,7 @@ export function createActionBindingsModule(deps) {
     if (state.activeMainTab !== "settings") return;
     if (state.settingsActiveSection !== "provider") return;
     if (state.providerSwitchboardLoading || state.providerSwitchboardBusy) return;
-    const stale = Date.now() - providerSwitchboardLastRefreshMs > 2_500;
+    const stale = Date.now() - providerSwitchboardLastRefreshMs > PROVIDER_SWITCHBOARD_STALE_MS;
     if (state.providerSwitchboardStatus && !state.providerSwitchboardError && !stale) return;
     refreshProviderSwitchboard({ showLoading: !state.providerSwitchboardStatus });
   }
@@ -632,7 +635,7 @@ export function createActionBindingsModule(deps) {
       providerSwitchboardAutoRefreshBound = true;
       scheduleInterval(() => {
         refreshSettingsProviderSwitchboardIfNeeded();
-      }, 2500);
+      }, PROVIDER_SWITCHBOARD_AUTO_REFRESH_MS);
     }
     bindClick("addHostBtn", () => addHost().catch((e) => setStatus(resolveActionErrorMessage(e), true)));
     bindClick("resolveApprovalBtn", () =>

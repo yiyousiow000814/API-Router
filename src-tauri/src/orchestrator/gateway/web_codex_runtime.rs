@@ -1,6 +1,7 @@
 use super::*;
 use axum::extract::Query;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::process::Command;
 
 use crate::orchestrator::gateway::web_codex_home::{
@@ -39,7 +40,7 @@ pub(super) struct CodexRuntimeStatePayload {
     active_thread_count: usize,
 }
 
-#[derive(Clone, Serialize, Debug, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub(super) struct CodexVersionInfo {
     windows: String,
     wsl2: String,
@@ -75,6 +76,16 @@ struct CodexVersionInfoCache {
     updated_at_unix_secs: i64,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedCodexVersionInfo {
+    version: u64,
+    updated_at_unix_secs: i64,
+    value: CodexVersionInfo,
+}
+
+static CODEX_VERSION_INFO_REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DetectedCodexRuntime {
     version: String,
@@ -82,6 +93,12 @@ struct DetectedCodexRuntime {
     app_server_supported: bool,
     remote_tui_supported: bool,
 }
+
+const WSL_CODEX_VERSION_MARKER: &str = "__API_ROUTER_CODEX_VERSION__";
+const WSL_CODEX_HELP_MARKER: &str = "__API_ROUTER_CODEX_HELP__";
+const WSL_CODEX_APP_SERVER_HELP_MARKER: &str = "__API_ROUTER_CODEX_APP_SERVER_HELP__";
+const CODEX_VERSION_INFO_PERSISTED_CACHE_VERSION: u64 = 1;
+const CODEX_VERSION_INFO_PERSISTED_CACHE_FILE: &str = "codex-web-version-info-cache-v1.json";
 
 fn codex_version_info_cache() -> &'static std::sync::Mutex<Option<CodexVersionInfoCache>> {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<CodexVersionInfoCache>>> =
@@ -95,6 +112,65 @@ fn lock_codex_version_info_cache() -> std::sync::MutexGuard<'static, Option<Code
         Ok(v) => v,
         Err(err) => err.into_inner(),
     }
+}
+
+fn version_info_cache_is_fresh(updated_at_unix_secs: i64, now_unix_secs: i64) -> bool {
+    now_unix_secs.saturating_sub(updated_at_unix_secs) < VERSION_INFO_CACHE_SECS
+}
+
+fn codex_version_info_persisted_cache_path() -> Option<PathBuf> {
+    Some(
+        crate::diagnostics::current_user_data_dir()?
+            .join("data")
+            .join(CODEX_VERSION_INFO_PERSISTED_CACHE_FILE),
+    )
+}
+
+fn read_persisted_codex_version_info() -> Option<CodexVersionInfoCache> {
+    let path = codex_version_info_persisted_cache_path()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let persisted = serde_json::from_str::<PersistedCodexVersionInfo>(&raw).ok()?;
+    if persisted.version != CODEX_VERSION_INFO_PERSISTED_CACHE_VERSION {
+        return None;
+    }
+    Some(CodexVersionInfoCache {
+        value: persisted.value,
+        updated_at_unix_secs: persisted.updated_at_unix_secs,
+    })
+}
+
+fn write_persisted_codex_version_info(value: &CodexVersionInfo) {
+    let Some(path) = codex_version_info_persisted_cache_path() else {
+        return;
+    };
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let body = json!({
+        "version": CODEX_VERSION_INFO_PERSISTED_CACHE_VERSION,
+        "updatedAtUnixSecs": current_unix_secs(),
+        "value": value,
+    });
+    let tmp_path = path.with_extension("json.tmp");
+    if std::fs::write(&tmp_path, body.to_string()).is_err() {
+        return;
+    }
+    if std::fs::rename(&tmp_path, &path).is_err() {
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::rename(tmp_path, path);
+    }
+}
+
+fn cached_codex_version_info() -> Option<CodexVersionInfoCache> {
+    if let Some(cached) = lock_codex_version_info_cache().clone() {
+        return Some(cached);
+    }
+    let cached = read_persisted_codex_version_info()?;
+    *lock_codex_version_info_cache() = Some(cached.clone());
+    Some(cached)
 }
 
 pub(super) fn truncate_output(value: &[u8]) -> (String, bool) {
@@ -159,6 +235,43 @@ async fn run_wsl_shell_stdout(command: &str) -> Option<String> {
     run_stdout_cmd(cmd).await
 }
 
+fn wsl_codex_runtime_probe_command() -> &'static str {
+    "printf '%s\n' '__API_ROUTER_CODEX_VERSION__'; codex --version 2>/dev/null || true; printf '%s\n' '__API_ROUTER_CODEX_HELP__'; codex --help 2>/dev/null || true; printf '%s\n' '__API_ROUTER_CODEX_APP_SERVER_HELP__'; codex app-server --help 2>/dev/null || true"
+}
+
+fn marker_section<'a>(output: &'a str, marker: &str) -> &'a str {
+    let Some(start) = output.find(marker).map(|index| index + marker.len()) else {
+        return "";
+    };
+    let rest = &output[start..];
+    let end = [
+        WSL_CODEX_VERSION_MARKER,
+        WSL_CODEX_HELP_MARKER,
+        WSL_CODEX_APP_SERVER_HELP_MARKER,
+    ]
+    .iter()
+    .filter(|candidate| **candidate != marker)
+    .filter_map(|candidate| rest.find(candidate))
+    .min()
+    .unwrap_or(rest.len());
+    rest[..end].trim()
+}
+
+fn parse_wsl_codex_runtime_probe(output: Option<&str>) -> DetectedCodexRuntime {
+    let output = output.unwrap_or_default();
+    let version = first_nonempty_line(marker_section(output, WSL_CODEX_VERSION_MARKER))
+        .unwrap_or_else(|| "Not installed".to_string());
+    let installed = version != "Not installed";
+    let help_output = marker_section(output, WSL_CODEX_HELP_MARKER);
+    let app_server_help_output = marker_section(output, WSL_CODEX_APP_SERVER_HELP_MARKER);
+    DetectedCodexRuntime {
+        version,
+        installed,
+        remote_tui_supported: installed && help_text_supports_remote_tui(help_output),
+        app_server_supported: installed && help_text_supports_app_server(app_server_help_output),
+    }
+}
+
 fn windows_codex_shell_candidates(subcommand: &str) -> Vec<String> {
     let mut candidates = vec![format!("codex {subcommand}")];
     if let Ok(appdata) = std::env::var("APPDATA") {
@@ -171,9 +284,8 @@ fn windows_codex_shell_candidates(subcommand: &str) -> Vec<String> {
 }
 
 async fn detect_windows_codex_runtime() -> DetectedCodexRuntime {
+    let started = std::time::Instant::now();
     let mut version = "Not installed".to_string();
-    let mut app_server_supported = false;
-    let mut remote_tui_supported = false;
     for candidate in windows_codex_shell_candidates("--version") {
         if let Some(found) = run_windows_shell_stdout(&candidate).await {
             if let Some(line) = first_nonempty_line(&found) {
@@ -183,24 +295,32 @@ async fn detect_windows_codex_runtime() -> DetectedCodexRuntime {
         }
     }
     let installed = version != "Not installed";
-    if installed {
-        for candidate in windows_codex_shell_candidates("--help") {
-            if let Some(help) = run_windows_shell_stdout(&candidate).await {
-                remote_tui_supported = help_text_supports_remote_tui(&help);
-                if remote_tui_supported {
-                    break;
+    let (remote_tui_supported, app_server_supported) = if installed {
+        let remote = async {
+            for candidate in windows_codex_shell_candidates("--help") {
+                if let Some(help) = run_windows_shell_stdout(&candidate).await {
+                    if help_text_supports_remote_tui(&help) {
+                        return true;
+                    }
                 }
             }
-        }
-        for candidate in windows_codex_shell_candidates("app-server --help") {
-            if let Some(help) = run_windows_shell_stdout(&candidate).await {
-                app_server_supported = help_text_supports_app_server(&help);
-                if app_server_supported {
-                    break;
+            false
+        };
+        let app_server = async {
+            for candidate in windows_codex_shell_candidates("app-server --help") {
+                if let Some(help) = run_windows_shell_stdout(&candidate).await {
+                    if help_text_supports_app_server(&help) {
+                        return true;
+                    }
                 }
             }
-        }
-    }
+            false
+        };
+        tokio::join!(remote, app_server)
+    } else {
+        (false, false)
+    };
+    log_codex_version_detect_timing("windows", started.elapsed().as_millis());
     DetectedCodexRuntime {
         version,
         installed,
@@ -210,31 +330,33 @@ async fn detect_windows_codex_runtime() -> DetectedCodexRuntime {
 }
 
 async fn detect_wsl_codex_runtime() -> DetectedCodexRuntime {
-    let version = run_wsl_shell_stdout("codex --version")
-        .await
-        .and_then(|found| first_nonempty_line(&found))
-        .unwrap_or_else(|| "Not installed".to_string());
-    let installed = version != "Not installed";
-    let remote_tui_supported = if installed {
-        run_wsl_shell_stdout("codex --help")
-            .await
-            .is_some_and(|help| help_text_supports_remote_tui(&help))
-    } else {
-        false
-    };
-    let app_server_supported = if installed {
-        run_wsl_shell_stdout("codex app-server --help")
-            .await
-            .is_some_and(|help| help_text_supports_app_server(&help))
-    } else {
-        false
-    };
-    DetectedCodexRuntime {
-        version,
-        installed,
-        app_server_supported,
-        remote_tui_supported,
-    }
+    let started = std::time::Instant::now();
+    let output = run_wsl_shell_stdout(wsl_codex_runtime_probe_command()).await;
+    let detected = parse_wsl_codex_runtime_probe(output.as_deref());
+    log_codex_version_detect_timing("wsl2", started.elapsed().as_millis());
+    detected
+}
+
+fn log_codex_version_detect_timing(workspace: &str, elapsed_ms: u128) {
+    let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+        "/codex/version-info",
+        workspace,
+        "runtime_detect",
+        u64::try_from(elapsed_ms).unwrap_or(u64::MAX),
+    );
+    pipeline.source = Some("codex-version-command".to_string());
+    pipeline.ok = Some(true);
+    crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
+    let _ =
+        crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(&json!({
+            "source": "backend.version_info",
+            "entry": {
+                "at": current_unix_secs() * 1000,
+                "kind": "version_info.detect_runtime",
+                "workspace": workspace,
+                "elapsedMs": elapsed_ms,
+            }
+        }));
 }
 
 fn resolve_repo_root_for_git() -> Option<PathBuf> {
@@ -309,6 +431,80 @@ fn build_version_payload(
     }
 }
 
+fn build_version_info_placeholder() -> CodexVersionInfo {
+    build_version_payload(
+        DetectedCodexRuntime {
+            version: "Detecting".to_string(),
+            installed: false,
+            app_server_supported: false,
+            remote_tui_supported: false,
+        },
+        DetectedCodexRuntime {
+            version: "Detecting".to_string(),
+            installed: false,
+            app_server_supported: false,
+            remote_tui_supported: false,
+        },
+        option_env!("API_ROUTER_BUILD_GIT_SHA")
+            .unwrap_or("unknown")
+            .to_string(),
+        option_env!("API_ROUTER_BUILD_GIT_SHORT_SHA")
+            .unwrap_or("unknown")
+            .to_string(),
+        detect_repo_git_sha(),
+    )
+}
+
+async fn detect_codex_version_info_payload() -> CodexVersionInfo {
+    let started = std::time::Instant::now();
+    let (windows, wsl2) = tokio::join!(detect_windows_codex_runtime(), detect_wsl_codex_runtime());
+    let build_git_sha = option_env!("API_ROUTER_BUILD_GIT_SHA")
+        .unwrap_or("unknown")
+        .to_string();
+    let build_git_short_sha = option_env!("API_ROUTER_BUILD_GIT_SHORT_SHA")
+        .unwrap_or("unknown")
+        .to_string();
+    let repo_git_sha = detect_repo_git_sha();
+    let payload = build_version_payload(
+        windows,
+        wsl2,
+        build_git_sha,
+        build_git_short_sha,
+        repo_git_sha,
+    );
+    {
+        let mut cache = lock_codex_version_info_cache();
+        *cache = Some(CodexVersionInfoCache {
+            value: payload.clone(),
+            updated_at_unix_secs: current_unix_secs(),
+        });
+    }
+    write_persisted_codex_version_info(&payload);
+    let _ =
+        crate::orchestrator::gateway::web_codex_storage::append_codex_live_trace_entry(&json!({
+            "source": "backend.version_info",
+            "entry": {
+                "at": current_unix_secs() * 1000,
+                "kind": "version_info.refresh_complete",
+                "elapsedMs": started.elapsed().as_millis(),
+            }
+        }));
+    payload
+}
+
+fn spawn_codex_version_info_refresh_if_idle() {
+    if CODEX_VERSION_INFO_REFRESH_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    tauri::async_runtime::spawn(async {
+        let _ = detect_codex_version_info_payload().await;
+        CODEX_VERSION_INFO_REFRESH_IN_FLIGHT.store(false, Ordering::Release);
+    });
+}
+
 fn normalize_runtime_home_override(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -338,6 +534,7 @@ pub(super) async fn codex_runtime_state(
     headers: HeaderMap,
     Query(query): Query<RuntimeStateQuery>,
 ) -> Response {
+    let started = std::time::Instant::now();
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
@@ -345,45 +542,71 @@ pub(super) async fn codex_runtime_state(
     let home_override = normalize_runtime_home_override(query.home.as_deref())
         .or_else(|| web_codex_rpc_home_override_for_target(workspace_target));
     let snapshot = workspace_runtime_snapshot(workspace_target, home_override.as_deref());
-    Json(build_runtime_state_payload(snapshot)).into_response()
+    let payload = build_runtime_state_payload(snapshot);
+    let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+        "/codex/runtime/state",
+        &payload.workspace,
+        "gateway_handler",
+        crate::diagnostics::codex_web_pipeline::elapsed_ms_u64(started),
+    );
+    pipeline.source = Some("runtime-registry".to_string());
+    pipeline.item_count = Some(payload.active_thread_count);
+    pipeline.ok = Some(true);
+    crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
+    Json(payload).into_response()
 }
 
 pub(super) async fn codex_version_info(
     State(st): State<GatewayState>,
     headers: HeaderMap,
 ) -> Response {
+    let started = std::time::Instant::now();
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
     let now = current_unix_secs();
-    if let Some(cached) = lock_codex_version_info_cache().clone() {
-        if now.saturating_sub(cached.updated_at_unix_secs) < VERSION_INFO_CACHE_SECS {
+    if let Some(cached) = cached_codex_version_info() {
+        if version_info_cache_is_fresh(cached.updated_at_unix_secs, now) {
+            let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+                "/codex/version-info",
+                "all",
+                "gateway_handler",
+                crate::diagnostics::codex_web_pipeline::elapsed_ms_u64(started),
+            );
+            pipeline.cache_hit = Some(true);
+            pipeline.source = Some("fresh-cache".to_string());
+            pipeline.ok = Some(true);
+            crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
             return Json(cached.value).into_response();
         }
+        spawn_codex_version_info_refresh_if_idle();
+        let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+            "/codex/version-info",
+            "all",
+            "gateway_handler",
+            crate::diagnostics::codex_web_pipeline::elapsed_ms_u64(started),
+        );
+        pipeline.cache_hit = Some(true);
+        pipeline.refreshing = Some(true);
+        pipeline.source = Some("stale-cache-background-refresh".to_string());
+        pipeline.ok = Some(true);
+        crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
+        return Json(cached.value).into_response();
     }
 
-    let (windows, wsl2) = tokio::join!(detect_windows_codex_runtime(), detect_wsl_codex_runtime());
-    let build_git_sha = option_env!("API_ROUTER_BUILD_GIT_SHA")
-        .unwrap_or("unknown")
-        .to_string();
-    let build_git_short_sha = option_env!("API_ROUTER_BUILD_GIT_SHORT_SHA")
-        .unwrap_or("unknown")
-        .to_string();
-    let repo_git_sha = detect_repo_git_sha();
-    let payload = build_version_payload(
-        windows,
-        wsl2,
-        build_git_sha,
-        build_git_short_sha,
-        repo_git_sha,
+    spawn_codex_version_info_refresh_if_idle();
+    let payload = build_version_info_placeholder();
+    let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+        "/codex/version-info",
+        "all",
+        "gateway_handler",
+        crate::diagnostics::codex_web_pipeline::elapsed_ms_u64(started),
     );
-    {
-        let mut cache = lock_codex_version_info_cache();
-        *cache = Some(CodexVersionInfoCache {
-            value: payload.clone(),
-            updated_at_unix_secs: now,
-        });
-    }
+    pipeline.cache_hit = Some(false);
+    pipeline.refreshing = Some(true);
+    pipeline.source = Some("cold-background-refresh".to_string());
+    pipeline.ok = Some(true);
+    crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
     Json(payload).into_response()
 }
 
@@ -517,11 +740,126 @@ mod tests {
     }
 
     #[test]
+    fn cold_version_info_placeholder_does_not_claim_runtime_installed() {
+        let payload = build_version_info_placeholder();
+        assert_eq!(payload.windows, "Detecting");
+        assert_eq!(payload.wsl2, "Detecting");
+        assert!(!payload.windows_installed);
+        assert!(!payload.wsl2_installed);
+        assert_eq!(payload.app_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
     fn help_text_support_flags_are_detected() {
         let help = "Usage: codex [OPTIONS]\nCommands:\n  app-server\nOptions:\n  --remote <ADDR>\n";
         assert!(help_text_supports_app_server(help));
         assert!(help_text_supports_remote_tui(help));
         assert!(!help_text_supports_remote_tui("Usage: codex [OPTIONS]"));
+    }
+
+    #[test]
+    fn parses_wsl_codex_runtime_from_single_probe_output() {
+        let output = format!(
+            "{WSL_CODEX_VERSION_MARKER}\ncodex-cli 0.124.0\n{WSL_CODEX_HELP_MARKER}\nUsage: codex [OPTIONS]\n  --remote <ADDR>\n{WSL_CODEX_APP_SERVER_HELP_MARKER}\nUsage: codex app-server\n"
+        );
+
+        let detected = parse_wsl_codex_runtime_probe(Some(&output));
+
+        assert_eq!(detected.version, "codex-cli 0.124.0");
+        assert!(detected.installed);
+        assert!(detected.remote_tui_supported);
+        assert!(detected.app_server_supported);
+    }
+
+    #[test]
+    fn missing_wsl_codex_probe_output_marks_runtime_not_installed() {
+        let detected = parse_wsl_codex_runtime_probe(None);
+
+        assert_eq!(detected.version, "Not installed");
+        assert!(!detected.installed);
+        assert!(!detected.remote_tui_supported);
+        assert!(!detected.app_server_supported);
+    }
+
+    #[test]
+    fn version_info_cache_distinguishes_fresh_from_stale() {
+        assert!(version_info_cache_is_fresh(
+            1_000,
+            1_000 + VERSION_INFO_CACHE_SECS - 1
+        ));
+        assert!(!version_info_cache_is_fresh(
+            1_000,
+            1_000 + VERSION_INFO_CACHE_SECS
+        ));
+    }
+
+    #[test]
+    fn persisted_version_info_hydrates_memory_cache_without_runtime_probe() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let previous = crate::diagnostics::set_test_user_data_dir_override(Some(temp.path()));
+        *lock_codex_version_info_cache() = None;
+        let payload = build_version_payload(
+            DetectedCodexRuntime {
+                version: "codex-cli 1.0.0".to_string(),
+                installed: true,
+                app_server_supported: true,
+                remote_tui_supported: true,
+            },
+            DetectedCodexRuntime {
+                version: "codex-cli 1.0.0-wsl".to_string(),
+                installed: true,
+                app_server_supported: true,
+                remote_tui_supported: true,
+            },
+            "abc12345".to_string(),
+            "abc12345".to_string(),
+            Some("abc12345".to_string()),
+        );
+
+        write_persisted_codex_version_info(&payload);
+        *lock_codex_version_info_cache() = None;
+        let cached = cached_codex_version_info().expect("persisted version cache");
+
+        assert_eq!(cached.value, payload);
+        assert!(version_info_cache_is_fresh(
+            cached.updated_at_unix_secs,
+            current_unix_secs()
+        ));
+        *lock_codex_version_info_cache() = None;
+        crate::diagnostics::set_test_user_data_dir_override(previous.as_deref());
+    }
+
+    #[test]
+    fn persisted_version_info_preserves_original_cache_age() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let previous = crate::diagnostics::set_test_user_data_dir_override(Some(temp.path()));
+        *lock_codex_version_info_cache() = None;
+        let payload = build_version_info_placeholder();
+        let path = temp
+            .path()
+            .join("data")
+            .join(super::CODEX_VERSION_INFO_PERSISTED_CACHE_FILE);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("cache dir");
+        std::fs::write(
+            &path,
+            json!({
+                "version": super::CODEX_VERSION_INFO_PERSISTED_CACHE_VERSION,
+                "updatedAtUnixSecs": 1,
+                "value": payload
+            })
+            .to_string(),
+        )
+        .expect("write persisted version cache");
+
+        let cached = cached_codex_version_info().expect("persisted version cache");
+        assert_eq!(cached.updated_at_unix_secs, 1);
+        assert!(!version_info_cache_is_fresh(
+            cached.updated_at_unix_secs,
+            1 + VERSION_INFO_CACHE_SECS
+        ));
+
+        *lock_codex_version_info_cache() = None;
+        crate::diagnostics::set_test_user_data_dir_override(previous.as_deref());
     }
 
     #[test]

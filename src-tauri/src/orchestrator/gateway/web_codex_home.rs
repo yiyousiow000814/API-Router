@@ -396,10 +396,45 @@ fn backup_path(path: &Path) -> PathBuf {
 }
 
 fn paths_refer_to_same_target(link: &Path, target: &Path) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        if windows_paths_refer_to_same_file(link, target) {
+            return true;
+        }
+    }
     match (std::fs::canonicalize(link), std::fs::canonicalize(target)) {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
     }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_paths_refer_to_same_file(link: &Path, target: &Path) -> bool {
+    fn file_identity(path: &Path) -> Option<(u32, u64)> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        };
+
+        let file = std::fs::File::open(path).ok()?;
+        let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+        let ok =
+            unsafe { GetFileInformationByHandle(file.as_raw_handle() as isize, info.as_mut_ptr()) };
+        if ok == 0 {
+            return None;
+        }
+        let info = unsafe { info.assume_init() };
+        let file_index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+        if file_index == 0 {
+            None
+        } else {
+            Some((info.dwVolumeSerialNumber, file_index))
+        }
+    }
+
+    file_identity(link)
+        .zip(file_identity(target))
+        .is_some_and(|(link_id, target_id)| link_id == target_id)
 }
 
 fn prepare_link_location(link: &Path, target: &Path) -> Result<bool, String> {
@@ -816,6 +851,57 @@ mod tests {
         assert_eq!(
             std::fs::canonicalize(overlay_home.join("sessions")).expect("linked sessions"),
             std::fs::canonicalize(official_home.join("sessions")).expect("official sessions")
+        );
+
+        unsafe {
+            std::env::remove_var("USERPROFILE");
+            std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_overlay_keeps_existing_history_hardlink() {
+        let _test_guard = crate::codex_app_server::lock_test_globals();
+        let user_profile = tempfile::tempdir().expect("user profile");
+        let app_data = tempfile::tempdir().expect("app data");
+        let official_home = user_profile.path().join(".codex");
+        let overlay_home = app_data.path().join("codex-home");
+        std::fs::create_dir_all(official_home.join("sessions")).expect("official sessions");
+        std::fs::create_dir_all(&overlay_home).expect("overlay home");
+        std::fs::write(official_home.join("history.jsonl"), "known history\n")
+            .expect("official history");
+        std::fs::hard_link(
+            official_home.join("history.jsonl"),
+            overlay_home.join("history.jsonl"),
+        )
+        .expect("overlay history hardlink");
+        unsafe {
+            std::env::set_var("USERPROFILE", user_profile.path());
+            std::env::set_var("API_ROUTER_USER_DATA_DIR", app_data.path());
+            std::env::remove_var("API_ROUTER_WEB_CODEX_CODEX_HOME");
+            std::env::remove_var("CODEX_HOME");
+        }
+
+        ensure_web_codex_runtime_session_links(Some(overlay_home.to_string_lossy().as_ref()))
+            .expect("first link pass");
+        ensure_web_codex_runtime_session_links(Some(overlay_home.to_string_lossy().as_ref()))
+            .expect("second link pass");
+
+        assert_eq!(
+            std::fs::read_to_string(overlay_home.join("history.jsonl")).expect("history"),
+            "known history\n"
+        );
+        assert!(
+            !overlay_home
+                .read_dir()
+                .expect("read overlay")
+                .flatten()
+                .any(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("history.jsonl.web-codex-backup-")),
+            "existing hardlink should not be renamed into backups"
         );
 
         unsafe {

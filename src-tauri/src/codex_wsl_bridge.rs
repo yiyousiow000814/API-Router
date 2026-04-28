@@ -5,17 +5,17 @@ use serde_json::json;
 use serde_json::Value;
 #[cfg(any(test, target_os = "windows"))]
 use std::borrow::Cow;
-#[cfg(target_os = "windows")]
+#[cfg(any(test, target_os = "windows"))]
 use std::collections::HashMap;
 #[cfg(target_os = "windows")]
 use std::process::Stdio;
-#[cfg(target_os = "windows")]
+#[cfg(any(test, target_os = "windows"))]
 use std::sync::OnceLock;
 #[cfg(target_os = "windows")]
 use std::time::Duration;
 #[cfg(target_os = "windows")]
 use tokio::process::Command;
-#[cfg(target_os = "windows")]
+#[cfg(any(test, target_os = "windows"))]
 use tokio::sync::Mutex;
 
 #[cfg(target_os = "windows")]
@@ -39,6 +39,10 @@ const BRIDGE_LOG_PATH: &str = "/tmp/api-router-wsl-codex-bridge.log";
 
 #[cfg(target_os = "windows")]
 static BRIDGES: OnceLock<Mutex<HashMap<String, std::sync::Arc<Mutex<BridgeRuntime>>>>> =
+    OnceLock::new();
+
+#[cfg(any(test, target_os = "windows"))]
+static BRIDGE_START_LOCKS: OnceLock<Mutex<HashMap<String, std::sync::Arc<Mutex<()>>>>> =
     OnceLock::new();
 
 #[cfg(all(test, target_os = "windows"))]
@@ -93,6 +97,20 @@ impl BridgeRuntime {
 #[cfg(target_os = "windows")]
 fn bridge_map() -> &'static Mutex<HashMap<String, std::sync::Arc<Mutex<BridgeRuntime>>>> {
     BRIDGES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn bridge_start_lock_map() -> &'static Mutex<HashMap<String, std::sync::Arc<Mutex<()>>>> {
+    BRIDGE_START_LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(any(test, target_os = "windows"))]
+async fn bridge_start_lock_for_key(key: &str) -> std::sync::Arc<Mutex<()>> {
+    let mut guard = bridge_start_lock_map().lock().await;
+    guard
+        .entry(key.to_string())
+        .or_insert_with(|| std::sync::Arc::new(Mutex::new(())))
+        .clone()
 }
 
 #[cfg(any(test, target_os = "windows"))]
@@ -760,6 +778,18 @@ def refresh_server(codex_home):
     if server is not None:
         server.stop()
 
+def bridge_local_rpc_result(method, params):
+    normalized = str(method or "").strip()
+    if normalized in (
+        "bridge/approvals/list",
+        "approvals/list",
+        "bridge/userInput/list",
+        "userInput/list",
+        "request_user_input/list",
+    ):
+        return []
+    return None
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ApiRouterWslCodexBridge/1.0"
 
@@ -777,7 +807,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/health":
-            self._send(200, {"ok": True, "bridge": "api-router-wsl-codex-bridge", "version": 3})
+            self._send(200, {"ok": True, "bridge": "api-router-wsl-codex-bridge", "version": 4})
             return
         if parsed.path != "/notifications":
             self._send(404, {"error": "not found"})
@@ -823,6 +853,10 @@ class Handler(BaseHTTPRequestHandler):
         params = payload.get("params")
         if not isinstance(params, dict):
             params = {}
+        local_result = bridge_local_rpc_result(method, params)
+        if local_result is not None:
+            self._send(200, {"result": local_result})
+            return
         try:
             result = get_server(codex_home).request(method, params)
         except Exception as exc:
@@ -846,12 +880,21 @@ fn bridge_health_payload_ok(payload: &Value) -> bool {
 }
 
 #[cfg(any(test, target_os = "windows"))]
+fn should_clear_stale_bridge_candidate(
+    selected_port: u16,
+    candidate_port: u16,
+    payload: &Value,
+) -> bool {
+    if selected_port == candidate_port {
+        return false;
+    }
+    let is_bridge = payload.get("bridge").and_then(|v| v.as_str()) == Some(BRIDGE_HEALTH_MARKER)
+        && payload.get("ok").and_then(|v| v.as_bool()) == Some(true);
+    is_bridge && !bridge_health_payload_ok(payload)
+}
+
+#[cfg(any(test, target_os = "windows"))]
 fn build_launch_script(target: &BridgeTarget, port: u16) -> String {
-    let encoded = {
-        use base64::engine::general_purpose::STANDARD;
-        use base64::Engine as _;
-        STANDARD.encode(python_bridge_script())
-    };
     let distro = target.distro.as_deref().unwrap_or_default();
     let mut prefix = String::new();
     if !distro.trim().is_empty() {
@@ -866,10 +909,9 @@ fn build_launch_script(target: &BridgeTarget, port: u16) -> String {
 if [ -z \"$PYTHON_BIN\" ]; then echo 'python3 not found in WSL' >&2; exit 127; fi; \
 export API_ROUTER_WSL_BRIDGE_HOST='0.0.0.0'; \
 export API_ROUTER_WSL_BRIDGE_PORT={port}; \
-exec \"$PYTHON_BIN\" -u -c \"import base64; exec(base64.b64decode('{encoded}').decode('utf-8'))\"",
+exec \"$PYTHON_BIN\" -u -",
         prefix = prefix,
         port = port,
-        encoded = encoded,
         log = shell_single_quote(BRIDGE_LOG_PATH),
     )
 }
@@ -886,25 +928,98 @@ fn build_launch_command(target: &BridgeTarget, port: u16) -> Command {
         .arg("sh")
         .arg("-lc")
         .arg(build_launch_script(target, port));
-    cmd.stdin(Stdio::null());
+    cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::null());
     cmd.stderr(Stdio::null());
     cmd.creation_flags(0x08000000);
     cmd
 }
 
+#[cfg(any(test, target_os = "windows"))]
+fn build_clear_stale_bridge_port_script(port: u16) -> String {
+    format!(
+        "port={port}; \
+if command -v fuser >/dev/null 2>&1; then fuser -k \"${{port}}/tcp\" >/dev/null 2>&1 || true; exit 0; fi; \
+if command -v ss >/dev/null 2>&1; then \
+ss -ltnp \"sport = :${{port}}\" 2>/dev/null | sed -n 's/.*pid=\\([0-9][0-9]*\\).*/\\1/p' | xargs -r kill >/dev/null 2>&1 || true; \
+fi"
+    )
+}
+
 #[cfg(target_os = "windows")]
-async fn healthcheck(base_url: &str, client: &Client) -> Result<bool, String> {
+async fn clear_stale_bridge_port(target: &BridgeTarget, port: u16) {
+    let mut cmd = Command::new("wsl.exe");
+    if let Some(distro) = target.distro.as_deref() {
+        if !distro.trim().is_empty() {
+            cmd.arg("-d").arg(distro);
+        }
+    }
+    cmd.arg("-e")
+        .arg("sh")
+        .arg("-lc")
+        .arg(build_clear_stale_bridge_port_script(port));
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+    cmd.creation_flags(0x08000000);
+    let _ = tokio::time::timeout(Duration::from_secs(2), cmd.output()).await;
+}
+
+#[cfg(target_os = "windows")]
+async fn spawn_bridge_child(
+    target: &BridgeTarget,
+    port: u16,
+) -> Result<tokio::process::Child, String> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut child = build_launch_command(target, port)
+        .spawn()
+        .map_err(|e| format!("failed to launch WSL bridge: {e}"))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "failed to open WSL bridge stdin".to_string())?;
+    stdin
+        .write_all(python_bridge_script().as_bytes())
+        .await
+        .map_err(|e| format!("failed to stream WSL bridge script: {e}"))?;
+    drop(stdin);
+    Ok(child)
+}
+
+#[cfg(target_os = "windows")]
+async fn health_payload(base_url: &str, client: &Client) -> Result<Value, String> {
     let response = client
         .get(format!("{base_url}/health"))
         .send()
         .await
         .map_err(|e| e.to_string())?;
     if !response.status().is_success() {
-        return Ok(false);
+        return Err(format!("bridge healthcheck returned {}", response.status()));
     }
-    let payload = response.json::<Value>().await.map_err(|e| e.to_string())?;
+    response.json::<Value>().await.map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "windows")]
+async fn healthcheck(base_url: &str, client: &Client) -> Result<bool, String> {
+    let payload = health_payload(base_url, client).await?;
     Ok(bridge_health_payload_ok(&payload))
+}
+
+#[cfg(target_os = "windows")]
+async fn clear_stale_candidate_bridges(target: &BridgeTarget, selected_port: u16, client: &Client) {
+    for candidate_port in bridge_ports_for_target(target) {
+        if candidate_port == selected_port {
+            continue;
+        }
+        let base_url = format!("http://127.0.0.1:{candidate_port}");
+        let Ok(payload) = health_payload(&base_url, client).await else {
+            continue;
+        };
+        if should_clear_stale_bridge_candidate(selected_port, candidate_port, &payload) {
+            clear_stale_bridge_port(target, candidate_port).await;
+        }
+    }
 }
 
 #[cfg(all(test, target_os = "windows"))]
@@ -963,19 +1078,20 @@ async fn start_bridge(target: &BridgeTarget) -> Result<BridgeRuntime, String> {
         for port in bridge_ports_for_target(target) {
             let base_url = format!("http://127.0.0.1:{port}");
             if healthcheck(&base_url, &client).await.unwrap_or(false) {
+                clear_stale_candidate_bridges(target, port, &client).await;
                 return Ok(BridgeRuntime {
                     endpoint: BridgeEndpoint { base_url, client },
                     child: None,
                 });
             }
 
-            let mut child = build_launch_command(target, port)
-                .spawn()
-                .map_err(|e| format!("failed to launch WSL bridge: {e}"))?;
+            clear_stale_bridge_port(target, port).await;
+            let mut child = spawn_bridge_child(target, port).await?;
             let deadline = tokio::time::Instant::now() + BRIDGE_START_TIMEOUT;
             let mut launch_dead = None;
             while tokio::time::Instant::now() < deadline {
                 if healthcheck(&base_url, &client).await.unwrap_or(false) {
+                    clear_stale_candidate_bridges(target, port, &client).await;
                     return Ok(BridgeRuntime {
                         endpoint: BridgeEndpoint { base_url, client },
                         child: Some(child),
@@ -1021,6 +1137,37 @@ async fn ensure_bridge(target: &BridgeTarget) -> Result<BridgeEndpoint, String> 
     let lock = bridge_map();
 
     loop {
+        let existing = {
+            let guard = lock.lock().await;
+            guard.get(&key).cloned()
+        };
+        if let Some(runtime) = existing {
+            let (dead, endpoint) = {
+                let mut rt = runtime.lock().await;
+                let dead = rt.is_dead().unwrap_or(true);
+                let endpoint = rt.endpoint.clone();
+                (dead, endpoint)
+            };
+            if !dead
+                && healthcheck(&endpoint.base_url, &endpoint.client)
+                    .await
+                    .unwrap_or(false)
+            {
+                return Ok(endpoint);
+            }
+            let mut guard = lock.lock().await;
+            if guard
+                .get(&key)
+                .is_some_and(|current| std::sync::Arc::ptr_eq(current, &runtime))
+            {
+                guard.remove(&key);
+            }
+            continue;
+        }
+
+        let start_lock = bridge_start_lock_for_key(&key).await;
+        let _start_guard = start_lock.lock().await;
+
         let existing = {
             let guard = lock.lock().await;
             guard.get(&key).cloned()
@@ -1252,10 +1399,48 @@ mod tests {
         let script = build_launch_script(&target, 42180);
         assert!(script.contains("command -v python3"));
         assert!(script.contains("exec >>"));
-        assert!(script.contains("exec \"$PYTHON_BIN\" -u -c"));
+        assert!(script.contains("exec \"$PYTHON_BIN\" -u -"));
         assert!(!script.contains("nohup "));
         assert!(script.contains("API_ROUTER_WSL_BRIDGE_HOST='0.0.0.0'"));
         assert!(script.contains(BRIDGE_LOG_PATH));
+    }
+
+    #[test]
+    fn launch_script_stays_short_by_streaming_python_over_stdin() {
+        let target = BridgeTarget {
+            distro: Some("Ubuntu".to_string()),
+            codex_home_linux: Some("/home/me/.codex".to_string()),
+        };
+        let script = build_launch_script(&target, 42180);
+
+        assert!(script.len() < 2048);
+        assert!(!script.contains("base64"));
+        assert!(!script.contains(python_bridge_script()));
+    }
+
+    #[test]
+    fn stale_bridge_port_cleanup_targets_one_tcp_port() {
+        let script = build_clear_stale_bridge_port_script(42250);
+
+        assert!(script.contains("port=42250"));
+        assert!(script.contains("fuser -k \"${port}/tcp\""));
+        assert!(script.contains("ss -ltnp \"sport = :${port}\""));
+        assert!(!script.contains("pkill"));
+    }
+
+    #[tokio::test]
+    async fn bridge_start_locks_are_key_scoped() {
+        let first = bridge_start_lock_for_key("Ubuntu").await;
+        let second = bridge_start_lock_for_key("Ubuntu").await;
+        let other = bridge_start_lock_for_key("Debian").await;
+
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert!(!std::sync::Arc::ptr_eq(&first, &other));
+
+        let held = first.try_lock().expect("first lock should be available");
+        assert!(second.try_lock().is_err());
+        drop(held);
+        assert!(second.try_lock().is_ok());
     }
 
     #[test]
@@ -1270,5 +1455,60 @@ mod tests {
             "bridge": BRIDGE_HEALTH_MARKER,
             "version": BRIDGE_SCRIPT_VERSION - 1,
         })));
+    }
+
+    #[test]
+    fn stale_bridge_candidate_cleanup_ignores_selected_and_current_ports() {
+        let current = serde_json::json!({
+            "ok": true,
+            "bridge": BRIDGE_HEALTH_MARKER,
+            "version": BRIDGE_SCRIPT_VERSION,
+        });
+        let stale = serde_json::json!({
+            "ok": true,
+            "bridge": BRIDGE_HEALTH_MARKER,
+            "version": BRIDGE_SCRIPT_VERSION - 1,
+        });
+        let unrelated = serde_json::json!({
+            "ok": true,
+            "bridge": "other",
+            "version": BRIDGE_SCRIPT_VERSION - 1,
+        });
+
+        assert!(!should_clear_stale_bridge_candidate(42250, 42250, &stale));
+        assert!(!should_clear_stale_bridge_candidate(42250, 42251, &current));
+        assert!(should_clear_stale_bridge_candidate(42250, 42252, &stale));
+        assert!(!should_clear_stale_bridge_candidate(
+            42250, 42253, &unrelated
+        ));
+    }
+
+    #[test]
+    fn python_bridge_health_reports_current_script_version() {
+        let expected = format!(r#""version": {BRIDGE_SCRIPT_VERSION}"#);
+
+        assert!(
+            python_bridge_script().contains(&expected),
+            "Python bridge /health response must match BRIDGE_SCRIPT_VERSION"
+        );
+    }
+
+    #[test]
+    fn python_bridge_handles_pending_event_lists_locally() {
+        let script = python_bridge_script();
+
+        for method in [
+            "bridge/approvals/list",
+            "approvals/list",
+            "bridge/userInput/list",
+            "userInput/list",
+            "request_user_input/list",
+        ] {
+            assert!(
+                script.contains(method),
+                "Python bridge should handle {method} without forwarding to app-server"
+            );
+        }
+        assert!(script.contains("bridge_local_rpc_result(method, params)"));
     }
 }

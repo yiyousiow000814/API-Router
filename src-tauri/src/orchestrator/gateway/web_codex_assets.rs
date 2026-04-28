@@ -221,10 +221,13 @@ pub(super) async fn codex_web_index(State(st): State<GatewayState>) -> Response 
 pub(super) async fn codex_web_app_js() -> Response {
     (
         StatusCode::OK,
-        [(
-            header::CONTENT_TYPE,
-            "application/javascript; charset=utf-8",
-        )],
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
         WEB_CODEX_APP_JS,
     )
         .into_response()
@@ -236,10 +239,13 @@ pub(super) async fn codex_web_module_js(AxumPath(module_path): AxumPath<String>)
     };
     (
         StatusCode::OK,
-        [(
-            header::CONTENT_TYPE,
-            "application/javascript; charset=utf-8",
-        )],
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
         body,
     )
         .into_response()
@@ -366,6 +372,21 @@ mod tests {
     #[test]
     fn rejects_unknown_web_codex_modules() {
         assert!(resolve_web_codex_module_body("codex-web/unknown.js").is_none());
+    }
+
+    #[tokio::test]
+    async fn serves_web_codex_javascript_without_browser_cache() {
+        let app_js = codex_web_app_js().await;
+        assert_eq!(
+            app_js.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+
+        let module_js = codex_web_module_js(AxumPath("codex-web/threadLive.js".to_string())).await;
+        assert_eq!(
+            module_js.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
     }
 
     #[test]

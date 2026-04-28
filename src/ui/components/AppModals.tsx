@@ -906,6 +906,14 @@ requires_openai_auth = true`}
               setCodexSwapDir2(wslDir)
               setCodexSwapUseWindows(draftCodexSwapUseWindows)
               setCodexSwapUseWsl(draftCodexSwapUseWsl)
+              if (!isDevPreview) {
+                await invoke('codex_cli_directories_set', {
+                  windowsEnabled: draftCodexSwapUseWindows,
+                  windowsHome: windowsDir,
+                  wsl2Enabled: draftCodexSwapUseWsl,
+                  wsl2Home: wslDir,
+                })
+              }
               setCodexSwapModalOpen(false)
               if (reopenGettingStartedAfterDirs) {
                 setInstructionModalOpen(true)

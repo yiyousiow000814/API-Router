@@ -8,7 +8,7 @@ const MAX_TERMINAL_OUTPUT_BYTES: usize = 512 * 1024;
 const TERMINAL_TIMEOUT_SECS: u64 = 20;
 const HISTORY_READ_TIMEOUT_SECS: u64 = 20;
 const VERSION_DETECT_TIMEOUT_SECS: u64 = 3;
-const VERSION_INFO_CACHE_SECS: i64 = 30;
+const VERSION_INFO_CACHE_SECS: i64 = 5 * 60;
 
 type WorkspaceTarget = crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
 

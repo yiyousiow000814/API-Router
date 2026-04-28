@@ -59,19 +59,25 @@ describe("debugTools", () => {
     expect(info.links).toEqual([{ text: "c", href: "/x" }]);
   });
 
-  it("collects only unsent persisted live trace events by default", () => {
+  it("collects only unsent persisted non-routine live trace events by default", () => {
     const state = {
       liveDebugEvents: [
         { at: 1, kind: "a", __traceUploaded: true },
         { at: 2, kind: "b" },
         { at: 3, kind: "c", __tracePersist: true },
         { at: 4, kind: "d", __tracePersist: true },
+        { at: 5, kind: "api.request:start", __tracePersist: true, route: "GET /codex/threads" },
+        { at: 6, kind: "api.request:finish", __tracePersist: true, ok: true, elapsedMs: 210 },
+        { at: 7, kind: "api.request:finish", __tracePersist: true, ok: false, elapsedMs: 210 },
+        { at: 8, kind: "api.request:finish", __tracePersist: true, ok: true, elapsedMs: 1200 },
       ],
     };
     expect(collectPendingLiveTraceEvents(state, 1)).toEqual([{ at: 3, kind: "c", __tracePersist: true }]);
     expect(collectPendingLiveTraceEvents(state, 5)).toEqual([
       { at: 3, kind: "c", __tracePersist: true },
       { at: 4, kind: "d", __tracePersist: true },
+      { at: 7, kind: "api.request:finish", __tracePersist: true, ok: false, elapsedMs: 210 },
+      { at: 8, kind: "api.request:finish", __tracePersist: true, ok: true, elapsedMs: 1200 },
     ]);
   });
 

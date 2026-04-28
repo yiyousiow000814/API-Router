@@ -259,6 +259,257 @@ describe("connectionFlows", () => {
     }
   });
 
+  it("does not block connection refresh on model and version metadata", async () => {
+    let resolveModels;
+    let resolveVersions;
+    const originalLocalStorage = globalThis.localStorage;
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: { getItem() { return ""; }, setItem() {}, removeItem() {} },
+    });
+    const modelRefresh = new Promise((resolve) => {
+      resolveModels = resolve;
+    });
+    const versionRefresh = new Promise((resolve) => {
+      resolveVersions = resolve;
+    });
+    const refreshThreadCalls = [];
+    try {
+      const module = createConnectionFlowsModule({
+        state: {
+          activeHostId: "",
+          activeThreadWorkspace: "",
+          pendingApprovals: [],
+          pendingUserInputs: [],
+          token: "",
+        },
+        byId: (id) => (id === "tokenInput" ? { value: "" } : null),
+        api: async (path) => {
+          if (path === "/codex/auth/verify") return { ok: true };
+          if (path === "/codex/hosts") return { items: [] };
+          if (path === "/codex/approvals/pending?workspace=windows") return { items: [] };
+          if (path === "/codex/user-input/pending?workspace=windows") return { items: [] };
+          return { items: [] };
+        },
+        wsSend: () => false,
+        nextReqId: () => "req-1",
+        connectWs: () => {},
+        ensureArrayItems: (value) =>
+          Array.isArray(value) ? value : Array.isArray(value?.items) ? value.items : value ? [value] : [],
+        escapeHtml: (value) => String(value || ""),
+        blockInSandbox: () => false,
+        TOKEN_STORAGE_KEY: "token",
+        getEmbeddedToken: () => "",
+        refreshModels: () => modelRefresh,
+        refreshCodexVersions: () => versionRefresh,
+        refreshThreads: async (...args) => {
+          refreshThreadCalls.push(args);
+        },
+        refreshWorkspaceRuntimeState: async () => null,
+        getWorkspaceTarget: () => "windows",
+        setStatus: () => {},
+        setMainTab: () => {},
+        setMobileTab: () => {},
+        addChat: () => {},
+        renderPendingInline: () => {},
+      });
+
+      const connectPromise = module.connect({ switchToChat: false });
+      await Promise.resolve();
+      const settledBeforeMetadata = await Promise.race([
+        connectPromise.then(() => true),
+        new Promise((resolve) => setTimeout(() => resolve(false), 0)),
+      ]);
+
+      expect(settledBeforeMetadata).toBe(true);
+      expect(refreshThreadCalls).toEqual([["windows", { force: false, silent: false }]]);
+      resolveModels();
+      resolveVersions();
+      await connectPromise;
+    } finally {
+      Object.defineProperty(globalThis, "localStorage", {
+        configurable: true,
+        value: originalLocalStorage,
+      });
+    }
+  });
+
+  it("starts model and version metadata after the first workspace refresh", async () => {
+    const events = [];
+    const originalLocalStorage = globalThis.localStorage;
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: { getItem() { return ""; }, setItem() {}, removeItem() {} },
+    });
+    try {
+      const module = createConnectionFlowsModule({
+        state: {
+          activeHostId: "",
+          activeThreadWorkspace: "",
+          pendingApprovals: [],
+          pendingUserInputs: [],
+          token: "",
+        },
+        byId: (id) => (id === "tokenInput" ? { value: "" } : null),
+        api: async (path) => {
+          events.push(`api:${path}`);
+          if (path === "/codex/auth/verify") return { ok: true };
+          if (path === "/codex/hosts") return { items: [] };
+          if (path === "/codex/approvals/pending?workspace=windows") return { items: [] };
+          if (path === "/codex/user-input/pending?workspace=windows") return { items: [] };
+          return { items: [] };
+        },
+        wsSend: () => false,
+        nextReqId: () => "req-1",
+        connectWs: () => {},
+        ensureArrayItems: (value) =>
+          Array.isArray(value) ? value : Array.isArray(value?.items) ? value.items : value ? [value] : [],
+        escapeHtml: (value) => String(value || ""),
+        blockInSandbox: () => false,
+        TOKEN_STORAGE_KEY: "token",
+        getEmbeddedToken: () => "",
+        refreshModels: async () => {
+          events.push("metadata:models");
+        },
+        refreshCodexVersions: async () => {
+          events.push("metadata:versions");
+        },
+        refreshThreads: async () => {
+          events.push("refresh:threads");
+        },
+        refreshWorkspaceRuntimeState: async () => {
+          events.push("refresh:runtime");
+        },
+        getWorkspaceTarget: () => "windows",
+        setStatus: () => {},
+        setMainTab: () => {},
+        setMobileTab: () => {},
+        addChat: () => {},
+        renderPendingInline: () => {},
+      });
+
+      await module.connect({ switchToChat: false });
+
+      const metadataIndex = Math.min(events.indexOf("metadata:models"), events.indexOf("metadata:versions"));
+      expect(metadataIndex).toBeGreaterThan(events.indexOf("refresh:threads"));
+      expect(metadataIndex).toBeGreaterThan(events.indexOf("refresh:runtime"));
+    } finally {
+      Object.defineProperty(globalThis, "localStorage", {
+        configurable: true,
+        value: originalLocalStorage,
+      });
+    }
+  });
+
+  it("skips immediate model and version metadata when bootstrap restored cached values", async () => {
+    const refreshModels = vi.fn(async () => {});
+    const refreshCodexVersions = vi.fn(async () => {});
+    const originalLocalStorage = globalThis.localStorage;
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: { getItem() { return ""; }, setItem() {}, removeItem() {} },
+    });
+    try {
+      const module = createConnectionFlowsModule({
+        state: {
+          activeHostId: "",
+          activeThreadWorkspace: "",
+          codexVersionInfoRestoredFromCache: true,
+          modelOptions: [{ id: "gpt-5", label: "GPT-5" }],
+          pendingApprovals: [],
+          pendingUserInputs: [],
+          token: "",
+        },
+        byId: (id) => (id === "tokenInput" ? { value: "" } : null),
+        api: async (path) => {
+          if (path === "/codex/auth/verify") return { ok: true };
+          if (path === "/codex/hosts") return { items: [] };
+          if (path === "/codex/approvals/pending?workspace=windows") return { items: [] };
+          if (path === "/codex/user-input/pending?workspace=windows") return { items: [] };
+          return { items: [] };
+        },
+        wsSend: () => false,
+        nextReqId: () => "req-1",
+        connectWs: () => {},
+        ensureArrayItems: (value) =>
+          Array.isArray(value) ? value : Array.isArray(value?.items) ? value.items : value ? [value] : [],
+        escapeHtml: (value) => String(value || ""),
+        blockInSandbox: () => false,
+        TOKEN_STORAGE_KEY: "token",
+        getEmbeddedToken: () => "",
+        refreshModels,
+        refreshCodexVersions,
+        refreshThreads: async () => {},
+        refreshWorkspaceRuntimeState: async () => null,
+        getWorkspaceTarget: () => "windows",
+        setStatus: () => {},
+        setMainTab: () => {},
+        setMobileTab: () => {},
+        addChat: () => {},
+        renderPendingInline: () => {},
+      });
+
+      await module.connect({ switchToChat: false });
+
+      expect(refreshModels).not.toHaveBeenCalled();
+      expect(refreshCodexVersions).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, "localStorage", {
+        configurable: true,
+        value: originalLocalStorage,
+      });
+    }
+  });
+
+  it("refreshes only the active workspace during full connection refresh", async () => {
+    const refreshThreadCalls = [];
+    const runtimeCalls = [];
+    const module = createConnectionFlowsModule({
+      state: {
+        activeHostId: "",
+        activeThreadWorkspace: "",
+        pendingApprovals: [],
+        pendingUserInputs: [],
+        token: "",
+      },
+      byId: () => null,
+      api: async (path) => {
+        if (path === "/codex/hosts") return { items: [] };
+        if (path === "/codex/approvals/pending?workspace=wsl2") return { items: [] };
+        if (path === "/codex/user-input/pending?workspace=wsl2") return { items: [] };
+        return { items: [] };
+      },
+      wsSend: () => false,
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      ensureArrayItems: (value) =>
+        Array.isArray(value) ? value : Array.isArray(value?.items) ? value.items : value ? [value] : [],
+      escapeHtml: (value) => String(value || ""),
+      blockInSandbox: () => false,
+      TOKEN_STORAGE_KEY: "token",
+      getEmbeddedToken: () => "",
+      refreshModels: async () => {},
+      refreshCodexVersions: async () => {},
+      refreshThreads: async (...args) => {
+        refreshThreadCalls.push(args);
+      },
+      refreshWorkspaceRuntimeState: async (...args) => {
+        runtimeCalls.push(args);
+      },
+      getWorkspaceTarget: () => "wsl2",
+      setStatus: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      addChat: () => {},
+      renderPendingInline: () => {},
+    });
+
+    await module.refreshAll();
+
+    expect(refreshThreadCalls).toEqual([["wsl2", { force: false, silent: false }]]);
+    expect(runtimeCalls).toEqual([["wsl2", { silent: true }]]);
+  });
+
   it("stores pending selections in state and mirrors them into the inputs", () => {
     const approvalIdInput = { value: "" };
     const userInputIdInput = { value: "" };

@@ -7,12 +7,10 @@ export function resolveThreadAutoRefreshInterval(wsOpen, wsSubscribed, connected
 export function resolveThreadAutoRefreshTargets(currentTarget, availability = {}) {
   const normalizedCurrent =
     String(currentTarget || "").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
-  const targets = [normalizedCurrent];
   const windowsAvailable = availability.windowsInstalled !== false;
   const wslAvailable = availability.wsl2Installed !== false;
-  if (normalizedCurrent !== "windows" && windowsAvailable) targets.push("windows");
-  if (normalizedCurrent !== "wsl2" && wslAvailable) targets.push("wsl2");
-  return targets;
+  if (normalizedCurrent === "wsl2") return wslAvailable ? ["wsl2"] : [];
+  return windowsAvailable ? ["windows"] : [];
 }
 
 export function resolveActiveThreadLivePollInterval(
@@ -45,7 +43,6 @@ export function shouldPollActiveThreadLive({
   if (String(activeThreadPendingUserMessage || "").trim()) return true;
   if (String(activeThreadPendingAssistantMessage || "").trim()) return true;
   if (activeThreadOpenState?.resumeRequired === true) return true;
-  if (activeThreadStarted === true) return true;
   return false;
 }
 
@@ -68,8 +65,13 @@ export function createThreadLiveModule(deps) {
     ACTIVE_THREAD_LIVE_POLL_MS,
     ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS = 0,
     WebSocketRef = WebSocket,
+    documentRef = typeof document === "undefined" ? null : document,
     setIntervalRef = setInterval,
   } = deps;
+
+  function isThreadAutoRefreshVisible() {
+    return String(documentRef?.visibilityState || "visible").trim().toLowerCase() !== "hidden";
+  }
 
   function shouldRecoverWorkspaceAvailability() {
     const availability = state.workspaceAvailability || {};
@@ -229,6 +231,7 @@ export function createThreadLiveModule(deps) {
 
   function startThreadAutoRefreshLoop() {
     setIntervalRef(() => {
+      if (!isThreadAutoRefreshVisible()) return;
       if (state.threadAutoRefreshInFlight) return;
       const refreshTargets = resolveThreadAutoRefreshTargets(
         getWorkspaceTarget(),

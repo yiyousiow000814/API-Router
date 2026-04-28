@@ -10,6 +10,7 @@ export const FAVORITE_THREADS_KEY = "web_codex_favorite_threads_v1";
 export const SELECTED_MODEL_KEY = "web_codex_selected_model_v1";
 export const ACTIVE_MAIN_TAB_KEY = "web_codex_active_main_tab_v1";
 export const MODELS_CACHE_KEY = "web_codex_models_cache_v1";
+export const CODEX_VERSION_CACHE_KEY = "web_codex_version_cache_v1";
 export const THREADS_CACHE_KEY = "web_codex_threads_cache_v1";
 export const REASONING_EFFORT_KEY = "web_codex_reasoning_effort_v1";
 export const LAST_EVENT_ID_KEY = "web_codex_last_event_id_v1";
@@ -33,7 +34,7 @@ export const THREAD_AUTO_REFRESH_CONNECTED_MS = 20000;
 export const THREAD_AUTO_REFRESH_DISCONNECTED_MS = 3500;
 export const ACTIVE_THREAD_REFRESH_DEBOUNCE_MS = 380;
 export const ACTIVE_THREAD_LIVE_POLL_MS = 800;
-export const ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS = 3000;
+export const ACTIVE_THREAD_LIVE_POLL_WS_FALLBACK_MS = 15000;
 export const MODEL_LOADING_MIN_MS = 1000;
 export const RECENT_EVENT_ID_CACHE_SIZE = 2048;
 export const CHAT_LIVE_FOLLOW_MAX_STEP_PX = 64;
@@ -105,6 +106,8 @@ export function createInitialState() {
     drawerOpenPhaseTimer: 0,
     threadRefreshAbortByWorkspace: { windows: null, wsl2: null },
     threadRefreshReqSeqByWorkspace: { windows: 0, wsl2: 0 },
+    threadRefreshCompletedAtByWorkspace: { windows: 0, wsl2: 0 },
+    threadWorkspaceSwitchRefreshTimerByWorkspace: { windows: 0, wsl2: 0 },
     threadAutoRefreshLastMsByWorkspace: { windows: 0, wsl2: 0 },
     threadForceRefreshLastMsByWorkspace: { windows: 0, wsl2: 0 },
     threadAutoRefreshInFlight: false,
@@ -176,7 +179,7 @@ export function createInitialState() {
     providerSwitchboardConfirm: null,
     providerSwitchboardProvidersModalOpen: false,
     workspaceTarget: "windows",
-    workspaceAvailability: { windowsInstalled: false, wsl2Installed: false },
+    workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
     workspaceRuntimeByTarget: {
       windows: createWorkspaceRuntimeState("windows"),
       wsl2: createWorkspaceRuntimeState("wsl2"),

@@ -37,6 +37,8 @@ mod shared_health;
 mod usage_history;
 #[path = "lan_sync/versioning.rs"]
 mod versioning;
+#[path = "lan_sync/watchdog_incidents.rs"]
+mod watchdog_incidents;
 mod build_info {
     include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
 }

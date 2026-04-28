@@ -13,6 +13,7 @@ use axum::extract::{FromRequest, FromRequestParts, Json, State};
 use axum::http::request::Parts;
 use axum::http::Request;
 use axum::http::{header, HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::Router;
@@ -76,6 +77,246 @@ static RUNTIME_BOUND_LISTENER_ADDRS: OnceLock<Mutex<HashSet<SocketAddr>>> = Once
 
 fn runtime_bound_listener_addrs() -> &'static Mutex<HashSet<SocketAddr>> {
     RUNTIME_BOUND_LISTENER_ADDRS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn header_text(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(truncate_header_value)
+}
+
+fn truncate_header_value(value: &str) -> String {
+    const MAX_HEADER_TRACE_CHARS: usize = 256;
+    let value = value.trim();
+    if value.chars().count() <= MAX_HEADER_TRACE_CHARS {
+        return value.to_string();
+    }
+    value.chars().take(MAX_HEADER_TRACE_CHARS).collect()
+}
+
+fn codex_web_client_type(headers: &HeaderMap) -> String {
+    if let Some(explicit) = header_text(headers, "x-api-router-client") {
+        let normalized = explicit.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "desktop-webview" | "desktop-browser" | "mobile-browser" | "unknown" => {
+                return normalized;
+            }
+            _ => {}
+        }
+    }
+    let ua = header_text(headers, header::USER_AGENT.as_str()).unwrap_or_default();
+    let ua_lower = ua.to_ascii_lowercase();
+    let mobile_hint = header_text(headers, "sec-ch-ua-mobile")
+        .map(|value| value.trim() == "?1")
+        .unwrap_or(false);
+    if mobile_hint
+        || ua_lower.contains("mobile")
+        || ua_lower.contains("android")
+        || ua_lower.contains("iphone")
+        || ua_lower.contains("ipad")
+    {
+        return "mobile-browser".to_string();
+    }
+    if ua_lower.contains("tauri")
+        || ua_lower.contains("wry")
+        || ua_lower.contains("electron")
+        || ua_lower.contains(" codex/")
+    {
+        return "desktop-webview".to_string();
+    }
+    if !ua_lower.is_empty() {
+        return "desktop-browser".to_string();
+    }
+    "unknown".to_string()
+}
+
+fn codex_web_request_id(headers: &HeaderMap) -> String {
+    header_text(headers, "x-codex-web-request-id").unwrap_or_else(|| {
+        format!(
+            "srv_{}_{}",
+            unix_ms(),
+            NEXT_CODEX_WEB_SERVER_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        )
+    })
+}
+
+fn content_length_header(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+}
+
+fn request_workspace_hint(path_and_query: &str) -> String {
+    let Some((_, query)) = path_and_query.split_once('?') else {
+        return "unknown".to_string();
+    };
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        if key == "workspace" {
+            let decoded = urlencoding::decode(value)
+                .map(|value| value.into_owned())
+                .unwrap_or_else(|_| value.to_string());
+            let trimmed = decoded.trim().to_ascii_lowercase();
+            if trimmed == "windows" || trimmed == "wsl2" {
+                return trimmed;
+            }
+        }
+    }
+    "unknown".to_string()
+}
+
+struct CodexWebHttpTrace<'a> {
+    request_id: &'a str,
+    method: &'a str,
+    path_and_query: &'a str,
+    stage: &'a str,
+    elapsed_ms: u64,
+    status_code: Option<u16>,
+    request_bytes: Option<u64>,
+    response_bytes: Option<u64>,
+    client_type: &'a str,
+    user_agent: Option<&'a str>,
+    origin: Option<&'a str>,
+    referer: Option<&'a str>,
+    remote_addr: Option<&'a str>,
+}
+
+fn trace_codex_web_gateway_request(trace: CodexWebHttpTrace<'_>) {
+    let mut event = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+        trace.path_and_query,
+        &request_workspace_hint(trace.path_and_query),
+        trace.stage,
+        trace.elapsed_ms,
+    );
+    event.request_id = Some(trace.request_id.to_string());
+    event.method = Some(trace.method.to_string());
+    event.path = Some(trace.path_and_query.to_string());
+    event.status_code = trace.status_code;
+    event.request_bytes = trace.request_bytes;
+    event.response_bytes = trace.response_bytes;
+    event.client_type = Some(trace.client_type.to_string());
+    event.user_agent = trace.user_agent.map(str::to_string);
+    event.origin = trace.origin.map(str::to_string);
+    event.referer = trace.referer.map(str::to_string);
+    event.remote_addr = trace.remote_addr.map(str::to_string);
+    event.direction = Some(if trace.stage == "gateway_request_in" {
+        "inbound".to_string()
+    } else {
+        "outbound".to_string()
+    });
+    event.source = Some("http-gateway".to_string());
+    event.ok = trace.status_code.map(|code| code < 400);
+    crate::diagnostics::codex_web_pipeline::append_pipeline_event(event);
+}
+
+static NEXT_CODEX_WEB_SERVER_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+
+async fn trace_codex_web_http_request(req: Request<Body>, next: Next) -> Response {
+    let path = req.uri().path().to_string();
+    if !path.starts_with("/codex/") || path == "/codex/ws" || path == "/codex/app-server/ws" {
+        return next.run(req).await;
+    }
+    let method = req.method().as_str().to_string();
+    let headers = req.headers();
+    let client_type = codex_web_client_type(headers);
+    let user_agent = header_text(headers, header::USER_AGENT.as_str());
+    let origin = header_text(headers, header::ORIGIN.as_str());
+    let referer = header_text(headers, header::REFERER.as_str());
+    let remote_addr = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|connect_info| connect_info.0.to_string());
+    let path_and_query = req
+        .uri()
+        .path_and_query()
+        .map(|value| value.as_str().to_string())
+        .unwrap_or_else(|| path.clone());
+    let request_bytes = content_length_header(headers);
+    let request_id = codex_web_request_id(headers);
+    trace_codex_web_gateway_request(CodexWebHttpTrace {
+        request_id: &request_id,
+        method: &method,
+        path_and_query: &path_and_query,
+        stage: "gateway_request_in",
+        elapsed_ms: 0,
+        status_code: None,
+        request_bytes,
+        response_bytes: None,
+        client_type: &client_type,
+        user_agent: user_agent.as_deref(),
+        origin: origin.as_deref(),
+        referer: referer.as_deref(),
+        remote_addr: remote_addr.as_deref(),
+    });
+    let started = std::time::Instant::now();
+    let response =
+        crate::diagnostics::codex_web_pipeline::scope_request_id(request_id.clone(), next.run(req))
+            .await;
+    let status_code = response.status().as_u16();
+    let response_bytes = content_length_header(response.headers());
+    trace_codex_web_gateway_request(CodexWebHttpTrace {
+        request_id: &request_id,
+        method: &method,
+        path_and_query: &path_and_query,
+        stage: "gateway_response_out",
+        elapsed_ms: crate::diagnostics::codex_web_pipeline::elapsed_ms_u64(started),
+        status_code: Some(status_code),
+        request_bytes,
+        response_bytes,
+        client_type: &client_type,
+        user_agent: user_agent.as_deref(),
+        origin: origin.as_deref(),
+        referer: referer.as_deref(),
+        remote_addr: remote_addr.as_deref(),
+    });
+    response
+}
+
+#[cfg(test)]
+mod codex_web_client_trace_tests {
+    use super::codex_web_client_type;
+    use axum::http::{header, HeaderMap, HeaderValue};
+
+    #[test]
+    fn classifies_mobile_browser_from_user_agent() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::USER_AGENT,
+            HeaderValue::from_static(
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile Safari/604.1",
+            ),
+        );
+        assert_eq!(codex_web_client_type(&headers), "mobile-browser");
+    }
+
+    #[test]
+    fn honors_explicit_desktop_webview_client_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-api-router-client",
+            HeaderValue::from_static("desktop-webview"),
+        );
+        headers.insert(header::USER_AGENT, HeaderValue::from_static("Mozilla/5.0"));
+        assert_eq!(codex_web_client_type(&headers), "desktop-webview");
+    }
+
+    #[test]
+    fn classifies_codex_electron_as_desktop_webview() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::USER_AGENT,
+            HeaderValue::from_static(
+                "Mozilla/5.0 AppleWebKit/537.36 Codex/26.422.30944 Electron/41.2.0",
+            ),
+        );
+        assert_eq!(codex_web_client_type(&headers), "desktop-webview");
+    }
 }
 
 pub(crate) fn register_prepared_gateway_listener_bindings(
@@ -1274,6 +1515,7 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
         .route("/codex/runtime/state", get(codex_runtime_state))
         .route("/codex/version-info", get(codex_version_info))
         .route("/codex/rpc", post(codex_rpc_proxy))
+        .layer(middleware::from_fn(trace_codex_web_http_request))
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .with_state(state);
     #[cfg(test)]
