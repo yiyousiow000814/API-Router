@@ -259,6 +259,81 @@ describe("connectionFlows", () => {
     }
   });
 
+  it("does not block connection refresh on model and version metadata", async () => {
+    let resolveModels;
+    let resolveVersions;
+    const originalLocalStorage = globalThis.localStorage;
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: { getItem() { return ""; }, setItem() {}, removeItem() {} },
+    });
+    const modelRefresh = new Promise((resolve) => {
+      resolveModels = resolve;
+    });
+    const versionRefresh = new Promise((resolve) => {
+      resolveVersions = resolve;
+    });
+    const refreshThreadCalls = [];
+    try {
+      const module = createConnectionFlowsModule({
+        state: {
+          activeHostId: "",
+          activeThreadWorkspace: "",
+          pendingApprovals: [],
+          pendingUserInputs: [],
+          token: "",
+        },
+        byId: (id) => (id === "tokenInput" ? { value: "" } : null),
+        api: async (path) => {
+          if (path === "/codex/auth/verify") return { ok: true };
+          if (path === "/codex/hosts") return { items: [] };
+          if (path === "/codex/approvals/pending?workspace=windows") return { items: [] };
+          if (path === "/codex/user-input/pending?workspace=windows") return { items: [] };
+          return { items: [] };
+        },
+        wsSend: () => false,
+        nextReqId: () => "req-1",
+        connectWs: () => {},
+        ensureArrayItems: (value) =>
+          Array.isArray(value) ? value : Array.isArray(value?.items) ? value.items : value ? [value] : [],
+        escapeHtml: (value) => String(value || ""),
+        blockInSandbox: () => false,
+        TOKEN_STORAGE_KEY: "token",
+        getEmbeddedToken: () => "",
+        refreshModels: () => modelRefresh,
+        refreshCodexVersions: () => versionRefresh,
+        refreshThreads: async (...args) => {
+          refreshThreadCalls.push(args);
+        },
+        refreshWorkspaceRuntimeState: async () => null,
+        getWorkspaceTarget: () => "windows",
+        setStatus: () => {},
+        setMainTab: () => {},
+        setMobileTab: () => {},
+        addChat: () => {},
+        renderPendingInline: () => {},
+      });
+
+      const connectPromise = module.connect({ switchToChat: false });
+      await Promise.resolve();
+      const settledBeforeMetadata = await Promise.race([
+        connectPromise.then(() => true),
+        new Promise((resolve) => setTimeout(() => resolve(false), 0)),
+      ]);
+
+      expect(settledBeforeMetadata).toBe(true);
+      expect(refreshThreadCalls).toEqual([["windows", { force: false, silent: false }]]);
+      resolveModels();
+      resolveVersions();
+      await connectPromise;
+    } finally {
+      Object.defineProperty(globalThis, "localStorage", {
+        configurable: true,
+        value: originalLocalStorage,
+      });
+    }
+  });
+
   it("refreshes only the active workspace during full connection refresh", async () => {
     const refreshThreadCalls = [];
     const runtimeCalls = [];

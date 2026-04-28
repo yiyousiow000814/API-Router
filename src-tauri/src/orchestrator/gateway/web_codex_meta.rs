@@ -8,6 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const PROVIDER_SWITCHBOARD_CACHE_TTL: Duration = Duration::from_secs(5);
+const CODEX_MODELS_CACHE_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 struct ProviderSwitchboardStatusCacheEntry {
@@ -21,12 +22,20 @@ struct ProviderSwitchboardHomesCacheEntry {
     homes: Vec<String>,
 }
 
+#[derive(Clone)]
+struct CodexModelsCacheEntry {
+    cached_at: Instant,
+    payload: Value,
+}
+
 static PROVIDER_SWITCHBOARD_STATUS_CACHE: OnceLock<
     Mutex<HashMap<String, ProviderSwitchboardStatusCacheEntry>>,
 > = OnceLock::new();
 static PROVIDER_SWITCHBOARD_HOMES_CACHE: OnceLock<
     Mutex<HashMap<String, ProviderSwitchboardHomesCacheEntry>>,
 > = OnceLock::new();
+static CODEX_MODELS_CACHE: OnceLock<Mutex<Option<CodexModelsCacheEntry>>> = OnceLock::new();
+static CODEX_MODELS_REFRESH_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 fn provider_switchboard_status_cache(
 ) -> &'static Mutex<HashMap<String, ProviderSwitchboardStatusCacheEntry>> {
@@ -36,6 +45,32 @@ fn provider_switchboard_status_cache(
 fn provider_switchboard_homes_cache(
 ) -> &'static Mutex<HashMap<String, ProviderSwitchboardHomesCacheEntry>> {
     PROVIDER_SWITCHBOARD_HOMES_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn codex_models_cache() -> &'static Mutex<Option<CodexModelsCacheEntry>> {
+    CODEX_MODELS_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn codex_models_refresh_lock() -> &'static tokio::sync::Mutex<()> {
+    CODEX_MODELS_REFRESH_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+fn cached_codex_models_payload() -> Option<Value> {
+    codex_models_cache()
+        .lock()
+        .expect("codex models cache poisoned")
+        .as_ref()
+        .filter(|entry| entry.cached_at.elapsed() < CODEX_MODELS_CACHE_TTL)
+        .map(|entry| entry.payload.clone())
+}
+
+fn store_codex_models_payload(payload: Value) {
+    *codex_models_cache()
+        .lock()
+        .expect("codex models cache poisoned") = Some(CodexModelsCacheEntry {
+        cached_at: Instant::now(),
+        payload,
+    });
 }
 
 fn provider_switchboard_cache_key(scope: &str, homes: &[String]) -> String {
@@ -912,37 +947,84 @@ impl CodexModelsQuery {
     }
 }
 
+async fn fetch_codex_models_payload() -> Result<Value, String> {
+    let value = crate::codex_app_server::request_in_home(None, "model/list", Value::Null).await?;
+    Ok(json!({ "items": value.get("items").cloned().unwrap_or(value) }))
+}
+
+async fn codex_models_payload(refresh_requested: bool) -> Result<(Value, bool), String> {
+    if !refresh_requested {
+        if let Some(payload) = cached_codex_models_payload() {
+            return Ok((payload, true));
+        }
+    }
+
+    let _guard = codex_models_refresh_lock().lock().await;
+    if !refresh_requested {
+        if let Some(payload) = cached_codex_models_payload() {
+            return Ok((payload, true));
+        }
+    }
+
+    if refresh_requested {
+        crate::codex_app_server::refresh_server_in_home(None).await?;
+    }
+    let payload = fetch_codex_models_payload().await?;
+    store_codex_models_payload(payload.clone());
+    Ok((payload, false))
+}
+
 pub(super) async fn codex_models(
     State(st): State<GatewayState>,
     headers: HeaderMap,
     Query(query): Query<CodexModelsQuery>,
 ) -> Response {
+    let started = std::time::Instant::now();
     if let Some(resp) = require_codex_auth(&st, &headers) {
         return resp;
     }
-    if query.refresh_requested() {
-        if let Err(err) = crate::codex_app_server::refresh_server_in_home(None).await {
-            return api_error_detail(
-                StatusCode::BAD_GATEWAY,
-                "failed to refresh codex app-server",
-                err,
+    let refresh_requested = query.refresh_requested();
+    match codex_models_payload(refresh_requested).await {
+        Ok((payload, cache_hit)) => {
+            let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+                "/codex/models",
+                "all",
+                "gateway_handler",
+                crate::diagnostics::codex_web_pipeline::elapsed_ms_u64(started),
             );
+            pipeline.cache_hit = Some(cache_hit);
+            pipeline.refreshing = Some(refresh_requested);
+            pipeline.source = Some(if cache_hit {
+                "models-cache".to_string()
+            } else {
+                "app-server-model-list".to_string()
+            });
+            pipeline.ok = Some(true);
+            crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
+            Json(payload).into_response()
         }
-    }
-    match super::codex_rpc_call("model/list", Value::Null).await {
-        Ok(v) => Json(json!({ "items": v.get("items").cloned().unwrap_or(v) })).into_response(),
-        Err(resp) => resp,
+        Err(err) => api_error_detail(
+            StatusCode::BAD_GATEWAY,
+            if refresh_requested {
+                "failed to refresh codex app-server"
+            } else {
+                "codex app-server request failed"
+            },
+            err,
+        ),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_provider_switchboard_cache, extract_model_and_effort_from_toml,
-        provider_switchboard_cache_key, provider_switchboard_homes_cache,
-        resolve_codex_file_path_with_wsl_distro, CodexModelsQuery,
-        ProviderSwitchboardHomesCacheEntry, PROVIDER_SWITCHBOARD_CACHE_TTL,
+        cached_codex_models_payload, clear_provider_switchboard_cache, codex_models_cache,
+        extract_model_and_effort_from_toml, provider_switchboard_cache_key,
+        provider_switchboard_homes_cache, resolve_codex_file_path_with_wsl_distro,
+        CodexModelsCacheEntry, CodexModelsQuery, ProviderSwitchboardHomesCacheEntry,
+        CODEX_MODELS_CACHE_TTL, PROVIDER_SWITCHBOARD_CACHE_TTL,
     };
+    use serde_json::json;
     #[cfg(target_os = "windows")]
     use std::path::PathBuf;
     use std::time::Instant;
@@ -1012,6 +1094,25 @@ model_reasoning_effort = "medium"
             .lock()
             .expect("cache")
             .is_empty());
+    }
+
+    #[test]
+    fn codex_models_cache_respects_ttl() {
+        *codex_models_cache().lock().expect("models cache") = Some(CodexModelsCacheEntry {
+            cached_at: Instant::now(),
+            payload: json!({ "items": [{ "id": "gpt-5.4-codex" }] }),
+        });
+        assert_eq!(
+            cached_codex_models_payload().expect("fresh cache")["items"][0]["id"],
+            "gpt-5.4-codex"
+        );
+
+        *codex_models_cache().lock().expect("models cache") = Some(CodexModelsCacheEntry {
+            cached_at: Instant::now() - CODEX_MODELS_CACHE_TTL - std::time::Duration::from_secs(1),
+            payload: json!({ "items": [{ "id": "stale" }] }),
+        });
+        assert!(cached_codex_models_payload().is_none());
+        *codex_models_cache().lock().expect("models cache") = None;
     }
 
     #[test]

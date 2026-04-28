@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createModelPickerModule,
   normalizeModelOption,
   resolveSelectedModelId,
   resolveSelectedReasoningEffort,
@@ -65,5 +66,57 @@ describe("modelPicker", () => {
       "gpt-5.4",
       "gpt-5.3-codex",
     ]);
+  });
+
+  it("coalesces concurrent model refreshes into one API request", async () => {
+    let resolveModels;
+    const response = new Promise((resolve) => {
+      resolveModels = resolve;
+    });
+    const apiCalls = [];
+    const state = {
+      modelOptions: [],
+      modelOptionsLoading: false,
+      modelOptionsLoadingSeq: 0,
+      modelOptionsLoadingStartedAt: 0,
+    };
+    const module = createModelPickerModule({
+      state,
+      byId: () => null,
+      api(path) {
+        apiCalls.push(path);
+        return response;
+      },
+      waitMs: () => Promise.resolve(),
+      ensureArrayItems: (value) =>
+        Array.isArray(value) ? value : Array.isArray(value?.items) ? value.items : value ? [value] : [],
+      escapeHtml: (value) => String(value || ""),
+      escapeAttr: (value) => String(value || ""),
+      compactModelLabel: (value) => String(value || ""),
+      updateHeaderUi: () => {},
+      persistModelsCache: () => {},
+      pickLatestModelId: () => "",
+      SELECTED_MODEL_KEY: "model",
+      REASONING_EFFORT_KEY: "effort",
+      MODEL_USER_SELECTED_KEY: "model-user",
+      EFFORT_USER_SELECTED_KEY: "effort-user",
+      MODEL_LOADING_MIN_MS: 0,
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      documentRef: { getElementById() { return null; }, createElement() { return {}; }, body: { appendChild() {} } },
+      windowRef: {},
+      requestAnimationFrameRef: (callback) => callback(),
+      performanceRef: { now: () => 0 },
+    });
+
+    const first = module.refreshModels();
+    const second = module.refreshModels();
+    await Promise.resolve();
+    expect(apiCalls).toEqual(["/codex/models"]);
+
+    resolveModels({
+      items: [{ id: "gpt-5.4-codex", supportedReasoningEfforts: [{ effort: "medium" }] }],
+    });
+    await Promise.all([first, second]);
+    expect(state.modelOptions.map((item) => item.id)).toEqual(["gpt-5.4-codex"]);
   });
 });

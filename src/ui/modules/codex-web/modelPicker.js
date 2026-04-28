@@ -69,6 +69,7 @@ export function createModelPickerModule(deps) {
     performanceRef = performance,
     localStorageRef = localStorage,
   } = deps;
+  let modelListRequestInFlight = null;
 
   function setHeaderModelMenuOpen(open) {
     const picker = byId("headerModelPicker");
@@ -388,7 +389,12 @@ export function createModelPickerModule(deps) {
     state.modelOptionsLoadingStartedAt = performanceRef.now();
     updateHeaderUi();
     try {
-      const data = await api("/codex/models");
+      if (!modelListRequestInFlight) {
+        modelListRequestInFlight = api("/codex/models").finally(() => {
+          modelListRequestInFlight = null;
+        });
+      }
+      const data = await modelListRequestInFlight;
       const rawItems = ensureArrayItems(data.items);
       const mapped = [];
       for (const item of rawItems) {

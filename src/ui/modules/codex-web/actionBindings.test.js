@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  PROVIDER_SWITCHBOARD_AUTO_REFRESH_MS,
+  PROVIDER_SWITCHBOARD_STALE_MS,
   createActionBindingsModule,
   providerRuntimeRefreshErrorMessage,
   resolveActionErrorMessage,
@@ -39,6 +41,11 @@ describe("actionBindings", () => {
     expect(providerRuntimeRefreshErrorMessage("Windows", [])).toBe(
       "Web Codex Windows provider saved, but runtime refresh failed."
     );
+  });
+
+  it("keeps provider switchboard auto-refresh below chat refresh pressure", () => {
+    expect(PROVIDER_SWITCHBOARD_AUTO_REFRESH_MS).toBe(15_000);
+    expect(PROVIDER_SWITCHBOARD_STALE_MS).toBe(15_000);
   });
 
   it("reuses in-flight provider switchboard refreshes for the same scope", async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createAppPersistenceModule,
   relativeTimeLabel,
   shouldApplyVersionAvailabilityPayload,
   truncateLabel,
@@ -43,5 +44,62 @@ describe("appPersistence", () => {
         wsl2Installed: false,
       })
     ).toBe(true);
+  });
+
+  it("coalesces concurrent version refreshes into one API request", async () => {
+    let resolveVersion;
+    const versionResponse = new Promise((resolve) => {
+      resolveVersion = resolve;
+    });
+    const apiCalls = [];
+    const nodes = {
+      windowsCodexVersion: {
+        textContent: "",
+        classList: { add() {}, remove() {} },
+        get offsetWidth() { return 1; },
+      },
+      wslCodexVersion: {
+        textContent: "",
+        classList: { add() {}, remove() {} },
+        get offsetWidth() { return 1; },
+      },
+    };
+    const module = createAppPersistenceModule({
+      state: {},
+      byId: (id) => nodes[id] || null,
+      api(path) {
+        apiCalls.push(path);
+        return versionResponse;
+      },
+      setStatus: () => {},
+      updateWorkspaceAvailability: () => {},
+      getEmbeddedToken: () => "",
+      ensureArrayItems: (value) => (Array.isArray(value) ? value : []),
+      normalizeModelOption: (item) => item,
+      pickLatestModelId: () => "",
+      buildThreadRenderSig: () => "",
+      sortThreadsByNewest: (items) => items,
+      isThreadListActuallyVisible: () => false,
+      MODELS_CACHE_KEY: "models",
+      THREADS_CACHE_KEY: "threads",
+      REASONING_EFFORT_KEY: "effort",
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      documentRef: {},
+    });
+
+    const first = module.refreshCodexVersions();
+    const second = module.refreshCodexVersions();
+    await Promise.resolve();
+    expect(apiCalls).toEqual(["/codex/version-info"]);
+
+    resolveVersion({
+      windows: "codex-cli 1.0.0",
+      wsl2: "codex-cli 1.0.0",
+      windowsInstalled: true,
+      wsl2Installed: true,
+    });
+    await Promise.all([first, second]);
+    expect(nodes.windowsCodexVersion.textContent).toBe("codex-cli 1.0.0");
+    expect(nodes.wslCodexVersion.textContent).toBe("codex-cli 1.0.0");
   });
 });

@@ -63,6 +63,7 @@ export function createAppPersistenceModule(deps) {
     localStorageRef = localStorage,
     documentRef = document,
   } = deps;
+  let codexVersionInfoRequestInFlight = null;
 
   function persistModelsCache() {
     try {
@@ -161,7 +162,12 @@ export function createAppPersistenceModule(deps) {
     animateVersionNode(winNode, "Detecting...");
     animateVersionNode(wslNode, "Detecting...");
     try {
-      const data = await api("/codex/version-info");
+      if (!codexVersionInfoRequestInFlight) {
+        codexVersionInfoRequestInFlight = api("/codex/version-info").finally(() => {
+          codexVersionInfoRequestInFlight = null;
+        });
+      }
+      const data = await codexVersionInfoRequestInFlight;
       animateVersionNode(winNode, String(data?.windows || "Not detected"));
       animateVersionNode(wslNode, String(data?.wsl2 || "Not detected"));
       if (shouldApplyVersionAvailabilityPayload(data)) {
