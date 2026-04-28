@@ -57,6 +57,23 @@ function queueInvokeResult(entry: PendingInvokeResult): void {
   scheduleUiDiagnosticsFlush()
 }
 
+function queueInvokeStart(
+  command: string,
+  diagnosticsCommand: string,
+  frontendStartedUnixMs: number,
+): void {
+  if (shouldSkipInvokeDiagnostics(command)) return
+  queueUiTrace({
+    kind: 'invoke_start',
+    active_page: currentActivePage(),
+    visible: currentVisible(),
+    fields: {
+      command: diagnosticsCommand,
+      frontend_started_unix_ms: frontendStartedUnixMs,
+    },
+  })
+}
+
 declare global {
   interface Window {
     __API_ROUTER_ACTIVE_PAGE__?: string
@@ -138,7 +155,9 @@ export async function invoke<T>(
   options?: actual.InvokeOptions,
 ): Promise<T> {
   const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
+  const startedUnixMs = Date.now()
   const diagnosticsCommand = diagnosticCommandName(cmd, args)
+  queueInvokeStart(cmd, diagnosticsCommand, startedUnixMs)
   try {
     const result = await actual.invoke<T>(cmd, args, options)
     const elapsedMs = Math.round(

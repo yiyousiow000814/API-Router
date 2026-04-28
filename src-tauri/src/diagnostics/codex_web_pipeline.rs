@@ -15,7 +15,29 @@ pub(crate) struct CodexWebPipelineEvent {
     pub stage: String,
     pub elapsed_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub direction: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_code: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub referer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_addr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -43,7 +65,18 @@ impl CodexWebPipelineEvent {
             workspace: workspace.to_string(),
             stage: stage.to_string(),
             elapsed_ms,
+            request_id: current_request_id(),
+            direction: None,
             method: None,
+            path: None,
+            status_code: None,
+            request_bytes: None,
+            response_bytes: None,
+            client_type: None,
+            user_agent: None,
+            origin: None,
+            referer: None,
+            remote_addr: None,
             source: None,
             transport: None,
             cache_hit: None,
@@ -55,6 +88,21 @@ impl CodexWebPipelineEvent {
             detail: None,
         }
     }
+}
+
+tokio::task_local! {
+    static CODEX_WEB_REQUEST_ID: String;
+}
+
+pub(crate) fn current_request_id() -> Option<String> {
+    CODEX_WEB_REQUEST_ID.try_with(Clone::clone).ok()
+}
+
+pub(crate) async fn scope_request_id<F, T>(request_id: String, future: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    CODEX_WEB_REQUEST_ID.scope(request_id, future).await
 }
 
 pub(crate) fn elapsed_ms_u64(started: std::time::Instant) -> u64 {
@@ -124,6 +172,39 @@ mod tests {
         assert!(text.contains(r#""route":"/codex/threads""#));
         assert!(text.contains(r#""workspace":"windows""#));
         assert!(text.contains(r#""cacheHit":true"#));
+        set_test_user_data_dir_override(prev.as_deref());
+    }
+
+    #[tokio::test]
+    async fn request_scope_adds_request_id_to_pipeline_events() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let prev = set_test_user_data_dir_override(Some(temp.path()));
+        super::scope_request_id("req-test-1".to_string(), async {
+            let mut event =
+                CodexWebPipelineEvent::new("/codex/threads", "wsl2", "gateway_response_out", 7);
+            event.status_code = Some(200);
+            event.request_bytes = Some(12);
+            event.response_bytes = Some(34);
+            event.client_type = Some("mobile-browser".to_string());
+            event.user_agent = Some("Mozilla/5.0 Mobile Safari".to_string());
+            event.origin = Some("http://phone.local".to_string());
+            event.remote_addr = Some("192.168.1.10:51234".to_string());
+            append_pipeline_event(event);
+        })
+        .await;
+
+        let path = current_diagnostics_dir()
+            .expect("diagnostics dir")
+            .join("codex_web_pipeline.ndjson");
+        let text = std::fs::read_to_string(path).expect("pipeline log");
+        assert!(text.contains(r#""requestId":"req-test-1""#));
+        assert!(text.contains(r#""statusCode":200"#));
+        assert!(text.contains(r#""requestBytes":12"#));
+        assert!(text.contains(r#""responseBytes":34"#));
+        assert!(text.contains(r#""clientType":"mobile-browser""#));
+        assert!(text.contains(r#""userAgent":"Mozilla/5.0 Mobile Safari""#));
+        assert!(text.contains(r#""origin":"http://phone.local""#));
+        assert!(text.contains(r#""remoteAddr":"192.168.1.10:51234""#));
         set_test_user_data_dir_override(prev.as_deref());
     }
 }

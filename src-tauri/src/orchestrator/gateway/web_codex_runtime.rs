@@ -345,6 +345,30 @@ fn build_version_payload(
     }
 }
 
+fn build_version_info_placeholder() -> CodexVersionInfo {
+    build_version_payload(
+        DetectedCodexRuntime {
+            version: "Detecting".to_string(),
+            installed: false,
+            app_server_supported: false,
+            remote_tui_supported: false,
+        },
+        DetectedCodexRuntime {
+            version: "Detecting".to_string(),
+            installed: false,
+            app_server_supported: false,
+            remote_tui_supported: false,
+        },
+        option_env!("API_ROUTER_BUILD_GIT_SHA")
+            .unwrap_or("unknown")
+            .to_string(),
+        option_env!("API_ROUTER_BUILD_GIT_SHORT_SHA")
+            .unwrap_or("unknown")
+            .to_string(),
+        detect_repo_git_sha(),
+    )
+}
+
 async fn detect_codex_version_info_payload() -> CodexVersionInfo {
     let started = std::time::Instant::now();
     let (windows, wsl2) = tokio::join!(detect_windows_codex_runtime(), detect_wsl_codex_runtime());
@@ -483,7 +507,8 @@ pub(super) async fn codex_version_info(
         return Json(cached.value).into_response();
     }
 
-    let payload = detect_codex_version_info_payload().await;
+    spawn_codex_version_info_refresh_if_idle();
+    let payload = build_version_info_placeholder();
     let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
         "/codex/version-info",
         "all",
@@ -491,7 +516,8 @@ pub(super) async fn codex_version_info(
         crate::diagnostics::codex_web_pipeline::elapsed_ms_u64(started),
     );
     pipeline.cache_hit = Some(false);
-    pipeline.source = Some("cold-detect".to_string());
+    pipeline.refreshing = Some(true);
+    pipeline.source = Some("cold-background-refresh".to_string());
     pipeline.ok = Some(true);
     crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
     Json(payload).into_response()
@@ -624,6 +650,16 @@ mod tests {
         assert!(!payload.wsl2_remote_tui_supported);
         assert_eq!(payload.repo_git_short_sha, Some("fff00000".to_string()));
         assert!(payload.build_stale);
+    }
+
+    #[test]
+    fn cold_version_info_placeholder_does_not_claim_runtime_installed() {
+        let payload = build_version_info_placeholder();
+        assert_eq!(payload.windows, "Detecting");
+        assert_eq!(payload.wsl2, "Detecting");
+        assert!(!payload.windows_installed);
+        assert!(!payload.wsl2_installed);
+        assert_eq!(payload.app_version, env!("CARGO_PKG_VERSION"));
     }
 
     #[test]

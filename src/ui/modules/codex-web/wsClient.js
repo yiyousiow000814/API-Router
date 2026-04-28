@@ -18,6 +18,50 @@ export function nextReqId() {
   return `req_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
 }
 
+export function estimateUtf8Bytes(value) {
+  const text = String(value ?? "");
+  if (typeof TextEncoder !== "undefined") {
+    return new TextEncoder().encode(text).length;
+  }
+  return unescape(encodeURIComponent(text)).length;
+}
+
+export function workspaceFromApiPath(path) {
+  try {
+    const url = new URL(String(path || ""), "http://codex-web.local");
+    const workspace = String(url.searchParams.get("workspace") || "").trim().toLowerCase();
+    return workspace === "windows" || workspace === "wsl2" ? workspace : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function attachApiTrace(payload, trace) {
+  if (!payload || typeof payload !== "object") return payload;
+  try {
+    Object.defineProperty(payload, "__apiTrace", {
+      value: trace,
+      enumerable: false,
+      configurable: true,
+    });
+  } catch {
+    payload.__apiTrace = trace;
+  }
+  return payload;
+}
+
+export function detectCodexWebClientType(windowLike = typeof window === "undefined" ? null : window) {
+  const hasTauri =
+    !!windowLike?.__TAURI__ ||
+    !!windowLike?.__TAURI_INTERNALS__ ||
+    !!windowLike?.__TAURI_METADATA__;
+  if (hasTauri) return "desktop-webview";
+  const ua = String(windowLike?.navigator?.userAgent || "").toLowerCase();
+  if (ua.includes("electron") || ua.includes(" codex/")) return "desktop-webview";
+  if (/mobile|android|iphone|ipad/.test(ua)) return "mobile-browser";
+  return "desktop-browser";
+}
+
 export function buildCodexWsUrl(locationLike, token) {
   const proto = locationLike?.protocol === "https:" ? "wss" : "ws";
   const host = String(locationLike?.host || "").trim();
@@ -293,13 +337,29 @@ export function createWsClientModule(deps) {
   }
 
   async function liveApi(path, options = {}) {
+    const method = String(options.method || "GET").toUpperCase();
+    const requestId = nextReqId();
+    const requestBody = options.body ? JSON.stringify(options.body) : undefined;
     const headers = {
       "Content-Type": "application/json",
+      "X-Codex-Web-Request-Id": requestId,
+      "X-Api-Router-Client": detectCodexWebClientType(windowRef),
       ...(options.headers || {}),
     };
     if (state.token.trim()) headers.Authorization = `Bearer ${state.token.trim()}`;
-    const route = `${String(options.method || "GET").toUpperCase()} ${String(path || "")}`.trim();
+    const route = `${method} ${String(path || "")}`.trim();
     const startedAt = Number(nowRef()) || Date.now();
+    const requestBytes = requestBody ? estimateUtf8Bytes(requestBody) : 0;
+    pushLiveDebugEvent("api.request:start", {
+      __tracePersist: true,
+      requestId,
+      route,
+      path: String(path || ""),
+      method,
+      workspace: workspaceFromApiPath(path),
+      clientType: headers["X-Api-Router-Client"],
+      requestBytes,
+    });
     let pendingTimer = 0;
     let pendingReported = false;
     const pendingAfterMs = Math.max(0, Number(API_PENDING_AFTER_MS || 0));
@@ -313,19 +373,35 @@ export function createWsClientModule(deps) {
           elapsedMs,
           fields: {
             path: String(path || ""),
-            method: String(options.method || "GET").toUpperCase(),
+            method,
+            requestId,
+            clientType: headers["X-Api-Router-Client"],
           },
         });
         recordWebTransportEvent("api_request_pending", `${route} pending ${Math.round(elapsedMs)}ms`);
       }, pendingAfterMs);
     }
     let res;
+    let headersAt = startedAt;
     try {
       res = await fetchRef(path, {
-        method: options.method || "GET",
+        method,
         headers,
-        body: options.body ? JSON.stringify(options.body) : undefined,
+        body: requestBody,
         signal: options.signal,
+      });
+      headersAt = Number(nowRef()) || Date.now();
+      pushLiveDebugEvent("api.request:headers", {
+        __tracePersist: true,
+        requestId,
+        route,
+        path: String(path || ""),
+        method,
+        workspace: workspaceFromApiPath(path),
+        clientType: headers["X-Api-Router-Client"],
+        elapsedMs: headersAt - startedAt,
+        status: Number(res.status || 0),
+        ok: !!res.ok,
       });
     } catch (error) {
       if (pendingTimer) clearTimeoutRef(pendingTimer);
@@ -340,10 +416,80 @@ export function createWsClientModule(deps) {
         errorMessage: detail,
       });
       recordWebTransportEvent("api_request_failed", `${route} -> network error: ${detail}`);
+      pushLiveDebugEvent("api.request:finish", {
+        __tracePersist: true,
+        requestId,
+        route,
+        path: String(path || ""),
+        method,
+        workspace: workspaceFromApiPath(path),
+        clientType: headers["X-Api-Router-Client"],
+        elapsedMs: (Number(nowRef()) || Date.now()) - startedAt,
+        ok: false,
+        error: detail,
+        requestBytes,
+      });
       throw error;
     }
     if (pendingTimer) clearTimeoutRef(pendingTimer);
-    const payload = await res.json().catch(() => ({}));
+    let rawText = "";
+    let payload = {};
+    const bodyStartedAt = Number(nowRef()) || Date.now();
+    if (typeof res.text === "function") {
+      rawText = await res.text().catch(() => "");
+    } else if (typeof res.json === "function") {
+      payload = await res.json().catch(() => ({}));
+      rawText = JSON.stringify(payload);
+    }
+    const bodyFinishedAt = Number(nowRef()) || Date.now();
+    const responseBytes = estimateUtf8Bytes(rawText);
+    pushLiveDebugEvent("api.request:body", {
+      __tracePersist: true,
+      requestId,
+      route,
+      path: String(path || ""),
+      method,
+      workspace: workspaceFromApiPath(path),
+      clientType: headers["X-Api-Router-Client"],
+      elapsedMs: bodyFinishedAt - startedAt,
+      bodyReadMs: bodyFinishedAt - bodyStartedAt,
+      responseBytes,
+    });
+    let parseMs = 0;
+    if (rawText && typeof res.text === "function") {
+      const parseStartedAt = Number(nowRef()) || Date.now();
+      try {
+        payload = JSON.parse(rawText);
+      } catch {
+        payload = {};
+      }
+      parseMs = (Number(nowRef()) || Date.now()) - parseStartedAt;
+      pushLiveDebugEvent("api.request:parse", {
+        __tracePersist: true,
+        requestId,
+        route,
+        path: String(path || ""),
+        method,
+        workspace: workspaceFromApiPath(path),
+        clientType: headers["X-Api-Router-Client"],
+        elapsedMs: (Number(nowRef()) || Date.now()) - startedAt,
+        parseMs,
+        responseBytes,
+      });
+    }
+    const apiTrace = {
+      requestId,
+      route,
+      path: String(path || ""),
+      method,
+      workspace: workspaceFromApiPath(path),
+      clientType: headers["X-Api-Router-Client"],
+      requestBytes,
+      responseBytes,
+      headersMs: headersAt - startedAt,
+      bodyReadMs: bodyFinishedAt - bodyStartedAt,
+      parseMs,
+    };
     if (!res.ok) {
       const detail = resolveApiErrorMessage(payload, res.status);
       recordApiResult({
@@ -356,6 +502,21 @@ export function createWsClientModule(deps) {
       if (/thread not found/i.test(detail)) {
         recordWebTransportEvent("thread_missing_observed", detail);
       }
+      pushLiveDebugEvent("api.request:finish", {
+        __tracePersist: true,
+        requestId,
+        route,
+        path: String(path || ""),
+        method,
+        workspace: workspaceFromApiPath(path),
+        clientType: headers["X-Api-Router-Client"],
+        elapsedMs: (Number(nowRef()) || Date.now()) - startedAt,
+        ok: false,
+        status: Number(res.status || 0),
+        error: detail,
+        requestBytes,
+        responseBytes,
+      });
       throw new Error(detail);
     }
     recordApiResult({
@@ -364,7 +525,28 @@ export function createWsClientModule(deps) {
       ok: true,
       errorMessage: pendingReported ? "completed after pending warning" : null,
     });
-    return payload;
+    pushLiveDebugEvent("api.request:finish", {
+      __tracePersist: true,
+      requestId,
+      route,
+      path: String(path || ""),
+      method,
+      workspace: workspaceFromApiPath(path),
+      clientType: headers["X-Api-Router-Client"],
+      elapsedMs: (Number(nowRef()) || Date.now()) - startedAt,
+      ok: true,
+      status: Number(res.status || 0),
+      requestBytes,
+      responseBytes,
+      pendingReported,
+    });
+    return attachApiTrace(payload, {
+      ...apiTrace,
+      elapsedMs: (Number(nowRef()) || Date.now()) - startedAt,
+      ok: true,
+      status: Number(res.status || 0),
+      pendingReported,
+    });
   }
 
   function renderTransportConnectionStatus(message, { kind = "thinking", animate = true, reset = false } = {}) {

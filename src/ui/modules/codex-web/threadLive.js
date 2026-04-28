@@ -7,12 +7,10 @@ export function resolveThreadAutoRefreshInterval(wsOpen, wsSubscribed, connected
 export function resolveThreadAutoRefreshTargets(currentTarget, availability = {}) {
   const normalizedCurrent =
     String(currentTarget || "").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
-  const targets = [normalizedCurrent];
   const windowsAvailable = availability.windowsInstalled !== false;
   const wslAvailable = availability.wsl2Installed !== false;
-  if (normalizedCurrent !== "windows" && windowsAvailable) targets.push("windows");
-  if (normalizedCurrent !== "wsl2" && wslAvailable) targets.push("wsl2");
-  return targets;
+  if (normalizedCurrent === "wsl2") return wslAvailable ? ["wsl2"] : [];
+  return windowsAvailable ? ["windows"] : [];
 }
 
 export function resolveActiveThreadLivePollInterval(

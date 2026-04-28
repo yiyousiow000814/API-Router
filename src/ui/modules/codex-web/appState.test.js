@@ -35,4 +35,11 @@ describe("appState", () => {
       activeThreadGitMetaReqSeq: 0,
     });
   });
+
+  it("keeps workspace switches selectable while runtime detection is pending", () => {
+    expect(createInitialState().workspaceAvailability).toEqual({
+      windowsInstalled: true,
+      wsl2Installed: true,
+    });
+  });
 });

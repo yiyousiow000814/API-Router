@@ -259,6 +259,55 @@ describe("connectionFlows", () => {
     }
   });
 
+  it("refreshes only the active workspace during full connection refresh", async () => {
+    const refreshThreadCalls = [];
+    const runtimeCalls = [];
+    const module = createConnectionFlowsModule({
+      state: {
+        activeHostId: "",
+        activeThreadWorkspace: "",
+        pendingApprovals: [],
+        pendingUserInputs: [],
+        token: "",
+      },
+      byId: () => null,
+      api: async (path) => {
+        if (path === "/codex/hosts") return { items: [] };
+        if (path === "/codex/approvals/pending?workspace=wsl2") return { items: [] };
+        if (path === "/codex/user-input/pending?workspace=wsl2") return { items: [] };
+        return { items: [] };
+      },
+      wsSend: () => false,
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      ensureArrayItems: (value) =>
+        Array.isArray(value) ? value : Array.isArray(value?.items) ? value.items : value ? [value] : [],
+      escapeHtml: (value) => String(value || ""),
+      blockInSandbox: () => false,
+      TOKEN_STORAGE_KEY: "token",
+      getEmbeddedToken: () => "",
+      refreshModels: async () => {},
+      refreshCodexVersions: async () => {},
+      refreshThreads: async (...args) => {
+        refreshThreadCalls.push(args);
+      },
+      refreshWorkspaceRuntimeState: async (...args) => {
+        runtimeCalls.push(args);
+      },
+      getWorkspaceTarget: () => "wsl2",
+      setStatus: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      addChat: () => {},
+      renderPendingInline: () => {},
+    });
+
+    await module.refreshAll();
+
+    expect(refreshThreadCalls).toEqual([["wsl2", { force: false, silent: false }]]);
+    expect(runtimeCalls).toEqual([["wsl2", { silent: true }]]);
+  });
+
   it("stores pending selections in state and mirrors them into the inputs", () => {
     const approvalIdInput = { value: "" };
     const userInputIdInput = { value: "" };

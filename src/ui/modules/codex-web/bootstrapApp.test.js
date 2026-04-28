@@ -105,4 +105,76 @@ describe("bootstrapApp", () => {
     expect(calls).toContain('connect:{"switchToChat":false}');
     expect(state.fastModeEnabled).toBe(true);
   });
+
+  it("does not disable workspace switches before version detection finishes", () => {
+    const state = {
+      startCwdByWorkspace: { windows: "", wsl2: "" },
+      favoriteThreadIds: new Set(),
+      workspaceTarget: "windows",
+      fastModeEnabled: false,
+      collapsedWorkspaceKeysByWorkspace: { windows: new Set(), wsl2: new Set() },
+      threadItemsByWorkspace: { windows: [], wsl2: [] },
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+    };
+    const availabilityUpdates = [];
+    const module = createBootstrapModule({
+      state,
+      byId() { return null; },
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      documentRef: { querySelector() { return null; }, body: { classList: { add() {} } } },
+      requestAnimationFrameRef(cb) { cb(); },
+      MutationObserverRef: class { observe() {} },
+      installDebugAndE2E() {},
+      installMobileViewportSync() {},
+      getEmbeddedToken() { return ""; },
+      normalizeWorkspaceTarget(value) { return value === "wsl2" ? "wsl2" : "windows"; },
+      normalizeStartCwd(value) { return value; },
+      restoreModelsCache() { return false; },
+      restoreThreadsCache() { return false; },
+      updateWorkspaceAvailability(...args) { availabilityUpdates.push(args); },
+      applyWorkspaceUi() {},
+      syncHeaderModelPicker() {},
+      setStatus() {},
+      updateNotificationState() {},
+      applyManagedTokenUi() {},
+      renderPendingLists() {},
+      renderFolderPicker() {},
+      renderAttachmentPills() {},
+      renderComposerContextLeft() {},
+      renderRuntimePanels() {},
+      updateMobileComposerState() {},
+      refreshSlashCommandsState() { return Promise.resolve([]); },
+      syncSettingsControlsFromMain() {},
+      updateWelcomeSelections() {},
+      setMainTab() {},
+      wireActions() {},
+      ensureScrollToBottomBtn() {},
+      stopChatLiveFollow() {},
+      updateScrollToBottomBtn() {},
+      chatDistanceFromBottom() { return 0; },
+      dbgSet() {},
+      canStartChatLiveFollow() { return false; },
+      scheduleChatLiveFollow() {},
+      startThreadAutoRefreshLoop() {},
+      startActiveThreadLivePollLoop() {},
+      setMobileTab() {},
+      connect() { return Promise.resolve(); },
+      GUIDE_DISMISSED_KEY: "guide",
+      TOKEN_STORAGE_KEY: "token",
+      WORKSPACE_TARGET_KEY: "workspace",
+      START_CWD_BY_WORKSPACE_KEY: "cwd",
+      FAVORITE_THREADS_KEY: "favorites",
+      SELECTED_MODEL_KEY: "model",
+      ACTIVE_MAIN_TAB_KEY: "web_codex_active_main_tab_v1",
+      FAST_MODE_DEVICE_DEFAULT_KEY: "web_codex_fast_mode_device_default_v1",
+      PERMISSION_PRESET_STORAGE_KEY: "web_codex_permission_preset_by_workspace_v1",
+      SANDBOX_MODE: false,
+      CHAT_STICKY_BOTTOM_PX: 32,
+    });
+
+    module.bootstrap();
+
+    expect(availabilityUpdates).toEqual([]);
+    expect(state.workspaceAvailability).toEqual({ windowsInstalled: true, wsl2Installed: true });
+  });
 });

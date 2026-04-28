@@ -21,6 +21,7 @@ use crate::orchestrator::gateway::web_codex_home::{
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const APP_SERVER_RUNTIME_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
+const APP_SERVER_RUNTIME_RECHECK_AFTER: Duration = Duration::from_secs(5 * 60);
 const NOTIFICATION_QUEUE_CAP: usize = 2048;
 const DEBUG_EVENT_CAP: usize = 160;
 const ROLLOUT_LIVE_SYNC_POLL_BYTES: u64 = 64 * 1024;
@@ -2361,7 +2362,11 @@ async fn model_list_runtime_changed(
     server: &std::sync::Arc<Mutex<AppServer>>,
 ) -> bool {
     let previous = {
-        let srv = server.lock().await;
+        let mut srv = server.lock().await;
+        if !should_recheck_runtime_fingerprint(srv.runtime_fingerprint_checked_at) {
+            return false;
+        }
+        srv.runtime_fingerprint_checked_at = Instant::now();
         srv.runtime_fingerprint.clone()
     };
     let current = detect_app_server_runtime_fingerprint(codex_home).await;
@@ -2380,13 +2385,29 @@ async fn model_list_runtime_changed(
     true
 }
 
-fn resolve_codex_cmd() -> Option<PathBuf> {
+fn should_recheck_runtime_fingerprint(last_checked_at: Instant) -> bool {
+    last_checked_at.elapsed() >= APP_SERVER_RUNTIME_RECHECK_AFTER
+}
+
+fn resolve_codex_node_script() -> Option<(PathBuf, PathBuf)> {
     #[cfg(target_os = "windows")]
     {
         if let Ok(appdata) = std::env::var("APPDATA") {
-            let candidate = PathBuf::from(appdata).join("npm").join("codex.cmd");
-            if candidate.exists() {
-                return Some(candidate);
+            let npm_dir = PathBuf::from(appdata).join("npm");
+            let script = npm_dir
+                .join("node_modules")
+                .join("@openai")
+                .join("codex")
+                .join("bin")
+                .join("codex.js");
+            if script.exists() {
+                let bundled_node = npm_dir.join("node.exe");
+                let node = if bundled_node.exists() {
+                    bundled_node
+                } else {
+                    PathBuf::from("node")
+                };
+                return Some((node, script));
             }
         }
     }
@@ -2470,9 +2491,9 @@ fn pipeline_workspace_label_for_home(codex_home: Option<&str>) -> &'static str {
 fn build_codex_command(codex_home: Option<&str>) -> Command {
     match resolve_launch_spec(codex_home) {
         LaunchSpec::Native { codex_home } => {
-            if let Some(path) = resolve_codex_cmd() {
-                let mut cmd = Command::new("cmd.exe");
-                cmd.arg("/c").arg(path).arg("app-server");
+            if let Some((node, script)) = resolve_codex_node_script() {
+                let mut cmd = Command::new(node);
+                cmd.arg(script).arg("app-server");
                 if let Some(home) = codex_home.as_deref() {
                     cmd.env("CODEX_HOME", home);
                 }
@@ -2518,9 +2539,9 @@ fn build_codex_command(codex_home: Option<&str>) -> Command {
 fn build_codex_version_command(codex_home: Option<&str>) -> Command {
     match resolve_launch_spec(codex_home) {
         LaunchSpec::Native { codex_home } => {
-            if let Some(path) = resolve_codex_cmd() {
-                let mut cmd = Command::new("cmd.exe");
-                cmd.arg("/c").arg(path).arg("--version");
+            if let Some((node, script)) = resolve_codex_node_script() {
+                let mut cmd = Command::new(node);
+                cmd.arg(script).arg("--version");
                 if let Some(home) = codex_home.as_deref() {
                     cmd.env("CODEX_HOME", home);
                 }
@@ -2727,6 +2748,7 @@ struct AppServer {
     _stdout_task: tokio::task::JoinHandle<()>,
     next_id: i64,
     runtime_fingerprint: String,
+    runtime_fingerprint_checked_at: Instant,
 }
 
 impl AppServer {
@@ -2789,6 +2811,7 @@ impl AppServer {
             _stdout_task: stdout_task,
             next_id: 1,
             runtime_fingerprint,
+            runtime_fingerprint_checked_at: Instant::now(),
         };
         let _ = server
             .request(
@@ -2887,6 +2910,14 @@ mod tests {
             Some("codex-cli 0.124.0".to_string())
         );
         assert_eq!(normalize_runtime_fingerprint_stdout(b"\n\t\n"), None);
+    }
+
+    #[test]
+    fn runtime_fingerprint_recheck_is_ttl_limited() {
+        assert!(!should_recheck_runtime_fingerprint(Instant::now()));
+        assert!(should_recheck_runtime_fingerprint(
+            Instant::now() - APP_SERVER_RUNTIME_RECHECK_AFTER - Duration::from_secs(1)
+        ));
     }
 
     #[test]

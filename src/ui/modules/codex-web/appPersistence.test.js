@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { relativeTimeLabel, truncateLabel } from "./appPersistence.js";
+import {
+  relativeTimeLabel,
+  shouldApplyVersionAvailabilityPayload,
+  truncateLabel,
+} from "./appPersistence.js";
 
 describe("appPersistence", () => {
   it("truncates labels with ellipsis", () => {
@@ -20,5 +24,24 @@ describe("appPersistence", () => {
     } finally {
       Date.now = realNow;
     }
+  });
+
+  it("does not apply provisional detecting version availability", () => {
+    expect(
+      shouldApplyVersionAvailabilityPayload({
+        windows: "Detecting",
+        wsl2: "Detecting",
+        windowsInstalled: false,
+        wsl2Installed: false,
+      })
+    ).toBe(false);
+    expect(
+      shouldApplyVersionAvailabilityPayload({
+        windows: "codex-cli 1.0.0",
+        wsl2: "Not installed",
+        windowsInstalled: true,
+        wsl2Installed: false,
+      })
+    ).toBe(true);
   });
 });

@@ -3,6 +3,14 @@ export function truncateLabel(label, max = 28) {
   return text.length > max ? `${text.slice(0, max - 1)}...` : text;
 }
 
+export function shouldApplyVersionAvailabilityPayload(data) {
+  if (!data || typeof data !== "object") return false;
+  const windows = String(data.windows || "").trim().toLowerCase();
+  const wsl2 = String(data.wsl2 || "").trim().toLowerCase();
+  if (windows === "detecting" || wsl2 === "detecting") return false;
+  return typeof data.windowsInstalled === "boolean" || typeof data.wsl2Installed === "boolean";
+}
+
 export function relativeTimeLabel(input) {
   if (!input) return "";
   let ts = Number.NaN;
@@ -156,7 +164,9 @@ export function createAppPersistenceModule(deps) {
       const data = await api("/codex/version-info");
       animateVersionNode(winNode, String(data?.windows || "Not detected"));
       animateVersionNode(wslNode, String(data?.wsl2 || "Not detected"));
-      updateWorkspaceAvailability(data?.windowsInstalled, data?.wsl2Installed);
+      if (shouldApplyVersionAvailabilityPayload(data)) {
+        updateWorkspaceAvailability(data?.windowsInstalled, data?.wsl2Installed);
+      }
       const buildStale = !!data?.buildStale;
       if (buildStale && !state.gatewayBuildStaleWarned) {
         const buildShort = String(data?.buildGitShortSha || "").trim() || "unknown";

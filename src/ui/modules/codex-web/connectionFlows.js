@@ -159,7 +159,6 @@ export function createConnectionFlowsModule(deps) {
     refreshThreads,
     refreshWorkspaceRuntimeState = async () => null,
     getWorkspaceTarget,
-    isWorkspaceAvailable,
     setStatus,
     setMainTab,
     setMobileTab,
@@ -731,16 +730,11 @@ export function createConnectionFlowsModule(deps) {
 
   async function refreshAll() {
     const currentTarget = getWorkspaceTarget();
-    const otherTarget = currentTarget === "wsl2" ? "windows" : "wsl2";
     const tasks = [
       refreshThreads(currentTarget, { force: false, silent: false }),
       refreshHosts(),
       refreshWorkspaceRuntimeState(currentTarget, { silent: true }),
     ];
-    if (isWorkspaceAvailable(otherTarget)) {
-      tasks.push(refreshThreads(otherTarget, { force: false, silent: true }).catch(() => null));
-      tasks.push(refreshWorkspaceRuntimeState(otherTarget, { silent: true }).catch(() => null));
-    }
     await Promise.all(tasks);
     await refreshPending();
   }

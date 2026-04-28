@@ -26,6 +26,7 @@ export function createThreadListRefreshModule(deps) {
     setStatus,
     THREAD_FORCE_REFRESH_MIN_INTERVAL_MS,
     performanceRef = performance,
+    nowRef = Date.now,
   } = deps;
 
   function isThreadListActuallyVisible() {
@@ -159,6 +160,7 @@ export function createThreadListRefreshModule(deps) {
   }
 
   async function refreshThreads(workspaceTarget = getWorkspaceTarget(), options = {}) {
+    const refreshStartedAt = performanceRef.now();
     const target = normalizeWorkspaceTarget(workspaceTarget);
     const force = options.force === true;
     if (force) {
@@ -207,6 +209,20 @@ export function createThreadListRefreshModule(deps) {
         !threadListNode?.querySelector?.(".groupCard, .itemCard");
       const previousIdSet = new Set(previousItems.map((item) => item?.id || item?.threadId || "").filter(Boolean));
       const data = await api(`/codex/threads?${query}`, { signal: controller.signal });
+      const apiTrace = data && typeof data === "object" ? data.__apiTrace || null : null;
+      recordLocalTask({
+        command: "thread refresh fetch",
+        elapsedMs: performanceRef.now() - refreshStartedAt,
+        fields: {
+          workspace: target,
+          force,
+          requestId: String(apiTrace?.requestId || ""),
+          responseBytes: Number(apiTrace?.responseBytes || 0),
+          headersMs: Number(apiTrace?.headersMs || 0),
+          bodyReadMs: Number(apiTrace?.bodyReadMs || 0),
+          parseMs: Number(apiTrace?.parseMs || 0),
+        },
+      });
       const meta = data && typeof data === "object" ? data.meta || null : null;
       if (meta && typeof meta === "object") {
         const totalMs = Number(meta.totalMs || 0);
@@ -223,12 +239,24 @@ export function createThreadListRefreshModule(deps) {
         }
       }
       if ((state.threadRefreshReqSeqByWorkspace[target] || 0) !== reqSeq) return;
+      const materializeStartedAt = performanceRef.now();
       const items = ensureArrayItems(data.items).map((item) => {
         if (!item || typeof item !== "object") return item;
         return {
           ...item,
           __workspaceQueryTarget: target,
         };
+      });
+      recordLocalTask({
+        command: "thread refresh materialize",
+        elapsedMs: performanceRef.now() - materializeStartedAt,
+        fields: {
+          workspace: target,
+          force,
+          requestId: String(apiTrace?.requestId || ""),
+          itemCount: items.length,
+          responseBytes: Number(apiTrace?.responseBytes || 0),
+        },
       });
       const refreshPendingWithEmptyResult =
         !force && !!meta?.refreshing && items.length === 0 && previousItems.length > 0;
@@ -238,6 +266,10 @@ export function createThreadListRefreshModule(deps) {
           previousCount: previousItems.length,
         });
         state.threadWorkspaceHydratedByWorkspace[target] = true;
+        if (!state.threadRefreshCompletedAtByWorkspace || typeof state.threadRefreshCompletedAtByWorkspace !== "object") {
+          state.threadRefreshCompletedAtByWorkspace = {};
+        }
+        state.threadRefreshCompletedAtByWorkspace[target] = nowRef();
         if (getWorkspaceTarget() === target) {
           state.threadItemsAll = previousItems;
           applyThreadFilter();
@@ -257,7 +289,25 @@ export function createThreadListRefreshModule(deps) {
         !!state.threadListPendingVisibleAnimationByWorkspace?.[target] && isThreadListActuallyVisible() && items.length > 0;
       state.threadItemsByWorkspace[target] = items;
       state.threadWorkspaceHydratedByWorkspace[target] = true;
-      persistThreadsCache();
+      if (!state.threadRefreshCompletedAtByWorkspace || typeof state.threadRefreshCompletedAtByWorkspace !== "object") {
+        state.threadRefreshCompletedAtByWorkspace = {};
+      }
+      state.threadRefreshCompletedAtByWorkspace[target] = nowRef();
+      const persistStartedAt = performanceRef.now();
+      try {
+        persistThreadsCache();
+      } finally {
+        recordLocalTask({
+          command: "thread cache persist",
+          elapsedMs: performanceRef.now() - persistStartedAt,
+          fields: {
+            workspace: target,
+            force,
+            requestId: String(apiTrace?.requestId || ""),
+            itemCount: items.length,
+          },
+        });
+      }
       if (getWorkspaceTarget() !== target) return;
       const shouldAnimateVisibleListFromPlaceholder = domWasPlaceholder && items.length > 0;
       const animationHoldRemainingMs = Math.max(
@@ -324,6 +374,15 @@ export function createThreadListRefreshModule(deps) {
       applyThreadFilter();
       updateHeaderUi();
     } finally {
+      recordLocalTask({
+        command: "thread refresh total",
+        elapsedMs: performanceRef.now() - refreshStartedAt,
+        fields: {
+          workspace: target,
+          force,
+          silent,
+        },
+      });
       if (state.threadRefreshAbortByWorkspace[target] === controller) {
         state.threadRefreshAbortByWorkspace[target] = null;
       }

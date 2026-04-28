@@ -15,25 +15,25 @@ describe("threadLive", () => {
     expect(resolveThreadAutoRefreshInterval(false, true, 20000, 3500)).toBe(3500);
   });
 
-  it("refreshes both workspace buckets when available", () => {
+  it("refreshes only the active workspace bucket automatically", () => {
     expect(
       resolveThreadAutoRefreshTargets("windows", {
         windowsInstalled: true,
         wsl2Installed: true,
       })
-    ).toEqual(["windows", "wsl2"]);
+    ).toEqual(["windows"]);
     expect(
       resolveThreadAutoRefreshTargets("wsl2", {
         windowsInstalled: true,
         wsl2Installed: true,
       })
-    ).toEqual(["wsl2", "windows"]);
+    ).toEqual(["wsl2"]);
     expect(
       resolveThreadAutoRefreshTargets("windows", {
-        windowsInstalled: true,
+        windowsInstalled: false,
         wsl2Installed: false,
       })
-    ).toEqual(["windows"]);
+    ).toEqual([]);
   });
 
   it("keeps polling an opened active thread so external terminal turns can appear without refresh", () => {
@@ -399,7 +399,7 @@ describe("threadLive", () => {
     }
   });
 
-  it("auto refreshes both windows and wsl thread lists when both are available", async () => {
+  it("auto refreshes only the active thread list when both workspaces are available", async () => {
     const callbacks = [];
     const refreshThreadCalls = [];
     let now = 10_000;
@@ -450,11 +450,8 @@ describe("threadLive", () => {
 
       now += 20_001;
       await callbacks[0]();
-      expect(refreshThreadCalls).toHaveLength(2);
-      expect(refreshThreadCalls.map((call) => call[0])).toEqual([
-        "windows",
-        "wsl2",
-      ]);
+      expect(refreshThreadCalls).toHaveLength(1);
+      expect(refreshThreadCalls.map((call) => call[0])).toEqual(["windows"]);
     } finally {
       Date.now = realNow;
     }

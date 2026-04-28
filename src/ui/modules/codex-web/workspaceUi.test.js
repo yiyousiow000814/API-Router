@@ -105,6 +105,156 @@ describe("workspaceUi", () => {
     expect(statuses).toContain("Workspace target: WSL2");
   });
 
+  it("renders fresh cached workspace threads before deferring switch refresh", async () => {
+    const refreshCalls = [];
+    const timers = [];
+    const state = {
+      workspaceTarget: "windows",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      collapsedWorkspaceKeys: new Set(),
+      collapsedWorkspaceKeysByWorkspace: { windows: new Set(), wsl2: new Set() },
+      threadItemsByWorkspace: {
+        windows: [],
+        wsl2: [{ id: "thread-wsl", workspace: "wsl2" }],
+      },
+      threadWorkspaceHydratedByWorkspace: { windows: false, wsl2: true },
+      threadRefreshCompletedAtByWorkspace: { wsl2: 1000 },
+      threadListRenderSigByWorkspace: { windows: "", wsl2: "" },
+      threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+      startCwdByWorkspace: { windows: "", wsl2: "" },
+      threadItemsAll: [],
+      threadItems: [],
+      folderPickerOpen: false,
+    };
+    const module = createWorkspaceUiModule({
+      state,
+      byId() {
+        return null;
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      localStorageRef: { setItem() {} },
+      WORKSPACE_TARGET_KEY: "workspace",
+      START_CWD_BY_WORKSPACE_KEY: "cwd",
+      detectThreadWorkspaceTarget() {
+        return "unknown";
+      },
+      updateHeaderUi() {},
+      renderFolderPicker() {},
+      setStatus() {},
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return true;
+      },
+      buildThreadRenderSig(items) {
+        return String(items.length);
+      },
+      applyThreadFilter() {},
+      refreshThreads(target, options) {
+        refreshCalls.push({ target, options });
+        return Promise.resolve();
+      },
+      syncEventSubscription() {
+        return true;
+      },
+      renderThreads() {},
+      nowRef() {
+        return 2000;
+      },
+      setTimeoutRef(callback, delayMs) {
+        timers.push({ callback, delayMs });
+        return timers.length;
+      },
+      clearTimeoutRef() {},
+    });
+
+    await module.setWorkspaceTarget("wsl2");
+
+    expect(state.threadItemsAll).toEqual([{ id: "thread-wsl", workspace: "wsl2" }]);
+    expect(refreshCalls).toEqual([]);
+    expect(timers).toHaveLength(1);
+    expect(timers[0].delayMs).toBe(1200);
+
+    timers[0].callback();
+
+    expect(refreshCalls).toEqual([
+      { target: "wsl2", options: { force: false, silent: true } },
+    ]);
+  });
+
+  it("refreshes immediately when switching to stale cached workspace threads", async () => {
+    const refreshCalls = [];
+    const timers = [];
+    const state = {
+      workspaceTarget: "windows",
+      workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
+      collapsedWorkspaceKeys: new Set(),
+      collapsedWorkspaceKeysByWorkspace: { windows: new Set(), wsl2: new Set() },
+      threadItemsByWorkspace: {
+        windows: [],
+        wsl2: [{ id: "thread-wsl", workspace: "wsl2" }],
+      },
+      threadWorkspaceHydratedByWorkspace: { windows: false, wsl2: true },
+      threadRefreshCompletedAtByWorkspace: { wsl2: 1000 },
+      threadListRenderSigByWorkspace: { windows: "", wsl2: "" },
+      threadListPendingVisibleAnimationByWorkspace: { windows: false, wsl2: false },
+      startCwdByWorkspace: { windows: "", wsl2: "" },
+      threadItemsAll: [],
+      threadItems: [],
+      folderPickerOpen: false,
+    };
+    const module = createWorkspaceUiModule({
+      state,
+      byId() {
+        return null;
+      },
+      normalizeWorkspaceTarget(value) {
+        return String(value || "").trim().toLowerCase() === "wsl2" ? "wsl2" : "windows";
+      },
+      localStorageRef: { setItem() {} },
+      WORKSPACE_TARGET_KEY: "workspace",
+      START_CWD_BY_WORKSPACE_KEY: "cwd",
+      detectThreadWorkspaceTarget() {
+        return "unknown";
+      },
+      updateHeaderUi() {},
+      renderFolderPicker() {},
+      setStatus() {},
+      pushThreadAnimDebug() {},
+      isThreadListActuallyVisible() {
+        return true;
+      },
+      buildThreadRenderSig(items) {
+        return String(items.length);
+      },
+      applyThreadFilter() {},
+      refreshThreads(target, options) {
+        refreshCalls.push({ target, options });
+        return Promise.resolve();
+      },
+      syncEventSubscription() {
+        return true;
+      },
+      renderThreads() {},
+      nowRef() {
+        return 20000;
+      },
+      setTimeoutRef(callback, delayMs) {
+        timers.push({ callback, delayMs });
+        return timers.length;
+      },
+      clearTimeoutRef() {},
+    });
+
+    await module.setWorkspaceTarget("wsl2");
+
+    expect(timers).toEqual([]);
+    expect(refreshCalls).toEqual([
+      { target: "wsl2", options: { force: false, silent: true } },
+    ]);
+  });
+
   it("refreshes canonical runtime state for the requested workspace", async () => {
     const updates = [];
     const state = {

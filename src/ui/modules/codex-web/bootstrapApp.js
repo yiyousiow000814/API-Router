@@ -145,14 +145,6 @@ export function createBootstrapModule(deps) {
 
     restoreModelsCache();
     restoreThreadsCache(state.workspaceTarget);
-    updateWorkspaceAvailability(false, false);
-    if (state.threadItemsByWorkspace.windows.length || state.threadItemsByWorkspace.wsl2.length) {
-      updateWorkspaceAvailability(
-        state.threadItemsByWorkspace.windows.length > 0,
-        state.threadItemsByWorkspace.wsl2.length > 0,
-        { applyFilter: false }
-      );
-    }
 
     applyWorkspaceUi();
     syncHeaderModelPicker();

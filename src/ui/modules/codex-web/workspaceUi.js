@@ -1,6 +1,9 @@
 import { resolveThreadOpenState, setThreadOpenState } from "./threadOpenState.js";
 import { resolveCurrentThreadId } from "./runtimeState.js";
 
+const WORKSPACE_SWITCH_FRESH_THREAD_CACHE_MS = 15000;
+const WORKSPACE_SWITCH_DEFERRED_REFRESH_MS = 1200;
+
 export function normalizeStartCwd(value, target = "windows") {
   const text = String(value || "").trim();
   if (!text) return "";
@@ -109,6 +112,9 @@ export function createWorkspaceUiModule(deps) {
     refreshThreads,
     syncEventSubscription = () => false,
     performanceRef = performance,
+    nowRef = Date.now,
+    setTimeoutRef = setTimeout,
+    clearTimeoutRef = clearTimeout,
   } = deps;
 
   function ensureWorkspaceRuntimeState(target = "windows") {
@@ -285,6 +291,23 @@ export function createWorkspaceUiModule(deps) {
     updateHeaderUi();
   }
 
+  function scheduleWorkspaceSwitchRefresh(target, silent) {
+    const workspace = normalizeWorkspaceTarget(target);
+    if (!state.threadWorkspaceSwitchRefreshTimerByWorkspace || typeof state.threadWorkspaceSwitchRefreshTimerByWorkspace !== "object") {
+      state.threadWorkspaceSwitchRefreshTimerByWorkspace = {};
+    }
+    const existingTimer = Number(state.threadWorkspaceSwitchRefreshTimerByWorkspace[workspace] || 0);
+    if (existingTimer) {
+      clearTimeoutRef(existingTimer);
+      state.threadWorkspaceSwitchRefreshTimerByWorkspace[workspace] = 0;
+    }
+    state.threadWorkspaceSwitchRefreshTimerByWorkspace[workspace] = setTimeoutRef(() => {
+      state.threadWorkspaceSwitchRefreshTimerByWorkspace[workspace] = 0;
+      if (getWorkspaceTarget() !== workspace) return;
+      refreshThreads(workspace, { force: false, silent }).catch((e) => setStatus(e.message, true));
+    }, WORKSPACE_SWITCH_DEFERRED_REFRESH_MS);
+  }
+
   async function setWorkspaceTarget(nextTarget) {
     const startedAt = performanceRef.now();
     const target = normalizeWorkspaceTarget(nextTarget);
@@ -306,11 +329,19 @@ export function createWorkspaceUiModule(deps) {
       ? state.threadItemsByWorkspace[target]
       : [];
     const hasHydrated = !!state.threadWorkspaceHydratedByWorkspace[target];
+    const lastRefreshAt = Number(state.threadRefreshCompletedAtByWorkspace?.[target] || 0);
+    const cacheAgeMs = lastRefreshAt > 0 ? Math.max(0, nowRef() - lastRefreshAt) : null;
+    const cacheFreshForSwitch =
+      hasHydrated &&
+      cacheAgeMs !== null &&
+      cacheAgeMs <= WORKSPACE_SWITCH_FRESH_THREAD_CACHE_MS;
     const listActuallyVisible = isThreadListActuallyVisible();
     pushThreadAnimDebug("setWorkspaceTarget", {
       target,
       previousTarget,
       hasHydrated,
+      cacheAgeMs,
+      cacheFreshForSwitch,
       cachedCount: cached.length,
       listActuallyVisible,
     });
@@ -327,7 +358,11 @@ export function createWorkspaceUiModule(deps) {
       state.threadListAnimateThreadIds = new Set();
       applyThreadFilter();
       updateHeaderUi();
-      setStatus(`Refreshing ${target.toUpperCase()} chats...`);
+      setStatus(
+        cacheFreshForSwitch
+          ? `${target.toUpperCase()} chats ready`
+          : `Refreshing ${target.toUpperCase()} chats...`
+      );
     } else {
       state.threadItemsAll = [];
       state.threadItems = [];
@@ -348,9 +383,15 @@ export function createWorkspaceUiModule(deps) {
         previousTarget,
         hasHydrated,
         cachedCount: cached.length,
+        cacheAgeMs,
+        cacheFreshForSwitch,
         listActuallyVisible,
       },
     });
+    if (cacheFreshForSwitch) {
+      scheduleWorkspaceSwitchRefresh(target, true);
+      return;
+    }
     refreshThreads(target, { force: false, silent: hasHydrated }).catch((e) =>
       setStatus(e.message, true)
     );

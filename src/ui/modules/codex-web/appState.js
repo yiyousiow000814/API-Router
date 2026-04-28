@@ -105,6 +105,8 @@ export function createInitialState() {
     drawerOpenPhaseTimer: 0,
     threadRefreshAbortByWorkspace: { windows: null, wsl2: null },
     threadRefreshReqSeqByWorkspace: { windows: 0, wsl2: 0 },
+    threadRefreshCompletedAtByWorkspace: { windows: 0, wsl2: 0 },
+    threadWorkspaceSwitchRefreshTimerByWorkspace: { windows: 0, wsl2: 0 },
     threadAutoRefreshLastMsByWorkspace: { windows: 0, wsl2: 0 },
     threadForceRefreshLastMsByWorkspace: { windows: 0, wsl2: 0 },
     threadAutoRefreshInFlight: false,
@@ -176,7 +178,7 @@ export function createInitialState() {
     providerSwitchboardConfirm: null,
     providerSwitchboardProvidersModalOpen: false,
     workspaceTarget: "windows",
-    workspaceAvailability: { windowsInstalled: false, wsl2Installed: false },
+    workspaceAvailability: { windowsInstalled: true, wsl2Installed: true },
     workspaceRuntimeByTarget: {
       windows: createWorkspaceRuntimeState("windows"),
       wsl2: createWorkspaceRuntimeState("wsl2"),
