@@ -11,7 +11,24 @@ use crate::orchestrator::gateway::web_codex_storage::{codex_attachments_dir, san
 use axum::extract::{Path as AxumPath, Query};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use std::io::BufRead;
+use std::collections::HashMap;
+use std::io::{BufRead, Read, Seek, SeekFrom};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+const PLAN_MODE_CACHE_TTL: Duration = Duration::from_secs(5);
+const PLAN_MODE_TAIL_SCAN_BYTES: u64 = 256 * 1024;
+
+#[derive(Clone, Copy, Debug)]
+struct PlanModeCacheEntry {
+    value: Option<bool>,
+    observed_at: Instant,
+}
+
+fn plan_mode_cache() -> &'static Mutex<HashMap<String, PlanModeCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, PlanModeCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -878,48 +895,112 @@ fn permission_children_for_workspace(workspace: Option<&str>) -> Vec<SlashComman
     children
 }
 
-fn read_plan_mode_from_rollout_path(rollout_path: Option<&str>) -> Option<bool> {
-    let path = rollout_path
+fn parse_plan_mode_line(line: &str) -> Option<bool> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let value = serde_json::from_str::<Value>(trimmed).ok()?;
+    let item_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if item_type != "event_msg" {
+        return None;
+    }
+    let payload = value.get("payload")?;
+    let event_type = payload
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if event_type != "turn_started" && event_type != "task_started" {
+        return None;
+    }
+    let mode = payload
+        .get("collaboration_mode_kind")
+        .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from)?;
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if mode.is_empty() {
+        None
+    } else {
+        Some(mode == "plan")
+    }
+}
+
+fn read_plan_mode_from_tail(path: &std::path::Path) -> Option<bool> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let file_len = file.metadata().ok()?.len();
+    let start = file_len.saturating_sub(PLAN_MODE_TAIL_SCAN_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut text = String::new();
+    file.read_to_string(&mut text).ok()?;
+    let text = if start > 0 {
+        text.split_once('\n').map(|(_, rest)| rest).unwrap_or("")
+    } else {
+        text.as_str()
+    };
+    for line in text.lines().rev() {
+        if let Some(value) = parse_plan_mode_line(line) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn read_plan_mode_from_full_file(path: &std::path::Path) -> Option<bool> {
     let file = std::fs::File::open(path).ok()?;
     let reader = std::io::BufReader::new(file);
     let mut latest: Option<bool> = None;
     for line in reader.lines() {
         let line = line.ok()?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
+        if let Some(value) = parse_plan_mode_line(&line) {
+            latest = Some(value);
         }
-        let value = serde_json::from_str::<Value>(trimmed).ok()?;
-        let item_type = value
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if item_type != "event_msg" {
-            continue;
-        }
-        let payload = value.get("payload")?;
-        let event_type = payload
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if event_type != "turn_started" && event_type != "task_started" {
-            continue;
-        }
-        let mode = payload
-            .get("collaboration_mode_kind")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if mode.is_empty() {
-            continue;
-        }
-        latest = Some(mode == "plan");
     }
     latest
+}
+
+fn read_cached_plan_mode(path: &str) -> Option<Option<bool>> {
+    let guard = match plan_mode_cache().lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    let entry = guard.get(path)?;
+    if Instant::now().duration_since(entry.observed_at) > PLAN_MODE_CACHE_TTL {
+        None
+    } else {
+        Some(entry.value)
+    }
+}
+
+fn store_cached_plan_mode(path: &str, value: Option<bool>) {
+    let mut guard = match plan_mode_cache().lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    guard.insert(
+        path.to_string(),
+        PlanModeCacheEntry {
+            value,
+            observed_at: Instant::now(),
+        },
+    );
+}
+
+fn read_plan_mode_from_rollout_path(rollout_path: Option<&str>) -> Option<bool> {
+    let path_text = rollout_path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)?;
+    if let Some(value) = read_cached_plan_mode(&path_text) {
+        return value;
+    }
+    let path = std::path::PathBuf::from(&path_text);
+    let value = read_plan_mode_from_tail(&path).or_else(|| read_plan_mode_from_full_file(&path));
+    store_cached_plan_mode(&path_text, value);
+    value
 }
 
 pub(super) fn supported_slash_commands(
@@ -1472,9 +1553,9 @@ pub(super) async fn codex_rpc_proxy(
 mod tests {
     use super::{
         build_turn_start_params, build_turn_start_response, parse_slash_command,
-        prompt_with_plan_protocol, record_terminal_turn_start_runtime, service_tier_override_json,
-        status_read_result, supported_slash_commands, turn_thread_id, ServiceTierOverride,
-        TurnStartRequest,
+        prompt_with_plan_protocol, read_plan_mode_from_rollout_path,
+        record_terminal_turn_start_runtime, service_tier_override_json, status_read_result,
+        supported_slash_commands, turn_thread_id, ServiceTierOverride, TurnStartRequest,
     };
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
     use serde_json::{json, Value};
@@ -1840,5 +1921,25 @@ mod tests {
             .children
             .iter()
             .any(|child| child.command == "/plan off" && child.active));
+    }
+
+    #[test]
+    fn plan_mode_reader_uses_recent_tail_entry() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let rollout_path = tmp.path().join("large-rollout.jsonl");
+        let filler = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"message\",\"text\":\"x\"}}\n"
+            .repeat(5000);
+        std::fs::write(
+            &rollout_path,
+            format!(
+                "{filler}{}",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_started\",\"collaboration_mode_kind\":\"plan\"}}\n"
+            ),
+        )
+        .expect("write rollout");
+        assert_eq!(
+            read_plan_mode_from_rollout_path(rollout_path.to_str()),
+            Some(true)
+        );
     }
 }

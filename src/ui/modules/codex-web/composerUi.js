@@ -35,6 +35,7 @@ export function createComposerUiModule(deps) {
     documentRef,
     windowRef,
     api,
+    detectThreadWorkspaceTarget = () => "unknown",
   } = deps;
   const storage = localStorageRef ?? globalThis.localStorage ?? { getItem() { return ""; } };
   const doc = documentRef ?? globalThis.document;
@@ -1381,11 +1382,59 @@ export function createComposerUiModule(deps) {
     return applyActiveThreadGitMetaState(state, payload);
   }
 
+  function normalizeComposerWorkspaceCandidate(value) {
+    const workspace = String(value || "").trim().toLowerCase();
+    if (workspace === "wsl2" || workspace === "wsl") return "wsl2";
+    if (workspace === "windows" || workspace === "win") return "windows";
+    return "";
+  }
+
+  function readThreadItemId(item) {
+    return String(item?.id || item?.threadId || "").trim();
+  }
+
+  function findCachedThreadWorkspace(threadId) {
+    const normalizedThreadId = String(threadId || "").trim();
+    if (!normalizedThreadId) return "";
+    const collections = [
+      { items: state.threadItemsAll, workspace: "" },
+      { items: state.threadItems, workspace: "" },
+      { items: state.threadItemsByWorkspace?.windows, workspace: "windows" },
+      { items: state.threadItemsByWorkspace?.wsl2, workspace: "wsl2" },
+    ];
+    for (const collection of collections) {
+      if (!Array.isArray(collection.items)) continue;
+      const item = collection.items.find((candidate) => readThreadItemId(candidate) === normalizedThreadId);
+      if (!item) continue;
+      const detectedWorkspace = normalizeComposerWorkspaceCandidate(detectThreadWorkspaceTarget(item));
+      if (detectedWorkspace) return detectedWorkspace;
+      const itemWorkspace = normalizeComposerWorkspaceCandidate(item?.workspace || item?.__workspaceQueryTarget);
+      if (itemWorkspace) return itemWorkspace;
+      if (collection.workspace) return collection.workspace;
+    }
+    return "";
+  }
+
+  function resolveActiveThreadGitMetaContext(options = {}) {
+    const threadId = String(options.threadId || resolveCurrentThreadId(state) || "").trim();
+    const requestedWorkspace = normalizeComposerWorkspaceCandidate(options.workspace);
+    const cachedThreadWorkspace = findCachedThreadWorkspace(threadId);
+    const workspace = cachedThreadWorkspace || requestedWorkspace || normalizeGitMetaWorkspace(options.workspace, state);
+    if (
+      threadId &&
+      cachedThreadWorkspace &&
+      String(state.activeThreadId || "").trim() === threadId &&
+      state.activeThreadWorkspace !== cachedThreadWorkspace
+    ) {
+      state.activeThreadWorkspace = cachedThreadWorkspace;
+    }
+    const cwd = String(options.cwd || state.startCwdByWorkspace?.[workspace] || "").trim();
+    return { threadId, workspace, cwd };
+  }
+
   function shouldRefreshActiveThreadGitMeta(options = {}) {
     if (typeof api !== "function") return false;
-    const threadId = String(options.threadId || resolveCurrentThreadId(state) || "").trim();
-    const workspace = normalizeGitMetaWorkspace(options.workspace, state);
-    const cwd = String(options.cwd || state.startCwdByWorkspace?.[workspace] || "").trim();
+    const { threadId, workspace, cwd } = resolveActiveThreadGitMetaContext(options);
     if (workspace !== "windows" && workspace !== "wsl2") return false;
     const useThread = !!threadId && options.preferCwd !== true;
     if (!useThread && !cwd) return false;
@@ -1402,18 +1451,14 @@ export function createComposerUiModule(deps) {
   }
 
   function shouldClearActiveThreadGitMeta(options = {}) {
-    const threadId = String(options.threadId || resolveCurrentThreadId(state) || "").trim();
-    const workspace = String(options.workspace || activeComposerWorkspace(state)).trim().toLowerCase();
-    const cwd = String(options.cwd || state.startCwdByWorkspace?.[normalizeGitMetaWorkspace(workspace, state)] || "").trim();
+    const { threadId, workspace, cwd } = resolveActiveThreadGitMetaContext(options);
     if (workspace !== "windows" && workspace !== "wsl2") return true;
     return !threadId && !cwd;
   }
 
   async function refreshActiveThreadGitMeta(options = {}) {
     if (typeof api !== "function") return null;
-    const threadId = String(options.threadId || resolveCurrentThreadId(state) || "").trim();
-    const workspace = normalizeGitMetaWorkspace(options.workspace, state);
-    const cwd = String(options.cwd || state.startCwdByWorkspace?.[workspace] || "").trim();
+    const { threadId, workspace, cwd } = resolveActiveThreadGitMetaContext(options);
     if (workspace !== "windows" && workspace !== "wsl2") {
       clearActiveThreadGitMeta();
       return null;

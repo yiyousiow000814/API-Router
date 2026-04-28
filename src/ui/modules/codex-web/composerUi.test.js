@@ -4467,4 +4467,101 @@ describe("composerUi", () => {
 
     expect(apiCalls).toBe(0);
   });
+
+  it("uses the cached thread workspace when git metadata state is stale", async () => {
+    const nodes = new Map();
+    for (const id of [
+      "mobileComposerRow",
+      "mobilePromptWrap",
+      "mobilePromptInput",
+      "mobileSendBtn",
+      "composerActionMenuBtn",
+      "composerActionMenu",
+      "queuedTurnCard",
+      "queuedTurnCardTitle",
+      "queuedTurnCardCount",
+      "queuedTurnToggleBtn",
+      "queuedTurnCardStatus",
+      "queuedTurnCardList",
+      "queuedTurnCardSummary",
+      "composerPickerBar",
+      "composerBranchPickerBtn",
+      "composerBranchPickerMenu",
+      "composerPermissionPickerBtn",
+      "composerPermissionPickerMenu",
+    ]) {
+      nodes.set(id, makeNode());
+    }
+    nodes.get("mobilePromptInput").value = "";
+    nodes.get("mobilePromptInput").scrollHeight = 44;
+    const apiCalls = [];
+    const state = {
+      activeMainTab: "chat",
+      activeThreadId: "thread-win",
+      activeThreadWorkspace: "wsl2",
+      workspaceTarget: "wsl2",
+      startCwdByWorkspace: { windows: "C:\\repo", wsl2: "/repo" },
+      threadItemsAll: [],
+      threadItemsByWorkspace: {
+        windows: [{ id: "thread-win", workspace: "windows", cwd: "C:\\repo" }],
+        wsl2: [{ id: "thread-wsl", workspace: "wsl2", cwd: "/repo" }],
+      },
+      activeThreadPendingTurnRunning: false,
+      activeThreadQueuedTurns: [],
+      composerActionMenuOpen: false,
+      composerBranchMenuOpen: false,
+      composerPermissionMenuOpen: false,
+      activeThreadGitMetaLoading: false,
+      activeThreadGitMetaLoaded: false,
+      activeThreadGitMetaError: "",
+      activeThreadGitMetaErrorKey: "",
+      activeThreadGitMetaKey: "",
+      activeThreadCurrentBranch: "",
+      activeThreadBranchOptions: [],
+      permissionPresetByWorkspace: {
+        windows: "/permission auto",
+        wsl2: "/permission auto",
+      },
+    };
+    const module = createComposerUiModule({
+      state,
+      byId(id) {
+        return nodes.get(id) || null;
+      },
+      api(url) {
+        apiCalls.push(url);
+        return Promise.resolve({
+          threadId: "thread-win",
+          workspace: "windows",
+          cwd: "C:\\repo",
+          currentBranch: "main",
+          branches: [{ name: "main" }],
+          isWorktree: false,
+        });
+      },
+      detectThreadWorkspaceTarget(thread) {
+        return String(thread?.workspace || "").trim() === "wsl2" ? "wsl2" : "windows";
+      },
+      readPromptValue(node) {
+        return String(node?.value || "");
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() {
+        return { heightPx: 44, overflowY: "hidden" };
+      },
+      renderComposerContextLeftInNode() {},
+      escapeHtml(value) {
+        return String(value || "");
+      },
+      updateHeaderUi() {},
+      documentRef: { querySelector() { return null; } },
+      windowRef: { innerHeight: 900 },
+    });
+
+    await module.refreshActiveThreadGitMeta({ force: true });
+
+    expect(apiCalls).toEqual(["/codex/threads/thread-win/git?workspace=windows"]);
+    expect(state.activeThreadWorkspace).toBe("windows");
+    expect(state.activeThreadGitMetaKey).toBe("thread:windows:thread-win");
+  });
 });

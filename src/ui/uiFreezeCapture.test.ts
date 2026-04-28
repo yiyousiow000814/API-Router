@@ -8,9 +8,9 @@ import {
 
 describe('uiFreezeCapture helpers', () => {
   it('reports only stalls that exceed the threshold', () => {
-    expect(shouldReportFrameStall(79)).toBe(false)
-    expect(shouldReportFrameStall(80)).toBe(true)
-    expect(shouldReportFrameStall(160)).toBe(true)
+    expect(shouldReportFrameStall(179)).toBe(false)
+    expect(shouldReportFrameStall(180)).toBe(true)
+    expect(shouldReportFrameStall(240)).toBe(true)
   })
 
   it('extends monitor windows without shrinking them', () => {

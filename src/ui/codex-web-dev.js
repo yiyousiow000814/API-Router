@@ -641,6 +641,7 @@ const renderPendingInline = (...args) => renderPendingInlineFromComposition(...a
   normalizeType,
   escapeHtml,
   api,
+  detectThreadWorkspaceTarget,
   updateHeaderUi: (...args) => updateHeaderUi(...args),
   setSyntheticPendingUserInputs: (...args) => setSyntheticPendingUserInputs(...args),
   upsertSyntheticPendingUserInput: (...args) => upsertSyntheticPendingUserInput(...args),

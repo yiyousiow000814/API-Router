@@ -174,14 +174,6 @@ export function createBootstrapModule(deps) {
     if (state.activeMainTab === "settings" && state.settingsActiveSection === "provider") {
       refreshProviderSwitchboard().catch(() => {});
     }
-    refreshSlashCommandsState({ force: true, silent: true })
-      .then(() => {
-        renderComposerContextLeft();
-        syncSettingsControlsFromMain();
-        updateMobileComposerState();
-      })
-      .catch(() => {});
-
     try {
       const chatBox = byId("chatBox");
       if (chatBox && !chatBox.__wiredScrollToBottom) {

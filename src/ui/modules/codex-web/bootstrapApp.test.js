@@ -16,7 +16,7 @@ describe("bootstrapApp", () => {
     expect(Array.from(restoreFavoriteThreadIds("{bad json}"))).toEqual([]);
   });
 
-  it("refreshes slash defaults during bootstrap so a fresh load reflects config", async () => {
+  it("defers slash command loading during bootstrap", async () => {
     const state = {
       startCwdByWorkspace: { windows: "", wsl2: "" },
       favoriteThreadIds: new Set(),
@@ -98,7 +98,7 @@ describe("bootstrapApp", () => {
     module.bootstrap();
     await Promise.resolve();
 
-    expect(calls).toContain("refresh");
+    expect(calls).not.toContain("refresh");
     expect(calls).toContain("viewport");
     expect(calls.filter((entry) => entry === "settings").length).toBeGreaterThan(0);
     expect(calls).toContain("tab:settings");

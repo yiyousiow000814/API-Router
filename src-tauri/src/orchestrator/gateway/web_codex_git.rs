@@ -7,6 +7,11 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const WORKTREE_CACHE_TTL: Duration = Duration::from_secs(300);
+const PR_NUMBERS_CACHE_TTL: Duration = Duration::from_secs(60);
+const WSL_SNAPSHOT_CURRENT_BRANCH_SECTION: &str = "__API_ROUTER_CURRENT_BRANCH__";
+const WSL_SNAPSHOT_WORKTREE_SECTION: &str = "__API_ROUTER_WORKTREE__";
+const WSL_SNAPSHOT_STATUS_SECTION: &str = "__API_ROUTER_STATUS__";
+const WSL_SNAPSHOT_BRANCHES_SECTION: &str = "__API_ROUTER_LOCAL_BRANCHES__";
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
@@ -18,8 +23,19 @@ struct WorktreeCacheEntry {
     observed_at: Instant,
 }
 
+#[derive(Clone, Debug)]
+struct PrNumbersCacheEntry {
+    pr_numbers: HashMap<String, u64>,
+    observed_at: Instant,
+}
+
 fn worktree_cache() -> &'static Mutex<HashMap<String, WorktreeCacheEntry>> {
     static CACHE: OnceLock<Mutex<HashMap<String, WorktreeCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn pr_numbers_cache() -> &'static Mutex<HashMap<String, PrNumbersCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, PrNumbersCacheEntry>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -29,6 +45,14 @@ pub(super) struct GitBranchOption {
     pub(super) name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) pr_number: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct GitMetaSnapshot {
+    pub(super) current_branch: String,
+    pub(super) is_worktree: bool,
+    pub(super) uncommitted_file_count: usize,
+    pub(super) local_branches: Vec<String>,
 }
 
 fn normalize_cache_key(workspace: Option<&str>, cwd: &str) -> Option<String> {
@@ -54,6 +78,17 @@ fn read_cached_worktree_status(entry: WorktreeCacheEntry, now: Instant) -> Optio
         None
     } else {
         Some(entry.is_worktree)
+    }
+}
+
+fn read_cached_pr_numbers(
+    entry: &PrNumbersCacheEntry,
+    now: Instant,
+) -> Option<HashMap<String, u64>> {
+    if now.duration_since(entry.observed_at) > PR_NUMBERS_CACHE_TTL {
+        None
+    } else {
+        Some(entry.pr_numbers.clone())
     }
 }
 
@@ -91,11 +126,45 @@ fn format_branch_switch_fallback_error(switch_error: &str, checkout_error: &str)
     )
 }
 
+fn workspace_pipeline_label(workspace: Option<&str>) -> &'static str {
+    if workspace
+        .map(str::trim)
+        .is_some_and(|value| value.eq_ignore_ascii_case("wsl2"))
+    {
+        "wsl2"
+    } else {
+        "windows"
+    }
+}
+
+fn log_process_pipeline_event(
+    route: &str,
+    stage: &str,
+    workspace: Option<&str>,
+    method: &str,
+    started: Instant,
+    ok: bool,
+    detail: Option<&str>,
+) {
+    let mut pipeline = crate::diagnostics::codex_web_pipeline::CodexWebPipelineEvent::new(
+        route,
+        workspace_pipeline_label(workspace),
+        stage,
+        crate::diagnostics::codex_web_pipeline::elapsed_ms_u64(started),
+    );
+    pipeline.method = Some(method.to_string());
+    pipeline.ok = Some(ok);
+    pipeline.detail = detail.map(str::to_string);
+    crate::diagnostics::codex_web_pipeline::append_pipeline_event(pipeline);
+}
+
 pub(super) async fn run_git_command_for_workspace(
     workspace: Option<&str>,
     cwd: &str,
     args: &[&str],
 ) -> Result<String, String> {
+    let started = Instant::now();
+    let method = format!("git {}", args.join(" "));
     let target = workspace.and_then(parse_workspace_target);
     let mut command = if matches!(target, Some(WorkspaceTarget::Wsl2)) {
         let mut script = format!("git -C {}", shell_quote(cwd));
@@ -118,21 +187,34 @@ pub(super) async fn run_git_command_for_workspace(
     command.stderr(std::process::Stdio::piped());
     #[cfg(target_os = "windows")]
     command.creation_flags(0x08000000);
-    let output = tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
-        .await
-        .map_err(|_| "git command timed out".to_string())?
-        .map_err(|err| err.to_string())?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let detail = if !stderr.is_empty() { stderr } else { stdout };
-        return Err(if detail.is_empty() {
-            "git command failed".to_string()
-        } else {
-            detail
-        });
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    let result =
+        match tokio::time::timeout(std::time::Duration::from_secs(10), command.output()).await {
+            Ok(Ok(output)) if output.status.success() => {
+                Ok(String::from_utf8_lossy(&output.stdout).to_string())
+            }
+            Ok(Ok(output)) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let detail = if !stderr.is_empty() { stderr } else { stdout };
+                Err(if detail.is_empty() {
+                    "git command failed".to_string()
+                } else {
+                    detail
+                })
+            }
+            Ok(Err(err)) => Err(err.to_string()),
+            Err(_) => Err("git command timed out".to_string()),
+        };
+    log_process_pipeline_event(
+        "codex-git-command",
+        "git_command",
+        workspace,
+        &method,
+        started,
+        result.is_ok(),
+        result.as_ref().err().map(String::as_str),
+    );
+    result
 }
 
 pub(super) async fn run_gh_command_for_workspace(
@@ -140,6 +222,8 @@ pub(super) async fn run_gh_command_for_workspace(
     cwd: &str,
     args: &[&str],
 ) -> Result<String, String> {
+    let started = Instant::now();
+    let method = format!("gh {}", args.join(" "));
     let target = workspace.and_then(parse_workspace_target);
     let mut command = if matches!(target, Some(WorkspaceTarget::Wsl2)) {
         let mut script = format!("cd {} && gh", shell_quote(cwd));
@@ -162,21 +246,34 @@ pub(super) async fn run_gh_command_for_workspace(
     command.stderr(std::process::Stdio::piped());
     #[cfg(target_os = "windows")]
     command.creation_flags(0x08000000);
-    let output = tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
-        .await
-        .map_err(|_| "gh command timed out".to_string())?
-        .map_err(|err| err.to_string())?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let detail = if !stderr.is_empty() { stderr } else { stdout };
-        return Err(if detail.is_empty() {
-            "gh command failed".to_string()
-        } else {
-            detail
-        });
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    let result =
+        match tokio::time::timeout(std::time::Duration::from_secs(10), command.output()).await {
+            Ok(Ok(output)) if output.status.success() => {
+                Ok(String::from_utf8_lossy(&output.stdout).to_string())
+            }
+            Ok(Ok(output)) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let detail = if !stderr.is_empty() { stderr } else { stdout };
+                Err(if detail.is_empty() {
+                    "gh command failed".to_string()
+                } else {
+                    detail
+                })
+            }
+            Ok(Err(err)) => Err(err.to_string()),
+            Err(_) => Err("gh command timed out".to_string()),
+        };
+    log_process_pipeline_event(
+        "codex-gh-command",
+        "gh_command",
+        workspace,
+        &method,
+        started,
+        result.is_ok(),
+        result.as_ref().err().map(String::as_str),
+    );
+    result
 }
 
 #[derive(Deserialize)]
@@ -211,6 +308,39 @@ async fn pr_numbers_for_workspace(
         map.insert(item.head_ref_name, item.number);
     }
     Ok(map)
+}
+
+async fn cached_pr_numbers_for_workspace(
+    workspace: Option<&str>,
+    cwd: &str,
+) -> Result<HashMap<String, u64>, String> {
+    let Some(cache_key) = normalize_cache_key(workspace, cwd) else {
+        return pr_numbers_for_workspace(workspace, cwd).await;
+    };
+    {
+        let guard = match pr_numbers_cache().lock() {
+            Ok(guard) => guard,
+            Err(err) => err.into_inner(),
+        };
+        if let Some(entry) = guard.get(&cache_key) {
+            if let Some(value) = read_cached_pr_numbers(entry, Instant::now()) {
+                return Ok(value);
+            }
+        }
+    }
+    let pr_numbers = pr_numbers_for_workspace(workspace, cwd).await?;
+    let mut guard = match pr_numbers_cache().lock() {
+        Ok(guard) => guard,
+        Err(err) => err.into_inner(),
+    };
+    guard.insert(
+        cache_key,
+        PrNumbersCacheEntry {
+            pr_numbers: pr_numbers.clone(),
+            observed_at: Instant::now(),
+        },
+    );
+    Ok(pr_numbers)
 }
 
 fn build_visible_branch_options(
@@ -264,13 +394,13 @@ fn build_visible_branch_options(
     options
 }
 
-pub(super) async fn visible_branch_options_for_workspace_with_current_branch(
+pub(super) async fn visible_branch_options_for_workspace_from_local_branches(
     workspace: Option<&str>,
     cwd: &str,
     current_branch: &str,
+    local_branches: Vec<String>,
 ) -> Result<Vec<GitBranchOption>, String> {
-    let local_branches = local_branches_for_workspace(workspace, cwd).await?;
-    let pr_numbers = pr_numbers_for_workspace(workspace, cwd)
+    let pr_numbers = cached_pr_numbers_for_workspace(workspace, cwd)
         .await
         .unwrap_or_default();
     Ok(build_visible_branch_options(
@@ -382,6 +512,157 @@ pub(super) async fn local_branches_for_workspace(
         .collect())
 }
 
+fn build_wsl_git_meta_snapshot_script(cwd: &str) -> String {
+    format!(
+        concat!(
+            "set -e\n",
+            "cd {cwd}\n",
+            "printf '%s\\n' '{current}'\n",
+            "git branch --show-current\n",
+            "printf '%s\\n' '{worktree}'\n",
+            "git rev-parse --path-format=absolute --show-toplevel --git-dir --git-common-dir\n",
+            "printf '%s\\n' '{status}'\n",
+            "git status --porcelain=v1 --untracked-files=no\n",
+            "printf '%s\\n' '{branches}'\n",
+            "git for-each-ref --format='%(refname:short)' --sort=-committerdate refs/heads\n",
+        ),
+        cwd = shell_quote(cwd),
+        current = WSL_SNAPSHOT_CURRENT_BRANCH_SECTION,
+        worktree = WSL_SNAPSHOT_WORKTREE_SECTION,
+        status = WSL_SNAPSHOT_STATUS_SECTION,
+        branches = WSL_SNAPSHOT_BRANCHES_SECTION,
+    )
+}
+
+fn push_wsl_snapshot_line(
+    section: Option<&str>,
+    line: &str,
+    current_branch: &mut Vec<String>,
+    worktree: &mut Vec<String>,
+    status: &mut Vec<String>,
+    branches: &mut Vec<String>,
+) {
+    match section {
+        Some(WSL_SNAPSHOT_CURRENT_BRANCH_SECTION) => current_branch.push(line.to_string()),
+        Some(WSL_SNAPSHOT_WORKTREE_SECTION) => worktree.push(line.to_string()),
+        Some(WSL_SNAPSHOT_STATUS_SECTION) => status.push(line.to_string()),
+        Some(WSL_SNAPSHOT_BRANCHES_SECTION) => branches.push(line.to_string()),
+        _ => {}
+    }
+}
+
+fn parse_wsl_git_meta_snapshot_output(output: &str) -> Result<GitMetaSnapshot, String> {
+    let mut section = None;
+    let mut current_branch = Vec::new();
+    let mut worktree = Vec::new();
+    let mut status = Vec::new();
+    let mut branches = Vec::new();
+    for line in output.lines() {
+        let trimmed = line.trim_end();
+        section = match trimmed {
+            WSL_SNAPSHOT_CURRENT_BRANCH_SECTION => Some(WSL_SNAPSHOT_CURRENT_BRANCH_SECTION),
+            WSL_SNAPSHOT_WORKTREE_SECTION => Some(WSL_SNAPSHOT_WORKTREE_SECTION),
+            WSL_SNAPSHOT_STATUS_SECTION => Some(WSL_SNAPSHOT_STATUS_SECTION),
+            WSL_SNAPSHOT_BRANCHES_SECTION => Some(WSL_SNAPSHOT_BRANCHES_SECTION),
+            _ => {
+                push_wsl_snapshot_line(
+                    section,
+                    trimmed,
+                    &mut current_branch,
+                    &mut worktree,
+                    &mut status,
+                    &mut branches,
+                );
+                section
+            }
+        };
+    }
+    let current_branch = current_branch
+        .iter()
+        .map(String::as_str)
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    let is_worktree = parse_worktree_detection_output(&worktree.join("\n"))?;
+    let status_output = status.join("\n");
+    let uncommitted_file_count = count_uncommitted_changes(&status_output);
+    let local_branches = branches
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect();
+    Ok(GitMetaSnapshot {
+        current_branch,
+        is_worktree,
+        uncommitted_file_count,
+        local_branches,
+    })
+}
+
+async fn wsl_git_meta_snapshot(cwd: &str) -> Result<GitMetaSnapshot, String> {
+    let started = Instant::now();
+    let script = build_wsl_git_meta_snapshot_script(cwd);
+    let mut command = tokio::process::Command::new("wsl.exe");
+    command.arg("-e").arg("bash").arg("-lc").arg(script);
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    #[cfg(target_os = "windows")]
+    command.creation_flags(0x08000000);
+    let result =
+        match tokio::time::timeout(std::time::Duration::from_secs(10), command.output()).await {
+            Ok(Ok(output)) if output.status.success() => {
+                parse_wsl_git_meta_snapshot_output(&String::from_utf8_lossy(&output.stdout))
+            }
+            Ok(Ok(output)) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let detail = if !stderr.is_empty() { stderr } else { stdout };
+                Err(if detail.is_empty() {
+                    "wsl git metadata snapshot failed".to_string()
+                } else {
+                    detail
+                })
+            }
+            Ok(Err(err)) => Err(err.to_string()),
+            Err(_) => Err("wsl git metadata snapshot timed out".to_string()),
+        };
+    log_process_pipeline_event(
+        "codex-git-command",
+        "git_meta_snapshot",
+        Some("wsl2"),
+        "wsl git metadata snapshot",
+        started,
+        result.is_ok(),
+        result.as_ref().err().map(String::as_str),
+    );
+    result
+}
+
+pub(super) async fn git_meta_snapshot_for_workspace(
+    workspace: Option<&str>,
+    cwd: &str,
+) -> Result<GitMetaSnapshot, String> {
+    if matches!(
+        workspace.and_then(parse_workspace_target),
+        Some(WorkspaceTarget::Wsl2)
+    ) {
+        return wsl_git_meta_snapshot(cwd).await;
+    }
+    let (current_branch, is_worktree, uncommitted_file_count, local_branches) = tokio::try_join!(
+        current_branch_for_workspace(workspace, cwd),
+        detect_git_worktree_for_workspace(workspace, cwd),
+        uncommitted_file_count_for_workspace(workspace, cwd),
+        local_branches_for_workspace(workspace, cwd),
+    )?;
+    Ok(GitMetaSnapshot {
+        current_branch,
+        is_worktree,
+        uncommitted_file_count,
+        local_branches,
+    })
+}
+
 pub(super) async fn ensure_clean_worktree_for_workspace(
     workspace: Option<&str>,
     cwd: &str,
@@ -459,6 +740,32 @@ mod tests {
         assert!(visible.iter().any(|o| o.name == "current"));
         assert!(visible.iter().any(|o| o.name == "with-pr"));
         assert!(!visible.iter().any(|o| o.name == "inactive"));
+    }
+
+    #[test]
+    fn parse_wsl_git_meta_snapshot_output_reads_all_sections() {
+        let output = concat!(
+            "__API_ROUTER_CURRENT_BRANCH__\n",
+            "feature/demo\n",
+            "__API_ROUTER_WORKTREE__\n",
+            "/home/yiyou/repo\n",
+            "/home/yiyou/repo/.git\n",
+            "/home/yiyou/repo/.git\n",
+            "__API_ROUTER_STATUS__\n",
+            " M src/main.rs\n",
+            "?? ignored.txt\n",
+            "__API_ROUTER_LOCAL_BRANCHES__\n",
+            "feature/demo\n",
+            "main\n",
+        );
+        let snapshot = parse_wsl_git_meta_snapshot_output(output).expect("parse snapshot");
+        assert_eq!(snapshot.current_branch, "feature/demo");
+        assert!(!snapshot.is_worktree);
+        assert_eq!(snapshot.uncommitted_file_count, 1);
+        assert_eq!(
+            snapshot.local_branches,
+            vec!["feature/demo".to_string(), "main".to_string()]
+        );
     }
 
     #[test]
