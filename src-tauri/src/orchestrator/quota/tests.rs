@@ -303,12 +303,9 @@ mod tests {
                                             "start_time": 1777449600_u64,
                                             "end_time": 1779945600_u64,
                                             "amount_total": 45000000,
-                                            "amount_used": 1250000
-                                        },
-                                        "plan": {
-                                            "id": 7,
-                                            "title": "codex-每天90刀-30天卡",
-                                            "quota_reset_period": "daily"
+                                            "amount_used": 1250000,
+                                            "last_reset_time": 1777449600_u64,
+                                            "next_reset_time": 1777536000_u64
                                         }
                                     }
                                 ],

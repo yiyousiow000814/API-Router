@@ -30,7 +30,9 @@ active_status = "active"
 end_time_pointer = "/subscription/end_time"
 amount_total_pointer = "/amount_total"
 amount_used_pointer = "/amount_used"
-reset_period_pointer = "/quota_reset_period"
+reset_period_pointers = ["/plan/quota_reset_period", "/subscription/quota_reset_period"]
+reset_window_start_pointer = "/subscription/last_reset_time"
+reset_window_end_pointer = "/subscription/next_reset_time"
 plan_title_pointer = "/title"
 
 [usage.summary_mapping]

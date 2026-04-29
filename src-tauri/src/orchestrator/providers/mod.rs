@@ -112,7 +112,9 @@ pub(crate) struct SubscriptionLoginProfile {
     pub end_time_pointer: String,
     pub amount_total_pointer: String,
     pub amount_used_pointer: String,
-    pub reset_period_pointer: String,
+    pub reset_period_pointers: Vec<String>,
+    pub reset_window_start_pointer: Option<String>,
+    pub reset_window_end_pointer: Option<String>,
     pub plan_title_pointer: String,
 }
 
@@ -176,7 +178,11 @@ struct SubscriptionLoginFile {
     #[serde(default)]
     amount_used_pointer: Option<String>,
     #[serde(default)]
-    reset_period_pointer: Option<String>,
+    reset_period_pointers: Vec<String>,
+    #[serde(default)]
+    reset_window_start_pointer: Option<String>,
+    #[serde(default)]
+    reset_window_end_pointer: Option<String>,
     #[serde(default)]
     plan_title_pointer: Option<String>,
 }
@@ -859,8 +865,16 @@ fn parse_subscription_login_profile(
             .unwrap_or_else(|| "/amount_total".to_string()),
         amount_used_pointer: optional_trimmed(value.amount_used_pointer)
             .unwrap_or_else(|| "/amount_used".to_string()),
-        reset_period_pointer: optional_trimmed(value.reset_period_pointer)
-            .unwrap_or_else(|| "/quota_reset_period".to_string()),
+        reset_period_pointers: normalized_pointer_list(
+            value.reset_period_pointers,
+            &[
+                "/plan/quota_reset_period",
+                "/subscription/quota_reset_period",
+                "/quota_reset_period",
+            ],
+        ),
+        reset_window_start_pointer: optional_trimmed(value.reset_window_start_pointer),
+        reset_window_end_pointer: optional_trimmed(value.reset_window_end_pointer),
         plan_title_pointer: optional_trimmed(value.plan_title_pointer)
             .unwrap_or_else(|| "/title".to_string()),
     })
