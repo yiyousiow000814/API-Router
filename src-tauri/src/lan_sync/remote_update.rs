@@ -2159,6 +2159,8 @@ fn spawn_remote_update_worker(
     let log_path = lan_remote_update_log_path();
     let mut command = std::process::Command::new(program);
     command.args(&args).current_dir(&repo_root);
+    command.env_remove("API_ROUTER_BUILD_SKIP_RELEASE_BUILD");
+    command.env_remove("API_ROUTER_BUILD_SKIP_PRERELEASE_CHECKS");
     if let Some(path) = status_path {
         command.env("API_ROUTER_REMOTE_UPDATE_STATUS_PATH", path);
     }
@@ -3064,6 +3066,10 @@ mod tests {
 
         assert!(spawn_fn_source.contains("command.stdout(Stdio::null());"));
         assert!(spawn_fn_source.contains("command.stderr(Stdio::null());"));
+        assert!(spawn_fn_source
+            .contains("command.env_remove(\"API_ROUTER_BUILD_SKIP_RELEASE_BUILD\");"));
+        assert!(spawn_fn_source
+            .contains("command.env_remove(\"API_ROUTER_BUILD_SKIP_PRERELEASE_CHECKS\");"));
         assert!(spawn_fn_source.contains("API_ROUTER_REMOTE_UPDATE_LISTEN_PORT"));
         assert!(spawn_fn_source.contains("API_ROUTER_REMOTE_UPDATE_UPDATER_PORT"));
         assert!(spawn_fn_source.contains("API_ROUTER_REMOTE_UPDATE_LAN_SECRET"));
@@ -3124,6 +3130,7 @@ mod tests {
         assert!(build_script.contains("[switch]$UseProcessExitCode"));
         assert!(build_script.contains("-UseProcessExitCode"));
         assert!(build_script.contains("CreateNoWindow = [bool]$StartHidden"));
+        assert!(build_script.contains("$RemoteUpdateRequiresFreshBuild"));
         assert!(build_script
             .contains("Skipping Tauri app build; updater binary still builds in this script"));
         let skip_release_build_pos = build_script
@@ -3180,6 +3187,11 @@ mod tests {
         assert!(build_script.contains("return \"[$hostValue]\""));
         assert!(build_script.contains("function Wait-ApiRouterRuntimeHealthy"));
         assert!(build_script.contains("/health"));
+        assert!(build_script.contains("function Get-LocalHttpStatusUrl"));
+        assert!(build_script.contains("function Get-ExpectedRuntimeGitSha"));
+        assert!(build_script.contains("/status"));
+        assert!(build_script.contains("runtime build sha"));
+        assert!(build_script.contains("Runtime build check passed"));
         assert!(build_script.contains("returned ok=true"));
         assert!(build_script.contains("api_router_updater.exe"));
         assert!(build_script.contains("API Router Updater.exe"));

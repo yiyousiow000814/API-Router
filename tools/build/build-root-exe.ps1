@@ -37,7 +37,10 @@ $DstExe = Resolve-BuildArtifactPath 'API_ROUTER_BUILD_DST_EXE_PATH' $DefaultDstE
 $DstUpdaterExe = Resolve-BuildArtifactPath 'API_ROUTER_BUILD_DST_UPDATER_EXE_PATH' $DefaultDstUpdaterExe
 $DstTestExe = Resolve-BuildArtifactPath 'API_ROUTER_BUILD_DST_TEST_EXE_PATH' $DefaultDstTestExe
 $StartFilePath = Resolve-BuildArtifactPath 'API_ROUTER_BUILD_START_FILE_PATH' $DstExe
-$SkipReleaseBuild = ([string][System.Environment]::GetEnvironmentVariable('API_ROUTER_BUILD_SKIP_RELEASE_BUILD')).Trim() -eq '1'
+$RemoteUpdateTargetRef = [string][System.Environment]::GetEnvironmentVariable('API_ROUTER_REMOTE_UPDATE_TARGET_REF')
+$RemoteUpdateToGitSha = [string][System.Environment]::GetEnvironmentVariable('API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA')
+$RemoteUpdateRequiresFreshBuild = -not [string]::IsNullOrWhiteSpace($RemoteUpdateTargetRef) -or -not [string]::IsNullOrWhiteSpace($RemoteUpdateToGitSha)
+$SkipReleaseBuild = (([string][System.Environment]::GetEnvironmentVariable('API_ROUTER_BUILD_SKIP_RELEASE_BUILD')).Trim() -eq '1') -and -not $RemoteUpdateRequiresFreshBuild
 $SkipPrereleaseChecks = ([string][System.Environment]::GetEnvironmentVariable('API_ROUTER_BUILD_SKIP_PRERELEASE_CHECKS')).Trim() -eq '1'
 $UsesArtifactPathOverrides = @(
   'API_ROUTER_BUILD_SRC_EXE_PATH',
@@ -275,6 +278,19 @@ function Get-LocalHttpHealthUrl {
   if ([string]::IsNullOrWhiteSpace($port)) { return $null }
   $hostValue = Get-LocalHttpHealthProbeHost
   return "http://$($hostValue):$($port.Trim())/health"
+}
+
+function Get-LocalHttpStatusUrl {
+  $port = [string](Get-ConfiguredListenPort)
+  if ([string]::IsNullOrWhiteSpace($port)) { return $null }
+  $hostValue = Get-LocalHttpHealthProbeHost
+  return "http://$($hostValue):$($port.Trim())/status"
+}
+
+function Get-ExpectedRuntimeGitSha {
+  $expected = Normalize-VersionSha $env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA $env:API_ROUTER_REMOTE_UPDATE_TARGET_REF
+  if ($expected -eq 'unknown') { return $null }
+  return $expected
 }
 
 function Get-UpdaterDaemonRoot {
@@ -788,6 +804,8 @@ function Wait-ApiRouterRuntimeHealthy {
     $TimeoutSeconds = Get-ApiRouterRuntimeHealthTimeoutSeconds
   }
   $healthUrl = Get-LocalHttpHealthUrl
+  $statusUrl = Get-LocalHttpStatusUrl
+  $expectedGitSha = Get-ExpectedRuntimeGitSha
   $detail = if ($healthUrl) { "Waiting for API Router HTTP health at $healthUrl" } else { 'Waiting for repo root API Router.exe process' }
   Enter-BuildStep -Phase 'health_checking' -Label 'Checking runtime health' -Detail $detail
   $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
@@ -803,6 +821,19 @@ function Wait-ApiRouterRuntimeHealthy {
           if ($healthUrl) {
             $payload = Invoke-JsonHttpGet -Uri $healthUrl -TimeoutSeconds 2
             if ($payload -and $payload.ok -eq $true) {
+              if (-not [string]::IsNullOrWhiteSpace($expectedGitSha)) {
+                if ([string]::IsNullOrWhiteSpace($statusUrl)) {
+                  $lastDetail = "status endpoint unavailable while expecting build $expectedGitSha"
+                  continue
+                }
+                $statusPayload = Invoke-JsonHttpGet -Uri $statusUrl -TimeoutSeconds 2
+                $actualGitSha = [string]$statusPayload.lan_sync.local_node.build_identity.build_git_sha
+                if ($actualGitSha.Trim() -ine $expectedGitSha.Trim()) {
+                  $lastDetail = "runtime build sha $actualGitSha does not match expected $expectedGitSha"
+                  continue
+                }
+                Write-RemoteUpdateLog "Runtime build check passed: $actualGitSha."
+              }
               Write-RemoteUpdateLog "Runtime health check passed: $healthUrl returned ok=true."
               return
             }
