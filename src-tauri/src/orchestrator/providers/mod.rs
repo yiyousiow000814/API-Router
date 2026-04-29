@@ -1262,6 +1262,11 @@ pub(crate) fn resolve_quota_profile(provider: &ProviderConfig) -> ProviderQuotaP
     }
 }
 
+pub(crate) fn provider_supports_usage_login(provider: &ProviderConfig) -> bool {
+    let profile = resolve_quota_profile(provider);
+    profile.uses_login_summary_refresh() || profile.uses_subscription_login_refresh()
+}
+
 pub(crate) fn explicit_usage_mapping(endpoint_url: &str) -> &'static CanonicalUsageMapping {
     explicit_usage_mapping_from_endpoint(Some(endpoint_url))
         .unwrap_or(&DEFAULT_DIRECT_USAGE_MAPPING)

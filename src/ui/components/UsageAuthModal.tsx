@@ -1,5 +1,4 @@
 import { ModalBackdrop } from './ModalBackdrop'
-import { supportsUsageAuthHost } from '../utils/providerUsageSupport'
 
 type Props = {
   open: boolean
@@ -40,9 +39,8 @@ export function UsageAuthModal({
   onClear,
   onSave,
 }: Props) {
+  void baseUrl
   if (!open) return null
-
-  if (!supportsUsageAuthHost(baseUrl)) return null
 
   return (
     <ModalBackdrop className="aoModalBackdrop aoModalBackdropTop" onClose={onCancel}>

@@ -1,4 +1,5 @@
-export function supportsUsageAuthHost(baseUrl?: string | null): boolean {
-  const text = `${baseUrl ?? ''}`.trim().toLowerCase()
-  return text.includes('codex-for') || text.includes('yfy.zhouyang168.top')
+import type { Config } from '../types'
+
+export function supportsUsageAuthProvider(provider?: Pick<Config['providers'][string], 'supports_usage_login'> | null): boolean {
+  return provider?.supports_usage_login === true
 }

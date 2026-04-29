@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { UsageBaseModalState, UseProviderActionsParams } from './types'
 import type { Config, Status } from '../../types'
 import { buildProviderGroupMaps, resolveProviderDisplayName } from '../../utils/providerGroups'
-import { supportsUsageAuthHost } from '../../utils/providerUsageSupport'
+import { supportsUsageAuthProvider } from '../../utils/providerUsageSupport'
 
 const MANUAL_QUOTA_REFRESH_WAIT_TIMEOUT_MS = 12_000
 const MANUAL_QUOTA_REFRESH_WAIT_POLL_MS = 350
@@ -104,11 +104,11 @@ export function buildUsageBaseModalDraft(
   explicitValue: string | null | undefined,
   effectiveValue: string | null | undefined,
   payload?: Partial<UsageAuthPayload> | null,
-  options?: { showUrlInput?: boolean },
+  options?: { showUrlInput?: boolean; supportsUsageAuth?: boolean },
 ) {
   const explicit = (explicitValue ?? '').trim()
   const effective = (effectiveValue ?? '').trim()
-  const showAuthFields = supportsUsageAuthProvider(baseUrl)
+  const showAuthFields = options?.supportsUsageAuth === true
   return {
     open: true,
     provider,
@@ -143,10 +143,6 @@ export function buildUsageAuthModalDraft(
     loading: false,
     loadFailed: false,
   }
-}
-
-function supportsUsageAuthProvider(baseUrl?: string | null): boolean {
-  return supportsUsageAuthHost(baseUrl)
 }
 
 export function shouldPersistUsageAuthFromUsageBaseModal(
@@ -735,10 +731,11 @@ export function useProviderUsageActions({
       setUsageBaseModal({
         ...buildUsageBaseModalDraft(provider, providerBaseUrl, explicit, '', undefined, {
           showUrlInput,
+          supportsUsageAuth: supportsUsageAuthProvider(providerCfg),
         }),
       })
       if (isDevPreview) return
-      const loadAuth = supportsUsageAuthProvider(providerBaseUrl)
+      const loadAuth = supportsUsageAuthProvider(providerCfg)
       const [effectiveResult, authResult] = await Promise.all([
         invoke<string | null>('get_effective_usage_base', { provider })
           .then((value) => ({ status: 'fulfilled' as const, value }))
@@ -780,7 +777,7 @@ export function useProviderUsageActions({
   const openUsageAuthModal = useCallback(
     async (provider: string) => {
       const providerCfg = config?.providers?.[provider]
-      if (!supportsUsageAuthProvider(providerCfg?.base_url)) {
+      if (!supportsUsageAuthProvider(providerCfg)) {
         flashToast('Usage auth only supports configured login hosts', 'error')
         return
       }

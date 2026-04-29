@@ -130,7 +130,7 @@ describe('buildUsageBaseModalDraft', () => {
     })
   })
 
-  it('adds login fields for supported usage auth hosts', () => {
+  it('adds login fields when provider config supports usage auth', () => {
     expect(
       buildUsageBaseModalDraft(
         'custom-name',
@@ -138,6 +138,7 @@ describe('buildUsageBaseModalDraft', () => {
         'https://yfy.zhouyang168.top',
         'https://yfy.zhouyang168.top',
         { username: ' alice ', password: 'secret' },
+        { supportsUsageAuth: true },
       ),
     ).toMatchObject({
       showAuthFields: true,
@@ -147,13 +148,15 @@ describe('buildUsageBaseModalDraft', () => {
     })
   })
 
-  it('marks supported auth hosts as not loaded until auth payload arrives', () => {
+  it('marks supported auth providers as not loaded until auth payload arrives', () => {
     expect(
       buildUsageBaseModalDraft(
         'custom-name',
         'https://yfy.zhouyang168.top/v1',
         'https://yfy.zhouyang168.top',
         'https://yfy.zhouyang168.top',
+        undefined,
+        { supportsUsageAuth: true },
       ),
     ).toMatchObject({
       showAuthFields: true,

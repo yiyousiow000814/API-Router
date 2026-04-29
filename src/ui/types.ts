@@ -410,6 +410,7 @@ export type Config = {
       key_storage?: 'auth_json' | 'config_toml_experimental_bearer_token'
       has_usage_token?: boolean
       has_usage_login?: boolean
+      supports_usage_login?: boolean
       borrowed?: boolean
       editable?: boolean
       source_node_id?: string | null

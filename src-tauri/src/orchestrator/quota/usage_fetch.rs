@@ -648,7 +648,7 @@ fn normalize_subscription_login_reset_period(value: &str) -> Option<&'static str
 fn infer_subscription_login_reset_period(
     selected: &Value,
     profile: &SubscriptionLoginProfile,
-) -> &'static str {
+) -> Option<&'static str> {
     if let Some(period) = profile
         .reset_period_pointers
         .iter()
@@ -656,22 +656,14 @@ fn infer_subscription_login_reset_period(
         .filter_map(Value::as_str)
         .find_map(normalize_subscription_login_reset_period)
     {
-        return period;
+        return Some(period);
     }
-    let Some(start_pointer) = profile.reset_window_start_pointer.as_deref() else {
-        return "monthly";
-    };
-    let Some(end_pointer) = profile.reset_window_end_pointer.as_deref() else {
-        return "monthly";
-    };
-    let Some(start) = subscription_login_number_at(selected, start_pointer) else {
-        return "monthly";
-    };
-    let Some(end) = subscription_login_number_at(selected, end_pointer) else {
-        return "monthly";
-    };
+    let start_pointer = profile.reset_window_start_pointer.as_deref()?;
+    let end_pointer = profile.reset_window_end_pointer.as_deref()?;
+    let start = subscription_login_number_at(selected, start_pointer)?;
+    let end = subscription_login_number_at(selected, end_pointer)?;
     let span_seconds = (end - start).abs();
-    if span_seconds <= 2.0 * 24.0 * 60.0 * 60.0 {
+    Some(if span_seconds <= 2.0 * 24.0 * 60.0 * 60.0 {
         "daily"
     } else if span_seconds <= 8.0 * 24.0 * 60.0 * 60.0 {
         "weekly"
@@ -679,7 +671,7 @@ fn infer_subscription_login_reset_period(
         "monthly"
     } else {
         "never"
-    }
+    })
 }
 
 fn normalize_subscription_login_payload(
@@ -710,7 +702,7 @@ fn normalize_subscription_login_payload(
     let total = total_quota / quota_per_unit;
     let used = used_quota / quota_per_unit;
     let remaining = (total - used).max(0.0);
-    let reset_period = infer_subscription_login_reset_period(selected, profile);
+    let reset_period = infer_subscription_login_reset_period(selected, profile)?;
     let mut out = serde_json::json!({
         "plan_name": plan.pointer(&profile.plan_title_pointer).and_then(Value::as_str).unwrap_or(""),
         "quota_reset_period": reset_period,

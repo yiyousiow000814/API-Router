@@ -1130,6 +1130,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn subscription_login_without_reset_period_fails_normalization() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://yfy.zhouyang168.top/v1".to_string(), secrets);
+        let cfg = st.cfg.read().clone();
+        let provider = cfg.providers.get("p1").unwrap();
+        let profile = resolve_quota_profile(provider);
+        let subscription_login = profile.subscription_login.as_ref().unwrap();
+        let payload = serde_json::json!({
+            "success": true,
+            "data": {
+                "subscriptions": [{
+                    "subscription": {
+                        "status": "active",
+                        "end_time": 1779945600_u64,
+                        "amount_total": 45000000,
+                        "amount_used": 1250000
+                    }
+                }]
+            }
+        });
+
+        assert!(normalize_subscription_login_payload(&payload, 500000.0, subscription_login).is_none());
+    }
+
+    #[tokio::test]
     async fn quan2go_provider_definition_fetches_usage_via_card_login_summary() {
         let (base, handle) = start_quan2go_codexusage_mock_server().await;
         let tmp = tempfile::tempdir().unwrap();

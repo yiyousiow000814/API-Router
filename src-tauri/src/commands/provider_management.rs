@@ -350,6 +350,7 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
                   "key_storage": state.secrets.get_provider_key_storage_mode(name),
                   "has_usage_token": usage_token.is_some(),
                   "has_usage_login": usage_login.is_some(),
+                  "supports_usage_login": crate::orchestrator::providers::provider_supports_usage_login(p),
                   "borrowed": borrowed,
                   "editable": !borrowed,
                   "source_node_id": followed_source_node_id.clone(),
