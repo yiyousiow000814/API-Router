@@ -15,6 +15,7 @@ export type UsageBaseModalState = {
   provider: string
   baseUrl: string
   showUrlInput: boolean
+  showAuthFields: boolean
   value: string
   auto: boolean
   explicitValue: string

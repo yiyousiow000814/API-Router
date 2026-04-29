@@ -5,7 +5,13 @@ type Props = {
   provider: string
   value: string
   effectiveValue?: string
+  username: string
+  password: string
+  showAuthFields?: boolean
+  loadFailed?: boolean
   onChange: (next: string) => void
+  onChangeUsername: (next: string) => void
+  onChangePassword: (next: string) => void
   onCancel: () => void
   onClear: () => void
   onSave: () => void
@@ -18,7 +24,13 @@ export function UsageBaseModal({
   provider,
   value,
   effectiveValue = '',
+  username,
+  password,
+  showAuthFields = false,
+  loadFailed = false,
   onChange,
+  onChangeUsername,
+  onChangePassword,
   onCancel,
   onClear,
   onSave,
@@ -41,6 +53,36 @@ export function UsageBaseModal({
           value={value}
           onChange={(e) => onChange(e.target.value)}
         />
+        {showAuthFields ? (
+          <>
+            <div className="aoMiniLabel" style={{ marginTop: 10 }}>
+              Username
+            </div>
+            <input
+              className="aoInput"
+              style={{ width: '100%', height: 36, borderRadius: 12, padding: '0 12px' }}
+              placeholder="username"
+              value={username}
+              onChange={(e) => onChangeUsername(e.target.value)}
+            />
+            <div className="aoMiniLabel" style={{ marginTop: 10 }}>
+              Password
+            </div>
+            <input
+              className="aoInput"
+              type="password"
+              style={{ width: '100%', height: 36, borderRadius: 12, padding: '0 12px' }}
+              placeholder="password"
+              value={password}
+              onChange={(e) => onChangePassword(e.target.value)}
+            />
+          </>
+        ) : null}
+        {loadFailed ? (
+          <div className="aoHint" style={{ marginTop: 8, color: 'rgba(145, 12, 43, 0.92)' }}>
+            Failed to load saved usage auth.
+          </div>
+        ) : null}
         {effectiveValue ? (
           <div className="aoHint" style={{ marginTop: 8 }}>
             Current derived endpoint: <span style={{ fontFamily: mono }}>{effectiveValue}</span>

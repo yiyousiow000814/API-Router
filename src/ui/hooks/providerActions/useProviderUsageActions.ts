@@ -108,11 +108,13 @@ export function buildUsageBaseModalDraft(
 ) {
   const explicit = (explicitValue ?? '').trim()
   const effective = (effectiveValue ?? '').trim()
+  const showAuthFields = supportsUsageAuthProvider(baseUrl)
   return {
     open: true,
     provider,
     baseUrl: (baseUrl ?? '').trim(),
     showUrlInput: options?.showUrlInput ?? true,
+    showAuthFields,
     value: explicit,
     auto: !explicit,
     explicitValue: explicit,
@@ -446,7 +448,14 @@ export function useProviderUsageActions({
     if (!provider) return
     try {
       await applyUsageBaseUrl(provider, usageBaseModal.value)
-      if (!isDevPreview && usageBaseModal.value.trim()) {
+      if (usageBaseModal.showAuthFields) {
+        await applyUsageAuth(provider, {
+          token: usageBaseModal.token,
+          username: usageBaseModal.username,
+          password: usageBaseModal.password,
+        })
+      }
+      if (!isDevPreview && (usageBaseModal.value.trim() || usageBaseModal.showAuthFields)) {
         await refreshQuota(provider)
       }
       setUsageBaseModal({
@@ -454,6 +463,7 @@ export function useProviderUsageActions({
         provider: '',
         baseUrl: '',
         showUrlInput: true,
+        showAuthFields: false,
         value: '',
         auto: false,
         explicitValue: '',
@@ -469,11 +479,16 @@ export function useProviderUsageActions({
     }
   }, [
     applyUsageBaseUrl,
+    applyUsageAuth,
     isDevPreview,
     flashToast,
     refreshQuota,
     setUsageBaseModal,
+    usageBaseModal.password,
     usageBaseModal.provider,
+    usageBaseModal.showAuthFields,
+    usageBaseModal.token,
+    usageBaseModal.username,
     usageBaseModal.value,
   ])
 
@@ -714,23 +729,39 @@ export function useProviderUsageActions({
         }),
       })
       if (isDevPreview) return
-      const effectiveResult = await invoke<string | null>('get_effective_usage_base', { provider })
-        .then((value) => ({ status: 'fulfilled' as const, value }))
-        .catch((reason) => ({ status: 'rejected' as const, reason }))
+      const loadAuth = supportsUsageAuthProvider(providerBaseUrl)
+      const [effectiveResult, authResult] = await Promise.all([
+        invoke<string | null>('get_effective_usage_base', { provider })
+          .then((value) => ({ status: 'fulfilled' as const, value }))
+          .catch((reason) => ({ status: 'rejected' as const, reason })),
+        loadAuth
+          ? invoke<UsageAuthPayload>('get_usage_auth', { provider })
+              .then((value) => ({ status: 'fulfilled' as const, value }))
+              .catch((reason) => ({ status: 'rejected' as const, reason }))
+          : Promise.resolve({ status: 'fulfilled' as const, value: null }),
+      ])
       setUsageBaseModal((m) => {
         if (!m.open || m.provider !== provider) return m
         const nextEffective =
           effectiveResult.status === 'fulfilled' ? (effectiveResult.value ?? '').trim() : m.effectiveValue
+        const authPayload = authResult.status === 'fulfilled' ? authResult.value : null
         return {
           ...m,
           value: m.explicitValue,
           auto: !m.explicitValue,
           effectiveValue: nextEffective,
+          token: (authPayload?.token ?? '').trim(),
+          username: (authPayload?.username ?? '').trim(),
+          password: authPayload?.password ?? '',
           loading: false,
+          loadFailed: authResult.status === 'rejected',
         }
       })
       if (effectiveResult.status === 'rejected') {
         console.warn('Failed to load usage base', effectiveResult.reason)
+      }
+      if (authResult.status === 'rejected') {
+        console.warn('Failed to load usage auth', authResult.reason)
       }
     },
     [config, isDevPreview, setUsageBaseModal],

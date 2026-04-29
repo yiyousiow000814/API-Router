@@ -66,6 +66,7 @@ describe('buildUsageBaseModalDraft', () => {
       provider: 'p1',
       baseUrl: 'https://codex-api.packycode.com/v1',
       showUrlInput: true,
+      showAuthFields: false,
       value: '',
       auto: true,
       explicitValue: '',
@@ -84,6 +85,7 @@ describe('buildUsageBaseModalDraft', () => {
       provider: 'p1',
       baseUrl: 'https://codex-api.packycode.com/v1',
       showUrlInput: true,
+      showAuthFields: false,
       value: 'https://manual.example.com',
       auto: false,
       explicitValue: 'https://manual.example.com',
@@ -111,6 +113,7 @@ describe('buildUsageBaseModalDraft', () => {
       provider: 'p1',
       baseUrl: 'https://codex.packycode.com/v1',
       showUrlInput: false,
+      showAuthFields: false,
       value: 'https://codex.packycode.com',
       auto: false,
       explicitValue: 'https://codex.packycode.com',
@@ -120,6 +123,22 @@ describe('buildUsageBaseModalDraft', () => {
       password: '',
       loading: false,
       loadFailed: false,
+    })
+  })
+
+  it('adds login fields for supported usage auth hosts', () => {
+    expect(
+      buildUsageBaseModalDraft(
+        'yangfangyu',
+        'https://yfy.zhouyang168.top/v1',
+        'https://yfy.zhouyang168.top',
+        'https://yfy.zhouyang168.top',
+        { username: ' alice ', password: 'secret' },
+      ),
+    ).toMatchObject({
+      showAuthFields: true,
+      username: 'alice',
+      password: 'secret',
     })
   })
 })

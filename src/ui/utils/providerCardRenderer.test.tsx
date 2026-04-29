@@ -190,18 +190,18 @@ describe('provider usage controls rendering', () => {
     expect(html).not.toContain('monthly cap')
   })
 
-  it('hides usage url for codex-for hosts', () => {
+  it('uses usage url for codex-for login settings', () => {
     const html = renderCardHtml(buildConfig(null, 'https://api-vip.codex-for.vip/v1'), buildStatus())
     expect(html).toContain('Email')
-    expect(html).toContain('Usage Auth')
-    expect(html).not.toContain('Usage URL')
+    expect(html).not.toContain('Usage Auth')
+    expect(html).toContain('Usage URL')
     expect(html).not.toContain('Usage URL sets the usage endpoint.')
   })
 
-  it('shows usage auth and usage url for yangfangyu hosts', () => {
+  it('uses only usage url for yangfangyu login settings', () => {
     const html = renderCardHtml(buildConfig(null, 'https://yfy.zhouyang168.top/v1'), buildStatus())
     expect(html).toContain('Email')
-    expect(html).toContain('Usage Auth')
+    expect(html).not.toContain('Usage Auth')
     expect(html).toContain('Usage URL')
   })
 

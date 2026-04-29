@@ -4,7 +4,6 @@ import {
   getVisibleBudgetHardCapPeriods,
   isBudgetInfoQuota,
 } from './providerBudgetWindows'
-import { hidesUsageUrlForHost, supportsUsageAuthHost } from './providerUsageSupport'
 
 type CreateProviderCardRendererOptions = {
   config: Config | null
@@ -48,9 +47,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
     const p = options.config?.providers?.[name]
     if (!p) return null
 
-    const normalizedBaseUrl = (p.base_url ?? '').toLowerCase()
-    const supportsUsageAuth = supportsUsageAuthHost(normalizedBaseUrl)
-    const supportsUsageUrl = !hidesUsageUrlForHost(normalizedBaseUrl)
+    const supportsUsageUrl = true
     const quotaHardCap = p.quota_hard_cap ?? { daily: true, weekly: true, monthly: true }
     const quota = options.status?.quota?.[name]
     const hasBudgetInfo = isBudgetInfoQuota(quota)
@@ -239,15 +236,6 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                   >
                     Email
                   </button>
-                  {supportsUsageAuth ? (
-                    <button
-                      className="aoTinyBtn"
-                      disabled={!editable}
-                      onClick={() => void options.openUsageAuthModal(name)}
-                    >
-                      Usage Auth
-                    </button>
-                  ) : null}
                   {supportsUsageUrl ? (
                     <button
                       className="aoTinyBtn"

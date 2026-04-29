@@ -125,10 +125,8 @@ describe('ProviderGroupManagerModal', () => {
         onAssignGroup={async () => undefined}
         onSetUsageBase={async () => undefined}
         onClearUsageBase={async () => undefined}
-        onClearUsageAuth={async () => undefined}
         onSetHardCap={async () => undefined}
         onOpenProviderEmailModal={() => undefined}
-        onOpenUsageAuthModal={async () => undefined}
       />,
     )
 

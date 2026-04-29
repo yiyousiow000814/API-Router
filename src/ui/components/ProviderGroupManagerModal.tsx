@@ -4,7 +4,6 @@ import { ModalBackdrop } from './ModalBackdrop'
 import type { QuotaHardCapField } from '../hooks/providerActions/useProviderUsageActions'
 import { getBudgetWindowVisibleByPeriod, QUOTA_HARD_CAP_PERIODS } from '../utils/providerBudgetWindows'
 import { inferGroupUsageBase } from '../utils/groupUsageBase'
-import { supportsUsageAuthHost } from '../utils/providerUsageSupport'
 
 type Props = {
   open: boolean
@@ -16,18 +15,8 @@ type Props = {
   onAssignGroup: (providers: string[], group: string | null) => Promise<void>
   onSetUsageBase: (provider: string, url: string) => Promise<void>
   onClearUsageBase: (provider: string) => Promise<void>
-  onClearUsageAuth: (provider: string) => Promise<void>
   onSetHardCap: (provider: string, field: QuotaHardCapField, enabled: boolean) => Promise<void>
   onOpenProviderEmailModal: (provider: string, current: string | null | undefined) => void
-  onOpenUsageAuthModal: (provider: string) => Promise<void>
-}
-
-function isCodexForProviderBase(baseUrl: string | null | undefined): boolean {
-  return supportsUsageAuthHost(baseUrl)
-}
-
-function hasProviderUsageLogin(provider: Config['providers'][string] | null | undefined): boolean {
-  return Boolean(provider?.has_usage_token || provider?.has_usage_login)
 }
 
 function orderedProviders(config: Config, ordered: string[], includeDisabled = false): string[] {
@@ -49,10 +38,8 @@ export function ProviderGroupManagerModal({
   onAssignGroup,
   onSetUsageBase,
   onClearUsageBase,
-  onClearUsageAuth,
   onSetHardCap,
   onOpenProviderEmailModal,
-  onOpenUsageAuthModal,
 }: Props) {
   const openInitKeyRef = useRef<string | null>(null)
   const [assignMode, setAssignMode] = useState<'new' | 'add'>('new')
@@ -332,9 +319,6 @@ export function ProviderGroupManagerModal({
                       <div className="aoGroupManagerProviderList">
                         {visibleMembers.map((provider) => {
                           const providerConfig = config.providers?.[provider]
-                          const providerBaseUrl = providerConfig?.base_url ?? ''
-                          const supportsProviderLogin = isCodexForProviderBase(providerBaseUrl)
-                          const hasLogin = hasProviderUsageLogin(providerConfig)
                           return (
                             <div key={`group-member-row-${name}-${provider}`} className="aoGroupManagerMemberRow">
                               <span className="aoProviderName">{provider}</span>
@@ -351,19 +335,6 @@ export function ProviderGroupManagerModal({
                                 >
                                   Email
                                 </button>
-                                {supportsProviderLogin ? (
-                                  <button
-                                    className={`aoTinyBtn${hasLogin ? ' aoTinyBtnDangerSoft' : ''}`}
-                                    disabled={!definitionsEditable}
-                                    onClick={() =>
-                                      void (hasLogin
-                                        ? onClearUsageAuth(provider)
-                                        : onOpenUsageAuthModal(provider))
-                                    }
-                                  >
-                                    {hasLogin ? 'Logout' : 'Login'}
-                                  </button>
-                                ) : null}
                                 {isEditingThisGroup ? (
                                   <button
                                     className="aoGroupManagerMemberRemove"
