@@ -505,10 +505,11 @@ export function AppModals(props: Props) {
             password: '',
             loading: false,
             loadFailed: false,
+            authLoaded: false,
           })
         }
-        onChangeUsername={(username) => setUsageBaseModal((m) => ({ ...m, username }))}
-        onChangePassword={(password) => setUsageBaseModal((m) => ({ ...m, password }))}
+        onChangeUsername={(username) => setUsageBaseModal((m) => ({ ...m, username, authLoaded: true }))}
+        onChangePassword={(password) => setUsageBaseModal((m) => ({ ...m, password, authLoaded: true }))}
         onClear={() =>
           setUsageBaseModal((m) => ({
             ...m,
@@ -518,6 +519,7 @@ export function AppModals(props: Props) {
             token: '',
             username: '',
             password: '',
+            authLoaded: true,
           }))
         }
         onSave={() => void saveUsageBaseUrl()}

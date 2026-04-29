@@ -700,6 +700,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn new_api_console_url_accepts_site_root_or_api_root() {
+        assert_eq!(
+            build_new_api_console_url("https://yfy.zhouyang168.top", "user/login").as_deref(),
+            Some("https://yfy.zhouyang168.top/api/user/login")
+        );
+        assert_eq!(
+            build_new_api_console_url("https://yfy.zhouyang168.top/api", "user/login").as_deref(),
+            Some("https://yfy.zhouyang168.top/api/user/login")
+        );
+        assert_eq!(
+            build_new_api_console_url("https://yfy.zhouyang168.top/api/", "/api/subscription/self")
+                .as_deref(),
+            Some("https://yfy.zhouyang168.top/api/subscription/self")
+        );
+    }
+
+    #[tokio::test]
     async fn budget_info_invalid_shape_reports_base_in_error() {
         use axum::http::StatusCode;
         use axum::routing::get;

@@ -25,6 +25,7 @@ export type UsageBaseModalState = {
   password: string
   loading: boolean
   loadFailed: boolean
+  authLoaded: boolean
 }
 
 export type UsageAuthModalState = {

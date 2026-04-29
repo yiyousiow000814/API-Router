@@ -270,6 +270,7 @@ export default function App() {
     password: "",
     loading: false,
     loadFailed: false,
+    authLoaded: false,
   });
   const [usageAuthModal, setUsageAuthModal] = useState<UsageAuthModalState>({
     open: false,

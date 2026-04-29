@@ -7,6 +7,7 @@ import {
   buildUsageBaseModalDraft,
   invokeManualQuotaRefresh,
   setProviderQuotaHardCapFieldWithRefresh,
+  shouldPersistUsageAuthFromUsageBaseModal,
 } from './useProviderUsageActions'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -76,6 +77,7 @@ describe('buildUsageBaseModalDraft', () => {
       password: '',
       loading: false,
       loadFailed: false,
+      authLoaded: true,
     })
   })
 
@@ -95,6 +97,7 @@ describe('buildUsageBaseModalDraft', () => {
       password: '',
       loading: false,
       loadFailed: false,
+      authLoaded: true,
     })
   })
 
@@ -123,6 +126,7 @@ describe('buildUsageBaseModalDraft', () => {
       password: '',
       loading: false,
       loadFailed: false,
+      authLoaded: true,
     })
   })
 
@@ -139,7 +143,34 @@ describe('buildUsageBaseModalDraft', () => {
       showAuthFields: true,
       username: 'alice',
       password: 'secret',
+      authLoaded: true,
     })
+  })
+
+  it('marks supported auth hosts as not loaded until auth payload arrives', () => {
+    expect(
+      buildUsageBaseModalDraft(
+        'custom-name',
+        'https://yfy.zhouyang168.top/v1',
+        'https://yfy.zhouyang168.top',
+        'https://yfy.zhouyang168.top',
+      ),
+    ).toMatchObject({
+      showAuthFields: true,
+      username: '',
+      password: '',
+      authLoaded: false,
+    })
+  })
+})
+
+describe('shouldPersistUsageAuthFromUsageBaseModal', () => {
+  it('does not persist empty auth when loading saved auth failed', () => {
+    expect(shouldPersistUsageAuthFromUsageBaseModal({ showAuthFields: true, authLoaded: false })).toBe(false)
+  })
+
+  it('persists auth after the saved auth payload loaded', () => {
+    expect(shouldPersistUsageAuthFromUsageBaseModal({ showAuthFields: true, authLoaded: true })).toBe(true)
   })
 })
 

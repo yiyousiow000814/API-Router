@@ -406,7 +406,11 @@ fn build_login_summary_api_url(base: &str, endpoint: &str) -> Option<String> {
 }
 
 fn build_new_api_console_url(base: &str, endpoint: &str) -> Option<String> {
-    let trimmed = base.trim().trim_end_matches('/');
+    let trimmed = base
+        .trim()
+        .trim_end_matches('/')
+        .trim_end_matches("/api")
+        .trim_end_matches('/');
     if trimmed.is_empty() {
         return None;
     }

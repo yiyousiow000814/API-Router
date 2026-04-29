@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import type { UseProviderActionsParams } from './types'
+import type { UsageBaseModalState, UseProviderActionsParams } from './types'
 import type { Config, Status } from '../../types'
 import { buildProviderGroupMaps, resolveProviderDisplayName } from '../../utils/providerGroups'
 import { supportsUsageAuthHost } from '../../utils/providerUsageSupport'
@@ -124,6 +124,7 @@ export function buildUsageBaseModalDraft(
     password: payload?.password ?? '',
     loading: false,
     loadFailed: false,
+    authLoaded: !showAuthFields || payload !== undefined,
   }
 }
 
@@ -146,6 +147,12 @@ export function buildUsageAuthModalDraft(
 
 function supportsUsageAuthProvider(baseUrl?: string | null): boolean {
   return supportsUsageAuthHost(baseUrl)
+}
+
+export function shouldPersistUsageAuthFromUsageBaseModal(
+  modal: Pick<UsageBaseModalState, 'showAuthFields' | 'authLoaded'>,
+): boolean {
+  return modal.showAuthFields && modal.authLoaded
 }
 
 function delay(ms: number): Promise<void> {
@@ -448,7 +455,7 @@ export function useProviderUsageActions({
     if (!provider) return
     try {
       await applyUsageBaseUrl(provider, usageBaseModal.value)
-      if (usageBaseModal.showAuthFields) {
+      if (shouldPersistUsageAuthFromUsageBaseModal(usageBaseModal)) {
         await applyUsageAuth(provider, {
           token: usageBaseModal.token,
           username: usageBaseModal.username,
@@ -473,6 +480,7 @@ export function useProviderUsageActions({
         password: '',
         loading: false,
         loadFailed: false,
+        authLoaded: false,
       })
     } catch (e) {
       flashToast(String(e), 'error')
@@ -485,6 +493,7 @@ export function useProviderUsageActions({
     refreshQuota,
     setUsageBaseModal,
     usageBaseModal.password,
+    usageBaseModal.authLoaded,
     usageBaseModal.provider,
     usageBaseModal.showAuthFields,
     usageBaseModal.token,
@@ -755,6 +764,7 @@ export function useProviderUsageActions({
           password: authPayload?.password ?? '',
           loading: false,
           loadFailed: authResult.status === 'rejected',
+          authLoaded: authResult.status === 'fulfilled',
         }
       })
       if (effectiveResult.status === 'rejected') {
