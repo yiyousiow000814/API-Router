@@ -893,11 +893,12 @@ impl SecretStore {
             limit_weekly_remaining: item.summary.limit_weekly_remaining.clone(),
             limit_weekly_reset_at: item.summary.limit_weekly_reset_at.clone(),
         };
-        self.capture_official_account_profile(
+        let imported = self.capture_official_account_profile(
             &item.auth_json,
             Some(&item.summary.label),
             Some(&usage),
-        )
+        )?;
+        self.select_official_account_profile(&imported.id)
     }
 
     pub fn update_official_account_profile_usage(
@@ -2202,6 +2203,48 @@ mod tests {
         assert_eq!(
             target.active_official_account_profile_auth_json(),
             Some(auth_json)
+        );
+    }
+
+    #[test]
+    fn importing_official_account_sync_item_selects_imported_profile() {
+        let source_tmp = tempfile::tempdir().expect("source tempdir");
+        let target_tmp = tempfile::tempdir().expect("target tempdir");
+        let source = SecretStore::new(source_tmp.path().join("secrets.json"));
+        let target = SecretStore::new(target_tmp.path().join("secrets.json"));
+        let existing_auth_json = serde_json::json!({
+            "tokens": {
+                "account_id": "acct-existing",
+                "access_token": "access-existing"
+            }
+        });
+        let synced_auth_json = serde_json::json!({
+            "tokens": {
+                "account_id": "acct-synced",
+                "access_token": "access-synced"
+            }
+        });
+
+        target
+            .capture_official_account_profile(&existing_auth_json, Some("Existing"), None)
+            .expect("capture existing account");
+        source
+            .capture_official_account_profile(&synced_auth_json, Some("Synced"), None)
+            .expect("capture source account");
+        let item = source
+            .export_official_account_sync_items()
+            .into_iter()
+            .next()
+            .expect("sync item");
+
+        let imported = target
+            .import_official_account_sync_item(&item)
+            .expect("import synced account");
+
+        assert!(imported.active);
+        assert_eq!(
+            target.active_official_account_profile_auth_json(),
+            Some(synced_auth_json)
         );
     }
 

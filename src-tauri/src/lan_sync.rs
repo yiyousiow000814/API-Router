@@ -114,6 +114,7 @@ const LAN_PAIR_REQUEST_TTL_MS: u64 = 5 * 60 * 1000;
 const LAN_PAIR_REQUEST_THROTTLE_MS: u64 = 60 * 1000;
 const LAN_PAIR_APPROVAL_TTL_MS: u64 = 5 * 60 * 1000;
 const LAN_REMOTE_UPDATE_ACCEPTED_STARTUP_GRACE_MS: u64 = 15_000;
+const LAN_OFFICIAL_ACCOUNTS_SYNC_HTTP_TIMEOUT_MS: u64 = 2_500;
 const LAN_SYNC_AUTH_NODE_ID_HEADER: &str = "x-api-router-lan-node-id";
 const LAN_SYNC_AUTH_SECRET_HEADER: &str = "x-api-router-lan-secret";
 pub(crate) const LAN_REMOTE_UPDATE_CAPABILITY: &str = "remote_update_v2";
@@ -4095,6 +4096,10 @@ fn lan_sync_http_client() -> &'static reqwest::Client {
     })
 }
 
+fn official_account_profiles_request_timeout() -> Duration {
+    Duration::from_millis(LAN_OFFICIAL_ACCOUNTS_SYNC_HTTP_TIMEOUT_MS)
+}
+
 fn peer_pair_state(
     node_id: &str,
     trusted_node_ids: &std::collections::BTreeSet<String>,
@@ -4422,6 +4427,7 @@ async fn fetch_official_account_profiles_http(
             version: 1,
             node_id: runtime.local_node.node_id.clone(),
         })
+        .timeout(official_account_profiles_request_timeout())
         .send()
         .await
         .map_err(|err| {
@@ -7542,6 +7548,14 @@ mod tests {
         assert_eq!(probe.route, "/lan-sync/edit");
         assert_eq!(probe.outcome, "ok");
         assert!(snapshot.last_http_sync_failure.is_none());
+    }
+
+    #[test]
+    fn official_account_profile_fetch_uses_short_request_timeout() {
+        assert_eq!(
+            super::official_account_profiles_request_timeout(),
+            std::time::Duration::from_millis(2_500)
+        );
     }
 
     #[test]
