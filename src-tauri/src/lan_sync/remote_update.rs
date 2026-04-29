@@ -136,6 +136,24 @@ pub(crate) struct LanRemoteUpdateDebugResponsePacket {
     #[serde(default)]
     pub shell_log_tail: Option<String>,
     #[serde(default)]
+    pub app_startup_path: Option<String>,
+    #[serde(default)]
+    pub app_startup_file_exists: bool,
+    #[serde(default)]
+    pub app_startup_tail: Option<String>,
+    #[serde(default)]
+    pub gateway_bootstrap_path: Option<String>,
+    #[serde(default)]
+    pub gateway_bootstrap_file_exists: bool,
+    #[serde(default)]
+    pub gateway_bootstrap_tail: Option<String>,
+    #[serde(default)]
+    pub gateway_startup_path: Option<String>,
+    #[serde(default)]
+    pub gateway_startup_file_exists: bool,
+    #[serde(default)]
+    pub gateway_startup_tail: Option<String>,
+    #[serde(default)]
     pub worker_bootstrap_observed: bool,
     pub worker_script_probe: Option<LanRemoteUpdateWorkerScriptProbe>,
     pub local_build_identity: LanBuildIdentitySnapshot,
@@ -704,6 +722,15 @@ fn read_remote_update_log_tail(max_bytes: usize) -> Option<String> {
 
 fn read_remote_update_shell_window_log_tail(max_bytes: usize) -> Option<String> {
     let path = remote_update_shell_window_log_path()?;
+    read_optional_log_tail(&path, max_bytes)
+}
+
+fn runtime_startup_diag_path(file_name: &str) -> Option<std::path::PathBuf> {
+    Some(crate::diagnostics::current_user_data_dir()?.join(file_name))
+}
+
+fn runtime_startup_diag_tail(file_name: &str, max_bytes: usize) -> Option<String> {
+    let path = runtime_startup_diag_path(file_name)?;
     read_optional_log_tail(&path, max_bytes)
 }
 
@@ -2048,6 +2075,9 @@ pub(crate) async fn lan_sync_remote_update_debug_http(
     let status_path = lan_remote_update_status_path();
     let log_path = lan_remote_update_log_path();
     let shell_log_path = remote_update_shell_window_log_path();
+    let app_startup_path = runtime_startup_diag_path("app-startup.json");
+    let gateway_bootstrap_path = runtime_startup_diag_path("gateway-bootstrap.json");
+    let gateway_startup_path = runtime_startup_diag_path("gateway-startup.json");
     let remote_update_status = load_lan_remote_update_status();
     let worker_bootstrap_observed = remote_update_status
         .as_ref()
@@ -2055,6 +2085,9 @@ pub(crate) async fn lan_sync_remote_update_debug_http(
     let worker_script_probe = probe_remote_update_worker_script();
     let file_log_tail = read_remote_update_log_tail(6_000);
     let shell_log_tail = read_remote_update_shell_window_log_tail(20_000);
+    let app_startup_tail = runtime_startup_diag_tail("app-startup.json", 12_000);
+    let gateway_bootstrap_tail = runtime_startup_diag_tail("gateway-bootstrap.json", 12_000);
+    let gateway_startup_tail = runtime_startup_diag_tail("gateway-startup.json", 12_000);
     let (log_tail_source, log_tail) =
         select_remote_update_log_tail(remote_update_status.as_ref(), file_log_tail);
     Json(serde_json::json!(LanRemoteUpdateDebugResponsePacket {
@@ -2079,6 +2112,19 @@ pub(crate) async fn lan_sync_remote_update_debug_http(
         shell_log_file_exists: shell_log_path.as_ref().is_some_and(|path| path.is_file()),
         shell_log_path: shell_log_path.map(|path| path.display().to_string()),
         shell_log_tail,
+        app_startup_file_exists: app_startup_path.as_ref().is_some_and(|path| path.is_file()),
+        app_startup_path: app_startup_path.map(|path| path.display().to_string()),
+        app_startup_tail,
+        gateway_bootstrap_file_exists: gateway_bootstrap_path
+            .as_ref()
+            .is_some_and(|path| path.is_file()),
+        gateway_bootstrap_path: gateway_bootstrap_path.map(|path| path.display().to_string()),
+        gateway_bootstrap_tail,
+        gateway_startup_file_exists: gateway_startup_path
+            .as_ref()
+            .is_some_and(|path| path.is_file()),
+        gateway_startup_path: gateway_startup_path.map(|path| path.display().to_string()),
+        gateway_startup_tail,
         worker_bootstrap_observed,
         worker_script_probe,
         local_build_identity: current_build_identity(),
@@ -2883,6 +2929,15 @@ mod tests {
         assert!(!parsed.shell_log_file_exists);
         assert_eq!(parsed.shell_log_path, None);
         assert_eq!(parsed.shell_log_tail, None);
+        assert!(!parsed.app_startup_file_exists);
+        assert_eq!(parsed.app_startup_path, None);
+        assert_eq!(parsed.app_startup_tail, None);
+        assert!(!parsed.gateway_bootstrap_file_exists);
+        assert_eq!(parsed.gateway_bootstrap_path, None);
+        assert_eq!(parsed.gateway_bootstrap_tail, None);
+        assert!(!parsed.gateway_startup_file_exists);
+        assert_eq!(parsed.gateway_startup_path, None);
+        assert_eq!(parsed.gateway_startup_tail, None);
         assert_eq!(parsed.remote_update_status, None);
     }
 

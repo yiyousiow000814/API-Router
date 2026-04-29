@@ -111,6 +111,32 @@ function Get-RepoUserDataDir {
   return Join-Path $RepoRoot 'user-data'
 }
 
+function Get-TextFileTail([string]$Path, [int]$MaxChars) {
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) { return $null }
+  try {
+    $text = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+    if ($null -eq $text) { return $null }
+    if ($text.Length -le $MaxChars) { return $text.Trim() }
+    return $text.Substring($text.Length - $MaxChars).Trim()
+  } catch {
+    return "failed to read ${Path}: $($_.Exception.Message)"
+  }
+}
+
+function Write-RuntimeStartupDiagnostics([string]$Reason) {
+  $userDataDir = Get-RepoUserDataDir
+  Write-RemoteUpdateLog "Runtime startup diagnostics after ${Reason}: user_data_dir=$userDataDir"
+  foreach ($fileName in @('app-startup.json', 'gateway-bootstrap.json', 'gateway-startup.json')) {
+    $path = Join-Path $userDataDir $fileName
+    $tail = Get-TextFileTail -Path $path -MaxChars 4000
+    if ([string]::IsNullOrWhiteSpace($tail)) {
+      Write-RemoteUpdateLog "Runtime startup diagnostics ${fileName}: <missing or empty>"
+    } else {
+      Write-RemoteUpdateLog "Runtime startup diagnostics ${fileName}: $tail"
+    }
+  }
+}
+
 function Read-RepoTomlSectionValue {
   param(
     [Parameter(Mandatory = $true)]
@@ -783,6 +809,24 @@ function Format-ProcessSummary([object[]]$Processes) {
       }) -join '; ')
 }
 
+function Get-ProcessCommandLineSummary([int[]]$ProcessIds) {
+  if (-not $ProcessIds -or $ProcessIds.Count -eq 0) { return '<none>' }
+  $items = @()
+  foreach ($processId in $ProcessIds) {
+    try {
+      $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction Stop
+      if ($proc) {
+        $items += "pid=$processId parent=$($proc.ParentProcessId) exe=$($proc.ExecutablePath) command=$($proc.CommandLine)"
+      } else {
+        $items += "pid=$processId <missing cim process>"
+      }
+    } catch {
+      $items += "pid=$processId <command line unavailable: $($_.Exception.Message)>"
+    }
+  }
+  return ($items -join '; ')
+}
+
 function Get-ApiRouterRuntimeProcesses {
   try {
     return @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
@@ -874,6 +918,7 @@ function Start-ApiRouter {
   Reset-LastExitCode
   if ($startedProcess) {
     Write-RemoteUpdateLog "Started API Router process: pid=$($startedProcess.Id); path=$StartFilePath"
+    Write-RemoteUpdateLog "Started API Router command line: $(Get-ProcessCommandLineSummary @([int]$startedProcess.Id))"
   }
   return $startedProcess
 }
@@ -907,6 +952,7 @@ function Wait-ApiRouterRuntimeProcessStarted {
           $pids = ($alive | ForEach-Object { $_.Id }) -join ','
           $lastDetail = "repo root API Router.exe process observed: pid=$pids"
           Write-RemoteUpdateLog $lastDetail
+          Write-RemoteUpdateLog "Observed API Router command line: $(Get-ProcessCommandLineSummary @($alive | ForEach-Object { [int]$_.Id }))"
         } elseif ((([DateTime]::UtcNow) - $stableSince).TotalMilliseconds -ge 1500) {
           $pids = ($alive | ForEach-Object { $_.Id }) -join ','
           Write-RemoteUpdateLog "Runtime restart gate passed: repo root API Router.exe stayed alive; pid=$pids"
@@ -1005,6 +1051,7 @@ function Wait-ApiRouterRuntimeHealthy {
   if (-not $lastDetail) {
     $lastDetail = 'timed out waiting for API Router.exe'
   }
+  Write-RuntimeStartupDiagnostics "runtime health timeout"
   throw "runtime health check failed: $lastDetail; $(Get-RuntimePortOwnerDetail)"
 }
 

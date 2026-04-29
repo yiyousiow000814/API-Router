@@ -3,7 +3,9 @@ use std::io::ErrorKind;
 use std::net::IpAddr;
 use std::net::SocketAddr;
 #[cfg(windows)]
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+#[cfg(windows)]
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 
@@ -100,6 +102,24 @@ fn tailscale_hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     cmd
 }
 
+#[cfg(windows)]
+fn command_output_with_timeout(mut command: Command, timeout: Duration) -> anyhow::Result<Output> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        if child.try_wait()?.is_some() {
+            return Ok(child.wait_with_output()?);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("command timed out after {}ms", timeout.as_millis());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 fn write_gateway_bootstrap_diag(stage: &str, detail: Option<&str>) {
     let Some(user_data_dir) = std::env::var("API_ROUTER_USER_DATA_DIR").ok() else {
         return;
@@ -139,12 +159,15 @@ fn write_gateway_bootstrap_diag(stage: &str, detail: Option<&str>) {
 #[cfg(windows)]
 fn detected_tailscale_ipv4_addrs() -> Vec<IpAddr> {
     write_gateway_bootstrap_diag("tailscale_ipv4_detect_start", None);
-    let output =
-        tailscale_hidden_command(crate::tailscale_diagnostics::resolve_tailscale_command_path())
-            .args(["ip", "-4"])
-            .output();
+    let mut command =
+        tailscale_hidden_command(crate::tailscale_diagnostics::resolve_tailscale_command_path());
+    command.args(["ip", "-4"]);
+    let output = command_output_with_timeout(command, Duration::from_secs(2));
     let Ok(output) = output else {
-        write_gateway_bootstrap_diag("tailscale_ipv4_detect_unavailable", None);
+        write_gateway_bootstrap_diag(
+            "tailscale_ipv4_detect_unavailable",
+            Some(&output.err().map(|err| err.to_string()).unwrap_or_default()),
+        );
         return Vec::new();
     };
     if !output.status.success() {
@@ -531,6 +554,25 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].to_string(), "100.64.208.117");
         assert_eq!(parsed[1].to_string(), "100.118.0.115");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn command_output_with_timeout_stops_slow_process() {
+        let mut command = std::process::Command::new("powershell.exe");
+        command.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Sleep -Milliseconds 1500",
+        ]);
+
+        let started = std::time::Instant::now();
+        let result =
+            super::command_output_with_timeout(command, std::time::Duration::from_millis(100));
+
+        assert!(result.is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[test]
