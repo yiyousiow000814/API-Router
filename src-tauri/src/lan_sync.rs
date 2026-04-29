@@ -78,6 +78,7 @@ pub(crate) use usage_history::{
 use usage_history::{
     refresh_shared_tracked_spend_projection_for_event, tracked_spend_history_day_key_for_debug,
 };
+pub(crate) use versioning::SYNC_DOMAIN_OFFICIAL_ACCOUNTS as LAN_SYNC_DOMAIN_OFFICIAL_ACCOUNTS;
 use versioning::{
     lan_heartbeat_capabilities, local_sync_contracts, local_version_inventory,
     merge_version_inventory, SYNC_DOMAIN_PROVIDER_DEFINITIONS, SYNC_DOMAIN_SHARED_HEALTH,
@@ -650,6 +651,12 @@ pub(crate) struct LanProviderDefinitionsRequestPacket {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LanOfficialAccountProfilesRequestPacket {
+    version: u8,
+    node_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct LanTrackedSpendHistoryDebugRequestPacket {
     version: u8,
     node_id: String,
@@ -713,6 +720,26 @@ struct LanProviderDefinitionsSyncPacket {
     node_name: String,
     provider_definitions_revision: String,
     definitions: Vec<LanProviderDefinitionSyncItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LanOfficialAccountProfileSyncItem {
+    pub source_node_id: String,
+    pub source_node_name: String,
+    pub remote_profile_id: String,
+    #[serde(default)]
+    pub identity_key: Option<String>,
+    pub summary: crate::orchestrator::secrets::OfficialAccountProfileSummary,
+    #[serde(default)]
+    pub auth_json: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LanOfficialAccountProfilesSyncPacket {
+    version: u8,
+    pub node_id: String,
+    pub node_name: String,
+    pub profiles: Vec<LanOfficialAccountProfileSyncItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1609,6 +1636,46 @@ pub(crate) async fn lan_sync_provider_definitions_http(
         "node_name": node.as_ref().map(|value| value.node_name.clone()).unwrap_or_default(),
         "provider_definitions_revision": provider_definitions_revision(&definitions),
         "definitions": definitions,
+    }))
+    .into_response()
+}
+
+pub(crate) async fn lan_sync_official_accounts_http(
+    State(gateway): State<crate::orchestrator::gateway::GatewayState>,
+    headers: HeaderMap,
+    Json(packet): Json<LanOfficialAccountProfilesRequestPacket>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize_lan_sync_http_request(&gateway, &headers, &packet.node_id) {
+        return err.into_response();
+    }
+    let node = gateway.secrets.get_lan_node_identity();
+    let node_id = node
+        .as_ref()
+        .map(|value| value.node_id.clone())
+        .unwrap_or_default();
+    let node_name = node
+        .as_ref()
+        .map(|value| value.node_name.clone())
+        .unwrap_or_default();
+    let profiles = gateway
+        .secrets
+        .export_official_account_sync_items()
+        .into_iter()
+        .map(|item| LanOfficialAccountProfileSyncItem {
+            source_node_id: node_id.clone(),
+            source_node_name: node_name.clone(),
+            remote_profile_id: item.id,
+            identity_key: item.identity_key,
+            summary: item.summary,
+            auth_json: Some(item.auth_json),
+        })
+        .collect::<Vec<_>>();
+    Json(serde_json::json!({
+        "ok": true,
+        "version": 1,
+        "node_id": node_id,
+        "node_name": node_name,
+        "profiles": profiles,
     }))
     .into_response()
 }
@@ -3828,7 +3895,10 @@ fn sync_contract_version(contracts: &BTreeMap<String, u32>, domain: &str) -> u32
     contracts.get(domain).copied().unwrap_or(0)
 }
 
-fn sync_contract_mismatch_detail(peer: &LanPeerSnapshot, domain: &str) -> Option<(u32, u32)> {
+pub(crate) fn sync_contract_mismatch_detail(
+    peer: &LanPeerSnapshot,
+    domain: &str,
+) -> Option<(u32, u32)> {
     if !peer.trusted {
         return None;
     }
@@ -4331,6 +4401,69 @@ async fn fetch_provider_definitions_http(
         );
     }
     Ok(packet)
+}
+
+async fn fetch_official_account_profiles_http(
+    runtime: &LanSyncRuntime,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    peer: &LanPeerSnapshot,
+) -> Result<LanOfficialAccountProfilesSyncPacket, String> {
+    let base_url = peer_http_base_url(peer)
+        .ok_or_else(|| format!("peer has no valid HTTP listen address: {}", peer.node_id))?;
+    let trust_secret = current_lan_trust_secret(gateway)?;
+    let response = lan_sync_http_client()
+        .post(format!("{base_url}/lan-sync/official-accounts"))
+        .header(
+            LAN_SYNC_AUTH_NODE_ID_HEADER,
+            runtime.local_node.node_id.clone(),
+        )
+        .header(LAN_SYNC_AUTH_SECRET_HEADER, trust_secret)
+        .json(&LanOfficialAccountProfilesRequestPacket {
+            version: 1,
+            node_id: runtime.local_node.node_id.clone(),
+        })
+        .send()
+        .await
+        .map_err(|err| {
+            let detail = format_lan_sync_reqwest_error(&err);
+            runtime.note_http_sync_probe(
+                peer,
+                "/lan-sync/official-accounts",
+                "request_error",
+                &detail,
+            );
+            format!("LAN official accounts request failed: {detail}")
+        })?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let detail = format!("LAN official accounts http {status}: {body}");
+        runtime.note_http_sync_probe(peer, "/lan-sync/official-accounts", "http_error", &detail);
+        return Err(detail);
+    }
+    let packet = response
+        .json::<LanOfficialAccountProfilesSyncPacket>()
+        .await
+        .map_err(|err| {
+            let detail = format_lan_sync_reqwest_error(&err);
+            runtime.note_http_sync_probe(
+                peer,
+                "/lan-sync/official-accounts",
+                "decode_error",
+                &detail,
+            );
+            format!("LAN official accounts response decode failed: {detail}")
+        })?;
+    let _ = runtime.note_http_sync_probe(peer, "/lan-sync/official-accounts", "ok", "HTTP sync ok");
+    Ok(packet)
+}
+
+pub(crate) fn fetch_official_account_profiles_from_peer(
+    runtime: &LanSyncRuntime,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    peer: &LanPeerSnapshot,
+) -> Result<LanOfficialAccountProfilesSyncPacket, String> {
+    tauri::async_runtime::block_on(fetch_official_account_profiles_http(runtime, gateway, peer))
 }
 
 pub(crate) fn refresh_followed_provider_definitions_from_live_peer(

@@ -4,7 +4,7 @@ import { DashboardProvidersSection } from './DashboardProvidersSection'
 import { DashboardSessionsSection } from './DashboardSessionsSection'
 import { LoadingSurface } from './LoadingSurface'
 import type { LastErrorJump } from './ProvidersTable'
-import type { Config, OfficialAccountProfileSummary, Status } from '../types'
+import type { Config, OfficialAccountProfileSummary, RemoteOfficialAccountProfile, Status } from '../types'
 import './DashboardPanel.css'
 
 type Props = {
@@ -27,8 +27,13 @@ type Props = {
   codexSwapBadgeTitle: string
   codexAccountProfiles: OfficialAccountProfileSummary[]
   codexAccountProfilesLoading: boolean
+  remoteCodexAccountProfiles: RemoteOfficialAccountProfile[]
+  remoteCodexAccountProfilesLoading: boolean
+  remoteCodexAccountFollowBusy: Record<string, boolean>
   onActivateCodexAccountProfile: (profileId: string) => Promise<void>
   onRemoveCodexAccountProfile: (profileId: string) => Promise<void>
+  onFollowRemoteCodexAccountProfile: (sourceNodeId: string, remoteProfileId: string) => Promise<void>
+  onRefreshRemoteCodexAccountProfiles: () => Promise<void>
   onAddCodexAccountProfile: () => Promise<void>
   routeMode: 'follow_preferred_auto' | 'balanced_auto'
   onRouteModeChange: (next: 'follow_preferred_auto' | 'balanced_auto') => Promise<boolean>
@@ -64,8 +69,13 @@ export function DashboardPanel({
   codexSwapBadgeTitle,
   codexAccountProfiles,
   codexAccountProfilesLoading,
+  remoteCodexAccountProfiles,
+  remoteCodexAccountProfilesLoading,
+  remoteCodexAccountFollowBusy,
   onActivateCodexAccountProfile,
   onRemoveCodexAccountProfile,
+  onFollowRemoteCodexAccountProfile,
+  onRefreshRemoteCodexAccountProfiles,
   onAddCodexAccountProfile,
   routeMode,
   onRouteModeChange,
@@ -133,8 +143,13 @@ export function DashboardPanel({
           swapBadgeTitle={codexSwapBadgeTitle}
           profiles={codexAccountProfiles}
           profilesLoading={codexAccountProfilesLoading}
+          remoteProfiles={remoteCodexAccountProfiles}
+          remoteProfilesLoading={remoteCodexAccountProfilesLoading}
+          remoteProfileFollowBusy={remoteCodexAccountFollowBusy}
           onActivateProfile={onActivateCodexAccountProfile}
           onRemoveProfile={onRemoveCodexAccountProfile}
+          onFollowRemoteProfile={onFollowRemoteCodexAccountProfile}
+          onRefreshRemoteProfiles={onRefreshRemoteCodexAccountProfiles}
           onAddAccount={onAddCodexAccountProfile}
         />
         <HeroRoutingCard

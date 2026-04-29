@@ -69,8 +69,13 @@ type Props = {
   codexSwapBadgeTitle: string
   codexAccountProfiles: any[]
   codexAccountProfilesLoading: boolean
+  remoteCodexAccountProfiles: any[]
+  remoteCodexAccountProfilesLoading: boolean
+  remoteCodexAccountFollowBusy: Record<string, boolean>
   onActivateCodexAccountProfile: (profileId: string) => Promise<void>
   onRemoveCodexAccountProfile: (profileId: string) => Promise<void>
+  onFollowRemoteCodexAccountProfile: (sourceNodeId: string, remoteProfileId: string) => Promise<void>
+  onRefreshRemoteCodexAccountProfiles: () => Promise<void>
   onAddCodexAccountProfile: () => Promise<void>
   routeMode: 'follow_preferred_auto' | 'balanced_auto'
   onRouteModeChange: (next: 'follow_preferred_auto' | 'balanced_auto') => Promise<boolean>
@@ -180,10 +185,15 @@ function AppMainContentInner(props: Props) {
     codexSwapBadgeText,
     codexSwapBadgeTitle,
     codexAccountProfiles,
-  codexAccountProfilesLoading,
-  onActivateCodexAccountProfile,
-  onRemoveCodexAccountProfile,
-  onAddCodexAccountProfile,
+    codexAccountProfilesLoading,
+    remoteCodexAccountProfiles,
+    remoteCodexAccountProfilesLoading,
+    remoteCodexAccountFollowBusy,
+    onActivateCodexAccountProfile,
+    onRemoveCodexAccountProfile,
+    onFollowRemoteCodexAccountProfile,
+    onRefreshRemoteCodexAccountProfiles,
+    onAddCodexAccountProfile,
     routeMode,
     onRouteModeChange,
     override,
@@ -282,8 +292,13 @@ function AppMainContentInner(props: Props) {
         codexSwapBadgeTitle={codexSwapBadgeTitle}
         codexAccountProfiles={codexAccountProfiles}
         codexAccountProfilesLoading={codexAccountProfilesLoading}
+        remoteCodexAccountProfiles={remoteCodexAccountProfiles}
+        remoteCodexAccountProfilesLoading={remoteCodexAccountProfilesLoading}
+        remoteCodexAccountFollowBusy={remoteCodexAccountFollowBusy}
         onActivateCodexAccountProfile={onActivateCodexAccountProfile}
         onRemoveCodexAccountProfile={onRemoveCodexAccountProfile}
+        onFollowRemoteCodexAccountProfile={onFollowRemoteCodexAccountProfile}
+        onRefreshRemoteCodexAccountProfiles={onRefreshRemoteCodexAccountProfiles}
         onAddCodexAccountProfile={onAddCodexAccountProfile}
         routeMode={routeMode}
         onRouteModeChange={onRouteModeChange}
@@ -341,8 +356,13 @@ function areEqualAppMainContentProps(prev: Props, next: Props): boolean {
         prev.codexSwapBadgeTitle === next.codexSwapBadgeTitle &&
         prev.codexAccountProfiles === next.codexAccountProfiles &&
         prev.codexAccountProfilesLoading === next.codexAccountProfilesLoading &&
+        prev.remoteCodexAccountProfiles === next.remoteCodexAccountProfiles &&
+        prev.remoteCodexAccountProfilesLoading === next.remoteCodexAccountProfilesLoading &&
+        prev.remoteCodexAccountFollowBusy === next.remoteCodexAccountFollowBusy &&
         prev.onActivateCodexAccountProfile === next.onActivateCodexAccountProfile &&
         prev.onRemoveCodexAccountProfile === next.onRemoveCodexAccountProfile &&
+        prev.onFollowRemoteCodexAccountProfile === next.onFollowRemoteCodexAccountProfile &&
+        prev.onRefreshRemoteCodexAccountProfiles === next.onRefreshRemoteCodexAccountProfiles &&
         prev.onAddCodexAccountProfile === next.onAddCodexAccountProfile &&
         prev.routeMode === next.routeMode &&
         prev.onRouteModeChange === next.onRouteModeChange &&

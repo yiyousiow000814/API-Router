@@ -23,6 +23,7 @@ pub(crate) const SYNC_DOMAIN_USAGE_REQUESTS: &str = "usage_requests";
 pub(crate) const SYNC_DOMAIN_USAGE_HISTORY: &str = "usage_history";
 pub(crate) const SYNC_DOMAIN_PROVIDER_DEFINITIONS: &str = "provider_definitions";
 pub(crate) const SYNC_DOMAIN_SHARED_HEALTH: &str = "shared_health";
+pub(crate) const SYNC_DOMAIN_OFFICIAL_ACCOUNTS: &str = "official_accounts";
 
 const LAN_VERSION_RULES: &[LanVersionRule] = &[
     LanVersionRule {
@@ -55,6 +56,12 @@ const LAN_VERSION_RULES: &[LanVersionRule] = &[
         version: 1,
         kind: LanVersionKind::Capability,
         bump_rule: "Bump when provider-definition follow/sync route behavior changes.",
+    },
+    LanVersionRule {
+        name: SYNC_DOMAIN_OFFICIAL_ACCOUNTS,
+        version: 1,
+        kind: LanVersionKind::Capability,
+        bump_rule: "Bump when official-account follow/sync route behavior changes.",
     },
     LanVersionRule {
         name: "config_source",
@@ -106,6 +113,12 @@ const LAN_VERSION_RULES: &[LanVersionRule] = &[
         version: 1,
         kind: LanVersionKind::SyncContract,
         bump_rule: "Bump when provider-definition sync payloads or merge semantics change.",
+    },
+    LanVersionRule {
+        name: SYNC_DOMAIN_OFFICIAL_ACCOUNTS,
+        version: 1,
+        kind: LanVersionKind::SyncContract,
+        bump_rule: "Bump when official-account sync payloads or import semantics change.",
     },
     LanVersionRule {
         name: SYNC_DOMAIN_SHARED_HEALTH,

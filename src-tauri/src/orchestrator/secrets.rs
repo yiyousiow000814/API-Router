@@ -115,6 +115,15 @@ pub struct OfficialAccountProfileAuthEntry {
     pub auth_json: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OfficialAccountProfileSyncItem {
+    pub id: String,
+    #[serde(default)]
+    pub identity_key: Option<String>,
+    pub summary: OfficialAccountProfileSummary,
+    pub auth_json: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderStateBundle {
     pub providers: BTreeMap<String, String>,
@@ -848,6 +857,47 @@ impl SecretStore {
             .collect::<Vec<_>>();
         entries.sort_by(|left, right| left.id.cmp(&right.id));
         entries
+    }
+
+    pub fn export_official_account_sync_items(&self) -> Vec<OfficialAccountProfileSyncItem> {
+        let mut data = self.inner.lock();
+        if merge_official_account_profiles(&mut data) {
+            let _ = self.persist(&data);
+        }
+        let active_id = data.active_official_account_profile_id.clone();
+        let mut items = data
+            .official_account_profiles
+            .iter()
+            .map(|(id, profile)| OfficialAccountProfileSyncItem {
+                id: id.clone(),
+                identity_key: official_account_identity_key(&profile.auth_json),
+                summary: Self::official_account_summary(id, profile, active_id.as_deref()),
+                auth_json: profile.auth_json.clone(),
+            })
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| {
+            official_account_sort_key(&left.summary.label)
+                .cmp(&official_account_sort_key(&right.summary.label))
+                .then_with(|| left.summary.label.cmp(&right.summary.label))
+        });
+        items
+    }
+
+    pub fn import_official_account_sync_item(
+        &self,
+        item: &OfficialAccountProfileSyncItem,
+    ) -> Result<OfficialAccountProfileSummary, String> {
+        let usage = OfficialAccountUsageSnapshot {
+            limit_5h_remaining: item.summary.limit_5h_remaining.clone(),
+            limit_5h_reset_at: item.summary.limit_5h_reset_at.clone(),
+            limit_weekly_remaining: item.summary.limit_weekly_remaining.clone(),
+            limit_weekly_reset_at: item.summary.limit_weekly_reset_at.clone(),
+        };
+        self.capture_official_account_profile(
+            &item.auth_json,
+            Some(&item.summary.label),
+            Some(&usage),
+        )
     }
 
     pub fn update_official_account_profile_usage(
@@ -2113,6 +2163,46 @@ mod tests {
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id, second.id);
         assert!(remaining[0].active);
+    }
+
+    #[test]
+    fn official_account_sync_items_roundtrip_into_another_store() {
+        let source_tmp = tempfile::tempdir().expect("source tempdir");
+        let target_tmp = tempfile::tempdir().expect("target tempdir");
+        let source = SecretStore::new(source_tmp.path().join("secrets.json"));
+        let target = SecretStore::new(target_tmp.path().join("secrets.json"));
+        let usage = OfficialAccountUsageSnapshot {
+            limit_5h_remaining: Some("92%".to_string()),
+            limit_5h_reset_at: Some("111".to_string()),
+            limit_weekly_remaining: Some("81%".to_string()),
+            limit_weekly_reset_at: Some("222".to_string()),
+        };
+        let auth_json = serde_json::json!({
+            "tokens": {
+                "account_id": "acct-sync",
+                "access_token": "access-sync",
+                "refresh_token": "refresh-sync"
+            }
+        });
+
+        source
+            .capture_official_account_profile(&auth_json, Some("Synced account"), Some(&usage))
+            .expect("capture source account");
+        let item = source
+            .export_official_account_sync_items()
+            .into_iter()
+            .next()
+            .expect("sync item");
+        let imported = target
+            .import_official_account_sync_item(&item)
+            .expect("import synced account");
+
+        assert_eq!(imported.label, "Synced account");
+        assert_eq!(imported.limit_5h_remaining.as_deref(), Some("92%"));
+        assert_eq!(
+            target.active_official_account_profile_auth_json(),
+            Some(auth_json)
+        );
     }
 
     #[test]

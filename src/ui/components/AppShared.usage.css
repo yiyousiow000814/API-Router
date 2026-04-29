@@ -1811,8 +1811,11 @@
 }
 
 .aoAccountsMenu {
+  display: flex;
+  flex-direction: column;
   width: min(392px, calc(100vw - 28px));
   min-width: 0;
+  max-height: min(520px, calc(100vh - 120px));
   padding: 8px;
   border-radius: 14px;
 }
@@ -1842,12 +1845,19 @@
 }
 
 .aoAccountsMenuList {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: min(420px, calc(100vh - 240px));
+  min-height: 0;
   overflow-y: auto;
   padding-right: 2px;
+}
+
+.aoAccountsMenuFooter {
+  flex: 0 0 auto;
+  padding-top: 4px;
+  background: inherit;
 }
 
 .aoAccountsMenuDivider {
@@ -1889,6 +1899,95 @@
   border-color: rgba(40, 199, 217, 0.38);
   background: rgba(233, 241, 248, 0.98);
   box-shadow: 0 0 0 1px rgba(40, 199, 217, 0.16);
+}
+
+.aoAccountsRemoteDivider {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px 1px;
+}
+
+.aoAccountsRemoteDivider span {
+  height: 1px;
+  background: rgba(13, 18, 32, 0.08);
+}
+
+.aoAccountsRemoteDivider strong {
+  color: rgba(13, 18, 32, 0.42);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.aoAccountsMenuRowRemote {
+  display: grid;
+  grid-template-rows: auto auto;
+  gap: 9px;
+  padding: 10px;
+  overflow: visible;
+  border-color: rgba(13, 18, 32, 0.1);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(244, 249, 251, 0.88)),
+    rgba(247, 250, 252, 0.9);
+}
+
+.aoAccountsMenuRowRemote:hover {
+  border-color: rgba(40, 199, 217, 0.24);
+  background: rgba(244, 249, 251, 0.9);
+}
+
+.aoAccountsRemoteCardContent {
+  display: block;
+  margin-top: 8px;
+  padding: 7px 8px;
+  border: 1px solid rgba(13, 18, 32, 0.07);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.42);
+  filter: blur(0.75px);
+  opacity: 0.8;
+  pointer-events: none;
+  user-select: none;
+}
+
+.aoAccountsRemoteTopline {
+  position: relative;
+  z-index: 1;
+}
+
+.aoAccountsRemoteFooter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding-top: 1px;
+}
+
+.aoAccountsRemoteMeta {
+  min-width: 0;
+  margin-top: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aoAccountsRemoteFollow {
+  min-width: 72px;
+  height: 26px;
+  border-color: rgba(40, 199, 217, 0.28);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: none;
+}
+
+.aoAccountsMenuRemoteLoading {
+  margin: 0 8px;
+  padding: 8px 2px;
+  color: rgba(13, 18, 32, 0.52);
+  font-size: 11px;
+  font-weight: 650;
 }
 
 .aoAccountsMenuPrimary {

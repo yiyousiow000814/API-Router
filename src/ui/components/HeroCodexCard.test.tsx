@@ -204,4 +204,57 @@ describe('HeroCodexCard', () => {
     expect(html).toContain('No cached limits yet')
     expect(html).not.toContain('Switch to inspect limits')
   })
+
+  it('renders remote official accounts as blurred use cards above add account', () => {
+    const html = renderToStaticMarkup(
+      <HeroCodexCard
+        status={buildStatus()}
+        onLoginLogout={() => {}}
+        onRefresh={() => {}}
+        refreshing={false}
+        onSwapAuthConfig={() => {}}
+        onSwapOptions={() => {}}
+        swapTarget="both"
+        swapTargetWindowsEnabled
+        swapTargetWslEnabled
+        onChangeSwapTarget={() => {}}
+        swapBadgeText=""
+        swapBadgeTitle=""
+        profiles={profiles}
+        profilesLoading={false}
+        remoteProfiles={[
+          {
+            source_node_id: 'node-laptop',
+            source_node_name: 'Yiyou-Laptop',
+            remote_profile_id: 'official_remote_1',
+            summary: {
+              id: 'official_remote_1',
+              label: 'Remote official account',
+              email: 'remote@example.com',
+              plan_label: 'Pro Lite',
+              updated_at_unix_ms: Date.now(),
+              active: false,
+              limit_5h_remaining: '92%',
+              limit_weekly_remaining: '81%',
+            },
+          },
+        ]}
+        remoteProfilesLoading={false}
+        remoteProfileFollowBusy={{}}
+        onActivateProfile={async () => {}}
+        onRemoveProfile={async () => {}}
+        onFollowRemoteProfile={async () => {}}
+        onAddAccount={async () => {}}
+        defaultAccountsMenuOpen
+      />,
+    )
+
+    expect(html).toContain('aoAccountsMenuRowRemote')
+    expect(html).toContain('aoAccountsRemoteFooter')
+    expect(html).toContain('Use')
+    expect(html).toContain('remote@example.com')
+    expect(html).toContain('From Yiyou-Laptop')
+    expect(html).toContain('Trusted devices')
+    expect(html.indexOf('Use')).toBeLessThan(html.indexOf('Add account'))
+  })
 })
