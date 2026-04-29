@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { OfficialAccountProfileSummary, Status } from '../types'
+import type { OfficialAccountProfileSummary, RemoteOfficialAccountProfile, Status } from '../types'
 import { fmtResetIn, fmtWhen } from '../utils/format'
 import { officialAccountDisplayName } from '../utils/codexAccountProfiles'
 import { OfficialAccountQuotaSummary } from './OfficialAccountQuotaSummary'
@@ -19,8 +19,13 @@ type HeroCodexProps = {
   swapBadgeTitle: string
   profiles: OfficialAccountProfileSummary[]
   profilesLoading: boolean
+  remoteProfiles?: RemoteOfficialAccountProfile[]
+  remoteProfilesLoading?: boolean
+  remoteProfileFollowBusy?: Record<string, boolean>
   onActivateProfile: (profileId: string) => Promise<void>
   onRemoveProfile: (profileId: string) => Promise<void>
+  onFollowRemoteProfile?: (sourceNodeId: string, remoteProfileId: string) => Promise<void>
+  onRefreshRemoteProfiles?: () => Promise<void>
   onAddAccount: () => Promise<void>
   defaultAccountsMenuOpen?: boolean
 }
@@ -40,8 +45,13 @@ export function HeroCodexCard({
   swapBadgeTitle,
   profiles,
   profilesLoading,
+  remoteProfiles = [],
+  remoteProfilesLoading = false,
+  remoteProfileFollowBusy = {},
   onActivateProfile,
   onRemoveProfile,
+  onFollowRemoteProfile = async () => {},
+  onRefreshRemoteProfiles = async () => {},
   onAddAccount,
   defaultAccountsMenuOpen = false,
 }: HeroCodexProps) {
@@ -194,7 +204,15 @@ export function HeroCodexCard({
               <button
                 className="aoBtn aoHeroCodexAccountsBtn"
                 type="button"
-                onClick={() => setAccountsMenuOpen((value) => !value)}
+                onClick={() => {
+                  setAccountsMenuOpen((value) => {
+                    const next = !value
+                    if (next) {
+                      void onRefreshRemoteProfiles()
+                    }
+                    return next
+                  })
+                }}
                 title={profilesLoading ? 'Loading accounts...' : 'Official accounts'}
               >
                 {`Accounts (${profiles.length})`}
@@ -255,6 +273,68 @@ export function HeroCodexCard({
                         </button>
                       </div>
                     ))}
+                    {remoteProfiles.length || remoteProfilesLoading ? (
+                      <div className="aoAccountsRemoteDivider" aria-hidden="true">
+                        <span />
+                        <strong>Trusted devices</strong>
+                        <span />
+                      </div>
+                    ) : null}
+                    {remoteProfiles.map((remote) => {
+                      const followKey = `${remote.source_node_id}:${remote.remote_profile_id}`
+                      const followBusy = Boolean(remoteProfileFollowBusy[followKey])
+                      return (
+                        <div
+                          key={followKey}
+                          className="aoAccountsMenuRow aoAccountsMenuRowRemote"
+                        >
+                          <span className="aoAccountsMenuText">
+                            <span className="aoAccountsMenuTopline aoAccountsRemoteTopline">
+                              <span
+                                className="aoAccountsMenuLabel"
+                                title={officialAccountDisplayName(remote.summary)}
+                              >
+                                {officialAccountDisplayName(remote.summary)}
+                              </span>
+                              <span className="aoAccountsMenuTags">
+                                {remote.summary.plan_label ? (
+                                  <span className="aoAccountsMenuPlanTag">
+                                    {remote.summary.plan_label}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </span>
+                            <span className="aoAccountsRemoteCardContent" aria-hidden="true">
+                              <OfficialAccountQuotaSummary profile={remote.summary} />
+                            </span>
+                          </span>
+                          <div className="aoAccountsRemoteFooter">
+                            <span className="aoAccountsMenuMeta aoAccountsRemoteMeta">
+                              From {remote.source_node_name || remote.source_node_id}
+                            </span>
+                            <button
+                              type="button"
+                              className="aoTinyBtn aoAccountsRemoteFollow"
+                              disabled={followBusy}
+                              onClick={() =>
+                                void onFollowRemoteProfile(
+                                  remote.source_node_id,
+                                  remote.remote_profile_id,
+                                )
+                              }
+                            >
+                              {followBusy ? 'Using' : 'Use'}
+                            </button>
+                            <span aria-hidden="true" />
+                          </div>
+                        </div>
+                      )
+                    })}
+                    {remoteProfilesLoading ? (
+                      <div className="aoAccountsMenuRemoteLoading">Checking trusted devices...</div>
+                    ) : null}
+                  </div>
+                  <div className="aoAccountsMenuFooter">
                     <div className="aoAccountsMenuDivider" />
                     <button
                       type="button"

@@ -892,6 +892,8 @@ pub fn run() {
             commands::codex_account_logout,
             commands::codex_account_refresh,
             commands::codex_account_profiles_list,
+            commands::codex_account_remote_profiles_list,
+            commands::codex_account_profile_follow,
             commands::codex_account_refresh_async,
             commands::codex_account_profile_select,
             commands::codex_account_profile_remove,

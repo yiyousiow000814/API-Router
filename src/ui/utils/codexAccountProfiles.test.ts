@@ -3,6 +3,8 @@ import {
   activateDevPreviewOfficialAccountProfile,
   addDevPreviewOfficialAccountProfile,
   buildDevPreviewOfficialAccountProfiles,
+  buildDevPreviewRemoteOfficialAccountProfiles,
+  followDevPreviewRemoteOfficialAccountProfile,
   officialAccountDisplayName,
   removeDevPreviewOfficialAccountProfile,
   shouldRefreshOfficialAccountProfilesUsage,
@@ -88,6 +90,26 @@ describe("buildDevPreviewOfficialAccountProfiles", () => {
     );
     expect(removed).toHaveLength(2);
     expect(removed.some((profile) => profile.active)).toBe(true);
+  });
+
+  it("builds and follows preview remote profiles", () => {
+    const profiles = buildDevPreviewOfficialAccountProfiles({
+      ok: true,
+      signed_in: true,
+    });
+    const [remoteProfile] = buildDevPreviewRemoteOfficialAccountProfiles();
+
+    const followed = followDevPreviewRemoteOfficialAccountProfile(
+      profiles,
+      remoteProfile,
+    );
+
+    expect(followed).toHaveLength(3);
+    expect(followed[2]).toMatchObject({
+      email: "demo.remote.pro@example.com",
+      active: true,
+    });
+    expect(followed[0]?.active).toBe(false);
   });
 
   it("does not refresh per-profile usage on status ticks", () => {

@@ -16,6 +16,7 @@ import type {
   Config,
   OfficialAccountProfileSummary,
   ProviderSwitchboardStatus,
+  RemoteOfficialAccountProfile,
   Status,
   UsageStatistics,
   UsageStatisticsOverview,
@@ -102,6 +103,8 @@ import {
   activateDevPreviewOfficialAccountProfile,
   addDevPreviewOfficialAccountProfile,
   buildDevPreviewOfficialAccountProfiles,
+  buildDevPreviewRemoteOfficialAccountProfiles,
+  followDevPreviewRemoteOfficialAccountProfile,
   removeDevPreviewOfficialAccountProfile,
   shouldRefreshOfficialAccountProfilesUsage,
   type OfficialAccountProfilesRefreshReason,
@@ -346,6 +349,15 @@ export default function App() {
   >([]);
   const [codexAccountProfilesLoading, setCodexAccountProfilesLoading] =
     useState<boolean>(false);
+  const [remoteCodexAccountProfiles, setRemoteCodexAccountProfiles] = useState<
+    RemoteOfficialAccountProfile[]
+  >([]);
+  const [
+    remoteCodexAccountProfilesLoading,
+    setRemoteCodexAccountProfilesLoading,
+  ] = useState<boolean>(false);
+  const [remoteCodexAccountFollowBusy, setRemoteCodexAccountFollowBusy] =
+    useState<Record<string, boolean>>({});
   const pendingOfficialAddAccountRef = useRef<{
     expectedCount: number;
     startedAtUnixMs: number;
@@ -1242,11 +1254,32 @@ export default function App() {
     },
     [isDevPreview],
   );
+  const refreshRemoteCodexAccountProfiles = useCallback(async () => {
+    if (isDevPreview) {
+      setRemoteCodexAccountProfiles(buildDevPreviewRemoteOfficialAccountProfiles());
+      setRemoteCodexAccountProfilesLoading(false);
+      return;
+    }
+    setRemoteCodexAccountProfilesLoading(true);
+    try {
+      const profiles = await invoke<RemoteOfficialAccountProfile[]>(
+        "codex_account_remote_profiles_list",
+      );
+      setRemoteCodexAccountProfiles(profiles);
+    } catch {
+      setRemoteCodexAccountProfiles([]);
+    } finally {
+      setRemoteCodexAccountProfilesLoading(false);
+    }
+  }, [isDevPreview]);
   useEffect(() => {
     void refreshCodexAccountProfiles(status?.codex_account, {
       reason: "status_tick",
     });
-  }, [status?.codex_account?.checked_at_unix_ms, refreshCodexAccountProfiles]);
+  }, [
+    status?.codex_account?.checked_at_unix_ms,
+    refreshCodexAccountProfiles,
+  ]);
   useEffect(() => {
     if (isDevPreview || typeof window === "undefined") return;
     let disposed = false;
@@ -1357,6 +1390,58 @@ export default function App() {
       }
     },
     [flashToast, isDevPreview, refreshCodexAccountProfiles, status?.codex_account],
+  );
+  const onFollowRemoteCodexAccountProfile = useCallback(
+    async (sourceNodeId: string, remoteProfileId: string) => {
+      const followKey = `${sourceNodeId}:${remoteProfileId}`;
+      setRemoteCodexAccountFollowBusy((prev) => ({ ...prev, [followKey]: true }));
+      try {
+        if (isDevPreview) {
+          const followedProfile = remoteCodexAccountProfiles.find(
+            (profile) =>
+              `${profile.source_node_id}:${profile.remote_profile_id}` === followKey,
+          );
+          if (followedProfile) {
+            setCodexAccountProfiles((prev) =>
+              followDevPreviewRemoteOfficialAccountProfile(prev, followedProfile),
+            );
+          }
+          setRemoteCodexAccountProfiles((prev) =>
+            prev.filter(
+              (profile) =>
+                `${profile.source_node_id}:${profile.remote_profile_id}` !== followKey,
+            ),
+          );
+          flashToast("Official account ready to use [TEST]");
+          return;
+        }
+        await invoke<OfficialAccountProfileSummary>("codex_account_profile_follow", {
+          sourceNodeId,
+          remoteProfileId,
+        });
+        await refreshCodexAccountProfiles(status?.codex_account, {
+          reason: "profile_add_complete",
+        });
+        await refreshRemoteCodexAccountProfiles();
+        flashToast("Official account ready to use");
+      } catch (e) {
+        flashToast(String(e), "error");
+      } finally {
+        setRemoteCodexAccountFollowBusy((prev) => {
+          const next = { ...prev };
+          delete next[followKey];
+          return next;
+        });
+      }
+    },
+    [
+      flashToast,
+      isDevPreview,
+      refreshCodexAccountProfiles,
+      refreshRemoteCodexAccountProfiles,
+      remoteCodexAccountProfiles,
+      status?.codex_account,
+    ],
   );
   const onAddCodexAccountProfile = useCallback(
     async () => {
@@ -2354,8 +2439,13 @@ export default function App() {
                 codexSwapBadgeTitle={codexSwapBadge.badgeTitle}
                 codexAccountProfiles={codexAccountProfiles}
                 codexAccountProfilesLoading={codexAccountProfilesLoading}
+                remoteCodexAccountProfiles={remoteCodexAccountProfiles}
+                remoteCodexAccountProfilesLoading={remoteCodexAccountProfilesLoading}
+                remoteCodexAccountFollowBusy={remoteCodexAccountFollowBusy}
                 onActivateCodexAccountProfile={onActivateCodexAccountProfile}
                 onRemoveCodexAccountProfile={onRemoveCodexAccountProfile}
+                onFollowRemoteCodexAccountProfile={onFollowRemoteCodexAccountProfile}
+                onRefreshRemoteCodexAccountProfiles={refreshRemoteCodexAccountProfiles}
                 onAddCodexAccountProfile={onAddCodexAccountProfile}
                 routeMode={routeMode}
                 onRouteModeChange={setRouteMode}

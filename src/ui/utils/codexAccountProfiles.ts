@@ -1,4 +1,8 @@
-import type { OfficialAccountProfileSummary, Status } from "../types";
+import type {
+  OfficialAccountProfileSummary,
+  RemoteOfficialAccountProfile,
+  Status,
+} from "../types";
 
 const DEV_PROFILE_BASE_TIME = Date.UTC(2026, 3, 23, 13, 24, 48);
 
@@ -50,6 +54,67 @@ export function buildDevPreviewOfficialAccountProfiles(
       limit_5h_reset_at: String(DEV_PROFILE_BASE_TIME + 5_400_000),
       limit_weekly_remaining: "41%",
       limit_weekly_reset_at: String(DEV_PROFILE_BASE_TIME + 172_800_000),
+    },
+  ];
+}
+
+export function buildDevPreviewRemoteOfficialAccountProfiles(): RemoteOfficialAccountProfile[] {
+  return [
+    {
+      source_node_id: "dev-demo-laptop",
+      source_node_name: "Demo-Laptop",
+      remote_profile_id: "dev-remote-official-work",
+      identity_key: "dev-remote-work@example.com",
+      summary: {
+        id: "dev-remote-official-work",
+        label: "Official account from Demo-Laptop",
+        email: "demo.remote.pro@example.com",
+        plan_label: "Pro Lite",
+        updated_at_unix_ms: DEV_PROFILE_BASE_TIME - 120_000,
+        usage_updated_at_unix_ms: DEV_PROFILE_BASE_TIME - 120_000,
+        active: false,
+        limit_5h_remaining: "92%",
+        limit_5h_reset_at: String(DEV_PROFILE_BASE_TIME + 6_900_000),
+        limit_weekly_remaining: "81%",
+        limit_weekly_reset_at: String(DEV_PROFILE_BASE_TIME + 241_200_000),
+      },
+    },
+    {
+      source_node_id: "dev-demo-laptop",
+      source_node_name: "Demo-Laptop",
+      remote_profile_id: "dev-remote-official-plus",
+      identity_key: "dev-remote-plus@example.com",
+      summary: {
+        id: "dev-remote-official-plus",
+        label: "Official account from Demo-Laptop",
+        email: "demo.remote.plus@example.com",
+        plan_label: "Plus",
+        updated_at_unix_ms: DEV_PROFILE_BASE_TIME - 180_000,
+        usage_updated_at_unix_ms: DEV_PROFILE_BASE_TIME - 180_000,
+        active: false,
+        limit_5h_remaining: "78%",
+        limit_5h_reset_at: String(DEV_PROFILE_BASE_TIME + 4_800_000),
+        limit_weekly_remaining: "56%",
+        limit_weekly_reset_at: String(DEV_PROFILE_BASE_TIME + 198_000_000),
+      },
+    },
+  ];
+}
+
+export function followDevPreviewRemoteOfficialAccountProfile(
+  profiles: OfficialAccountProfileSummary[],
+  remoteProfile: RemoteOfficialAccountProfile,
+): OfficialAccountProfileSummary[] {
+  if (profiles.some((profile) => profile.email === remoteProfile.summary.email)) {
+    return profiles;
+  }
+  return [
+    ...profiles.map((profile) => ({ ...profile, active: false })),
+    {
+      ...remoteProfile.summary,
+      id: `dev-followed-${remoteProfile.remote_profile_id}`,
+      active: true,
+      updated_at_unix_ms: DEV_PROFILE_BASE_TIME + 240_000,
     },
   ];
 }

@@ -84,6 +84,120 @@ pub(crate) fn codex_account_profiles_list(
 }
 
 #[tauri::command]
+pub(crate) fn codex_account_remote_profiles_list(
+    state: tauri::State<'_, app_state::AppState>,
+) -> Result<Vec<crate::lan_sync::LanOfficialAccountProfileSyncItem>, String> {
+    let cfg = state.gateway.cfg.read().clone();
+    let local_profiles = state.secrets.export_official_account_sync_items();
+    let local_identity_keys = local_profiles
+        .iter()
+        .filter_map(|item| item.identity_key.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let lan_snapshot = state.lan_sync.snapshot(cfg.listen.port, &cfg, &state.secrets);
+    let mut remote_profiles = Vec::new();
+    for peer in lan_snapshot.peers {
+        if !peer.trusted {
+            continue;
+        }
+        if crate::lan_sync::sync_contract_mismatch_detail(
+            &peer,
+            crate::lan_sync::LAN_SYNC_DOMAIN_OFFICIAL_ACCOUNTS,
+        )
+        .is_some()
+        {
+            continue;
+        }
+        if !peer
+            .capabilities
+            .iter()
+            .any(|value| value == "official_accounts_v1")
+        {
+            continue;
+        }
+        let Ok(packet) = crate::lan_sync::fetch_official_account_profiles_from_peer(
+            &state.lan_sync,
+            &state.gateway,
+            &peer,
+        ) else {
+            continue;
+        };
+        remote_profiles.extend(packet.profiles.into_iter().filter_map(|mut profile| {
+            let keep = profile
+                .identity_key
+                .as_ref()
+                .map(|identity| !local_identity_keys.contains(identity))
+                .unwrap_or(true);
+            if keep {
+                profile.auth_json = None;
+                Some(profile)
+            } else {
+                None
+            }
+        }));
+    }
+    remote_profiles.sort_by(|left, right| {
+        left.source_node_name
+            .cmp(&right.source_node_name)
+            .then_with(|| left.summary.label.cmp(&right.summary.label))
+    });
+    Ok(remote_profiles)
+}
+
+#[tauri::command]
+pub(crate) fn codex_account_profile_follow(
+    state: tauri::State<'_, app_state::AppState>,
+    source_node_id: String,
+    remote_profile_id: String,
+) -> Result<crate::orchestrator::secrets::OfficialAccountProfileSummary, String> {
+    let source_node_id = source_node_id.trim();
+    let remote_profile_id = remote_profile_id.trim();
+    if source_node_id.is_empty() || remote_profile_id.is_empty() {
+        return Err("source_node_id and remote_profile_id are required".to_string());
+    }
+    let cfg = state.gateway.cfg.read().clone();
+    let lan_snapshot = state.lan_sync.snapshot(cfg.listen.port, &cfg, &state.secrets);
+    let peer = lan_snapshot
+        .peers
+        .into_iter()
+        .find(|peer| peer.node_id == source_node_id)
+        .ok_or_else(|| format!("unknown or offline official account source: {source_node_id}"))?;
+    if !peer.trusted || !state.secrets.is_lan_node_trusted(source_node_id) {
+        return Err("official account source is not trusted; pair this device first".to_string());
+    }
+    if crate::lan_sync::sync_contract_mismatch_detail(
+        &peer,
+        crate::lan_sync::LAN_SYNC_DOMAIN_OFFICIAL_ACCOUNTS,
+    )
+    .is_some()
+    {
+        return Err("official account sync is blocked by a version mismatch".to_string());
+    }
+    let packet = crate::lan_sync::fetch_official_account_profiles_from_peer(
+        &state.lan_sync,
+        &state.gateway,
+        &peer,
+    )?;
+    let profile = packet
+        .profiles
+        .into_iter()
+        .find(|profile| profile.remote_profile_id == remote_profile_id)
+        .ok_or_else(|| "remote official account is not available anymore".to_string())?;
+    let auth_json = profile
+        .auth_json
+        .ok_or_else(|| "remote official account sync payload is missing auth_json".to_string())?;
+    state
+        .secrets
+        .import_official_account_sync_item(
+            &crate::orchestrator::secrets::OfficialAccountProfileSyncItem {
+                id: profile.remote_profile_id,
+                identity_key: profile.identity_key,
+                summary: profile.summary,
+                auth_json,
+            },
+        )
+}
+
+#[tauri::command]
 pub(crate) fn codex_account_refresh_async(
     app: tauri::AppHandle,
     state: tauri::State<'_, app_state::AppState>,

@@ -1410,6 +1410,10 @@ pub(crate) fn build_router_with_body_limit(state: GatewayState, max_body_bytes: 
             post(crate::lan_sync::lan_sync_provider_definitions_http),
         )
         .route(
+            "/lan-sync/official-accounts",
+            post(crate::lan_sync::lan_sync_official_accounts_http),
+        )
+        .route(
             "/lan-sync/remote-update",
             post(crate::lan_sync::lan_sync_remote_update_http),
         )

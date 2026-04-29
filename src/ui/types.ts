@@ -22,6 +22,14 @@ export type OfficialAccountProfileSummary = {
   limit_weekly_reset_at?: string | null
 }
 
+export type RemoteOfficialAccountProfile = {
+  source_node_id: string
+  source_node_name: string
+  remote_profile_id: string
+  identity_key?: string | null
+  summary: OfficialAccountProfileSummary
+}
+
 export type Status = {
   listen: { host: string; port: number }
   config_revision?: string
