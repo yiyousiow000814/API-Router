@@ -91,6 +91,9 @@ pub const LAN_HEARTBEAT_INTERVAL_MS: u64 = 2_000;
 // though the peer is still reachable and immediately rediscovered from the same listen address.
 pub const LAN_PEER_STALE_AFTER_MS: u64 = 20_000;
 pub const LAN_PEER_HTTP_GRACE_AFTER_MS: u64 = 30_000;
+// Remote rollback intentionally keeps the peer's last known updater address longer than
+// normal LAN HTTP grace. If the main API Router process hangs after an update, heartbeat
+// stops, but the independent updater daemon can still receive a rollback request.
 pub const LAN_REMOTE_UPDATE_ROLLBACK_HTTP_GRACE_AFTER_MS: u64 = 30 * 60 * 1000;
 const LAN_PEER_HISTORY_RETAIN_AFTER_MS: u64 = LAN_REMOTE_UPDATE_ROLLBACK_HTTP_GRACE_AFTER_MS;
 const LAN_HEARTBEAT_SENDER_DELAY_LOG_THRESHOLD_MS: u64 = LAN_HEARTBEAT_INTERVAL_MS * 2;

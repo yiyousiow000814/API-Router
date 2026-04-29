@@ -3099,6 +3099,21 @@ mod tests {
                 .join("build-root-exe.ps1"),
         )
         .expect("read build-root-exe.ps1");
+        let provider_commands = std::fs::read_to_string(
+            repo_root
+                .join("src-tauri")
+                .join("src")
+                .join("commands")
+                .join("provider_management.rs"),
+        )
+        .expect("read provider_management.rs");
+        let tauri_lib =
+            std::fs::read_to_string(repo_root.join("src-tauri").join("src").join("lib.rs"))
+                .expect("read lib.rs");
+        assert!(
+            provider_commands.contains("pub(crate) async fn request_lan_remote_update_rollback")
+        );
+        assert!(tauri_lib.contains("commands::request_lan_remote_update_rollback"));
         assert!(build_script
             .contains("@($RunWithWinSdkCli, 'node', $TauriCliEntry, 'build', '--no-bundle')"));
         assert!(build_script.contains("[switch]$StartHidden"));
@@ -3128,10 +3143,15 @@ mod tests {
         assert!(build_script.contains("function Get-RepoUserDataDir"));
         assert!(build_script.contains("function Get-ConfiguredListenPort"));
         assert!(build_script.contains("function Get-ConfiguredListenHost"));
+        assert!(build_script.contains("function Get-ApiRouterRuntimeHealthTimeoutSeconds"));
         assert!(build_script.contains("function Get-RemoteUpdateLanSecret"));
+        assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_HEALTH_TIMEOUT_SECONDS"));
         assert!(build_script.contains("lan_trust_secret"));
         assert!(build_script.contains("$candidatePath = Get-ProcessExecutablePath $_"));
         assert!(build_script.contains("Ignoring stale updater daemon PID"));
+        assert!(build_script.contains("function Wait-UpdaterDaemonIdle"));
+        assert!(build_script.contains("activeOperation"));
+        assert!(build_script.contains("refusing to stop it during active rollback"));
         assert!(build_script.contains("Stop-Process -InputObject $stateProcess"));
         assert!(!build_script.contains("Stop-Process -Id ([int]$state.pid)"));
         assert!(!build_script.contains("Stop-Process -Name 'API Router'"));

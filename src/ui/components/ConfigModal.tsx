@@ -373,6 +373,13 @@ function remoteUpdateRollbackDetailText(source: ConfigSource): string {
   return `Restore previous build ${previousSha.slice(0, 8)}`
 }
 
+export function remoteUpdateRollbackConfirmationText(source: ConfigSource): string {
+  const nodeName = source.node_name?.trim() || 'this peer'
+  const previousSha = source.remote_update_status?.previous_git_sha?.trim() || ''
+  const versionText = previousSha ? ` to previous build ${previousSha.slice(0, 8)}` : ' to its previous build'
+  return `Rollback ${nodeName}${versionText}? This will replace and restart API Router on that peer.`
+}
+
 export function effectiveRemoteUpdateStatus(
   source: ConfigSource,
   remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
@@ -1443,6 +1450,7 @@ export function ConfigModal({
                               }
                               if (rollbackActionAvailable) {
                                 if (versionSyncPending) return
+                                if (!window.confirm(remoteUpdateRollbackConfirmationText(effectiveSource))) return
                                 await onRollbackPeerVersion(effectiveSource.node_id)
                                 return
                               }

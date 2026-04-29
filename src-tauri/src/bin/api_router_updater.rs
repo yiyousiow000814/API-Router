@@ -8,6 +8,7 @@ use std::io::{self, Read};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::State;
@@ -51,6 +52,14 @@ struct ServeState {
     repo_root: PathBuf,
     secret: String,
     status_path: Option<PathBuf>,
+    active_operation: Arc<Mutex<Option<ActiveOperation>>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ActiveOperation {
+    name: String,
+    #[serde(rename = "startedAtUnixMs")]
+    started_at_unix_ms: u64,
 }
 
 #[tokio::main]
@@ -243,11 +252,9 @@ async fn serve(args: &[String], repo_root: PathBuf) -> Result<(), String> {
         repo_root: repo_root.clone(),
         secret,
         status_path: remote_update_status_path(),
+        active_operation: Arc::new(Mutex::new(None)),
     };
-    let app = Router::new()
-        .route("/status", get(updater_status_http))
-        .route("/rollback", post(updater_rollback_http))
-        .with_state(state);
+    let app = updater_router(state);
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|err| format!("failed to bind updater listener {bind}: {err}"))?;
@@ -255,6 +262,13 @@ async fn serve(args: &[String], repo_root: PathBuf) -> Result<(), String> {
     axum::serve(listener, app)
         .await
         .map_err(|err| format!("updater listener failed: {err}"))
+}
+
+fn updater_router(state: ServeState) -> Router {
+    Router::new()
+        .route("/status", get(updater_status_http))
+        .route("/rollback", post(updater_rollback_http))
+        .with_state(state)
 }
 
 fn write_updater_state(repo_root: &Path, bind: SocketAddr) -> Result<(), String> {
@@ -298,6 +312,58 @@ fn updater_auth_error(message: &str) -> (StatusCode, Json<Value>) {
     )
 }
 
+fn active_operation_snapshot(state: &ServeState) -> Option<ActiveOperation> {
+    state
+        .active_operation
+        .lock()
+        .ok()
+        .and_then(|operation| operation.clone())
+}
+
+struct ActiveOperationGuard {
+    active_operation: Arc<Mutex<Option<ActiveOperation>>>,
+}
+
+impl Drop for ActiveOperationGuard {
+    fn drop(&mut self) {
+        if let Ok(mut operation) = self.active_operation.lock() {
+            *operation = None;
+        }
+    }
+}
+
+fn begin_active_operation(
+    state: &ServeState,
+    name: &str,
+) -> Result<ActiveOperationGuard, (StatusCode, Json<Value>)> {
+    let mut operation = state
+        .active_operation
+        .lock()
+        .map_err(|_| updater_busy_error("updater operation lock is poisoned", None))?;
+    if let Some(active) = operation.clone() {
+        return Err(updater_busy_error("updater is busy", Some(active)));
+    }
+    *operation = Some(ActiveOperation {
+        name: name.to_string(),
+        started_at_unix_ms: now_unix_ms(),
+    });
+    Ok(ActiveOperationGuard {
+        active_operation: Arc::clone(&state.active_operation),
+    })
+}
+
+fn updater_busy_error(message: &str, active: Option<ActiveOperation>) -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({
+            "ok": false,
+            "error": message,
+            "busy": true,
+            "activeOperation": active,
+        })),
+    )
+}
+
 async fn updater_status_http(
     State(state): State<ServeState>,
     headers: HeaderMap,
@@ -307,11 +373,14 @@ async fn updater_status_http(
     }
     let current = read_pointer(&state.repo_root, "current");
     let previous = read_pointer(&state.repo_root, "previous");
+    let active_operation = active_operation_snapshot(&state);
     Json(serde_json::json!({
         "ok": true,
         "current": current.ok(),
         "previous": previous.ok(),
         "updaterPath": state.repo_root.join(UPDATER_EXE_NAME),
+        "busy": active_operation.is_some(),
+        "activeOperation": active_operation,
     }))
     .into_response()
 }
@@ -323,8 +392,14 @@ async fn updater_rollback_http(
     if let Err(err) = authorize_updater_request(&headers, &state.secret) {
         return err.into_response();
     }
+    let _active_operation_guard = match begin_active_operation(&state, "rollback") {
+        Ok(guard) => guard,
+        Err(err) => return err.into_response(),
+    };
+    let repo_root = state.repo_root.clone();
+    let status_path = state.status_path.clone();
     match tokio::task::spawn_blocking(move || {
-        rollback_runtime(&state.repo_root, true, state.status_path.as_deref())
+        rollback_runtime(&repo_root, true, status_path.as_deref())
     })
     .await
     {
@@ -692,6 +767,9 @@ fn print_json(value: &serde_json::Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::{to_bytes, Body};
+    use http::{Method, Request, StatusCode};
+    use tower::ServiceExt;
 
     fn unique_test_dir(name: &str) -> PathBuf {
         let path =
@@ -699,6 +777,22 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("create test dir");
         path
+    }
+
+    fn test_serve_state(repo_root: PathBuf) -> ServeState {
+        ServeState {
+            repo_root,
+            secret: "test-secret".to_string(),
+            status_path: None,
+            active_operation: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    async fn response_json(response: axum::response::Response) -> Value {
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        serde_json::from_slice(&bytes).expect("parse response json")
     }
 
     #[test]
@@ -758,6 +852,76 @@ mod tests {
         assert_eq!(payload["timeline"][1]["phase"], "rolled_back");
         assert_eq!(payload["timeline"][1]["source"], "updater");
         assert!(payload["finished_at_unix_ms"].as_u64().unwrap() >= 1775312829000);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn updater_status_http_reports_active_operation() {
+        let dir = unique_test_dir("status-active-operation");
+        let state = test_serve_state(dir.clone());
+        *state
+            .active_operation
+            .lock()
+            .expect("lock active operation") = Some(ActiveOperation {
+            name: "rollback".to_string(),
+            started_at_unix_ms: 1775312820000,
+        });
+        let app = updater_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/status")
+                    .header(LAN_SYNC_AUTH_NODE_ID_HEADER, "node-a")
+                    .header(LAN_SYNC_AUTH_SECRET_HEADER, "test-secret")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("status response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["busy"], true);
+        assert_eq!(payload["activeOperation"]["name"], "rollback");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn updater_rollback_http_rejects_concurrent_rollback() {
+        let dir = unique_test_dir("rollback-busy");
+        let state = test_serve_state(dir.clone());
+        *state
+            .active_operation
+            .lock()
+            .expect("lock active operation") = Some(ActiveOperation {
+            name: "rollback".to_string(),
+            started_at_unix_ms: 1775312820000,
+        });
+        let app = updater_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/rollback")
+                    .header(LAN_SYNC_AUTH_NODE_ID_HEADER, "node-a")
+                    .header(LAN_SYNC_AUTH_SECRET_HEADER, "test-secret")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("rollback response");
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let payload = response_json(response).await;
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["busy"], true);
+        assert_eq!(payload["activeOperation"]["name"], "rollback");
 
         let _ = fs::remove_dir_all(dir);
     }

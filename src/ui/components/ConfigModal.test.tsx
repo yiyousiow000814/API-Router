@@ -18,6 +18,7 @@ import {
   remoteDebugStatusRelevance,
   remoteUpdateActionState,
   remoteUpdateDetailText,
+  remoteUpdateRollbackConfirmationText,
   remoteUpdateRollbackActionAvailable,
   remoteDebugReadinessReasonText,
   splitRemoteDebugLogTail,
@@ -1833,6 +1834,9 @@ describe('ConfigModal', () => {
 
     expect(remoteUpdateRollbackActionAvailable(source)).toBe(true)
     expect(remoteUpdateMenuActionLabel(source, undefined, 'fix9999999999')).toBe('Rollback peer')
+    expect(remoteUpdateRollbackConfirmationText(source)).toBe(
+      'Rollback Desk B to previous build good1234? This will replace and restart API Router on that peer.',
+    )
   })
 
   it('keeps offline peers from showing the normal update action without rollback', () => {

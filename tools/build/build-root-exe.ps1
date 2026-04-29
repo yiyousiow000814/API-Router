@@ -152,6 +152,18 @@ function Get-ConfiguredListenHost {
   return '127.0.0.1'
 }
 
+function Get-ApiRouterRuntimeHealthTimeoutSeconds {
+  $value = [string]$env:API_ROUTER_REMOTE_UPDATE_HEALTH_TIMEOUT_SECONDS
+  if ([string]::IsNullOrWhiteSpace($value)) { return 30 }
+  try {
+    $parsed = [int]$value.Trim()
+    if ($parsed -gt 0) { return $parsed }
+  } catch {
+  }
+  Write-RemoteUpdateLog "Ignoring invalid API_ROUTER_REMOTE_UPDATE_HEALTH_TIMEOUT_SECONDS value: $value"
+  return 30
+}
+
 function Get-RemoteUpdateLanSecret {
   $secret = [string]$env:API_ROUTER_REMOTE_UPDATE_LAN_SECRET
   if (-not [string]::IsNullOrWhiteSpace($secret)) { return $secret.Trim() }
@@ -331,6 +343,7 @@ function Stop-RunningUpdaterDaemon {
           $stateProcess = Get-Process -Id $statePid -ErrorAction SilentlyContinue
           $stateProcessPath = if ($stateProcess) { Get-ProcessExecutablePath $stateProcess } else { $null }
           if ($stateProcess -and (Test-UpdaterDaemonProcessPath $stateProcessPath)) {
+            Wait-UpdaterDaemonIdle -State $state | Out-Null
             Stop-Process -InputObject $stateProcess -Force -ErrorAction SilentlyContinue
           } elseif ($stateProcess) {
             Write-RemoteUpdateLog "Ignoring stale updater daemon PID $statePid with path: $stateProcessPath"
@@ -339,9 +352,11 @@ function Stop-RunningUpdaterDaemon {
       }
     } catch {
       Write-RemoteUpdateLog ("Failed to stop updater daemon by state file: " + $_.Exception.Message)
+      if ($_.Exception.Message -like 'updater daemon is busy*') { throw }
     }
   }
 
+  Wait-UpdaterDaemonIdle | Out-Null
   try {
     Get-Process -ErrorAction SilentlyContinue | Where-Object {
       $candidatePath = Get-ProcessExecutablePath $_
@@ -384,6 +399,70 @@ function Invoke-JsonHttpGet {
     return $null
   }
   return $response.Content | ConvertFrom-Json
+}
+
+function Get-UpdaterStatusUrlFromState {
+  param([object]$State = $null)
+
+  $port = $null
+  if ($State -and $State.bind) {
+    $bind = [string]$State.bind
+    if ($bind -match ':(\d+)$') {
+      $port = $Matches[1]
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$port)) {
+    $port = [string]$env:API_ROUTER_REMOTE_UPDATE_UPDATER_PORT
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$port)) {
+    $listenPort = Get-ConfiguredListenPort
+    $updaterPort = $listenPort + 1
+    if ($updaterPort -gt 65535) { return $null }
+    $port = [string]$updaterPort
+  }
+  return "http://127.0.0.1:$($port.Trim())/status"
+}
+
+function Wait-UpdaterDaemonIdle {
+  param(
+    [object]$State = $null,
+    [int]$TimeoutSeconds = 60
+  )
+
+  $secret = Get-RemoteUpdateLanSecret
+  if ([string]::IsNullOrWhiteSpace($secret)) {
+    Write-RemoteUpdateLog 'Updater daemon idle probe skipped; LAN trust secret is unavailable.'
+    return
+  }
+  $statusUrl = Get-UpdaterStatusUrlFromState -State $State
+  if ([string]::IsNullOrWhiteSpace($statusUrl)) {
+    Write-RemoteUpdateLog 'Updater daemon idle probe skipped; updater status URL is unavailable.'
+    return
+  }
+  $headers = @{
+    'x-api-router-lan-node-id' = if ($env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_ID) { $env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_ID } else { 'remote-update-worker' }
+    'x-api-router-lan-secret' = $secret.Trim()
+  }
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  $loggedBusy = $false
+  while ([DateTime]::UtcNow -lt $deadline) {
+    try {
+      $payload = Invoke-JsonHttpGet -Uri $statusUrl -Headers $headers -TimeoutSeconds 2
+      if (-not $payload -or $payload.ok -ne $true -or $payload.busy -ne $true) {
+        return
+      }
+      if (-not $loggedBusy) {
+        $operationName = if ($payload.activeOperation -and $payload.activeOperation.name) { [string]$payload.activeOperation.name } else { 'unknown' }
+        Write-RemoteUpdateLog "Waiting for updater daemon active operation before stop: $operationName"
+        $loggedBusy = $true
+      }
+    } catch {
+      Write-RemoteUpdateLog ("Updater daemon idle probe failed; proceeding with stop: " + $_.Exception.Message)
+      return
+    }
+    Start-Sleep -Milliseconds 500
+  }
+  throw "updater daemon is busy after ${TimeoutSeconds}s; refusing to stop it during active rollback"
 }
 
 function Wait-UpdaterDaemonReady {
@@ -702,9 +781,12 @@ function Start-ApiRouter {
 
 function Wait-ApiRouterRuntimeHealthy {
   param(
-    [int]$TimeoutSeconds = 30
+    [Nullable[int]]$TimeoutSeconds = $null
   )
 
+  if ($TimeoutSeconds -eq $null) {
+    $TimeoutSeconds = Get-ApiRouterRuntimeHealthTimeoutSeconds
+  }
   $healthUrl = Get-LocalHttpHealthUrl
   $detail = if ($healthUrl) { "Waiting for API Router HTTP health at $healthUrl" } else { 'Waiting for repo root API Router.exe process' }
   Enter-BuildStep -Phase 'health_checking' -Label 'Checking runtime health' -Detail $detail
