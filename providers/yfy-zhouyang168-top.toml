@@ -5,11 +5,33 @@ base_url_hosts = ["yfy.zhouyang168.top"]
 
 [usage]
 kind = "budget_info"
-refresh_flow = "new_api_subscription_login"
+refresh_flow = "subscription_login"
 budget_info_auth_source = "usage_token"
 candidate_base_sources = ["explicit_usage_base_url", "origin_from_base_url"]
 fixed_candidate_bases = []
 explicit_endpoint_mode = "none"
+
+[usage.subscription_login]
+login_endpoint = "/api/user/login"
+status_endpoint = "/api/status"
+subscription_endpoint = "/api/subscription/self"
+username_field = "username"
+password_field = "password"
+user_id_pointers = ["/data/id", "/id"]
+token_pointers = ["/data/token", "/token"]
+user_header = "New-Api-User"
+quota_per_unit_pointer = "/data/quota_per_unit"
+quota_per_unit_default = 500000
+subscriptions_pointer = "/data/subscriptions"
+plan_pointer = "/plan"
+subscription_pointer = "/subscription"
+status_pointer = "/subscription/status"
+active_status = "active"
+end_time_pointer = "/subscription/end_time"
+amount_total_pointer = "/amount_total"
+amount_used_pointer = "/amount_used"
+reset_period_pointer = "/quota_reset_period"
+plan_title_pointer = "/title"
 
 [usage.summary_mapping]
 usage_kind = "budget_info"

@@ -218,7 +218,7 @@ mod tests {
         (url, h)
     }
 
-    async fn start_new_api_subscription_mock_server() -> (String, tokio::task::JoinHandle<()>) {
+    async fn start_subscription_login_mock_server() -> (String, tokio::task::JoinHandle<()>) {
         use axum::http::{HeaderMap, StatusCode};
         use axum::response::IntoResponse;
         use axum::routing::{get, post};
@@ -247,7 +247,7 @@ mod tests {
                         StatusCode::OK,
                         [(
                             axum::http::header::SET_COOKIE,
-                            "new-api-session=session-123; Path=/; HttpOnly",
+                            "subscription-session=session-123; Path=/; HttpOnly",
                         )],
                         Json(serde_json::json!({
                             "success": true,
@@ -282,7 +282,7 @@ mod tests {
                         .get("New-Api-User")
                         .and_then(|value| value.to_str().ok())
                         .unwrap_or_default();
-                    if !cookie.contains("new-api-session=session-123") || user != "42" {
+                    if !cookie.contains("subscription-session=session-123") || user != "42" {
                         return (
                             StatusCode::UNAUTHORIZED,
                             Json(serde_json::json!({ "success": false, "message": "unauthorized" })),
@@ -700,19 +700,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn new_api_console_url_accepts_site_root_or_api_root() {
+    async fn subscription_login_url_uses_configured_endpoint() {
         assert_eq!(
-            build_new_api_console_url("https://yfy.zhouyang168.top", "user/login").as_deref(),
+            build_subscription_login_url("https://yfy.zhouyang168.top", "api/user/login").as_deref(),
             Some("https://yfy.zhouyang168.top/api/user/login")
         );
         assert_eq!(
-            build_new_api_console_url("https://yfy.zhouyang168.top/api", "user/login").as_deref(),
-            Some("https://yfy.zhouyang168.top/api/user/login")
-        );
-        assert_eq!(
-            build_new_api_console_url("https://yfy.zhouyang168.top/api/", "/api/subscription/self")
+            build_subscription_login_url("https://example.com/root", "/v2/subscription/self")
                 .as_deref(),
-            Some("https://yfy.zhouyang168.top/api/subscription/self")
+            Some("https://example.com/root/v2/subscription/self")
         );
     }
 
@@ -1106,8 +1102,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn yfy_host_login_fetches_new_api_subscription_snapshot() {
-        let (base, handle) = start_new_api_subscription_mock_server().await;
+    async fn yfy_host_login_fetches_subscription_snapshot() {
+        let (base, handle) = start_subscription_login_mock_server().await;
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_usage_login("p1", "alice", "secret").unwrap();
@@ -1132,7 +1128,7 @@ mod tests {
         assert_eq!(snap.effective_usage_base.as_deref(), Some(base.as_str()));
         assert_eq!(
             snap.effective_usage_source.as_deref(),
-            Some("new_api_subscription_login")
+            Some("subscription_login")
         );
     }
 

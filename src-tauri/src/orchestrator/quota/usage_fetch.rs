@@ -405,18 +405,15 @@ fn build_login_summary_api_url(base: &str, endpoint: &str) -> Option<String> {
     Some(url.to_string())
 }
 
-fn build_new_api_console_url(base: &str, endpoint: &str) -> Option<String> {
-    let trimmed = base
-        .trim()
-        .trim_end_matches('/')
-        .trim_end_matches("/api")
-        .trim_end_matches('/');
+fn build_subscription_login_url(base: &str, endpoint: &str) -> Option<String> {
+    let trimmed = base.trim().trim_end_matches('/');
     if trimmed.is_empty() {
         return None;
     }
+    let endpoint = endpoint.trim().trim_start_matches('/');
     let url = reqwest::Url::parse(&format!(
-        "{trimmed}/api/{}",
-        endpoint.trim_start_matches('/').trim_start_matches("api/")
+        "{trimmed}/{}",
+        endpoint
     ))
     .ok()?;
     Some(url.to_string())
@@ -476,26 +473,27 @@ async fn fetch_login_summary_token(
         .ok_or_else(|| format!("unexpected response from {base}"))
 }
 
-struct NewApiLoginSession {
+struct SubscriptionLoginSession {
     user_id: String,
     token: Option<String>,
     cookie_header: Option<String>,
 }
 
-async fn fetch_new_api_login_session(
+async fn fetch_subscription_login_session(
     client: &reqwest::Client,
     base: &str,
     login: &UsageLoginConfig,
-) -> Result<NewApiLoginSession, String> {
-    let url = build_new_api_console_url(base, "user/login")
-        .ok_or_else(|| format!("invalid usage base: {base}"))?;
+    profile: &SubscriptionLoginProfile,
+) -> Result<SubscriptionLoginSession, String> {
+    let url = build_subscription_login_url(base, &profile.login_endpoint)
+        .ok_or_else(|| format!("invalid subscription login usage base: {base}"))?;
     wait_for_usage_base_refresh_slot(base).await?;
+    let mut body = serde_json::Map::new();
+    body.insert(profile.username_field.clone(), serde_json::json!(login.username.trim()));
+    body.insert(profile.password_field.clone(), serde_json::json!(login.password));
     let resp = client
         .post(url)
-        .json(&serde_json::json!({
-            "username": login.username.trim(),
-            "password": login.password,
-        }))
+        .json(&Value::Object(body))
         .timeout(Duration::from_secs(15))
         .send()
         .await
@@ -512,18 +510,20 @@ async fn fetch_new_api_login_session(
         return Err(format!("http {status} from {base}"));
     }
     if payload.pointer("/data/require_2fa").and_then(Value::as_bool) == Some(true) {
-        return Err("new-api login requires 2FA".to_string());
+        return Err("subscription login requires 2FA".to_string());
     }
     if payload.get("success").and_then(Value::as_bool) == Some(false) {
         let message = payload
             .get("message")
             .and_then(Value::as_str)
-            .unwrap_or("new-api login failed");
+            .unwrap_or("subscription login failed");
         return Err(message.to_string());
     }
-    let user_id = payload
-        .pointer("/data/id")
-        .or_else(|| payload.get("id"))
+    let user_id = profile
+        .user_id_pointers
+        .iter()
+        .filter_map(|pointer| payload.pointer(pointer))
+        .next()
         .and_then(|value| {
             value
                 .as_u64()
@@ -533,9 +533,11 @@ async fn fetch_new_api_login_session(
         })
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("unexpected login response from {base}"))?;
-    let token = payload
-        .pointer("/data/token")
-        .or_else(|| payload.get("token"))
+    let token = profile
+        .token_pointers
+        .iter()
+        .filter_map(|pointer| payload.pointer(pointer))
+        .next()
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -544,24 +546,30 @@ async fn fetch_new_api_login_session(
     if token.is_none() && cookie_header.is_none() {
         return Err(format!("login response from {base} did not include auth token or cookie"));
     }
-    Ok(NewApiLoginSession {
+    Ok(SubscriptionLoginSession {
         user_id,
         token,
         cookie_header,
     })
 }
 
-async fn fetch_new_api_quota_per_unit(client: &reqwest::Client, base: &str) -> f64 {
-    let Some(url) = build_new_api_console_url(base, "status") else {
-        return 500_000.0;
+async fn fetch_subscription_login_quota_per_unit(
+    client: &reqwest::Client,
+    base: &str,
+    profile: &SubscriptionLoginProfile,
+) -> f64 {
+    let Some(endpoint) = profile.status_endpoint.as_deref() else {
+        return profile.quota_per_unit_default;
+    };
+    let Some(url) = build_subscription_login_url(base, endpoint) else {
+        return profile.quota_per_unit_default;
     };
     let Ok(resp) = client.get(url).timeout(Duration::from_secs(10)).send().await else {
-        return 500_000.0;
+        return profile.quota_per_unit_default;
     };
     let payload = resp.json::<Value>().await.unwrap_or(Value::Null);
     payload
-        .pointer("/data/quota_per_unit")
-        .or_else(|| payload.get("quota_per_unit"))
+        .pointer(&profile.quota_per_unit_pointer)
         .and_then(|value| {
             value
                 .as_f64()
@@ -570,21 +578,24 @@ async fn fetch_new_api_quota_per_unit(client: &reqwest::Client, base: &str) -> f
                 .or_else(|| value.as_str().and_then(|text| text.trim().parse::<f64>().ok()))
         })
         .filter(|value| value.is_finite() && *value > 0.0)
-        .unwrap_or(500_000.0)
+        .unwrap_or(profile.quota_per_unit_default)
 }
 
-async fn fetch_new_api_subscription_payload(
+async fn fetch_subscription_login_payload(
     client: &reqwest::Client,
     base: &str,
-    session: &NewApiLoginSession,
+    session: &SubscriptionLoginSession,
+    profile: &SubscriptionLoginProfile,
 ) -> Result<Value, String> {
-    let url = build_new_api_console_url(base, "subscription/self")
-        .ok_or_else(|| format!("invalid usage base: {base}"))?;
+    let url = build_subscription_login_url(base, &profile.subscription_endpoint)
+        .ok_or_else(|| format!("invalid subscription login usage base: {base}"))?;
     wait_for_usage_base_refresh_slot(base).await?;
     let mut req = client
         .get(url)
-        .header("New-Api-User", session.user_id.as_str())
         .timeout(Duration::from_secs(15));
+    if let Some(user_header) = profile.user_header.as_deref() {
+        req = req.header(user_header, session.user_id.as_str());
+    }
     if let Some(token) = session.token.as_deref() {
         req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
     }
@@ -609,13 +620,13 @@ async fn fetch_new_api_subscription_payload(
         let message = payload
             .get("message")
             .and_then(Value::as_str)
-            .unwrap_or("new-api subscription fetch failed");
+            .unwrap_or("subscription fetch failed");
         return Err(message.to_string());
     }
     Ok(payload)
 }
 
-fn new_api_number_at(value: &Value, pointer: &str) -> Option<f64> {
+fn subscription_login_number_at(value: &Value, pointer: &str) -> Option<f64> {
     let value = value.pointer(pointer)?;
     value
         .as_f64()
@@ -624,40 +635,44 @@ fn new_api_number_at(value: &Value, pointer: &str) -> Option<f64> {
         .or_else(|| value.as_str().and_then(|text| text.trim().parse::<f64>().ok()))
 }
 
-fn normalize_new_api_subscription_payload(payload: &Value, quota_per_unit: f64) -> Option<Value> {
-    let subscriptions = payload.pointer("/data/subscriptions")?.as_array()?;
+fn normalize_subscription_login_payload(
+    payload: &Value,
+    quota_per_unit: f64,
+    profile: &SubscriptionLoginProfile,
+) -> Option<Value> {
+    let subscriptions = payload.pointer(&profile.subscriptions_pointer)?.as_array()?;
     let now_sec = unix_ms() / 1000;
     let selected = subscriptions
         .iter()
         .find(|entry| {
             let status = entry
-                .pointer("/subscription/status")
+                .pointer(&profile.status_pointer)
                 .and_then(Value::as_str)
                 .unwrap_or("");
             let end_time = entry
-                .pointer("/subscription/end_time")
+                .pointer(&profile.end_time_pointer)
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
-            status.eq_ignore_ascii_case("active") && (end_time == 0 || end_time > now_sec)
+            status.eq_ignore_ascii_case(&profile.active_status) && (end_time == 0 || end_time > now_sec)
         })
         .or_else(|| subscriptions.first())?;
-    let plan = selected.pointer("/plan").unwrap_or(&Value::Null);
-    let subscription = selected.pointer("/subscription").unwrap_or(&Value::Null);
-    let total_quota = new_api_number_at(subscription, "/amount_total").unwrap_or(0.0);
-    let used_quota = new_api_number_at(subscription, "/amount_used").unwrap_or(0.0);
+    let plan = selected.pointer(&profile.plan_pointer).unwrap_or(&Value::Null);
+    let subscription = selected.pointer(&profile.subscription_pointer).unwrap_or(&Value::Null);
+    let total_quota = subscription_login_number_at(subscription, &profile.amount_total_pointer).unwrap_or(0.0);
+    let used_quota = subscription_login_number_at(subscription, &profile.amount_used_pointer).unwrap_or(0.0);
     let total = total_quota / quota_per_unit;
     let used = used_quota / quota_per_unit;
     let remaining = (total - used).max(0.0);
     let reset_period = plan
-        .pointer("/quota_reset_period")
+        .pointer(&profile.reset_period_pointer)
         .and_then(Value::as_str)
         .unwrap_or("never")
         .to_ascii_lowercase();
     let mut out = serde_json::json!({
-        "plan_name": plan.pointer("/title").and_then(Value::as_str).unwrap_or(""),
+        "plan_name": plan.pointer(&profile.plan_title_pointer).and_then(Value::as_str).unwrap_or(""),
         "quota_reset_period": reset_period,
         "remaining": remaining,
-        "expires_at": subscription.pointer("/end_time").cloned().unwrap_or(Value::Null),
+        "expires_at": selected.pointer(&profile.end_time_pointer).cloned().unwrap_or(Value::Null),
     });
     match reset_period.as_str() {
         "daily" => {
@@ -998,12 +1013,13 @@ async fn fetch_login_summary_any(
     out
 }
 
-async fn fetch_new_api_subscription_login_any(
+async fn fetch_subscription_login_any(
     st: &GatewayState,
     provider_name: &str,
     bases: &[String],
     usage_login: Option<&UsageLoginConfig>,
     summary_mapping: Option<&'static CanonicalUsageMapping>,
+    subscription_login: Option<&SubscriptionLoginProfile>,
 ) -> QuotaSnapshot {
     let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
     if bases.is_empty() {
@@ -1016,6 +1032,10 @@ async fn fetch_new_api_subscription_login_any(
     };
     let Some(mapping) = summary_mapping else {
         out.last_error = "missing summary mapping".to_string();
+        return out;
+    };
+    let Some(subscription_login) = subscription_login else {
+        out.last_error = "missing subscription login config".to_string();
         return out;
     };
 
@@ -1035,7 +1055,7 @@ async fn fetch_new_api_subscription_login_any(
         if base.is_empty() {
             continue;
         }
-        let session = match fetch_new_api_login_session(&client, base, login).await {
+        let session = match fetch_subscription_login_session(&client, base, login, subscription_login).await {
             Ok(session) => session,
             Err(err) => {
                 last_err = err.clone();
@@ -1047,8 +1067,8 @@ async fn fetch_new_api_subscription_login_any(
                 continue;
             }
         };
-        let quota_per_unit = fetch_new_api_quota_per_unit(&client, base).await;
-        let payload = match fetch_new_api_subscription_payload(&client, base, &session).await {
+        let quota_per_unit = fetch_subscription_login_quota_per_unit(&client, base, subscription_login).await;
+        let payload = match fetch_subscription_login_payload(&client, base, &session, subscription_login).await {
             Ok(payload) => payload,
             Err(err) => {
                 last_err = err.clone();
@@ -1060,7 +1080,8 @@ async fn fetch_new_api_subscription_login_any(
                 continue;
             }
         };
-        let Some(normalized) = normalize_new_api_subscription_payload(&payload, quota_per_unit)
+        let Some(normalized) =
+            normalize_subscription_login_payload(&payload, quota_per_unit, subscription_login)
         else {
             last_err = format!("unexpected response from {base}");
             non_404_err.get_or_insert_with(|| last_err.clone());
@@ -1071,7 +1092,7 @@ async fn fetch_new_api_subscription_login_any(
             mapping,
             CanonicalUsageContext {
                 effective_usage_base: Some(base.to_string()),
-                effective_usage_source: Some("new_api_subscription_login".to_string()),
+                effective_usage_source: Some("subscription_login".to_string()),
                 updated_at_unix_ms: unix_ms(),
             },
         ) else {

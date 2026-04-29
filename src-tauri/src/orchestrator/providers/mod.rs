@@ -26,7 +26,7 @@ pub(crate) enum PackageExpiryStrategy {
 pub(crate) enum RefreshFlow {
     Auto,
     LoginThenSummary,
-    NewApiSubscriptionLogin,
+    SubscriptionLogin,
     ProviderKeyCardLoginThenSummary,
 }
 
@@ -48,6 +48,7 @@ pub(crate) struct ProviderQuotaProfile {
     pub explicit_usage_mapping: Option<&'static CanonicalUsageMapping>,
     pub budget_info_mapping: Option<&'static CanonicalUsageMapping>,
     pub summary_mapping: Option<&'static CanonicalUsageMapping>,
+    pub subscription_login: Option<SubscriptionLoginProfile>,
     pub package_expiry_strategy: PackageExpiryStrategy,
 }
 
@@ -56,8 +57,8 @@ impl ProviderQuotaProfile {
         self.refresh_flow == RefreshFlow::LoginThenSummary
     }
 
-    pub fn uses_new_api_subscription_login_refresh(&self) -> bool {
-        self.refresh_flow == RefreshFlow::NewApiSubscriptionLogin
+    pub fn uses_subscription_login_refresh(&self) -> bool {
+        self.refresh_flow == RefreshFlow::SubscriptionLogin
     }
 
     pub fn uses_provider_key_card_login_refresh(&self) -> bool {
@@ -92,6 +93,30 @@ pub(crate) struct CanonicalProviderUsage {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct SubscriptionLoginProfile {
+    pub login_endpoint: String,
+    pub status_endpoint: Option<String>,
+    pub subscription_endpoint: String,
+    pub username_field: String,
+    pub password_field: String,
+    pub user_id_pointers: Vec<String>,
+    pub token_pointers: Vec<String>,
+    pub user_header: Option<String>,
+    pub quota_per_unit_pointer: String,
+    pub quota_per_unit_default: f64,
+    pub subscriptions_pointer: String,
+    pub plan_pointer: String,
+    pub subscription_pointer: String,
+    pub status_pointer: String,
+    pub active_status: String,
+    pub end_time_pointer: String,
+    pub amount_total_pointer: String,
+    pub amount_used_pointer: String,
+    pub reset_period_pointer: String,
+    pub plan_title_pointer: String,
+}
+
+#[derive(Debug, Clone)]
 struct ProviderDefinition {
     id: String,
     matcher: ProviderMatcher,
@@ -107,8 +132,53 @@ struct ProviderDefinition {
     explicit_usage_mapping: Option<&'static CanonicalUsageMapping>,
     budget_info_mapping: Option<&'static CanonicalUsageMapping>,
     summary_mapping: Option<&'static CanonicalUsageMapping>,
+    subscription_login: Option<SubscriptionLoginProfile>,
     package_expiry_strategy: PackageExpiryStrategy,
     request_prefers_simple_input_list: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SubscriptionLoginFile {
+    #[serde(default)]
+    login_endpoint: Option<String>,
+    #[serde(default)]
+    status_endpoint: Option<String>,
+    #[serde(default)]
+    subscription_endpoint: Option<String>,
+    #[serde(default)]
+    username_field: Option<String>,
+    #[serde(default)]
+    password_field: Option<String>,
+    #[serde(default)]
+    user_id_pointers: Vec<String>,
+    #[serde(default)]
+    token_pointers: Vec<String>,
+    #[serde(default)]
+    user_header: Option<String>,
+    #[serde(default)]
+    quota_per_unit_pointer: Option<String>,
+    #[serde(default)]
+    quota_per_unit_default: Option<f64>,
+    #[serde(default)]
+    subscriptions_pointer: Option<String>,
+    #[serde(default)]
+    plan_pointer: Option<String>,
+    #[serde(default)]
+    subscription_pointer: Option<String>,
+    #[serde(default)]
+    status_pointer: Option<String>,
+    #[serde(default)]
+    active_status: Option<String>,
+    #[serde(default)]
+    end_time_pointer: Option<String>,
+    #[serde(default)]
+    amount_total_pointer: Option<String>,
+    #[serde(default)]
+    amount_used_pointer: Option<String>,
+    #[serde(default)]
+    reset_period_pointer: Option<String>,
+    #[serde(default)]
+    plan_title_pointer: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,6 +273,8 @@ struct ProviderUsageFile {
     budget_info_mapping: Option<CanonicalUsageMappingFile>,
     #[serde(default)]
     summary_mapping: Option<CanonicalUsageMappingFile>,
+    #[serde(default)]
+    subscription_login: Option<SubscriptionLoginFile>,
     #[serde(default)]
     request_prefers_simple_input_list: Option<bool>,
 }
@@ -696,6 +768,11 @@ impl TryFrom<ProviderDefinitionFile> for ProviderDefinition {
                 .summary_mapping
                 .map(build_dynamic_mapping)
                 .transpose()?,
+            subscription_login: value
+                .usage
+                .subscription_login
+                .map(parse_subscription_login_profile)
+                .transpose()?,
             package_expiry_strategy,
             request_prefers_simple_input_list: value
                 .usage
@@ -721,11 +798,79 @@ fn normalize_url_values(values: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+fn required_trimmed(value: Option<String>, field: &str) -> Result<String, String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("subscription_login.{field} is required"))
+}
+
+fn optional_trimmed(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalized_pointer_list(values: Vec<String>, fallback: &[&str]) -> Vec<String> {
+    let out = values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if out.is_empty() {
+        fallback.iter().map(|value| (*value).to_string()).collect()
+    } else {
+        out
+    }
+}
+
+fn parse_subscription_login_profile(
+    value: SubscriptionLoginFile,
+) -> Result<SubscriptionLoginProfile, String> {
+    Ok(SubscriptionLoginProfile {
+        login_endpoint: required_trimmed(value.login_endpoint, "login_endpoint")?,
+        status_endpoint: optional_trimmed(value.status_endpoint),
+        subscription_endpoint: required_trimmed(
+            value.subscription_endpoint,
+            "subscription_endpoint",
+        )?,
+        username_field: optional_trimmed(value.username_field)
+            .unwrap_or_else(|| "username".to_string()),
+        password_field: optional_trimmed(value.password_field)
+            .unwrap_or_else(|| "password".to_string()),
+        user_id_pointers: normalized_pointer_list(value.user_id_pointers, &["/data/id", "/id"]),
+        token_pointers: normalized_pointer_list(value.token_pointers, &["/data/token", "/token"]),
+        user_header: optional_trimmed(value.user_header),
+        quota_per_unit_pointer: optional_trimmed(value.quota_per_unit_pointer)
+            .unwrap_or_else(|| "/data/quota_per_unit".to_string()),
+        quota_per_unit_default: value.quota_per_unit_default.unwrap_or(500_000.0),
+        subscriptions_pointer: optional_trimmed(value.subscriptions_pointer)
+            .unwrap_or_else(|| "/data/subscriptions".to_string()),
+        plan_pointer: optional_trimmed(value.plan_pointer).unwrap_or_else(|| "/plan".to_string()),
+        subscription_pointer: optional_trimmed(value.subscription_pointer)
+            .unwrap_or_else(|| "/subscription".to_string()),
+        status_pointer: optional_trimmed(value.status_pointer)
+            .unwrap_or_else(|| "/subscription/status".to_string()),
+        active_status: optional_trimmed(value.active_status)
+            .unwrap_or_else(|| "active".to_string()),
+        end_time_pointer: optional_trimmed(value.end_time_pointer)
+            .unwrap_or_else(|| "/subscription/end_time".to_string()),
+        amount_total_pointer: optional_trimmed(value.amount_total_pointer)
+            .unwrap_or_else(|| "/amount_total".to_string()),
+        amount_used_pointer: optional_trimmed(value.amount_used_pointer)
+            .unwrap_or_else(|| "/amount_used".to_string()),
+        reset_period_pointer: optional_trimmed(value.reset_period_pointer)
+            .unwrap_or_else(|| "/quota_reset_period".to_string()),
+        plan_title_pointer: optional_trimmed(value.plan_title_pointer)
+            .unwrap_or_else(|| "/title".to_string()),
+    })
+}
+
 fn parse_refresh_flow(value: &str) -> Result<RefreshFlow, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "auto" => Ok(RefreshFlow::Auto),
         "login_then_summary" => Ok(RefreshFlow::LoginThenSummary),
-        "new_api_subscription_login" => Ok(RefreshFlow::NewApiSubscriptionLogin),
+        "subscription_login" => Ok(RefreshFlow::SubscriptionLogin),
         "provider_key_card_login_then_summary" => Ok(RefreshFlow::ProviderKeyCardLoginThenSummary),
         other => Err(format!("unknown refresh flow: {other}")),
     }
@@ -1082,6 +1227,7 @@ pub(crate) fn resolve_quota_profile(provider: &ProviderConfig) -> ProviderQuotaP
             explicit_usage_mapping: definition.explicit_usage_mapping,
             budget_info_mapping: definition.budget_info_mapping,
             summary_mapping: definition.summary_mapping,
+            subscription_login: definition.subscription_login.clone(),
             package_expiry_strategy: definition.package_expiry_strategy,
         };
     }
@@ -1097,6 +1243,7 @@ pub(crate) fn resolve_quota_profile(provider: &ProviderConfig) -> ProviderQuotaP
         explicit_usage_mapping: None,
         budget_info_mapping: None,
         summary_mapping: None,
+        subscription_login: None,
         package_expiry_strategy: PackageExpiryStrategy::None,
     }
 }
