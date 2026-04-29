@@ -3016,6 +3016,8 @@ mod tests {
             .contains("$env:API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH = $buildResultPath"));
         assert!(windows_contents.contains("Hidden process exit_code was <null>"));
         assert!(windows_contents.contains("build result marker reported success"));
+        assert!(windows_contents.contains("$buildResult = Read-RemoteUpdateBuildResult"));
+        assert!(windows_contents.contains("[string]$buildResult.result -eq 'rolled_back'"));
         assert!(windows_contents.contains("-StartHidden"));
         assert!(windows_contents.contains("function Show-RemoteUpdateNotification"));
         assert!(windows_contents.contains("System.Windows.Forms.NotifyIcon"));
@@ -3188,6 +3190,15 @@ mod tests {
         assert!(build_script.contains("return \"[$hostValue]\""));
         assert!(build_script.contains("function Wait-ApiRouterRuntimeHealthy"));
         assert!(build_script.contains("function Wait-ApiRouterRuntimeProcessStarted"));
+        assert!(build_script.contains("function Wait-ApiRouterRuntimeStopped"));
+        assert!(build_script.contains("function Get-ListenPortOwnerProcesses"));
+        assert!(build_script.contains("function Get-RuntimePortOwnerDetail"));
+        assert!(build_script.contains("Get-NetTCPConnection -LocalPort"));
+        assert!(build_script
+            .contains("existing API Router.exe process is still running before restart"));
+        assert!(build_script.contains("-RequireNewProcess"));
+        assert!(build_script.contains("repo root API Router.exe did not stop"));
+        assert!(build_script.contains("port $port listeners"));
         assert!(build_script.contains("Start-Process @startOptions"));
         assert!(build_script.contains("PassThru"));
         assert!(build_script.contains("Runtime restart gate passed"));

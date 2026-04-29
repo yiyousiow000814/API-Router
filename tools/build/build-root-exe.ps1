@@ -775,6 +775,14 @@ function Is-ApiRouterRunning {
   }
 }
 
+function Format-ProcessSummary([object[]]$Processes) {
+  if (-not $Processes -or $Processes.Count -eq 0) { return '<none>' }
+  return (($Processes | ForEach-Object {
+        $path = if ($_.Path) { $_.Path } else { '<unknown path>' }
+        "pid=$($_.Id) path=$path"
+      }) -join '; ')
+}
+
 function Get-ApiRouterRuntimeProcesses {
   try {
     return @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
@@ -785,8 +793,57 @@ function Get-ApiRouterRuntimeProcesses {
   }
 }
 
+function Get-ListenPortOwnerProcesses {
+  $port = Get-ConfiguredListenPort
+  if (-not $port) { return @() }
+  try {
+    $connections = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+    $pids = @($connections | ForEach-Object { $_.OwningProcess } | Where-Object { $_ } | Sort-Object -Unique)
+    return @($pids | ForEach-Object {
+        Get-Process -Id $_ -ErrorAction SilentlyContinue
+      } | Where-Object { $_ })
+  } catch {
+    Write-RemoteUpdateLog ("Failed to inspect listen port owner: " + $_.Exception.Message)
+    return @()
+  }
+}
+
+function Get-RuntimePortOwnerDetail {
+  $port = Get-ConfiguredListenPort
+  $owners = @(Get-ListenPortOwnerProcesses)
+  return "port $port listeners: $(Format-ProcessSummary $owners)"
+}
+
+function Wait-ApiRouterRuntimeStopped {
+  param(
+    [Nullable[int]]$TimeoutSeconds = $null
+  )
+
+  if ($TimeoutSeconds -eq $null) { $TimeoutSeconds = 10 }
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  $lastDetail = ''
+  while ([DateTime]::UtcNow -lt $deadline) {
+    $runtimeProcesses = @(Get-ApiRouterRuntimeProcesses | Where-Object { -not $_.HasExited })
+    if ($runtimeProcesses.Count -eq 0) {
+      Write-RemoteUpdateLog "Runtime stop check passed: repo root API Router.exe is not running."
+      return
+    }
+    $lastDetail = Format-ProcessSummary $runtimeProcesses
+    Start-Sleep -Milliseconds 250
+  }
+  throw "repo root API Router.exe did not stop: $lastDetail; $(Get-RuntimePortOwnerDetail)"
+}
+
 function Start-ApiRouter {
+  param(
+    [switch]$RequireNewProcess
+  )
+
   if (Is-ApiRouterRunning) {
+    if ($RequireNewProcess) {
+      $runtimeProcesses = @(Get-ApiRouterRuntimeProcesses | Where-Object { -not $_.HasExited })
+      throw "existing API Router.exe process is still running before restart: $(Format-ProcessSummary $runtimeProcesses); $(Get-RuntimePortOwnerDetail)"
+    }
     Write-Host "API Router already running."
     return Get-ApiRouterRuntimeProcesses | Select-Object -First 1
   }
@@ -834,6 +891,7 @@ function Wait-ApiRouterRuntimeProcessStarted {
   $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
   $stableSince = $null
   $lastDetail = ''
+  $lastLoggedDetail = ''
   while ([DateTime]::UtcNow -lt $deadline) {
     try {
       if ($StartedProcess -and $StartedProcess.Id) {
@@ -858,17 +916,21 @@ function Wait-ApiRouterRuntimeProcessStarted {
       } else {
         $stableSince = $null
         $lastDetail = 'repo root API Router.exe process is not running yet'
+        if ($lastDetail -ne $lastLoggedDetail) {
+          Write-RemoteUpdateLog "$lastDetail; $(Get-RuntimePortOwnerDetail)"
+          $lastLoggedDetail = $lastDetail
+        }
       }
     } catch {
       $lastDetail = $_.Exception.Message
-      throw "runtime restart check failed: $lastDetail"
+      throw "runtime restart check failed: $lastDetail; $(Get-RuntimePortOwnerDetail)"
     }
     Start-Sleep -Milliseconds 250
   }
   if (-not $lastDetail) {
     $lastDetail = 'timed out waiting for repo root API Router.exe process'
   }
-  throw "runtime restart check failed: $lastDetail"
+  throw "runtime restart check failed: $lastDetail; $(Get-RuntimePortOwnerDetail)"
 }
 
 function Wait-ApiRouterRuntimeHealthy {
@@ -886,6 +948,7 @@ function Wait-ApiRouterRuntimeHealthy {
   Enter-BuildStep -Phase 'health_checking' -Label 'Checking runtime health' -Detail $detail
   $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
   $lastDetail = ''
+  $lastLoggedDetail = ''
   while ([DateTime]::UtcNow -lt $deadline) {
     try {
       $processes = @(Get-ApiRouterRuntimeProcesses)
@@ -905,7 +968,7 @@ function Wait-ApiRouterRuntimeHealthy {
                 if ($actualGitSha.Trim() -ine $expectedGitSha.Trim()) {
                   $lastDetail = "runtime build sha $actualGitSha does not match expected $expectedGitSha"
                   if ($lastDetail -ne $lastLoggedDetail) {
-                    Write-RemoteUpdateLog $lastDetail
+                    Write-RemoteUpdateLog "$lastDetail; $(Get-RuntimePortOwnerDetail)"
                     $lastLoggedDetail = $lastDetail
                   }
                   continue
@@ -917,7 +980,7 @@ function Wait-ApiRouterRuntimeHealthy {
             }
             $lastDetail = "health endpoint returned unexpected payload"
             if ($lastDetail -ne $lastLoggedDetail) {
-              Write-RemoteUpdateLog $lastDetail
+              Write-RemoteUpdateLog "$lastDetail; $(Get-RuntimePortOwnerDetail)"
               $lastLoggedDetail = $lastDetail
             }
           } else {
@@ -933,7 +996,7 @@ function Wait-ApiRouterRuntimeHealthy {
     } catch {
       $lastDetail = $_.Exception.Message
       if ($lastDetail -ne $lastLoggedDetail) {
-        Write-RemoteUpdateLog "Runtime health probe failed: $lastDetail"
+        Write-RemoteUpdateLog "Runtime health probe failed: $lastDetail; $(Get-RuntimePortOwnerDetail)"
         $lastLoggedDetail = $lastDetail
       }
     }
@@ -942,7 +1005,7 @@ function Wait-ApiRouterRuntimeHealthy {
   if (-not $lastDetail) {
     $lastDetail = 'timed out waiting for API Router.exe'
   }
-  throw "runtime health check failed: $lastDetail"
+  throw "runtime health check failed: $lastDetail; $(Get-RuntimePortOwnerDetail)"
 }
 
 function Stop-RunningApiRouter {
@@ -964,6 +1027,7 @@ function Copy-WithRetry([string]$From, [string]$To) {
     } catch {
       if ($i -eq $attempts) { throw }
       Stop-RunningApiRouter
+      Wait-ApiRouterRuntimeStopped
       Start-Sleep -Milliseconds (250 + ($i * 150))
     }
   }
@@ -1283,6 +1347,7 @@ try {
       Write-RemoteUpdateLog "Canonical runtime executable already up to date: $DstExe"
     } else {
       Stop-RunningApiRouter
+      Wait-ApiRouterRuntimeStopped
       $script:RuntimeRollbackCandidate = $true
       Copy-WithRetry $SrcExe $DstExe
       Write-Host "Wrote: $DstExe"
@@ -1323,7 +1388,7 @@ try {
     if ($script:RuntimeRollbackCandidate -and $hadFailure) {
       throw 'post-install failure after replacing API Router.exe; forcing rollback before starting the new runtime'
     }
-    $startedRuntimeProcess = Start-ApiRouter
+    $startedRuntimeProcess = Start-ApiRouter -RequireNewProcess:($script:RuntimeRollbackCandidate -and -not $NoCopy)
     if (-not $NoCopy) {
       Wait-ApiRouterRuntimeProcessStarted -StartedProcess $startedRuntimeProcess
       Wait-ApiRouterRuntimeHealthy

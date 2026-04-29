@@ -660,7 +660,8 @@ Write-RemoteUpdateStatus -State 'succeeded' -TargetRef $TargetRef -Detail (Step-
       $LASTEXITCODE,
       $_.Exception.GetType().FullName)
   $existingStatus = Read-RemoteUpdateStatus
-  if ($existingStatus -and [string]$existingStatus.state -eq 'rolled_back') {
+  $buildResult = Read-RemoteUpdateBuildResult
+  if ($existingStatus -and [string]$existingStatus.state -eq 'rolled_back' -and $buildResult -and [string]$buildResult.result -eq 'rolled_back') {
     Write-RemoteUpdateLog 'Preserving rolled_back status written by nested build script.'
   } else {
     Write-RemoteUpdateStatus -State 'failed' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $message) -Phase 'failed' -Label "$currentStep failed" -StartedAtUnixMs $startedAtUnixMs -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
