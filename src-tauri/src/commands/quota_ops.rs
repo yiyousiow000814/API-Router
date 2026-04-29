@@ -317,6 +317,7 @@ fn set_usage_auth_impl(
             "has_login": !normalized_username.is_empty() && !password.is_empty(),
         }),
     );
+    crate::orchestrator::quota::clear_quota_snapshot(&state.gateway, provider);
     Ok(())
 }
 
@@ -397,6 +398,7 @@ fn set_usage_base_url_impl(
         "usage base url updated",
         serde_json::Value::Null,
     );
+    crate::orchestrator::quota::clear_quota_snapshot(&state.gateway, provider);
     Ok(())
 }
 
@@ -831,6 +833,7 @@ pub(crate) async fn probe_provider(
 mod quota_ops_tests {
     use super::{set_usage_auth_impl, set_usage_base_url_impl, set_usage_token_impl};
     use crate::app_state::AppState;
+    use crate::orchestrator::quota::{QuotaSnapshot, UsageKind};
 
     fn build_test_state() -> (tempfile::TempDir, AppState) {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -838,6 +841,31 @@ mod quota_ops_tests {
         let data_dir = tmp.path().join("data");
         let state = crate::app_state::build_state(config_path, data_dir).expect("build state");
         (tmp, state)
+    }
+
+    fn seed_usage_snapshot(state: &AppState, provider: &str) {
+        let mut snap = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        snap.daily_budget_usd = Some(90.0);
+        snap.effective_usage_base = Some("https://old.example/user/api/v1/me".to_string());
+        snap.effective_usage_source = Some("usage_base".to_string());
+        state
+            .gateway
+            .store
+            .put_quota_snapshot(provider, &snap.to_json())
+            .expect("seed quota snapshot");
+    }
+
+    fn stored_usage_kind(state: &AppState, provider: &str) -> Option<String> {
+        state
+            .gateway
+            .store
+            .get_quota_snapshot(provider)
+            .and_then(|value| {
+                value
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToString::to_string)
+            })
     }
 
     #[test]
@@ -907,5 +935,27 @@ mod quota_ops_tests {
                 .and_then(|provider| provider.usage_base_url.clone()),
             original
         );
+    }
+
+    #[test]
+    fn usage_base_url_update_clears_stale_quota_snapshot() {
+        let (_tmp, state) = build_test_state();
+        seed_usage_snapshot(&state, "provider_1");
+
+        set_usage_base_url_impl(&state, "provider_1", "https://usage.example")
+            .expect("set usage base");
+
+        assert_eq!(stored_usage_kind(&state, "provider_1").as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn usage_auth_update_clears_stale_quota_snapshot() {
+        let (_tmp, state) = build_test_state();
+        seed_usage_snapshot(&state, "provider_1");
+
+        set_usage_auth_impl(&state, "provider_1", "", "alice", "secret")
+            .expect("set usage auth");
+
+        assert_eq!(stored_usage_kind(&state, "provider_1").as_deref(), Some("none"));
     }
 }

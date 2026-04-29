@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import type { UseProviderActionsParams } from './types'
+import type { UsageBaseModalState, UseProviderActionsParams } from './types'
 import type { Config, Status } from '../../types'
 import { buildProviderGroupMaps, resolveProviderDisplayName } from '../../utils/providerGroups'
+import { supportsUsageAuthProvider } from '../../utils/providerUsageSupport'
 
 const MANUAL_QUOTA_REFRESH_WAIT_TIMEOUT_MS = 12_000
 const MANUAL_QUOTA_REFRESH_WAIT_POLL_MS = 350
@@ -103,15 +104,17 @@ export function buildUsageBaseModalDraft(
   explicitValue: string | null | undefined,
   effectiveValue: string | null | undefined,
   payload?: Partial<UsageAuthPayload> | null,
-  options?: { showUrlInput?: boolean },
+  options?: { showUrlInput?: boolean; supportsUsageAuth?: boolean },
 ) {
   const explicit = (explicitValue ?? '').trim()
   const effective = (effectiveValue ?? '').trim()
+  const showAuthFields = options?.supportsUsageAuth === true
   return {
     open: true,
     provider,
     baseUrl: (baseUrl ?? '').trim(),
     showUrlInput: options?.showUrlInput ?? true,
+    showAuthFields,
     value: explicit,
     auto: !explicit,
     explicitValue: explicit,
@@ -121,6 +124,7 @@ export function buildUsageBaseModalDraft(
     password: payload?.password ?? '',
     loading: false,
     loadFailed: false,
+    authLoaded: !showAuthFields || payload !== undefined,
   }
 }
 
@@ -141,9 +145,10 @@ export function buildUsageAuthModalDraft(
   }
 }
 
-function supportsUsageAuthProvider(baseUrl?: string | null): boolean {
-  const text = `${baseUrl ?? ''}`.trim().toLowerCase()
-  return text.includes('codex-for')
+export function shouldPersistUsageAuthFromUsageBaseModal(
+  modal: Pick<UsageBaseModalState, 'showAuthFields' | 'authLoaded'>,
+): boolean {
+  return modal.showAuthFields && modal.authLoaded
 }
 
 function delay(ms: number): Promise<void> {
@@ -446,7 +451,14 @@ export function useProviderUsageActions({
     if (!provider) return
     try {
       await applyUsageBaseUrl(provider, usageBaseModal.value)
-      if (!isDevPreview && usageBaseModal.value.trim()) {
+      if (shouldPersistUsageAuthFromUsageBaseModal(usageBaseModal)) {
+        await applyUsageAuth(provider, {
+          token: usageBaseModal.token,
+          username: usageBaseModal.username,
+          password: usageBaseModal.password,
+        })
+      }
+      if (!isDevPreview && (usageBaseModal.value.trim() || usageBaseModal.showAuthFields)) {
         await refreshQuota(provider)
       }
       setUsageBaseModal({
@@ -454,6 +466,7 @@ export function useProviderUsageActions({
         provider: '',
         baseUrl: '',
         showUrlInput: true,
+        showAuthFields: false,
         value: '',
         auto: false,
         explicitValue: '',
@@ -463,17 +476,24 @@ export function useProviderUsageActions({
         password: '',
         loading: false,
         loadFailed: false,
+        authLoaded: false,
       })
     } catch (e) {
       flashToast(String(e), 'error')
     }
   }, [
     applyUsageBaseUrl,
+    applyUsageAuth,
     isDevPreview,
     flashToast,
     refreshQuota,
     setUsageBaseModal,
+    usageBaseModal.password,
+    usageBaseModal.authLoaded,
     usageBaseModal.provider,
+    usageBaseModal.showAuthFields,
+    usageBaseModal.token,
+    usageBaseModal.username,
     usageBaseModal.value,
   ])
 
@@ -711,26 +731,44 @@ export function useProviderUsageActions({
       setUsageBaseModal({
         ...buildUsageBaseModalDraft(provider, providerBaseUrl, explicit, '', undefined, {
           showUrlInput,
+          supportsUsageAuth: supportsUsageAuthProvider(providerCfg),
         }),
       })
       if (isDevPreview) return
-      const effectiveResult = await invoke<string | null>('get_effective_usage_base', { provider })
-        .then((value) => ({ status: 'fulfilled' as const, value }))
-        .catch((reason) => ({ status: 'rejected' as const, reason }))
+      const loadAuth = supportsUsageAuthProvider(providerCfg)
+      const [effectiveResult, authResult] = await Promise.all([
+        invoke<string | null>('get_effective_usage_base', { provider })
+          .then((value) => ({ status: 'fulfilled' as const, value }))
+          .catch((reason) => ({ status: 'rejected' as const, reason })),
+        loadAuth
+          ? invoke<UsageAuthPayload>('get_usage_auth', { provider })
+              .then((value) => ({ status: 'fulfilled' as const, value }))
+              .catch((reason) => ({ status: 'rejected' as const, reason }))
+          : Promise.resolve({ status: 'fulfilled' as const, value: null }),
+      ])
       setUsageBaseModal((m) => {
         if (!m.open || m.provider !== provider) return m
         const nextEffective =
           effectiveResult.status === 'fulfilled' ? (effectiveResult.value ?? '').trim() : m.effectiveValue
+        const authPayload = authResult.status === 'fulfilled' ? authResult.value : null
         return {
           ...m,
           value: m.explicitValue,
           auto: !m.explicitValue,
           effectiveValue: nextEffective,
+          token: (authPayload?.token ?? '').trim(),
+          username: (authPayload?.username ?? '').trim(),
+          password: authPayload?.password ?? '',
           loading: false,
+          loadFailed: authResult.status === 'rejected',
+          authLoaded: authResult.status === 'fulfilled',
         }
       })
       if (effectiveResult.status === 'rejected') {
         console.warn('Failed to load usage base', effectiveResult.reason)
+      }
+      if (authResult.status === 'rejected') {
+        console.warn('Failed to load usage auth', authResult.reason)
       }
     },
     [config, isDevPreview, setUsageBaseModal],
@@ -739,8 +777,8 @@ export function useProviderUsageActions({
   const openUsageAuthModal = useCallback(
     async (provider: string) => {
       const providerCfg = config?.providers?.[provider]
-      if (!supportsUsageAuthProvider(providerCfg?.base_url)) {
-        flashToast('Usage auth only supports codex-for hosts', 'error')
+      if (!supportsUsageAuthProvider(providerCfg)) {
+        flashToast('Usage auth only supports configured login hosts', 'error')
         return
       }
       setUsageAuthModal({

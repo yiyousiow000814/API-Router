@@ -15,7 +15,7 @@ pub(crate) use super::providers::normalize_usage_base_url;
 use super::providers::{
     default_budget_info_mapping, map_canonical_usage, resolve_quota_profile, BudgetInfoAuthSource,
     CanonicalProviderUsage, CanonicalUsageContext, CanonicalUsageMapping, PackageExpiryStrategy,
-    ProviderQuotaProfile,
+    ProviderQuotaProfile, SubscriptionLoginProfile,
 };
 #[cfg(test)]
 pub(crate) use super::providers::{
@@ -780,6 +780,28 @@ async fn compute_quota_snapshot(
         };
     }
 
+    if profile.uses_subscription_login_refresh() {
+        return match canonicalize_snapshot_result(
+            fetch_subscription_login_any(
+                st,
+                provider_name,
+                bases,
+                credentials.usage_login,
+                profile.summary_mapping,
+                profile.subscription_login.as_ref(),
+            )
+            .await,
+            UsageKind::BudgetInfo,
+        ) {
+            Ok(usage) => QuotaSnapshot::from_canonical(usage),
+            Err(err) => {
+                let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+                out.last_error = err;
+                out
+            }
+        };
+    }
+
     if let Some(endpoint_url) = profile.explicit_usage_endpoint.as_deref() {
         let direct = match canonicalize_snapshot_result(
             fetch_explicit_usage_endpoint_any(
@@ -1422,6 +1444,7 @@ fn can_refresh_quota_for_provider(
     }
     let profile = resolve_quota_profile(provider);
     let allows_login_only_refresh = profile.uses_login_summary_refresh();
+    let allows_subscription_login_refresh = profile.uses_subscription_login_refresh();
     let allows_provider_key_card_login_refresh = profile.uses_provider_key_card_login_refresh();
     let bases = profile.candidate_bases;
     if bases.is_empty() {
@@ -1435,6 +1458,9 @@ fn can_refresh_quota_for_provider(
     }
     if allows_login_only_refresh {
         return usage_token.is_some() || usage_login.is_some();
+    }
+    if allows_subscription_login_refresh {
+        return usage_login.is_some();
     }
     match profile.budget_info_auth_source {
         BudgetInfoAuthSource::ProviderKey => provider_key.is_some(),

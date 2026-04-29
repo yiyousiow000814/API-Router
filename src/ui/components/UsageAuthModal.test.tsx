@@ -5,7 +5,7 @@ import { UsageAuthModal } from './UsageAuthModal'
 const noop = vi.fn()
 
 describe('UsageAuthModal', () => {
-  it('renders codex-for host account login fields', () => {
+  it('renders account login fields when opened', () => {
     const html = renderToStaticMarkup(
       <UsageAuthModal
         open
@@ -52,10 +52,10 @@ describe('UsageAuthModal', () => {
     expect(html).not.toContain('Loading...')
   })
 
-  it('does not render for unsupported hosts', () => {
+  it('does not render when closed', () => {
     const html = renderToStaticMarkup(
       <UsageAuthModal
-        open
+        open={false}
         provider="packy"
         baseUrl="https://codex.packycode.com"
         token=""

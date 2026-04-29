@@ -12,7 +12,11 @@ describe('UsageBaseModal', () => {
         provider="packycode"
         value=""
         effectiveValue=""
+        username=""
+        password=""
         onChange={noop}
+        onChangeUsername={noop}
+        onChangePassword={noop}
         onCancel={noop}
         onClear={noop}
         onSave={noop}
@@ -30,7 +34,11 @@ describe('UsageBaseModal', () => {
         provider="other"
         value=""
         effectiveValue="https://codex.packycode.com"
+        username=""
+        password=""
         onChange={noop}
+        onChangeUsername={noop}
+        onChangePassword={noop}
         onCancel={noop}
         onClear={noop}
         onSave={noop}
@@ -48,7 +56,11 @@ describe('UsageBaseModal', () => {
         provider="packycode"
         value=""
         effectiveValue=""
+        username=""
+        password=""
         onChange={noop}
+        onChangeUsername={noop}
+        onChangePassword={noop}
         onCancel={noop}
         onClear={noop}
         onSave={noop}
@@ -56,5 +68,30 @@ describe('UsageBaseModal', () => {
     )
 
     expect(html).toContain('disabled=""')
+  })
+
+  it('renders login fields inside usage url for supported providers', () => {
+    const html = renderToStaticMarkup(
+      <UsageBaseModal
+        open
+        provider="custom-name"
+        value="https://yfy.zhouyang168.top"
+        effectiveValue=""
+        username="alice"
+        password="secret"
+        showAuthFields
+        onChange={noop}
+        onChangeUsername={noop}
+        onChangePassword={noop}
+        onCancel={noop}
+        onClear={noop}
+        onSave={noop}
+      />,
+    )
+
+    expect(html).toContain('Usage URL')
+    expect(html).toContain('Username')
+    expect(html).toContain('Password')
+    expect(html).toContain('alice')
   })
 })

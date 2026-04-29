@@ -260,6 +260,7 @@ export default function App() {
     provider: "",
     baseUrl: "",
     showUrlInput: true,
+    showAuthFields: false,
     value: "",
     auto: false,
     explicitValue: "",
@@ -269,6 +270,7 @@ export default function App() {
     password: "",
     loading: false,
     loadFailed: false,
+    authLoaded: false,
   });
   const [usageAuthModal, setUsageAuthModal] = useState<UsageAuthModalState>({
     open: false,
@@ -2595,10 +2597,8 @@ export default function App() {
             onAssignGroup={setProvidersGroup}
             onSetUsageBase={setUsageBaseUrl}
             onClearUsageBase={clearUsageBaseUrl}
-            onClearUsageAuth={clearUsageAuth}
             onSetHardCap={setProviderQuotaHardCap}
             onOpenProviderEmailModal={openProviderEmailModal}
-            onOpenUsageAuthModal={openUsageAuthModal}
           />
         </Suspense>
       ) : null}

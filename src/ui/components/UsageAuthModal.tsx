@@ -39,11 +39,8 @@ export function UsageAuthModal({
   onClear,
   onSave,
 }: Props) {
+  void baseUrl
   if (!open) return null
-
-  const normalizedBaseUrl = baseUrl.trim().toLowerCase()
-  const isCodexForHost = normalizedBaseUrl.includes('codex-for')
-  if (!isCodexForHost) return null
 
   return (
     <ModalBackdrop className="aoModalBackdrop aoModalBackdropTop" onClose={onCancel}>

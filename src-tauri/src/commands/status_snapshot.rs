@@ -1002,6 +1002,7 @@ fn config_revision(state: &app_state::AppState, cfg: &crate::orchestrator::confi
             "account_email": state.secrets.get_provider_account_email(provider_name),
             "has_usage_token": state.secrets.get_usage_token(provider_name).is_some(),
             "has_usage_login": state.secrets.get_usage_login(provider_name).is_some(),
+            "supports_usage_login": crate::orchestrator::providers::provider_supports_usage_login(provider_cfg),
         }));
     }
     for provider_name in cfg.providers.keys() {
@@ -1025,6 +1026,7 @@ fn config_revision(state: &app_state::AppState, cfg: &crate::orchestrator::confi
             "account_email": state.secrets.get_provider_account_email(provider_name),
             "has_usage_token": state.secrets.get_usage_token(provider_name).is_some(),
             "has_usage_login": state.secrets.get_usage_login(provider_name).is_some(),
+            "supports_usage_login": crate::orchestrator::providers::provider_supports_usage_login(provider_cfg),
         }));
     }
     let payload = serde_json::json!({

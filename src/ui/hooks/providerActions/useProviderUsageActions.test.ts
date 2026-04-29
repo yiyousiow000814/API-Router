@@ -7,6 +7,7 @@ import {
   buildUsageBaseModalDraft,
   invokeManualQuotaRefresh,
   setProviderQuotaHardCapFieldWithRefresh,
+  shouldPersistUsageAuthFromUsageBaseModal,
 } from './useProviderUsageActions'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -66,6 +67,7 @@ describe('buildUsageBaseModalDraft', () => {
       provider: 'p1',
       baseUrl: 'https://codex-api.packycode.com/v1',
       showUrlInput: true,
+      showAuthFields: false,
       value: '',
       auto: true,
       explicitValue: '',
@@ -75,6 +77,7 @@ describe('buildUsageBaseModalDraft', () => {
       password: '',
       loading: false,
       loadFailed: false,
+      authLoaded: true,
     })
   })
 
@@ -84,6 +87,7 @@ describe('buildUsageBaseModalDraft', () => {
       provider: 'p1',
       baseUrl: 'https://codex-api.packycode.com/v1',
       showUrlInput: true,
+      showAuthFields: false,
       value: 'https://manual.example.com',
       auto: false,
       explicitValue: 'https://manual.example.com',
@@ -93,6 +97,7 @@ describe('buildUsageBaseModalDraft', () => {
       password: '',
       loading: false,
       loadFailed: false,
+      authLoaded: true,
     })
   })
 
@@ -111,6 +116,7 @@ describe('buildUsageBaseModalDraft', () => {
       provider: 'p1',
       baseUrl: 'https://codex.packycode.com/v1',
       showUrlInput: false,
+      showAuthFields: false,
       value: 'https://codex.packycode.com',
       auto: false,
       explicitValue: 'https://codex.packycode.com',
@@ -120,7 +126,54 @@ describe('buildUsageBaseModalDraft', () => {
       password: '',
       loading: false,
       loadFailed: false,
+      authLoaded: true,
     })
+  })
+
+  it('adds login fields when provider config supports usage auth', () => {
+    expect(
+      buildUsageBaseModalDraft(
+        'custom-name',
+        'https://yfy.zhouyang168.top/v1',
+        'https://yfy.zhouyang168.top',
+        'https://yfy.zhouyang168.top',
+        { username: ' alice ', password: 'secret' },
+        { supportsUsageAuth: true },
+      ),
+    ).toMatchObject({
+      showAuthFields: true,
+      username: 'alice',
+      password: 'secret',
+      authLoaded: true,
+    })
+  })
+
+  it('marks supported auth providers as not loaded until auth payload arrives', () => {
+    expect(
+      buildUsageBaseModalDraft(
+        'custom-name',
+        'https://yfy.zhouyang168.top/v1',
+        'https://yfy.zhouyang168.top',
+        'https://yfy.zhouyang168.top',
+        undefined,
+        { supportsUsageAuth: true },
+      ),
+    ).toMatchObject({
+      showAuthFields: true,
+      username: '',
+      password: '',
+      authLoaded: false,
+    })
+  })
+})
+
+describe('shouldPersistUsageAuthFromUsageBaseModal', () => {
+  it('does not persist empty auth when loading saved auth failed', () => {
+    expect(shouldPersistUsageAuthFromUsageBaseModal({ showAuthFields: true, authLoaded: false })).toBe(false)
+  })
+
+  it('persists auth after the saved auth payload loaded', () => {
+    expect(shouldPersistUsageAuthFromUsageBaseModal({ showAuthFields: true, authLoaded: true })).toBe(true)
   })
 })
 

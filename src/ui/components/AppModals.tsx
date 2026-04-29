@@ -477,6 +477,10 @@ export function AppModals(props: Props) {
         provider={usageBaseModal.provider}
         value={usageBaseModal.value}
         effectiveValue={usageBaseModal.effectiveValue}
+        username={usageBaseModal.username}
+        password={usageBaseModal.password}
+        showAuthFields={usageBaseModal.showAuthFields}
+        loadFailed={usageBaseModal.loadFailed}
         onChange={(value) =>
           setUsageBaseModal((m) => ({
             ...m,
@@ -491,6 +495,7 @@ export function AppModals(props: Props) {
             provider: '',
             baseUrl: '',
             showUrlInput: true,
+            showAuthFields: false,
             value: '',
             auto: false,
             explicitValue: '',
@@ -500,14 +505,21 @@ export function AppModals(props: Props) {
             password: '',
             loading: false,
             loadFailed: false,
+            authLoaded: false,
           })
         }
+        onChangeUsername={(username) => setUsageBaseModal((m) => ({ ...m, username, authLoaded: true }))}
+        onChangePassword={(password) => setUsageBaseModal((m) => ({ ...m, password, authLoaded: true }))}
         onClear={() =>
           setUsageBaseModal((m) => ({
             ...m,
             value: '',
             auto: false,
             explicitValue: '',
+            token: '',
+            username: '',
+            password: '',
+            authLoaded: true,
           }))
         }
         onSave={() => void saveUsageBaseUrl()}
