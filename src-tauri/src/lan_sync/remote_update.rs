@@ -3165,6 +3165,7 @@ mod tests {
         assert!(build_script.contains("function Get-ConfiguredListenPort"));
         assert!(build_script.contains("function Get-ConfiguredListenHost"));
         assert!(build_script.contains("function Get-ApiRouterRuntimeHealthTimeoutSeconds"));
+        assert!(build_script.contains("return 120"));
         assert!(build_script.contains("function Get-RemoteUpdateLanSecret"));
         assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_HEALTH_TIMEOUT_SECONDS"));
         assert!(build_script.contains("lan_trust_secret"));
@@ -3186,6 +3187,12 @@ mod tests {
         assert!(build_script.contains("$lowerHost -eq '::'"));
         assert!(build_script.contains("return \"[$hostValue]\""));
         assert!(build_script.contains("function Wait-ApiRouterRuntimeHealthy"));
+        assert!(build_script.contains("function Wait-ApiRouterRuntimeProcessStarted"));
+        assert!(build_script.contains("Start-Process @startOptions"));
+        assert!(build_script.contains("PassThru"));
+        assert!(build_script.contains("Runtime restart gate passed"));
+        assert!(build_script.contains("runtime restart check failed"));
+        assert!(build_script.contains("restart_verified"));
         assert!(build_script.contains("/health"));
         assert!(build_script.contains("function Get-LocalHttpStatusUrl"));
         assert!(build_script.contains("function Get-ExpectedRuntimeGitSha"));

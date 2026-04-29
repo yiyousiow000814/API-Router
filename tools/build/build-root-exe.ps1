@@ -157,7 +157,14 @@ function Get-ConfiguredListenHost {
 
 function Get-ApiRouterRuntimeHealthTimeoutSeconds {
   $value = [string]$env:API_ROUTER_REMOTE_UPDATE_HEALTH_TIMEOUT_SECONDS
-  if ([string]::IsNullOrWhiteSpace($value)) { return 30 }
+  if ([string]::IsNullOrWhiteSpace($value)) {
+    $remoteTargetRef = [string]$env:API_ROUTER_REMOTE_UPDATE_TARGET_REF
+    $remoteToGitSha = [string]$env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA
+    if (-not [string]::IsNullOrWhiteSpace($remoteTargetRef) -or -not [string]::IsNullOrWhiteSpace($remoteToGitSha)) {
+      return 120
+    }
+    return 30
+  }
   try {
     $parsed = [int]$value.Trim()
     if ($parsed -gt 0) { return $parsed }
@@ -288,7 +295,10 @@ function Get-LocalHttpStatusUrl {
 }
 
 function Get-ExpectedRuntimeGitSha {
-  $expected = Normalize-VersionSha $env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA $env:API_ROUTER_REMOTE_UPDATE_TARGET_REF
+  $expected = Normalize-VersionSha $env:API_ROUTER_REMOTE_UPDATE_CURRENT_GIT_SHA $env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA
+  if ($expected -eq 'unknown') {
+    $expected = Normalize-VersionSha $env:API_ROUTER_REMOTE_UPDATE_TARGET_REF ''
+  }
   if ($expected -eq 'unknown') { return $null }
   return $expected
 }
@@ -492,6 +502,7 @@ function Wait-UpdaterDaemonReady {
 
   $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
   $lastDetail = ''
+  $lastLoggedDetail = ''
   while ([DateTime]::UtcNow -lt $deadline) {
     try {
       $payload = Invoke-JsonHttpGet -Uri $StatusUrl -Headers $Headers -TimeoutSeconds 2
@@ -757,21 +768,31 @@ function Get-StageDurationText([int64]$StartedAtUnixMs) {
 
 function Is-ApiRouterRunning {
   try {
-    $p = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path -ieq $DstExe) } | Select-Object -First 1
+    $p = Get-ApiRouterRuntimeProcesses | Select-Object -First 1
     return [bool]$p
   } catch {
     return $false
   }
 }
 
+function Get-ApiRouterRuntimeProcesses {
+  try {
+    return @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Path -and ($_.Path -ieq $DstExe)
+    })
+  } catch {
+    return @()
+  }
+}
+
 function Start-ApiRouter {
   if (Is-ApiRouterRunning) {
     Write-Host "API Router already running."
-    return
+    return Get-ApiRouterRuntimeProcesses | Select-Object -First 1
   }
   if (-not (Test-Path $StartFilePath)) {
     Write-Warning "Missing start target: $StartFilePath (cannot restart)"
-    return
+    return $null
   }
   $env:API_ROUTER_PROFILE = $null
   if ($TestProfile) { $env:API_ROUTER_PROFILE = 'test' }
@@ -787,12 +808,67 @@ function Start-ApiRouter {
     # changes do not reintroduce a late console flash during the restart phase.
     $startOptions.WindowStyle = 'Hidden'
   }
-  if ($arguments.Count -gt 0) {
-    Start-Process @startOptions -ArgumentList $arguments | Out-Null
+  $startOptions.PassThru = $true
+  $startedProcess = if ($arguments.Count -gt 0) {
+    Start-Process @startOptions -ArgumentList $arguments
   } else {
-    Start-Process @startOptions | Out-Null
+    Start-Process @startOptions
   }
   Reset-LastExitCode
+  if ($startedProcess) {
+    Write-RemoteUpdateLog "Started API Router process: pid=$($startedProcess.Id); path=$StartFilePath"
+  }
+  return $startedProcess
+}
+
+function Wait-ApiRouterRuntimeProcessStarted {
+  param(
+    [Parameter(Mandatory = $false)]
+    [object]$StartedProcess,
+    [Nullable[int]]$TimeoutSeconds = $null
+  )
+
+  if ($TimeoutSeconds -eq $null) {
+    $TimeoutSeconds = 15
+  }
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  $stableSince = $null
+  $lastDetail = ''
+  while ([DateTime]::UtcNow -lt $deadline) {
+    try {
+      if ($StartedProcess -and $StartedProcess.Id) {
+        $startedById = Get-Process -Id $StartedProcess.Id -ErrorAction SilentlyContinue
+        if ($null -eq $startedById -or $startedById.HasExited) {
+          throw "started API Router process exited before HTTP health check: pid=$($StartedProcess.Id)"
+        }
+      }
+      $alive = @(Get-ApiRouterRuntimeProcesses | Where-Object { -not $_.HasExited })
+      if ($alive.Count -gt 0) {
+        if ($null -eq $stableSince) {
+          $stableSince = [DateTime]::UtcNow
+          $pids = ($alive | ForEach-Object { $_.Id }) -join ','
+          $lastDetail = "repo root API Router.exe process observed: pid=$pids"
+          Write-RemoteUpdateLog $lastDetail
+        } elseif ((([DateTime]::UtcNow) - $stableSince).TotalMilliseconds -ge 1500) {
+          $pids = ($alive | ForEach-Object { $_.Id }) -join ','
+          Write-RemoteUpdateLog "Runtime restart gate passed: repo root API Router.exe stayed alive; pid=$pids"
+          Update-RemoteUpdateTimelineStep -Phase 'restart_verified' -Label 'Runtime process verified' -Detail "API Router.exe process is running: pid=$pids" -State 'running'
+          return
+        }
+      } else {
+        $stableSince = $null
+        $lastDetail = 'repo root API Router.exe process is not running yet'
+      }
+    } catch {
+      $lastDetail = $_.Exception.Message
+      throw "runtime restart check failed: $lastDetail"
+    }
+    Start-Sleep -Milliseconds 250
+  }
+  if (-not $lastDetail) {
+    $lastDetail = 'timed out waiting for repo root API Router.exe process'
+  }
+  throw "runtime restart check failed: $lastDetail"
 }
 
 function Wait-ApiRouterRuntimeHealthy {
@@ -812,9 +888,7 @@ function Wait-ApiRouterRuntimeHealthy {
   $lastDetail = ''
   while ([DateTime]::UtcNow -lt $deadline) {
     try {
-      $processes = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
-          $_.Path -and ($_.Path -ieq $DstExe)
-      })
+      $processes = @(Get-ApiRouterRuntimeProcesses)
       if ($processes.Count -gt 0) {
         $alive = @($processes | Where-Object { -not $_.HasExited })
         if ($alive.Count -gt 0) {
@@ -830,6 +904,10 @@ function Wait-ApiRouterRuntimeHealthy {
                 $actualGitSha = [string]$statusPayload.lan_sync.local_node.build_identity.build_git_sha
                 if ($actualGitSha.Trim() -ine $expectedGitSha.Trim()) {
                   $lastDetail = "runtime build sha $actualGitSha does not match expected $expectedGitSha"
+                  if ($lastDetail -ne $lastLoggedDetail) {
+                    Write-RemoteUpdateLog $lastDetail
+                    $lastLoggedDetail = $lastDetail
+                  }
                   continue
                 }
                 Write-RemoteUpdateLog "Runtime build check passed: $actualGitSha."
@@ -838,6 +916,10 @@ function Wait-ApiRouterRuntimeHealthy {
               return
             }
             $lastDetail = "health endpoint returned unexpected payload"
+            if ($lastDetail -ne $lastLoggedDetail) {
+              Write-RemoteUpdateLog $lastDetail
+              $lastLoggedDetail = $lastDetail
+            }
           } else {
             Write-RemoteUpdateLog "Runtime health check passed: API Router.exe process is running."
             return
@@ -850,6 +932,10 @@ function Wait-ApiRouterRuntimeHealthy {
       }
     } catch {
       $lastDetail = $_.Exception.Message
+      if ($lastDetail -ne $lastLoggedDetail) {
+        Write-RemoteUpdateLog "Runtime health probe failed: $lastDetail"
+        $lastLoggedDetail = $lastDetail
+      }
     }
     Start-Sleep -Milliseconds 500
   }
@@ -1237,8 +1323,9 @@ try {
     if ($script:RuntimeRollbackCandidate -and $hadFailure) {
       throw 'post-install failure after replacing API Router.exe; forcing rollback before starting the new runtime'
     }
-    Start-ApiRouter
+    $startedRuntimeProcess = Start-ApiRouter
     if (-not $NoCopy) {
+      Wait-ApiRouterRuntimeProcessStarted -StartedProcess $startedRuntimeProcess
       Wait-ApiRouterRuntimeHealthy
       $env:API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT = '100'
       Update-RemoteUpdateTimelineStep -Phase 'health_check_succeeded' -Label 'Runtime health check passed' -Detail 'API Router.exe is running' -State 'running'
@@ -1249,6 +1336,7 @@ try {
       Write-RemoteUpdateLog ("Runtime validation failed; starting rollback: " + $runtimeValidationError.Exception.Message)
       try {
         Restore-PreviousRuntime
+        Wait-ApiRouterRuntimeProcessStarted -StartedProcess $null
         Wait-ApiRouterRuntimeHealthy
         Update-RemoteUpdateTimelineStep -Phase 'rolled_back' -Label 'Rollback health check passed' -Detail "Rolled back to $env:API_ROUTER_REMOTE_UPDATE_CURRENT_GIT_SHA" -State 'rolled_back' -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
         $script:BuildResult = 'rolled_back'
