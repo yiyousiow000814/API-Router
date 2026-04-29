@@ -3,7 +3,7 @@ import type { Config } from '../types'
 type ConfigSource = NonNullable<Config['config_source']>['sources'][number]
 
 export type RemoteUpdatePendingStage = {
-  stage: 'requesting' | 'refreshing'
+  stage: 'requesting' | 'refreshing' | 'rolling_back'
   detail: string
   startedAtUnixMs: number
 }

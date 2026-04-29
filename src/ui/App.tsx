@@ -78,7 +78,10 @@ import type {
 } from "./hooks/providerActions/types";
 import { buildCodexSwapBadge, resolveCliHomes } from "./utils/switchboard";
 import { usageProviderRowKey } from "./utils/usageStatisticsView";
-import { isRemoteUpdateStatusCurrentForPending } from "./utils/remoteUpdateStatus";
+import {
+  isRemoteUpdateStatusCurrentForPending,
+  type RemoteUpdatePendingStage,
+} from "./utils/remoteUpdateStatus";
 import {
   USAGE_REQUESTS_CANONICAL_QUERY_KEY,
   primeUsageRequestsPrefetchCache,
@@ -1784,16 +1787,7 @@ export default function App() {
     });
   }
   const [lanRemoteUpdatePendingByNode, setLanRemoteUpdatePendingByNode] =
-    useState<
-      Record<
-        string,
-        {
-          stage: "requesting" | "refreshing";
-          detail: string;
-          startedAtUnixMs: number;
-        }
-      >
-    >({});
+    useState<Record<string, RemoteUpdatePendingStage>>({});
 
   useEffect(() => {
     const sources = config?.config_source?.sources ?? [];
@@ -1807,13 +1801,17 @@ export default function App() {
         if (!source) continue;
         const pendingStage = prev[nodeId];
         const remoteState = source.remote_update_status?.state?.trim() || "";
+        const terminalStates =
+          pendingStage.stage === "rolling_back"
+            ? ["rolled_back", "failed"]
+            : ["failed", "succeeded", "superseded", "rolled_back"];
         const hasCurrentTerminalRemoteUpdateStatus =
           Boolean(source.remote_update_status?.state?.trim()) &&
           isRemoteUpdateStatusCurrentForPending(source, pendingStage) &&
-          ["failed", "succeeded", "superseded"].includes(remoteState);
+          terminalStates.includes(remoteState);
         if (
           hasCurrentTerminalRemoteUpdateStatus ||
-          !source.version_sync_required
+          (pendingStage.stage !== "rolling_back" && !source.version_sync_required)
         ) {
           delete next[nodeId];
           changed = true;
@@ -1885,6 +1883,47 @@ export default function App() {
         },
       }));
       flashToast("Peer version sync requested");
+      await refreshConfig({ refreshProviderSwitchStatus: false, force: true });
+    } catch (error) {
+      setLanRemoteUpdatePendingByNode((prev) => {
+        const next = { ...prev };
+        delete next[nodeId];
+        return next;
+      });
+      flashToast(String(error), "error");
+    }
+  }
+
+  async function requestLanRemoteUpdateRollback(nodeId: string) {
+    if (lanRemoteUpdatePendingByNode[nodeId]) return;
+    setLanRemoteUpdatePendingByNode((prev) => ({
+      ...prev,
+      [nodeId]: {
+        stage: "rolling_back",
+        detail: "Sending rollback request to peer",
+        startedAtUnixMs: Date.now(),
+      },
+    }));
+    try {
+      if (isDevPreview) {
+        flashToast(`Requested ${nodeId} to rollback [TEST]`);
+        setLanRemoteUpdatePendingByNode((prev) => {
+          const next = { ...prev };
+          delete next[nodeId];
+          return next;
+        });
+        return;
+      }
+      await invoke("request_lan_remote_update_rollback", { nodeId });
+      setLanRemoteUpdatePendingByNode((prev) => ({
+        ...prev,
+        [nodeId]: {
+          stage: "rolling_back",
+          detail: "Peer accepted rollback. Refreshing remote progress",
+          startedAtUnixMs: prev[nodeId]?.startedAtUnixMs ?? Date.now(),
+        },
+      }));
+      flashToast("Peer rollback requested");
       await refreshConfig({ refreshProviderSwitchStatus: false, force: true });
     } catch (error) {
       setLanRemoteUpdatePendingByNode((prev) => {
@@ -2386,6 +2425,7 @@ export default function App() {
             requestLanRemoteUpdateSameVersion={
               requestLanRemoteUpdateSameVersion
             }
+            requestLanRemoteUpdateRollback={requestLanRemoteUpdateRollback}
             lanRemoteUpdatePendingByNode={lanRemoteUpdatePendingByNode}
             openProviderGroupManager={openProviderGroupManager}
             setConfigModalOpen={setConfigModalOpen}

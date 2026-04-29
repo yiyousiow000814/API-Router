@@ -60,6 +60,18 @@ pub struct LanRemoteUpdateStatusSnapshot {
     pub state: String,
     pub target_ref: String,
     #[serde(default)]
+    pub from_git_sha: Option<String>,
+    #[serde(default)]
+    pub to_git_sha: Option<String>,
+    #[serde(default)]
+    pub current_git_sha: Option<String>,
+    #[serde(default)]
+    pub previous_git_sha: Option<String>,
+    #[serde(default)]
+    pub progress_percent: Option<u8>,
+    #[serde(default)]
+    pub rollback_available: bool,
+    #[serde(default)]
     pub request_id: Option<String>,
     #[serde(default)]
     pub reason_code: Option<String>,
@@ -1492,7 +1504,129 @@ fn trust_peer_snapshot(
     peer
 }
 
+pub(crate) fn remote_update_updater_port(listen_port: u16) -> Option<u16> {
+    listen_port.checked_add(1)
+}
+
+#[cfg(not(test))]
+pub(crate) fn ensure_remote_update_updater_daemon(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+) {
+    if let Err(err) = spawn_remote_update_updater_daemon(gateway) {
+        append_remote_update_log_message(&format!("Updater daemon unavailable: {err}"));
+    }
+}
+
+#[cfg(not(test))]
+fn spawn_remote_update_updater_daemon(
+    gateway: &crate::orchestrator::gateway::GatewayState,
+) -> Result<(), String> {
+    let repo_root = resolve_repo_root_for_self_update()?;
+    let updater = repo_root.join("API Router Updater.exe");
+    if !updater.is_file() {
+        return Err(format!("missing updater executable: {}", updater.display()));
+    }
+    let listen_port = gateway.cfg.read().listen.port;
+    let updater_port = remote_update_updater_port(listen_port)
+        .ok_or_else(|| format!("listen port {listen_port} has no updater port"))?;
+    let trust_secret = current_lan_trust_secret(gateway)?;
+    let bind = format!("0.0.0.0:{updater_port}");
+    let mut command = std::process::Command::new(&updater);
+    command
+        .current_dir(&repo_root)
+        .args(["serve", "--repo-root"])
+        .arg(&repo_root)
+        .args(["--bind", &bind])
+        .env("API_ROUTER_REMOTE_UPDATE_LAN_SECRET", &trust_secret)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(windows_remote_update_creation_flags());
+    }
+    command
+        .spawn()
+        .map_err(|err| format!("failed to start updater daemon: {err}"))?;
+    append_remote_update_log_message(&format!(
+        "Updater daemon start requested: path={} bind={bind}",
+        updater.display()
+    ));
+    Ok(())
+}
+
 impl LanSyncRuntime {
+    pub async fn request_peer_remote_update_rollback(
+        &self,
+        gateway: &crate::orchestrator::gateway::GatewayState,
+        node_id: &str,
+    ) -> Result<(), String> {
+        let normalized_node_id = node_id.trim();
+        if normalized_node_id.is_empty() {
+            return Err("node_id is required".to_string());
+        }
+        let peer = self.rollback_peer_for_request(
+            normalized_node_id,
+            &gateway.secrets.trusted_lan_node_ids(),
+        )?;
+        let base_url = peer_updater_base_url(&peer).ok_or_else(|| {
+            format!("peer has no remote update updater address: {normalized_node_id}")
+        })?;
+        let trust_secret = current_lan_trust_secret(gateway)?;
+        let response = lan_sync_http_client()
+            .post(format!("{base_url}/rollback"))
+            .header(
+                LAN_SYNC_AUTH_NODE_ID_HEADER,
+                self.local_node.node_id.clone(),
+            )
+            .header(LAN_SYNC_AUTH_SECRET_HEADER, trust_secret)
+            .send()
+            .await
+            .map_err(|err| format!("remote update rollback request failed: {err}"))?;
+        if !response.status().is_success() {
+            let detail = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unknown remote update rollback error".to_string());
+            return Err(format!(
+                "remote update rollback rejected by {}: {detail}",
+                peer.node_name
+            ));
+        }
+        gateway.store.events().lan().remote_update_requested(
+            "gateway",
+            &format!("Requested {} to rollback via updater", peer.node_name),
+            serde_json::json!({
+                "peer_node_id": peer.node_id,
+                "peer_node_name": peer.node_name,
+                "updater_base_url": base_url,
+                "target_ref": "previous",
+            }),
+        );
+        Ok(())
+    }
+
+    fn rollback_peer_for_request(
+        &self,
+        normalized_node_id: &str,
+        trusted_node_ids: &std::collections::BTreeSet<String>,
+    ) -> Result<LanPeerSnapshot, String> {
+        let peer = self
+            .recent_peer_by_node_id(
+                normalized_node_id,
+                LAN_REMOTE_UPDATE_ROLLBACK_HTTP_GRACE_AFTER_MS,
+            )
+            .ok_or_else(|| format!("peer is not reachable on LAN: {normalized_node_id}"))?;
+        let peer = trust_peer_snapshot(peer, trusted_node_ids);
+        if !peer.trusted {
+            return Err(format!(
+                "peer is not trusted for remote update rollback: {normalized_node_id}"
+            ));
+        }
+        Ok(peer)
+    }
+
     pub async fn request_peer_remote_update(
         &self,
         gateway: &crate::orchestrator::gateway::GatewayState,
@@ -1777,6 +1911,12 @@ pub(crate) async fn lan_sync_remote_update_http(
     let accepted_status = LanRemoteUpdateStatusSnapshot {
         state: "accepted".to_string(),
         target_ref: normalized_target_ref.to_string(),
+        from_git_sha: normalized_local_build_target_ref(),
+        to_git_sha: None,
+        current_git_sha: normalized_local_build_target_ref(),
+        previous_git_sha: None,
+        progress_percent: Some(0),
+        rollback_available: false,
         request_id: Some(request_id.clone()),
         reason_code: Some("request_accepted".to_string()),
         requester_node_id: Some(packet.node_id.clone()),
@@ -2025,6 +2165,29 @@ fn spawn_remote_update_worker(
     if let Some(path) = log_path.as_ref() {
         command.env("API_ROUTER_REMOTE_UPDATE_LOG_PATH", path);
     }
+    let cfg_snapshot = gateway.cfg.read().clone();
+    let updater_port = remote_update_updater_port(cfg_snapshot.listen.port).ok_or_else(|| {
+        format!(
+            "listen port {} has no updater port",
+            cfg_snapshot.listen.port
+        )
+    })?;
+    command.env(
+        "API_ROUTER_REMOTE_UPDATE_LISTEN_HOST",
+        cfg_snapshot.listen.host,
+    );
+    command.env(
+        "API_ROUTER_REMOTE_UPDATE_LISTEN_PORT",
+        cfg_snapshot.listen.port.to_string(),
+    );
+    command.env(
+        "API_ROUTER_REMOTE_UPDATE_UPDATER_PORT",
+        updater_port.to_string(),
+    );
+    command.env(
+        "API_ROUTER_REMOTE_UPDATE_LAN_SECRET",
+        current_lan_trust_secret(gateway)?,
+    );
     command.env("API_ROUTER_REMOTE_UPDATE_TARGET_REF", target_ref);
     command.env("API_ROUTER_REMOTE_UPDATE_REQUEST_ID", request_id);
     command.env(
@@ -2131,6 +2294,12 @@ mod tests {
         LanRemoteUpdateStatusSnapshot {
             state: "accepted".to_string(),
             target_ref: "abc123".to_string(),
+            from_git_sha: Some("from123".to_string()),
+            to_git_sha: None,
+            current_git_sha: Some("from123".to_string()),
+            previous_git_sha: None,
+            progress_percent: Some(0),
+            rollback_available: false,
             request_id: Some("ru_test".to_string()),
             reason_code: Some("request_accepted".to_string()),
             requester_node_id: Some("node-remote".to_string()),
@@ -2352,6 +2521,7 @@ mod tests {
             node_id: "node-a".to_string(),
             node_name: "Node A".to_string(),
             listen_addr: "192.168.1.10:4000".to_string(),
+            remote_update_updater_port: Some(4001),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
             version_inventory: super::local_version_inventory(),
@@ -2393,6 +2563,7 @@ mod tests {
             node_id: "node-a".to_string(),
             node_name: "Node A".to_string(),
             listen_addr: "192.168.1.10:4000".to_string(),
+            remote_update_updater_port: Some(4001),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
             version_inventory: super::local_version_inventory(),
@@ -2417,6 +2588,57 @@ mod tests {
 
         let untrusted_peer = trust_peer_snapshot(peer, &std::collections::BTreeSet::new());
         assert!(!untrusted_peer.trusted);
+    }
+
+    #[test]
+    fn rollback_peer_selection_requires_trust_and_bounded_stale_cache() {
+        let runtime = LanSyncRuntime::new(LanNodeIdentity {
+            node_id: "node-local".to_string(),
+            node_name: "local".to_string(),
+        });
+        runtime.peers.write().insert(
+            "node-remote".to_string(),
+            super::LanPeerRuntime {
+                node_id: "node-remote".to_string(),
+                node_name: "Remote".to_string(),
+                listen_addr: "192.168.1.10:4000".to_string(),
+                remote_update_updater_port: Some(4001),
+                last_heartbeat_unix_ms: unix_ms()
+                    .saturating_sub(LAN_PEER_STALE_AFTER_MS.saturating_add(1)),
+                capabilities: super::lan_heartbeat_capabilities(),
+                version_inventory: super::local_version_inventory(),
+                build_identity: super::current_build_identity(),
+                remote_update_readiness: Some(current_local_remote_update_readiness()),
+                remote_update_status: None,
+                sync_contracts: super::local_sync_contracts(),
+                provider_fingerprints: Vec::new(),
+                provider_definitions_revision: String::new(),
+                followed_source_node_id: None,
+            },
+        );
+
+        let trusted_node_ids = std::collections::BTreeSet::from(["node-remote".to_string()]);
+        let selected = runtime
+            .rollback_peer_for_request("node-remote", &trusted_node_ids)
+            .expect("trusted stale peer inside rollback grace");
+        assert_eq!(selected.remote_update_updater_port, Some(4001));
+
+        let untrusted_error = runtime
+            .rollback_peer_for_request("node-remote", &std::collections::BTreeSet::new())
+            .expect_err("untrusted peer must not receive rollback secret");
+        assert!(untrusted_error.contains("not trusted"));
+
+        runtime
+            .peers
+            .write()
+            .get_mut("node-remote")
+            .expect("seeded peer")
+            .last_heartbeat_unix_ms =
+            unix_ms().saturating_sub(LAN_REMOTE_UPDATE_ROLLBACK_HTTP_GRACE_AFTER_MS + 5_000);
+        let expired_error = runtime
+            .rollback_peer_for_request("node-remote", &trusted_node_ids)
+            .expect_err("expired stale peer must not receive rollback secret");
+        assert!(expired_error.contains("not reachable"));
     }
 
     #[test]
@@ -2520,6 +2742,12 @@ mod tests {
         let status = LanRemoteUpdateStatusSnapshot {
             state: "succeeded".to_string(),
             target_ref: "9e557ebd".to_string(),
+            from_git_sha: Some("6b28b6e".to_string()),
+            to_git_sha: Some("9e557ebd".to_string()),
+            current_git_sha: Some("9e557ebd".to_string()),
+            previous_git_sha: Some("6b28b6e".to_string()),
+            progress_percent: Some(100),
+            rollback_available: true,
             request_id: Some("ru_success".to_string()),
             reason_code: None,
             requester_node_id: Some("node-remote".to_string()),
@@ -2566,6 +2794,12 @@ mod tests {
         let status = LanRemoteUpdateStatusSnapshot {
             state: "succeeded".to_string(),
             target_ref: "9e557ebd".to_string(),
+            from_git_sha: Some("6b28b6e".to_string()),
+            to_git_sha: Some("9e557ebd".to_string()),
+            current_git_sha: Some("9e557ebd".to_string()),
+            previous_git_sha: Some("6b28b6e".to_string()),
+            progress_percent: Some(100),
+            rollback_available: true,
             request_id: Some("ru_success".to_string()),
             reason_code: None,
             requester_node_id: Some("node-remote".to_string()),
@@ -2647,6 +2881,7 @@ mod tests {
         assert!(!parsed.shell_log_file_exists);
         assert_eq!(parsed.shell_log_path, None);
         assert_eq!(parsed.shell_log_tail, None);
+        assert_eq!(parsed.remote_update_status, None);
     }
 
     #[test]
@@ -2654,6 +2889,12 @@ mod tests {
         let status = LanRemoteUpdateStatusSnapshot {
             state: "failed".to_string(),
             target_ref: "deadbeef".to_string(),
+            from_git_sha: Some("6b28b6e".to_string()),
+            to_git_sha: Some("deadbeef".to_string()),
+            current_git_sha: Some("6b28b6e".to_string()),
+            previous_git_sha: Some("6b28b6e".to_string()),
+            progress_percent: Some(90),
+            rollback_available: true,
             request_id: Some("ru_file".to_string()),
             reason_code: Some("build_failed".to_string()),
             requester_node_id: Some("node-a".to_string()),
@@ -2687,6 +2928,12 @@ mod tests {
         let status = LanRemoteUpdateStatusSnapshot {
             state: "running".to_string(),
             target_ref: "0d3cbb4b".to_string(),
+            from_git_sha: Some("6b28b6e".to_string()),
+            to_git_sha: Some("0d3cbb4b".to_string()),
+            current_git_sha: Some("6b28b6e".to_string()),
+            previous_git_sha: None,
+            progress_percent: Some(55),
+            rollback_available: true,
             request_id: Some("ru_bom".to_string()),
             reason_code: Some("worker_spawned".to_string()),
             requester_node_id: Some("node-remote".to_string()),
@@ -2759,6 +3006,9 @@ mod tests {
         assert!(windows_contents.contains("tools\\build\\build-root-exe.ps1"));
         assert!(windows_contents.contains("Running Windows EXE build and restart script"));
         assert!(windows_contents.contains("build-root-exe.ps1 failed"));
+        assert!(windows_contents.contains("API_ROUTER_REMOTE_UPDATE_FROM_GIT_SHA"));
+        assert!(windows_contents.contains("API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA"));
+        assert!(windows_contents.contains("API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT"));
         assert!(windows_contents.contains("function Get-RemoteUpdateBuildResultPath"));
         assert!(windows_contents
             .contains("$env:API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH = $buildResultPath"));
@@ -2814,6 +3064,9 @@ mod tests {
 
         assert!(spawn_fn_source.contains("command.stdout(Stdio::null());"));
         assert!(spawn_fn_source.contains("command.stderr(Stdio::null());"));
+        assert!(spawn_fn_source.contains("API_ROUTER_REMOTE_UPDATE_LISTEN_PORT"));
+        assert!(spawn_fn_source.contains("API_ROUTER_REMOTE_UPDATE_UPDATER_PORT"));
+        assert!(spawn_fn_source.contains("API_ROUTER_REMOTE_UPDATE_LAN_SECRET"));
         assert!(!spawn_fn_source.contains("command.stdout(Stdio::from(stdout));"));
         assert!(!spawn_fn_source.contains("command.stderr(Stdio::from(stderr));"));
         assert!(!spawn_fn_source.contains("failed to open remote update log for stdout"));
@@ -2856,14 +3109,60 @@ mod tests {
         assert!(build_script.contains("CreateNoWindow = $true"));
         assert!(build_script.contains("function Get-RemoteUpdateBuildResultPath"));
         assert!(build_script.contains("function Write-BuildResultMarker"));
+        assert!(build_script.contains("function Backup-CurrentRuntimeForRollback"));
+        assert!(build_script.contains("function Record-InstalledRuntimeVersion"));
+        assert!(build_script.contains("function Restore-PreviousRuntime"));
+        assert!(build_script.contains("-PreferredUpdaterPath $SrcUpdaterExe"));
+        assert!(build_script.contains("$script:RuntimeRollbackCandidate = $false"));
+        assert!(build_script.contains("$script:RuntimeRollbackCandidate = $true"));
+        assert!(build_script
+            .contains("post-install failure after replacing API Router.exe; forcing rollback"));
+        assert!(!build_script.contains("if (-not $hadFailure -and -not $NoCopy)"));
+        assert!(build_script.contains("function Invoke-UpdaterCommand"));
+        assert!(build_script.contains("function Start-UpdaterDaemonForRemoteRollback"));
+        assert!(build_script.contains("function Wait-UpdaterDaemonReady"));
+        assert!(build_script.contains("function Stop-RunningUpdaterDaemon"));
+        assert!(build_script.contains("function Install-UpdaterDaemonRuntime"));
+        assert!(build_script.contains("function Test-UpdaterDaemonProcessPath"));
+        assert!(build_script.contains("function Get-ProcessExecutablePath"));
+        assert!(build_script.contains("function Get-RepoUserDataDir"));
+        assert!(build_script.contains("function Get-ConfiguredListenPort"));
+        assert!(build_script.contains("function Get-ConfiguredListenHost"));
+        assert!(build_script.contains("function Get-RemoteUpdateLanSecret"));
+        assert!(build_script.contains("lan_trust_secret"));
+        assert!(build_script.contains("$candidatePath = Get-ProcessExecutablePath $_"));
+        assert!(build_script.contains("Ignoring stale updater daemon PID"));
+        assert!(build_script.contains("Stop-Process -InputObject $stateProcess"));
+        assert!(!build_script.contains("Stop-Process -Id ([int]$state.pid)"));
+        assert!(!build_script.contains("Stop-Process -Name 'API Router'"));
+        assert!(!build_script.contains("taskkill.exe /F /IM"));
+        assert!(build_script.contains("runtime') 'updater-daemon'"));
+        assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_UPDATER_PORT"));
+        assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_LAN_SECRET"));
+        assert!(build_script.contains("function Get-LocalHttpHealthProbeHost"));
+        assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_LISTEN_HOST"));
+        assert!(build_script.contains("$lowerHost -eq '0.0.0.0'"));
+        assert!(build_script.contains("$lowerHost -eq '::'"));
+        assert!(build_script.contains("return \"[$hostValue]\""));
+        assert!(build_script.contains("function Wait-ApiRouterRuntimeHealthy"));
+        assert!(build_script.contains("/health"));
+        assert!(build_script.contains("returned ok=true"));
+        assert!(build_script.contains("api_router_updater.exe"));
+        assert!(build_script.contains("API Router Updater.exe"));
+        assert!(build_script.contains("--bin', 'api_router_updater'"));
+        assert!(build_script.contains("Stop-RunningUpdaterDaemon"));
+        assert!(build_script.contains("Start-UpdaterDaemonForRemoteRollback"));
+        assert!(!build_script.contains("'--secret'"));
+        assert!(!build_script.contains("function Write-VersionManifest"));
+        assert!(!build_script.contains("function Write-RuntimePointer"));
+        assert!(build_script.contains("rolled_back"));
         assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH"));
         assert!(build_script.contains("lan-remote-update-build-result.json"));
         assert!(build_script.contains("function Invoke-BuildStage"));
         assert!(build_script.contains("Invoke-BuildStage `"));
-        assert!(build_script.contains("-FilePath $NpmCli"));
+        assert!(build_script.contains("-FilePath $NodeCli"));
         assert!(build_script.contains("function Update-RemoteUpdateTimelineStep"));
         assert!(build_script.contains("function Try-CopyOptionalArtifact"));
-        assert!(build_script.contains("-Phase 'build_vite'"));
         assert!(build_script.contains("-Phase 'build_release_binary'"));
         assert!(build_script.contains("Enter-BuildStep -Phase 'install_release_binary'"));
         assert!(build_script.contains("Enter-BuildStep -Phase 'restart_api_router'"));
@@ -2879,9 +3178,24 @@ mod tests {
         assert!(build_script.contains("$startOptions.WindowStyle = 'Hidden'"));
         assert!(build_script.contains("Start-Process @startOptions"));
         assert!(build_script.contains("$UsesArtifactPathOverrides"));
-        assert!(build_script.contains("if ($IsWindows -and -not $UsesArtifactPathOverrides)"));
+        assert!(!build_script.contains("Restore-PreviousRuntime\r\n          Start-ApiRouter"));
+        assert!(!build_script.contains("Restore-PreviousRuntime\n          Start-ApiRouter"));
         assert!(build_script.contains("Reset-LastExitCode"));
         assert!(build_script.contains("exit 0"));
+
+        let updater_source = std::fs::read_to_string(
+            repo_root
+                .join("src-tauri")
+                .join("src")
+                .join("bin")
+                .join("api_router_updater.rs"),
+        )
+        .expect("read api_router_updater.rs");
+        assert!(updater_source.contains("fn stop_api_router_processes(target: &Path)"));
+        assert!(updater_source.contains("QueryFullProcessImageNameW"));
+        assert!(updater_source.contains("TerminateProcess"));
+        assert!(!updater_source.contains("taskkill.exe"));
+        assert!(!updater_source.contains("\"/IM\""));
     }
 
     #[test]
@@ -2892,6 +3206,12 @@ mod tests {
         let status = LanRemoteUpdateStatusSnapshot {
             state: "failed".to_string(),
             target_ref: target_ref.clone(),
+            from_git_sha: Some("6b28b6e".to_string()),
+            to_git_sha: Some(target_ref.clone()),
+            current_git_sha: Some(target_ref.clone()),
+            previous_git_sha: Some("6b28b6e".to_string()),
+            progress_percent: Some(100),
+            rollback_available: true,
             request_id: Some("ru_failed".to_string()),
             reason_code: Some("worker_exited_early".to_string()),
             requester_node_id: Some("node-remote".to_string()),

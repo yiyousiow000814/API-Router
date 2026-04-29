@@ -27,17 +27,23 @@ function Resolve-BuildArtifactPath([string]$EnvVarName, [string]$DefaultPath) {
 }
 
 $DefaultSrcExe = Join-Path $RepoRoot 'src-tauri\target\release\api_router.exe'
+$DefaultSrcUpdaterExe = Join-Path $RepoRoot 'src-tauri\target\release\api_router_updater.exe'
 $DefaultDstExe = Join-Path $RepoRoot 'API Router.exe'
+$DefaultDstUpdaterExe = Join-Path $RepoRoot 'API Router Updater.exe'
 $DefaultDstTestExe = Join-Path $RepoRoot 'API Router [TEST].exe'
 $SrcExe = Resolve-BuildArtifactPath 'API_ROUTER_BUILD_SRC_EXE_PATH' $DefaultSrcExe
+$SrcUpdaterExe = Resolve-BuildArtifactPath 'API_ROUTER_BUILD_SRC_UPDATER_EXE_PATH' $DefaultSrcUpdaterExe
 $DstExe = Resolve-BuildArtifactPath 'API_ROUTER_BUILD_DST_EXE_PATH' $DefaultDstExe
+$DstUpdaterExe = Resolve-BuildArtifactPath 'API_ROUTER_BUILD_DST_UPDATER_EXE_PATH' $DefaultDstUpdaterExe
 $DstTestExe = Resolve-BuildArtifactPath 'API_ROUTER_BUILD_DST_TEST_EXE_PATH' $DefaultDstTestExe
 $StartFilePath = Resolve-BuildArtifactPath 'API_ROUTER_BUILD_START_FILE_PATH' $DstExe
 $SkipReleaseBuild = ([string][System.Environment]::GetEnvironmentVariable('API_ROUTER_BUILD_SKIP_RELEASE_BUILD')).Trim() -eq '1'
 $SkipPrereleaseChecks = ([string][System.Environment]::GetEnvironmentVariable('API_ROUTER_BUILD_SKIP_PRERELEASE_CHECKS')).Trim() -eq '1'
 $UsesArtifactPathOverrides = @(
   'API_ROUTER_BUILD_SRC_EXE_PATH',
+  'API_ROUTER_BUILD_SRC_UPDATER_EXE_PATH',
   'API_ROUTER_BUILD_DST_EXE_PATH',
+  'API_ROUTER_BUILD_DST_UPDATER_EXE_PATH',
   'API_ROUTER_BUILD_DST_TEST_EXE_PATH',
   'API_ROUTER_BUILD_START_FILE_PATH'
 ) | Where-Object {
@@ -93,7 +99,72 @@ function Get-RemoteUpdateStatusPath {
 function Get-RemoteUpdateLogPath {
   $path = [string]$env:API_ROUTER_REMOTE_UPDATE_LOG_PATH
   if ([string]::IsNullOrWhiteSpace($path)) { return $null }
-  return $path
+  return $path.Trim()
+}
+
+function Get-RepoUserDataDir {
+  $path = [string]$env:API_ROUTER_USER_DATA_DIR
+  if (-not [string]::IsNullOrWhiteSpace($path)) { return $path.Trim() }
+  return Join-Path $RepoRoot 'user-data'
+}
+
+function Read-RepoTomlSectionValue {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Section,
+    [Parameter(Mandatory = $true)]
+    [string]$Key
+  )
+
+  $configPath = Join-Path (Get-RepoUserDataDir) 'config.toml'
+  if (-not (Test-Path -LiteralPath $configPath)) { return $null }
+  $inSection = $false
+  foreach ($line in Get-Content -LiteralPath $configPath) {
+    $trimmed = $line.Trim()
+    if ($trimmed -match '^\[(.+)\]\s*$') {
+      $inSection = ([string]$Matches[1]) -eq $Section
+      continue
+    }
+    if (-not $inSection) { continue }
+    $escapedKey = [regex]::Escape($Key)
+    if ($trimmed -match "^$escapedKey\s*=\s*(.+)$") {
+      $value = ([string]$Matches[1]).Trim()
+      if ($value -match '^"([^"]*)"') { return [string]$Matches[1] }
+      return (($value -split '#', 2)[0]).Trim()
+    }
+  }
+  return $null
+}
+
+function Get-ConfiguredListenPort {
+  $port = [string]$env:API_ROUTER_REMOTE_UPDATE_LISTEN_PORT
+  if (-not [string]::IsNullOrWhiteSpace($port)) { return [int]$port.Trim() }
+  $configured = Read-RepoTomlSectionValue -Section 'listen' -Key 'port'
+  if (-not [string]::IsNullOrWhiteSpace($configured)) { return [int]$configured.Trim() }
+  return 4000
+}
+
+function Get-ConfiguredListenHost {
+  $hostValue = [string]$env:API_ROUTER_REMOTE_UPDATE_LISTEN_HOST
+  if (-not [string]::IsNullOrWhiteSpace($hostValue)) { return $hostValue.Trim() }
+  $configured = Read-RepoTomlSectionValue -Section 'listen' -Key 'host'
+  if (-not [string]::IsNullOrWhiteSpace($configured)) { return $configured.Trim() }
+  return '127.0.0.1'
+}
+
+function Get-RemoteUpdateLanSecret {
+  $secret = [string]$env:API_ROUTER_REMOTE_UPDATE_LAN_SECRET
+  if (-not [string]::IsNullOrWhiteSpace($secret)) { return $secret.Trim() }
+  $secretsPath = Join-Path (Get-RepoUserDataDir) 'secrets.json'
+  if (-not (Test-Path -LiteralPath $secretsPath)) { return $null }
+  try {
+    $payload = Get-Content -LiteralPath $secretsPath -Raw | ConvertFrom-Json
+    $storedSecret = [string]$payload.lan_trust_secret
+    if (-not [string]::IsNullOrWhiteSpace($storedSecret)) { return $storedSecret.Trim() }
+  } catch {
+    Write-RemoteUpdateLog ("Failed to read LAN trust secret for updater daemon: " + $_.Exception.Message)
+  }
+  return $null
 }
 
 function Get-RemoteUpdateBuildResultPath {
@@ -123,6 +194,308 @@ function Write-RemoteUpdateLog {
   }
   $timestamp = [DateTimeOffset]::UtcNow.ToString('dd-MM-yyyy HH:mm:ss.fff UTC')
   Add-Content -Path $logPath -Value "[$timestamp] [build-root-exe] $Message" -Encoding UTF8
+}
+
+function Normalize-VersionSha([string]$Sha, [string]$Fallback) {
+  if (-not [string]::IsNullOrWhiteSpace($Sha)) { return $Sha.Trim() }
+  if (-not [string]::IsNullOrWhiteSpace($Fallback)) { return $Fallback.Trim() }
+  return 'unknown'
+}
+
+function Invoke-UpdaterCommand {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string[]]$ArgumentList,
+    [Parameter(Mandatory = $true)]
+    [string]$FailureMessage,
+    [string]$PreferredUpdaterPath = ''
+  )
+
+  $updaterPath = if ($PreferredUpdaterPath -and (Test-Path -LiteralPath $PreferredUpdaterPath)) {
+    $PreferredUpdaterPath
+  } elseif (Test-Path -LiteralPath $DstUpdaterExe) {
+    $DstUpdaterExe
+  } elseif (Test-Path -LiteralPath $SrcUpdaterExe) {
+    $SrcUpdaterExe
+  } else {
+    throw "API Router Updater.exe is missing; cannot run updater command"
+  }
+  Invoke-BuildCommand -FilePath $updaterPath -ArgumentList $ArgumentList -FailureLabel $FailureMessage
+}
+
+function Get-UpdaterBindAddress {
+  $port = [string]$env:API_ROUTER_REMOTE_UPDATE_UPDATER_PORT
+  if ([string]::IsNullOrWhiteSpace($port)) {
+    $listenPort = Get-ConfiguredListenPort
+    $updaterPort = $listenPort + 1
+    if ($updaterPort -gt 65535) { return $null }
+    $port = [string]$updaterPort
+    $env:API_ROUTER_REMOTE_UPDATE_UPDATER_PORT = $port
+  }
+  return "0.0.0.0:$($port.Trim())"
+}
+
+function Get-LocalHttpHealthProbeHost {
+  $hostValue = Get-ConfiguredListenHost
+  if ($hostValue.StartsWith('[') -and $hostValue.EndsWith(']') -and $hostValue.Length -gt 2) {
+    $hostValue = $hostValue.Substring(1, $hostValue.Length - 2)
+  }
+
+  $lowerHost = $hostValue.ToLowerInvariant()
+  if (
+    [string]::IsNullOrWhiteSpace($hostValue) -or
+    $lowerHost -eq '0.0.0.0' -or
+    $lowerHost -eq '::' -or
+    $lowerHost -eq '*' -or
+    $lowerHost -eq '+'
+  ) {
+    return '127.0.0.1'
+  }
+
+  if ($hostValue.Contains(':')) {
+    return "[$hostValue]"
+  }
+  return $hostValue
+}
+
+function Get-LocalHttpHealthUrl {
+  $port = [string](Get-ConfiguredListenPort)
+  if ([string]::IsNullOrWhiteSpace($port)) { return $null }
+  $hostValue = Get-LocalHttpHealthProbeHost
+  return "http://$($hostValue):$($port.Trim())/health"
+}
+
+function Get-UpdaterDaemonRoot {
+  return Join-Path (Join-Path $RepoRoot 'runtime') 'updater-daemon'
+}
+
+function Get-UpdaterDaemonStatePath {
+  return Join-Path (Join-Path $RepoRoot 'runtime') 'updater-state.json'
+}
+
+function Get-UpdaterDaemonExePath {
+  $toSha = Normalize-VersionSha $env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA $env:API_ROUTER_REMOTE_UPDATE_TARGET_REF
+  return Join-Path (Join-Path (Get-UpdaterDaemonRoot) $toSha) 'API Router Updater.exe'
+}
+
+function Normalize-PathForComparison {
+  param([string]$Path)
+
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+  try {
+    return [System.IO.Path]::GetFullPath($Path).TrimEnd(
+      [System.IO.Path]::DirectorySeparatorChar,
+      [System.IO.Path]::AltDirectorySeparatorChar
+    )
+  } catch {
+    return $Path.Trim().TrimEnd('\', '/')
+  }
+}
+
+function Test-UpdaterDaemonProcessPath {
+  param([string]$ProcessPath)
+
+  $normalizedProcessPath = Normalize-PathForComparison $ProcessPath
+  if (-not $normalizedProcessPath) { return $false }
+
+  $normalizedRootUpdater = Normalize-PathForComparison $DstUpdaterExe
+  if ($normalizedRootUpdater -and $normalizedProcessPath -ieq $normalizedRootUpdater) {
+    return $true
+  }
+
+  $normalizedDaemonRoot = Normalize-PathForComparison (Get-UpdaterDaemonRoot)
+  if (-not $normalizedDaemonRoot) { return $false }
+
+  $daemonRootWithSeparator = $normalizedDaemonRoot + [System.IO.Path]::DirectorySeparatorChar
+  return $normalizedProcessPath.StartsWith($daemonRootWithSeparator, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-ProcessExecutablePath {
+  param([Parameter(Mandatory = $true)]$Process)
+
+  try {
+    return [string]$Process.Path
+  } catch {
+    return $null
+  }
+}
+
+function Stop-RunningUpdaterDaemon {
+  $statePath = Get-UpdaterDaemonStatePath
+  if (Test-Path -LiteralPath $statePath) {
+    try {
+      $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+      if ($state -and $state.pid) {
+        $statePid = [int]$state.pid
+        if ($statePid -gt 0) {
+          $stateProcess = Get-Process -Id $statePid -ErrorAction SilentlyContinue
+          $stateProcessPath = if ($stateProcess) { Get-ProcessExecutablePath $stateProcess } else { $null }
+          if ($stateProcess -and (Test-UpdaterDaemonProcessPath $stateProcessPath)) {
+            Stop-Process -InputObject $stateProcess -Force -ErrorAction SilentlyContinue
+          } elseif ($stateProcess) {
+            Write-RemoteUpdateLog "Ignoring stale updater daemon PID $statePid with path: $stateProcessPath"
+          }
+        }
+      }
+    } catch {
+      Write-RemoteUpdateLog ("Failed to stop updater daemon by state file: " + $_.Exception.Message)
+    }
+  }
+
+  try {
+    Get-Process -ErrorAction SilentlyContinue | Where-Object {
+      $candidatePath = Get-ProcessExecutablePath $_
+      Test-UpdaterDaemonProcessPath $candidatePath
+    } | Stop-Process -Force -ErrorAction SilentlyContinue
+  } catch {
+    Write-RemoteUpdateLog ("Failed to stop updater daemon by process path: " + $_.Exception.Message)
+  }
+}
+
+function Install-UpdaterDaemonRuntime {
+  $daemonExe = Get-UpdaterDaemonExePath
+  $daemonDir = Split-Path -Parent $daemonExe
+  if ($daemonDir) {
+    New-Item -ItemType Directory -Force -Path $daemonDir | Out-Null
+  }
+  Copy-WithRetry $DstUpdaterExe $daemonExe
+  Write-RemoteUpdateLog "Installed updater daemon runtime executable: $daemonExe"
+  return $daemonExe
+}
+
+function Invoke-JsonHttpGet {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Uri,
+    [hashtable]$Headers = @{},
+    [int]$TimeoutSeconds = 3
+  )
+
+  $response = Invoke-WebRequest `
+    -Uri $Uri `
+    -Headers $Headers `
+    -UseBasicParsing `
+    -TimeoutSec $TimeoutSeconds `
+    -ErrorAction Stop
+  if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 300) {
+    throw "http $($response.StatusCode)"
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$response.Content)) {
+    return $null
+  }
+  return $response.Content | ConvertFrom-Json
+}
+
+function Wait-UpdaterDaemonReady {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$StatusUrl,
+    [Parameter(Mandatory = $true)]
+    [hashtable]$Headers,
+    [int]$TimeoutSeconds = 10
+  )
+
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  $lastDetail = ''
+  while ([DateTime]::UtcNow -lt $deadline) {
+    try {
+      $payload = Invoke-JsonHttpGet -Uri $StatusUrl -Headers $Headers -TimeoutSeconds 2
+      if ($payload -and $payload.ok -eq $true) {
+        Write-RemoteUpdateLog "Updater daemon readiness check passed: $StatusUrl"
+        return
+      }
+      $lastDetail = "unexpected updater status payload"
+    } catch {
+      $lastDetail = $_.Exception.Message
+    }
+    Start-Sleep -Milliseconds 300
+  }
+  throw "updater daemon did not become ready: $lastDetail"
+}
+
+function Start-UpdaterDaemonForRemoteRollback {
+  $bind = Get-UpdaterBindAddress
+  $secret = Get-RemoteUpdateLanSecret
+  if ([string]::IsNullOrWhiteSpace($bind) -or [string]::IsNullOrWhiteSpace($secret)) {
+    Write-RemoteUpdateLog 'Updater daemon start skipped; remote updater port or LAN trust secret is missing.'
+    return
+  }
+  if (-not (Test-Path -LiteralPath $DstUpdaterExe)) {
+    throw "API Router Updater.exe is missing after install: $DstUpdaterExe"
+  }
+  $env:API_ROUTER_REMOTE_UPDATE_LAN_SECRET = $secret.Trim()
+  if ([string]::IsNullOrWhiteSpace([string]$env:API_ROUTER_USER_DATA_DIR)) {
+    $env:API_ROUTER_USER_DATA_DIR = Get-RepoUserDataDir
+  }
+  $daemonExe = Install-UpdaterDaemonRuntime
+
+  try {
+    Enter-BuildStep -Phase 'start_updater_daemon' -Label 'Starting updater daemon' -Detail "Binding independent rollback endpoint on $bind"
+    $headers = @{
+      'x-api-router-lan-node-id' = if ($env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_ID) { $env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_ID } else { 'remote-update-worker' }
+      'x-api-router-lan-secret' = $secret.Trim()
+    }
+    $statusUrl = "http://127.0.0.1:$($env:API_ROUTER_REMOTE_UPDATE_UPDATER_PORT.Trim())/status"
+    try {
+      Wait-UpdaterDaemonReady -StatusUrl $statusUrl -Headers $headers -TimeoutSeconds 2
+      return
+    } catch {
+      Write-RemoteUpdateLog ("Existing updater daemon probe missed; starting daemon: " + $_.Exception.Message)
+    }
+
+    $arguments = @('serve', '--repo-root', $RepoRoot, '--bind', $bind)
+    Start-Process `
+      -FilePath $daemonExe `
+      -ArgumentList $arguments `
+      -WorkingDirectory $RepoRoot `
+      -WindowStyle Hidden | Out-Null
+    Reset-LastExitCode
+    Wait-UpdaterDaemonReady -StatusUrl $statusUrl -Headers $headers -TimeoutSeconds 10
+  } finally {
+    $env:API_ROUTER_REMOTE_UPDATE_LAN_SECRET = $null
+  }
+}
+
+function Backup-CurrentRuntimeForRollback {
+  $fromSha = Normalize-VersionSha $env:API_ROUTER_REMOTE_UPDATE_FROM_GIT_SHA 'unknown'
+  if (-not (Test-Path -LiteralPath $DstExe)) {
+    Write-RemoteUpdateLog "Rollback backup skipped; current runtime does not exist: $DstExe"
+    return $null
+  }
+  Enter-BuildStep -Phase 'backing_up' -Label 'Backing up runtime' -Detail "Saving rollback version $fromSha"
+  Invoke-UpdaterCommand `
+    -PreferredUpdaterPath $SrcUpdaterExe `
+    -ArgumentList @('backup', '--repo-root', $RepoRoot, '--git-sha', $fromSha, '--source', $DstExe) `
+    -FailureMessage 'updater backup'
+  $env:API_ROUTER_REMOTE_UPDATE_PREVIOUS_GIT_SHA = $fromSha
+  $env:API_ROUTER_REMOTE_UPDATE_ROLLBACK_AVAILABLE = '1'
+  Write-RemoteUpdateLog "Rollback backup saved by updater: sha=$fromSha"
+  return $fromSha
+}
+
+function Record-InstalledRuntimeVersion {
+  $toSha = Normalize-VersionSha $env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA $env:API_ROUTER_REMOTE_UPDATE_TARGET_REF
+  Invoke-UpdaterCommand `
+    -PreferredUpdaterPath $DstUpdaterExe `
+    -ArgumentList @('record-current', '--repo-root', $RepoRoot, '--git-sha', $toSha, '--source', $DstExe) `
+    -FailureMessage 'updater record current'
+  $env:API_ROUTER_REMOTE_UPDATE_CURRENT_GIT_SHA = $toSha
+  Write-RemoteUpdateLog "Installed runtime version recorded by updater: sha=$toSha"
+}
+
+function Restore-PreviousRuntime {
+  $previousSha = Normalize-VersionSha $env:API_ROUTER_REMOTE_UPDATE_PREVIOUS_GIT_SHA ''
+  if ($previousSha -eq 'unknown') {
+    throw 'previous runtime sha is unknown; cannot rollback'
+  }
+  Enter-BuildStep -Phase 'rolling_back' -Label 'Rolling back runtime' -Detail "Restoring previous version $previousSha"
+  Invoke-UpdaterCommand `
+    -PreferredUpdaterPath $SrcUpdaterExe `
+    -ArgumentList @('rollback', '--repo-root', $RepoRoot, '--start-hidden') `
+    -FailureMessage 'updater rollback'
+  $env:API_ROUTER_REMOTE_UPDATE_CURRENT_GIT_SHA = $previousSha
+  Update-RemoteUpdateTimelineStep -Phase 'rolled_back' -Label 'Rolled back runtime' -Detail "Rolled back to $previousSha" -State 'rolled_back' -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+  Write-RemoteUpdateLog "Rolled back runtime to $previousSha"
 }
 
 function Write-BuildExitDiagnostics([string]$Result) {
@@ -219,6 +592,14 @@ function Update-RemoteUpdateTimelineStep {
 
     $status.state = $State
     $status.detail = $Detail
+    $status.from_git_sha = if ($env:API_ROUTER_REMOTE_UPDATE_FROM_GIT_SHA) { $env:API_ROUTER_REMOTE_UPDATE_FROM_GIT_SHA } else { $status.from_git_sha }
+    $status.to_git_sha = if ($env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA) { $env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA } else { $status.to_git_sha }
+    $status.current_git_sha = if ($env:API_ROUTER_REMOTE_UPDATE_CURRENT_GIT_SHA) { $env:API_ROUTER_REMOTE_UPDATE_CURRENT_GIT_SHA } else { $status.current_git_sha }
+    $status.previous_git_sha = if ($env:API_ROUTER_REMOTE_UPDATE_PREVIOUS_GIT_SHA) { $env:API_ROUTER_REMOTE_UPDATE_PREVIOUS_GIT_SHA } else { $status.previous_git_sha }
+    if ($env:API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT) {
+      $status.progress_percent = [int]$env:API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT
+    }
+    $status.rollback_available = ([string]$env:API_ROUTER_REMOTE_UPDATE_ROLLBACK_AVAILABLE -eq '1')
     $status.updated_at_unix_ms = $now
     if ($status.started_at_unix_ms -eq $null) {
       $status.started_at_unix_ms = $now
@@ -249,6 +630,23 @@ function Enter-BuildStep {
   $script:CurrentBuildStepPhase = $Phase
   $script:CurrentBuildStepLabel = $Label
   $script:CurrentBuildStepDetail = $Detail
+  $progressByPhase = @{
+    skip_prerelease_checks = 50
+    run_prebuild_checks = 50
+    build_release_binary = 65
+    build_updater_binary = 70
+    reuse_release_binary = 65
+    backing_up = 72
+    start_updater_daemon = 76
+    install_release_binary = 78
+    restart_api_router = 88
+    health_checking = 94
+    rolling_back = 96
+    rolled_back = 100
+  }
+  if ($progressByPhase.ContainsKey($Phase)) {
+    $env:API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT = [string]$progressByPhase[$Phase]
+  }
   Write-Host "${Label}: $Detail"
   Write-RemoteUpdateLog "${Label}: $Detail"
   Update-RemoteUpdateTimelineStep -Phase $Phase -Label $Label -Detail "${Label}: $Detail"
@@ -302,30 +700,60 @@ function Start-ApiRouter {
   Reset-LastExitCode
 }
 
+function Wait-ApiRouterRuntimeHealthy {
+  param(
+    [int]$TimeoutSeconds = 30
+  )
+
+  $healthUrl = Get-LocalHttpHealthUrl
+  $detail = if ($healthUrl) { "Waiting for API Router HTTP health at $healthUrl" } else { 'Waiting for repo root API Router.exe process' }
+  Enter-BuildStep -Phase 'health_checking' -Label 'Checking runtime health' -Detail $detail
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  $lastDetail = ''
+  while ([DateTime]::UtcNow -lt $deadline) {
+    try {
+      $processes = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+          $_.Path -and ($_.Path -ieq $DstExe)
+      })
+      if ($processes.Count -gt 0) {
+        $alive = @($processes | Where-Object { -not $_.HasExited })
+        if ($alive.Count -gt 0) {
+          if ($healthUrl) {
+            $payload = Invoke-JsonHttpGet -Uri $healthUrl -TimeoutSeconds 2
+            if ($payload -and $payload.ok -eq $true) {
+              Write-RemoteUpdateLog "Runtime health check passed: $healthUrl returned ok=true."
+              return
+            }
+            $lastDetail = "health endpoint returned unexpected payload"
+          } else {
+            Write-RemoteUpdateLog "Runtime health check passed: API Router.exe process is running."
+            return
+          }
+        } else {
+          $lastDetail = 'repo root API Router.exe process has exited'
+        }
+      } else {
+        $lastDetail = 'repo root API Router.exe process is not running yet'
+      }
+    } catch {
+      $lastDetail = $_.Exception.Message
+    }
+    Start-Sleep -Milliseconds 500
+  }
+  if (-not $lastDetail) {
+    $lastDetail = 'timed out waiting for API Router.exe'
+  }
+  throw "runtime health check failed: $lastDetail"
+}
+
 function Stop-RunningApiRouter {
   # Best-effort: if the root EXE is running, replacing it will fail with EPERM/EBUSY.
-  # When test overrides point to temporary artifacts, never kill the user's real API Router by
-  # image name. In that mode we only target exact overridden paths.
-  if (-not $UsesArtifactPathOverrides) {
-    try { Stop-Process -Name 'API Router' -Force -ErrorAction SilentlyContinue } catch {}
-    try { Stop-Process -Name 'API Router [TEST]' -Force -ErrorAction SilentlyContinue } catch {}
-    try { Stop-Process -Name 'api_router' -Force -ErrorAction SilentlyContinue } catch {}
-  }
+  # Only target exact executable paths so another checkout or raw Tauri artifact is not stopped.
   try {
     Get-Process -ErrorAction SilentlyContinue | Where-Object {
       $_.Path -and (($_.Path -ieq $DstExe) -or ($_.Path -ieq $DstTestExe) -or ($_.Path -ieq $SrcExe))
     } | Stop-Process -Force -ErrorAction SilentlyContinue
   } catch {}
-
-  if ($IsWindows -and -not $UsesArtifactPathOverrides) {
-    try { & taskkill.exe /F /IM 'API Router.exe' /T | Out-Null } catch {}
-    try { & taskkill.exe /F /IM 'API Router [TEST].exe' /T | Out-Null } catch {}
-    try { & taskkill.exe /F /IM 'api_router.exe' /T | Out-Null } catch {}
-    # taskkill returns non-zero when nothing matched. That is expected during a clean restart and
-    # must not leak into the script exit code, otherwise remote update can be marked failed after
-    # a successful install/restart purely because a best-effort kill missed an already-closed PID.
-    Reset-LastExitCode
-  }
 }
 
 function Copy-WithRetry([string]$From, [string]$To) {
@@ -600,6 +1028,7 @@ $script:BuildResult = 'succeeded'
 $script:CurrentBuildStepPhase = ''
 $script:CurrentBuildStepLabel = ''
 $script:CurrentBuildStepDetail = ''
+$script:RuntimeRollbackCandidate = $false
 try {
   $buildStartedAtUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   # Keep the outer checks explicit so remote-update diagnostics can point at the first
@@ -628,22 +1057,38 @@ try {
       -FilePath $NodeCli `
       -ArgumentList @($RunWithWinSdkCli, 'node', $TauriCliEntry, 'build', '--no-bundle') `
       -FailureLabel 'tauri build'
+    Invoke-BuildStage `
+      -Phase 'build_updater_binary' `
+      -Label 'Building updater binary' `
+      -Detail 'Compiling independent API Router Updater.exe' `
+      -FilePath $NodeCli `
+      -ArgumentList @($RunWithWinSdkCli, 'cargo', 'build', '--manifest-path', (Join-Path $RepoRoot 'src-tauri\Cargo.toml'), '--release', '--bin', 'api_router_updater') `
+      -FailureLabel 'updater build'
   }
   Write-RemoteUpdateLog ("Primary build stages completed in {0}" -f (Get-StageDurationText $buildStartedAtUnixMs))
 
   if (-not $NoCopy) {
     Enter-BuildStep -Phase 'install_release_binary' -Label 'Installing EXE' -Detail 'Replacing repo root API Router executables'
     if (-not (Test-Path $SrcExe)) { throw "Missing built exe: $SrcExe" }
+    if (-not (Test-Path $SrcUpdaterExe)) { throw "Missing built updater exe: $SrcUpdaterExe" }
+    $null = Backup-CurrentRuntimeForRollback
 
     if (Test-ArtifactUpToDate $SrcExe $DstExe) {
       Write-Host "Up to date: $DstExe"
       Write-RemoteUpdateLog "Canonical runtime executable already up to date: $DstExe"
     } else {
       Stop-RunningApiRouter
+      $script:RuntimeRollbackCandidate = $true
       Copy-WithRetry $SrcExe $DstExe
       Write-Host "Wrote: $DstExe"
       Write-RemoteUpdateLog "Installed canonical runtime executable: $DstExe"
     }
+    Stop-RunningUpdaterDaemon
+    Copy-WithRetry $SrcUpdaterExe $DstUpdaterExe
+    Write-Host "Wrote: $DstUpdaterExe"
+    Write-RemoteUpdateLog "Installed independent updater executable: $DstUpdaterExe"
+    Start-UpdaterDaemonForRemoteRollback
+    Record-InstalledRuntimeVersion
     # The canonical runtime is API Router.exe. The TEST copy is auxiliary and must not
     # turn a successful remote update into a failed one if that secondary artifact is locked.
     $null = Try-CopyOptionalArtifact $SrcExe $DstTestExe 'Optional TEST EXE'
@@ -670,16 +1115,48 @@ try {
   # Codex sessions are stopped.
   try {
     Enter-BuildStep -Phase 'restart_api_router' -Label 'Restarting API Router' -Detail 'Launching repo root API Router.exe'
+    if ($script:RuntimeRollbackCandidate -and $hadFailure) {
+      throw 'post-install failure after replacing API Router.exe; forcing rollback before starting the new runtime'
+    }
     Start-ApiRouter
+    if (-not $NoCopy) {
+      Wait-ApiRouterRuntimeHealthy
+      $env:API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT = '100'
+      Update-RemoteUpdateTimelineStep -Phase 'health_check_succeeded' -Label 'Runtime health check passed' -Detail 'API Router.exe is running' -State 'running'
+    }
   } catch {
-    $restartWarning = $_
-    Write-RemoteUpdateLog ("Restart warning: " + $_.Exception.Message)
-    Update-RemoteUpdateTimelineStep `
-      -Phase 'restart_api_router' `
-      -Label 'Restarting API Router' `
-      -Detail ("Restarting API Router: " + $_.Exception.Message) `
-      -State 'running'
-    Write-Warning ("API Router restart after build failed: " + $_.Exception.Message)
+    $runtimeValidationError = $_
+    if ($script:RuntimeRollbackCandidate -and -not $NoCopy) {
+      Write-RemoteUpdateLog ("Runtime validation failed; starting rollback: " + $runtimeValidationError.Exception.Message)
+      try {
+        Restore-PreviousRuntime
+        Wait-ApiRouterRuntimeHealthy
+        Update-RemoteUpdateTimelineStep -Phase 'rolled_back' -Label 'Rollback health check passed' -Detail "Rolled back to $env:API_ROUTER_REMOTE_UPDATE_CURRENT_GIT_SHA" -State 'rolled_back' -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+        $script:BuildResult = 'rolled_back'
+        $hadFailure = $true
+        $restartWarning = $runtimeValidationError
+      } catch {
+        $script:BuildResult = 'failed'
+        $hadFailure = $true
+        $restartWarning = $_
+        Write-RemoteUpdateLog ("Rollback failed: " + $_.Exception.Message)
+        Update-RemoteUpdateTimelineStep `
+          -Phase 'rollback_failed' `
+          -Label 'Rollback failed' `
+          -Detail ("Rollback failed: " + $_.Exception.Message) `
+          -State 'failed' `
+          -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+      }
+    } else {
+      $restartWarning = $runtimeValidationError
+      Write-RemoteUpdateLog ("Restart warning: " + $runtimeValidationError.Exception.Message)
+      Update-RemoteUpdateTimelineStep `
+        -Phase 'restart_api_router' `
+        -Label 'Restarting API Router' `
+        -Detail ("Restarting API Router: " + $runtimeValidationError.Exception.Message) `
+        -State 'running'
+      Write-Warning ("API Router restart after build failed: " + $runtimeValidationError.Exception.Message)
+    }
   }
   Write-BuildExitDiagnostics $script:BuildResult
   Write-BuildResultMarker $script:BuildResult
@@ -693,7 +1170,7 @@ if ($null -ne $restartWarning) {
   Write-Warning "Windows EXE build succeeded, but the restart attempt failed. See warning above."
 }
 
-# PowerShell can otherwise propagate a stale non-zero $LASTEXITCODE from best-effort native
-# helpers such as taskkill.exe even when this script completed successfully.
+# PowerShell can otherwise propagate a stale non-zero $LASTEXITCODE from native
+# build helpers even when this script completed successfully.
 Reset-LastExitCode
 exit 0

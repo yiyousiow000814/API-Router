@@ -453,7 +453,7 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
     .chain(
         state
             .lan_sync
-            .recently_stale_peers(crate::lan_sync::LAN_PEER_HTTP_GRACE_AFTER_MS)
+            .recently_stale_peers(crate::lan_sync::LAN_REMOTE_UPDATE_ROLLBACK_HTTP_GRACE_AFTER_MS)
             .into_iter()
             .filter(|peer| {
                 !lan_snapshot
@@ -461,7 +461,12 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
                     .iter()
                     .any(|live_peer| live_peer.node_id == peer.node_id)
             })
-            .map(|peer| {
+            .map(|mut peer| {
+                peer.trusted = state.secrets.is_lan_node_trusted(&peer.node_id);
+                if peer.trusted {
+                    peer.pair_state = Some("trusted".to_string());
+                }
+                peer.build_matches_local = peer.build_identity == lan_snapshot.local_node.build_identity;
                 let version_sync_reason = crate::lan_sync::peer_version_sync_reason(&peer);
                 ConfigSourceSnapshot {
                     kind: "peer",
@@ -575,6 +580,17 @@ pub(crate) async fn request_lan_remote_update_same_version(
     state
         .lan_sync
         .request_peer_remote_update_to_local_build(&state.gateway, &node_id)
+        .await
+}
+
+#[tauri::command]
+pub(crate) async fn request_lan_remote_update_rollback(
+    state: tauri::State<'_, app_state::AppState>,
+    node_id: String,
+) -> Result<(), String> {
+    state
+        .lan_sync
+        .request_peer_remote_update_rollback(&state.gateway, &node_id)
         .await
 }
 

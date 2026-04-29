@@ -829,6 +829,7 @@ pub fn run() {
             commands::approve_lan_pair,
             commands::submit_lan_pair_pin,
             commands::request_lan_remote_update,
+            commands::request_lan_remote_update_rollback,
             commands::request_lan_remote_update_same_version,
             commands::fetch_lan_peer_remote_update_debug,
             commands::get_remote_peer_diagnostics,

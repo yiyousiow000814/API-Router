@@ -131,6 +131,12 @@ function Write-RemoteUpdateStatus {
   $payload = [ordered]@{
     state = $State
     target_ref = $TargetRef
+    from_git_sha = if ($env:API_ROUTER_REMOTE_UPDATE_FROM_GIT_SHA) { $env:API_ROUTER_REMOTE_UPDATE_FROM_GIT_SHA } else { $null }
+    to_git_sha = if ($env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA) { $env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA } else { $null }
+    current_git_sha = if ($env:API_ROUTER_REMOTE_UPDATE_CURRENT_GIT_SHA) { $env:API_ROUTER_REMOTE_UPDATE_CURRENT_GIT_SHA } else { $null }
+    previous_git_sha = if ($env:API_ROUTER_REMOTE_UPDATE_PREVIOUS_GIT_SHA) { $env:API_ROUTER_REMOTE_UPDATE_PREVIOUS_GIT_SHA } else { $null }
+    progress_percent = if ($env:API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT) { [int]$env:API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT } else { $null }
+    rollback_available = ([string]$env:API_ROUTER_REMOTE_UPDATE_ROLLBACK_AVAILABLE -eq '1')
     request_id = $requestId
     requester_node_id = if ($env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_ID) { $env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_ID } else { $null }
     requester_node_name = if ($env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_NAME) { $env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_NAME } else { $null }
@@ -146,6 +152,35 @@ function Write-RemoteUpdateStatus {
   $json = $payload | ConvertTo-Json -Depth 6
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::WriteAllText($statusPath, $json, $utf8NoBom)
+}
+
+function Read-RemoteUpdateStatus {
+  $statusPath = Get-RemoteUpdateStatusPath
+  if (-not $statusPath -or -not (Test-Path -LiteralPath $statusPath)) {
+    return $null
+  }
+  try {
+    return Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
+  } catch {
+    Write-RemoteUpdateLog ("Failed to read remote update status marker: " + $_.Exception.Message)
+    return $null
+  }
+}
+
+function Set-RemoteUpdateProgress([int]$Percent) {
+  $bounded = [Math]::Max(0, [Math]::Min(100, $Percent))
+  $env:API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT = [string]$bounded
+}
+
+function Get-CurrentGitSha {
+  try {
+    $sha = (& git rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$sha)) {
+      return ([string]$sha).Trim()
+    }
+  } catch {
+  }
+  return $null
 }
 
 function Show-RemoteUpdateNotification {
@@ -543,25 +578,33 @@ $RepoRoot = $null
 
 try {
 Write-RemoteUpdateLog "Starting remote self-update for target ref $TargetRef"
+$env:API_ROUTER_REMOTE_UPDATE_TARGET_REF = $TargetRef
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep "Bootstrapping remote self-update worker.") -Phase 'bootstrap' -Label 'Bootstrapping worker' -StartedAtUnixMs $startedAtUnixMs
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
 Set-Location $RepoRoot
+$env:API_ROUTER_REMOTE_UPDATE_FROM_GIT_SHA = Get-CurrentGitSha
+$env:API_ROUTER_REMOTE_UPDATE_CURRENT_GIT_SHA = $env:API_ROUTER_REMOTE_UPDATE_FROM_GIT_SHA
+$env:API_ROUTER_REMOTE_UPDATE_ROLLBACK_AVAILABLE = '0'
+Set-RemoteUpdateProgress 5
 Start-Sleep -Seconds 1
 
 $currentStep = 'Preparing worker'
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep "Starting remote self-update worker.") -Phase 'worker_started' -Label 'Worker started' -StartedAtUnixMs $startedAtUnixMs
 
 $currentStep = 'Checking git worktree'
+Set-RemoteUpdateProgress 10
 Write-RemoteUpdateLog $currentStep
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep) -Phase 'git_status' -Label 'Checking git worktree' -StartedAtUnixMs $startedAtUnixMs
 Assert-CleanWorktree
 
 $currentStep = 'Fetching from origin'
+Set-RemoteUpdateProgress 20
 Write-RemoteUpdateLog $currentStep
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep) -Phase 'git_fetch' -Label 'Fetching from origin' -StartedAtUnixMs $startedAtUnixMs
 Invoke-RemoteUpdateCommand -FailureMessage 'git fetch failed' -Command { git fetch origin --prune }
 
 $currentStep = 'Resolving target ref'
+Set-RemoteUpdateProgress 30
 Write-RemoteUpdateLog "${currentStep}: $TargetRef"
 Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-Detail $currentStep "Target $TargetRef") -Phase 'resolve_target' -Label 'Resolving target ref' -StartedAtUnixMs $startedAtUnixMs
 $target = Resolve-CheckoutTarget $TargetRef
@@ -586,6 +629,10 @@ if ($target.Mode -eq 'local_branch') {
   Invoke-RemoteUpdateCommand -FailureMessage "git checkout --detach failed: $($target.Value)" -Command { git checkout --detach $target.Value }
 }
 
+$env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA = Get-CurrentGitSha
+$env:API_ROUTER_REMOTE_UPDATE_CURRENT_GIT_SHA = $env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA
+Set-RemoteUpdateProgress 45
+
 $currentStep = 'Building EXE'
 $buildScriptPath = Join-Path $RepoRoot 'tools\build\build-root-exe.ps1'
 if (-not (Test-Path $buildScriptPath)) {
@@ -596,6 +643,10 @@ Write-RemoteUpdateStatus -State 'running' -TargetRef $TargetRef -Detail (Step-De
 Show-RemoteUpdateNotification -TargetRef $TargetRef
 Invoke-HiddenProcess -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $buildScriptPath, '-StartHidden') -FailureMessage 'tools/build/build-root-exe.ps1 failed'
 Write-RemoteUpdateLog "build-root-exe.ps1 hidden invocation returned success to remote update worker."
+$env:API_ROUTER_REMOTE_UPDATE_CURRENT_GIT_SHA = $env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA
+$env:API_ROUTER_REMOTE_UPDATE_PREVIOUS_GIT_SHA = $env:API_ROUTER_REMOTE_UPDATE_FROM_GIT_SHA
+$env:API_ROUTER_REMOTE_UPDATE_ROLLBACK_AVAILABLE = '1'
+Set-RemoteUpdateProgress 100
 
 $currentStep = 'Completed'
 Write-RemoteUpdateLog 'Remote self-update completed successfully.'
@@ -608,6 +659,11 @@ Write-RemoteUpdateStatus -State 'succeeded' -TargetRef $TargetRef -Detail (Step-
       $?.ToString().ToLowerInvariant(),
       $LASTEXITCODE,
       $_.Exception.GetType().FullName)
-  Write-RemoteUpdateStatus -State 'failed' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $message) -Phase 'failed' -Label "$currentStep failed" -StartedAtUnixMs $startedAtUnixMs -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+  $existingStatus = Read-RemoteUpdateStatus
+  if ($existingStatus -and [string]$existingStatus.state -eq 'rolled_back') {
+    Write-RemoteUpdateLog 'Preserving rolled_back status written by nested build script.'
+  } else {
+    Write-RemoteUpdateStatus -State 'failed' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $message) -Phase 'failed' -Label "$currentStep failed" -StartedAtUnixMs $startedAtUnixMs -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+  }
   throw
 }

@@ -1448,6 +1448,8 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         app_state.gateway.cfg.read().listen.port,
         app_state.ui_watchdog.clone(),
     );
+    #[cfg(not(test))]
+    crate::lan_sync::ensure_remote_update_updater_daemon(&app_state.gateway);
     app_state
         .gateway
         .store
