@@ -76,9 +76,10 @@ const LAN_VERSION_RULES: &[LanVersionRule] = &[
     },
     LanVersionRule {
         name: "remote_update",
-        version: 1,
+        version: 2,
         kind: LanVersionKind::Capability,
-        bump_rule: "Bump when remote update request/debug flow changes incompatibly.",
+        bump_rule:
+            "Bump when remote update request/debug flow, updater ownership, or rollback semantics change incompatibly.",
     },
     LanVersionRule {
         name: "lan_debug",

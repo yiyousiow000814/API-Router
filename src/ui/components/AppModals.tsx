@@ -14,6 +14,7 @@ import { isValidWindowsCodexPath, isValidWslCodexPath } from '../utils/codexPath
 import { GATEWAY_MODEL_PROVIDER_ID, GATEWAY_WINDOWS_HOST } from '../constants'
 import { buildGatewayBaseUrl, normalizeGatewayPort } from '../utils/gatewayUrl'
 import type { Config } from '../types'
+import type { RemoteUpdatePendingStage } from '../utils/remoteUpdateStatus'
 import type {
   PricingTimelineMode,
   ProviderScheduleDraft,
@@ -108,10 +109,8 @@ type Props = {
   approveLanPair: (requestId: string) => Promise<string | null>
   submitLanPairPin: (nodeId: string, requestId: string, pinCode: string) => Promise<void>
   requestLanRemoteUpdateSameVersion: (nodeId: string) => Promise<void>
-  lanRemoteUpdatePendingByNode: Record<
-    string,
-    { stage: 'requesting' | 'refreshing'; detail: string; startedAtUnixMs: number }
-  >
+  requestLanRemoteUpdateRollback: (nodeId: string) => Promise<void>
+  lanRemoteUpdatePendingByNode: Record<string, RemoteUpdatePendingStage>
   openProviderGroupManager: (provider?: string) => void
   setConfigModalOpen: Dispatch<SetStateAction<boolean>>
   rawConfigModalOpen: boolean
@@ -298,6 +297,7 @@ export function AppModals(props: Props) {
     approveLanPair,
     submitLanPairPin,
     requestLanRemoteUpdateSameVersion,
+    requestLanRemoteUpdateRollback,
     lanRemoteUpdatePendingByNode,
     openProviderGroupManager,
     setConfigModalOpen,
@@ -595,6 +595,7 @@ requires_openai_auth = true`}
         onApprovePair={approveLanPair}
         onSubmitPairPin={submitLanPairPin}
         onSyncPeerVersion={(nodeId) => void requestLanRemoteUpdateSameVersion(nodeId)}
+        onRollbackPeerVersion={(nodeId) => void requestLanRemoteUpdateRollback(nodeId)}
         remoteUpdatePendingByNode={lanRemoteUpdatePendingByNode}
         onOpenGroupManager={() => openProviderGroupManager()}
         onClose={() => setConfigModalOpen(false)}

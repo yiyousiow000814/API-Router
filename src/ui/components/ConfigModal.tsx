@@ -28,6 +28,7 @@ type Props = {
   onApprovePair: (requestId: string) => Promise<string | null | void> | string | null | void
   onSubmitPairPin: (nodeId: string, requestId: string, pinCode: string) => Promise<void> | void
   onSyncPeerVersion: (nodeId: string) => Promise<void> | void
+  onRollbackPeerVersion: (nodeId: string) => Promise<void> | void
   remoteUpdatePendingByNode: Record<string, RemoteUpdatePendingStage>
   onOpenGroupManager: () => void
   onClose: () => void
@@ -256,6 +257,7 @@ function remoteUpdateStateLabel(source: ConfigSource, localBuildSha?: string | n
     return remoteUpdateLiveStageLabel(source.remote_update_status) ?? (state === 'accepted' ? 'Queued' : 'Updating')
   }
   if (state === 'failed') return 'Update failed'
+  if (state === 'rolled_back') return 'Rolled back'
   if (state === 'succeeded') return 'Updated'
   if (state === 'superseded' && reasonCode === 'peer_build_changed_before_start') return 'Expired before start'
   if (state === 'superseded' && reasonCode === 'peer_build_changed_after_start') return 'Build changed'
@@ -293,7 +295,7 @@ export function isRemoteUpdateStatusRelevantToCurrentBuild(
   if (localBuildSha && targetMatchesLocalBuild === false) {
     return false
   }
-  const terminalState = ['failed', 'succeeded', 'superseded'].includes(status.state.trim())
+  const terminalState = ['failed', 'succeeded', 'superseded', 'rolled_back'].includes(status.state.trim())
   if (terminalState && source.build_matches_local && !source.version_sync_required) {
     return false
   }
@@ -321,6 +323,61 @@ export function shouldShowDiagnosticsRemoteUpdateStatus(
 
 function remoteUpdateProgressDetail(source: ConfigSource): string {
   return sanitizeRemoteUpdateText(source.remote_update_status?.detail?.trim() || '')
+}
+
+function remoteUpdateStatusHasFreshPeerBuildContext(source: ConfigSource): boolean {
+  const targetMatchesPeerBuild = remoteUpdateTargetMatchesBuild(source, source.build_identity?.build_git_sha)
+  if (targetMatchesPeerBuild === false) return false
+  const buildCommitUnixMs = source.build_identity?.build_git_commit_unix_ms ?? null
+  if (!Number.isFinite(buildCommitUnixMs) || !buildCommitUnixMs) return true
+  const statusObservedAtUnixMs = remoteUpdateStatusObservedAtUnixMs(source)
+  if (!statusObservedAtUnixMs) return true
+  return statusObservedAtUnixMs >= buildCommitUnixMs
+}
+
+function pendingRemoteUpdateRollbackActionAvailable(
+  source: ConfigSource,
+  pendingStage: RemoteUpdatePendingStage | undefined,
+): boolean {
+  return (
+    source.kind === 'peer' &&
+    source.trusted === true &&
+    source.online === false &&
+    pendingStage !== undefined &&
+    pendingStage.stage !== 'rolling_back'
+  )
+}
+
+export function remoteUpdateRollbackActionAvailable(
+  source: ConfigSource,
+  pendingStage?: RemoteUpdatePendingStage,
+): boolean {
+  if (source.kind !== 'peer' || !source.trusted) return false
+  const status = source.remote_update_status
+  if (!status?.rollback_available) return pendingRemoteUpdateRollbackActionAvailable(source, pendingStage)
+  const state = status.state?.trim()
+  if (!state || state === 'accepted' || state === 'running') {
+    return pendingRemoteUpdateRollbackActionAvailable(source, pendingStage)
+  }
+  if (state === 'rolled_back') return false
+  if (!status.previous_git_sha?.trim()) return pendingRemoteUpdateRollbackActionAvailable(source, pendingStage)
+  return (
+    remoteUpdateStatusHasFreshPeerBuildContext(source) ||
+    pendingRemoteUpdateRollbackActionAvailable(source, pendingStage)
+  )
+}
+
+function remoteUpdateRollbackDetailText(source: ConfigSource): string {
+  const previousSha = source.remote_update_status?.previous_git_sha?.trim() || ''
+  if (!previousSha) return 'Restore previous build'
+  return `Restore previous build ${previousSha.slice(0, 8)}`
+}
+
+export function remoteUpdateRollbackConfirmationText(source: ConfigSource): string {
+  const nodeName = source.node_name?.trim() || 'this peer'
+  const previousSha = source.remote_update_status?.previous_git_sha?.trim() || ''
+  const versionText = previousSha ? ` to previous build ${previousSha.slice(0, 8)}` : ' to its previous build'
+  return `Rollback ${nodeName}${versionText}? This will replace and restart API Router on that peer.`
 }
 
 export function effectiveRemoteUpdateStatus(
@@ -400,8 +457,12 @@ function remoteUpdateLiveStageLabel(
     return 'Checking out'
   }
   if (phase === 'build_release_binary') return 'Building'
+  if (phase === 'backing_up') return 'Backing up'
   if (phase === 'install_release_binary') return 'Installing'
   if (phase === 'restart_api_router') return 'Restarting'
+  if (phase === 'health_checking') return 'Checking health'
+  if (phase === 'rolling_back') return 'Rolling back'
+  if (phase === 'rolled_back') return 'Rolled back'
   if (phase === 'build_exe') return 'Building'
   if (status?.state?.trim() === 'accepted') return 'Queued'
   if (status?.state?.trim() === 'running') return 'Updating'
@@ -578,7 +639,7 @@ export function remoteDebugStatusRelevance(
       reason: `status target ${formatReadableCommitRefs(targetRef)} does not match current build ${formatReadableCommitRefs(normalizedLocalBuildSha)}`,
     }
   }
-  const terminalState = ['failed', 'succeeded', 'superseded'].includes(status.state.trim())
+  const terminalState = ['failed', 'succeeded', 'superseded', 'rolled_back'].includes(status.state.trim())
   if (terminalState && source.build_matches_local && !source.version_sync_required) {
     return {
       isCurrent: false,
@@ -624,7 +685,11 @@ export function remoteUpdateDetailText(source: ConfigSource, localBuildSha?: str
   const status = source.remote_update_status
   if (!status) return ''
   const requester = status.requester_node_name?.trim() || status.requester_node_id?.trim() || 'remote peer'
-  const detail = remoteUpdateProgressDetail(source)
+  const progress =
+    typeof status.progress_percent === 'number' && Number.isFinite(status.progress_percent)
+      ? `${Math.max(0, Math.min(100, status.progress_percent))}%`
+      : ''
+  const detail = [progress, remoteUpdateProgressDetail(source)].filter(Boolean).join(' · ')
   if (status.state === 'accepted') {
     return detail || `Accepted update request from ${requester}.`
   }
@@ -635,7 +700,14 @@ export function remoteUpdateDetailText(source: ConfigSource, localBuildSha?: str
     return detail || `Remote update requested by ${requester} failed.`
   }
   if (status.state === 'succeeded') {
-    return detail || `Remote update to ${formatReadableCommitRefs(status.target_ref)} completed.`
+    const fromTo = status.from_git_sha || status.to_git_sha
+      ? `${formatReadableCommitRefs(status.from_git_sha || 'unknown')} -> ${formatReadableCommitRefs(status.to_git_sha || status.target_ref)}`
+      : formatReadableCommitRefs(status.target_ref)
+    return detail || `Remote update to ${fromTo} completed.`
+  }
+  if (status.state === 'rolled_back') {
+    const previous = status.previous_git_sha?.trim()
+    return detail || `Remote update rolled back${previous ? ` to ${formatReadableCommitRefs(previous)}` : ''}.`
   }
   if (status.state === 'superseded') {
     if (status.reason_code === 'peer_build_changed_before_start') {
@@ -676,6 +748,7 @@ function pendingRemoteUpdateStateLabel(pendingStage: RemoteUpdatePendingStage | 
   if (!pendingStage) return null
   if (pendingStage.stage === 'requesting') return 'Sending'
   if (pendingStage.stage === 'refreshing') return 'Waiting'
+  if (pendingStage.stage === 'rolling_back') return 'Rolling back'
   return 'Remote update pending'
 }
 
@@ -697,6 +770,8 @@ function pendingRemoteUpdateTimelineEntries(pendingStage: RemoteUpdatePendingSta
       label:
         pendingStage.stage === 'requesting'
           ? 'Request sent from current machine'
+          : pendingStage.stage === 'rolling_back'
+          ? 'Rollback request sent from current machine'
           : 'Peer accepted request; waiting for remote progress',
       detail: sanitizeRemoteUpdateText(pendingStage.detail?.trim() || ''),
       phase: pendingStage.stage,
@@ -781,6 +856,20 @@ export function remoteUpdateActionState(
     ? source.remote_update_status?.state?.trim()
     : ''
   const remoteStatusCurrentForPending = isRemoteUpdateStatusCurrentForPending(source, pendingStage)
+  if (pendingStage?.stage === 'rolling_back') {
+    return {
+      actionLabel: 'Rolling back...',
+      actionDetail: pendingStage.detail || 'Waiting for peer rollback',
+      spinning: true,
+    }
+  }
+  if (remoteUpdateRollbackActionAvailable(source, pendingStage)) {
+    return {
+      actionLabel: 'Rollback peer',
+      actionDetail: remoteUpdateRollbackDetailText(source),
+      spinning: false,
+    }
+  }
   if (pendingStage?.stage === 'requesting') {
     return {
       actionLabel: 'Sending...',
@@ -843,9 +932,13 @@ export function remoteUpdateMenuActionLabel(
   pendingStage: RemoteUpdatePendingStage | undefined,
   localBuildSha?: string | null,
 ): string {
+  const actionState = remoteUpdateActionState(source, pendingStage, localBuildSha)
+  if (actionState.spinning || remoteUpdateRollbackActionAvailable(source, pendingStage)) {
+    return actionState.actionLabel
+  }
+  if (source.kind === 'peer' && source.online === false) return 'Offline'
   const remoteStateLabel = remoteUpdateStateLabel(source, localBuildSha)
   if (remoteStateLabel) return remoteStateLabel
-  const actionState = remoteUpdateActionState(source, pendingStage, localBuildSha)
   return actionState.actionLabel
 }
 
@@ -855,6 +948,7 @@ export function shouldShowRemoteUpdateMenuDetail(
   localBuildSha?: string | null,
 ): boolean {
   if (!actionState?.actionDetail?.trim()) return false
+  if (remoteUpdateRollbackActionAvailable(source)) return true
   if (actionState.spinning) return true
   const remoteState = isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)
     ? source.remote_update_status?.state?.trim()
@@ -863,7 +957,12 @@ export function shouldShowRemoteUpdateMenuDetail(
 }
 
 export function keepSourceMenuOpenAfterAction(source: ConfigSource): boolean {
-  return source.kind === 'peer' && Boolean(source.version_sync_required)
+  return (
+    source.kind === 'peer' &&
+    (Boolean(source.version_sync_required) ||
+      (Boolean(source.remote_update_status?.rollback_available) &&
+        source.remote_update_status?.state?.trim() !== 'rolled_back'))
+  )
 }
 
 export function formatBuildLabel(buildIdentity: BuildIdentity): string {
@@ -947,6 +1046,7 @@ export function ConfigModal({
   onApprovePair,
   onSubmitPairPin,
   onSyncPeerVersion,
+  onRollbackPeerVersion,
   remoteUpdatePendingByNode,
   onOpenGroupManager,
   onClose,
@@ -1235,13 +1335,21 @@ export function ConfigModal({
                         const versionSyncBlockedReason =
                           effectiveSource.same_version_update_blocked_reason?.trim() || ''
                         const versionSyncActionAvailable =
-                          versionSyncRequired && Boolean(effectiveSource.same_version_update_allowed)
+                          versionSyncRequired &&
+                          effectiveSource.online !== false &&
+                          Boolean(effectiveSource.same_version_update_allowed)
                         const versionSyncPendingStage =
                           effectiveSource.kind === 'peer'
                             ? remoteUpdatePendingByNode[effectiveSource.node_id]
                             : undefined
+                        const rollbackActionAvailable =
+                          effectiveSource.kind === 'peer' &&
+                          remoteUpdateRollbackActionAvailable(effectiveSource, versionSyncPendingStage)
+                        const remoteUpdateActionVisible =
+                          effectiveSource.kind === 'peer' &&
+                          (versionSyncRequired || rollbackActionAvailable || Boolean(versionSyncPendingStage))
                         const versionSyncActionState =
-                          versionSyncRequired && effectiveSource.kind === 'peer'
+                          remoteUpdateActionVisible && effectiveSource.kind === 'peer'
                             ? remoteUpdateActionState(effectiveSource, versionSyncPendingStage, localBuildSha)
                             : null
                         const versionSyncPending = Boolean(versionSyncActionState?.spinning)
@@ -1251,17 +1359,20 @@ export function ConfigModal({
                           (!effectiveSource.trusted ||
                             (effectiveSource.trusted && effectiveSource.follow_allowed && !effectiveSource.active))
                         const disabled =
-                          (effectiveSource.kind === 'peer' && !pairActionAvailable && !versionSyncActionAvailable) ||
+                          (effectiveSource.kind === 'peer' &&
+                            !pairActionAvailable &&
+                            !versionSyncActionAvailable &&
+                            !rollbackActionAvailable) ||
                           versionSyncPending
                         const actionLabel =
                           effectiveSource.kind === 'local'
                             ? effectiveSource.active
                               ? 'Current'
                               : 'Use local'
+                            : remoteUpdateActionVisible
+                              ? remoteUpdateMenuActionLabel(effectiveSource, versionSyncPendingStage, localBuildSha)
                             : effectiveSource.online === false
                               ? 'Offline'
-                            : versionSyncRequired
-                              ? remoteUpdateMenuActionLabel(effectiveSource, versionSyncPendingStage, localBuildSha)
                               : effectiveSource.active
                               ? 'Following'
                               : !source.trusted && pairState === 'incoming_request'
@@ -1287,6 +1398,7 @@ export function ConfigModal({
                             disabled={disabled}
                             title={
                               versionSyncBlockedReason ||
+                              versionSyncActionState?.actionDetail ||
                               effectiveSource.version_sync_reason?.trim() ||
                               blockedReason ||
                               label
@@ -1334,6 +1446,12 @@ export function ConfigModal({
                                     requestId,
                                   })
                                 }
+                                return
+                              }
+                              if (rollbackActionAvailable) {
+                                if (versionSyncPending) return
+                                if (!window.confirm(remoteUpdateRollbackConfirmationText(effectiveSource))) return
+                                await onRollbackPeerVersion(effectiveSource.node_id)
                                 return
                               }
                               if (versionSyncRequired) {

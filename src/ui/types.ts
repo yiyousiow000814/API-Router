@@ -161,6 +161,7 @@ export type Status = {
       node_id: string
       node_name: string
       listen_addr?: string | null
+      remote_update_updater_port?: number | null
       capabilities: string[]
       tailscale?: Status['tailscale']
       version_inventory?: string[]
@@ -177,8 +178,14 @@ export type Status = {
         blocked_reason?: string | null
       }
       remote_update_status?: {
-        state: 'accepted' | 'running' | 'failed' | 'succeeded' | string
+        state: 'accepted' | 'running' | 'failed' | 'succeeded' | 'rolled_back' | string
         target_ref: string
+        from_git_sha?: string | null
+        to_git_sha?: string | null
+        current_git_sha?: string | null
+        previous_git_sha?: string | null
+        progress_percent?: number | null
+        rollback_available?: boolean
         request_id?: string | null
         reason_code?: string | null
         requester_node_id?: string | null
@@ -205,6 +212,7 @@ export type Status = {
       node_id: string
       node_name: string
       listen_addr: string
+      remote_update_updater_port?: number | null
       last_heartbeat_unix_ms: number
       capabilities: string[]
       tailscale?: Status['tailscale']
@@ -221,8 +229,14 @@ export type Status = {
         checked_at_unix_ms?: number
       } | null
       remote_update_status?: {
-        state: 'accepted' | 'running' | 'failed' | 'succeeded' | string
+        state: 'accepted' | 'running' | 'failed' | 'succeeded' | 'rolled_back' | string
         target_ref: string
+        from_git_sha?: string | null
+        to_git_sha?: string | null
+        current_git_sha?: string | null
+        previous_git_sha?: string | null
+        progress_percent?: number | null
+        rollback_available?: boolean
         request_id?: string | null
         reason_code?: string | null
         requester_node_id?: string | null
@@ -302,8 +316,14 @@ export type LanRemoteUpdateDebugResponse = {
     checked_at_unix_ms?: number
   }
   remote_update_status?: {
-    state: 'accepted' | 'running' | 'failed' | 'succeeded' | string
+    state: 'accepted' | 'running' | 'failed' | 'succeeded' | 'rolled_back' | string
     target_ref: string
+    from_git_sha?: string | null
+    to_git_sha?: string | null
+    current_git_sha?: string | null
+    previous_git_sha?: string | null
+    progress_percent?: number | null
+    rollback_available?: boolean
     request_id?: string | null
     reason_code?: string | null
     requester_node_id?: string | null
@@ -424,8 +444,14 @@ export type Config = {
       sync_contracts?: Record<string, number>
       build_matches_local?: boolean
       remote_update_status?: {
-        state: 'accepted' | 'running' | 'failed' | 'succeeded' | string
+        state: 'accepted' | 'running' | 'failed' | 'succeeded' | 'rolled_back' | string
         target_ref: string
+        from_git_sha?: string | null
+        to_git_sha?: string | null
+        current_git_sha?: string | null
+        previous_git_sha?: string | null
+        progress_percent?: number | null
+        rollback_available?: boolean
         request_id?: string | null
         reason_code?: string | null
         requester_node_id?: string | null

@@ -22,6 +22,11 @@ user-data/
 Agent Orchestrator.exe
 API Router.exe
 API Router [[]TEST[]].exe
+API Router Updater.exe
+
+# Remote update runtime slots and pointers (generated locally)
+versions/
+runtime/
 
 # Local research / temporary clones (never commit)
 packycode-cost/

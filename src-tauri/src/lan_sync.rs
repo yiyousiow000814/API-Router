@@ -54,6 +54,8 @@ pub use local_state::{
     write_local_provider_state_snapshot, LocalProviderCopyStateSnapshot,
     LocalProviderStateSnapshot,
 };
+#[cfg(not(test))]
+pub(crate) use remote_update::ensure_remote_update_updater_daemon;
 #[cfg(test)]
 pub(crate) use remote_update::{
     build_remote_update_worker_command, compute_local_remote_update_readiness,
@@ -65,7 +67,7 @@ pub(crate) use remote_update::{
     lan_sync_remote_update_http, load_lan_remote_update_status,
     load_lan_remote_update_status_public, normalized_local_build_target_ref,
     peer_remote_update_blocked_reason, reconcile_remote_update_terminal_event,
-    LanRemoteUpdateDebugResponsePacket,
+    remote_update_updater_port, LanRemoteUpdateDebugResponsePacket,
 };
 pub use remote_update::{LanRemoteUpdateReadinessSnapshot, LanRemoteUpdateStatusSnapshot};
 pub(crate) use shared_health::LanSharedHealthPacket;
@@ -89,9 +91,15 @@ pub const LAN_HEARTBEAT_INTERVAL_MS: u64 = 2_000;
 // though the peer is still reachable and immediately rediscovered from the same listen address.
 pub const LAN_PEER_STALE_AFTER_MS: u64 = 20_000;
 pub const LAN_PEER_HTTP_GRACE_AFTER_MS: u64 = 30_000;
+// Remote rollback intentionally keeps the peer's last known updater address longer than
+// normal LAN HTTP grace. If the main API Router process hangs after an update, heartbeat
+// stops, but the independent updater daemon can still receive a rollback request.
+pub const LAN_REMOTE_UPDATE_ROLLBACK_HTTP_GRACE_AFTER_MS: u64 = 30 * 60 * 1000;
+const LAN_PEER_HISTORY_RETAIN_AFTER_MS: u64 = LAN_REMOTE_UPDATE_ROLLBACK_HTTP_GRACE_AFTER_MS;
 const LAN_HEARTBEAT_SENDER_DELAY_LOG_THRESHOLD_MS: u64 = LAN_HEARTBEAT_INTERVAL_MS * 2;
 const LAN_HEARTBEAT_PREP_SLOW_LOG_THRESHOLD_MS: u64 = 250;
 const _: () = assert!(LAN_PEER_STALE_AFTER_MS >= LAN_HEARTBEAT_INTERVAL_MS * 10);
+const _: () = assert!(LAN_PEER_HISTORY_RETAIN_AFTER_MS >= LAN_PEER_STALE_AFTER_MS);
 const LAN_SHARED_HEALTH_LOOP_INTERVAL_MS: u64 = 900;
 const LAN_USAGE_SYNC_LOOP_INTERVAL_MS: u64 = 1_000;
 const LAN_USAGE_SYNC_BATCH_LIMIT: usize = 2_048;
@@ -107,7 +115,7 @@ const LAN_PAIR_APPROVAL_TTL_MS: u64 = 5 * 60 * 1000;
 const LAN_REMOTE_UPDATE_ACCEPTED_STARTUP_GRACE_MS: u64 = 15_000;
 const LAN_SYNC_AUTH_NODE_ID_HEADER: &str = "x-api-router-lan-node-id";
 const LAN_SYNC_AUTH_SECRET_HEADER: &str = "x-api-router-lan-secret";
-pub(crate) const LAN_REMOTE_UPDATE_CAPABILITY: &str = "remote_update_v1";
+pub(crate) const LAN_REMOTE_UPDATE_CAPABILITY: &str = "remote_update_v2";
 const LAN_EDIT_ENTITY_PROVIDER_DEFINITION: &str = "provider_definition";
 const LAN_EDIT_ENTITY_PROVIDER_PRICING: &str = "provider_pricing";
 const LAN_EDIT_ENTITY_QUOTA_SNAPSHOT: &str = "quota_snapshot";
@@ -422,6 +430,7 @@ pub struct LanLocalNodeSnapshot {
     pub node_id: String,
     pub node_name: String,
     pub listen_addr: Option<String>,
+    pub remote_update_updater_port: Option<u16>,
     pub capabilities: Vec<String>,
     pub version_inventory: Vec<String>,
     pub build_identity: LanBuildIdentitySnapshot,
@@ -437,6 +446,7 @@ pub struct LanPeerSnapshot {
     pub node_id: String,
     pub node_name: String,
     pub listen_addr: String,
+    pub remote_update_updater_port: Option<u16>,
     pub last_heartbeat_unix_ms: u64,
     pub capabilities: Vec<String>,
     pub version_inventory: Vec<String>,
@@ -507,6 +517,7 @@ struct LanPeerRuntime {
     node_id: String,
     node_name: String,
     listen_addr: String,
+    remote_update_updater_port: Option<u16>,
     last_heartbeat_unix_ms: u64,
     capabilities: Vec<String>,
     version_inventory: Vec<String>,
@@ -524,6 +535,7 @@ fn lan_peer_snapshot_from_runtime(peer: &LanPeerRuntime) -> LanPeerSnapshot {
         node_id: peer.node_id.clone(),
         node_name: peer.node_name.clone(),
         listen_addr: peer.listen_addr.clone(),
+        remote_update_updater_port: peer.remote_update_updater_port,
         last_heartbeat_unix_ms: peer.last_heartbeat_unix_ms,
         capabilities: peer.capabilities.clone(),
         version_inventory: peer.version_inventory.clone(),
@@ -572,6 +584,8 @@ struct LanHeartbeatPacket {
     node_id: String,
     node_name: String,
     listen_port: u16,
+    #[serde(default)]
+    remote_update_updater_port: Option<u16>,
     sent_at_unix_ms: u64,
     #[serde(default)]
     sequence: u64,
@@ -997,6 +1011,7 @@ impl LanSyncRuntime {
                 node_id: self.local_node.node_id.clone(),
                 node_name: self.local_node.node_name.clone(),
                 listen_addr: detect_local_listen_addr(listen_port),
+                remote_update_updater_port: remote_update_updater_port(listen_port),
                 capabilities: lan_heartbeat_capabilities(),
                 version_inventory: local_version_inventory(),
                 build_identity: local_build_identity,
@@ -1025,6 +1040,7 @@ impl LanSyncRuntime {
                 node_id: node_id.to_string(),
                 node_name: sanitize_node_name(node_name),
                 listen_addr: "192.168.1.10:4000".to_string(),
+                remote_update_updater_port: remote_update_updater_port(4000),
                 last_heartbeat_unix_ms: unix_ms(),
                 capabilities: lan_heartbeat_capabilities(),
                 version_inventory: local_version_inventory(),
@@ -1077,6 +1093,7 @@ impl LanSyncRuntime {
                 node_id: packet.node_id,
                 node_name: sanitized_name.clone(),
                 listen_addr: listen_addr.clone(),
+                remote_update_updater_port: packet.remote_update_updater_port,
                 last_heartbeat_unix_ms: received_at_unix_ms,
                 capabilities: packet.capabilities,
                 version_inventory,
@@ -1133,26 +1150,28 @@ impl LanSyncRuntime {
             let mut peers = self.peers.write();
             let mut stale_peers = Vec::new();
             peers.retain(|_, peer| {
-                let is_stale = peer_is_stale(peer.last_heartbeat_unix_ms, now);
-                if is_stale {
+                let age_ms = now.saturating_sub(peer.last_heartbeat_unix_ms);
+                let should_drop = age_ms > LAN_PEER_HISTORY_RETAIN_AFTER_MS;
+                if should_drop {
                     stale_peers.push((
                         peer.node_id.clone(),
                         peer.node_name.clone(),
                         peer.listen_addr.clone(),
-                        now.saturating_sub(peer.last_heartbeat_unix_ms),
+                        age_ms,
                     ));
                 }
-                !is_stale
+                !should_drop
             });
             self.last_peer_prune_unix_ms.store(now, Ordering::Relaxed);
             for (node_id, node_name, listen_addr, age_ms) in stale_peers {
                 append_lan_peer_diagnostics_log(&format!(
-                    "Pruned stale LAN peer {} ({}) after {}ms without heartbeat; listen_addr={}",
+                    "Pruned historical LAN peer {} ({}) after {}ms without heartbeat; listen_addr={}",
                     node_id, node_name, age_ms, listen_addr
                 ));
             }
             peers
                 .values()
+                .filter(|peer| !peer_is_stale(peer.last_heartbeat_unix_ms, now))
                 .map(lan_peer_snapshot_from_runtime)
                 .collect::<Vec<_>>()
         } else {
@@ -3268,6 +3287,7 @@ fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::Ga
             node_id: runtime.local_node.node_id.clone(),
             node_name: runtime.local_node.node_name.clone(),
             listen_port: cfg_snapshot.listen.port,
+            remote_update_updater_port: remote_update_updater_port(cfg_snapshot.listen.port),
             sent_at_unix_ms: heartbeat_started_unix_ms,
             sequence: heartbeat_sequence,
             sender_previous_gap_ms,
@@ -3578,6 +3598,21 @@ fn peer_sync_addr(peer: &LanPeerSnapshot) -> Option<SocketAddr> {
 fn peer_http_base_url(peer: &LanPeerSnapshot) -> Option<String> {
     let trimmed = peer.listen_addr.trim();
     (!trimmed.is_empty()).then(|| format!("http://{trimmed}"))
+}
+
+fn peer_listen_host_and_port(peer: &LanPeerSnapshot) -> Option<(&str, u16)> {
+    let (host, port) = peer.listen_addr.trim().rsplit_once(':')?;
+    let host = host.trim();
+    let port = port.trim().parse::<u16>().ok()?;
+    (!host.is_empty()).then_some((host, port))
+}
+
+fn peer_updater_base_url(peer: &LanPeerSnapshot) -> Option<String> {
+    let (host, listen_port) = peer_listen_host_and_port(peer)?;
+    let updater_port = peer
+        .remote_update_updater_port
+        .or_else(|| remote_update_updater_port(listen_port))?;
+    (!host.is_empty()).then(|| format!("http://{host}:{updater_port}"))
 }
 
 fn redact_url_for_logs(url: &reqwest::Url) -> String {
@@ -4842,6 +4877,7 @@ mod tests {
             node_id: "node-peer".to_string(),
             node_name: "Peer".to_string(),
             listen_addr: "192.168.1.10:4000".to_string(),
+            remote_update_updater_port: Some(4001),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
             version_inventory: super::local_version_inventory(),
@@ -4964,6 +5000,12 @@ mod tests {
         super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
             state: "running".to_string(),
             target_ref: "abc123".to_string(),
+            from_git_sha: None,
+            to_git_sha: None,
+            current_git_sha: None,
+            previous_git_sha: None,
+            progress_percent: None,
+            rollback_available: false,
             request_id: None,
             reason_code: None,
             requester_node_id: Some("node-remote".to_string()),
@@ -5019,6 +5061,12 @@ mod tests {
         super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
             state: "accepted".to_string(),
             target_ref: "abc123".to_string(),
+            from_git_sha: None,
+            to_git_sha: None,
+            current_git_sha: None,
+            previous_git_sha: None,
+            progress_percent: None,
+            rollback_available: false,
             request_id: None,
             reason_code: None,
             requester_node_id: Some("node-prev".to_string()),
@@ -5073,6 +5121,12 @@ mod tests {
         let status = LanRemoteUpdateStatusSnapshot {
             state: "succeeded".to_string(),
             target_ref: "abc123".to_string(),
+            from_git_sha: Some("from123".to_string()),
+            to_git_sha: Some("abc123".to_string()),
+            current_git_sha: Some("abc123".to_string()),
+            previous_git_sha: Some("from123".to_string()),
+            progress_percent: Some(100),
+            rollback_available: true,
             request_id: None,
             reason_code: None,
             requester_node_id: Some("node-remote".to_string()),
@@ -5115,6 +5169,12 @@ mod tests {
         let status = LanRemoteUpdateStatusSnapshot {
             state: "running".to_string(),
             target_ref: "abc123".to_string(),
+            from_git_sha: Some("from123".to_string()),
+            to_git_sha: Some("abc123".to_string()),
+            current_git_sha: Some("from123".to_string()),
+            previous_git_sha: None,
+            progress_percent: Some(20),
+            rollback_available: false,
             request_id: None,
             reason_code: None,
             requester_node_id: Some("node-remote".to_string()),
@@ -5206,6 +5266,12 @@ mod tests {
         let status = LanRemoteUpdateStatusSnapshot {
             state: "failed".to_string(),
             target_ref: "abc123".to_string(),
+            from_git_sha: Some("from123".to_string()),
+            to_git_sha: Some("abc123".to_string()),
+            current_git_sha: Some("from123".to_string()),
+            previous_git_sha: Some("from123".to_string()),
+            progress_percent: Some(80),
+            rollback_available: true,
             request_id: None,
             reason_code: Some("build_checked_exe".to_string()),
             requester_node_id: Some("node-remote".to_string()),
@@ -5287,6 +5353,12 @@ mod tests {
         super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
             state: "accepted".to_string(),
             target_ref: target_ref.clone(),
+            from_git_sha: None,
+            to_git_sha: Some(target_ref.clone()),
+            current_git_sha: None,
+            previous_git_sha: None,
+            progress_percent: None,
+            rollback_available: false,
             request_id: None,
             reason_code: None,
             requester_node_id: Some("node-remote".to_string()),
@@ -5329,6 +5401,12 @@ mod tests {
         super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
             state: "accepted".to_string(),
             target_ref: "9910964e24802d327b1500a69f2d4471fb7ac647".to_string(),
+            from_git_sha: None,
+            to_git_sha: Some("9910964e24802d327b1500a69f2d4471fb7ac647".to_string()),
+            current_git_sha: None,
+            previous_git_sha: None,
+            progress_percent: None,
+            rollback_available: false,
             request_id: None,
             reason_code: None,
             requester_node_id: Some("node-remote".to_string()),
@@ -5372,6 +5450,12 @@ mod tests {
         super::write_lan_remote_update_status(&LanRemoteUpdateStatusSnapshot {
             state: "accepted".to_string(),
             target_ref: "9910964e24802d327b1500a69f2d4471fb7ac647".to_string(),
+            from_git_sha: None,
+            to_git_sha: Some("9910964e24802d327b1500a69f2d4471fb7ac647".to_string()),
+            current_git_sha: None,
+            previous_git_sha: None,
+            progress_percent: None,
+            rollback_available: false,
             request_id: None,
             reason_code: None,
             requester_node_id: Some("node-remote".to_string()),
@@ -5948,6 +6032,7 @@ mod tests {
                 node_id: "node-x".to_string(),
                 node_name: "Desk".to_string(),
                 listen_port: 4000,
+                remote_update_updater_port: Some(4001),
                 sent_at_unix_ms: 1,
                 sequence: 0,
                 sender_previous_gap_ms: None,
@@ -6528,6 +6613,7 @@ mod tests {
             node_id: "node-a".to_string(),
             node_name: "Node A".to_string(),
             listen_addr: "192.168.1.10:4000".to_string(),
+            remote_update_updater_port: Some(4001),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
             version_inventory: super::local_version_inventory(),
@@ -6577,6 +6663,7 @@ mod tests {
             node_id: "node-a".to_string(),
             node_name: "Node A".to_string(),
             listen_addr: "192.168.1.10:4000".to_string(),
+            remote_update_updater_port: Some(4001),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
             version_inventory: super::merge_version_inventory(
@@ -6625,6 +6712,7 @@ mod tests {
             node_id: "node-a".to_string(),
             node_name: "Node A".to_string(),
             listen_addr: "192.168.1.10:4000".to_string(),
+            remote_update_updater_port: Some(4001),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
             version_inventory: super::merge_version_inventory(
@@ -6760,7 +6848,7 @@ mod tests {
     fn local_version_inventory_exposes_capabilities_and_contracts() {
         let inventory = super::local_version_inventory();
         assert!(inventory.contains(&"heartbeat_v1".to_string()));
-        assert!(inventory.contains(&"remote_update_v1".to_string()));
+        assert!(inventory.contains(&"remote_update_v2".to_string()));
         assert!(inventory.contains(&"usage_requests_v2".to_string()));
         assert!(inventory.contains(&"usage_history_v4".to_string()));
     }
@@ -6788,6 +6876,7 @@ mod tests {
             node_id: "node-remote".to_string(),
             node_name: "remote".to_string(),
             listen_addr: "192.168.1.10:4000".to_string(),
+            remote_update_updater_port: Some(4001),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
             version_inventory: super::merge_version_inventory(
@@ -6927,18 +7016,20 @@ mod tests {
     }
 
     #[test]
-    fn peer_registry_prunes_stale_peers() {
+    fn peer_registry_hides_stale_peers_and_prunes_expired_history() {
         let runtime = LanSyncRuntime::new(LanNodeIdentity {
             node_id: "node-self".to_string(),
             node_name: "self".to_string(),
         });
+        let now = super::LAN_PEER_HISTORY_RETAIN_AFTER_MS + 100_000;
         runtime.peers.write().insert(
             "fresh".to_string(),
             super::LanPeerRuntime {
                 node_id: "fresh".to_string(),
                 node_name: "Fresh".to_string(),
                 listen_addr: "192.168.1.10:4000".to_string(),
-                last_heartbeat_unix_ms: 100_000,
+                remote_update_updater_port: Some(4001),
+                last_heartbeat_unix_ms: now,
                 capabilities: vec!["heartbeat_v1".to_string()],
                 version_inventory: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
@@ -6956,7 +7047,28 @@ mod tests {
                 node_id: "stale".to_string(),
                 node_name: "Stale".to_string(),
                 listen_addr: "192.168.1.11:4000".to_string(),
-                last_heartbeat_unix_ms: 100_000_u64.saturating_sub(LAN_PEER_STALE_AFTER_MS + 1),
+                remote_update_updater_port: Some(4001),
+                last_heartbeat_unix_ms: now.saturating_sub(LAN_PEER_STALE_AFTER_MS + 1),
+                capabilities: vec!["heartbeat_v1".to_string()],
+                version_inventory: vec!["heartbeat_v1".to_string()],
+                build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
+                remote_update_status: None,
+                sync_contracts: std::collections::BTreeMap::new(),
+                provider_fingerprints: vec![],
+                provider_definitions_revision: String::new(),
+                followed_source_node_id: None,
+            },
+        );
+        runtime.peers.write().insert(
+            "expired".to_string(),
+            super::LanPeerRuntime {
+                node_id: "expired".to_string(),
+                node_name: "Expired".to_string(),
+                listen_addr: "192.168.1.12:4000".to_string(),
+                remote_update_updater_port: Some(4001),
+                last_heartbeat_unix_ms: now
+                    .saturating_sub(super::LAN_PEER_HISTORY_RETAIN_AFTER_MS + 1),
                 capabilities: vec!["heartbeat_v1".to_string()],
                 version_inventory: vec!["heartbeat_v1".to_string()],
                 build_identity: super::current_build_identity(),
@@ -6969,9 +7081,17 @@ mod tests {
             },
         );
 
-        let peers = runtime.collect_live_peers(100_000);
+        let peers = runtime.collect_live_peers(now);
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].node_id, "fresh");
+        assert!(
+            runtime.peers.read().contains_key("stale"),
+            "recently stale peer metadata must stay available for rollback"
+        );
+        assert!(
+            !runtime.peers.read().contains_key("expired"),
+            "expired peer metadata should be pruned after rollback grace"
+        );
     }
 
     #[test]
@@ -6987,6 +7107,7 @@ mod tests {
                 node_id: "peer-recent".to_string(),
                 node_name: "Peer Recent".to_string(),
                 listen_addr: "192.168.1.12:4000".to_string(),
+                remote_update_updater_port: Some(4001),
                 last_heartbeat_unix_ms: now.saturating_sub(LAN_PEER_STALE_AFTER_MS + 1),
                 capabilities: super::lan_heartbeat_capabilities(),
                 version_inventory: super::local_version_inventory(),
@@ -7012,6 +7133,37 @@ mod tests {
     }
 
     #[test]
+    fn peer_updater_base_url_derives_port_for_legacy_heartbeat() {
+        let peer = LanPeerSnapshot {
+            node_id: "peer-legacy".to_string(),
+            node_name: "Peer Legacy".to_string(),
+            listen_addr: "192.168.1.12:4000".to_string(),
+            remote_update_updater_port: None,
+            last_heartbeat_unix_ms: crate::orchestrator::store::unix_ms(),
+            capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::local_version_inventory(),
+            build_identity: super::current_build_identity(),
+            provider_fingerprints: Vec::new(),
+            provider_definitions_revision: String::new(),
+            sync_contracts: super::local_sync_contracts(),
+            followed_source_node_id: None,
+            trusted: true,
+            pair_state: Some("trusted".to_string()),
+            pair_request_id: None,
+            remote_update_readiness: Some(super::current_local_remote_update_readiness()),
+            remote_update_status: None,
+            sync_blocked_domains: Vec::new(),
+            sync_diagnostics: Vec::new(),
+            build_matches_local: true,
+        };
+
+        assert_eq!(
+            super::peer_updater_base_url(&peer),
+            Some("http://192.168.1.12:4001".to_string())
+        );
+    }
+
+    #[test]
     fn recently_stale_peers_lists_recent_offline_peer_without_readding_live_peer() {
         let runtime = LanSyncRuntime::new(LanNodeIdentity {
             node_id: "node-self".to_string(),
@@ -7024,6 +7176,7 @@ mod tests {
                 node_id: "peer-recent".to_string(),
                 node_name: "Peer Recent".to_string(),
                 listen_addr: "192.168.1.12:4000".to_string(),
+                remote_update_updater_port: Some(4001),
                 last_heartbeat_unix_ms: now.saturating_sub(super::LAN_PEER_STALE_AFTER_MS + 1),
                 capabilities: super::lan_heartbeat_capabilities(),
                 version_inventory: super::local_version_inventory(),
@@ -7042,6 +7195,7 @@ mod tests {
                 node_id: "peer-live".to_string(),
                 node_name: "Peer Live".to_string(),
                 listen_addr: "192.168.1.13:4000".to_string(),
+                remote_update_updater_port: Some(4001),
                 last_heartbeat_unix_ms: now,
                 capabilities: super::lan_heartbeat_capabilities(),
                 version_inventory: super::local_version_inventory(),
@@ -7088,6 +7242,7 @@ mod tests {
                 node_id: "node-peer".to_string(),
                 node_name: "peer".to_string(),
                 listen_port: 4000,
+                remote_update_updater_port: Some(4001),
                 sent_at_unix_ms: 1000,
                 sequence: 0,
                 sender_previous_gap_ms: None,
@@ -7167,6 +7322,7 @@ mod tests {
             node_id: "node-peer".to_string(),
             node_name: "Peer".to_string(),
             listen_addr: "192.168.1.50:4000".to_string(),
+            remote_update_updater_port: Some(4001),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
             version_inventory: super::local_version_inventory(),
@@ -7218,6 +7374,7 @@ mod tests {
             node_id: "node-peer".to_string(),
             node_name: "Peer".to_string(),
             listen_addr: "192.168.1.50:4000".to_string(),
+            remote_update_updater_port: Some(4001),
             last_heartbeat_unix_ms: 1,
             capabilities: super::lan_heartbeat_capabilities(),
             version_inventory: super::local_version_inventory(),
@@ -7857,6 +8014,7 @@ mod tests {
                 node_id: "peer-fresh".to_string(),
                 node_name: "Peer Fresh".to_string(),
                 listen_port: 4000,
+                remote_update_updater_port: Some(4001),
                 sent_at_unix_ms: 1,
                 sequence: 0,
                 sender_previous_gap_ms: None,
@@ -7892,6 +8050,7 @@ mod tests {
                 node_id: "node-a".to_string(),
                 node_name: "peer-a".to_string(),
                 listen_addr: "192.168.1.10:4000".to_string(),
+                remote_update_updater_port: Some(4001),
                 last_heartbeat_unix_ms: now,
                 capabilities: super::lan_heartbeat_capabilities(),
                 version_inventory: super::local_version_inventory(),
@@ -7927,6 +8086,7 @@ mod tests {
                 node_id: "node-a".to_string(),
                 node_name: "peer-a".to_string(),
                 listen_addr: "192.168.1.10:4000".to_string(),
+                remote_update_updater_port: Some(4001),
                 last_heartbeat_unix_ms: now,
                 capabilities: vec!["heartbeat_v1".to_string()],
                 version_inventory: vec!["heartbeat_v1".to_string()],
@@ -7974,6 +8134,7 @@ mod tests {
                 node_id: "node-live".to_string(),
                 node_name: "peer-live".to_string(),
                 listen_addr: "192.168.1.50:4000".to_string(),
+                remote_update_updater_port: Some(4001),
                 last_heartbeat_unix_ms: now,
                 capabilities: super::lan_heartbeat_capabilities(),
                 version_inventory: super::local_version_inventory(),
@@ -7992,6 +8153,7 @@ mod tests {
                 node_id: "node-stale".to_string(),
                 node_name: "peer-stale".to_string(),
                 listen_addr: "192.168.1.51:4000".to_string(),
+                remote_update_updater_port: Some(4001),
                 last_heartbeat_unix_ms: now.saturating_sub(super::LAN_PEER_STALE_AFTER_MS + 1),
                 capabilities: super::lan_heartbeat_capabilities(),
                 version_inventory: super::local_version_inventory(),
@@ -8415,6 +8577,7 @@ mod tests {
                 node_id: "node-remote".to_string(),
                 node_name: "remote-box".to_string(),
                 listen_addr: "192.168.1.21:4000".to_string(),
+                remote_update_updater_port: Some(4001),
                 last_heartbeat_unix_ms: crate::orchestrator::store::unix_ms(),
                 capabilities: vec!["heartbeat_v1".to_string()],
                 version_inventory: vec!["heartbeat_v1".to_string()],

@@ -18,6 +18,8 @@ import {
   remoteDebugStatusRelevance,
   remoteUpdateActionState,
   remoteUpdateDetailText,
+  remoteUpdateRollbackConfirmationText,
+  remoteUpdateRollbackActionAvailable,
   remoteDebugReadinessReasonText,
   splitRemoteDebugLogTail,
   shouldShowDiagnosticsRemoteUpdateStatus,
@@ -84,7 +86,7 @@ describe('ConfigModal', () => {
   it('combines capability and contract versions into one diagnostics list', () => {
     expect(
       diagnosticVersionEntries({
-        capabilities: ['heartbeat_v1', 'status_v1', 'remote_update_v1'],
+        capabilities: ['heartbeat_v1', 'status_v1', 'remote_update_v2'],
         sync_contracts: {
           usage_history: 4,
           usage_requests: 2,
@@ -94,7 +96,7 @@ describe('ConfigModal', () => {
     ).toEqual([
       'heartbeat_v1',
       'status_v1',
-      'remote_update_v1',
+      'remote_update_v2',
       'shared_health_v1',
       'usage_history_v4',
       'usage_requests_v2',
@@ -232,6 +234,7 @@ describe('ConfigModal', () => {
         onApprovePair={() => undefined}
         onSubmitPairPin={() => undefined}
         onSyncPeerVersion={() => undefined}
+        onRollbackPeerVersion={() => undefined}
         remoteUpdatePendingByNode={{}}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}
@@ -271,6 +274,7 @@ describe('ConfigModal', () => {
         onApprovePair={() => undefined}
         onSubmitPairPin={() => undefined}
         onSyncPeerVersion={() => undefined}
+        onRollbackPeerVersion={() => undefined}
         remoteUpdatePendingByNode={{}}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}
@@ -342,6 +346,7 @@ describe('ConfigModal', () => {
         onApprovePair={() => undefined}
         onSubmitPairPin={() => undefined}
         onSyncPeerVersion={() => undefined}
+        onRollbackPeerVersion={() => undefined}
         remoteUpdatePendingByNode={{}}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}
@@ -413,6 +418,7 @@ describe('ConfigModal', () => {
         onApprovePair={() => undefined}
         onSubmitPairPin={() => undefined}
         onSyncPeerVersion={() => undefined}
+        onRollbackPeerVersion={() => undefined}
         remoteUpdatePendingByNode={{}}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}
@@ -491,6 +497,7 @@ describe('ConfigModal', () => {
         onApprovePair={() => undefined}
         onSubmitPairPin={() => undefined}
         onSyncPeerVersion={() => undefined}
+        onRollbackPeerVersion={() => undefined}
         remoteUpdatePendingByNode={{}}
         onOpenGroupManager={() => undefined}
         onClose={() => undefined}
@@ -1742,6 +1749,150 @@ describe('ConfigModal', () => {
     expect(
       shouldShowRemoteUpdateMenuDetail(source, remoteUpdateActionState(source, undefined)),
     ).toBe(false)
+  })
+
+  it('exposes rollback as the peer action when the rollback slot is available', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      build_matches_local: true,
+      build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: 'bad1234567890',
+        build_git_short_sha: 'bad12345',
+        build_git_commit_unix_ms: 1775312827000,
+      },
+      version_sync_required: false,
+      version_sync_reason: null,
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'succeeded',
+        target_ref: 'bad1234567890',
+        from_git_sha: 'good1234567890',
+        to_git_sha: 'bad1234567890',
+        current_git_sha: 'bad1234567890',
+        previous_git_sha: 'good1234567890',
+        rollback_available: true,
+        finished_at_unix_ms: 1775312829000,
+        updated_at_unix_ms: 1775312829000,
+      },
+    }
+
+    const actionState = remoteUpdateActionState(source, undefined, 'bad1234567890')
+    expect(remoteUpdateRollbackActionAvailable(source)).toBe(true)
+    expect(actionState).toEqual({
+      actionLabel: 'Rollback peer',
+      actionDetail: 'Restore previous build good1234',
+      spinning: false,
+    })
+    expect(remoteUpdateMenuActionLabel(source, undefined, 'bad1234567890')).toBe('Rollback peer')
+    expect(shouldShowRemoteUpdateMenuDetail(source, actionState, 'bad1234567890')).toBe(true)
+  })
+
+  it('keeps rollback available after the local machine moves past the bad peer build', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      build_matches_local: false,
+      build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: 'bad1234567890',
+        build_git_short_sha: 'bad12345',
+        build_git_commit_unix_ms: 1775312827000,
+      },
+      version_sync_required: true,
+      version_sync_reason: 'Desk B is on a bad build.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'succeeded',
+        target_ref: 'bad1234567890',
+        from_git_sha: 'good1234567890',
+        to_git_sha: 'bad1234567890',
+        current_git_sha: 'bad1234567890',
+        previous_git_sha: 'good1234567890',
+        rollback_available: true,
+        finished_at_unix_ms: 1775312829000,
+        updated_at_unix_ms: 1775312829000,
+      },
+    }
+
+    expect(remoteUpdateRollbackActionAvailable(source)).toBe(true)
+    expect(remoteUpdateMenuActionLabel(source, undefined, 'fix9999999999')).toBe('Rollback peer')
+    expect(remoteUpdateRollbackConfirmationText(source)).toBe(
+      'Rollback Desk B to previous build good1234? This will replace and restart API Router on that peer.',
+    )
+  })
+
+  it('keeps offline peers from showing the normal update action without rollback', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      online: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+    }
+
+    expect(remoteUpdateRollbackActionAvailable(source)).toBe(false)
+    expect(remoteUpdateMenuActionLabel(source, undefined, 'abc123')).toBe('Offline')
+  })
+
+  it('allows rollback for a pending remote update after the peer goes offline', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      online: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: false,
+      same_version_update_blocked_reason: 'that node is currently offline',
+      remote_update_status: null,
+    }
+    const pendingStage = {
+      stage: 'refreshing' as const,
+      detail: 'Peer accepted request. Refreshing remote progress',
+      startedAtUnixMs: 1775312829000,
+    }
+
+    const actionState = remoteUpdateActionState(source, pendingStage, 'abc123')
+    expect(remoteUpdateRollbackActionAvailable(source, pendingStage)).toBe(true)
+    expect(actionState).toEqual({
+      actionLabel: 'Rollback peer',
+      actionDetail: 'Restore previous build',
+      spinning: false,
+    })
+    expect(remoteUpdateMenuActionLabel(source, pendingStage, 'abc123')).toBe('Rollback peer')
   })
 
   it('shows terminal superseded state in dropdown after a superseded update', () => {

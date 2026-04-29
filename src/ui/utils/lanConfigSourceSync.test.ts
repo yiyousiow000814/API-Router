@@ -215,7 +215,7 @@ describe('lanConfigSourceSyncSignature', () => {
       peers: [
         {
           ...base.peers[0],
-          capabilities: ['heartbeat_v1', 'remote_update_v1'],
+          capabilities: ['heartbeat_v1', 'remote_update_v2'],
           remote_update_readiness: {
             ready: true,
             blocked_reason: null,
@@ -247,7 +247,7 @@ describe('lanConfigSourceSyncSignature', () => {
           node_name: 'Remote',
           listen_addr: '192.168.1.20:4000',
           last_heartbeat_unix_ms: 100,
-          capabilities: ['heartbeat_v1', 'remote_update_v1'],
+          capabilities: ['heartbeat_v1', 'remote_update_v2'],
           provider_fingerprints: [],
           trusted: true,
           pair_state: 'trusted' as const,
