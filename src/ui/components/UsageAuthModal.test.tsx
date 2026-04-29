@@ -30,11 +30,11 @@ describe('UsageAuthModal', () => {
     expect(html).toContain('padding:0 12px')
   })
 
-  it('renders yangfangyu host account login fields', () => {
+  it('renders yfy host account login fields', () => {
     const html = renderToStaticMarkup(
       <UsageAuthModal
         open
-        provider="yangfangyu"
+        provider="custom-name"
         baseUrl="https://yfy.zhouyang168.top/v1"
         token=""
         username=""

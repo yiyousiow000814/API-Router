@@ -198,7 +198,7 @@ describe('provider usage controls rendering', () => {
     expect(html).not.toContain('Usage URL sets the usage endpoint.')
   })
 
-  it('uses only usage url for yangfangyu login settings', () => {
+  it('uses only usage url for yfy host login settings', () => {
     const html = renderCardHtml(buildConfig(null, 'https://yfy.zhouyang168.top/v1'), buildStatus())
     expect(html).toContain('Email')
     expect(html).not.toContain('Usage Auth')

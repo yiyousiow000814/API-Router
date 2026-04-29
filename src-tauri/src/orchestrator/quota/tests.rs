@@ -1089,7 +1089,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn yangfangyu_login_fetches_new_api_subscription_snapshot() {
+    async fn yfy_host_login_fetches_new_api_subscription_snapshot() {
         let (base, handle) = start_new_api_subscription_mock_server().await;
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
@@ -1200,7 +1200,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn usage_login_allows_quota_refresh_for_yangfangyu_host() {
+    async fn usage_login_allows_quota_refresh_for_yfy_host() {
         let tmp = tempfile::tempdir().unwrap();
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_usage_login("p1", "alice", "secret").unwrap();

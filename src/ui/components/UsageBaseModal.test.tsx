@@ -74,7 +74,7 @@ describe('UsageBaseModal', () => {
     const html = renderToStaticMarkup(
       <UsageBaseModal
         open
-        provider="yangfangyu"
+        provider="custom-name"
         value="https://yfy.zhouyang168.top"
         effectiveValue=""
         username="alice"

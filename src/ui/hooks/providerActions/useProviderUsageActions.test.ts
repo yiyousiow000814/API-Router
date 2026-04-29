@@ -129,7 +129,7 @@ describe('buildUsageBaseModalDraft', () => {
   it('adds login fields for supported usage auth hosts', () => {
     expect(
       buildUsageBaseModalDraft(
-        'yangfangyu',
+        'custom-name',
         'https://yfy.zhouyang168.top/v1',
         'https://yfy.zhouyang168.top',
         'https://yfy.zhouyang168.top',
