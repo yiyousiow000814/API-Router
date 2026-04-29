@@ -3121,7 +3121,9 @@ mod tests {
         assert!(build_script.contains("if ($arguments.Count -gt 0)"));
         assert!(build_script.contains("$restartWarning = $null"));
         assert!(build_script.contains("function Invoke-BuildCommand"));
-        assert!(build_script.contains("CreateNoWindow = $true"));
+        assert!(build_script.contains("[switch]$UseProcessExitCode"));
+        assert!(build_script.contains("-UseProcessExitCode"));
+        assert!(build_script.contains("CreateNoWindow = [bool]$StartHidden"));
         assert!(build_script.contains("function Get-RemoteUpdateBuildResultPath"));
         assert!(build_script.contains("function Write-BuildResultMarker"));
         assert!(build_script.contains("function Backup-CurrentRuntimeForRollback"));

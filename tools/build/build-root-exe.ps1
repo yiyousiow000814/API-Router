@@ -232,7 +232,7 @@ function Invoke-UpdaterCommand {
   } else {
     throw "API Router Updater.exe is missing; cannot run updater command"
   }
-  Invoke-BuildCommand -FilePath $updaterPath -ArgumentList $ArgumentList -FailureLabel $FailureMessage
+  Invoke-BuildCommand -FilePath $updaterPath -ArgumentList $ArgumentList -FailureLabel $FailureMessage -UseProcessExitCode
 }
 
 function Get-UpdaterBindAddress {
@@ -976,10 +976,12 @@ function Invoke-BuildCommand {
     [string]$FilePath,
     [string[]]$ArgumentList = @(),
     [Parameter(Mandatory = $true)]
-    [string]$FailureLabel
+    [string]$FailureLabel,
+    [switch]$UseProcessExitCode
   )
 
-  if (-not $StartHidden) {
+  if (-not $StartHidden -and -not $UseProcessExitCode) {
+    Reset-LastExitCode
     & $FilePath @ArgumentList
     if ($LASTEXITCODE -ne 0) {
       throw "$FailureLabel failed with exit code $LASTEXITCODE"
@@ -1029,7 +1031,7 @@ function Invoke-BuildCommand {
   }
   $startInfo.WorkingDirectory = $RepoRoot
   $startInfo.UseShellExecute = $false
-  $startInfo.CreateNoWindow = $true
+  $startInfo.CreateNoWindow = [bool]$StartHidden
   $startInfo.RedirectStandardOutput = $true
   $startInfo.RedirectStandardError = $true
 
@@ -1039,6 +1041,10 @@ function Invoke-BuildCommand {
   $process.WaitForExit()
   $stdoutLines = if ($stdout) { @($stdout -split "\r?\n") } else { @() }
   $stderrLines = if ($stderr) { @($stderr -split "\r?\n") } else { @() }
+  if (-not $StartHidden) {
+    if ($stdout) { [Console]::Out.Write($stdout) }
+    if ($stderr) { [Console]::Error.Write($stderr) }
+  }
   $summary = Format-BuildCommandOutputSummary @($stderrLines + $stdoutLines)
   if (-not $summary) {
     $summary = Format-BuildCommandOutputSummary @($stdoutLines + $stderrLines)
