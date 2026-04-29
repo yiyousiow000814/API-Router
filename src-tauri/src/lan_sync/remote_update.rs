@@ -3124,6 +3124,18 @@ mod tests {
         assert!(build_script.contains("[switch]$UseProcessExitCode"));
         assert!(build_script.contains("-UseProcessExitCode"));
         assert!(build_script.contains("CreateNoWindow = [bool]$StartHidden"));
+        assert!(build_script
+            .contains("Skipping Tauri app build; updater binary still builds in this script"));
+        let skip_release_build_pos = build_script
+            .find("if ($SkipReleaseBuild)")
+            .expect("build script checks skip release build");
+        let updater_build_pos = build_script
+            .find("-Phase 'build_updater_binary'")
+            .expect("build script builds updater binary");
+        assert!(
+            updater_build_pos > skip_release_build_pos,
+            "updater binary build must still run after the skip-release branch"
+        );
         assert!(build_script.contains("function Get-RemoteUpdateBuildResultPath"));
         assert!(build_script.contains("function Write-BuildResultMarker"));
         assert!(build_script.contains("function Backup-CurrentRuntimeForRollback"));

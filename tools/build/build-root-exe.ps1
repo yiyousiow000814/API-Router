@@ -1134,7 +1134,7 @@ try {
   }
 
   if ($SkipReleaseBuild) {
-    Enter-BuildStep -Phase 'reuse_release_binary' -Label 'Reusing release binary' -Detail 'Skipping Tauri build and copying the existing src-tauri/target/release/api_router.exe'
+    Enter-BuildStep -Phase 'reuse_release_binary' -Label 'Reusing release binary' -Detail 'Skipping Tauri app build; updater binary still builds in this script'
     if (-not (Test-Path $SrcExe)) { throw "Missing built exe: $SrcExe" }
   } else {
     # Build tauri app (produces src-tauri/target/release/api_router.exe).
@@ -1145,14 +1145,14 @@ try {
       -FilePath $NodeCli `
       -ArgumentList @($RunWithWinSdkCli, 'node', $TauriCliEntry, 'build', '--no-bundle') `
       -FailureLabel 'tauri build'
-    Invoke-BuildStage `
-      -Phase 'build_updater_binary' `
-      -Label 'Building updater binary' `
-      -Detail 'Compiling independent API Router Updater.exe' `
-      -FilePath $NodeCli `
-      -ArgumentList @($RunWithWinSdkCli, 'cargo', 'build', '--manifest-path', (Join-Path $RepoRoot 'src-tauri\Cargo.toml'), '--release', '--bin', 'api_router_updater') `
-      -FailureLabel 'updater build'
   }
+  Invoke-BuildStage `
+    -Phase 'build_updater_binary' `
+    -Label 'Building updater binary' `
+    -Detail 'Compiling independent API Router Updater.exe' `
+    -FilePath $NodeCli `
+    -ArgumentList @($RunWithWinSdkCli, 'cargo', 'build', '--manifest-path', (Join-Path $RepoRoot 'src-tauri\Cargo.toml'), '--release', '--bin', 'api_router_updater') `
+    -FailureLabel 'updater build'
   Write-RemoteUpdateLog ("Primary build stages completed in {0}" -f (Get-StageDurationText $buildStartedAtUnixMs))
 
   if (-not $NoCopy) {
