@@ -218,6 +218,116 @@ mod tests {
         (url, h)
     }
 
+    async fn start_new_api_subscription_mock_server() -> (String, tokio::task::JoinHandle<()>) {
+        use axum::http::{HeaderMap, StatusCode};
+        use axum::response::IntoResponse;
+        use axum::routing::{get, post};
+        use axum::{Json, Router};
+
+        let app = Router::new()
+            .route(
+                "/api/user/login",
+                post(|Json(payload): Json<Value>| async move {
+                    let username = payload
+                        .get("username")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let password = payload
+                        .get("password")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if username != "alice" || password != "secret" {
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            Json(serde_json::json!({ "success": false, "message": "bad credentials" })),
+                        )
+                            .into_response();
+                    }
+                    (
+                        StatusCode::OK,
+                        [(
+                            axum::http::header::SET_COOKIE,
+                            "new-api-session=session-123; Path=/; HttpOnly",
+                        )],
+                        Json(serde_json::json!({
+                            "success": true,
+                            "data": {
+                                "id": 42,
+                                "username": "alice"
+                            }
+                        })),
+                    )
+                        .into_response()
+                }),
+            )
+            .route(
+                "/api/status",
+                get(|| async move {
+                    Json(serde_json::json!({
+                        "success": true,
+                        "data": {
+                            "quota_per_unit": 500000
+                        }
+                    }))
+                }),
+            )
+            .route(
+                "/api/subscription/self",
+                get(|headers: HeaderMap| async move {
+                    let cookie = headers
+                        .get(axum::http::header::COOKIE)
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default();
+                    let user = headers
+                        .get("New-Api-User")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default();
+                    if !cookie.contains("new-api-session=session-123") || user != "42" {
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            Json(serde_json::json!({ "success": false, "message": "unauthorized" })),
+                        );
+                    }
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "success": true,
+                            "data": {
+                                "billing_preference": "subscription_first",
+                                "subscriptions": [
+                                    {
+                                        "subscription": {
+                                            "id": 165,
+                                            "plan_id": 7,
+                                            "status": "active",
+                                            "start_time": 1777449600_u64,
+                                            "end_time": 1779945600_u64,
+                                            "amount_total": 45000000,
+                                            "amount_used": 1250000
+                                        },
+                                        "plan": {
+                                            "id": 7,
+                                            "title": "codex-每天90刀-30天卡",
+                                            "quota_reset_period": "daily"
+                                        }
+                                    }
+                                ],
+                                "all_subscriptions": []
+                            }
+                        })),
+                    )
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}:{}", addr.ip(), addr.port());
+        let h = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (url, h)
+    }
+
     async fn start_quan2go_codexusage_mock_server() -> (String, tokio::task::JoinHandle<()>) {
         use axum::http::{HeaderMap, StatusCode};
         use axum::routing::{get, post};
@@ -979,6 +1089,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn yangfangyu_login_fetches_new_api_subscription_snapshot() {
+        let (base, handle) = start_new_api_subscription_mock_server().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_usage_login("p1", "alice", "secret").unwrap();
+        let st = mk_state(format!("{base}/v1"), secrets);
+        {
+            let mut cfg = st.cfg.write();
+            if let Some(provider) = cfg.providers.get_mut("p1") {
+                provider.base_url = "https://yfy.zhouyang168.top/v1".to_string();
+                provider.usage_base_url = Some(base.clone());
+            }
+        }
+
+        let snap = refresh_quota_for_provider(&st, "p1").await;
+        handle.abort();
+
+        assert!(snap.last_error.is_empty(), "{}", snap.last_error);
+        assert_eq!(snap.kind, UsageKind::BudgetInfo);
+        assert_eq!(snap.daily_budget_usd, Some(90.0));
+        assert_eq!(snap.daily_spent_usd, Some(2.5));
+        assert_eq!(snap.remaining, Some(87.5));
+        assert_eq!(snap.package_expires_at_unix_ms, Some(1_779_945_600_000));
+        assert_eq!(snap.effective_usage_base.as_deref(), Some(base.as_str()));
+        assert_eq!(
+            snap.effective_usage_source.as_deref(),
+            Some("new_api_subscription_login")
+        );
+    }
+
+    #[tokio::test]
     async fn quan2go_provider_definition_fetches_usage_via_card_login_summary() {
         let (base, handle) = start_quan2go_codexusage_mock_server().await;
         let tmp = tempfile::tempdir().unwrap();
@@ -1053,6 +1194,17 @@ mod tests {
         let secrets = SecretStore::new(tmp.path().join("secrets.json"));
         secrets.set_usage_login("p1", "alice", "secret").unwrap();
         let st = mk_state("https://api-vip.codex-for.vip/v1".to_string(), secrets);
+        let cfg = st.cfg.read().clone();
+        let provider = cfg.providers.get("p1").unwrap();
+        assert!(can_refresh_quota_for_provider(&st, "p1", provider));
+    }
+
+    #[tokio::test]
+    async fn usage_login_allows_quota_refresh_for_yangfangyu_host() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        secrets.set_usage_login("p1", "alice", "secret").unwrap();
+        let st = mk_state("https://yfy.zhouyang168.top/v1".to_string(), secrets);
         let cfg = st.cfg.read().clone();
         let provider = cfg.providers.get("p1").unwrap();
         assert!(can_refresh_quota_for_provider(&st, "p1", provider));

@@ -4,6 +4,7 @@ import { ModalBackdrop } from './ModalBackdrop'
 import type { QuotaHardCapField } from '../hooks/providerActions/useProviderUsageActions'
 import { getBudgetWindowVisibleByPeriod, QUOTA_HARD_CAP_PERIODS } from '../utils/providerBudgetWindows'
 import { inferGroupUsageBase } from '../utils/groupUsageBase'
+import { supportsUsageAuthHost } from '../utils/providerUsageSupport'
 
 type Props = {
   open: boolean
@@ -22,7 +23,7 @@ type Props = {
 }
 
 function isCodexForProviderBase(baseUrl: string | null | undefined): boolean {
-  return `${baseUrl ?? ''}`.trim().toLowerCase().includes('codex-for')
+  return supportsUsageAuthHost(baseUrl)
 }
 
 function hasProviderUsageLogin(provider: Config['providers'][string] | null | undefined): boolean {

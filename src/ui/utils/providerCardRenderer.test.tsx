@@ -198,6 +198,13 @@ describe('provider usage controls rendering', () => {
     expect(html).not.toContain('Usage URL sets the usage endpoint.')
   })
 
+  it('shows usage auth and usage url for yangfangyu hosts', () => {
+    const html = renderCardHtml(buildConfig(null, 'https://yfy.zhouyang168.top/v1'), buildStatus())
+    expect(html).toContain('Email')
+    expect(html).toContain('Usage Auth')
+    expect(html).toContain('Usage URL')
+  })
+
   it('keeps caps menu content out of the inline provider card markup', () => {
     const html = renderCardHtml(buildConfig(null), buildStatus(), 'p1')
     expect(html).toContain('Caps')

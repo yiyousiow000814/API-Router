@@ -26,6 +26,7 @@ pub(crate) enum PackageExpiryStrategy {
 pub(crate) enum RefreshFlow {
     Auto,
     LoginThenSummary,
+    NewApiSubscriptionLogin,
     ProviderKeyCardLoginThenSummary,
 }
 
@@ -53,6 +54,10 @@ pub(crate) struct ProviderQuotaProfile {
 impl ProviderQuotaProfile {
     pub fn uses_login_summary_refresh(&self) -> bool {
         self.refresh_flow == RefreshFlow::LoginThenSummary
+    }
+
+    pub fn uses_new_api_subscription_login_refresh(&self) -> bool {
+        self.refresh_flow == RefreshFlow::NewApiSubscriptionLogin
     }
 
     pub fn uses_provider_key_card_login_refresh(&self) -> bool {
@@ -720,6 +725,7 @@ fn parse_refresh_flow(value: &str) -> Result<RefreshFlow, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "auto" => Ok(RefreshFlow::Auto),
         "login_then_summary" => Ok(RefreshFlow::LoginThenSummary),
+        "new_api_subscription_login" => Ok(RefreshFlow::NewApiSubscriptionLogin),
         "provider_key_card_login_then_summary" => Ok(RefreshFlow::ProviderKeyCardLoginThenSummary),
         other => Err(format!("unknown refresh flow: {other}")),
     }

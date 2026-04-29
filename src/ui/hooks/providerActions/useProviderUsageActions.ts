@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { UseProviderActionsParams } from './types'
 import type { Config, Status } from '../../types'
 import { buildProviderGroupMaps, resolveProviderDisplayName } from '../../utils/providerGroups'
+import { supportsUsageAuthHost } from '../../utils/providerUsageSupport'
 
 const MANUAL_QUOTA_REFRESH_WAIT_TIMEOUT_MS = 12_000
 const MANUAL_QUOTA_REFRESH_WAIT_POLL_MS = 350
@@ -142,8 +143,7 @@ export function buildUsageAuthModalDraft(
 }
 
 function supportsUsageAuthProvider(baseUrl?: string | null): boolean {
-  const text = `${baseUrl ?? ''}`.trim().toLowerCase()
-  return text.includes('codex-for')
+  return supportsUsageAuthHost(baseUrl)
 }
 
 function delay(ms: number): Promise<void> {
@@ -740,7 +740,7 @@ export function useProviderUsageActions({
     async (provider: string) => {
       const providerCfg = config?.providers?.[provider]
       if (!supportsUsageAuthProvider(providerCfg?.base_url)) {
-        flashToast('Usage auth only supports codex-for hosts', 'error')
+        flashToast('Usage auth only supports configured login hosts', 'error')
         return
       }
       setUsageAuthModal({

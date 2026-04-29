@@ -30,6 +30,30 @@ describe('UsageAuthModal', () => {
     expect(html).toContain('padding:0 12px')
   })
 
+  it('renders yangfangyu host account login fields', () => {
+    const html = renderToStaticMarkup(
+      <UsageAuthModal
+        open
+        provider="yangfangyu"
+        baseUrl="https://yfy.zhouyang168.top/v1"
+        token=""
+        username=""
+        password=""
+        loading={false}
+        loadFailed={false}
+        onChangeUsername={noop}
+        onChangePassword={noop}
+        onCancel={noop}
+        onClear={noop}
+        onSave={noop}
+      />,
+    )
+
+    expect(html).toContain('Usage auth')
+    expect(html).toContain('Username')
+    expect(html).toContain('Password')
+  })
+
   it('does not render loading copy while auth is loading', () => {
     const html = renderToStaticMarkup(
       <UsageAuthModal

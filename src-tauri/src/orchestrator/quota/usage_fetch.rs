@@ -405,6 +405,36 @@ fn build_login_summary_api_url(base: &str, endpoint: &str) -> Option<String> {
     Some(url.to_string())
 }
 
+fn build_new_api_console_url(base: &str, endpoint: &str) -> Option<String> {
+    let trimmed = base.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let url = reqwest::Url::parse(&format!(
+        "{trimmed}/api/{}",
+        endpoint.trim_start_matches('/').trim_start_matches("api/")
+    ))
+    .ok()?;
+    Some(url.to_string())
+}
+
+fn extract_set_cookie_header(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    let cookies = headers
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .filter_map(|raw| raw.split(';').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if cookies.is_empty() {
+        None
+    } else {
+        Some(cookies.join("; "))
+    }
+}
+
 async fn fetch_login_summary_token(
     client: &reqwest::Client,
     base: &str,
@@ -440,6 +470,206 @@ async fn fetch_login_summary_token(
         .map(|token| token.trim().to_string())
         .filter(|token| !token.is_empty())
         .ok_or_else(|| format!("unexpected response from {base}"))
+}
+
+struct NewApiLoginSession {
+    user_id: String,
+    token: Option<String>,
+    cookie_header: Option<String>,
+}
+
+async fn fetch_new_api_login_session(
+    client: &reqwest::Client,
+    base: &str,
+    login: &UsageLoginConfig,
+) -> Result<NewApiLoginSession, String> {
+    let url = build_new_api_console_url(base, "user/login")
+        .ok_or_else(|| format!("invalid usage base: {base}"))?;
+    wait_for_usage_base_refresh_slot(base).await?;
+    let resp = client
+        .post(url)
+        .json(&serde_json::json!({
+            "username": login.username.trim(),
+            "password": login.password,
+        }))
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|err| format_reqwest_error_for_logs(&err))?;
+    let status = resp.status().as_u16();
+    let headers = resp.headers().clone();
+    let backoff_ms =
+        parse_rate_limit_backoff_ms(&headers, unix_ms(), USAGE_BASE_429_BACKOFF_MS);
+    let payload = resp.json::<Value>().await.unwrap_or(Value::Null);
+    if !(200..300).contains(&status) {
+        if status == 429 {
+            note_usage_base_rate_limited(base, unix_ms(), backoff_ms);
+        }
+        return Err(format!("http {status} from {base}"));
+    }
+    if payload.pointer("/data/require_2fa").and_then(Value::as_bool) == Some(true) {
+        return Err("new-api login requires 2FA".to_string());
+    }
+    if payload.get("success").and_then(Value::as_bool) == Some(false) {
+        let message = payload
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("new-api login failed");
+        return Err(message.to_string());
+    }
+    let user_id = payload
+        .pointer("/data/id")
+        .or_else(|| payload.get("id"))
+        .and_then(|value| {
+            value
+                .as_u64()
+                .map(|id| id.to_string())
+                .or_else(|| value.as_i64().filter(|id| *id > 0).map(|id| id.to_string()))
+                .or_else(|| value.as_str().map(str::trim).map(ToString::to_string))
+        })
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("unexpected login response from {base}"))?;
+    let token = payload
+        .pointer("/data/token")
+        .or_else(|| payload.get("token"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let cookie_header = extract_set_cookie_header(&headers);
+    if token.is_none() && cookie_header.is_none() {
+        return Err(format!("login response from {base} did not include auth token or cookie"));
+    }
+    Ok(NewApiLoginSession {
+        user_id,
+        token,
+        cookie_header,
+    })
+}
+
+async fn fetch_new_api_quota_per_unit(client: &reqwest::Client, base: &str) -> f64 {
+    let Some(url) = build_new_api_console_url(base, "status") else {
+        return 500_000.0;
+    };
+    let Ok(resp) = client.get(url).timeout(Duration::from_secs(10)).send().await else {
+        return 500_000.0;
+    };
+    let payload = resp.json::<Value>().await.unwrap_or(Value::Null);
+    payload
+        .pointer("/data/quota_per_unit")
+        .or_else(|| payload.get("quota_per_unit"))
+        .and_then(|value| {
+            value
+                .as_f64()
+                .or_else(|| value.as_i64().map(|n| n as f64))
+                .or_else(|| value.as_u64().map(|n| n as f64))
+                .or_else(|| value.as_str().and_then(|text| text.trim().parse::<f64>().ok()))
+        })
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(500_000.0)
+}
+
+async fn fetch_new_api_subscription_payload(
+    client: &reqwest::Client,
+    base: &str,
+    session: &NewApiLoginSession,
+) -> Result<Value, String> {
+    let url = build_new_api_console_url(base, "subscription/self")
+        .ok_or_else(|| format!("invalid usage base: {base}"))?;
+    wait_for_usage_base_refresh_slot(base).await?;
+    let mut req = client
+        .get(url)
+        .header("New-Api-User", session.user_id.as_str())
+        .timeout(Duration::from_secs(15));
+    if let Some(token) = session.token.as_deref() {
+        req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    if let Some(cookie_header) = session.cookie_header.as_deref() {
+        req = req.header(reqwest::header::COOKIE, cookie_header);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|err| format_reqwest_error_for_logs(&err))?;
+    let status = resp.status().as_u16();
+    let backoff_ms =
+        parse_rate_limit_backoff_ms(resp.headers(), unix_ms(), USAGE_BASE_429_BACKOFF_MS);
+    let payload = resp.json::<Value>().await.unwrap_or(Value::Null);
+    if !(200..300).contains(&status) {
+        if status == 429 {
+            note_usage_base_rate_limited(base, unix_ms(), backoff_ms);
+        }
+        return Err(format!("http {status} from {base}"));
+    }
+    if payload.get("success").and_then(Value::as_bool) == Some(false) {
+        let message = payload
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("new-api subscription fetch failed");
+        return Err(message.to_string());
+    }
+    Ok(payload)
+}
+
+fn new_api_number_at(value: &Value, pointer: &str) -> Option<f64> {
+    let value = value.pointer(pointer)?;
+    value
+        .as_f64()
+        .or_else(|| value.as_i64().map(|n| n as f64))
+        .or_else(|| value.as_u64().map(|n| n as f64))
+        .or_else(|| value.as_str().and_then(|text| text.trim().parse::<f64>().ok()))
+}
+
+fn normalize_new_api_subscription_payload(payload: &Value, quota_per_unit: f64) -> Option<Value> {
+    let subscriptions = payload.pointer("/data/subscriptions")?.as_array()?;
+    let now_sec = unix_ms() / 1000;
+    let selected = subscriptions
+        .iter()
+        .find(|entry| {
+            let status = entry
+                .pointer("/subscription/status")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let end_time = entry
+                .pointer("/subscription/end_time")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            status.eq_ignore_ascii_case("active") && (end_time == 0 || end_time > now_sec)
+        })
+        .or_else(|| subscriptions.first())?;
+    let plan = selected.pointer("/plan").unwrap_or(&Value::Null);
+    let subscription = selected.pointer("/subscription").unwrap_or(&Value::Null);
+    let total_quota = new_api_number_at(subscription, "/amount_total").unwrap_or(0.0);
+    let used_quota = new_api_number_at(subscription, "/amount_used").unwrap_or(0.0);
+    let total = total_quota / quota_per_unit;
+    let used = used_quota / quota_per_unit;
+    let remaining = (total - used).max(0.0);
+    let reset_period = plan
+        .pointer("/quota_reset_period")
+        .and_then(Value::as_str)
+        .unwrap_or("never")
+        .to_ascii_lowercase();
+    let mut out = serde_json::json!({
+        "plan_name": plan.pointer("/title").and_then(Value::as_str).unwrap_or(""),
+        "quota_reset_period": reset_period,
+        "remaining": remaining,
+        "expires_at": subscription.pointer("/end_time").cloned().unwrap_or(Value::Null),
+    });
+    match reset_period.as_str() {
+        "daily" => {
+            out["daily_limit"] = serde_json::json!(total);
+            out["daily_used"] = serde_json::json!(used);
+        }
+        "weekly" => {
+            out["weekly_limit"] = serde_json::json!(total);
+            out["weekly_used"] = serde_json::json!(used);
+        }
+        _ => {
+            out["monthly_limit"] = serde_json::json!(total);
+            out["monthly_used"] = serde_json::json!(used);
+        }
+    }
+    Some(out)
 }
 
 async fn fetch_login_summary_payload(
@@ -752,6 +982,100 @@ async fn fetch_login_summary_any(
                 last_err = err;
             }
         }
+    }
+
+    if let Some(err) = non_404_err {
+        out.last_error = err;
+    } else if saw_404 || last_err.is_empty() {
+        out.last_error = "usage endpoint not found (set Usage base URL)".to_string();
+    } else {
+        out.last_error = last_err;
+    }
+    out
+}
+
+async fn fetch_new_api_subscription_login_any(
+    st: &GatewayState,
+    provider_name: &str,
+    bases: &[String],
+    usage_login: Option<&UsageLoginConfig>,
+    summary_mapping: Option<&'static CanonicalUsageMapping>,
+) -> QuotaSnapshot {
+    let mut out = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+    if bases.is_empty() {
+        out.last_error = "missing quota base".to_string();
+        return out;
+    }
+    let Some(login) = usage_login else {
+        out.last_error = "missing usage auth".to_string();
+        return out;
+    };
+    let Some(mapping) = summary_mapping else {
+        out.last_error = "missing summary mapping".to_string();
+        return out;
+    };
+
+    let client = match build_usage_http_client(st, provider_name) {
+        Ok(client) => client,
+        Err(err) => {
+            out.last_error = err;
+            return out;
+        }
+    };
+
+    let mut last_err = String::new();
+    let mut saw_404 = false;
+    let mut non_404_err: Option<String> = None;
+    for base in bases {
+        let base = base.trim().trim_end_matches('/');
+        if base.is_empty() {
+            continue;
+        }
+        let session = match fetch_new_api_login_session(&client, base, login).await {
+            Ok(session) => session,
+            Err(err) => {
+                last_err = err.clone();
+                if !err.contains("http 404") {
+                    non_404_err.get_or_insert(err);
+                } else {
+                    saw_404 = true;
+                }
+                continue;
+            }
+        };
+        let quota_per_unit = fetch_new_api_quota_per_unit(&client, base).await;
+        let payload = match fetch_new_api_subscription_payload(&client, base, &session).await {
+            Ok(payload) => payload,
+            Err(err) => {
+                last_err = err.clone();
+                if !err.contains("http 404") {
+                    non_404_err.get_or_insert(err);
+                } else {
+                    saw_404 = true;
+                }
+                continue;
+            }
+        };
+        let Some(normalized) = normalize_new_api_subscription_payload(&payload, quota_per_unit)
+        else {
+            last_err = format!("unexpected response from {base}");
+            non_404_err.get_or_insert_with(|| last_err.clone());
+            continue;
+        };
+        let Some(usage) = map_canonical_usage(
+            &normalized,
+            mapping,
+            CanonicalUsageContext {
+                effective_usage_base: Some(base.to_string()),
+                effective_usage_source: Some("new_api_subscription_login".to_string()),
+                updated_at_unix_ms: unix_ms(),
+            },
+        ) else {
+            last_err = format!("unexpected response from {base}");
+            non_404_err.get_or_insert_with(|| last_err.clone());
+            continue;
+        };
+        return snapshot_from_canonical_usage(usage);
     }
 
     if let Some(err) = non_404_err {
