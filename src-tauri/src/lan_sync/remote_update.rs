@@ -3230,6 +3230,8 @@ mod tests {
         assert!(build_script.contains("git -C $RepoRoot rev-parse HEAD"));
         assert!(build_script.contains("function Get-RecordedRuntimeSha"));
         assert!(build_script.contains("Get-RecordedRuntimeSha 'current'"));
+        assert!(build_script.contains("[System.IO.File]::AppendAllText"));
+        assert!(build_script.contains("Logging must never break install/rollback"));
         assert!(build_script.contains("$Sha.Trim() -ine 'unknown'"));
         assert!(build_script.contains("$Fallback.Trim() -ine 'unknown'"));
         assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_HEALTH_TIMEOUT_SECONDS"));

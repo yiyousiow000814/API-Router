@@ -309,12 +309,21 @@ function Write-RemoteUpdateLog {
 
   $logPath = Get-RemoteUpdateLogPath
   if (-not $logPath) { return }
-  $parent = Split-Path -Parent $logPath
-  if ($parent) {
-    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+  try {
+    $parent = Split-Path -Parent $logPath
+    if ($parent) {
+      New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    }
+    $timestamp = [DateTimeOffset]::UtcNow.ToString('dd-MM-yyyy HH:mm:ss.fff UTC')
+    [System.IO.File]::AppendAllText(
+      $logPath,
+      "[$timestamp] [build-root-exe] $Message`r`n",
+      [System.Text.UTF8Encoding]::new($false)
+    )
+  } catch {
+    # Logging must never break install/rollback. The caller usually cannot surface
+    # a secondary log-write failure once the runtime is being replaced.
   }
-  $timestamp = [DateTimeOffset]::UtcNow.ToString('dd-MM-yyyy HH:mm:ss.fff UTC')
-  Add-Content -Path $logPath -Value "[$timestamp] [build-root-exe] $Message" -Encoding UTF8
 }
 
 function Get-RepoGitHeadSha {
