@@ -1046,6 +1046,23 @@ function Start-UpdaterDaemonForRemoteRollback {
   }
 }
 
+function Start-UpdaterDaemonForRemoteRollbackOrDegrade {
+  try {
+    Start-UpdaterDaemonForRemoteRollback
+    return $true
+  } catch {
+    $detail = "Remote rollback daemon unavailable; continuing with local rollback only: $($_.Exception.Message)"
+    $env:API_ROUTER_REMOTE_UPDATE_ROLLBACK_DAEMON_DEGRADED = '1'
+    Write-RemoteUpdateLog $detail
+    Update-RemoteUpdateTimelineStep `
+      -Phase 'start_updater_daemon_degraded' `
+      -Label 'Updater daemon unavailable' `
+      -Detail $detail `
+      -State 'running'
+    return $false
+  }
+}
+
 function Backup-CurrentRuntimeForRollback {
   $runningRuntimeSha = Get-RunningRuntimeGitShaFromStatus
   $recordedCurrentSha = Get-RecordedRuntimeSha 'current'
@@ -2002,7 +2019,7 @@ try {
     Copy-WithRetry $SrcUpdaterExe $DstUpdaterExe
     Write-Host "Wrote: $DstUpdaterExe"
     Write-RemoteUpdateLog "Installed independent updater executable: $DstUpdaterExe"
-    Start-UpdaterDaemonForRemoteRollback
+    $null = Start-UpdaterDaemonForRemoteRollbackOrDegrade
     # The canonical runtime is API Router.exe. The TEST copy is auxiliary and must not
     # turn a successful remote update into a failed one if that secondary artifact is locked.
     $null = Try-CopyOptionalArtifact $SrcExe $DstTestExe 'Optional TEST EXE'

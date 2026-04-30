@@ -4072,6 +4072,9 @@ mod tests {
         assert!(!build_script.contains("if (-not $hadFailure -and -not $NoCopy)"));
         assert!(build_script.contains("function Invoke-UpdaterCommand"));
         assert!(build_script.contains("function Start-UpdaterDaemonForRemoteRollback"));
+        assert!(build_script.contains("function Start-UpdaterDaemonForRemoteRollbackOrDegrade"));
+        assert!(build_script
+            .contains("Remote rollback daemon unavailable; continuing with local rollback only"));
         assert!(build_script.contains("function Wait-UpdaterDaemonReady"));
         assert!(build_script.contains("function Stop-RunningUpdaterDaemon"));
         assert!(build_script.contains("function Install-UpdaterDaemonRuntime"));
