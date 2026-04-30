@@ -3224,7 +3224,7 @@ mod tests {
         assert!(build_script.contains("function Get-ConfiguredListenPort"));
         assert!(build_script.contains("function Get-ConfiguredListenHost"));
         assert!(build_script.contains("function Get-ApiRouterRuntimeHealthTimeoutSeconds"));
-        assert!(build_script.contains("return 120"));
+        assert!(build_script.contains("return 600"));
         assert!(build_script.contains("function Get-RemoteUpdateLanSecret"));
         assert!(build_script.contains("function Get-RepoGitHeadSha"));
         assert!(build_script.contains("git -C $RepoRoot rev-parse HEAD"));

@@ -645,7 +645,7 @@ impl Store {
         };
         trace("store_events_schema_start", None);
         store
-            .ensure_event_sqlite_schema()
+            .ensure_event_sqlite_schema_with_trace(&mut trace)
             .map_err(|e| sled::Error::Unsupported(format!("init events sqlite failed: {e}")))?;
         trace("store_events_schema_ok", None);
         if let Some(legacy_path) = legacy_events_db_path {
@@ -698,9 +698,15 @@ impl Store {
         std::fs::copy(src, dst).is_ok()
     }
 
-    fn ensure_event_sqlite_schema(&self) -> anyhow::Result<()> {
+    fn ensure_event_sqlite_schema_with_trace<F>(&self, mut trace: F) -> anyhow::Result<()>
+    where
+        F: FnMut(&str, Option<String>),
+    {
         let conn = self.events_db.lock();
+        trace("store_events_schema_pragmas_start", None);
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        trace("store_events_schema_pragmas_ok", None);
+        trace("store_events_schema_ddl_start", None);
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS event_meta(
@@ -959,6 +965,8 @@ impl Store {
               ON session_route_assignments(assigned_at_unix_ms DESC);
             ",
         )?;
+        trace("store_events_schema_ddl_ok", None);
+        trace("store_events_schema_version_check_start", None);
         let current_schema: Option<String> = conn
             .query_row(
                 "SELECT value FROM event_meta WHERE key='schema_version'",
@@ -966,7 +974,18 @@ impl Store {
                 |row| row.get(0),
             )
             .optional()?;
+        trace(
+            "store_events_schema_version_check_ok",
+            Some(format!(
+                "current={}",
+                current_schema.as_deref().unwrap_or("<missing>")
+            )),
+        );
         if current_schema.as_deref() != Some(Self::EVENTS_SQLITE_SCHEMA_VERSION) {
+            trace(
+                "store_events_schema_version_reset_start",
+                Some(format!("target={}", Self::EVENTS_SQLITE_SCHEMA_VERSION)),
+            );
             conn.execute("DELETE FROM events", [])?;
             conn.execute("DELETE FROM event_day_counts", [])?;
             conn.execute(
@@ -1004,7 +1023,9 @@ impl Store {
                  ON CONFLICT(key) DO UPDATE SET value='0'",
                 [],
             )?;
+            trace("store_events_schema_version_reset_ok", None);
         }
+        trace("store_events_schema_meta_defaults_start", None);
         conn.execute(
             "INSERT INTO event_meta(key, value) VALUES(?1, '0')
              ON CONFLICT(key) DO NOTHING",
@@ -1030,14 +1051,29 @@ impl Store {
              ON CONFLICT(key) DO NOTHING",
             [],
         )?;
+        trace("store_events_schema_meta_defaults_ok", None);
+        trace("store_usage_request_columns_start", None);
         Self::ensure_usage_request_columns(&conn)?;
+        trace("store_usage_request_columns_ok", None);
         drop(conn);
+        trace("store_legacy_events_migration_start", None);
         self.migrate_legacy_events_from_sled_if_needed()?;
+        trace("store_legacy_events_migration_ok", None);
+        trace("store_usage_requests_migration_start", None);
         self.migrate_usage_requests_from_sled_if_needed()?;
+        trace("store_usage_requests_migration_ok", None);
+        trace("store_spend_history_migration_start", None);
         self.migrate_spend_history_from_sled_if_needed()?;
+        trace("store_spend_history_migration_ok", None);
+        trace("store_usage_request_daily_backfill_start", None);
         self.backfill_usage_request_daily_index_if_needed()?;
+        trace("store_usage_request_daily_backfill_ok", None);
+        trace("store_runtime_listener_compact_start", None);
         self.compact_runtime_listener_skip_events()?;
+        trace("store_runtime_listener_compact_ok", None);
+        trace("store_event_day_counts_rebuild_start", None);
         self.rebuild_event_day_counts_index_if_needed()?;
+        trace("store_event_day_counts_rebuild_ok", None);
         Ok(())
     }
 

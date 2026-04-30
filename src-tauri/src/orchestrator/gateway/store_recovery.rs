@@ -146,6 +146,9 @@ mod store_recovery_tests {
         assert!(stages.contains(&"store_base_dir_create_start".to_string()));
         assert!(stages.contains(&"store_sled_open_start".to_string()));
         assert!(stages.contains(&"store_events_sqlite_open_start".to_string()));
+        assert!(stages.contains(&"store_events_schema_ddl_start".to_string()));
+        assert!(stages.contains(&"store_usage_request_columns_start".to_string()));
+        assert!(stages.contains(&"store_event_day_counts_rebuild_ok".to_string()));
         assert!(stages.contains(&"store_open_ok".to_string()));
     }
 }

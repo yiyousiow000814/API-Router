@@ -260,7 +260,7 @@ function Get-ApiRouterRuntimeHealthTimeoutSeconds {
     $remoteTargetRef = [string]$env:API_ROUTER_REMOTE_UPDATE_TARGET_REF
     $remoteToGitSha = [string]$env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA
     if (-not [string]::IsNullOrWhiteSpace($remoteTargetRef) -or -not [string]::IsNullOrWhiteSpace($remoteToGitSha)) {
-      return 120
+      return 600
     }
     return 30
   }
