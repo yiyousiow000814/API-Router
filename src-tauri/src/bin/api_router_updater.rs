@@ -374,6 +374,16 @@ async fn updater_status_http(
     let current = read_pointer(&state.repo_root, "current");
     let previous = read_pointer(&state.repo_root, "previous");
     let active_operation = active_operation_snapshot(&state);
+    let remote_update_status_file_exists = state
+        .status_path
+        .as_deref()
+        .is_some_and(|path| path.is_file());
+    let remote_update_status = state
+        .status_path
+        .as_deref()
+        .filter(|path| path.is_file())
+        .map(read_status_payload)
+        .filter(Value::is_object);
     Json(serde_json::json!({
         "ok": true,
         "current": current.ok(),
@@ -381,6 +391,9 @@ async fn updater_status_http(
         "updaterPath": state.repo_root.join(UPDATER_EXE_NAME),
         "busy": active_operation.is_some(),
         "activeOperation": active_operation,
+        "remoteUpdateStatusPath": state.status_path.as_ref().map(|path| path.display().to_string()),
+        "remoteUpdateStatusFileExists": remote_update_status_file_exists,
+        "remoteUpdateStatus": remote_update_status,
     }))
     .into_response()
 }
@@ -890,6 +903,64 @@ mod tests {
         assert_eq!(payload["timeline"][1]["phase"], "rolled_back");
         assert_eq!(payload["timeline"][1]["source"], "updater");
         assert!(payload["finished_at_unix_ms"].as_u64().unwrap() >= 1775312829000);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn updater_status_http_includes_remote_update_status_file() {
+        let dir = unique_test_dir("status-remote-update-status-file");
+        let status_path = dir
+            .join("diagnostics")
+            .join("lan-remote-update-status.json");
+        write_json(
+            &status_path,
+            &serde_json::json!({
+                "state": "running",
+                "target_ref": "target123",
+                "detail": "Checking runtime health: waiting for listener",
+                "updated_at_unix_ms": 1775312820000_u64,
+                "timeline": [
+                    {
+                        "unix_ms": 1775312820000_u64,
+                        "phase": "health_checking",
+                        "label": "Checking runtime health",
+                        "detail": "waiting for listener",
+                        "source": "build_root_exe",
+                        "state": "running"
+                    }
+                ]
+            }),
+        )
+        .expect("write remote update status");
+        let mut state = test_serve_state(dir.clone());
+        state.status_path = Some(status_path.clone());
+        let app = updater_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/status")
+                    .header(LAN_SYNC_AUTH_NODE_ID_HEADER, "node-a")
+                    .header(LAN_SYNC_AUTH_SECRET_HEADER, "test-secret")
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("status response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        assert_eq!(payload["remoteUpdateStatus"]["state"], "running");
+        assert_eq!(
+            payload["remoteUpdateStatus"]["detail"],
+            "Checking runtime health: waiting for listener"
+        );
+        assert_eq!(
+            payload["remoteUpdateStatusPath"],
+            status_path.display().to_string()
+        );
 
         let _ = fs::remove_dir_all(dir);
     }

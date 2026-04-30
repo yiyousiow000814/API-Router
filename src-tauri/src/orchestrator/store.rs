@@ -724,6 +724,8 @@ impl Store {
             );
             CREATE INDEX IF NOT EXISTS idx_events_unix_ms ON events(unix_ms DESC);
             CREATE INDEX IF NOT EXISTS idx_events_level_unix_ms ON events(level, unix_ms DESC);
+            CREATE INDEX IF NOT EXISTS idx_events_code_provider_unix_ms_id
+              ON events(code, provider, unix_ms ASC, id ASC);
             CREATE TABLE IF NOT EXISTS event_day_counts(
               day_key TEXT PRIMARY KEY,
               day_start_unix_ms INTEGER NOT NULL,
@@ -1158,23 +1160,20 @@ impl Store {
         }
 
         let deleted = conn.execute(
-            "DELETE FROM events
-             WHERE code = 'gateway.runtime_listener_skipped'
-               AND id NOT IN (
-                 SELECT first.id
-                 FROM events first
-                 WHERE first.code = 'gateway.runtime_listener_skipped'
-                   AND first.id = (
-                     SELECT candidate.id
-                     FROM events candidate
-                     WHERE candidate.provider = first.provider
-                       AND candidate.code = first.code
-                       AND strftime('%Y-%m-%d', candidate.unix_ms / 1000, 'unixepoch', 'localtime')
-                         = strftime('%Y-%m-%d', first.unix_ms / 1000, 'unixepoch', 'localtime')
-                     ORDER BY candidate.unix_ms ASC, candidate.id ASC
-                     LIMIT 1
-                   )
-               )",
+            "WITH ranked AS (
+               SELECT
+                 id,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY provider, strftime('%Y-%m-%d', unix_ms / 1000, 'unixepoch', 'localtime')
+                   ORDER BY unix_ms ASC, id ASC
+                 ) AS row_num
+               FROM events
+               WHERE code = 'gateway.runtime_listener_skipped'
+             )
+             DELETE FROM events
+             WHERE id IN (
+               SELECT id FROM ranked WHERE row_num > 1
+             )",
             [],
         )?;
         if deleted > 0 {

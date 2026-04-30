@@ -443,6 +443,26 @@ function Get-RuntimeStartupDiagnosisSummary {
   return 'startup diagnostics available; inspect app-startup.json tail for the last completed stage' + $stageSummary
 }
 
+function Update-RuntimeHealthWaitStatus {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$LastDetail,
+    [Parameter(Mandatory = $true)]
+    [int]$TimeoutSeconds,
+    [Parameter(Mandatory = $true)]
+    [DateTime]$StartedAtUtc
+  )
+
+  $elapsedSeconds = [Math]::Max(0, [int](([DateTime]::UtcNow - $StartedAtUtc).TotalSeconds))
+  $startupDiagnosis = Get-RuntimeStartupDiagnosisSummary
+  $detail = "Waiting for runtime health (${elapsedSeconds}s/${TimeoutSeconds}s): $LastDetail; $(Get-RuntimePortOwnerDetail); $startupDiagnosis"
+  Update-RemoteUpdateTimelineStep `
+    -Phase 'health_checking' `
+    -Label 'Checking runtime health' `
+    -Detail $detail `
+    -State 'running'
+}
+
 function Read-RepoTomlSectionValue {
   param(
     [Parameter(Mandatory = $true)]
@@ -1586,9 +1606,12 @@ function Wait-ApiRouterRuntimeHealthy {
   $expectedGitSha = Get-ExpectedRuntimeGitSha
   $detail = if ($healthUrl) { "Waiting for API Router HTTP health at $healthUrl" } else { 'Waiting for repo root API Router.exe process' }
   Enter-BuildStep -Phase 'health_checking' -Label 'Checking runtime health' -Detail $detail
+  $startedAtUtc = [DateTime]::UtcNow
   $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
   $lastDetail = ''
   $lastLoggedDetail = ''
+  $lastStatusDetail = ''
+  $lastStatusUpdateAt = [DateTime]::MinValue
   while ([DateTime]::UtcNow -lt $deadline) {
     try {
       $processes = @(Get-ApiRouterRuntimeProcesses)
@@ -1639,6 +1662,18 @@ function Wait-ApiRouterRuntimeHealthy {
         Write-RemoteUpdateLog "Runtime health probe failed: $lastDetail; $(Get-RuntimePortOwnerDetail)"
         $lastLoggedDetail = $lastDetail
       }
+    }
+    $nowUtc = [DateTime]::UtcNow
+    if (
+      -not [string]::IsNullOrWhiteSpace($lastDetail) -and
+      (
+        $lastDetail -ne $lastStatusDetail -or
+        (($nowUtc - $lastStatusUpdateAt).TotalSeconds -ge 10)
+      )
+    ) {
+      Update-RuntimeHealthWaitStatus -LastDetail $lastDetail -TimeoutSeconds $TimeoutSeconds -StartedAtUtc $startedAtUtc
+      $lastStatusDetail = $lastDetail
+      $lastStatusUpdateAt = $nowUtc
     }
     Start-Sleep -Milliseconds 500
   }

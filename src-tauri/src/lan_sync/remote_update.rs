@@ -1298,6 +1298,15 @@ fn updater_status_git_sha<'a>(value: &'a serde_json::Value, key: &str) -> Option
         .filter(|sha| !sha.is_empty())
 }
 
+fn updater_remote_update_status_snapshot(
+    value: &serde_json::Value,
+) -> Option<LanRemoteUpdateStatusSnapshot> {
+    value
+        .get("remoteUpdateStatus")
+        .cloned()
+        .and_then(|status| serde_json::from_value(status).ok())
+}
+
 fn fallback_remote_update_debug_packet(
     peer: &LanPeerSnapshot,
     transport: LanRemoteUpdateTransportSnapshot,
@@ -1319,6 +1328,10 @@ fn fallback_remote_update_debug_packet(
     } else if let Some(state) = transport.updater_state.as_deref() {
         blocked_parts.push(format!("updater {state}"));
     }
+    let remote_update_status = updater_status
+        .as_ref()
+        .and_then(updater_remote_update_status_snapshot)
+        .or_else(|| peer.remote_update_status.clone());
     LanRemoteUpdateDebugResponsePacket {
         ok: true,
         version: 1,
@@ -1329,7 +1342,7 @@ fn fallback_remote_update_debug_packet(
             blocked_reason: Some(blocked_parts.join("; ")),
             checked_at_unix_ms: unix_ms(),
         },
-        remote_update_status: peer.remote_update_status.clone(),
+        remote_update_status,
         status_path: None,
         status_file_exists: false,
         log_path: None,
@@ -3472,6 +3485,114 @@ mod tests {
     }
 
     #[test]
+    fn fallback_remote_update_debug_packet_uses_updater_remote_status_file() {
+        let peer = super::LanPeerSnapshot {
+            node_id: "node-a".to_string(),
+            node_name: "Node A".to_string(),
+            listen_addr: "192.168.1.10:4000".to_string(),
+            remote_update_updater_port: Some(4001),
+            last_heartbeat_unix_ms: 1,
+            capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::local_version_inventory(),
+            build_identity: super::current_build_identity(),
+            remote_update_readiness: None,
+            remote_update_status: Some(LanRemoteUpdateStatusSnapshot {
+                state: "running".to_string(),
+                target_ref: "target123".to_string(),
+                from_git_sha: Some("old".to_string()),
+                to_git_sha: Some("target123".to_string()),
+                current_git_sha: Some("old".to_string()),
+                previous_git_sha: None,
+                progress_percent: Some(78),
+                rollback_available: true,
+                request_id: Some("ru_cached".to_string()),
+                reason_code: None,
+                requester_node_id: Some("node-self".to_string()),
+                requester_node_name: Some("self".to_string()),
+                worker_script: None,
+                worker_pid: None,
+                worker_exit_code: None,
+                detail: Some("cached stale heartbeat status".to_string()),
+                accepted_at_unix_ms: 1,
+                started_at_unix_ms: Some(2),
+                finished_at_unix_ms: None,
+                updated_at_unix_ms: 3,
+                timeline: Vec::new(),
+            }),
+            provider_fingerprints: Vec::new(),
+            provider_definitions_revision: String::new(),
+            sync_contracts: super::local_sync_contracts(),
+            followed_source_node_id: None,
+            trusted: true,
+            pair_state: None,
+            pair_request_id: None,
+            sync_blocked_domains: Vec::new(),
+            sync_diagnostics: Vec::new(),
+            build_matches_local: false,
+            heartbeat_age_ms: 30_000,
+            http_probe_state: Some("stale_heartbeat".to_string()),
+            http_probe_detail: Some("last heartbeat was 30000ms ago".to_string()),
+        };
+        let updater_status = serde_json::json!({
+            "ok": true,
+            "busy": false,
+            "remoteUpdateStatus": {
+                "state": "running",
+                "target_ref": "target123",
+                "from_git_sha": "old",
+                "to_git_sha": "target123",
+                "current_git_sha": "target123",
+                "previous_git_sha": "old",
+                "progress_percent": 94,
+                "rollback_available": true,
+                "request_id": "ru_live",
+                "detail": "Checking runtime health: startup blocked while opening local store",
+                "accepted_at_unix_ms": 10,
+                "started_at_unix_ms": 20,
+                "updated_at_unix_ms": 30,
+                "timeline": [
+                    {
+                        "unix_ms": 30,
+                        "phase": "health_checking",
+                        "label": "Checking runtime health",
+                        "detail": "startup blocked while opening local store",
+                        "source": "build_root_exe",
+                        "state": "running"
+                    }
+                ]
+            }
+        });
+
+        let packet = fallback_remote_update_debug_packet(
+            &peer,
+            LanRemoteUpdateTransportSnapshot {
+                app_base_url: Some("http://192.168.1.10:4000".to_string()),
+                app_debug_state: "request_error".to_string(),
+                app_debug_detail: Some("connection refused".to_string()),
+                updater_base_url: Some("http://192.168.1.10:4001".to_string()),
+                updater_state: Some("ok".to_string()),
+                updater_detail: Some("updater responded".to_string()),
+            },
+            Some(updater_status),
+        );
+
+        let status = packet
+            .remote_update_status
+            .as_ref()
+            .expect("updater remote update status");
+        assert_eq!(status.request_id.as_deref(), Some("ru_live"));
+        assert_eq!(status.progress_percent, Some(94));
+        assert_eq!(
+            status.detail.as_deref(),
+            Some("Checking runtime health: startup blocked while opening local store")
+        );
+        assert_eq!(
+            status.timeline.first().map(|entry| entry.phase.as_str()),
+            Some("health_checking")
+        );
+    }
+
+    #[test]
     fn rollback_peer_selection_requires_trust_and_bounded_stale_cache() {
         let runtime = LanSyncRuntime::new(LanNodeIdentity {
             node_id: "node-local".to_string(),
@@ -4135,6 +4256,10 @@ mod tests {
         assert!(build_script.contains("$lowerHost -eq '::'"));
         assert!(build_script.contains("return \"[$hostValue]\""));
         assert!(build_script.contains("function Wait-ApiRouterRuntimeHealthy"));
+        assert!(build_script.contains("function Update-RuntimeHealthWaitStatus"));
+        assert!(build_script.contains("Waiting for runtime health"));
+        assert!(build_script.contains("Get-RuntimeStartupDiagnosisSummary"));
+        assert!(build_script.contains("-Phase 'health_checking'"));
         assert!(build_script.contains("function Wait-ApiRouterRuntimeProcessStarted"));
         assert!(build_script.contains("function Wait-ApiRouterRuntimeStopped"));
         assert!(build_script.contains("function Get-ListenPortOwnerProcesses"));
