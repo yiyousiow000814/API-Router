@@ -584,6 +584,34 @@ function remoteDebugScriptProbeText(remoteUpdateDebug: LanRemoteUpdateDebugRespo
   return `Worker script probe: ${facts.join(' · ')}`
 }
 
+export function remoteDebugStartupDiagnosisText(
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+): string {
+  const candidates = [
+    remoteUpdateDebug?.app_startup_tail ?? '',
+    remoteUpdateDebug?.log_tail ?? '',
+  ].filter((value) => value.trim().length > 0)
+  const text = candidates.join('\n')
+  if (!text.trim()) return ''
+  const hasStage = (stage: string) => text.includes(`"stage": "${stage}"`) || text.includes(`stage=${stage}`)
+  if (hasStage('build_state_open_store_start') && !hasStage('build_state_open_store_ok')) {
+    return 'Startup stopped while opening the local store. The runtime reached build_state_open_store_start but never reached build_state_open_store_ok.'
+  }
+  if (hasStage('build_state_secret_store_start') && !hasStage('build_state_secret_store_ok')) {
+    return 'Startup stopped while opening secrets. The runtime reached build_state_secret_store_start but never reached build_state_secret_store_ok.'
+  }
+  if (hasStage('build_state_load_config_start') && !hasStage('build_state_load_config_ok')) {
+    return 'Startup stopped while loading config. The runtime reached build_state_load_config_start but never reached build_state_load_config_ok.'
+  }
+  if (hasStage('build_state_updater_daemon_start') && !hasStage('build_state_updater_daemon_ok')) {
+    return 'Startup stopped while starting the updater daemon. The runtime reached build_state_updater_daemon_start but never reached build_state_updater_daemon_ok.'
+  }
+  if (hasStage('gateway_prepare_enter') && !hasStage('prepare_gateway_listeners')) {
+    return 'Startup stopped while preparing gateway listeners.'
+  }
+  return ''
+}
+
 export function remoteDebugReadinessReasonText(
   remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
 ): string {
@@ -1725,7 +1753,24 @@ export function ConfigModal({
                     const remoteUpdateDebugLoading = Boolean(remoteUpdateDebugLoadingByNode[source.node_id])
                     const remoteUpdateDebugError = remoteUpdateDebugErrorByNode[source.node_id] ?? ''
                     const debugReadinessReason = remoteDebugReadinessReasonText(remoteUpdateDebug)
+                    const debugStartupDiagnosis = remoteDebugStartupDiagnosisText(remoteUpdateDebug)
                     const debugLogTail = remoteUpdateDebug?.log_tail?.trim() ?? ''
+                    const debugStartupTail = [
+                      remoteUpdateDebug?.shell_log_tail?.trim()
+                        ? `remote-update-shell.log\n${remoteUpdateDebug.shell_log_tail.trim()}`
+                        : '',
+                      remoteUpdateDebug?.app_startup_tail?.trim()
+                        ? `app-startup.json\n${remoteUpdateDebug.app_startup_tail.trim()}`
+                        : '',
+                      remoteUpdateDebug?.gateway_bootstrap_tail?.trim()
+                        ? `gateway-bootstrap.json\n${remoteUpdateDebug.gateway_bootstrap_tail.trim()}`
+                        : '',
+                      remoteUpdateDebug?.gateway_startup_tail?.trim()
+                        ? `gateway-startup.json\n${remoteUpdateDebug.gateway_startup_tail.trim()}`
+                        : '',
+                    ]
+                      .filter((part) => part.trim().length > 0)
+                      .join('\n\n')
                     const { recent: recentDebugLogTail, older: olderDebugLogTail } =
                       splitRemoteDebugLogTail(debugLogTail)
                     const debugLogRelevance = remoteDebugStatusRelevance(
@@ -1756,7 +1801,7 @@ export function ConfigModal({
                         formattedDebugError,
                         showDebugReadinessReason ? debugReadinessReason : '',
                         remoteUpdateDebug,
-                        debugLogTail,
+                        [debugStartupDiagnosis, debugLogTail, debugStartupTail].filter(Boolean).join('\n'),
                       )
                     return (
                       <div key={source.node_id} className="aoCard aoConfigDiagCard">
@@ -1910,6 +1955,9 @@ export function ConfigModal({
                                     {debugScriptProbeText ? (
                                       <div className="aoConfigDiagRemoteUpdateDetail">{debugScriptProbeText}</div>
                                     ) : null}
+                                    {debugStartupDiagnosis ? (
+                                      <div className="aoConfigDiagWhyText">{debugStartupDiagnosis}</div>
+                                    ) : null}
                                     <div className="aoConfigDiagRemoteUpdateDetail">
                                       {remoteDebugStatusRecordText(remoteUpdateDebug)}
                                     </div>
@@ -1940,6 +1988,26 @@ export function ConfigModal({
                                     ) : (
                                       <div className="aoConfigDiagRemoteUpdateDetail">{debugLogSummaryText}</div>
                                     )}
+                                    {debugStartupTail ? (
+                                      <details style={{ marginTop: 8 }}>
+                                        <summary className="aoConfigDiagRemoteUpdateDetail">
+                                          Runtime startup diagnostics
+                                        </summary>
+                                        <pre
+                                          className="aoConfigDiagWhyText"
+                                          style={{
+                                            margin: '8px 0 0',
+                                            padding: '10px 12px',
+                                            whiteSpace: 'pre-wrap',
+                                            overflowWrap: 'anywhere',
+                                            background: 'rgba(10, 16, 28, 0.04)',
+                                            borderRadius: 10,
+                                          }}
+                                        >
+                                          {debugStartupTail}
+                                        </pre>
+                                      </details>
+                                    ) : null}
                                   </>
                                 ) : null}
                               </div>

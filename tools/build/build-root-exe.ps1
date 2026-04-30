@@ -137,6 +137,31 @@ function Write-RuntimeStartupDiagnostics([string]$Reason) {
   }
 }
 
+function Get-RuntimeStartupDiagnosisSummary {
+  $userDataDir = Get-RepoUserDataDir
+  $appStartupPath = Join-Path $userDataDir 'app-startup.json'
+  $appStartup = Get-TextFileTail -Path $appStartupPath -MaxChars 12000
+  if ([string]::IsNullOrWhiteSpace($appStartup)) {
+    return 'startup diagnostics missing; app-startup.json was not written'
+  }
+  if ($appStartup.Contains('"stage": "build_state_open_store_start"') -and -not $appStartup.Contains('"stage": "build_state_open_store_ok"')) {
+    return 'startup blocked while opening local store; app-startup reached build_state_open_store_start but not build_state_open_store_ok'
+  }
+  if ($appStartup.Contains('"stage": "build_state_secret_store_start"') -and -not $appStartup.Contains('"stage": "build_state_secret_store_ok"')) {
+    return 'startup blocked while opening secrets store; app-startup reached build_state_secret_store_start but not build_state_secret_store_ok'
+  }
+  if ($appStartup.Contains('"stage": "build_state_load_config_start"') -and -not $appStartup.Contains('"stage": "build_state_load_config_ok"')) {
+    return 'startup blocked while loading config; app-startup reached build_state_load_config_start but not build_state_load_config_ok'
+  }
+  if ($appStartup.Contains('"stage": "build_state_updater_daemon_start"') -and -not $appStartup.Contains('"stage": "build_state_updater_daemon_ok"')) {
+    return 'startup blocked while starting updater daemon; app-startup reached build_state_updater_daemon_start but not build_state_updater_daemon_ok'
+  }
+  if ($appStartup.Contains('"stage": "gateway_prepare_enter"') -and -not $appStartup.Contains('"stage": "prepare_gateway_listeners"')) {
+    return 'startup blocked while preparing gateway listeners'
+  }
+  return 'startup diagnostics available; inspect app-startup.json tail for the last completed stage'
+}
+
 function Read-RepoTomlSectionValue {
   param(
     [Parameter(Mandatory = $true)]
@@ -1052,7 +1077,14 @@ function Wait-ApiRouterRuntimeHealthy {
     $lastDetail = 'timed out waiting for API Router.exe'
   }
   Write-RuntimeStartupDiagnostics "runtime health timeout"
-  throw "runtime health check failed: $lastDetail; $(Get-RuntimePortOwnerDetail)"
+  $startupDiagnosis = Get-RuntimeStartupDiagnosisSummary
+  $failureDetail = "runtime health check failed: $lastDetail; $(Get-RuntimePortOwnerDetail); $startupDiagnosis"
+  Update-RemoteUpdateTimelineStep `
+    -Phase 'health_check_failed' `
+    -Label 'Runtime health check failed' `
+    -Detail $failureDetail `
+    -State 'failed'
+  throw $failureDetail
 }
 
 function Stop-RunningApiRouter {

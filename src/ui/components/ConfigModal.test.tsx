@@ -21,6 +21,7 @@ import {
   remoteUpdateRollbackConfirmationText,
   remoteUpdateRollbackActionAvailable,
   remoteDebugReadinessReasonText,
+  remoteDebugStartupDiagnosisText,
   splitRemoteDebugLogTail,
   shouldShowDiagnosticsRemoteUpdateStatus,
   shouldShowRemoteUpdateMenuDetail,
@@ -1722,6 +1723,41 @@ describe('ConfigModal', () => {
 
   it('keeps remote debug summary render-safe before payload arrives', () => {
     expect(remoteDebugReadinessReasonText(undefined)).toBe('')
+  })
+
+  it('diagnoses startup stalls from remote update app startup diagnostics', () => {
+    expect(
+      remoteDebugStartupDiagnosisText({
+        ok: true,
+        version: 1,
+        node_id: 'node-b',
+        node_name: 'Desk B',
+        remote_update_readiness: {
+          ready: true,
+        },
+        status_file_exists: true,
+        log_file_exists: true,
+        app_startup_tail: [
+          '{"stage": "build_state_start"}',
+          '{"stage": "build_state_load_config_start"}',
+          '{"stage": "build_state_load_config_ok"}',
+          '{"stage": "build_state_secret_store_start"}',
+          '{"stage": "build_state_secret_store_ok"}',
+          '{"stage": "build_state_open_store_start"}',
+        ].join('\n'),
+        local_build_identity: {
+          app_version: '0.4.0',
+          build_git_sha: 'dfa0f229abcdef1234567890',
+          build_git_short_sha: 'dfa0f229',
+          build_git_commit_unix_ms: 1775482000000,
+        },
+        local_version_sync: {
+          target_ref: 'dfa0f229abcdef1234567890',
+          git_worktree_clean: true,
+          update_to_local_build_allowed: true,
+        },
+      }),
+    ).toContain('opening the local store')
   })
 
   it('keeps idle update rows visually quiet', () => {

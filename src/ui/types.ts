@@ -357,6 +357,18 @@ export type LanRemoteUpdateDebugResponse = {
   log_file_exists: boolean
   log_tail_source?: 'file' | 'timeline' | 'none' | string
   log_tail?: string | null
+  shell_log_path?: string | null
+  shell_log_file_exists?: boolean
+  shell_log_tail?: string | null
+  app_startup_path?: string | null
+  app_startup_file_exists?: boolean
+  app_startup_tail?: string | null
+  gateway_bootstrap_path?: string | null
+  gateway_bootstrap_file_exists?: boolean
+  gateway_bootstrap_tail?: string | null
+  gateway_startup_path?: string | null
+  gateway_startup_file_exists?: boolean
+  gateway_startup_tail?: string | null
   worker_bootstrap_observed?: boolean
   worker_script_probe?: {
     path: string
