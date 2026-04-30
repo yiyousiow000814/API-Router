@@ -660,12 +660,15 @@ fn normalize_remote_update_status(
     let current_target_ref = normalized_local_build_target_ref();
     let status_target_ref = status.target_ref.trim();
     let state = status.state.trim().to_string();
-    if !matches!(state.as_str(), "accepted" | "running" | "failed") {
+    if !matches!(
+        state.as_str(),
+        "accepted" | "running" | "failed" | "superseded"
+    ) {
         return status;
     }
 
     let now_unix_ms = unix_ms();
-    if remote_update_worker_is_alive(status.worker_pid) {
+    if state != "superseded" && remote_update_worker_is_alive(status.worker_pid) {
         return status;
     }
     if state == "accepted" && status.started_at_unix_ms.is_none() {
@@ -680,17 +683,23 @@ fn normalize_remote_update_status(
     let Some(current_target_ref) = current_target_ref.as_deref() else {
         return status;
     };
+    if state == "superseded" && current_target_ref != status_target_ref {
+        return status;
+    }
 
     let worker_cleanup_detail = cleanup_remote_update_worker(status.worker_pid);
     let finished_at_unix_ms = unix_ms();
 
     if current_target_ref == status_target_ref {
         status.state = "succeeded".to_string();
-        status.reason_code = Some(if state == "failed" {
-            "peer_already_matches_target_after_failed_status".to_string()
-        } else {
-            "peer_already_matches_target".to_string()
-        });
+        status.reason_code = Some(
+            match state.as_str() {
+                "failed" => "peer_already_matches_target_after_failed_status",
+                "superseded" => "peer_already_matches_target_after_superseded_status",
+                _ => "peer_already_matches_target",
+            }
+            .to_string(),
+        );
         status.detail = Some(match worker_cleanup_detail {
             Some(detail) => format!(
                 "Current build already matches the queued target; cleared stale remote update status after restart/manual update. {detail}"
@@ -4383,6 +4392,59 @@ mod tests {
         assert_eq!(
             normalized.reason_code.as_deref(),
             Some("peer_already_matches_target_after_failed_status")
+        );
+        assert!(normalized.detail.as_deref().is_some_and(
+            |detail| detail.contains("Current build already matches the queued target")
+        ));
+        assert!(normalized
+            .timeline
+            .iter()
+            .any(|entry| entry.phase == "normalized_succeeded"
+                && entry.label == "Status normalized to succeeded"));
+    }
+
+    #[test]
+    fn normalize_remote_update_status_marks_superseded_status_succeeded_when_target_already_matches(
+    ) {
+        let Some(target_ref) = normalized_local_build_target_ref() else {
+            return;
+        };
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "superseded".to_string(),
+            target_ref: target_ref.clone(),
+            from_git_sha: Some("6b28b6e".to_string()),
+            to_git_sha: Some(target_ref.clone()),
+            current_git_sha: Some("6b28b6e".to_string()),
+            previous_git_sha: Some("6b28b6e".to_string()),
+            progress_percent: Some(45),
+            rollback_available: true,
+            request_id: Some("ru_superseded".to_string()),
+            reason_code: Some("peer_build_changed_after_start".to_string()),
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some("worker.ps1".to_string()),
+            worker_pid: None,
+            worker_exit_code: None,
+            detail: Some("Queued remote update stopped after the peer build changed.".to_string()),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: Some(20),
+            finished_at_unix_ms: Some(30),
+            updated_at_unix_ms: 30,
+            timeline: vec![LanRemoteUpdateTimelineEntry {
+                unix_ms: 30,
+                phase: "normalized_superseded".to_string(),
+                label: "Status normalized to replaced after start".to_string(),
+                detail: Some("stopped after the peer build changed".to_string()),
+                source: "normalizer".to_string(),
+                state: "superseded".to_string(),
+            }],
+        };
+
+        let normalized = normalize_remote_update_status(status);
+        assert_eq!(normalized.state, "succeeded");
+        assert_eq!(
+            normalized.reason_code.as_deref(),
+            Some("peer_already_matches_target_after_superseded_status")
         );
         assert!(normalized.detail.as_deref().is_some_and(
             |detail| detail.contains("Current build already matches the queued target")
