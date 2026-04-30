@@ -359,6 +359,17 @@ function Normalize-VersionSha([string]$Sha, [string]$Fallback) {
   return 'unknown'
 }
 
+function Select-VersionShaWithoutGitFallback {
+  param([string[]]$Candidates)
+
+  foreach ($candidate in $Candidates) {
+    if (-not [string]::IsNullOrWhiteSpace($candidate) -and $candidate.Trim() -ine 'unknown') {
+      return $candidate.Trim()
+    }
+  }
+  return 'unknown'
+}
+
 function Invoke-UpdaterCommand {
   param(
     [Parameter(Mandatory = $true)]
@@ -436,6 +447,21 @@ function Get-ExpectedRuntimeGitSha {
   }
   if ($expected -eq 'unknown') { return $null }
   return $expected
+}
+
+function Get-RunningRuntimeGitShaFromStatus {
+  $statusUrl = Get-LocalHttpStatusUrl
+  if ([string]::IsNullOrWhiteSpace($statusUrl)) { return $null }
+  try {
+    $payload = Invoke-JsonHttpGet -Uri $statusUrl -TimeoutSeconds 2
+    $sha = [string]$payload.lan_sync.local_node.build_identity.build_git_sha
+    if (-not [string]::IsNullOrWhiteSpace($sha) -and $sha.Trim() -ine 'unknown') {
+      return $sha.Trim()
+    }
+  } catch {
+    Write-RemoteUpdateLog ("Failed to read running runtime build sha from ${statusUrl}: " + $_.Exception.Message)
+  }
+  return $null
 }
 
 function Get-UpdaterDaemonRoot {
@@ -697,8 +723,9 @@ function Start-UpdaterDaemonForRemoteRollback {
 }
 
 function Backup-CurrentRuntimeForRollback {
+  $runningRuntimeSha = Get-RunningRuntimeGitShaFromStatus
   $recordedCurrentSha = Get-RecordedRuntimeSha 'current'
-  $fromSha = Normalize-VersionSha $env:API_ROUTER_REMOTE_UPDATE_FROM_GIT_SHA $recordedCurrentSha
+  $fromSha = Select-VersionShaWithoutGitFallback -Candidates @($runningRuntimeSha, $recordedCurrentSha, $env:API_ROUTER_REMOTE_UPDATE_FROM_GIT_SHA)
   if (-not (Test-Path -LiteralPath $DstExe)) {
     Write-RemoteUpdateLog "Rollback backup skipped; current runtime does not exist: $DstExe"
     return $null
@@ -1576,7 +1603,6 @@ try {
     Write-Host "Wrote: $DstUpdaterExe"
     Write-RemoteUpdateLog "Installed independent updater executable: $DstUpdaterExe"
     Start-UpdaterDaemonForRemoteRollback
-    Record-InstalledRuntimeVersion
     # The canonical runtime is API Router.exe. The TEST copy is auxiliary and must not
     # turn a successful remote update into a failed one if that secondary artifact is locked.
     $null = Try-CopyOptionalArtifact $SrcExe $DstTestExe 'Optional TEST EXE'
@@ -1610,6 +1636,7 @@ try {
     if (-not $NoCopy) {
       Wait-ApiRouterRuntimeProcessStarted -StartedProcess $startedRuntimeProcess
       Wait-ApiRouterRuntimeHealthy
+      Record-InstalledRuntimeVersion
       $env:API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT = '100'
       Update-RemoteUpdateTimelineStep -Phase 'health_check_succeeded' -Label 'Runtime health check passed' -Detail 'API Router.exe is running' -State 'running'
     }

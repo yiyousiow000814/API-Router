@@ -3229,7 +3229,10 @@ mod tests {
         assert!(build_script.contains("function Get-RepoGitHeadSha"));
         assert!(build_script.contains("git -C $RepoRoot rev-parse HEAD"));
         assert!(build_script.contains("function Get-RecordedRuntimeSha"));
+        assert!(build_script.contains("function Select-VersionShaWithoutGitFallback"));
         assert!(build_script.contains("Get-RecordedRuntimeSha 'current'"));
+        assert!(build_script.contains("function Get-RunningRuntimeGitShaFromStatus"));
+        assert!(build_script.contains("Select-VersionShaWithoutGitFallback -Candidates"));
         assert!(build_script.contains("[System.IO.File]::AppendAllText"));
         assert!(build_script.contains("Logging must never break install/rollback"));
         assert!(build_script.contains("$Sha.Trim() -ine 'unknown'"));
@@ -3318,6 +3321,10 @@ mod tests {
         assert!(build_script.contains("$UsesArtifactPathOverrides"));
         assert!(!build_script.contains("Restore-PreviousRuntime\r\n          Start-ApiRouter"));
         assert!(!build_script.contains("Restore-PreviousRuntime\n          Start-ApiRouter"));
+        let health_pos = build_script
+            .find("Wait-ApiRouterRuntimeHealthy\n      Record-InstalledRuntimeVersion")
+            .expect("build script waits for runtime health");
+        assert!(health_pos > 0);
         assert!(build_script.contains("Reset-LastExitCode"));
         assert!(build_script.contains("exit 0"));
 
