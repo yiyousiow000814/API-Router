@@ -622,7 +622,7 @@ function Invoke-UpdaterCommand {
   Invoke-BuildCommand -FilePath $updaterPath -ArgumentList $ArgumentList -FailureLabel $FailureMessage -UseProcessExitCode
 }
 
-function Get-UpdaterBindAddress {
+function Get-UpdaterListenPort {
   $port = [string]$env:API_ROUTER_REMOTE_UPDATE_UPDATER_PORT
   if ([string]::IsNullOrWhiteSpace($port)) {
     $listenPort = Get-ConfiguredListenPort
@@ -631,7 +631,18 @@ function Get-UpdaterBindAddress {
     $port = [string]$updaterPort
     $env:API_ROUTER_REMOTE_UPDATE_UPDATER_PORT = $port
   }
-  return "0.0.0.0:$($port.Trim())"
+  try {
+    return [int]$port.Trim()
+  } catch {
+    Write-RemoteUpdateLog "Ignoring invalid API_ROUTER_REMOTE_UPDATE_UPDATER_PORT value: $port"
+    return $null
+  }
+}
+
+function Get-UpdaterBindAddress {
+  $port = Get-UpdaterListenPort
+  if (-not $port) { return $null }
+  return "0.0.0.0:$port"
 }
 
 function Get-LocalHttpHealthProbeHost {
@@ -782,6 +793,25 @@ function Stop-RunningUpdaterDaemon {
   } catch {
     Write-RemoteUpdateLog ("Failed to stop updater daemon by process path: " + $_.Exception.Message)
   }
+
+  $portOwners = @(Get-UpdaterPortOwnerProcesses)
+  if ($portOwners.Count -eq 0) { return }
+
+  $daemonPortOwners = @($portOwners | Where-Object { Test-UpdaterDaemonProcess $_ })
+  if ($daemonPortOwners.Count -gt 0) {
+    Write-RemoteUpdateLog "Stopping stale updater daemon port owner process(es): $(Format-ProcessSummary $daemonPortOwners)"
+    foreach ($process in $daemonPortOwners) {
+      try {
+        Stop-Process -InputObject $process -Force -ErrorAction Stop
+        Write-RemoteUpdateLog "Stopped stale updater daemon port owner PID $($process.Id)"
+      } catch {
+        Write-RemoteUpdateLog "Failed to stop stale updater daemon port owner PID $($process.Id): $($_.Exception.Message)"
+      }
+    }
+    return
+  }
+
+  Write-RemoteUpdateLog "Updater daemon port is owned by non-updater process(es): $(Format-ProcessSummary $portOwners); command_line=$(Get-ProcessCommandLineSummary @($portOwners | ForEach-Object { [int]$_.Id }))"
 }
 
 function Install-UpdaterDaemonRuntime {
@@ -888,13 +918,22 @@ function Wait-UpdaterDaemonReady {
     [string]$StatusUrl,
     [Parameter(Mandatory = $true)]
     [hashtable]$Headers,
-    [int]$TimeoutSeconds = 10
+    [int]$TimeoutSeconds = 10,
+    [object]$StartedProcess = $null
   )
 
   $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
   $lastDetail = ''
   $lastLoggedDetail = ''
   while ([DateTime]::UtcNow -lt $deadline) {
+    if ($StartedProcess) {
+      $processDetail = Get-UpdaterDaemonProcessStateDetail -Process $StartedProcess
+      if ($processDetail.StartsWith('updater daemon process exited:', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "updater daemon process exited before readiness: $processDetail; $(Get-UpdaterPortOwnerDetail)"
+      }
+    } else {
+      $processDetail = 'updater daemon process not captured'
+    }
     try {
       $payload = Invoke-JsonHttpGet -Uri $StatusUrl -Headers $Headers -TimeoutSeconds 2
       if ($payload -and $payload.ok -eq $true) {
@@ -905,9 +944,15 @@ function Wait-UpdaterDaemonReady {
     } catch {
       $lastDetail = $_.Exception.Message
     }
+    $pendingDetail = "$lastDetail; $processDetail; $(Get-UpdaterPortOwnerDetail)"
+    if ($pendingDetail -ne $lastLoggedDetail) {
+      Write-RemoteUpdateLog "Updater daemon readiness pending: $pendingDetail"
+      $lastLoggedDetail = $pendingDetail
+    }
     Start-Sleep -Milliseconds 300
   }
-  throw "updater daemon did not become ready: $lastDetail"
+  $finalProcessDetail = Get-UpdaterDaemonProcessStateDetail -Process $StartedProcess
+  throw "updater daemon did not become ready: $lastDetail; $finalProcessDetail; $(Get-UpdaterPortOwnerDetail)"
 }
 
 function Start-UpdaterDaemonForRemoteRollback {
@@ -937,17 +982,22 @@ function Start-UpdaterDaemonForRemoteRollback {
       Wait-UpdaterDaemonReady -StatusUrl $statusUrl -Headers $headers -TimeoutSeconds 2
       return
     } catch {
-      Write-RemoteUpdateLog ("Existing updater daemon probe missed; starting daemon: " + $_.Exception.Message)
+      Write-RemoteUpdateLog ("Existing updater daemon probe missed; starting daemon: " + $_.Exception.Message + "; " + (Get-UpdaterPortOwnerDetail))
     }
 
     $arguments = @('serve', '--repo-root', $RepoRoot, '--bind', $bind)
-    Start-Process `
+    $startedDaemonProcess = Start-Process `
       -FilePath $daemonExe `
       -ArgumentList $arguments `
       -WorkingDirectory $RepoRoot `
-      -WindowStyle Hidden | Out-Null
+      -WindowStyle Hidden `
+      -PassThru
     Reset-LastExitCode
-    Wait-UpdaterDaemonReady -StatusUrl $statusUrl -Headers $headers -TimeoutSeconds 10
+    if ($startedDaemonProcess) {
+      Write-RemoteUpdateLog "Started updater daemon process: pid=$($startedDaemonProcess.Id); path=$daemonExe; bind=$bind; status=$statusUrl"
+      Write-RemoteUpdateLog "Started updater daemon command line: $(Get-ProcessCommandLineSummary @([int]$startedDaemonProcess.Id))"
+    }
+    Wait-UpdaterDaemonReady -StatusUrl $statusUrl -Headers $headers -TimeoutSeconds 20 -StartedProcess $startedDaemonProcess
   } finally {
     $env:API_ROUTER_REMOTE_UPDATE_LAN_SECRET = $null
   }
@@ -1197,6 +1247,64 @@ function Get-ProcessCommandLineSummary([int[]]$ProcessIds) {
     }
   }
   return ($items -join '; ')
+}
+
+function Test-UpdaterDaemonProcess {
+  param([object]$Process)
+
+  if ($null -eq $Process -or -not $Process.Id) { return $false }
+  $processPath = Get-ProcessExecutablePath $Process
+  if (Test-UpdaterDaemonProcessPath $processPath) { return $true }
+
+  $commandLine = Get-ProcessCommandLineSummary @([int]$Process.Id)
+  if ([string]::IsNullOrWhiteSpace($commandLine)) { return $false }
+  return $commandLine.ToLowerInvariant().Contains('api router updater.exe') -and
+    $commandLine.ToLowerInvariant().Contains(' serve ') -and
+    (Test-CommandLineContainsPath -CommandLine $commandLine -Path $RepoRoot)
+}
+
+function Get-UpdaterPortOwnerProcesses {
+  $port = Get-UpdaterListenPort
+  if (-not $port) { return @() }
+  try {
+    $connections = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+    $pids = @($connections | ForEach-Object { $_.OwningProcess } | Where-Object { $_ } | Sort-Object -Unique)
+    return @($pids | ForEach-Object {
+        Get-Process -Id $_ -ErrorAction SilentlyContinue
+      } | Where-Object { $_ })
+  } catch {
+    Write-RemoteUpdateLog ("Failed to inspect updater port owner: " + $_.Exception.Message)
+    return @()
+  }
+}
+
+function Get-UpdaterPortOwnerDetail {
+  $port = Get-UpdaterListenPort
+  if (-not $port) { return 'updater port listeners: <unknown port>' }
+  $owners = @(Get-UpdaterPortOwnerProcesses)
+  return "updater port $port listeners: $(Format-ProcessSummary $owners)"
+}
+
+function Get-UpdaterDaemonProcessStateDetail {
+  param([object]$Process)
+
+  if ($null -eq $Process -or -not $Process.Id) {
+    return 'updater daemon process not captured'
+  }
+  try {
+    $Process.Refresh()
+    if ($Process.HasExited) {
+      return "updater daemon process exited: pid=$($Process.Id) exit_code=$($Process.ExitCode)"
+    }
+  } catch {
+    return "updater daemon process state unavailable: pid=$($Process.Id) error=$($_.Exception.Message)"
+  }
+  $liveProcess = Get-Process -Id $Process.Id -ErrorAction SilentlyContinue
+  if ($null -eq $liveProcess -or $liveProcess.HasExited) {
+    return "updater daemon process exited: pid=$($Process.Id) exit_code=<unknown>"
+  }
+  $path = Get-ProcessExecutablePath $liveProcess
+  return "updater daemon process alive: pid=$($Process.Id) path=$path"
 }
 
 function Get-ApiRouterRuntimeProcesses {

@@ -4068,6 +4068,9 @@ mod tests {
         assert!(build_script.contains("function Wait-UpdaterDaemonReady"));
         assert!(build_script.contains("function Stop-RunningUpdaterDaemon"));
         assert!(build_script.contains("function Install-UpdaterDaemonRuntime"));
+        assert!(build_script.contains("function Get-UpdaterPortOwnerDetail"));
+        assert!(build_script.contains("function Get-UpdaterPortOwnerProcesses"));
+        assert!(build_script.contains("function Get-UpdaterDaemonProcessStateDetail"));
         assert!(build_script.contains("function Test-UpdaterDaemonProcessPath"));
         assert!(build_script.contains("function Get-ProcessExecutablePath"));
         assert!(build_script.contains("Get-CimInstance Win32_Process"));
@@ -4093,6 +4096,7 @@ mod tests {
         assert!(build_script.contains("lan_trust_secret"));
         assert!(build_script.contains("$candidatePath = Get-ProcessExecutablePath $_"));
         assert!(build_script.contains("Ignoring stale updater daemon PID"));
+        assert!(build_script.contains("Stopping stale updater daemon port owner process(es)"));
         assert!(build_script.contains("function Wait-UpdaterDaemonIdle"));
         assert!(build_script.contains("activeOperation"));
         assert!(build_script.contains("refusing to stop it during active rollback"));
@@ -4107,6 +4111,10 @@ mod tests {
         assert!(!build_script.contains("Join-Path (Join-Path (Get-UpdaterDaemonRoot) $toSha)"));
         assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_UPDATER_PORT"));
         assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_LAN_SECRET"));
+        assert!(build_script.contains("Started updater daemon process"));
+        assert!(build_script.contains("Started updater daemon command line"));
+        assert!(build_script.contains("Updater daemon readiness pending"));
+        assert!(build_script.contains("updater daemon process exited before readiness"));
         assert!(build_script.contains("function Get-LocalHttpHealthProbeHost"));
         assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_LISTEN_HOST"));
         assert!(build_script.contains("$lowerHost -eq '0.0.0.0'"));
