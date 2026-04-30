@@ -84,16 +84,21 @@ function Write-RemoteUpdateStatus {
   }
   $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   $acceptedAt = $now
-  $requestId = if ($env:API_ROUTER_REMOTE_UPDATE_REQUEST_ID) { $env:API_ROUTER_REMOTE_UPDATE_REQUEST_ID } else { $null }
+  $requestId = if ($env:API_ROUTER_REMOTE_UPDATE_REQUEST_ID) { [string]$env:API_ROUTER_REMOTE_UPDATE_REQUEST_ID } else { $null }
   $timeline = @()
   if (Test-Path $statusPath) {
     try {
       $existing = Get-Content $statusPath -Raw | ConvertFrom-Json
+      $existingRequestId = if ($existing.request_id) { [string]$existing.request_id } else { $null }
+      if ($existingRequestId -and $requestId -and ($existingRequestId -ne $requestId)) {
+        Write-RemoteUpdateLog "Skipping stale status write for request_id=$requestId because current status belongs to request_id=$existingRequestId"
+        return
+      }
       if ($existing.accepted_at_unix_ms) {
         $acceptedAt = [int64]$existing.accepted_at_unix_ms
       }
-      if ($existing.request_id) {
-        $requestId = [string]$existing.request_id
+      if (-not $requestId -and $existingRequestId) {
+        $requestId = $existingRequestId
       }
       if ($existing.timeline) {
         $timeline = @($existing.timeline)

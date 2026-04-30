@@ -5386,12 +5386,14 @@ mod tests {
         let secrets =
             crate::orchestrator::secrets::SecretStore::new(user_data_dir.join("secrets.json"));
         let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
+        let target_ref = super::remote_update::normalized_local_build_target_ref()
+            .unwrap_or_else(|| "abc123".to_string());
         let status = LanRemoteUpdateStatusSnapshot {
             state: "succeeded".to_string(),
-            target_ref: "abc123".to_string(),
+            target_ref: target_ref.clone(),
             from_git_sha: Some("from123".to_string()),
-            to_git_sha: Some("abc123".to_string()),
-            current_git_sha: Some("abc123".to_string()),
+            to_git_sha: Some(target_ref.clone()),
+            current_git_sha: Some(target_ref),
             previous_git_sha: Some("from123".to_string()),
             progress_percent: Some(100),
             rollback_available: true,

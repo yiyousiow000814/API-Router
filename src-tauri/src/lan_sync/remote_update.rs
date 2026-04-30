@@ -709,7 +709,7 @@ fn normalize_remote_update_status(
     let state = status.state.trim().to_string();
     if !matches!(
         state.as_str(),
-        "accepted" | "running" | "failed" | "superseded"
+        "accepted" | "running" | "failed" | "superseded" | "succeeded"
     ) {
         return status;
     }
@@ -717,6 +717,9 @@ fn normalize_remote_update_status(
     let Some(current_target_ref) = current_target_ref.as_deref() else {
         return status;
     };
+    if state == "succeeded" && current_target_ref == status_target_ref {
+        return status;
+    }
     let now_unix_ms = unix_ms();
     if state != "superseded"
         && remote_update_worker_should_delay_normalization(
@@ -776,8 +779,24 @@ fn normalize_remote_update_status(
         return status;
     }
 
-    let (reason_code, label, detail) = if state == "accepted" && status.started_at_unix_ms.is_none()
-    {
+    let (reason_code, label, detail) = if state == "succeeded" {
+        (
+            "peer_build_changed_after_completed_status",
+            "Completed status replaced",
+            match worker_cleanup_detail {
+                Some(detail) => format!(
+                    "Completed remote update to {} was replaced by current build {}. {detail}",
+                    display_target_ref(status_target_ref),
+                    display_target_ref(current_target_ref),
+                ),
+                None => format!(
+                    "Completed remote update to {} was replaced by current build {}.",
+                    display_target_ref(status_target_ref),
+                    display_target_ref(current_target_ref),
+                ),
+            },
+        )
+    } else if state == "accepted" && status.started_at_unix_ms.is_none() {
         (
             "peer_build_changed_before_start",
             "Status normalized to expired before start",
@@ -811,6 +830,8 @@ fn normalize_remote_update_status(
     status.state = "superseded".to_string();
     status.reason_code = Some(reason_code.to_string());
     status.detail = Some(detail);
+    status.current_git_sha = Some(current_target_ref.to_string());
+    status.progress_percent = Some(100);
     status
         .finished_at_unix_ms
         .get_or_insert(finished_at_unix_ms);
@@ -3878,13 +3899,15 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let _guard = set_remote_update_test_env(temp_dir.path());
         let gateway = gateway_state_fixture(temp_dir.path());
+        let target_ref =
+            normalized_local_build_target_ref().unwrap_or_else(|| "9e557ebd".to_string());
 
         let status = LanRemoteUpdateStatusSnapshot {
             state: "succeeded".to_string(),
-            target_ref: "9e557ebd".to_string(),
+            target_ref: target_ref.clone(),
             from_git_sha: Some("6b28b6e".to_string()),
-            to_git_sha: Some("9e557ebd".to_string()),
-            current_git_sha: Some("9e557ebd".to_string()),
+            to_git_sha: Some(target_ref.clone()),
+            current_git_sha: Some(target_ref),
             previous_git_sha: Some("6b28b6e".to_string()),
             progress_percent: Some(100),
             rollback_available: true,
@@ -4648,5 +4671,88 @@ mod tests {
             .iter()
             .any(|entry| entry.phase == "normalized_succeeded"
                 && entry.label == "Status normalized to succeeded"));
+    }
+
+    #[test]
+    fn normalize_remote_update_status_marks_completed_status_superseded_when_current_build_differs()
+    {
+        let Some(current_ref) = normalized_local_build_target_ref() else {
+            return;
+        };
+        let stale_ref = "stale-completed-target";
+        assert_ne!(current_ref, stale_ref);
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "succeeded".to_string(),
+            target_ref: stale_ref.to_string(),
+            from_git_sha: Some("before".to_string()),
+            to_git_sha: Some(stale_ref.to_string()),
+            current_git_sha: Some(stale_ref.to_string()),
+            previous_git_sha: Some("before".to_string()),
+            progress_percent: Some(100),
+            rollback_available: true,
+            request_id: Some("ru_stale_success".to_string()),
+            reason_code: None,
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some("worker.ps1".to_string()),
+            worker_pid: Some(1234),
+            worker_exit_code: Some(0),
+            detail: Some("Completed: Remote self-update completed successfully.".to_string()),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: Some(20),
+            finished_at_unix_ms: Some(30),
+            updated_at_unix_ms: 30,
+            timeline: vec![LanRemoteUpdateTimelineEntry {
+                unix_ms: 30,
+                phase: "completed".to_string(),
+                label: "Remote update completed".to_string(),
+                detail: Some("Remote self-update completed successfully.".to_string()),
+                source: "worker".to_string(),
+                state: "succeeded".to_string(),
+            }],
+        };
+
+        let normalized = normalize_remote_update_status(status);
+        assert_eq!(normalized.state, "superseded");
+        assert_eq!(
+            normalized.reason_code.as_deref(),
+            Some("peer_build_changed_after_completed_status")
+        );
+        assert!(normalized
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("was replaced by current build")));
+        assert_eq!(
+            normalized.current_git_sha.as_deref(),
+            Some(current_ref.as_str())
+        );
+        assert!(normalized
+            .timeline
+            .iter()
+            .any(|entry| entry.phase == "normalized_superseded"
+                && entry.label == "Completed status replaced"));
+    }
+
+    #[test]
+    fn remote_update_worker_status_writes_are_request_scoped() {
+        let repo_root = resolve_repo_root_for_self_update().expect("resolve repo root");
+        let worker_script = std::fs::read_to_string(
+            repo_root
+                .join("src-tauri")
+                .join("src")
+                .join("lan_sync")
+                .join("remote_update")
+                .join("lan-remote-update.ps1"),
+        )
+        .expect("read lan-remote-update.ps1");
+
+        assert!(
+            worker_script.contains("$requestId = if ($env:API_ROUTER_REMOTE_UPDATE_REQUEST_ID)")
+        );
+        assert!(!worker_script.contains("$requestId = [string]$existing.request_id"));
+        assert!(worker_script.contains(
+            "Skipping stale status write for request_id=$requestId because current status belongs to request_id=$existingRequestId"
+        ));
+        assert!(worker_script.contains("return"));
     }
 }
