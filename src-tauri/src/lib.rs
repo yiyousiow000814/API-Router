@@ -550,14 +550,13 @@ pub fn run() {
             }
             std::env::set_var("API_ROUTER_USER_DATA_DIR", &user_data_dir);
             reset_app_startup_diag();
-            if hidden_remote_update_launch {
-                // The remote-update completion notification is emitted by the restarted Tauri
-                // process, not the hidden PowerShell worker. This path is more reliable and now
-                // leaves app-startup diagnostics when Windows accepts or rejects the notification.
-                maybe_notify_hidden_remote_update_success(app.handle());
-            }
 
             let build_state_started = Instant::now();
+            write_app_startup_diag(
+                "build_state_start",
+                build_state_started.elapsed().as_millis(),
+                Some(&format!("user_data_dir={}", user_data_dir.display())),
+            );
             let state = build_state(
                 user_data_dir.join("config.toml"),
                 user_data_dir.join("data"),
@@ -573,6 +572,11 @@ pub fn run() {
                 }
             }
             app.manage(state);
+            if hidden_remote_update_launch {
+                // The notification is emitted only after state initialization succeeds. A remote
+                // update is not usable until the restarted runtime can continue toward gateway bind.
+                maybe_notify_hidden_remote_update_success(app.handle());
+            }
             {
                 let st = app.state::<app_state::AppState>();
                 let cfg = st.gateway.cfg.read().clone();
