@@ -4113,6 +4113,10 @@ mod tests {
         assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_LAN_SECRET"));
         assert!(build_script.contains("Started updater daemon process"));
         assert!(build_script.contains("Started updater daemon command line"));
+        assert!(build_script.contains("Started updater daemon output logs"));
+        assert!(build_script.contains("function Get-UpdaterDaemonOutputTail"));
+        assert!(build_script.contains("-RedirectStandardOutput"));
+        assert!(build_script.contains("-RedirectStandardError"));
         assert!(build_script.contains("Updater daemon readiness pending"));
         assert!(build_script.contains("updater daemon process exited before readiness"));
         assert!(build_script.contains("function Get-LocalHttpHealthProbeHost"));

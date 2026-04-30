@@ -58,6 +58,8 @@ Write-Host "RepoRoot: $RepoRoot"
 
 $script:BuildMutex = $null
 $script:BuildMutexHeld = $false
+$script:UpdaterDaemonStdoutPath = $null
+$script:UpdaterDaemonStderrPath = $null
 
 function Get-BuildMutexName {
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($RepoRoot.ToLowerInvariant())
@@ -718,6 +720,41 @@ function Get-UpdaterDaemonExePath {
   return Join-Path (Get-UpdaterDaemonRoot) 'API Router Updater.exe'
 }
 
+function Get-UpdaterDaemonOutputPath {
+  param([Parameter(Mandatory = $true)][string]$Name)
+
+  $logPath = Get-RemoteUpdateLogPath
+  $parent = if (-not [string]::IsNullOrWhiteSpace($logPath)) {
+    Split-Path -Parent $logPath
+  } else {
+    Get-UpdaterDaemonRoot
+  }
+  if ([string]::IsNullOrWhiteSpace($parent)) {
+    $parent = Get-UpdaterDaemonRoot
+  }
+  New-Item -ItemType Directory -Force -Path $parent | Out-Null
+  return Join-Path $parent "api-router-updater-daemon-$Name.log"
+}
+
+function Get-UpdaterDaemonOutputTail {
+  $items = @()
+  foreach ($entry in @(
+      @{ Label = 'stdout'; Path = $script:UpdaterDaemonStdoutPath },
+      @{ Label = 'stderr'; Path = $script:UpdaterDaemonStderrPath }
+    )) {
+    $path = [string]$entry.Path
+    if ([string]::IsNullOrWhiteSpace($path)) { continue }
+    $tail = Get-TextFileTail -Path $path -MaxChars 4000
+    if ([string]::IsNullOrWhiteSpace($tail)) {
+      $items += "$($entry.Label)=<empty>"
+    } else {
+      $items += "$($entry.Label)=$tail"
+    }
+  }
+  if ($items.Count -eq 0) { return 'updater daemon output logs: <not configured>' }
+  return 'updater daemon output logs: ' + ($items -join '; ')
+}
+
 function Normalize-PathForComparison {
   param([string]$Path)
 
@@ -929,7 +966,7 @@ function Wait-UpdaterDaemonReady {
     if ($StartedProcess) {
       $processDetail = Get-UpdaterDaemonProcessStateDetail -Process $StartedProcess
       if ($processDetail.StartsWith('updater daemon process exited:', [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "updater daemon process exited before readiness: $processDetail; $(Get-UpdaterPortOwnerDetail)"
+        throw "updater daemon process exited before readiness: $processDetail; $(Get-UpdaterPortOwnerDetail); $(Get-UpdaterDaemonOutputTail)"
       }
     } else {
       $processDetail = 'updater daemon process not captured'
@@ -952,7 +989,7 @@ function Wait-UpdaterDaemonReady {
     Start-Sleep -Milliseconds 300
   }
   $finalProcessDetail = Get-UpdaterDaemonProcessStateDetail -Process $StartedProcess
-  throw "updater daemon did not become ready: $lastDetail; $finalProcessDetail; $(Get-UpdaterPortOwnerDetail)"
+  throw "updater daemon did not become ready: $lastDetail; $finalProcessDetail; $(Get-UpdaterPortOwnerDetail); $(Get-UpdaterDaemonOutputTail)"
 }
 
 function Start-UpdaterDaemonForRemoteRollback {
@@ -986,16 +1023,22 @@ function Start-UpdaterDaemonForRemoteRollback {
     }
 
     $arguments = @('serve', '--repo-root', $RepoRoot, '--bind', $bind)
+    $script:UpdaterDaemonStdoutPath = Get-UpdaterDaemonOutputPath 'stdout'
+    $script:UpdaterDaemonStderrPath = Get-UpdaterDaemonOutputPath 'stderr'
+    Remove-Item -LiteralPath $script:UpdaterDaemonStdoutPath, $script:UpdaterDaemonStderrPath -Force -ErrorAction SilentlyContinue
     $startedDaemonProcess = Start-Process `
       -FilePath $daemonExe `
       -ArgumentList $arguments `
       -WorkingDirectory $RepoRoot `
       -WindowStyle Hidden `
+      -RedirectStandardOutput $script:UpdaterDaemonStdoutPath `
+      -RedirectStandardError $script:UpdaterDaemonStderrPath `
       -PassThru
     Reset-LastExitCode
     if ($startedDaemonProcess) {
       Write-RemoteUpdateLog "Started updater daemon process: pid=$($startedDaemonProcess.Id); path=$daemonExe; bind=$bind; status=$statusUrl"
       Write-RemoteUpdateLog "Started updater daemon command line: $(Get-ProcessCommandLineSummary @([int]$startedDaemonProcess.Id))"
+      Write-RemoteUpdateLog "Started updater daemon output logs: stdout=$script:UpdaterDaemonStdoutPath; stderr=$script:UpdaterDaemonStderrPath"
     }
     Wait-UpdaterDaemonReady -StatusUrl $statusUrl -Headers $headers -TimeoutSeconds 20 -StartedProcess $startedDaemonProcess
   } finally {
