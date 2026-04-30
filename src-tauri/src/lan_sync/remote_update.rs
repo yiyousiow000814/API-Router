@@ -3905,6 +3905,11 @@ mod tests {
         assert!(windows_contents.contains("Hidden process exit_code was <null>"));
         assert!(windows_contents.contains("build result marker reported success"));
         assert!(windows_contents.contains("$buildResult = Read-RemoteUpdateBuildResult"));
+        assert!(windows_contents.contains("function Format-HiddenProcessArgumentString"));
+        assert!(windows_contents.contains("$startInfo.UseShellExecute = $false"));
+        assert!(windows_contents.contains("$startInfo.CreateNoWindow = $true"));
+        assert!(windows_contents.contains("[System.Diagnostics.Process]::Start($startInfo)"));
+        assert!(!windows_contents.contains("Start-Process -FilePath $FilePath"));
         assert!(windows_contents.contains("[string]$buildResult.result -eq 'rolled_back'"));
         assert!(windows_contents.contains("-StartHidden"));
         assert!(windows_contents.contains("function Show-RemoteUpdateNotification"));
@@ -4054,6 +4059,8 @@ mod tests {
         );
         assert!(build_script.contains("function Get-RemoteUpdateBuildResultPath"));
         assert!(build_script.contains("function Write-BuildResultMarker"));
+        assert!(build_script.contains("function Set-RemoteUpdateStatusProperty"));
+        assert!(build_script.contains("Add-Member -InputObject $Status -NotePropertyName"));
         assert!(build_script.contains("function Backup-CurrentRuntimeForRollback"));
         assert!(build_script.contains("function Record-InstalledRuntimeVersion"));
         assert!(build_script.contains("function Restore-PreviousRuntime"));

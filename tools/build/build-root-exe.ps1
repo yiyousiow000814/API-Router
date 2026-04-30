@@ -1142,6 +1142,23 @@ function Write-BuildResultMarker([string]$Result) {
   }
 }
 
+function Set-RemoteUpdateStatusProperty {
+  param(
+    [Parameter(Mandatory = $true)]
+    [object]$Status,
+    [Parameter(Mandatory = $true)]
+    [string]$Name,
+    [Parameter(Mandatory = $false)]
+    [object]$Value
+  )
+
+  if ($Status.PSObject.Properties.Name -contains $Name) {
+    $Status.$Name = $Value
+    return
+  }
+  Add-Member -InputObject $Status -NotePropertyName $Name -NotePropertyValue $Value
+}
+
 function Update-RemoteUpdateTimelineStep {
   param(
     [Parameter(Mandatory = $true)]
@@ -1187,24 +1204,24 @@ function Update-RemoteUpdateTimelineStep {
       }
     }
 
-    $status.state = $State
-    $status.detail = $Detail
-    $status.from_git_sha = if ($env:API_ROUTER_REMOTE_UPDATE_FROM_GIT_SHA) { $env:API_ROUTER_REMOTE_UPDATE_FROM_GIT_SHA } else { $status.from_git_sha }
-    $status.to_git_sha = if ($env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA) { $env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA } else { $status.to_git_sha }
-    $status.current_git_sha = if ($env:API_ROUTER_REMOTE_UPDATE_CURRENT_GIT_SHA) { $env:API_ROUTER_REMOTE_UPDATE_CURRENT_GIT_SHA } else { $status.current_git_sha }
-    $status.previous_git_sha = if ($env:API_ROUTER_REMOTE_UPDATE_PREVIOUS_GIT_SHA) { $env:API_ROUTER_REMOTE_UPDATE_PREVIOUS_GIT_SHA } else { $status.previous_git_sha }
+    Set-RemoteUpdateStatusProperty -Status $status -Name 'state' -Value $State
+    Set-RemoteUpdateStatusProperty -Status $status -Name 'detail' -Value $Detail
+    Set-RemoteUpdateStatusProperty -Status $status -Name 'from_git_sha' -Value $(if ($env:API_ROUTER_REMOTE_UPDATE_FROM_GIT_SHA) { $env:API_ROUTER_REMOTE_UPDATE_FROM_GIT_SHA } else { $status.from_git_sha })
+    Set-RemoteUpdateStatusProperty -Status $status -Name 'to_git_sha' -Value $(if ($env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA) { $env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA } else { $status.to_git_sha })
+    Set-RemoteUpdateStatusProperty -Status $status -Name 'current_git_sha' -Value $(if ($env:API_ROUTER_REMOTE_UPDATE_CURRENT_GIT_SHA) { $env:API_ROUTER_REMOTE_UPDATE_CURRENT_GIT_SHA } else { $status.current_git_sha })
+    Set-RemoteUpdateStatusProperty -Status $status -Name 'previous_git_sha' -Value $(if ($env:API_ROUTER_REMOTE_UPDATE_PREVIOUS_GIT_SHA) { $env:API_ROUTER_REMOTE_UPDATE_PREVIOUS_GIT_SHA } else { $status.previous_git_sha })
     if ($env:API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT) {
-      $status.progress_percent = [int]$env:API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT
+      Set-RemoteUpdateStatusProperty -Status $status -Name 'progress_percent' -Value ([int]$env:API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT)
     }
-    $status.rollback_available = ([string]$env:API_ROUTER_REMOTE_UPDATE_ROLLBACK_AVAILABLE -eq '1')
-    $status.updated_at_unix_ms = $now
+    Set-RemoteUpdateStatusProperty -Status $status -Name 'rollback_available' -Value ([string]$env:API_ROUTER_REMOTE_UPDATE_ROLLBACK_AVAILABLE -eq '1')
+    Set-RemoteUpdateStatusProperty -Status $status -Name 'updated_at_unix_ms' -Value $now
     if ($status.started_at_unix_ms -eq $null) {
-      $status.started_at_unix_ms = $now
+      Set-RemoteUpdateStatusProperty -Status $status -Name 'started_at_unix_ms' -Value $now
     }
     if ($FinishedAtUnixMs -ne $null) {
-      $status.finished_at_unix_ms = [int64]$FinishedAtUnixMs
+      Set-RemoteUpdateStatusProperty -Status $status -Name 'finished_at_unix_ms' -Value ([int64]$FinishedAtUnixMs)
     }
-    $status.timeline = $timeline
+    Set-RemoteUpdateStatusProperty -Status $status -Name 'timeline' -Value $timeline
 
     $json = $status | ConvertTo-Json -Depth 8
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)

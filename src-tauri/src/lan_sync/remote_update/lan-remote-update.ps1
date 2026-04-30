@@ -403,6 +403,24 @@ function Get-ProcessExitCodeOrNull {
   }
 }
 
+function Format-HiddenProcessArgumentToken([string]$Argument) {
+  if ($null -eq $Argument) { return '' }
+  if ($Argument.Length -eq 0) { return '""' }
+  if ($Argument -notmatch '[\s"]') { return $Argument }
+  return '"' + $Argument.Replace('"', '\"') + '"'
+}
+
+function Format-HiddenProcessArgumentString {
+  param([string[]]$ArgumentList)
+
+  $tokens = @()
+  foreach ($argument in $ArgumentList) {
+    $token = Format-HiddenProcessArgumentToken $argument
+    if ($token) { $tokens += $token }
+  }
+  return ($tokens -join ' ')
+}
+
 function Test-GitRevisionExists {
   param(
     [Parameter(Mandatory = $true)]
@@ -498,18 +516,24 @@ function Invoke-HiddenProcess {
       $env:API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH = $buildResultPath
     }
     Write-RemoteUpdateLog "Invoking hidden process: file=$FilePath args=$($ArgumentList -join ' ')"
-    $process = Start-Process -FilePath $FilePath `
-      -ArgumentList $ArgumentList `
-      -WorkingDirectory $RepoRoot `
-      -NoNewWindow:$false `
-      -WindowStyle Hidden `
-      -RedirectStandardOutput $stdoutPath `
-      -RedirectStandardError $stderrPath `
-      -PassThru
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = Format-HiddenProcessArgumentString -ArgumentList $ArgumentList
+    $startInfo.WorkingDirectory = $RepoRoot
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    Write-RemoteUpdateLog "Hidden process started: pid=$($process.Id); file=$FilePath"
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
     $process.WaitForExit()
     $exitCode = Get-ProcessExitCodeOrNull -Process $process
-    $stdout = if (Test-Path $stdoutPath) { Get-Content -Path $stdoutPath -Raw -ErrorAction SilentlyContinue } else { '' }
-    $stderr = if (Test-Path $stderrPath) { Get-Content -Path $stderrPath -Raw -ErrorAction SilentlyContinue } else { '' }
+    $stdout = $stdoutTask.Result
+    $stderr = $stderrTask.Result
+    [System.IO.File]::WriteAllText($stdoutPath, [string]$stdout, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($stderrPath, [string]$stderr, [System.Text.UTF8Encoding]::new($false))
     $combinedOutput = @()
     if ($stdout) { $combinedOutput += $stdout -split "\r?\n" }
     if ($stderr) { $combinedOutput += $stderr -split "\r?\n" }
