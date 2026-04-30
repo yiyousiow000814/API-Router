@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 
-import { buildRemoteAccountRefreshKey, HeroCodexCard } from './HeroCodexCard'
+import { buildRemoteAccountRefreshKey, computeAccountsMenuMaxHeight, HeroCodexCard } from './HeroCodexCard'
 import type { OfficialAccountProfileSummary, Status } from '../types'
 
 function buildStatus(): Status {
@@ -37,6 +37,12 @@ describe('HeroCodexCard', () => {
     },
   ]
 
+  it('sizes the accounts menu from the trigger to the viewport bottom', () => {
+    expect(computeAccountsMenuMaxHeight(560, 96)).toBe(450)
+    expect(computeAccountsMenuMaxHeight(560, 260)).toBe(286)
+    expect(computeAccountsMenuMaxHeight(560, 420)).toBe(220)
+  })
+
   it('shows the 5-hour reset countdown when available', () => {
     const html = renderToStaticMarkup(
       <HeroCodexCard
@@ -63,6 +69,44 @@ describe('HeroCodexCard', () => {
     expect(html).toContain('5-hour limit')
     expect(html).toContain('Reset in')
     expect(html).toContain('Accounts (1)')
+  })
+
+  it('keeps codex account login state actions inside the accounts menu', () => {
+    const signedOutStatus = buildStatus()
+    signedOutStatus.codex_account = {
+      ...signedOutStatus.codex_account,
+      signed_in: false,
+    }
+    const html = renderToStaticMarkup(
+      <HeroCodexCard
+        status={signedOutStatus}
+        onLoginLogout={() => {}}
+        onRefresh={() => {}}
+        refreshing={false}
+        onSwapAuthConfig={() => {}}
+        onSwapOptions={() => {}}
+        swapTarget="both"
+        swapTargetWindowsEnabled
+        swapTargetWslEnabled
+        onChangeSwapTarget={() => {}}
+        swapBadgeText=""
+        swapBadgeTitle=""
+        profiles={[]}
+        profilesLoading={false}
+        onActivateProfile={async () => {}}
+        onRemoveProfile={async () => {}}
+        onAddAccount={async () => {}}
+        defaultAccountsMenuOpen
+      />,
+    )
+
+    expect(html).toContain('Accounts (0)')
+    expect(html).toContain('Add account')
+    expect(html).not.toContain('signed in')
+    expect(html).not.toContain('signed out')
+    expect(html).not.toContain('Log in')
+    expect(html).not.toContain('title="Log out"')
+    expect(html).not.toContain('aria-label="Log out"')
   })
 
   it('uses the selected profile usage for the codex auth hero cards', () => {
@@ -104,7 +148,7 @@ describe('HeroCodexCard', () => {
     expect(html).not.toContain('87%')
   })
 
-  it('renders account usage bars and add action inside the official menu', () => {
+  it('renders account usage bars and local logout action inside the official menu', () => {
     const html = renderToStaticMarkup(
       <HeroCodexCard
         status={buildStatus()}
@@ -164,6 +208,8 @@ describe('HeroCodexCard', () => {
     expect(html).toContain('aoAccountsMenuCurrentTag')
     expect(html).toContain('Current')
     expect(html).not.toContain('>Remove<')
+    expect(html).toContain('title="Log out local account official.account1@example.com"')
+    expect(html).toContain('aria-label="Log out local account official.account1@example.com"')
     expect(html).toContain('Add account')
     expect(html.indexOf('official.account1@example.com')).toBeLessThan(
       html.indexOf('official.account2@example.com'),

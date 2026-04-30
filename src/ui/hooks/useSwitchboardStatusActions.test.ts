@@ -23,7 +23,7 @@ describe('mergeProviderSwitchDirs', () => {
 })
 
 describe('runGatewaySwitchPreflight', () => {
-  it('does not call legacy WSL gateway access commands for gateway mode', async () => {
+  it('does not call legacy WSL gateway access commands or toast for gateway mode', async () => {
     const invokeFn = vi.fn()
     const confirmFn = vi.fn()
     const flashToast = vi.fn()
@@ -41,10 +41,7 @@ describe('runGatewaySwitchPreflight', () => {
     expect(ok).toBe(true)
     expect(invokeFn).not.toHaveBeenCalled()
     expect(confirmFn).not.toHaveBeenCalled()
-    expect(flashToast).toHaveBeenCalledWith(
-      'WSL2 gateway access is now native; no Windows authorization is required.',
-      'info',
-    )
+    expect(flashToast).not.toHaveBeenCalled()
   })
 })
 

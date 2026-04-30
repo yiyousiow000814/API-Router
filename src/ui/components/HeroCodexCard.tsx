@@ -4,6 +4,15 @@ import { fmtResetIn, fmtWhen } from '../utils/format'
 import { officialAccountDisplayName } from '../utils/codexAccountProfiles'
 import { OfficialAccountQuotaSummary } from './OfficialAccountQuotaSummary'
 
+const ACCOUNTS_MENU_VIEWPORT_MARGIN = 14
+const ACCOUNTS_MENU_MAX_HEIGHT = 450
+const ACCOUNTS_MENU_MIN_HEIGHT = 220
+
+export function computeAccountsMenuMaxHeight(viewportHeight: number, triggerBottom: number): number {
+  const availableBelow = Math.floor(viewportHeight - triggerBottom - ACCOUNTS_MENU_VIEWPORT_MARGIN)
+  return Math.max(ACCOUNTS_MENU_MIN_HEIGHT, Math.min(ACCOUNTS_MENU_MAX_HEIGHT, availableBelow))
+}
+
 export function buildRemoteAccountRefreshKey(status: Status): string {
   const peers = status.lan_sync?.peers ?? []
   return peers
@@ -53,7 +62,6 @@ type HeroCodexProps = {
 
 export function HeroCodexCard({
   status,
-  onLoginLogout,
   onRefresh,
   refreshing,
   onSwapAuthConfig,
@@ -78,6 +86,7 @@ export function HeroCodexCard({
 }: HeroCodexProps) {
   const [menuOpen, setMenuOpen] = useState<boolean>(false)
   const [accountsMenuOpen, setAccountsMenuOpen] = useState<boolean>(defaultAccountsMenuOpen)
+  const [accountsMenuMaxHeight, setAccountsMenuMaxHeight] = useState<number>(ACCOUNTS_MENU_MAX_HEIGHT)
   const menuWrapRef = useRef<HTMLDivElement | null>(null)
   const accountsMenuWrapRef = useRef<HTMLDivElement | null>(null)
   const swapTargetLabel = swapTarget === 'windows' ? 'Windows' : swapTarget === 'wsl2' ? 'WSL2' : 'Both'
@@ -133,15 +142,27 @@ export function HeroCodexCard({
     return () => document.removeEventListener('mousedown', onDocMouseDown)
   }, [accountsMenuOpen])
 
+  useEffect(() => {
+    if (!accountsMenuOpen || typeof window === 'undefined') return
+    const updateMenuHeight = () => {
+      const rect = accountsMenuWrapRef.current?.getBoundingClientRect()
+      if (!rect) return
+      setAccountsMenuMaxHeight(computeAccountsMenuMaxHeight(window.innerHeight, rect.bottom))
+    }
+    updateMenuHeight()
+    window.addEventListener('resize', updateMenuHeight)
+    window.addEventListener('scroll', updateMenuHeight, true)
+    return () => {
+      window.removeEventListener('resize', updateMenuHeight)
+      window.removeEventListener('scroll', updateMenuHeight, true)
+    }
+  }, [accountsMenuOpen])
+
   return (
     <div className="aoCard aoHeroCard aoHeroCodex">
       <div className="aoCardHeader">
         <div className="aoCardTitle">Codex (Auth)</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span className="aoPill">
-            <span className={status.codex_account?.signed_in ? 'aoDot' : 'aoDot aoDotBad'} />
-            <span className="aoPillText">{status.codex_account?.signed_in ? 'signed in' : 'signed out'}</span>
-          </span>
           <button
             className={`aoUsageRefreshBtn aoUsageRefreshBtnMini${refreshing ? ' aoUsageRefreshBtnSpin' : ''}`}
             title="Refresh"
@@ -155,20 +176,6 @@ export function HeroCodexCard({
               <path d="M1 14l5.3 5.3A9 9 0 0 0 20.5 15" />
             </svg>
           </button>
-          {status.codex_account?.signed_in ? (
-            <button
-              className="aoIconBtn aoIconBtnMini aoIconBtnDangerSoft"
-              title="Log out"
-              aria-label="Log out"
-              onClick={onLoginLogout}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M10 17l5-5-5-5" />
-                <path d="M15 12H3" />
-                <path d="M21 3v18" />
-              </svg>
-            </button>
-          ) : null}
         </div>
       </div>
       <div className="aoKvp">
@@ -220,16 +227,10 @@ export function HeroCodexCard({
         style={{
           marginTop: 15,
           width: '100%',
-          justifyContent: status.codex_account?.signed_in ? 'flex-end' : 'space-between',
+          justifyContent: 'flex-end',
         }}
       >
-        {!status.codex_account?.signed_in ? (
-          <button className="aoBtn" onClick={onLoginLogout}>
-            Log in
-          </button>
-        ) : null}
         <div className="aoHeroCodexActionsRow">
-          {profiles.length ? (
             <div className="aoActionsMenuWrap aoHeroCodexAccountsWrap" ref={accountsMenuWrapRef}>
               <button
                 className="aoBtn aoHeroCodexAccountsBtn"
@@ -244,7 +245,12 @@ export function HeroCodexCard({
                 {`Accounts (${profiles.length})`}
               </button>
               {accountsMenuOpen ? (
-                <div className="aoMenu aoMenuCompact aoMenuCompactOffset aoAccountsMenu" role="menu" aria-label="Official accounts menu">
+                <div
+                  className="aoMenu aoMenuCompact aoMenuCompactOffset aoAccountsMenu"
+                  role="menu"
+                  aria-label="Official accounts menu"
+                  style={{ '--ao-accounts-menu-max-height': `${accountsMenuMaxHeight}px` } as React.CSSProperties}
+                >
                   <div className="aoAccountsMenuHeader">
                     <span className="aoAccountsMenuTitle">Official accounts</span>
                   </div>
@@ -289,8 +295,8 @@ export function HeroCodexCard({
                           type="button"
                           className="aoAccountsMenuRemove"
                           onClick={() => void onRemoveProfile(profile.id)}
-                          title={`Remove ${profile.label}`}
-                          aria-label={`Remove ${profile.label}`}
+                          title={`Log out local account ${officialAccountDisplayName(profile)}`}
+                          aria-label={`Log out local account ${officialAccountDisplayName(profile)}`}
                         >
                           <svg viewBox="0 0 16 16" aria-hidden="true">
                             <path d="M4 4l8 8" />
@@ -377,7 +383,6 @@ export function HeroCodexCard({
                 </div>
               ) : null}
             </div>
-          ) : null}
           <div className="aoActionsMenuWrap" ref={menuWrapRef} style={{ justifyContent: 'flex-start' }}>
             <div className="aoSplitBtn aoSplitBtnPrimary" title={swapBadgeTitle}>
               <button className="aoSplitBtnBtn" onClick={onSwapAuthConfig}>

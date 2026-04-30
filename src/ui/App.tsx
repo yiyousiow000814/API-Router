@@ -1377,14 +1377,14 @@ export default function App() {
           setCodexAccountProfiles((prev) =>
             removeDevPreviewOfficialAccountProfile(prev, profileId),
           );
-          flashToast("Official account removed [TEST]");
+          flashToast("Official account logged out [TEST]");
           return;
         }
         await invoke("codex_account_profile_remove", { profileId });
         await refreshCodexAccountProfiles(status?.codex_account, {
           reason: "profile_remove",
         });
-        flashToast("Official account removed");
+        flashToast("Official account logged out");
       } catch (e) {
         flashToast(String(e), "error");
       }
