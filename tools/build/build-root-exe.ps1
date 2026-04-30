@@ -853,13 +853,46 @@ function Get-ProcessCommandLineSummary([int[]]$ProcessIds) {
 }
 
 function Get-ApiRouterRuntimeProcesses {
+  $targetPath = Normalize-PathForComparison $DstExe
+  if (-not $targetPath) { return @() }
+  $seen = @{}
+  $matches = @()
   try {
-    return @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.Path -and ($_.Path -ieq $DstExe)
-    })
+    $processMatches = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $candidatePath = Get-ProcessExecutablePath $_
+        $normalizedCandidate = Normalize-PathForComparison $candidatePath
+        $normalizedCandidate -and ($normalizedCandidate -ieq $targetPath)
+      })
+    foreach ($process in $processMatches) {
+      $seen[[string]$process.Id] = $true
+      $matches += $process
+    }
   } catch {
-    return @()
+    Write-RemoteUpdateLog ("Failed to inspect runtime processes via Get-Process: " + $_.Exception.Message)
   }
+  try {
+    $escapedName = $AppExeName.Replace("'", "''")
+    $cimMatches = @(Get-CimInstance Win32_Process -Filter "Name = '$escapedName'" -ErrorAction Stop | Where-Object {
+        $normalizedCandidate = Normalize-PathForComparison $_.ExecutablePath
+        if ($normalizedCandidate -and ($normalizedCandidate -ieq $targetPath)) { return $true }
+        $commandLine = [string]$_.CommandLine
+        return (-not [string]::IsNullOrWhiteSpace($commandLine)) -and
+          ($commandLine.IndexOf($DstExe, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+      })
+    foreach ($process in $cimMatches) {
+      $pidKey = [string]$process.ProcessId
+      if ($seen.ContainsKey($pidKey)) { continue }
+      $matches += [pscustomobject]@{
+        Id       = [int]$process.ProcessId
+        Path     = [string]$process.ExecutablePath
+        HasExited = $false
+      }
+      $seen[$pidKey] = $true
+    }
+  } catch {
+    Write-RemoteUpdateLog ("Failed to inspect runtime processes via CIM: " + $_.Exception.Message)
+  }
+  return @($matches)
 }
 
 function Get-ListenPortOwnerProcesses {
@@ -1090,11 +1123,24 @@ function Wait-ApiRouterRuntimeHealthy {
 function Stop-RunningApiRouter {
   # Best-effort: if the root EXE is running, replacing it will fail with EPERM/EBUSY.
   # Only target exact executable paths so another checkout or raw Tauri artifact is not stopped.
+  $runtimeProcesses = @(Get-ApiRouterRuntimeProcesses)
+  if ($runtimeProcesses.Count -gt 0) {
+    Write-RemoteUpdateLog "Stopping repo root API Router.exe process(es): $(Format-ProcessSummary $runtimeProcesses)"
+    foreach ($process in $runtimeProcesses) {
+      try {
+        Stop-Process -Id ([int]$process.Id) -Force -ErrorAction Stop
+      } catch {
+        Write-RemoteUpdateLog "Failed to stop API Router.exe pid=$($process.Id): $($_.Exception.Message)"
+      }
+    }
+  }
   try {
     Get-Process -ErrorAction SilentlyContinue | Where-Object {
       $_.Path -and (($_.Path -ieq $DstExe) -or ($_.Path -ieq $DstTestExe) -or ($_.Path -ieq $SrcExe))
     } | Stop-Process -Force -ErrorAction SilentlyContinue
-  } catch {}
+  } catch {
+    Write-RemoteUpdateLog ("Failed to stop secondary API Router processes: " + $_.Exception.Message)
+  }
 }
 
 function Copy-WithRetry([string]$From, [string]$To) {

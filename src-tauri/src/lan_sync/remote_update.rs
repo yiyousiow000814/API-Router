@@ -3218,6 +3218,8 @@ mod tests {
         assert!(build_script.contains("function Install-UpdaterDaemonRuntime"));
         assert!(build_script.contains("function Test-UpdaterDaemonProcessPath"));
         assert!(build_script.contains("function Get-ProcessExecutablePath"));
+        assert!(build_script.contains("Get-CimInstance Win32_Process"));
+        assert!(build_script.contains("Stopping repo root API Router.exe process(es)"));
         assert!(build_script.contains("function Get-RepoUserDataDir"));
         assert!(build_script.contains("function Get-ConfiguredListenPort"));
         assert!(build_script.contains("function Get-ConfiguredListenHost"));
