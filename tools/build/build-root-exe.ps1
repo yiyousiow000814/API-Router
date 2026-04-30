@@ -137,6 +137,47 @@ function Write-RuntimeStartupDiagnostics([string]$Reason) {
   }
 }
 
+function Clear-RuntimeStartupDiagnostics {
+  $userDataDir = Get-RepoUserDataDir
+  foreach ($fileName in @('app-startup.json', 'gateway-bootstrap.json', 'gateway-startup.json')) {
+    $path = Join-Path $userDataDir $fileName
+    try {
+      if (Test-Path -LiteralPath $path) {
+        Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+        Write-RemoteUpdateLog "Cleared stale runtime startup diagnostic: $path"
+      }
+    } catch {
+      Write-RemoteUpdateLog "Failed to clear runtime startup diagnostic ${path}: $($_.Exception.Message)"
+    }
+  }
+}
+
+function Format-StartupStageSummary($Payload) {
+  try {
+    $stages = @($Payload.stages)
+    if ($stages.Count -eq 0) { return 'recent startup stages: <none>' }
+    $start = [Math]::Max(0, $stages.Count - 8)
+    $items = @()
+    for ($i = $start; $i -lt $stages.Count; $i++) {
+      $stage = $stages[$i]
+      $name = [string]$stage.stage
+      $elapsed = [string]$stage.elapsedMs
+      $detail = ([string]$stage.detail).Trim()
+      if ($detail.Length -gt 120) {
+        $detail = $detail.Substring(0, 120) + '...'
+      }
+      if ([string]::IsNullOrWhiteSpace($detail)) {
+        $items += "$name@${elapsed}ms"
+      } else {
+        $items += "$name@${elapsed}ms($detail)"
+      }
+    }
+    return 'recent startup stages: ' + ($items -join ' -> ')
+  } catch {
+    return "recent startup stages unavailable: $($_.Exception.Message)"
+  }
+}
+
 function Get-RuntimeStartupDiagnosisSummary {
   $userDataDir = Get-RepoUserDataDir
   $appStartupPath = Join-Path $userDataDir 'app-startup.json'
@@ -144,22 +185,29 @@ function Get-RuntimeStartupDiagnosisSummary {
   if ([string]::IsNullOrWhiteSpace($appStartup)) {
     return 'startup diagnostics missing; app-startup.json was not written'
   }
+  $stageSummary = ''
+  try {
+    $payload = $appStartup | ConvertFrom-Json
+    $stageSummary = '; ' + (Format-StartupStageSummary $payload)
+  } catch {
+    $stageSummary = '; app-startup parse failed: ' + $_.Exception.Message
+  }
   if ($appStartup.Contains('"stage": "build_state_open_store_start"') -and -not $appStartup.Contains('"stage": "build_state_open_store_ok"')) {
-    return 'startup blocked while opening local store; app-startup reached build_state_open_store_start but not build_state_open_store_ok'
+    return 'startup blocked while opening local store; app-startup reached build_state_open_store_start but not build_state_open_store_ok' + $stageSummary
   }
   if ($appStartup.Contains('"stage": "build_state_secret_store_start"') -and -not $appStartup.Contains('"stage": "build_state_secret_store_ok"')) {
-    return 'startup blocked while opening secrets store; app-startup reached build_state_secret_store_start but not build_state_secret_store_ok'
+    return 'startup blocked while opening secrets store; app-startup reached build_state_secret_store_start but not build_state_secret_store_ok' + $stageSummary
   }
   if ($appStartup.Contains('"stage": "build_state_load_config_start"') -and -not $appStartup.Contains('"stage": "build_state_load_config_ok"')) {
-    return 'startup blocked while loading config; app-startup reached build_state_load_config_start but not build_state_load_config_ok'
+    return 'startup blocked while loading config; app-startup reached build_state_load_config_start but not build_state_load_config_ok' + $stageSummary
   }
   if ($appStartup.Contains('"stage": "build_state_updater_daemon_start"') -and -not $appStartup.Contains('"stage": "build_state_updater_daemon_ok"')) {
-    return 'startup blocked while starting updater daemon; app-startup reached build_state_updater_daemon_start but not build_state_updater_daemon_ok'
+    return 'startup blocked while starting updater daemon; app-startup reached build_state_updater_daemon_start but not build_state_updater_daemon_ok' + $stageSummary
   }
   if ($appStartup.Contains('"stage": "gateway_prepare_enter"') -and -not $appStartup.Contains('"stage": "prepare_gateway_listeners"')) {
-    return 'startup blocked while preparing gateway listeners'
+    return 'startup blocked while preparing gateway listeners' + $stageSummary
   }
-  return 'startup diagnostics available; inspect app-startup.json tail for the last completed stage'
+  return 'startup diagnostics available; inspect app-startup.json tail for the last completed stage' + $stageSummary
 }
 
 function Read-RepoTomlSectionValue {
@@ -958,6 +1006,7 @@ function Start-ApiRouter {
   }
   $env:API_ROUTER_PROFILE = $null
   if ($TestProfile) { $env:API_ROUTER_PROFILE = 'test' }
+  Clear-RuntimeStartupDiagnostics
   $arguments = @()
   if ($StartHidden) { $arguments += '--start-hidden' }
   Write-Host "Starting: $StartFilePath"

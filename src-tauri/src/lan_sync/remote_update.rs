@@ -3253,6 +3253,11 @@ mod tests {
         assert!(build_script.contains("Get-NetTCPConnection -LocalPort"));
         assert!(build_script
             .contains("existing API Router.exe process is still running before restart"));
+        assert!(build_script.contains("function Clear-RuntimeStartupDiagnostics"));
+        assert!(build_script.contains("Cleared stale runtime startup diagnostic"));
+        assert!(build_script.contains("function Format-StartupStageSummary"));
+        assert!(build_script.contains("recent startup stages:"));
+        assert!(build_script.contains("Clear-RuntimeStartupDiagnostics"));
         assert!(build_script.contains("-RequireNewProcess"));
         assert!(build_script.contains("repo root API Router.exe did not stop"));
         assert!(build_script.contains("port $port listeners"));
