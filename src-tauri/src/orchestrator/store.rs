@@ -559,8 +559,24 @@ impl Store {
         [b"codex_account:snapshot", b"official_web:snapshot"]
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn open(path: &std::path::Path) -> Result<Self, sled::Error> {
+        Self::open_with_trace(path, |_, _| {})
+    }
+
+    pub(crate) fn open_with_trace<F>(
+        path: &std::path::Path,
+        mut trace: F,
+    ) -> Result<Self, sled::Error>
+    where
+        F: FnMut(&str, Option<String>),
+    {
+        trace(
+            "store_sled_open_start",
+            Some(format!("path={}", path.display())),
+        );
         let db = sled::open(path)?;
+        trace("store_sled_open_ok", None);
         // Keep the event SQLite file outside the sled directory. Sled maintenance/recovery
         // may swap or recreate the whole sled dir, which would otherwise drop events.sqlite3.
         let is_sled_dir = path.file_name().and_then(|n| n.to_str()) == Some("sled");
@@ -584,6 +600,14 @@ impl Store {
         if is_sled_dir {
             let legacy_path = path.join("events.sqlite3");
             if !events_db_path.exists() && legacy_path.exists() {
+                trace(
+                    "store_legacy_sqlite_move_start",
+                    Some(format!(
+                        "from={} to={}",
+                        legacy_path.display(),
+                        events_db_path.display()
+                    )),
+                );
                 let moved = if std::fs::rename(&legacy_path, &events_db_path).is_ok() {
                     true
                 } else {
@@ -604,31 +628,53 @@ impl Store {
                     // Data is already in the canonical sqlite path; skip legacy merge.
                     legacy_events_db_path = None;
                 }
+                trace("store_legacy_sqlite_move_ok", None);
             }
         }
+        trace(
+            "store_events_sqlite_open_start",
+            Some(format!("path={}", events_db_path.display())),
+        );
         let events_db = rusqlite::Connection::open(&events_db_path)
             .map_err(|e| sled::Error::Unsupported(format!("open events sqlite failed: {e}")))?;
+        trace("store_events_sqlite_open_ok", None);
         let store = Self {
             db,
             events_db_path,
             events_db: Arc::new(Mutex::new(events_db)),
         };
+        trace("store_events_schema_start", None);
         store
             .ensure_event_sqlite_schema()
             .map_err(|e| sled::Error::Unsupported(format!("init events sqlite failed: {e}")))?;
+        trace("store_events_schema_ok", None);
         if let Some(legacy_path) = legacy_events_db_path {
+            trace(
+                "store_legacy_sqlite_merge_check_start",
+                Some(format!("path={}", legacy_path.display())),
+            );
             let already_merged = store.legacy_sqlite_merge_done().map_err(|e| {
                 sled::Error::Unsupported(format!("check legacy sqlite merge state failed: {e}"))
             })?;
+            trace(
+                "store_legacy_sqlite_merge_check_ok",
+                Some(format!("already_merged={already_merged}")),
+            );
             if !already_merged {
+                trace(
+                    "store_legacy_sqlite_merge_start",
+                    Some(format!("path={}", legacy_path.display())),
+                );
                 store
                     .merge_legacy_events_sqlite(&legacy_path)
                     .and_then(|_| store.mark_legacy_sqlite_merge_done())
                     .map_err(|e| {
                         sled::Error::Unsupported(format!("merge legacy events sqlite failed: {e}"))
                     })?;
+                trace("store_legacy_sqlite_merge_ok", None);
             }
         }
+        trace("store_open_ok", None);
         Ok(store)
     }
 

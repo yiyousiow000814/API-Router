@@ -11,7 +11,7 @@ use std::os::windows::process::CommandExt;
 use parking_lot::{Mutex, RwLock};
 
 use crate::orchestrator::config::AppConfig;
-use crate::orchestrator::gateway::{open_store_dir, GatewayState};
+use crate::orchestrator::gateway::{open_store_dir_with_trace, GatewayState};
 use crate::orchestrator::router::RouterState;
 use crate::orchestrator::secrets::SecretStore;
 use crate::orchestrator::store::unix_ms;
@@ -1468,7 +1468,9 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         started,
         Some(&format!("data_dir={}", data_dir.display())),
     );
-    let store = open_store_dir(data_dir.clone())?;
+    let store = open_store_dir_with_trace(data_dir.clone(), |stage, detail| {
+        write_build_state_startup_diag(stage, started, detail.as_deref());
+    })?;
     write_build_state_startup_diag("build_state_open_store_ok", started, None);
     write_build_state_startup_diag("build_state_router_start", started, None);
     let router = Arc::new(RouterState::new_with_store(
