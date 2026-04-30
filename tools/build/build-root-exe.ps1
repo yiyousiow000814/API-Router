@@ -447,8 +447,7 @@ function Get-UpdaterDaemonStatePath {
 }
 
 function Get-UpdaterDaemonExePath {
-  $toSha = Normalize-VersionSha $env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA $env:API_ROUTER_REMOTE_UPDATE_TARGET_REF
-  return Join-Path (Join-Path (Get-UpdaterDaemonRoot) $toSha) 'API Router Updater.exe'
+  return Join-Path (Get-UpdaterDaemonRoot) 'API Router Updater.exe'
 }
 
 function Normalize-PathForComparison {

@@ -3246,6 +3246,10 @@ mod tests {
         assert!(!build_script.contains("Stop-Process -Name 'API Router'"));
         assert!(!build_script.contains("taskkill.exe /F /IM"));
         assert!(build_script.contains("runtime') 'updater-daemon'"));
+        assert!(build_script.contains("function Get-UpdaterDaemonExePath"));
+        assert!(build_script
+            .contains("return Join-Path (Get-UpdaterDaemonRoot) 'API Router Updater.exe'"));
+        assert!(!build_script.contains("Join-Path (Join-Path (Get-UpdaterDaemonRoot) $toSha)"));
         assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_UPDATER_PORT"));
         assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_LAN_SECRET"));
         assert!(build_script.contains("function Get-LocalHttpHealthProbeHost"));
