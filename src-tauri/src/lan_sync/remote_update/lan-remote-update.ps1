@@ -530,8 +530,21 @@ function Invoke-HiddenProcess {
     $stderrTask = $process.StandardError.ReadToEndAsync()
     $process.WaitForExit()
     $exitCode = Get-ProcessExitCodeOrNull -Process $process
-    $stdout = $stdoutTask.Result
-    $stderr = $stderrTask.Result
+    $stdoutClosed = $stdoutTask.Wait(5000)
+    $stderrClosed = $stderrTask.Wait(5000)
+    if (-not $stdoutClosed -or -not $stderrClosed) {
+      Write-RemoteUpdateLog ("Hidden process output stream did not close after process exit: stdout_closed={0}; stderr_closed={1}" -f `
+          $stdoutClosed.ToString().ToLowerInvariant(),
+          $stderrClosed.ToString().ToLowerInvariant())
+    }
+    $stdout = if ($stdoutClosed) { $stdoutTask.Result } else { '' }
+    $stderr = if ($stderrClosed) { $stderrTask.Result } else { '' }
+    if (-not $stdoutClosed) {
+      try { $process.StandardOutput.Dispose() } catch {}
+    }
+    if (-not $stderrClosed) {
+      try { $process.StandardError.Dispose() } catch {}
+    }
     [System.IO.File]::WriteAllText($stdoutPath, [string]$stdout, [System.Text.UTF8Encoding]::new($false))
     [System.IO.File]::WriteAllText($stderrPath, [string]$stderr, [System.Text.UTF8Encoding]::new($false))
     $combinedOutput = @()

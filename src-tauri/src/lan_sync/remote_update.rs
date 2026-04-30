@@ -600,6 +600,53 @@ fn cleanup_remote_update_worker(worker_pid: Option<u32>) -> Option<String> {
     }
 }
 
+fn remote_update_status_has_successful_runtime_health(
+    status: &LanRemoteUpdateStatusSnapshot,
+) -> bool {
+    if !status
+        .progress_percent
+        .is_some_and(|progress| progress >= 100)
+    {
+        return false;
+    }
+    let detail = status
+        .detail
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if detail.contains("api router.exe is running")
+        || detail.contains("runtime health check passed")
+        || detail.contains("returned ok=true")
+    {
+        return true;
+    }
+    status.timeline.iter().any(|entry| {
+        let phase = entry.phase.trim();
+        let label = entry.label.trim().to_ascii_lowercase();
+        let detail = entry
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        phase == "health_check_succeeded"
+            || label == "runtime health check passed"
+            || detail.contains("runtime health check passed")
+            || detail.contains("returned ok=true")
+    })
+}
+
+fn remote_update_worker_should_delay_normalization(
+    status: &LanRemoteUpdateStatusSnapshot,
+    current_target_ref: &str,
+    status_target_ref: &str,
+) -> bool {
+    if !remote_update_worker_is_alive(status.worker_pid) {
+        return false;
+    }
+    !(current_target_ref == status_target_ref
+        && remote_update_status_has_successful_runtime_health(status))
+}
+
 fn terminate_remote_update_worker(pid: u32) -> Result<Option<bool>, String> {
     if pid == 0 {
         return Ok(None);
@@ -667,8 +714,17 @@ fn normalize_remote_update_status(
         return status;
     }
 
+    let Some(current_target_ref) = current_target_ref.as_deref() else {
+        return status;
+    };
     let now_unix_ms = unix_ms();
-    if state != "superseded" && remote_update_worker_is_alive(status.worker_pid) {
+    if state != "superseded"
+        && remote_update_worker_should_delay_normalization(
+            &status,
+            current_target_ref,
+            status_target_ref,
+        )
+    {
         return status;
     }
     if state == "accepted" && status.started_at_unix_ms.is_none() {
@@ -680,9 +736,6 @@ fn normalize_remote_update_status(
         }
     }
 
-    let Some(current_target_ref) = current_target_ref.as_deref() else {
-        return status;
-    };
     if state == "superseded" && current_target_ref != status_target_ref {
         return status;
     }
@@ -4415,6 +4468,20 @@ mod tests {
         assert!(build_script.contains("Reset-LastExitCode"));
         assert!(build_script.contains("exit 0"));
 
+        let remote_update_worker_script = std::fs::read_to_string(
+            repo_root
+                .join("src-tauri")
+                .join("src")
+                .join("lan_sync")
+                .join("remote_update")
+                .join("lan-remote-update.ps1"),
+        )
+        .expect("read lan-remote-update.ps1");
+        assert!(remote_update_worker_script.contains("$stdoutTask.Wait(5000)"));
+        assert!(remote_update_worker_script.contains("$stderrTask.Wait(5000)"));
+        assert!(remote_update_worker_script
+            .contains("Hidden process output stream did not close after process exit"));
+
         let updater_source = std::fs::read_to_string(
             repo_root
                 .join("src-tauri")
@@ -4480,6 +4547,51 @@ mod tests {
             .iter()
             .any(|entry| entry.phase == "normalized_succeeded"
                 && entry.label == "Status normalized to succeeded"));
+    }
+
+    #[test]
+    fn successful_runtime_health_allows_stuck_worker_status_to_normalize() {
+        let target_ref = "abc123";
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "running".to_string(),
+            target_ref: target_ref.to_string(),
+            from_git_sha: Some("before".to_string()),
+            to_git_sha: Some(target_ref.to_string()),
+            current_git_sha: Some(target_ref.to_string()),
+            previous_git_sha: Some("before".to_string()),
+            progress_percent: Some(100),
+            rollback_available: true,
+            request_id: Some("ru_pipe_stuck".to_string()),
+            reason_code: None,
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some("worker.ps1".to_string()),
+            worker_pid: Some(std::process::id()),
+            worker_exit_code: None,
+            detail: Some("API Router.exe is running".to_string()),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: Some(20),
+            finished_at_unix_ms: None,
+            updated_at_unix_ms: 30,
+            timeline: vec![LanRemoteUpdateTimelineEntry {
+                unix_ms: 30,
+                phase: "health_check_succeeded".to_string(),
+                label: "Runtime health check passed".to_string(),
+                detail: Some("Runtime health check passed: /health returned ok=true.".to_string()),
+                source: "build_root_exe".to_string(),
+                state: "running".to_string(),
+            }],
+        };
+
+        assert!(remote_update_status_has_successful_runtime_health(&status));
+        assert!(!remote_update_worker_should_delay_normalization(
+            &status, target_ref, target_ref
+        ));
+        assert!(remote_update_worker_should_delay_normalization(
+            &status,
+            "different",
+            target_ref
+        ));
     }
 
     #[test]
