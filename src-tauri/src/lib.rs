@@ -85,7 +85,7 @@ fn app_profile_name() -> String {
     app_profile_name_from_inputs(Some(raw.as_str()), exe_stem.as_deref())
 }
 
-fn has_explicit_user_data_override() -> bool {
+fn has_any_user_data_override() -> bool {
     std::env::var("API_ROUTER_USER_DATA_DIR")
         .ok()
         .map(|value| !value.trim().is_empty())
@@ -178,6 +178,47 @@ fn profile_data_dir_name(profile: &str) -> String {
     }
 }
 
+fn canonical_user_data_dir(exe_dir: &Path, app_profile: &str) -> PathBuf {
+    exe_dir.join(profile_data_dir_name(app_profile))
+}
+
+fn comparable_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn paths_match(left: &Path, right: &Path) -> bool {
+    let left = comparable_path(left);
+    let right = comparable_path(right);
+    if cfg!(windows) {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    } else {
+        left == right
+    }
+}
+
+fn is_noncanonical_user_data_override(
+    raw_override: Option<&str>,
+    exe_dir: &Path,
+    app_profile: &str,
+) -> bool {
+    let Some(raw_override) = raw_override else {
+        return false;
+    };
+    let trimmed = raw_override.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let override_dir = PathBuf::from(trimmed);
+    let canonical_dir = canonical_user_data_dir(exe_dir, app_profile);
+    !paths_match(&override_dir, &canonical_dir)
+}
+
+fn has_noncanonical_user_data_override(exe_dir: &Path, app_profile: &str) -> bool {
+    let raw_override = std::env::var("API_ROUTER_USER_DATA_DIR").ok();
+    is_noncanonical_user_data_override(raw_override.as_deref(), exe_dir, app_profile)
+}
+
 fn should_reset_profile_data(profile: &str, is_ui_tauri: bool) -> bool {
     !is_ui_tauri && profile == "test"
 }
@@ -189,9 +230,9 @@ fn should_seed_mock_data(profile: &str, is_ui_tauri: bool) -> bool {
 fn should_enable_single_instance(
     profile: &str,
     is_ui_tauri: bool,
-    has_explicit_user_data_override: bool,
+    has_noncanonical_user_data_override: bool,
 ) -> bool {
-    !is_ui_tauri && profile != "test" && !has_explicit_user_data_override
+    !is_ui_tauri && profile != "test" && !has_noncanonical_user_data_override
 }
 
 fn resolve_codex_home(user_data_dir: &Path, _is_ui_tauri: bool, _app_profile: &str) -> PathBuf {
@@ -471,11 +512,15 @@ fn seed_test_profile_data(state: &app_state::AppState) -> anyhow::Result<()> {
 pub fn run() {
     let is_ui_tauri = std::env::var("UI_TAURI").ok().as_deref() == Some("1");
     let app_profile = app_profile_name();
-    let has_explicit_user_data_override = has_explicit_user_data_override();
+    let noncanonical_user_data_override = std::env::current_exe()
+        .ok()
+        .and_then(|exe_path| exe_path.parent().map(Path::to_path_buf))
+        .map(|exe_dir| has_noncanonical_user_data_override(&exe_dir, &app_profile))
+        .unwrap_or_else(has_any_user_data_override);
     let launch_args = app_launch_args();
     let start_hidden = app_launch_requests_hidden(&launch_args);
     let mut builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
-    if should_enable_single_instance(&app_profile, is_ui_tauri, has_explicit_user_data_override) {
+    if should_enable_single_instance(&app_profile, is_ui_tauri, noncanonical_user_data_override) {
         // Ensure clicking the EXE again focuses the existing instance instead of launching a second one.
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if app_launch_requests_hidden(&argv) {
@@ -916,9 +961,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        app_launch_requests_hidden, app_profile_name_from_inputs, has_explicit_user_data_override,
-        profile_data_dir_name, resolve_codex_home, resolve_user_data_dir,
-        should_enable_single_instance, should_reset_profile_data,
+        app_launch_requests_hidden, app_profile_name_from_inputs, canonical_user_data_dir,
+        is_noncanonical_user_data_override, profile_data_dir_name, resolve_codex_home,
+        resolve_user_data_dir, should_enable_single_instance, should_reset_profile_data,
         should_reveal_main_window_on_setup, should_seed_mock_data,
     };
 
@@ -973,15 +1018,34 @@ mod tests {
     }
 
     #[test]
-    fn explicit_user_data_override_disables_single_instance() {
-        std::env::remove_var("API_ROUTER_USER_DATA_DIR");
-        assert!(!has_explicit_user_data_override());
-        assert!(should_enable_single_instance("default", false, false));
+    fn canonical_user_data_override_keeps_single_instance_enabled() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let exe_dir = tmp.path().join("repo");
+        let canonical_dir = canonical_user_data_dir(&exe_dir, "default");
+        std::fs::create_dir_all(&canonical_dir).unwrap();
 
-        std::env::set_var("API_ROUTER_USER_DATA_DIR", "C:\\temp\\api-router-e2e");
-        assert!(has_explicit_user_data_override());
+        assert!(!is_noncanonical_user_data_override(
+            canonical_dir.to_str(),
+            &exe_dir,
+            "default"
+        ));
+        assert!(should_enable_single_instance("default", false, false));
+    }
+
+    #[test]
+    fn noncanonical_user_data_override_disables_single_instance() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let exe_dir = tmp.path().join("repo");
+        let override_dir = tmp.path().join("isolated-user-data");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        std::fs::create_dir_all(&override_dir).unwrap();
+
+        assert!(is_noncanonical_user_data_override(
+            override_dir.to_str(),
+            &exe_dir,
+            "default"
+        ));
         assert!(!should_enable_single_instance("default", false, true));
-        std::env::remove_var("API_ROUTER_USER_DATA_DIR");
     }
 
     #[test]
