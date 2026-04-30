@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 
-import { HeroCodexCard } from './HeroCodexCard'
+import { buildRemoteAccountRefreshKey, HeroCodexCard } from './HeroCodexCard'
 import type { OfficialAccountProfileSummary, Status } from '../types'
 
 function buildStatus(): Status {
@@ -256,5 +256,107 @@ describe('HeroCodexCard', () => {
     expect(html).toContain('From Yiyou-Laptop')
     expect(html).toContain('Trusted devices')
     expect(html.indexOf('Use')).toBeLessThan(html.indexOf('Add account'))
+  })
+
+  it('changes the remote account refresh key when a trusted account peer appears', () => {
+    const offlineStatus = buildStatus()
+    offlineStatus.lan_sync = {
+      enabled: true,
+      discovery_port: 38455,
+      heartbeat_interval_ms: 2000,
+      peer_stale_after_ms: 20000,
+      local_node: {
+        node_id: 'node-syb',
+        node_name: 'SYB',
+        listen_addr: '192.168.3.137:51385',
+        capabilities: ['official_accounts_v1'],
+        provider_fingerprints: [],
+      },
+      peers: [],
+    }
+    const onlineStatus = buildStatus()
+    onlineStatus.lan_sync = {
+      ...offlineStatus.lan_sync,
+      peers: [
+        {
+          node_id: 'node-desktop',
+          node_name: 'DESKTOP-KK6SA2D',
+          listen_addr: '192.168.3.210:4000',
+          last_heartbeat_unix_ms: 1777572249004,
+          capabilities: ['official_accounts_v1'],
+          provider_fingerprints: [],
+          trusted: true,
+          sync_diagnostics: [
+            {
+              domain: 'official_accounts',
+              status: 'ok',
+              local_contract_version: 1,
+              peer_contract_version: 1,
+              blocked_reason: null,
+            },
+          ],
+          http_probe_state: 'ok',
+        },
+      ],
+    }
+
+    expect(buildRemoteAccountRefreshKey(offlineStatus)).toBe('')
+    expect(buildRemoteAccountRefreshKey(onlineStatus)).toBe(
+      'node-desktop:192.168.3.210:4000:ok:ok:1:1',
+    )
+  })
+
+  it('keeps the remote account refresh key stable across heartbeat churn', () => {
+    const status = buildStatus()
+    status.lan_sync = {
+      enabled: true,
+      discovery_port: 38455,
+      heartbeat_interval_ms: 2000,
+      peer_stale_after_ms: 20000,
+      local_node: {
+        node_id: 'node-syb',
+        node_name: 'SYB',
+        listen_addr: '192.168.3.137:51385',
+        capabilities: ['official_accounts_v1'],
+        provider_fingerprints: [],
+      },
+      peers: [
+        {
+          node_id: 'node-desktop',
+          node_name: 'DESKTOP-KK6SA2D',
+          listen_addr: '192.168.3.210:4000',
+          last_heartbeat_unix_ms: 1,
+          capabilities: ['official_accounts_v1'],
+          provider_fingerprints: [],
+          trusted: true,
+          sync_diagnostics: [
+            {
+              domain: 'official_accounts',
+              status: 'ok',
+              local_contract_version: 1,
+              peer_contract_version: 1,
+            },
+          ],
+          http_probe_state: 'ok',
+        },
+      ],
+    }
+    const lanSync = status.lan_sync
+    expect(lanSync).toBeDefined()
+    const nextStatus: Status = {
+      ...status,
+      lan_sync: {
+        ...lanSync!,
+        peers: lanSync!.peers.map((peer) => ({
+          ...peer,
+          last_heartbeat_unix_ms: 2,
+          heartbeat_age_ms: 100,
+        })),
+      },
+    }
+
+    expect(buildRemoteAccountRefreshKey(nextStatus)).toBe(
+      buildRemoteAccountRefreshKey(status),
+    )
   })
 })

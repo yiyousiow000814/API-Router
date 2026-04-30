@@ -4,6 +4,27 @@ import { fmtResetIn, fmtWhen } from '../utils/format'
 import { officialAccountDisplayName } from '../utils/codexAccountProfiles'
 import { OfficialAccountQuotaSummary } from './OfficialAccountQuotaSummary'
 
+export function buildRemoteAccountRefreshKey(status: Status): string {
+  const peers = status.lan_sync?.peers ?? []
+  return peers
+    .filter((peer) => peer.trusted && peer.capabilities.includes('official_accounts_v1'))
+    .map((peer) => {
+      const accountSync = peer.sync_diagnostics?.find(
+        (item) => item.domain === 'official_accounts',
+      )
+      return [
+        peer.node_id,
+        peer.listen_addr,
+        peer.http_probe_state ?? '',
+        accountSync?.status ?? '',
+        accountSync?.local_contract_version ?? '',
+        accountSync?.peer_contract_version ?? '',
+      ].join(':')
+    })
+    .sort()
+    .join('|')
+}
+
 type HeroCodexProps = {
   status: Status
   onLoginLogout: () => void
@@ -62,6 +83,8 @@ export function HeroCodexCard({
   const swapTargetLabel = swapTarget === 'windows' ? 'Windows' : swapTarget === 'wsl2' ? 'WSL2' : 'Both'
   const availableTargets: Array<'windows' | 'wsl2' | 'both'> = []
   const selectedProfile = profiles.find((profile) => profile.active) ?? null
+  const remoteAccountRefreshKey = buildRemoteAccountRefreshKey(status)
+  const lastRemoteAccountRefreshKeyRef = useRef<string | null>(null)
   const displayedCheckedAt =
     selectedProfile?.updated_at_unix_ms ?? status.codex_account?.checked_at_unix_ms
   const displayed5hRemaining =
@@ -90,6 +113,13 @@ export function HeroCodexCard({
     document.addEventListener('mousedown', onDocMouseDown)
     return () => document.removeEventListener('mousedown', onDocMouseDown)
   }, [menuOpen])
+
+  useEffect(() => {
+    if (!accountsMenuOpen) return
+    if (lastRemoteAccountRefreshKeyRef.current === remoteAccountRefreshKey) return
+    lastRemoteAccountRefreshKeyRef.current = remoteAccountRefreshKey
+    void onRefreshRemoteProfiles()
+  }, [accountsMenuOpen, onRefreshRemoteProfiles, remoteAccountRefreshKey])
 
   useEffect(() => {
     if (!accountsMenuOpen) return
@@ -206,11 +236,7 @@ export function HeroCodexCard({
                 type="button"
                 onClick={() => {
                   setAccountsMenuOpen((value) => {
-                    const next = !value
-                    if (next) {
-                      void onRefreshRemoteProfiles()
-                    }
-                    return next
+                    return !value
                   })
                 }}
                 title={profilesLoading ? 'Loading accounts...' : 'Official accounts'}
