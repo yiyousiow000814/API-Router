@@ -584,6 +584,67 @@ function remoteDebugScriptProbeText(remoteUpdateDebug: LanRemoteUpdateDebugRespo
   return `Worker script probe: ${facts.join(' · ')}`
 }
 
+function formatRemoteDebugBytes(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return 'unknown'
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  let scaled = value
+  let unit = 0
+  while (scaled >= 1024 && unit < units.length - 1) {
+    scaled /= 1024
+    unit += 1
+  }
+  return `${scaled >= 10 || unit === 0 ? scaled.toFixed(0) : scaled.toFixed(1)} ${units[unit]}`
+}
+
+function formatRemoteDebugPercent(value: number | null | undefined): string {
+  return value == null || !Number.isFinite(value) ? 'unknown' : `${value.toFixed(1)}%`
+}
+
+function remoteDebugSystemSnapshotText(
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+): string | null {
+  const snapshot = remoteUpdateDebug?.system_snapshot
+  if (!snapshot) return null
+  const memoryUsed =
+    snapshot.memory_total_bytes != null && snapshot.memory_available_bytes != null
+      ? Math.max(0, snapshot.memory_total_bytes - snapshot.memory_available_bytes)
+      : null
+  const diskUsed =
+    snapshot.disk_total_bytes != null && snapshot.disk_available_bytes != null
+      ? Math.max(0, snapshot.disk_total_bytes - snapshot.disk_available_bytes)
+      : null
+  const lines = [
+    `remote-update-system-snapshot`,
+    `cpu=${formatRemoteDebugPercent(snapshot.cpu_load_percent)} · gpu=${formatRemoteDebugPercent(
+      snapshot.gpu_load_percent,
+    )}`,
+    `memory=${formatRemoteDebugBytes(memoryUsed)} / ${formatRemoteDebugBytes(snapshot.memory_total_bytes)}`,
+    `disk=${formatRemoteDebugBytes(diskUsed)} / ${formatRemoteDebugBytes(snapshot.disk_total_bytes)}`,
+  ]
+  const processLines =
+    snapshot.remote_update_processes
+      ?.map((process) =>
+        [
+          `pid=${process.pid}`,
+          `role=${process.role}`,
+          `visibility=${process.visibility}`,
+          `rss=${formatRemoteDebugBytes(process.working_set_bytes)}`,
+          process.command,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+      )
+      .filter((line) => line.trim().length > 0) ?? []
+  if (processLines.length > 0) {
+    lines.push(`remote-update-processes\n${processLines.join('\n')}`)
+  }
+  const detailLines = snapshot.probe_detail?.filter((line) => line.trim().length > 0) ?? []
+  if (detailLines.length > 0) {
+    lines.push(`probe-detail\n${detailLines.join('\n')}`)
+  }
+  return lines.join('\n')
+}
+
 export function remoteDebugStartupDiagnosisText(
   remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
 ): string {
@@ -1051,6 +1112,11 @@ export function diagnosticsWhyText(
     }
     const followReason = source.follow_blocked_reason?.trim()
     if (followReason) return followReason
+  }
+  const httpProbeState = source.http_probe_state?.trim()
+  const httpProbeDetail = source.http_probe_detail?.trim()
+  if (httpProbeState && httpProbeState !== 'ok' && httpProbeDetail) {
+    return `Heartbeat seen ${source.heartbeat_age_ms ?? '?'}ms ago, but HTTP sync is ${httpProbeState}: ${httpProbeDetail}`
   }
   return ''
 }
@@ -1756,6 +1822,22 @@ export function ConfigModal({
                     const debugStartupDiagnosis = remoteDebugStartupDiagnosisText(remoteUpdateDebug)
                     const debugLogTail = remoteUpdateDebug?.log_tail?.trim() ?? ''
                     const debugStartupTail = [
+                      remoteUpdateDebug?.shell_window_summary?.length
+                        ? `remote-update-shell-summary\n${remoteUpdateDebug.shell_window_summary
+                            .map((entry) =>
+                              [
+                                `pid=${entry.pid}`,
+                                `role=${entry.role}`,
+                                `visibility=${entry.visibility}`,
+                                entry.request_id ? `request=${entry.request_id}` : '',
+                                entry.command,
+                              ]
+                                .filter(Boolean)
+                                .join(' · '),
+                            )
+                            .join('\n')}`
+                        : '',
+                      remoteDebugSystemSnapshotText(remoteUpdateDebug) ?? '',
                       remoteUpdateDebug?.shell_log_tail?.trim()
                         ? `remote-update-shell.log\n${remoteUpdateDebug.shell_log_tail.trim()}`
                         : '',

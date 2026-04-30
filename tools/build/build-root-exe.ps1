@@ -56,6 +56,46 @@ $UsesArtifactPathOverrides = [bool]$UsesArtifactPathOverrides
 
 Write-Host "RepoRoot: $RepoRoot"
 
+$script:BuildMutex = $null
+$script:BuildMutexHeld = $false
+
+function Get-BuildMutexName {
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes($RepoRoot.ToLowerInvariant())
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $hashBytes = $sha.ComputeHash($bytes)
+    $hash = [System.BitConverter]::ToString($hashBytes).Replace('-', '').Substring(0, 16)
+  } finally {
+    $sha.Dispose()
+  }
+  return "Global\API-Router-Build-$hash"
+}
+
+function Enter-BuildMutex {
+  $name = Get-BuildMutexName
+  $script:BuildMutex = [System.Threading.Mutex]::new($false, $name)
+  $script:BuildMutexHeld = $script:BuildMutex.WaitOne(0)
+  if (-not $script:BuildMutexHeld) {
+    $script:BuildMutex.Dispose()
+    $script:BuildMutex = $null
+    throw "another API Router build/update is already running for repo root $RepoRoot"
+  }
+}
+
+function Exit-BuildMutex {
+  if ($script:BuildMutexHeld -and $null -ne $script:BuildMutex) {
+    try {
+      $script:BuildMutex.ReleaseMutex() | Out-Null
+    } catch {
+    }
+  }
+  if ($null -ne $script:BuildMutex) {
+    $script:BuildMutex.Dispose()
+  }
+  $script:BuildMutex = $null
+  $script:BuildMutexHeld = $false
+}
+
 function Resolve-BuildToolPath([string]$EnvVarName, [string]$DefaultPath, [string]$Label) {
   $override = [string][System.Environment]::GetEnvironmentVariable($EnvVarName)
   if (-not [string]::IsNullOrWhiteSpace($override)) {
@@ -1543,6 +1583,7 @@ $script:CurrentBuildStepPhase = ''
 $script:CurrentBuildStepLabel = ''
 $script:CurrentBuildStepDetail = ''
 $script:RuntimeRollbackCandidate = $false
+Enter-BuildMutex
 try {
   $buildStartedAtUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   # Keep the outer checks explicit so remote-update diagnostics can point at the first
@@ -1675,8 +1716,12 @@ try {
       Write-Warning ("API Router restart after build failed: " + $runtimeValidationError.Exception.Message)
     }
   }
-  Write-BuildExitDiagnostics $script:BuildResult
-  Write-BuildResultMarker $script:BuildResult
+  try {
+    Write-BuildExitDiagnostics $script:BuildResult
+    Write-BuildResultMarker $script:BuildResult
+  } finally {
+    Exit-BuildMutex
+  }
 }
 
 if ($hadFailure) {

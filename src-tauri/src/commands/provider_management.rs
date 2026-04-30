@@ -467,6 +467,13 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
                 if peer.trusted {
                     peer.pair_state = Some("trusted".to_string());
                 }
+                peer.heartbeat_age_ms = crate::orchestrator::store::unix_ms()
+                    .saturating_sub(peer.last_heartbeat_unix_ms);
+                peer.http_probe_state = Some("stale_heartbeat".to_string());
+                peer.http_probe_detail = Some(format!(
+                    "last heartbeat was {}ms ago; last listen_addr={}",
+                    peer.heartbeat_age_ms, peer.listen_addr
+                ));
                 peer.build_matches_local = peer.build_identity == lan_snapshot.local_node.build_identity;
                 let version_sync_reason = crate::lan_sync::peer_version_sync_reason(&peer);
                 ConfigSourceSnapshot {

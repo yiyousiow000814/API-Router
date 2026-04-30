@@ -241,8 +241,46 @@ fn probe_git_worktree_clean(repo_root: &Path) -> Result<bool, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().is_empty())
 }
 
+fn git_output_trimmed(repo_root: &Path, args: &[&str]) -> Result<String, String> {
+    let output = crate::platform::git_exec::new_git_command()
+        .args(args)
+        .current_dir(repo_root)
+        .output()
+        .map_err(|err| format!("git {} failed: {err}", args.join(" ")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            return Err(format!(
+                "git {} exited with {}",
+                args.join(" "),
+                output.status
+            ));
+        }
+        return Err(format!(
+            "git {} exited with {}: {stderr}",
+            args.join(" "),
+            output.status
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn local_version_sync_target_ref_for_repo(repo_root: &Path, build_sha: &str) -> String {
+    let head_sha = git_output_trimmed(repo_root, &["rev-parse", "HEAD"]).unwrap_or_default();
+    if head_sha.eq_ignore_ascii_case(build_sha) {
+        let branch = git_output_trimmed(repo_root, &["branch", "--show-current"])
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if !branch.is_empty() {
+            return branch;
+        }
+    }
+    build_sha.to_string()
+}
+
 fn compute_local_version_sync_snapshot() -> LanLocalVersionSyncSnapshot {
-    let Some(target_ref) = normalized_local_build_target_ref() else {
+    let Some(build_sha) = normalized_local_build_target_ref() else {
         return LanLocalVersionSyncSnapshot {
             target_ref: None,
             git_worktree_clean: false,
@@ -253,9 +291,12 @@ fn compute_local_version_sync_snapshot() -> LanLocalVersionSyncSnapshot {
             ),
         };
     };
-    let git_worktree_clean = match resolve_repo_root_for_self_update() {
-        Ok(repo_root) => probe_git_worktree_clean(&repo_root).unwrap_or_default(),
-        Err(_) => false,
+    let (target_ref, git_worktree_clean) = match resolve_repo_root_for_self_update() {
+        Ok(repo_root) => (
+            local_version_sync_target_ref_for_repo(&repo_root, &build_sha),
+            probe_git_worktree_clean(&repo_root).unwrap_or_default(),
+        ),
+        Err(_) => (build_sha.clone(), false),
     };
     LanLocalVersionSyncSnapshot {
         target_ref: Some(target_ref),
@@ -465,6 +506,9 @@ pub struct LanPeerSnapshot {
     pub sync_blocked_domains: Vec<String>,
     pub sync_diagnostics: Vec<LanSyncDomainDiagnosticSnapshot>,
     pub build_matches_local: bool,
+    pub heartbeat_age_ms: u64,
+    pub http_probe_state: Option<String>,
+    pub http_probe_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -554,6 +598,35 @@ fn lan_peer_snapshot_from_runtime(peer: &LanPeerRuntime) -> LanPeerSnapshot {
         sync_blocked_domains: Vec::new(),
         sync_diagnostics: Vec::new(),
         build_matches_local: false,
+        heartbeat_age_ms: 0,
+        http_probe_state: None,
+        http_probe_detail: None,
+    }
+}
+
+fn enrich_peer_transport_diagnostics(
+    peer: &mut LanPeerSnapshot,
+    now: u64,
+    last_probe: Option<&LanHttpSyncProbeSnapshot>,
+    last_failure: Option<&LanHttpSyncProbeSnapshot>,
+) {
+    peer.heartbeat_age_ms = now.saturating_sub(peer.last_heartbeat_unix_ms);
+    let matching_failure = last_failure.filter(|probe| probe.peer_node_id == peer.node_id);
+    let matching_probe = last_probe.filter(|probe| probe.peer_node_id == peer.node_id);
+    if let Some(failure) = matching_failure {
+        peer.http_probe_state = Some(failure.outcome.clone());
+        peer.http_probe_detail = Some(format!(
+            "{} via {}: {}",
+            failure.route, failure.peer_listen_addr, failure.detail
+        ));
+        return;
+    }
+    if let Some(probe) = matching_probe {
+        peer.http_probe_state = Some(probe.outcome.clone());
+        peer.http_probe_detail = Some(format!(
+            "{} via {}: {}",
+            probe.route, probe.peer_listen_addr, probe.detail
+        ));
     }
 }
 
@@ -1003,10 +1076,18 @@ impl LanSyncRuntime {
         let trusted_node_ids = secrets.trusted_lan_node_ids();
         let inbound_requests = self.inbound_pair_requests.read().clone();
         let outbound_requests = self.outbound_pair_requests.read().clone();
+        let last_http_sync_probe = self.last_http_sync_probe.read().clone();
+        let last_http_sync_failure = self.last_http_sync_failure.read().clone();
         let peers = self
             .collect_live_peers(now)
             .into_iter()
             .map(|mut peer| {
+                enrich_peer_transport_diagnostics(
+                    &mut peer,
+                    now,
+                    last_http_sync_probe.as_ref(),
+                    last_http_sync_failure.as_ref(),
+                );
                 peer.trusted = trusted_node_ids.contains(&peer.node_id);
                 peer.pair_state = peer_pair_state(
                     &peer.node_id,
@@ -1033,8 +1114,8 @@ impl LanSyncRuntime {
                 .last_peer_heartbeat_received_unix_ms
                 .load(Ordering::Relaxed),
             last_peer_heartbeat_source: self.last_peer_heartbeat_source.read().clone(),
-            last_http_sync_probe: self.last_http_sync_probe.read().clone(),
-            last_http_sync_failure: self.last_http_sync_failure.read().clone(),
+            last_http_sync_probe,
+            last_http_sync_failure,
             local_node: LanLocalNodeSnapshot {
                 node_id: self.local_node.node_id.clone(),
                 node_name: self.local_node.node_name.clone(),
@@ -5033,6 +5114,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: true,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         }
     }
 
@@ -5048,6 +5132,46 @@ mod tests {
         assert_eq!(
             local_version_sync_target_ref(&snapshot).expect("target ref should stay usable"),
             "abc123"
+        );
+    }
+
+    #[test]
+    fn local_version_sync_target_ref_for_repo_prefers_current_branch() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let repo = tmp.path();
+        crate::platform::git_exec::new_git_command()
+            .args(["init", "-b", "feature/test"])
+            .current_dir(repo)
+            .output()
+            .expect("git init");
+        std::fs::write(repo.join("README.md"), "test\n").expect("write readme");
+        crate::platform::git_exec::new_git_command()
+            .args(["add", "README.md"])
+            .current_dir(repo)
+            .output()
+            .expect("git add");
+        crate::platform::git_exec::new_git_command()
+            .args([
+                "-c",
+                "user.name=API Router Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "test",
+            ])
+            .current_dir(repo)
+            .output()
+            .expect("git commit");
+        let sha = super::git_output_trimmed(repo, &["rev-parse", "HEAD"]).expect("head sha");
+
+        assert_eq!(
+            super::local_version_sync_target_ref_for_repo(repo, &sha),
+            "feature/test"
+        );
+        assert_eq!(
+            super::local_version_sync_target_ref_for_repo(repo, "deadbeef"),
+            "deadbeef"
         );
     }
 
@@ -6769,6 +6893,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: true,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         };
         assert!(peer_supports_http_sync(&trusted_peer, "edit_sync_v1"));
 
@@ -6832,6 +6959,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: true,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         };
 
         let reason = super::sync_contract_block_reason_for_domain(
@@ -6881,6 +7011,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: true,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         };
 
         let diagnostics = super::sync_domain_diagnostics_for_peer(&peer);
@@ -7045,6 +7178,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: false,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         };
         let shared_provider_id = state
             .secrets
@@ -7294,6 +7430,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: true,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         };
 
         assert_eq!(
@@ -7478,6 +7617,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: true,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         };
         runtime.note_http_sync_probe(
             &peer,
@@ -7530,6 +7672,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: true,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         };
         runtime.note_http_sync_probe(
             &peer,

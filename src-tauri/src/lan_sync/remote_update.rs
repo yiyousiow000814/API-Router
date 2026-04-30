@@ -136,6 +136,10 @@ pub(crate) struct LanRemoteUpdateDebugResponsePacket {
     #[serde(default)]
     pub shell_log_tail: Option<String>,
     #[serde(default)]
+    pub shell_window_summary: Vec<LanRemoteUpdateShellWindowSummary>,
+    #[serde(default)]
+    pub system_snapshot: LanRemoteUpdateSystemSnapshot,
+    #[serde(default)]
     pub app_startup_path: Option<String>,
     #[serde(default)]
     pub app_startup_file_exists: bool,
@@ -158,6 +162,47 @@ pub(crate) struct LanRemoteUpdateDebugResponsePacket {
     pub worker_script_probe: Option<LanRemoteUpdateWorkerScriptProbe>,
     pub local_build_identity: LanBuildIdentitySnapshot,
     pub local_version_sync: LanLocalVersionSyncSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct LanRemoteUpdateShellWindowSummary {
+    pub pid: u32,
+    pub visibility: String,
+    pub role: String,
+    pub request_id: Option<String>,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub(crate) struct LanRemoteUpdateSystemSnapshot {
+    #[serde(default)]
+    pub captured_at_unix_ms: u64,
+    #[serde(default)]
+    pub cpu_load_percent: Option<f64>,
+    #[serde(default)]
+    pub memory_total_bytes: Option<u64>,
+    #[serde(default)]
+    pub memory_available_bytes: Option<u64>,
+    #[serde(default)]
+    pub disk_total_bytes: Option<u64>,
+    #[serde(default)]
+    pub disk_available_bytes: Option<u64>,
+    #[serde(default)]
+    pub gpu_load_percent: Option<f64>,
+    #[serde(default)]
+    pub probe_detail: Vec<String>,
+    #[serde(default)]
+    pub remote_update_processes: Vec<LanRemoteUpdateProcessResourceSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct LanRemoteUpdateProcessResourceSummary {
+    pub pid: u32,
+    pub role: String,
+    pub visibility: String,
+    #[serde(default)]
+    pub working_set_bytes: Option<u64>,
+    pub command: String,
 }
 
 fn default_remote_update_log_tail_source() -> String {
@@ -869,6 +914,376 @@ fn current_remote_update_status_block_reason() -> Option<String> {
     })
 }
 
+#[cfg(target_os = "windows")]
+fn remote_update_active_process_block_reason() -> Option<String> {
+    let repo_root = resolve_repo_root_for_self_update().ok()?;
+    let status_path = lan_remote_update_status_path();
+    let log_path = lan_remote_update_log_path();
+    let current_pid = std::process::id();
+    let candidate_pids = crate::platform::windows_loopback_peer::list_process_ids_by_name(&[
+        "powershell.exe",
+        "pwsh.exe",
+        "cmd.exe",
+        "conhost.exe",
+    ]);
+    for pid in candidate_pids {
+        if pid == current_pid {
+            continue;
+        }
+        let command_line = crate::platform::windows_loopback_peer::read_process_command_line(pid)
+            .unwrap_or_default();
+        let status_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            pid,
+            "API_ROUTER_REMOTE_UPDATE_STATUS_PATH",
+        )
+        .unwrap_or_default();
+        let log_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            pid,
+            "API_ROUTER_REMOTE_UPDATE_LOG_PATH",
+        )
+        .unwrap_or_default();
+        let request_id_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            pid,
+            "API_ROUTER_REMOTE_UPDATE_REQUEST_ID",
+        )
+        .unwrap_or_default();
+        if !remote_update_active_process_is_marked(
+            &repo_root,
+            status_path.as_deref(),
+            log_path.as_deref(),
+            &command_line,
+            &status_env,
+            &log_env,
+            &request_id_env,
+        ) {
+            continue;
+        }
+        let command_preview = if command_line.trim().is_empty() {
+            "<unavailable>".to_string()
+        } else {
+            command_line.trim().chars().take(180).collect::<String>()
+        };
+        return Some(format!(
+            "This machine is already running remote update process PID {pid}: {command_preview}"
+        ));
+    }
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+fn remote_update_active_process_block_reason() -> Option<String> {
+    None
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn remote_update_active_process_is_marked(
+    repo_root: &std::path::Path,
+    status_path: Option<&std::path::Path>,
+    log_path: Option<&std::path::Path>,
+    command_line: &str,
+    status_env: &str,
+    log_env: &str,
+    request_id_env: &str,
+) -> bool {
+    let command_line_lower = command_line.trim().to_ascii_lowercase();
+    let repo_marker = repo_root.display().to_string().to_ascii_lowercase();
+    if command_line_lower.contains("lan-remote-update.ps1")
+        || command_line_lower.contains("lan-remote-update.sh")
+        || command_line_lower.contains("build-root-exe.ps1")
+        || command_line_lower.contains("build-root-exe.mjs")
+        || (!repo_marker.is_empty()
+            && command_line_lower.contains(&repo_marker)
+            && command_line_lower.contains("api_router_remote_update"))
+    {
+        return true;
+    }
+    if !request_id_env.trim().is_empty() {
+        return true;
+    }
+    if status_path.is_some_and(|path| {
+        status_env
+            .trim()
+            .eq_ignore_ascii_case(&path.display().to_string())
+    }) {
+        return true;
+    }
+    log_path.is_some_and(|path| {
+        log_env
+            .trim()
+            .eq_ignore_ascii_case(&path.display().to_string())
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn current_remote_update_shell_window_summary() -> Vec<LanRemoteUpdateShellWindowSummary> {
+    let repo_root = match resolve_repo_root_for_self_update() {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    let status_path = lan_remote_update_status_path();
+    let log_path = lan_remote_update_log_path();
+    let candidate_pids = crate::platform::windows_loopback_peer::list_process_ids_by_name(&[
+        "powershell.exe",
+        "pwsh.exe",
+        "cmd.exe",
+        "conhost.exe",
+    ]);
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for pid in candidate_pids {
+        if !seen.insert(pid) {
+            continue;
+        }
+        let command_line = crate::platform::windows_loopback_peer::read_process_command_line(pid)
+            .unwrap_or_default();
+        let status_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            pid,
+            "API_ROUTER_REMOTE_UPDATE_STATUS_PATH",
+        )
+        .unwrap_or_default();
+        let log_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            pid,
+            "API_ROUTER_REMOTE_UPDATE_LOG_PATH",
+        )
+        .unwrap_or_default();
+        let request_id_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            pid,
+            "API_ROUTER_REMOTE_UPDATE_REQUEST_ID",
+        )
+        .unwrap_or_default();
+        if !remote_update_active_process_is_marked(
+            &repo_root,
+            status_path.as_deref(),
+            log_path.as_deref(),
+            &command_line,
+            &status_env,
+            &log_env,
+            &request_id_env,
+        ) {
+            continue;
+        }
+        let visible_title = crate::platform::windows_loopback_peer::visible_window_title(pid);
+        let visibility = if visible_title.is_some() {
+            "visible"
+        } else {
+            "hidden_or_no_window"
+        };
+        out.push(LanRemoteUpdateShellWindowSummary {
+            pid,
+            visibility: visibility.to_string(),
+            role: classify_remote_update_shell_command(&command_line).to_string(),
+            request_id: (!request_id_env.trim().is_empty())
+                .then(|| request_id_env.trim().to_string()),
+            command: if command_line.trim().is_empty() {
+                "<unavailable>".to_string()
+            } else {
+                command_line.trim().chars().take(240).collect()
+            },
+        });
+    }
+    out
+}
+
+#[cfg(not(target_os = "windows"))]
+fn current_remote_update_shell_window_summary() -> Vec<LanRemoteUpdateShellWindowSummary> {
+    Vec::new()
+}
+
+#[cfg(target_os = "windows")]
+fn current_remote_update_system_snapshot(
+    shell_windows: &[LanRemoteUpdateShellWindowSummary],
+) -> LanRemoteUpdateSystemSnapshot {
+    let mut snapshot = LanRemoteUpdateSystemSnapshot {
+        captured_at_unix_ms: unix_ms(),
+        ..LanRemoteUpdateSystemSnapshot::default()
+    };
+    snapshot.cpu_load_percent = windows_cpu_load_percent_sample();
+    if snapshot.cpu_load_percent.is_none() {
+        snapshot
+            .probe_detail
+            .push("cpu_load_percent needs one previous debug sample".to_string());
+    }
+    match windows_memory_snapshot() {
+        Some((total, available)) => {
+            snapshot.memory_total_bytes = Some(total);
+            snapshot.memory_available_bytes = Some(available);
+        }
+        None => snapshot
+            .probe_detail
+            .push("memory snapshot unavailable".to_string()),
+    }
+    match windows_disk_snapshot_for_path(&resolve_repo_root_for_self_update().unwrap_or_default()) {
+        Some((total, available)) => {
+            snapshot.disk_total_bytes = Some(total);
+            snapshot.disk_available_bytes = Some(available);
+        }
+        None => snapshot
+            .probe_detail
+            .push("disk snapshot unavailable".to_string()),
+    }
+    snapshot
+        .probe_detail
+        .push("gpu_load_percent unavailable: Windows GPU utilization is not exposed by the low-cost Win32 probes used here".to_string());
+    snapshot.remote_update_processes = shell_windows
+        .iter()
+        .map(|item| LanRemoteUpdateProcessResourceSummary {
+            pid: item.pid,
+            role: item.role.clone(),
+            visibility: item.visibility.clone(),
+            working_set_bytes: windows_process_working_set_bytes(item.pid),
+            command: item.command.clone(),
+        })
+        .collect();
+    snapshot
+}
+
+#[cfg(not(target_os = "windows"))]
+fn current_remote_update_system_snapshot(
+    _shell_windows: &[LanRemoteUpdateShellWindowSummary],
+) -> LanRemoteUpdateSystemSnapshot {
+    LanRemoteUpdateSystemSnapshot {
+        captured_at_unix_ms: unix_ms(),
+        probe_detail: vec!["system snapshot unavailable on this platform".to_string()],
+        ..LanRemoteUpdateSystemSnapshot::default()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_memory_snapshot() -> Option<(u64, u64)> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+
+    let mut status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..unsafe { std::mem::zeroed() }
+    };
+    let ok = unsafe { GlobalMemoryStatusEx(&mut status as *mut MEMORYSTATUSEX) };
+    (ok != 0).then_some((status.ullTotalPhys, status.ullAvailPhys))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_disk_snapshot_for_path(path: &std::path::Path) -> Option<(u64, u64)> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let probe_path = if path.as_os_str().is_empty() {
+        std::env::current_dir().ok()?
+    } else {
+        path.to_path_buf()
+    };
+    let mut wide: Vec<u16> = probe_path.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let mut free_available: u64 = 0;
+    let mut total: u64 = 0;
+    let mut total_free: u64 = 0;
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free_available as *mut u64,
+            &mut total as *mut u64,
+            &mut total_free as *mut u64,
+        )
+    };
+    (ok != 0).then_some((total, free_available))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_process_working_set_bytes(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle == 0 {
+            return None;
+        }
+        let mut counters = PROCESS_MEMORY_COUNTERS {
+            cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            PageFaultCount: 0,
+            PeakWorkingSetSize: 0,
+            WorkingSetSize: 0,
+            QuotaPeakPagedPoolUsage: 0,
+            QuotaPagedPoolUsage: 0,
+            QuotaPeakNonPagedPoolUsage: 0,
+            QuotaNonPagedPoolUsage: 0,
+            PagefileUsage: 0,
+            PeakPagefileUsage: 0,
+        };
+        let ok = GetProcessMemoryInfo(
+            handle,
+            &mut counters as *mut PROCESS_MEMORY_COUNTERS,
+            counters.cb,
+        );
+        let _ = CloseHandle(handle);
+        (ok != 0).then_some(counters.WorkingSetSize as u64)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_cpu_load_percent_sample() -> Option<f64> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::GetSystemTimes;
+
+    static PREVIOUS: OnceLock<std::sync::Mutex<Option<(u64, u64)>>> = OnceLock::new();
+
+    let mut idle = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut kernel = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut user = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let ok = unsafe {
+        GetSystemTimes(
+            &mut idle as *mut FILETIME,
+            &mut kernel as *mut FILETIME,
+            &mut user as *mut FILETIME,
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+    let idle_ticks = filetime_to_u64(idle);
+    let total_ticks = filetime_to_u64(kernel).saturating_add(filetime_to_u64(user));
+    let lock = PREVIOUS.get_or_init(|| std::sync::Mutex::new(None));
+    let mut guard = lock.lock().ok()?;
+    let previous = guard.replace((idle_ticks, total_ticks));
+    let (previous_idle, previous_total) = previous?;
+    let total_delta = total_ticks.saturating_sub(previous_total);
+    if total_delta == 0 {
+        return None;
+    }
+    let idle_delta = idle_ticks.saturating_sub(previous_idle).min(total_delta);
+    Some(((total_delta - idle_delta) as f64 / total_delta as f64 * 100.0).clamp(0.0, 100.0))
+}
+
+#[cfg(target_os = "windows")]
+fn filetime_to_u64(value: windows_sys::Win32::Foundation::FILETIME) -> u64 {
+    ((value.dwHighDateTime as u64) << 32) | value.dwLowDateTime as u64
+}
+
+fn classify_remote_update_shell_command(command_line: &str) -> &'static str {
+    let lower = command_line.to_ascii_lowercase();
+    if lower.contains("lan-remote-update.ps1") || lower.contains("lan-remote-update.sh") {
+        "worker"
+    } else if lower.contains("build-root-exe.ps1") || lower.contains("build-root-exe.mjs") {
+        "build"
+    } else if lower.contains("api_router_updater") || lower.contains("api router updater.exe") {
+        "updater"
+    } else if lower.contains("api-router-remote-update-notify") {
+        "notification"
+    } else {
+        "child"
+    }
+}
+
 fn remote_update_request_lock() -> &'static std::sync::Mutex<()> {
     static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| std::sync::Mutex::new(()))
@@ -877,6 +1292,13 @@ fn remote_update_request_lock() -> &'static std::sync::Mutex<()> {
 pub(crate) fn compute_local_remote_update_readiness() -> LanRemoteUpdateReadinessSnapshot {
     let checked_at_unix_ms = unix_ms();
     if let Some(reason) = current_remote_update_status_block_reason() {
+        return LanRemoteUpdateReadinessSnapshot {
+            ready: false,
+            blocked_reason: Some(reason),
+            checked_at_unix_ms,
+        };
+    }
+    if let Some(reason) = remote_update_active_process_block_reason() {
         return LanRemoteUpdateReadinessSnapshot {
             ready: false,
             blocked_reason: Some(reason),
@@ -1932,6 +2354,16 @@ pub(crate) async fn lan_sync_remote_update_http(
         )
             .into_response();
     }
+    if let Some(reason) = remote_update_active_process_block_reason() {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": reason,
+            })),
+        )
+            .into_response();
+    }
     let accepted_at_unix_ms = unix_ms();
     let request_id = format!("ru_{}", uuid::Uuid::new_v4().simple());
     reset_remote_update_log();
@@ -2090,6 +2522,8 @@ pub(crate) async fn lan_sync_remote_update_debug_http(
     let gateway_startup_tail = runtime_startup_diag_tail("gateway-startup.json", 12_000);
     let (log_tail_source, log_tail) =
         select_remote_update_log_tail(remote_update_status.as_ref(), file_log_tail);
+    let shell_window_summary = current_remote_update_shell_window_summary();
+    let system_snapshot = current_remote_update_system_snapshot(&shell_window_summary);
     Json(serde_json::json!(LanRemoteUpdateDebugResponsePacket {
         ok: true,
         version: 1,
@@ -2112,6 +2546,8 @@ pub(crate) async fn lan_sync_remote_update_debug_http(
         shell_log_file_exists: shell_log_path.as_ref().is_some_and(|path| path.is_file()),
         shell_log_path: shell_log_path.map(|path| path.display().to_string()),
         shell_log_tail,
+        shell_window_summary,
+        system_snapshot,
         app_startup_file_exists: app_startup_path.as_ref().is_some_and(|path| path.is_file()),
         app_startup_path: app_startup_path.map(|path| path.display().to_string()),
         app_startup_tail,
@@ -2465,6 +2901,55 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn remote_update_active_process_marker_ignores_plain_repo_shells() {
+        let repo_root = std::path::Path::new(r"C:\repo\API-Router");
+        let status_path = repo_root
+            .join("user-data")
+            .join("diagnostics")
+            .join("lan-remote-update-status.json");
+        let log_path = repo_root
+            .join("user-data")
+            .join("diagnostics")
+            .join("lan-remote-update.log");
+        assert!(super::remote_update_active_process_is_marked(
+            repo_root,
+            Some(&status_path),
+            Some(&log_path),
+            r#"powershell.exe -File C:\repo\API-Router\tools\build\build-root-exe.ps1"#,
+            "",
+            "",
+            "",
+        ));
+        assert!(super::remote_update_active_process_is_marked(
+            repo_root,
+            Some(&status_path),
+            Some(&log_path),
+            "powershell.exe",
+            &status_path.display().to_string(),
+            "",
+            "",
+        ));
+        assert!(super::remote_update_active_process_is_marked(
+            repo_root,
+            Some(&status_path),
+            Some(&log_path),
+            "cmd.exe /c npm run build",
+            "",
+            "",
+            "ru_test",
+        ));
+        assert!(!super::remote_update_active_process_is_marked(
+            repo_root,
+            Some(&status_path),
+            Some(&log_path),
+            r#"powershell.exe -NoExit -Command cd C:\repo\API-Router"#,
+            "",
+            "",
+            "",
+        ));
+    }
+
     fn set_remote_update_test_env(root: &std::path::Path) -> RemoteUpdateTestGuard {
         let previous_user_data_dir = set_test_user_data_dir_override(Some(root));
         let previous_repo_root = set_test_repo_root_override(Some(root));
@@ -2586,6 +3071,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: true,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         };
 
         assert!(peer_supports_lan_diagnostics(&trusted_peer));
@@ -2628,6 +3116,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: true,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         };
 
         let trusted_node_ids = std::collections::BTreeSet::from([String::from("node-a")]);
@@ -3186,6 +3677,9 @@ mod tests {
         assert!(build_script.contains("function Invoke-BuildCommand"));
         assert!(build_script.contains("[switch]$UseProcessExitCode"));
         assert!(build_script.contains("-UseProcessExitCode"));
+        assert!(build_script.contains("function Enter-BuildMutex"));
+        assert!(build_script.contains("another API Router build/update is already running"));
+        assert!(build_script.contains("Exit-BuildMutex"));
         assert!(build_script.contains("CreateNoWindow = [bool]$StartHidden"));
         assert!(build_script.contains("$RemoteUpdateRequiresFreshBuild"));
         assert!(build_script
