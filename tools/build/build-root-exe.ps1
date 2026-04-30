@@ -71,15 +71,181 @@ function Get-BuildMutexName {
   return "Global\API-Router-Build-$hash"
 }
 
+function Test-IsRemoteUpdateBuildContext {
+  $remoteUpdateSignals = @(
+    'API_ROUTER_REMOTE_UPDATE_REQUEST_ID',
+    'API_ROUTER_REMOTE_UPDATE_TARGET_REF',
+    'API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA',
+    'API_ROUTER_REMOTE_UPDATE_STATUS_PATH',
+    'API_ROUTER_REMOTE_UPDATE_LOG_PATH'
+  )
+  foreach ($name in $remoteUpdateSignals) {
+    if (-not [string]::IsNullOrWhiteSpace([string][System.Environment]::GetEnvironmentVariable($name))) {
+      return $true
+    }
+  }
+  return $false
+}
+
+function Test-CommandLineContainsPath {
+  param(
+    [string]$CommandLine,
+    [string]$Path
+  )
+
+  if ([string]::IsNullOrWhiteSpace($CommandLine) -or [string]::IsNullOrWhiteSpace($Path)) {
+    return $false
+  }
+  $normalizedCommand = $CommandLine.ToLowerInvariant().Replace('/', '\')
+  $normalizedPath = (Normalize-PathForComparison $Path)
+  if ([string]::IsNullOrWhiteSpace($normalizedPath)) { return $false }
+  return $normalizedCommand.Contains($normalizedPath.ToLowerInvariant().Replace('/', '\'))
+}
+
+function Get-StaleRepoBuildProcesses {
+  param(
+    [Parameter(Mandatory = $true)]
+    [object[]]$AllProcesses
+  )
+
+  $buildScriptPath = Join-Path $RepoRoot 'tools\build\build-root-exe.ps1'
+  $currentProcessId = [int]$PID
+  $candidates = @()
+  foreach ($process in $AllProcesses) {
+    $processId = [int]$process.ProcessId
+    if ($processId -eq $currentProcessId) { continue }
+    $name = ([string]$process.Name).Trim()
+    if ($name -notin @('powershell.exe', 'pwsh.exe')) { continue }
+    $commandLine = ([string]$process.CommandLine).Trim()
+    if ([string]::IsNullOrWhiteSpace($commandLine)) { continue }
+    $lowerCommandLine = $commandLine.ToLowerInvariant()
+    if (-not $lowerCommandLine.Contains('build-root-exe.ps1')) { continue }
+    if (-not $lowerCommandLine.Contains('-starthidden')) { continue }
+    if (
+      -not (Test-CommandLineContainsPath -CommandLine $commandLine -Path $buildScriptPath) -and
+      -not (Test-CommandLineContainsPath -CommandLine $commandLine -Path $RepoRoot)
+    ) {
+      continue
+    }
+    $candidates += $process
+  }
+  return @($candidates)
+}
+
+function Get-ProcessTreeIds {
+  param(
+    [Parameter(Mandatory = $true)]
+    [int]$RootPid,
+    [Parameter(Mandatory = $true)]
+    [object[]]$AllProcesses
+  )
+
+  $childrenByParent = @{}
+  foreach ($process in $AllProcesses) {
+    $parentProcessId = [int]$process.ParentProcessId
+    if (-not $childrenByParent.ContainsKey($parentProcessId)) {
+      $childrenByParent[$parentProcessId] = @()
+    }
+    $childrenByParent[$parentProcessId] += $process
+  }
+
+  $items = @()
+  $stack = @([pscustomobject]@{ Pid = $RootPid; Depth = 0 })
+  while ($stack.Count -gt 0) {
+    $item = $stack[$stack.Count - 1]
+    if ($stack.Count -eq 1) {
+      $stack = @()
+    } else {
+      $stack = @($stack[0..($stack.Count - 2)])
+    }
+    $children = @($childrenByParent[[int]$item.Pid])
+    foreach ($child in $children) {
+      $childPid = [int]$child.ProcessId
+      $childDepth = [int]$item.Depth + 1
+      $items += [pscustomobject]@{ Pid = $childPid; Depth = $childDepth }
+      $stack += [pscustomobject]@{ Pid = $childPid; Depth = $childDepth }
+    }
+  }
+
+  $orderedChildren = @(
+    $items |
+      Sort-Object -Property @{ Expression = 'Depth'; Descending = $true }, @{ Expression = 'Pid'; Descending = $true } |
+      Select-Object -ExpandProperty Pid -Unique
+  )
+  return @($orderedChildren + $RootPid)
+}
+
+function Stop-StaleRemoteUpdateBuildProcesses {
+  if (-not (Test-IsRemoteUpdateBuildContext)) { return $false }
+
+  try {
+    $allProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+  } catch {
+    Write-RemoteUpdateLog ("Unable to inspect running processes while build mutex is busy: " + $_.Exception.Message)
+    return $false
+  }
+
+  $staleProcesses = @(Get-StaleRepoBuildProcesses -AllProcesses $allProcesses)
+  if ($staleProcesses.Count -eq 0) {
+    Write-RemoteUpdateLog "Build mutex is busy, but no stale same-repo hidden build-root-exe.ps1 process was found"
+    return $false
+  }
+
+  foreach ($staleProcess in $staleProcesses) {
+    $rootPid = [int]$staleProcess.ProcessId
+    $treeIds = @(Get-ProcessTreeIds -RootPid $rootPid -AllProcesses $allProcesses)
+    Write-RemoteUpdateLog "Stopping stale remote update build process tree: root_pid=$rootPid; pids=$($treeIds -join ',')"
+    foreach ($processId in $treeIds) {
+      if ([int]$processId -eq [int]$PID) { continue }
+      try {
+        Stop-Process -Id $processId -Force -ErrorAction Stop
+        Write-RemoteUpdateLog "Stopped stale remote update build process PID $processId"
+      } catch {
+        Write-RemoteUpdateLog "Failed to stop stale remote update build process PID ${processId}: $($_.Exception.Message)"
+      }
+    }
+  }
+  return $true
+}
+
+function Wait-BuildMutex {
+  param([int]$TimeoutMilliseconds)
+
+  try {
+    $script:BuildMutexHeld = $script:BuildMutex.WaitOne($TimeoutMilliseconds)
+    return $script:BuildMutexHeld
+  } catch [System.Threading.AbandonedMutexException] {
+    $script:BuildMutexHeld = $true
+    Write-RemoteUpdateLog "Acquired abandoned build mutex after stale process exit"
+    return $true
+  }
+}
+
 function Enter-BuildMutex {
   $name = Get-BuildMutexName
   $script:BuildMutex = [System.Threading.Mutex]::new($false, $name)
-  $script:BuildMutexHeld = $script:BuildMutex.WaitOne(0)
-  if (-not $script:BuildMutexHeld) {
+  if (Wait-BuildMutex -TimeoutMilliseconds 0) {
+    return
+  }
+
+  if (Test-IsRemoteUpdateBuildContext) {
+    Write-RemoteUpdateLog "Build mutex is busy; inspecting stale remote update build processes for repo root $RepoRoot"
+    $null = Stop-StaleRemoteUpdateBuildProcesses
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(15)
+    while ([DateTimeOffset]::UtcNow -lt $deadline) {
+      if (Wait-BuildMutex -TimeoutMilliseconds 1000) {
+        Write-RemoteUpdateLog "Build mutex acquired after stale process cleanup"
+        return
+      }
+    }
     $script:BuildMutex.Dispose()
     $script:BuildMutex = $null
-    throw "another API Router build/update is already running for repo root $RepoRoot"
+    throw "remote update build mutex is still held after stale process cleanup for repo root $RepoRoot"
   }
+
+  $script:BuildMutex.Dispose()
+  $script:BuildMutex = $null
+  throw "another API Router build/update is already running for repo root $RepoRoot"
 }
 
 function Exit-BuildMutex {

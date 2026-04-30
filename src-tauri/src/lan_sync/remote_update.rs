@@ -4021,6 +4021,15 @@ mod tests {
         assert!(build_script.contains("-UseProcessExitCode"));
         assert!(build_script.contains("function Enter-BuildMutex"));
         assert!(build_script.contains("another API Router build/update is already running"));
+        assert!(build_script.contains("function Test-IsRemoteUpdateBuildContext"));
+        assert!(build_script.contains("function Stop-StaleRemoteUpdateBuildProcesses"));
+        assert!(build_script.contains("function Get-StaleRepoBuildProcesses"));
+        assert!(build_script.contains("function Get-ProcessTreeIds"));
+        assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_REQUEST_ID"));
+        assert!(build_script.contains("ParentProcessId"));
+        assert!(build_script.contains("remote update build mutex is still held"));
+        assert!(build_script.contains("Stopping stale remote update build process tree"));
+        assert!(build_script.contains("Stop-Process -Id $processId -Force"));
         assert!(build_script.contains("Exit-BuildMutex"));
         assert!(build_script.contains("CreateNoWindow = [bool]$StartHidden"));
         assert!(build_script.contains("$RemoteUpdateRequiresFreshBuild"));

@@ -21,6 +21,7 @@ import {
   remoteUpdateRollbackConfirmationText,
   remoteUpdateRollbackActionAvailable,
   remoteDebugReadinessReasonText,
+  remoteDebugPeerReachabilityDiagnosisText,
   remoteDebugStartupDiagnosisText,
   splitRemoteDebugLogTail,
   shouldShowDiagnosticsRemoteUpdateStatus,
@@ -1723,6 +1724,85 @@ describe('ConfigModal', () => {
 
   it('keeps remote debug summary render-safe before payload arrives', () => {
     expect(remoteDebugReadinessReasonText(undefined)).toBe('')
+  })
+
+  it('explains when peer app is missing but the updater is still reachable', () => {
+    expect(
+      remoteDebugPeerReachabilityDiagnosisText({
+        ok: true,
+        version: 1,
+        node_id: 'node-b',
+        node_name: 'Desk B',
+        remote_update_readiness: {
+          ready: false,
+          blocked_reason: 'Peer app debug is unavailable',
+        },
+        status_file_exists: false,
+        log_file_exists: false,
+        transport: {
+          app_base_url: 'http://192.168.1.10:4000',
+          app_debug_state: 'request_error',
+          app_debug_detail: 'connection refused',
+          updater_base_url: 'http://192.168.1.10:4001',
+          updater_state: 'ok',
+          updater_detail: 'updater responded',
+        },
+        updater_status: {
+          ok: true,
+          busy: false,
+        },
+        local_build_identity: {
+          app_version: '0.4.0',
+          build_git_sha: 'dfa0f229abcdef1234567890',
+          build_git_short_sha: 'dfa0f229',
+          build_git_commit_unix_ms: 1775482000000,
+        },
+        local_version_sync: {
+          target_ref: 'dfa0f229abcdef1234567890',
+          git_worktree_clean: true,
+          update_to_local_build_allowed: true,
+        },
+      }),
+    ).toBe(
+      'Peer app is not responding at http://192.168.1.10:4000 (request_error: connection refused), but the updater is reachable at http://192.168.1.10:4001. This is a runtime restart/rollback state, not a LAN peer-missing state.',
+    )
+  })
+
+  it('explains when both peer app and updater are unavailable', () => {
+    expect(
+      remoteDebugPeerReachabilityDiagnosisText({
+        ok: true,
+        version: 1,
+        node_id: 'node-b',
+        node_name: 'Desk B',
+        remote_update_readiness: {
+          ready: false,
+        },
+        status_file_exists: false,
+        log_file_exists: false,
+        transport: {
+          app_base_url: 'http://192.168.1.10:4000',
+          app_debug_state: 'request_error',
+          app_debug_detail: 'timed out',
+          updater_base_url: 'http://192.168.1.10:4001',
+          updater_state: 'request_error',
+          updater_detail: 'timed out',
+        },
+        local_build_identity: {
+          app_version: '0.4.0',
+          build_git_sha: 'dfa0f229abcdef1234567890',
+          build_git_short_sha: 'dfa0f229',
+          build_git_commit_unix_ms: 1775482000000,
+        },
+        local_version_sync: {
+          target_ref: 'dfa0f229abcdef1234567890',
+          git_worktree_clean: true,
+          update_to_local_build_allowed: true,
+        },
+      }),
+    ).toBe(
+      'Peer app and updater are both unreachable. That points to a LAN/offline/firewall state, or a remote process crash before the updater could answer.',
+    )
   })
 
   it('diagnoses startup stalls from remote update app startup diagnostics', () => {

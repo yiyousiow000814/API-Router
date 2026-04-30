@@ -674,6 +674,33 @@ function remoteDebugTransportText(
   return lines.join('\n')
 }
 
+export function remoteDebugPeerReachabilityDiagnosisText(
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+): string {
+  const transport = remoteUpdateDebug?.transport
+  if (!transport) return ''
+  const appState = (transport.app_debug_state || '').trim()
+  const appDetail = transport.app_debug_detail?.trim()
+  const appUrl = transport.app_base_url ?? 'unknown'
+  const updaterState = transport.updater_state?.trim() ?? ''
+  const updaterDetail = transport.updater_detail?.trim()
+  const updaterUrl = transport.updater_base_url ?? 'unknown'
+  const updaterReachable = updaterState === 'ok' || remoteUpdateDebug?.updater_status?.ok === true
+  const updaterUnavailable =
+    (updaterState.length > 0 && updaterState !== 'ok') || remoteUpdateDebug?.updater_status?.ok === false
+
+  if (!appState || appState === 'ok') return ''
+  const appStateText = appDetail ? `${appState}: ${appDetail}` : appState
+  if (updaterReachable) {
+    return `Peer app is not responding at ${appUrl} (${appStateText}), but the updater is reachable at ${updaterUrl}. This is a runtime restart/rollback state, not a LAN peer-missing state.`
+  }
+  if (updaterUnavailable) {
+    return 'Peer app and updater are both unreachable. That points to a LAN/offline/firewall state, or a remote process crash before the updater could answer.'
+  }
+  const updaterStateText = updaterDetail ? `${updaterState || 'unknown'}: ${updaterDetail}` : updaterState || 'unknown'
+  return `Peer app is not responding at ${appUrl} (${appStateText}); updater state is ${updaterStateText}.`
+}
+
 export function remoteDebugStartupDiagnosisText(
   remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
 ): string {
@@ -1849,6 +1876,8 @@ export function ConfigModal({
                     const remoteUpdateDebugLoading = Boolean(remoteUpdateDebugLoadingByNode[source.node_id])
                     const remoteUpdateDebugError = remoteUpdateDebugErrorByNode[source.node_id] ?? ''
                     const debugReadinessReason = remoteDebugReadinessReasonText(remoteUpdateDebug)
+                    const debugReachabilityDiagnosis =
+                      remoteDebugPeerReachabilityDiagnosisText(remoteUpdateDebug)
                     const debugStartupDiagnosis = remoteDebugStartupDiagnosisText(remoteUpdateDebug)
                     const debugLogTail = remoteUpdateDebug?.log_tail?.trim() ?? ''
                     const debugStartupTail = [
@@ -1914,7 +1943,9 @@ export function ConfigModal({
                         formattedDebugError,
                         showDebugReadinessReason ? debugReadinessReason : '',
                         remoteUpdateDebug,
-                        [debugStartupDiagnosis, debugLogTail, debugStartupTail].filter(Boolean).join('\n'),
+                        [debugReachabilityDiagnosis, debugStartupDiagnosis, debugLogTail, debugStartupTail]
+                          .filter(Boolean)
+                          .join('\n'),
                       )
                     return (
                       <div key={source.node_id} className="aoCard aoConfigDiagCard">
@@ -2061,6 +2092,9 @@ export function ConfigModal({
                                   <>
                                     {showDebugReadinessReason ? (
                                       <div className="aoConfigDiagRemoteUpdateDetail">{debugReadinessReason}</div>
+                                    ) : null}
+                                    {debugReachabilityDiagnosis ? (
+                                      <div className="aoConfigDiagWhyText">{debugReachabilityDiagnosis}</div>
                                     ) : null}
                                     {debugBootstrapText ? (
                                       <div className="aoConfigDiagRemoteUpdateDetail">{debugBootstrapText}</div>
