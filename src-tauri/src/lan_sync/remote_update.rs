@@ -4481,6 +4481,9 @@ mod tests {
         assert!(remote_update_worker_script.contains("$stderrTask.Wait(5000)"));
         assert!(remote_update_worker_script
             .contains("Hidden process output stream did not close after process exit"));
+        assert!(remote_update_worker_script
+            .contains("Write-RemoteUpdateStatus -State 'succeeded' -TargetRef $TargetRef"));
+        assert!(remote_update_worker_script.contains("exit 0"));
 
         let updater_source = std::fs::read_to_string(
             repo_root
