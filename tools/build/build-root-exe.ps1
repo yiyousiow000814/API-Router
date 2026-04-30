@@ -343,8 +343,8 @@ function Get-RecordedRuntimeSha([string]$Name) {
 }
 
 function Normalize-VersionSha([string]$Sha, [string]$Fallback) {
-  if (-not [string]::IsNullOrWhiteSpace($Sha)) { return $Sha.Trim() }
-  if (-not [string]::IsNullOrWhiteSpace($Fallback)) { return $Fallback.Trim() }
+  if (-not [string]::IsNullOrWhiteSpace($Sha) -and $Sha.Trim() -ine 'unknown') { return $Sha.Trim() }
+  if (-not [string]::IsNullOrWhiteSpace($Fallback) -and $Fallback.Trim() -ine 'unknown') { return $Fallback.Trim() }
   $headSha = Get-RepoGitHeadSha
   if (-not [string]::IsNullOrWhiteSpace($headSha)) { return $headSha }
   return 'unknown'
