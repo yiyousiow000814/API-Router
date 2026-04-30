@@ -592,6 +592,7 @@ fn rollback_runtime(
     }
     let result: Result<(), String> = (|| {
         stop_api_router_processes(&target);
+        wait_api_router_processes_stopped(&target, Duration::from_secs(10))?;
         copy_runtime_with_retry(&previous_exe, &target)?;
         write_pointer(
             repo_root,
@@ -633,6 +634,7 @@ fn copy_runtime_with_retry(source: &Path, target: &Path) -> Result<(), String> {
             Err(err) => {
                 last_error = Some(err);
                 stop_api_router_processes(target);
+                let _ = wait_api_router_processes_stopped(target, Duration::from_secs(10));
                 std::thread::sleep(Duration::from_millis(250 * attempt));
             }
         }
@@ -648,7 +650,7 @@ fn copy_runtime_with_retry(source: &Path, target: &Path) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn stop_api_router_processes(target: &Path) {
+fn api_router_process_ids_by_target(target: &Path) -> Vec<u32> {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
@@ -657,8 +659,7 @@ fn stop_api_router_processes(target: &Path) {
         TH32CS_SNAPPROCESS,
     };
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, TerminateProcess,
-        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
     fn widestr_to_string(value: &[u16]) -> String {
@@ -688,10 +689,11 @@ fn stop_api_router_processes(target: &Path) {
     }
 
     let target_key = normalized_path_key(target);
+    let mut pids = Vec::new();
     unsafe {
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if snapshot == INVALID_HANDLE_VALUE {
-            return;
+            return pids;
         }
         let mut entry = PROCESSENTRY32W {
             dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
@@ -701,18 +703,14 @@ fn stop_api_router_processes(target: &Path) {
         while ok {
             let exe_name = widestr_to_string(&entry.szExeFile);
             if exe_name.eq_ignore_ascii_case(APP_EXE_NAME) {
-                let handle = OpenProcess(
-                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
-                    0,
-                    entry.th32ProcessID,
-                );
+                let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, entry.th32ProcessID);
                 if handle != 0 {
                     if process_image_path(handle)
                         .as_deref()
                         .map(normalized_path_key)
                         .is_some_and(|process_key| process_key == target_key)
                     {
-                        let _ = TerminateProcess(handle, 1);
+                        pids.push(entry.th32ProcessID);
                     }
                     let _ = CloseHandle(handle);
                 }
@@ -721,10 +719,50 @@ fn stop_api_router_processes(target: &Path) {
         }
         let _ = CloseHandle(snapshot);
     }
+    pids
+}
+
+#[cfg(windows)]
+fn stop_api_router_processes(target: &Path) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+
+    for pid in api_router_process_ids_by_target(target) {
+        unsafe {
+            let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if handle != 0 {
+                let _ = TerminateProcess(handle, 1);
+                let _ = CloseHandle(handle);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn wait_api_router_processes_stopped(target: &Path, timeout: Duration) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut remaining = api_router_process_ids_by_target(target);
+    while !remaining.is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+        remaining = api_router_process_ids_by_target(target);
+    }
+    if remaining.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "timed out waiting for API Router.exe process(es) to exit before rollback restart: {:?}",
+            remaining
+        ))
+    }
 }
 
 #[cfg(not(windows))]
 fn stop_api_router_processes(_target: &Path) {}
+
+#[cfg(not(windows))]
+fn wait_api_router_processes_stopped(_target: &Path, _timeout: Duration) -> Result<(), String> {
+    Ok(())
+}
 
 fn start_api_router(repo_root: &Path, target: &Path, start_hidden: bool) -> Result<(), String> {
     let mut command = Command::new(target);
@@ -854,6 +892,26 @@ mod tests {
         assert!(payload["finished_at_unix_ms"].as_u64().unwrap() >= 1775312829000);
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rollback_waits_for_runtime_process_exit_before_restart() {
+        let source = fs::read_to_string(file!()).expect("read updater source");
+        let rollback_start = source
+            .find("fn rollback_runtime")
+            .expect("rollback function");
+        let rollback_body = &source[rollback_start..];
+        let stop_index = rollback_body
+            .find("stop_api_router_processes(&target);")
+            .expect("rollback stops target runtime");
+        let wait_index = rollback_body
+            .find("wait_api_router_processes_stopped(&target, Duration::from_secs(10))?;")
+            .expect("rollback waits for target runtime exit");
+        let start_index = rollback_body
+            .find("start_api_router(repo_root, &target, start_hidden)?;")
+            .expect("rollback restarts runtime");
+        assert!(stop_index < wait_index);
+        assert!(wait_index < start_index);
     }
 
     #[tokio::test]
