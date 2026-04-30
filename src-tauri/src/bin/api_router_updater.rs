@@ -433,22 +433,18 @@ async fn updater_rollback_http(
 }
 
 fn remote_update_status_path() -> Option<PathBuf> {
-    env::var("API_ROUTER_REMOTE_UPDATE_STATUS_PATH")
-        .ok()
-        .map(|value| value.trim().to_string())
+    remote_update_status_path_from_env(
+        env::var("API_ROUTER_REMOTE_UPDATE_STATUS_PATH")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn remote_update_status_path_from_env(status_path: Option<&str>) -> Option<PathBuf> {
+    status_path
+        .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| {
-            env::var("API_ROUTER_USER_DATA_DIR")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .map(|value| {
-                    PathBuf::from(value)
-                        .join("diagnostics")
-                        .join("lan-remote-update-status.json")
-                })
-        })
 }
 
 fn status_string(payload: &Value, key: &str) -> Option<String> {
@@ -963,6 +959,16 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn remote_update_status_path_requires_explicit_status_env() {
+        assert_eq!(
+            remote_update_status_path_from_env(Some(r"C:\repo\status.json")),
+            Some(PathBuf::from(r"C:\repo\status.json"))
+        );
+        assert_eq!(remote_update_status_path_from_env(Some("   ")), None);
+        assert_eq!(remote_update_status_path_from_env(None), None);
     }
 
     #[test]

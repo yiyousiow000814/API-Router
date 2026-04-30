@@ -778,6 +778,9 @@ pub(crate) fn load_lan_remote_update_status() -> Option<LanRemoteUpdateStatusSna
     let path = lan_remote_update_status_path()?;
     let bytes = std::fs::read(path).ok()?;
     let status = parse_lan_remote_update_status_bytes(&bytes).ok()?;
+    if !remote_update_status_is_publishable(&status) {
+        return None;
+    }
     let normalized = normalize_remote_update_status(status.clone());
     if normalized != status {
         let _ = write_lan_remote_update_status(&normalized);
@@ -927,6 +930,26 @@ fn remote_update_status_blocks_new_request(status: &LanRemoteUpdateStatusSnapsho
     matches!(status.state.as_str(), "accepted" | "running")
 }
 
+fn remote_update_status_is_publishable(status: &LanRemoteUpdateStatusSnapshot) -> bool {
+    status
+        .request_id
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || status
+            .requester_node_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || status
+            .requester_node_name
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || status
+            .worker_script
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || status.worker_pid.is_some()
+}
+
 fn current_remote_update_status_block_reason() -> Option<String> {
     let status = load_lan_remote_update_status()?;
     if !remote_update_status_blocks_new_request(&status) {
@@ -949,12 +972,13 @@ fn remote_update_active_process_block_reason() -> Option<String> {
     let status_path = lan_remote_update_status_path();
     let log_path = lan_remote_update_log_path();
     let current_pid = std::process::id();
-    let candidate_pids = crate::platform::windows_loopback_peer::list_process_ids_by_name(&[
-        "powershell.exe",
-        "pwsh.exe",
-        "cmd.exe",
-        "conhost.exe",
-    ]);
+    let process_names = ["powershell.exe", "pwsh.exe", "cmd.exe", "conhost.exe"];
+    let readiness_process_names: Vec<&str> = process_names
+        .into_iter()
+        .filter(|name| remote_update_process_name_can_block_readiness(name))
+        .collect();
+    let candidate_pids =
+        crate::platform::windows_loopback_peer::list_process_ids_by_name(&readiness_process_names);
     for pid in candidate_pids {
         if pid == current_pid {
             continue;
@@ -997,6 +1021,14 @@ fn remote_update_active_process_block_reason() -> Option<String> {
         ));
     }
     None
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn remote_update_process_name_can_block_readiness(name: &str) -> bool {
+    matches!(
+        name.trim().to_ascii_lowercase().as_str(),
+        "powershell.exe" | "pwsh.exe" | "cmd.exe"
+    )
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -3224,6 +3256,50 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn remote_update_readiness_process_filter_ignores_console_hosts() {
+        assert!(super::remote_update_process_name_can_block_readiness(
+            "powershell.exe"
+        ));
+        assert!(super::remote_update_process_name_can_block_readiness(
+            "pwsh.exe"
+        ));
+        assert!(super::remote_update_process_name_can_block_readiness(
+            "cmd.exe"
+        ));
+        assert!(!super::remote_update_process_name_can_block_readiness(
+            "conhost.exe"
+        ));
+    }
+
+    #[test]
+    fn remote_update_status_without_request_id_is_not_publishable() {
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "rolled_back".to_string(),
+            target_ref: "c7dff6d1".to_string(),
+            from_git_sha: None,
+            to_git_sha: None,
+            current_git_sha: Some("c7dff6d1".to_string()),
+            previous_git_sha: Some("c7dff6d1".to_string()),
+            progress_percent: Some(100),
+            rollback_available: true,
+            request_id: None,
+            reason_code: None,
+            requester_node_id: None,
+            requester_node_name: None,
+            worker_script: None,
+            worker_pid: None,
+            worker_exit_code: None,
+            detail: Some("Rolled back to c7dff6d1".to_string()),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: None,
+            finished_at_unix_ms: Some(20),
+            updated_at_unix_ms: 20,
+            timeline: Vec::new(),
+        };
+        assert!(!super::remote_update_status_is_publishable(&status));
+    }
+
     fn set_remote_update_test_env(root: &std::path::Path) -> RemoteUpdateTestGuard {
         let previous_user_data_dir = set_test_user_data_dir_override(Some(root));
         let previous_repo_root = set_test_repo_root_override(Some(root));
@@ -4188,6 +4264,9 @@ mod tests {
             "updater binary build must still run after the skip-release branch"
         );
         assert!(build_script.contains("function Get-RemoteUpdateBuildResultPath"));
+        assert!(build_script.contains("function Get-BuildLogPath"));
+        assert!(build_script.contains("root-exe-build.log"));
+        assert!(build_script.contains("root-exe-build-result.json"));
         assert!(build_script.contains("function Write-BuildResultMarker"));
         assert!(build_script.contains("function Set-RemoteUpdateStatusProperty"));
         assert!(build_script.contains("Add-Member -InputObject $Status -NotePropertyName"));

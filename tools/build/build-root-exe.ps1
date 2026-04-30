@@ -338,6 +338,12 @@ function Get-RemoteUpdateLogPath {
   return $path.Trim()
 }
 
+function Get-BuildLogPath {
+  $remoteLogPath = Get-RemoteUpdateLogPath
+  if (-not [string]::IsNullOrWhiteSpace($remoteLogPath)) { return $remoteLogPath }
+  return Join-Path (Join-Path (Get-RepoUserDataDir) 'diagnostics') 'root-exe-build.log'
+}
+
 function Get-RepoUserDataDir {
   $path = [string]$env:API_ROUTER_USER_DATA_DIR
   if (-not [string]::IsNullOrWhiteSpace($path)) { return $path.Trim() }
@@ -544,11 +550,18 @@ function Get-RemoteUpdateLanSecret {
 function Get-RemoteUpdateBuildResultPath {
   $path = [string]$env:API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH
   if (-not [string]::IsNullOrWhiteSpace($path)) { return $path }
-  $logPath = Get-RemoteUpdateLogPath
-  if (-not [string]::IsNullOrWhiteSpace($logPath)) {
-    $parent = Split-Path -Parent $logPath
+  $remoteLogPath = Get-RemoteUpdateLogPath
+  if (-not [string]::IsNullOrWhiteSpace($remoteLogPath)) {
+    $parent = Split-Path -Parent $remoteLogPath
     if ($parent) {
       return (Join-Path $parent 'lan-remote-update-build-result.json')
+    }
+  }
+  $buildLogPath = Get-BuildLogPath
+  if (-not [string]::IsNullOrWhiteSpace($buildLogPath)) {
+    $parent = Split-Path -Parent $buildLogPath
+    if ($parent) {
+      return (Join-Path $parent 'root-exe-build-result.json')
     }
   }
   return $null
@@ -560,7 +573,7 @@ function Write-RemoteUpdateLog {
     [string]$Message
   )
 
-  $logPath = Get-RemoteUpdateLogPath
+  $logPath = Get-BuildLogPath
   if (-not $logPath) { return }
   try {
     $parent = Split-Path -Parent $logPath
@@ -743,7 +756,7 @@ function Get-UpdaterDaemonExePath {
 function Get-UpdaterDaemonOutputPath {
   param([Parameter(Mandatory = $true)][string]$Name)
 
-  $logPath = Get-RemoteUpdateLogPath
+  $logPath = Get-BuildLogPath
   $parent = if (-not [string]::IsNullOrWhiteSpace($logPath)) {
     Split-Path -Parent $logPath
   } else {
@@ -1840,6 +1853,9 @@ function Format-BuildFailureMessage([string]$FailureLabel, [string]$Summary, [in
   }
   if (Get-RemoteUpdateLogPath) {
     return "$FailureLabel failed; see lan-remote-update.log for stderr tail"
+  }
+  if (Get-BuildLogPath) {
+    return "$FailureLabel failed; see root-exe-build.log for stderr tail"
   }
   if ($ExitCode -gt 0) {
     return "$FailureLabel failed with exit code $ExitCode"
