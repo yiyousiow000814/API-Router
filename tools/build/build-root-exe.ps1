@@ -102,14 +102,47 @@ function Test-CommandLineContainsPath {
   return $normalizedCommand.Contains($normalizedPath.ToLowerInvariant().Replace('/', '\'))
 }
 
-function Get-StaleRepoBuildProcesses {
+function Invoke-CimProcessQueryWithTimeout {
   param(
     [Parameter(Mandatory = $true)]
-    [object[]]$AllProcesses
+    [string]$Filter,
+    [Parameter(Mandatory = $true)]
+    [string]$Description,
+    [int]$TimeoutSeconds = 4
   )
 
+  $job = $null
+  try {
+    $job = Start-Job -ScriptBlock {
+      param([string]$Filter)
+      Get-CimInstance Win32_Process -Filter $Filter -ErrorAction Stop |
+        Select-Object Name, ProcessId, ParentProcessId, CommandLine
+    } -ArgumentList $Filter
+    if (Wait-Job $job -Timeout $TimeoutSeconds) {
+      return @(Receive-Job $job -ErrorAction Stop)
+    }
+    Write-RemoteUpdateLog "Timed out while querying ${Description}; filter=$Filter"
+    Stop-Job $job -ErrorAction SilentlyContinue
+    return @()
+  } catch {
+    Write-RemoteUpdateLog "Failed to query ${Description}; filter=${Filter}; error=$($_.Exception.Message)"
+    return @()
+  } finally {
+    if ($null -ne $job) {
+      Remove-Job $job -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+function Get-StaleRepoBuildProcesses {
   $buildScriptPath = Join-Path $RepoRoot 'tools\build\build-root-exe.ps1'
   $currentProcessId = [int]$PID
+  $allProcesses = @(
+    Invoke-CimProcessQueryWithTimeout `
+      -Filter "Name = 'powershell.exe' OR Name = 'pwsh.exe'" `
+      -Description 'remote update PowerShell process snapshot' `
+      -TimeoutSeconds 4
+  )
   $candidates = @()
   foreach ($process in $AllProcesses) {
     $processId = [int]$process.ProcessId
@@ -135,22 +168,12 @@ function Get-StaleRepoBuildProcesses {
 function Get-ProcessTreeIds {
   param(
     [Parameter(Mandatory = $true)]
-    [int]$RootPid,
-    [Parameter(Mandatory = $true)]
-    [object[]]$AllProcesses
+    [int]$RootPid
   )
-
-  $childrenByParent = @{}
-  foreach ($process in $AllProcesses) {
-    $parentProcessId = [int]$process.ParentProcessId
-    if (-not $childrenByParent.ContainsKey($parentProcessId)) {
-      $childrenByParent[$parentProcessId] = @()
-    }
-    $childrenByParent[$parentProcessId] += $process
-  }
 
   $items = @()
   $stack = @([pscustomobject]@{ Pid = $RootPid; Depth = 0 })
+  $visited = @{}
   while ($stack.Count -gt 0) {
     $item = $stack[$stack.Count - 1]
     if ($stack.Count -eq 1) {
@@ -158,9 +181,18 @@ function Get-ProcessTreeIds {
     } else {
       $stack = @($stack[0..($stack.Count - 2)])
     }
-    $children = @($childrenByParent[[int]$item.Pid])
+    if ($visited.ContainsKey([int]$item.Pid)) { continue }
+    $visited[[int]$item.Pid] = $true
+    $ParentPid = [int]$item.Pid
+    $children = @(
+      Invoke-CimProcessQueryWithTimeout `
+        -Filter "ParentProcessId = $ParentPid" `
+        -Description "child processes for PID $ParentPid" `
+        -TimeoutSeconds 3
+    )
     foreach ($child in $children) {
       $childPid = [int]$child.ProcessId
+      if ($visited.ContainsKey($childPid)) { continue }
       $childDepth = [int]$item.Depth + 1
       $items += [pscustomobject]@{ Pid = $childPid; Depth = $childDepth }
       $stack += [pscustomobject]@{ Pid = $childPid; Depth = $childDepth }
@@ -178,14 +210,7 @@ function Get-ProcessTreeIds {
 function Stop-StaleRemoteUpdateBuildProcesses {
   if (-not (Test-IsRemoteUpdateBuildContext)) { return $false }
 
-  try {
-    $allProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop)
-  } catch {
-    Write-RemoteUpdateLog ("Unable to inspect running processes while build mutex is busy: " + $_.Exception.Message)
-    return $false
-  }
-
-  $staleProcesses = @(Get-StaleRepoBuildProcesses -AllProcesses $allProcesses)
+  $staleProcesses = @(Get-StaleRepoBuildProcesses)
   if ($staleProcesses.Count -eq 0) {
     Write-RemoteUpdateLog "Build mutex is busy, but no stale same-repo hidden build-root-exe.ps1 process was found"
     return $false
@@ -193,7 +218,7 @@ function Stop-StaleRemoteUpdateBuildProcesses {
 
   foreach ($staleProcess in $staleProcesses) {
     $rootPid = [int]$staleProcess.ProcessId
-    $treeIds = @(Get-ProcessTreeIds -RootPid $rootPid -AllProcesses $allProcesses)
+    $treeIds = @(Get-ProcessTreeIds -RootPid $rootPid)
     Write-RemoteUpdateLog "Stopping stale remote update build process tree: root_pid=$rootPid; pids=$($treeIds -join ',')"
     foreach ($processId in $treeIds) {
       if ([int]$processId -eq [int]$PID) { continue }

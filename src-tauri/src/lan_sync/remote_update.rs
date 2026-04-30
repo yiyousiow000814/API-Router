@@ -4025,11 +4025,18 @@ mod tests {
         assert!(build_script.contains("function Stop-StaleRemoteUpdateBuildProcesses"));
         assert!(build_script.contains("function Get-StaleRepoBuildProcesses"));
         assert!(build_script.contains("function Get-ProcessTreeIds"));
+        assert!(build_script.contains("function Invoke-CimProcessQueryWithTimeout"));
+        assert!(build_script.contains("Wait-Job $job -Timeout"));
+        assert!(build_script.contains("Stop-Job $job"));
+        assert!(build_script.contains("Name = 'powershell.exe' OR Name = 'pwsh.exe'"));
+        assert!(build_script.contains("ParentProcessId = $ParentPid"));
         assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_REQUEST_ID"));
         assert!(build_script.contains("ParentProcessId"));
         assert!(build_script.contains("remote update build mutex is still held"));
         assert!(build_script.contains("Stopping stale remote update build process tree"));
         assert!(build_script.contains("Stop-Process -Id $processId -Force"));
+        assert!(!build_script
+            .contains("$allProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop)"));
         assert!(build_script.contains("Exit-BuildMutex"));
         assert!(build_script.contains("CreateNoWindow = [bool]$StartHidden"));
         assert!(build_script.contains("$RemoteUpdateRequiresFreshBuild"));
