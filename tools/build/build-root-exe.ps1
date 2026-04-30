@@ -871,11 +871,14 @@ function Get-ApiRouterRuntimeProcesses {
     Write-RemoteUpdateLog ("Failed to inspect runtime processes via Get-Process: " + $_.Exception.Message)
   }
   try {
-    $escapedName = $AppExeName.Replace("'", "''")
-    $cimMatches = @(Get-CimInstance Win32_Process -Filter "Name = '$escapedName'" -ErrorAction Stop | Where-Object {
+    $cimMatches = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+        $name = [string]$_.Name
+        $commandLine = [string]$_.CommandLine
+        if (($name -ine $AppExeName) -and ($commandLine.IndexOf($DstExe, [System.StringComparison]::OrdinalIgnoreCase) -lt 0)) {
+          return $false
+        }
         $normalizedCandidate = Normalize-PathForComparison $_.ExecutablePath
         if ($normalizedCandidate -and ($normalizedCandidate -ieq $targetPath)) { return $true }
-        $commandLine = [string]$_.CommandLine
         return (-not [string]::IsNullOrWhiteSpace($commandLine)) -and
           ($commandLine.IndexOf($DstExe, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
       })
