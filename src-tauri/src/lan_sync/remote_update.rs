@@ -140,6 +140,10 @@ pub(crate) struct LanRemoteUpdateDebugResponsePacket {
     #[serde(default)]
     pub system_snapshot: LanRemoteUpdateSystemSnapshot,
     #[serde(default)]
+    pub transport: LanRemoteUpdateTransportSnapshot,
+    #[serde(default)]
+    pub updater_status: Option<serde_json::Value>,
+    #[serde(default)]
     pub app_startup_path: Option<String>,
     #[serde(default)]
     pub app_startup_file_exists: bool,
@@ -203,6 +207,22 @@ pub(crate) struct LanRemoteUpdateProcessResourceSummary {
     #[serde(default)]
     pub working_set_bytes: Option<u64>,
     pub command: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct LanRemoteUpdateTransportSnapshot {
+    #[serde(default)]
+    pub app_base_url: Option<String>,
+    #[serde(default)]
+    pub app_debug_state: String,
+    #[serde(default)]
+    pub app_debug_detail: Option<String>,
+    #[serde(default)]
+    pub updater_base_url: Option<String>,
+    #[serde(default)]
+    pub updater_state: Option<String>,
+    #[serde(default)]
+    pub updater_detail: Option<String>,
 }
 
 fn default_remote_update_log_tail_source() -> String {
@@ -1269,6 +1289,87 @@ fn filetime_to_u64(value: windows_sys::Win32::Foundation::FILETIME) -> u64 {
     ((value.dwHighDateTime as u64) << 32) | value.dwLowDateTime as u64
 }
 
+fn updater_status_git_sha<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    value
+        .get(key)
+        .and_then(|entry| entry.get("gitSha"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|sha| !sha.is_empty())
+}
+
+fn fallback_remote_update_debug_packet(
+    peer: &LanPeerSnapshot,
+    transport: LanRemoteUpdateTransportSnapshot,
+    updater_status: Option<serde_json::Value>,
+) -> LanRemoteUpdateDebugResponsePacket {
+    let mut blocked_parts = vec![format!(
+        "Peer app debug is unavailable{}",
+        transport
+            .app_debug_detail
+            .as_deref()
+            .map(|detail| format!(": {detail}"))
+            .unwrap_or_default()
+    )];
+    if let Some(detail) = transport.updater_detail.as_deref() {
+        blocked_parts.push(format!(
+            "updater {}: {detail}",
+            transport.updater_state.as_deref().unwrap_or("unknown")
+        ));
+    } else if let Some(state) = transport.updater_state.as_deref() {
+        blocked_parts.push(format!("updater {state}"));
+    }
+    LanRemoteUpdateDebugResponsePacket {
+        ok: true,
+        version: 1,
+        node_id: peer.node_id.clone(),
+        node_name: peer.node_name.clone(),
+        remote_update_readiness: LanRemoteUpdateReadinessSnapshot {
+            ready: false,
+            blocked_reason: Some(blocked_parts.join("; ")),
+            checked_at_unix_ms: unix_ms(),
+        },
+        remote_update_status: peer.remote_update_status.clone(),
+        status_path: None,
+        status_file_exists: false,
+        log_path: None,
+        log_file_exists: false,
+        log_tail_source: "none".to_string(),
+        log_tail: None,
+        shell_log_path: None,
+        shell_log_file_exists: false,
+        shell_log_tail: None,
+        shell_window_summary: Vec::new(),
+        system_snapshot: LanRemoteUpdateSystemSnapshot {
+            captured_at_unix_ms: unix_ms(),
+            probe_detail: vec![
+                "peer app HTTP debug is unavailable; this packet was synthesized from the local peer cache and updater status".to_string(),
+            ],
+            ..LanRemoteUpdateSystemSnapshot::default()
+        },
+        transport,
+        updater_status,
+        app_startup_path: None,
+        app_startup_file_exists: false,
+        app_startup_tail: None,
+        gateway_bootstrap_path: None,
+        gateway_bootstrap_file_exists: false,
+        gateway_bootstrap_tail: None,
+        gateway_startup_path: None,
+        gateway_startup_file_exists: false,
+        gateway_startup_tail: None,
+        worker_bootstrap_observed: false,
+        worker_script_probe: None,
+        local_build_identity: peer.build_identity.clone(),
+        local_version_sync: LanLocalVersionSyncSnapshot {
+            target_ref: None,
+            git_worktree_clean: false,
+            update_to_local_build_allowed: false,
+            blocked_reason: Some("peer app debug unavailable".to_string()),
+        },
+    }
+}
+
 fn classify_remote_update_shell_command(command_line: &str) -> &'static str {
     let lower = command_line.to_ascii_lowercase();
     if lower.contains("lan-remote-update.ps1") || lower.contains("lan-remote-update.sh") {
@@ -2174,23 +2275,27 @@ impl LanSyncRuntime {
         let peer = self
             .live_peer_by_node_id(normalized_node_id)
             .or_else(|| {
-                self.recent_peer_by_node_id(normalized_node_id, LAN_PEER_HTTP_GRACE_AFTER_MS)
+                self.recent_peer_by_node_id(
+                    normalized_node_id,
+                    LAN_REMOTE_UPDATE_ROLLBACK_HTTP_GRACE_AFTER_MS,
+                )
             })
             .ok_or_else(|| format!("peer is not reachable on LAN: {normalized_node_id}"))?;
-        let base_url = peer_http_base_url(&peer)
+        let app_base_url = peer_http_base_url(&peer)
             .ok_or_else(|| format!("peer has no valid LAN address: {normalized_node_id}"))?;
         let trust_secret = current_lan_trust_secret(gateway)?;
         let response = lan_sync_http_client()
-            .post(format!("{base_url}/lan-sync/debug/remote-update"))
+            .post(format!("{app_base_url}/lan-sync/debug/remote-update"))
             .header(
                 LAN_SYNC_AUTH_NODE_ID_HEADER,
                 self.local_node.node_id.clone(),
             )
-            .header(LAN_SYNC_AUTH_SECRET_HEADER, trust_secret)
+            .header(LAN_SYNC_AUTH_SECRET_HEADER, trust_secret.clone())
             .json(&LanRemoteUpdateDebugRequestPacket {
                 version: 1,
                 node_id: self.local_node.node_id.clone(),
             })
+            .timeout(remote_update_debug_request_timeout())
             .send()
             .await
             .map_err(|err| {
@@ -2201,8 +2306,22 @@ impl LanSyncRuntime {
                     "request_error",
                     &detail,
                 );
-                format!("LAN remote update debug request failed: {detail}")
-            })?;
+                detail
+            });
+        let response = match response {
+            Ok(response) => response,
+            Err(detail) => {
+                return Ok(self
+                    .fallback_remote_update_debug_from_updater(
+                        &peer,
+                        app_base_url,
+                        "request_error",
+                        Some(format!("LAN remote update debug request failed: {detail}")),
+                        &trust_secret,
+                    )
+                    .await);
+            }
+        };
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
@@ -2224,7 +2343,15 @@ impl LanSyncRuntime {
                     "http_error",
                     &detail,
                 );
-                return Err(detail);
+                return Ok(self
+                    .fallback_remote_update_debug_from_updater(
+                        &peer,
+                        app_base_url,
+                        "http_error",
+                        Some(detail),
+                        &trust_secret,
+                    )
+                    .await);
             }
             let detail = format!("LAN remote update debug http {status}: {body}");
             self.note_http_sync_probe(
@@ -2233,7 +2360,15 @@ impl LanSyncRuntime {
                 "http_error",
                 &detail,
             );
-            return Err(detail);
+            return Ok(self
+                .fallback_remote_update_debug_from_updater(
+                    &peer,
+                    app_base_url,
+                    "http_error",
+                    Some(detail),
+                    &trust_secret,
+                )
+                .await);
         }
         let packet = response
             .json::<LanRemoteUpdateDebugResponsePacket>()
@@ -2246,11 +2381,119 @@ impl LanSyncRuntime {
                     "decode_error",
                     &detail,
                 );
-                format!("LAN remote update debug response decode failed: {detail}")
-            })?;
+                detail
+            });
+        let mut packet = match packet {
+            Ok(packet) => packet,
+            Err(detail) => {
+                return Ok(self
+                    .fallback_remote_update_debug_from_updater(
+                        &peer,
+                        app_base_url,
+                        "decode_error",
+                        Some(format!(
+                            "LAN remote update debug response decode failed: {detail}"
+                        )),
+                        &trust_secret,
+                    )
+                    .await);
+            }
+        };
         let _ =
             self.note_http_sync_probe(&peer, "/lan-sync/debug/remote-update", "ok", "HTTP sync ok");
+        if packet.transport.app_debug_state.trim().is_empty() {
+            packet.transport.app_base_url = Some(app_base_url);
+            packet.transport.app_debug_state = "ok".to_string();
+            packet.transport.app_debug_detail = Some("HTTP sync ok".to_string());
+            packet.transport.updater_base_url = peer_updater_base_url(&peer);
+        }
         Ok(packet)
+    }
+
+    async fn fallback_remote_update_debug_from_updater(
+        &self,
+        peer: &LanPeerSnapshot,
+        app_base_url: String,
+        app_debug_state: &str,
+        app_debug_detail: Option<String>,
+        trust_secret: &str,
+    ) -> LanRemoteUpdateDebugResponsePacket {
+        let updater_base_url = peer_updater_base_url(peer);
+        let (updater_status, updater_state, updater_detail) = self
+            .fetch_peer_updater_status_for_debug(peer, updater_base_url.as_deref(), trust_secret)
+            .await;
+        fallback_remote_update_debug_packet(
+            peer,
+            LanRemoteUpdateTransportSnapshot {
+                app_base_url: Some(app_base_url),
+                app_debug_state: app_debug_state.to_string(),
+                app_debug_detail,
+                updater_base_url,
+                updater_state,
+                updater_detail,
+            },
+            updater_status,
+        )
+    }
+
+    async fn fetch_peer_updater_status_for_debug(
+        &self,
+        peer: &LanPeerSnapshot,
+        updater_base_url: Option<&str>,
+        trust_secret: &str,
+    ) -> (Option<serde_json::Value>, Option<String>, Option<String>) {
+        let Some(base_url) = updater_base_url else {
+            return (
+                None,
+                Some("missing_updater_addr".to_string()),
+                Some("peer has no known updater address".to_string()),
+            );
+        };
+        let response = lan_sync_http_client()
+            .get(format!("{base_url}/status"))
+            .header(
+                LAN_SYNC_AUTH_NODE_ID_HEADER,
+                self.local_node.node_id.clone(),
+            )
+            .header(LAN_SYNC_AUTH_SECRET_HEADER, trust_secret.to_string())
+            .timeout(remote_update_debug_request_timeout())
+            .send()
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(err) => {
+                let detail = format_lan_sync_reqwest_error(&err);
+                self.note_http_sync_probe(peer, "/updater/status", "request_error", &detail);
+                return (None, Some("request_error".to_string()), Some(detail));
+            }
+        };
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            let detail = format!("updater status http {status}: {body}");
+            self.note_http_sync_probe(peer, "/updater/status", "http_error", &detail);
+            return (None, Some("http_error".to_string()), Some(detail));
+        }
+        match response.json::<serde_json::Value>().await {
+            Ok(value) => {
+                let busy = value
+                    .get("busy")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let detail = format!(
+                    "updater status ok; busy={busy}; current={}; previous={}",
+                    updater_status_git_sha(&value, "current").unwrap_or("unknown"),
+                    updater_status_git_sha(&value, "previous").unwrap_or("unknown")
+                );
+                self.note_http_sync_probe(peer, "/updater/status", "ok", &detail);
+                (Some(value), Some("ok".to_string()), Some(detail))
+            }
+            Err(err) => {
+                let detail = format_lan_sync_reqwest_error(&err);
+                self.note_http_sync_probe(peer, "/updater/status", "decode_error", &detail);
+                (None, Some("decode_error".to_string()), Some(detail))
+            }
+        }
     }
 
     pub async fn fetch_peer_diagnostics(
@@ -2548,6 +2791,15 @@ pub(crate) async fn lan_sync_remote_update_debug_http(
         shell_log_tail,
         shell_window_summary,
         system_snapshot,
+        transport: LanRemoteUpdateTransportSnapshot {
+            app_base_url: None,
+            app_debug_state: "ok".to_string(),
+            app_debug_detail: Some("peer app debug endpoint responded".to_string()),
+            updater_base_url: None,
+            updater_state: None,
+            updater_detail: None,
+        },
+        updater_status: None,
         app_startup_file_exists: app_startup_path.as_ref().is_some_and(|path| path.is_file()),
         app_startup_path: app_startup_path.map(|path| path.display().to_string()),
         app_startup_tail,
@@ -3127,6 +3379,96 @@ mod tests {
 
         let untrusted_peer = trust_peer_snapshot(peer, &std::collections::BTreeSet::new());
         assert!(!untrusted_peer.trusted);
+    }
+
+    #[test]
+    fn fallback_remote_update_debug_packet_identifies_app_down_with_updater_alive() {
+        let peer = super::LanPeerSnapshot {
+            node_id: "node-a".to_string(),
+            node_name: "Node A".to_string(),
+            listen_addr: "192.168.1.10:4000".to_string(),
+            remote_update_updater_port: Some(4001),
+            last_heartbeat_unix_ms: 1,
+            capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::local_version_inventory(),
+            build_identity: super::current_build_identity(),
+            remote_update_readiness: None,
+            remote_update_status: Some(LanRemoteUpdateStatusSnapshot {
+                state: "running".to_string(),
+                target_ref: "main".to_string(),
+                from_git_sha: Some("old".to_string()),
+                to_git_sha: Some("new".to_string()),
+                current_git_sha: Some("old".to_string()),
+                previous_git_sha: None,
+                progress_percent: Some(90),
+                rollback_available: true,
+                request_id: Some("ru_test".to_string()),
+                reason_code: Some("health_check".to_string()),
+                requester_node_id: Some("node-self".to_string()),
+                requester_node_name: Some("self".to_string()),
+                worker_script: None,
+                worker_pid: None,
+                worker_exit_code: None,
+                detail: Some("Checking runtime health".to_string()),
+                accepted_at_unix_ms: 1,
+                started_at_unix_ms: Some(2),
+                finished_at_unix_ms: None,
+                updated_at_unix_ms: 3,
+                timeline: Vec::new(),
+            }),
+            provider_fingerprints: Vec::new(),
+            provider_definitions_revision: String::new(),
+            sync_contracts: super::local_sync_contracts(),
+            followed_source_node_id: None,
+            trusted: true,
+            pair_state: None,
+            pair_request_id: None,
+            sync_blocked_domains: Vec::new(),
+            sync_diagnostics: Vec::new(),
+            build_matches_local: false,
+            heartbeat_age_ms: 30_000,
+            http_probe_state: Some("stale_heartbeat".to_string()),
+            http_probe_detail: Some("last heartbeat was 30000ms ago".to_string()),
+        };
+        let updater_status = serde_json::json!({
+            "ok": true,
+            "busy": false,
+            "current": { "gitSha": "old" },
+            "previous": { "gitSha": "old" }
+        });
+
+        let packet = fallback_remote_update_debug_packet(
+            &peer,
+            LanRemoteUpdateTransportSnapshot {
+                app_base_url: Some("http://192.168.1.10:4000".to_string()),
+                app_debug_state: "request_error".to_string(),
+                app_debug_detail: Some("connection refused".to_string()),
+                updater_base_url: Some("http://192.168.1.10:4001".to_string()),
+                updater_state: Some("ok".to_string()),
+                updater_detail: Some(
+                    "updater status ok; busy=false; current=old; previous=old".to_string(),
+                ),
+            },
+            Some(updater_status),
+        );
+
+        assert!(!packet.remote_update_readiness.ready);
+        assert_eq!(packet.transport.app_debug_state, "request_error");
+        assert_eq!(packet.transport.updater_state.as_deref(), Some("ok"));
+        assert_eq!(
+            packet
+                .updater_status
+                .as_ref()
+                .and_then(|status| updater_status_git_sha(status, "current")),
+            Some("old")
+        );
+        assert_eq!(
+            packet
+                .remote_update_status
+                .as_ref()
+                .map(|status| status.state.as_str()),
+            Some("running")
+        );
     }
 
     #[test]

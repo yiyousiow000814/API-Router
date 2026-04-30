@@ -114,6 +114,7 @@ const LAN_PAIR_REQUEST_TTL_MS: u64 = 5 * 60 * 1000;
 const LAN_PAIR_REQUEST_THROTTLE_MS: u64 = 60 * 1000;
 const LAN_PAIR_APPROVAL_TTL_MS: u64 = 5 * 60 * 1000;
 const LAN_REMOTE_UPDATE_ACCEPTED_STARTUP_GRACE_MS: u64 = 15_000;
+const LAN_REMOTE_UPDATE_DEBUG_HTTP_TIMEOUT_MS: u64 = 4_000;
 const LAN_OFFICIAL_ACCOUNTS_SYNC_HTTP_TIMEOUT_MS: u64 = 2_500;
 const LAN_SYNC_AUTH_NODE_ID_HEADER: &str = "x-api-router-lan-node-id";
 const LAN_SYNC_AUTH_SECRET_HEADER: &str = "x-api-router-lan-secret";
@@ -4179,6 +4180,10 @@ fn lan_sync_http_client() -> &'static reqwest::Client {
 
 fn official_account_profiles_request_timeout() -> Duration {
     Duration::from_millis(LAN_OFFICIAL_ACCOUNTS_SYNC_HTTP_TIMEOUT_MS)
+}
+
+fn remote_update_debug_request_timeout() -> Duration {
+    Duration::from_millis(LAN_REMOTE_UPDATE_DEBUG_HTTP_TIMEOUT_MS)
 }
 
 fn peer_pair_state(

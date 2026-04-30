@@ -390,6 +390,32 @@ export type LanRemoteUpdateDebugResponse = {
       command: string
     }>
   }
+  transport?: {
+    app_base_url?: string | null
+    app_debug_state?: string
+    app_debug_detail?: string | null
+    updater_base_url?: string | null
+    updater_state?: string | null
+    updater_detail?: string | null
+  }
+  updater_status?: {
+    ok?: boolean
+    busy?: boolean
+    activeOperation?: unknown
+    current?: {
+      gitSha?: string
+      exePath?: string
+      reason?: string | null
+      updatedAtUnixMs?: number
+    } | null
+    previous?: {
+      gitSha?: string
+      exePath?: string
+      reason?: string | null
+      updatedAtUnixMs?: number
+    } | null
+    updaterPath?: string
+  } | null
   app_startup_path?: string | null
   app_startup_file_exists?: boolean
   app_startup_tail?: string | null
@@ -481,6 +507,8 @@ export type Config = {
       trusted?: boolean
       pair_state?: 'trusted' | 'incoming_request' | 'requested' | 'pin_required' | null
       pair_request_id?: string | null
+      listen_addr?: string | null
+      remote_update_updater_addr?: string | null
       follow_allowed: boolean
       follow_blocked_reason?: string | null
       using_count: number

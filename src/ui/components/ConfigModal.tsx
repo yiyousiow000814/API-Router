@@ -645,6 +645,35 @@ function remoteDebugSystemSnapshotText(
   return lines.join('\n')
 }
 
+function remoteDebugTransportText(
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+): string | null {
+  const transport = remoteUpdateDebug?.transport
+  const updater = remoteUpdateDebug?.updater_status
+  if (!transport && !updater) return null
+  const lines = ['remote-update-transport']
+  if (transport) {
+    lines.push(
+      `app=${transport.app_base_url ?? 'unknown'} · state=${transport.app_debug_state || 'unknown'}${
+        transport.app_debug_detail ? ` · ${transport.app_debug_detail}` : ''
+      }`,
+    )
+    lines.push(
+      `updater=${transport.updater_base_url ?? 'unknown'} · state=${transport.updater_state ?? 'unknown'}${
+        transport.updater_detail ? ` · ${transport.updater_detail}` : ''
+      }`,
+    )
+  }
+  if (updater) {
+    lines.push(
+      `updater-status busy=${String(Boolean(updater.busy))} · current=${
+        updater.current?.gitSha ?? 'unknown'
+      } · previous=${updater.previous?.gitSha ?? 'unknown'}`,
+    )
+  }
+  return lines.join('\n')
+}
+
 export function remoteDebugStartupDiagnosisText(
   remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
 ): string {
@@ -1116,7 +1145,8 @@ export function diagnosticsWhyText(
   const httpProbeState = source.http_probe_state?.trim()
   const httpProbeDetail = source.http_probe_detail?.trim()
   if (httpProbeState && httpProbeState !== 'ok' && httpProbeDetail) {
-    return `Heartbeat seen ${source.heartbeat_age_ms ?? '?'}ms ago, but HTTP sync is ${httpProbeState}: ${httpProbeDetail}`
+    const updater = source.remote_update_updater_addr ? ` updater=${source.remote_update_updater_addr}` : ''
+    return `Heartbeat seen ${source.heartbeat_age_ms ?? '?'}ms ago, but HTTP sync is ${httpProbeState}: ${httpProbeDetail}${updater}`
   }
   return ''
 }
@@ -1837,6 +1867,7 @@ export function ConfigModal({
                             )
                             .join('\n')}`
                         : '',
+                      remoteDebugTransportText(remoteUpdateDebug) ?? '',
                       remoteDebugSystemSnapshotText(remoteUpdateDebug) ?? '',
                       remoteUpdateDebug?.shell_log_tail?.trim()
                         ? `remote-update-shell.log\n${remoteUpdateDebug.shell_log_tail.trim()}`
