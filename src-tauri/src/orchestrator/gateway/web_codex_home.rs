@@ -99,6 +99,12 @@ pub(crate) struct WslIdentityCache {
     pub(crate) updated_at_unix_secs: i64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct WebCodexWslSessionHome {
+    pub(super) distro: Option<String>,
+    pub(super) linux_path: String,
+}
+
 fn current_unix_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -189,7 +195,7 @@ pub(crate) fn linux_path_to_unc(path: &str, distro: &str) -> PathBuf {
     }
 }
 
-pub(crate) fn parse_wsl_unc_to_linux_path(value: &str) -> Option<String> {
+pub(crate) fn parse_wsl_unc(value: &str) -> Option<(String, String)> {
     let mut text = value.trim().replace('/', "\\");
     if let Some(stripped) = text.strip_prefix(r"\\?\UNC\") {
         text = format!(r"\\{stripped}");
@@ -198,13 +204,21 @@ pub(crate) fn parse_wsl_unc_to_linux_path(value: &str) -> Option<String> {
         .strip_prefix(r"\\wsl.localhost\")
         .or_else(|| text.strip_prefix(r"\\wsl$\\"))?;
     let mut parts = stripped.split('\\').filter(|part| !part.is_empty());
-    let _distro = parts.next()?;
-    let rest = parts.collect::<Vec<_>>();
-    if rest.is_empty() {
-        Some("/".to_string())
-    } else {
-        Some(format!("/{}", rest.join("/")))
+    let distro = parts.next()?.trim().to_string();
+    if distro.is_empty() {
+        return None;
     }
+    let rest = parts.collect::<Vec<_>>();
+    let linux_path = if rest.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", rest.join("/"))
+    };
+    Some((distro, linux_path))
+}
+
+pub(crate) fn parse_wsl_unc_to_linux_path(value: &str) -> Option<String> {
+    parse_wsl_unc(value).map(|(_, linux_path)| linux_path)
 }
 
 fn detect_wsl_identity_uncached() -> Result<(String, String), String> {
@@ -320,13 +334,58 @@ fn user_data_codex_home() -> Option<PathBuf> {
         .map(|path| path.join("codex-home"))
 }
 
+fn user_data_config_path() -> Option<PathBuf> {
+    std::env::var_os("API_ROUTER_USER_DATA_DIR")
+        .map(PathBuf::from)
+        .map(|path| path.join("config.toml"))
+}
+
 pub(super) fn web_codex_windows_session_home() -> Option<PathBuf> {
     default_windows_codex_dir()
 }
 
+fn normalize_configured_wsl_codex_home(raw: &str) -> Option<WebCodexWslSessionHome> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some((distro, linux_path)) = parse_wsl_unc(trimmed) {
+        return normalize_wsl_linux_path(&linux_path).map(|linux_path| WebCodexWslSessionHome {
+            distro: Some(distro),
+            linux_path,
+        });
+    }
+    normalize_wsl_linux_path(trimmed).map(|linux_path| WebCodexWslSessionHome {
+        distro: None,
+        linux_path,
+    })
+}
+
+fn configured_wsl_cli_codex_home() -> Option<WebCodexWslSessionHome> {
+    let config_path = user_data_config_path()?;
+    let dirs = crate::codex_cli_swap::load_cli_directories_for_config(&config_path);
+    if !dirs.wsl2_enabled {
+        return None;
+    }
+    normalize_configured_wsl_codex_home(&dirs.wsl2_home)
+}
+
+fn web_codex_wsl_overlay_home_from_session_home(session_home: &str) -> Option<String> {
+    let normalized = normalize_wsl_linux_path(session_home)?;
+    let parent = linux_path_parent(&normalized)?;
+    Some(linux_path_join(&parent, ".api-router/codex-web-home"))
+}
+
+pub(super) fn web_codex_wsl_session_home_for_launch() -> Option<WebCodexWslSessionHome> {
+    configured_wsl_cli_codex_home()
+}
+
+pub(super) fn web_codex_wsl_launch_distro() -> Option<String> {
+    web_codex_wsl_session_home_for_launch().and_then(|home| home.distro)
+}
+
 pub(super) fn web_codex_wsl_session_home() -> Option<String> {
-    let (_, home) = resolve_wsl_identity().ok()?;
-    Some(linux_path_join(&home, ".codex"))
+    web_codex_wsl_session_home_for_launch().map(|home| home.linux_path)
 }
 
 pub(super) fn web_codex_session_home_for_target(target: WorkspaceTarget) -> Option<String> {
@@ -379,8 +438,8 @@ pub(super) fn web_codex_wsl_linux_home_override() -> Option<String> {
         }
         return None;
     }
-    let (_, home) = resolve_wsl_identity().ok()?;
-    Some(linux_path_join(&home, ".api-router/codex-web-home"))
+    let session_home = web_codex_wsl_session_home_for_launch()?;
+    web_codex_wsl_overlay_home_from_session_home(&session_home.linux_path)
 }
 
 fn backup_path(path: &Path) -> PathBuf {
@@ -767,6 +826,81 @@ mod tests {
 
         unsafe {
             std::env::remove_var("USERPROFILE");
+            std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        }
+    }
+
+    #[test]
+    fn wsl_codex_home_uses_enabled_cli_directory_without_identity_probe() {
+        let _test_guard = crate::codex_app_server::lock_test_globals();
+        let app_data = tempfile::tempdir().expect("app data");
+        let config_path = app_data.path().join("config.toml");
+        crate::codex_cli_swap::save_cli_directories_for_config(
+            &config_path,
+            &crate::codex_cli_swap::CodexCliDirectories {
+                windows_enabled: true,
+                windows_home: "C:\\Users\\syb\\.codex".to_string(),
+                wsl2_enabled: true,
+                wsl2_home: "\\\\wsl.localhost\\Ubuntu\\home\\syb\\.codex".to_string(),
+            },
+        )
+        .expect("save cli dirs");
+        {
+            let mut cache = super::lock_wsl_identity_cache();
+            *cache = Some(super::WslIdentityCache {
+                distro: "Wrong".to_string(),
+                home: "/wrong".to_string(),
+                updated_at_unix_secs: super::current_unix_secs(),
+            });
+        }
+        unsafe {
+            std::env::set_var("API_ROUTER_USER_DATA_DIR", app_data.path());
+            std::env::remove_var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME");
+        }
+
+        assert_eq!(
+            super::web_codex_wsl_session_home().as_deref(),
+            Some("/home/syb/.codex")
+        );
+        assert_eq!(
+            super::web_codex_wsl_linux_home_override().as_deref(),
+            Some("/home/syb/.api-router/codex-web-home")
+        );
+
+        {
+            let mut cache = super::lock_wsl_identity_cache();
+            *cache = None;
+        }
+        unsafe {
+            std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        }
+    }
+
+    #[test]
+    fn wsl_codex_home_is_absent_without_enabled_cli_directory() {
+        let _test_guard = crate::codex_app_server::lock_test_globals();
+        let app_data = tempfile::tempdir().expect("app data");
+        {
+            let mut cache = super::lock_wsl_identity_cache();
+            *cache = Some(super::WslIdentityCache {
+                distro: "ShouldNotBeUsed".to_string(),
+                home: "/should-not-be-used".to_string(),
+                updated_at_unix_secs: super::current_unix_secs(),
+            });
+        }
+        unsafe {
+            std::env::set_var("API_ROUTER_USER_DATA_DIR", app_data.path());
+            std::env::remove_var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME");
+        }
+
+        assert_eq!(super::web_codex_wsl_session_home(), None);
+        assert_eq!(super::web_codex_wsl_linux_home_override(), None);
+
+        {
+            let mut cache = super::lock_wsl_identity_cache();
+            *cache = None;
+        }
+        unsafe {
             std::env::remove_var("API_ROUTER_USER_DATA_DIR");
         }
     }

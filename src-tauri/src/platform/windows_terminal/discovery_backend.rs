@@ -465,6 +465,9 @@ fn discover_sessions_using_router_uncached(
             String::from_utf8_lossy(bytes).to_string()
         }
 
+        if !crate::platform::wsl_availability::registered_wsl_distribution_exists() {
+            return Vec::new();
+        }
         let out = hidden_wsl_command().args(["-l", "-q"]).output();
         let Ok(out) = out else {
             return Vec::new();

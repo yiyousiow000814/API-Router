@@ -10,4 +10,5 @@ pub mod local_network;
 pub mod windows_firewall;
 pub mod windows_loopback_peer;
 pub mod windows_terminal;
+pub mod wsl_availability;
 pub mod wsl_gateway_host;

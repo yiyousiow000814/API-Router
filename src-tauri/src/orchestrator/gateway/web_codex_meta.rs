@@ -662,8 +662,8 @@ fn web_codex_switchboard_home(target: WorkspaceTarget) -> Option<PathBuf> {
     if raw.starts_with('/') {
         #[cfg(target_os = "windows")]
         {
-            let (distro, _) =
-                crate::orchestrator::gateway::web_codex_home::resolve_wsl_identity().ok()?;
+            let distro =
+                crate::orchestrator::gateway::web_codex_home::web_codex_wsl_launch_distro()?;
             return Some(
                 crate::orchestrator::gateway::web_codex_home::linux_path_to_unc(&raw, &distro),
             );

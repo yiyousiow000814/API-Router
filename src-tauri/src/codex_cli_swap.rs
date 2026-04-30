@@ -51,6 +51,9 @@ fn hidden_wsl_command() -> std::process::Command {
 
 #[cfg(windows)]
 fn default_wsl_distribution_and_home() -> Option<(String, String)> {
+    if !crate::platform::wsl_availability::registered_wsl_distribution_exists() {
+        return None;
+    }
     let output = hidden_wsl_command()
         .args([
             "-e",
