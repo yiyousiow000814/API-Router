@@ -1,5 +1,17 @@
+#[cfg(test)]
+fn registered_wsl_distribution_override() -> Option<bool> {
+    std::env::var("API_ROUTER_TEST_REGISTERED_WSL_DISTRIBUTIONS")
+        .ok()
+        .map(|value| matches!(value.trim(), "1" | "true" | "yes"))
+}
+
 #[cfg(windows)]
 pub(crate) fn registered_wsl_distribution_exists() -> bool {
+    #[cfg(test)]
+    if let Some(value) = registered_wsl_distribution_override() {
+        return value;
+    }
+
     use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
 
@@ -17,5 +29,10 @@ pub(crate) fn registered_wsl_distribution_exists() -> bool {
 
 #[cfg(not(windows))]
 pub(crate) fn registered_wsl_distribution_exists() -> bool {
+    #[cfg(test)]
+    if let Some(value) = registered_wsl_distribution_override() {
+        return value;
+    }
+
     false
 }

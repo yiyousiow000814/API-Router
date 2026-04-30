@@ -362,6 +362,10 @@ fn normalize_configured_wsl_codex_home(raw: &str) -> Option<WebCodexWslSessionHo
 }
 
 fn configured_wsl_cli_codex_home() -> Option<WebCodexWslSessionHome> {
+    #[cfg(target_os = "windows")]
+    if !crate::platform::wsl_availability::registered_wsl_distribution_exists() {
+        return None;
+    }
     let config_path = user_data_config_path()?;
     let dirs = crate::codex_cli_swap::load_cli_directories_for_config(&config_path);
     if !dirs.wsl2_enabled {
@@ -855,6 +859,7 @@ mod tests {
         }
         unsafe {
             std::env::set_var("API_ROUTER_USER_DATA_DIR", app_data.path());
+            std::env::set_var("API_ROUTER_TEST_REGISTERED_WSL_DISTRIBUTIONS", "1");
             std::env::remove_var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME");
         }
 
@@ -873,6 +878,7 @@ mod tests {
         }
         unsafe {
             std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+            std::env::remove_var("API_ROUTER_TEST_REGISTERED_WSL_DISTRIBUTIONS");
         }
     }
 
@@ -890,6 +896,7 @@ mod tests {
         }
         unsafe {
             std::env::set_var("API_ROUTER_USER_DATA_DIR", app_data.path());
+            std::env::set_var("API_ROUTER_TEST_REGISTERED_WSL_DISTRIBUTIONS", "1");
             std::env::remove_var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME");
         }
 
@@ -902,6 +909,38 @@ mod tests {
         }
         unsafe {
             std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+            std::env::remove_var("API_ROUTER_TEST_REGISTERED_WSL_DISTRIBUTIONS");
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn wsl_codex_home_ignores_saved_directory_without_registered_distro() {
+        let _test_guard = crate::codex_app_server::lock_test_globals();
+        let app_data = tempfile::tempdir().expect("app data");
+        let config_path = app_data.path().join("config.toml");
+        crate::codex_cli_swap::save_cli_directories_for_config(
+            &config_path,
+            &crate::codex_cli_swap::CodexCliDirectories {
+                windows_enabled: true,
+                windows_home: "C:\\Users\\syb\\.codex".to_string(),
+                wsl2_enabled: true,
+                wsl2_home: "\\\\wsl.localhost\\Ubuntu\\home\\syb\\.codex".to_string(),
+            },
+        )
+        .expect("save cli dirs");
+        unsafe {
+            std::env::set_var("API_ROUTER_USER_DATA_DIR", app_data.path());
+            std::env::set_var("API_ROUTER_TEST_REGISTERED_WSL_DISTRIBUTIONS", "0");
+            std::env::remove_var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME");
+        }
+
+        assert_eq!(super::web_codex_wsl_session_home(), None);
+        assert_eq!(super::web_codex_wsl_linux_home_override(), None);
+
+        unsafe {
+            std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+            std::env::remove_var("API_ROUTER_TEST_REGISTERED_WSL_DISTRIBUTIONS");
         }
     }
 

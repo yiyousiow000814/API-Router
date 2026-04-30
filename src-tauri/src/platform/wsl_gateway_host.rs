@@ -150,6 +150,9 @@ fn detect_host_in_distro(distro: Option<&str>) -> Option<String> {
 
 #[cfg(windows)]
 fn detect_wsl_gateway_host() -> Option<String> {
+    if !crate::platform::wsl_availability::registered_wsl_distribution_exists() {
+        return None;
+    }
     if let Some(host) = detect_host_in_distro(None) {
         return Some(host);
     }
@@ -262,5 +265,19 @@ mod tests {
         assert!(!should_retry_detection(40_000, 40_000));
         assert!(!should_retry_detection(40_000, 40_000 - (30_000 - 1)));
         assert!(should_retry_detection(40_000, 40_000 - 30_000));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wsl_gateway_detection_skips_probe_without_registered_distro() {
+        unsafe {
+            std::env::set_var("API_ROUTER_TEST_REGISTERED_WSL_DISTRIBUTIONS", "0");
+        }
+
+        assert_eq!(super::detect_wsl_gateway_host(), None);
+
+        unsafe {
+            std::env::remove_var("API_ROUTER_TEST_REGISTERED_WSL_DISTRIBUTIONS");
+        }
     }
 }
