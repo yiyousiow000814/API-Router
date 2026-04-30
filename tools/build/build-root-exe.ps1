@@ -317,9 +317,36 @@ function Write-RemoteUpdateLog {
   Add-Content -Path $logPath -Value "[$timestamp] [build-root-exe] $Message" -Encoding UTF8
 }
 
+function Get-RepoGitHeadSha {
+  try {
+    $output = & git -C $RepoRoot rev-parse HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$output)) {
+      return ([string]$output).Trim()
+    }
+  } catch {
+    Write-RemoteUpdateLog ("Failed to resolve git HEAD sha: " + $_.Exception.Message)
+  }
+  return $null
+}
+
+function Get-RecordedRuntimeSha([string]$Name) {
+  try {
+    $path = Join-Path (Join-Path $RepoRoot 'runtime') "$Name.json"
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    $payload = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json
+    $sha = [string]$payload.gitSha
+    if (-not [string]::IsNullOrWhiteSpace($sha)) { return $sha.Trim() }
+  } catch {
+    Write-RemoteUpdateLog ("Failed to read recorded runtime ${Name} sha: " + $_.Exception.Message)
+  }
+  return $null
+}
+
 function Normalize-VersionSha([string]$Sha, [string]$Fallback) {
   if (-not [string]::IsNullOrWhiteSpace($Sha)) { return $Sha.Trim() }
   if (-not [string]::IsNullOrWhiteSpace($Fallback)) { return $Fallback.Trim() }
+  $headSha = Get-RepoGitHeadSha
+  if (-not [string]::IsNullOrWhiteSpace($headSha)) { return $headSha }
   return 'unknown'
 }
 
@@ -662,7 +689,8 @@ function Start-UpdaterDaemonForRemoteRollback {
 }
 
 function Backup-CurrentRuntimeForRollback {
-  $fromSha = Normalize-VersionSha $env:API_ROUTER_REMOTE_UPDATE_FROM_GIT_SHA 'unknown'
+  $recordedCurrentSha = Get-RecordedRuntimeSha 'current'
+  $fromSha = Normalize-VersionSha $env:API_ROUTER_REMOTE_UPDATE_FROM_GIT_SHA $recordedCurrentSha
   if (-not (Test-Path -LiteralPath $DstExe)) {
     Write-RemoteUpdateLog "Rollback backup skipped; current runtime does not exist: $DstExe"
     return $null
@@ -679,7 +707,12 @@ function Backup-CurrentRuntimeForRollback {
 }
 
 function Record-InstalledRuntimeVersion {
-  $toSha = Normalize-VersionSha $env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA $env:API_ROUTER_REMOTE_UPDATE_TARGET_REF
+  $targetFallback = if (-not [string]::IsNullOrWhiteSpace([string]$env:API_ROUTER_REMOTE_UPDATE_TARGET_REF)) {
+    [string]$env:API_ROUTER_REMOTE_UPDATE_TARGET_REF
+  } else {
+    Get-RepoGitHeadSha
+  }
+  $toSha = Normalize-VersionSha $env:API_ROUTER_REMOTE_UPDATE_TO_GIT_SHA $targetFallback
   Invoke-UpdaterCommand `
     -PreferredUpdaterPath $DstUpdaterExe `
     -ArgumentList @('record-current', '--repo-root', $RepoRoot, '--git-sha', $toSha, '--source', $DstExe) `
@@ -1288,8 +1321,8 @@ function Write-BuildFailureOutputDiagnostics(
   [string[]]$StdoutLines,
   [string[]]$StderrLines
 ) {
-  $stderrTail = @($StderrLines | Select-Object -Last 20)
-  $stdoutTail = @($StdoutLines | Select-Object -Last 20)
+  $stderrTail = @($StderrLines | Select-Object -Last 80)
+  $stdoutTail = @($StdoutLines | Select-Object -Last 80)
   if ($stderrTail.Count -gt 0) {
     Write-RemoteUpdateLog "$FailureLabel stderr tail:"
     foreach ($line in $stderrTail) {
