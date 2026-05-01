@@ -1391,6 +1391,44 @@ export default function App() {
     },
     [flashToast, isDevPreview, refreshCodexAccountProfiles, status?.codex_account],
   );
+  const onReauthCodexAccountProfile = useCallback(
+    async (profileId: string) => {
+      try {
+        if (isDevPreview) {
+          setCodexAccountProfiles((prev) =>
+            prev.map((profile) => ({
+              ...profile,
+              active: profile.id === profileId,
+              needs_reauth:
+                profile.id === profileId ? false : profile.needs_reauth,
+            })),
+          );
+          flashToast("Official account re-auth started [TEST]");
+          return;
+        }
+        setCodexAccountProfiles((prev) =>
+          prev.map((profile) => ({
+            ...profile,
+            active: profile.id === profileId,
+          })),
+        );
+        await invoke<OfficialAccountProfileSummary>(
+          "codex_account_profile_select",
+          { profileId },
+        );
+        pendingOfficialAddAccountRef.current = {
+          expectedCount: codexAccountProfiles.length,
+          startedAtUnixMs: Date.now(),
+        };
+        await onCodexAddAccount();
+        flashToast("Re-authenticate this official account in the browser");
+      } catch (e) {
+        pendingOfficialAddAccountRef.current = null;
+        flashToast(String(e), "error");
+      }
+    },
+    [codexAccountProfiles.length, flashToast, isDevPreview, onCodexAddAccount],
+  );
   const onFollowRemoteCodexAccountProfile = useCallback(
     async (sourceNodeId: string, remoteProfileId: string) => {
       const followKey = `${sourceNodeId}:${remoteProfileId}`;
@@ -2444,6 +2482,7 @@ export default function App() {
                 remoteCodexAccountFollowBusy={remoteCodexAccountFollowBusy}
                 onActivateCodexAccountProfile={onActivateCodexAccountProfile}
                 onRemoveCodexAccountProfile={onRemoveCodexAccountProfile}
+                onReauthCodexAccountProfile={onReauthCodexAccountProfile}
                 onFollowRemoteCodexAccountProfile={onFollowRemoteCodexAccountProfile}
                 onRefreshRemoteCodexAccountProfiles={refreshRemoteCodexAccountProfiles}
                 onAddCodexAccountProfile={onAddCodexAccountProfile}

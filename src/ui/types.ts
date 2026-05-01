@@ -20,6 +20,8 @@ export type OfficialAccountProfileSummary = {
   limit_5h_reset_at?: string | null
   limit_weekly_remaining?: string | null
   limit_weekly_reset_at?: string | null
+  access_token_expires_at_unix_ms?: number | null
+  needs_reauth?: boolean
 }
 
 export type RemoteOfficialAccountProfile = {

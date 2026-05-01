@@ -74,6 +74,7 @@ type Props = {
   remoteCodexAccountFollowBusy: Record<string, boolean>
   onActivateCodexAccountProfile: (profileId: string) => Promise<void>
   onRemoveCodexAccountProfile: (profileId: string) => Promise<void>
+  onReauthCodexAccountProfile: (profileId: string) => Promise<void>
   onFollowRemoteCodexAccountProfile: (sourceNodeId: string, remoteProfileId: string) => Promise<void>
   onRefreshRemoteCodexAccountProfiles: () => Promise<void>
   onAddCodexAccountProfile: () => Promise<void>
@@ -191,6 +192,7 @@ function AppMainContentInner(props: Props) {
     remoteCodexAccountFollowBusy,
     onActivateCodexAccountProfile,
     onRemoveCodexAccountProfile,
+    onReauthCodexAccountProfile,
     onFollowRemoteCodexAccountProfile,
     onRefreshRemoteCodexAccountProfiles,
     onAddCodexAccountProfile,
@@ -297,6 +299,7 @@ function AppMainContentInner(props: Props) {
         remoteCodexAccountFollowBusy={remoteCodexAccountFollowBusy}
         onActivateCodexAccountProfile={onActivateCodexAccountProfile}
         onRemoveCodexAccountProfile={onRemoveCodexAccountProfile}
+        onReauthCodexAccountProfile={onReauthCodexAccountProfile}
         onFollowRemoteCodexAccountProfile={onFollowRemoteCodexAccountProfile}
         onRefreshRemoteCodexAccountProfiles={onRefreshRemoteCodexAccountProfiles}
         onAddCodexAccountProfile={onAddCodexAccountProfile}
@@ -361,6 +364,7 @@ function areEqualAppMainContentProps(prev: Props, next: Props): boolean {
         prev.remoteCodexAccountFollowBusy === next.remoteCodexAccountFollowBusy &&
         prev.onActivateCodexAccountProfile === next.onActivateCodexAccountProfile &&
         prev.onRemoveCodexAccountProfile === next.onRemoveCodexAccountProfile &&
+        prev.onReauthCodexAccountProfile === next.onReauthCodexAccountProfile &&
         prev.onFollowRemoteCodexAccountProfile === next.onFollowRemoteCodexAccountProfile &&
         prev.onRefreshRemoteCodexAccountProfiles === next.onRefreshRemoteCodexAccountProfiles &&
         prev.onAddCodexAccountProfile === next.onAddCodexAccountProfile &&

@@ -446,13 +446,30 @@ async fn refresh_official_account_profiles_usage(
     let entries = secrets.list_official_account_profile_auth_entries();
     let mut outcome = OfficialAccountProfilesRefreshOutcome::default();
     for entry in entries {
+        let now_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
         let mut profile_home: Option<std::path::PathBuf> = None;
         let usage_result = async {
             let home =
                 ensure_official_account_profile_home(config_path, &entry.id, &entry.auth_json)?;
             profile_home = Some(home.clone());
-            read_codex_account_usage(Some(home.to_string_lossy().as_ref()), Some(&entry.auth_json))
-                .await
+            let home_text = home.to_string_lossy().to_string();
+            if official_account_auth_needs_runtime_refresh(&entry.auth_json, now_unix_ms) {
+                crate::codex_app_server::refresh_server_in_home(Some(home_text.as_str())).await?;
+            }
+            let mut usage =
+                read_codex_account_usage(Some(home_text.as_str()), Some(&entry.auth_json)).await?;
+            if !has_official_account_usage_limits(&usage)
+                && (official_account_auth_needs_runtime_refresh(&entry.auth_json, now_unix_ms)
+                    || !usage.signed_in)
+            {
+                crate::codex_app_server::refresh_server_in_home(Some(home_text.as_str())).await?;
+                usage = read_codex_account_usage(Some(home_text.as_str()), Some(&entry.auth_json))
+                    .await?;
+            }
+            Ok::<CodexAccountUsageRead, String>(usage)
         }
         .await;
         let usage = match usage_result {
@@ -524,6 +541,43 @@ fn read_codex_access_token(auth_json: Option<&Value>) -> Option<String> {
         .map(str::trim)
         .filter(|token| !token.is_empty())
         .map(|token| token.to_string())
+}
+
+const OFFICIAL_ACCOUNT_REFRESH_GRACE_MS: u64 = 5 * 60 * 1000;
+const OFFICIAL_ACCOUNT_REFRESH_STALE_AFTER_MS: u64 = 8 * 24 * 60 * 60 * 1000;
+
+fn official_account_access_token_expires_at_unix_ms(auth_json: &Value) -> Option<u64> {
+    let token = auth_json
+        .get("tokens")
+        .and_then(|tokens| tokens.get("access_token"))
+        .and_then(|value| value.as_str())?;
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        payload,
+    )
+    .ok()?;
+    let json = serde_json::from_slice::<Value>(&bytes).ok()?;
+    let exp = json.get("exp").and_then(|value| value.as_u64())?;
+    exp.checked_mul(1000)
+}
+
+fn official_account_last_refresh_unix_ms(auth_json: &Value) -> Option<u64> {
+    let raw = auth_json.get("last_refresh").and_then(|value| value.as_str())?;
+    let parsed = chrono::DateTime::parse_from_rfc3339(raw).ok()?;
+    let millis = parsed.timestamp_millis();
+    u64::try_from(millis).ok()
+}
+
+fn official_account_auth_needs_runtime_refresh(auth_json: &Value, now_unix_ms: u64) -> bool {
+    if official_account_access_token_expires_at_unix_ms(auth_json)
+        .is_some_and(|value| value <= now_unix_ms.saturating_add(OFFICIAL_ACCOUNT_REFRESH_GRACE_MS))
+    {
+        return true;
+    }
+    official_account_last_refresh_unix_ms(auth_json).is_some_and(|value| {
+        now_unix_ms.saturating_sub(value) >= OFFICIAL_ACCOUNT_REFRESH_STALE_AFTER_MS
+    })
 }
 
 fn ensure_official_account_profile_home(
@@ -750,7 +804,7 @@ fn read_codex_access_token_from_app(config_path: &std::path::Path) -> Option<Str
 #[allow(clippy::await_holding_lock)]
 mod account_switchboard_tests {
     use super::*;
-    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use crate::orchestrator::secrets::SecretStore;
     use std::sync::Arc;
 
@@ -759,8 +813,19 @@ mod account_switchboard_tests {
             "email": email,
             "chatgpt_plan_type": plan,
         });
-        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(serde_json::to_vec(&payload).expect("payload json"));
+        let payload_b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            serde_json::to_vec(&payload).expect("payload json"),
+        );
+        format!("header.{payload_b64}.signature")
+    }
+
+    fn test_access_token_with_exp(exp_unix_secs: u64) -> String {
+        let payload = serde_json::json!({ "exp": exp_unix_secs });
+        let payload_b64 = base64::Engine::encode(
+            &URL_SAFE_NO_PAD,
+            serde_json::to_vec(&payload).expect("payload json"),
+        );
         format!("header.{payload_b64}.signature")
     }
 
@@ -807,6 +872,63 @@ mod account_switchboard_tests {
             read_codex_access_token_from_app(&config_path).as_deref(),
             Some("chosen-access")
         );
+    }
+
+    #[test]
+    fn official_account_auth_needs_runtime_refresh_when_access_token_is_expired() {
+        let now_unix_ms = 1_800_000_000_000u64;
+        let auth_json = serde_json::json!({
+            "tokens": {
+                "access_token": test_access_token_with_exp((now_unix_ms / 1000).saturating_sub(1))
+            }
+        });
+
+        assert!(official_account_auth_needs_runtime_refresh(
+            &auth_json,
+            now_unix_ms,
+        ));
+    }
+
+    #[test]
+    fn official_account_auth_needs_runtime_refresh_when_last_refresh_is_stale() {
+        let now_unix_ms = 1_800_000_000_000u64;
+        let stale = chrono::DateTime::from_timestamp_millis(
+            (now_unix_ms - OFFICIAL_ACCOUNT_REFRESH_STALE_AFTER_MS - 1_000) as i64,
+        )
+        .expect("timestamp")
+        .to_rfc3339();
+        let auth_json = serde_json::json!({
+            "last_refresh": stale,
+            "tokens": {
+                "access_token": test_access_token_with_exp((now_unix_ms / 1000).saturating_add(86_400))
+            }
+        });
+
+        assert!(official_account_auth_needs_runtime_refresh(
+            &auth_json,
+            now_unix_ms,
+        ));
+    }
+
+    #[test]
+    fn official_account_auth_does_not_refresh_when_recent_and_unexpired() {
+        let now_unix_ms = 1_800_000_000_000u64;
+        let recent = chrono::DateTime::from_timestamp_millis(
+            (now_unix_ms - 60_000) as i64,
+        )
+        .expect("timestamp")
+        .to_rfc3339();
+        let auth_json = serde_json::json!({
+            "last_refresh": recent,
+            "tokens": {
+                "access_token": test_access_token_with_exp((now_unix_ms / 1000).saturating_add(86_400))
+            }
+        });
+
+        assert!(!official_account_auth_needs_runtime_refresh(
+            &auth_json,
+            now_unix_ms,
+        ));
     }
 
     #[test]

@@ -54,6 +54,7 @@ type HeroCodexProps = {
   remoteProfileFollowBusy?: Record<string, boolean>
   onActivateProfile: (profileId: string) => Promise<void>
   onRemoveProfile: (profileId: string) => Promise<void>
+  onReauthProfile: (profileId: string) => Promise<void>
   onFollowRemoteProfile?: (sourceNodeId: string, remoteProfileId: string) => Promise<void>
   onRefreshRemoteProfiles?: () => Promise<void>
   onAddAccount: () => Promise<void>
@@ -79,6 +80,7 @@ export function HeroCodexCard({
   remoteProfileFollowBusy = {},
   onActivateProfile,
   onRemoveProfile,
+  onReauthProfile,
   onFollowRemoteProfile = async () => {},
   onRefreshRemoteProfiles = async () => {},
   onAddAccount,
@@ -87,6 +89,7 @@ export function HeroCodexCard({
   const [menuOpen, setMenuOpen] = useState<boolean>(false)
   const [accountsMenuOpen, setAccountsMenuOpen] = useState<boolean>(defaultAccountsMenuOpen)
   const [accountsMenuMaxHeight, setAccountsMenuMaxHeight] = useState<number>(ACCOUNTS_MENU_MAX_HEIGHT)
+  const lastExpiredProfilesAutoRefreshRef = useRef<string>('')
   const menuWrapRef = useRef<HTMLDivElement | null>(null)
   const accountsMenuWrapRef = useRef<HTMLDivElement | null>(null)
   const swapTargetLabel = swapTarget === 'windows' ? 'Windows' : swapTarget === 'wsl2' ? 'WSL2' : 'Both'
@@ -159,6 +162,22 @@ export function HeroCodexCard({
       window.removeEventListener('scroll', updateMenuHeight, true)
     }
   }, [accountsMenuOpen])
+
+  useEffect(() => {
+    if (!accountsMenuOpen || profilesLoading || refreshing) return
+    const expiredSignature = profiles
+      .filter((profile) => profile.needs_reauth)
+      .map((profile) => profile.id)
+      .sort()
+      .join('|')
+    if (!expiredSignature) {
+      lastExpiredProfilesAutoRefreshRef.current = ''
+      return
+    }
+    if (lastExpiredProfilesAutoRefreshRef.current === expiredSignature) return
+    lastExpiredProfilesAutoRefreshRef.current = expiredSignature
+    onRefresh()
+  }, [accountsMenuOpen, onRefresh, profiles, profilesLoading, refreshing])
 
   return (
     <div className="aoCard aoHeroCard aoHeroCodex">
@@ -262,37 +281,57 @@ export function HeroCodexCard({
                         key={profile.id}
                         className={`aoAccountsMenuRow${profile.active ? ' aoAccountsMenuRowActive' : ''}`}
                       >
-                        <button
-                          type="button"
-                          className="aoAccountsMenuPrimary"
-                          onClick={() => {
-                            setAccountsMenuOpen(false)
-                            void onActivateProfile(profile.id)
-                          }}
-                        >
-                          <span className="aoAccountsMenuText">
+                        <div className="aoAccountsMenuText">
+                          <button
+                            type="button"
+                            className="aoAccountsMenuPrimary"
+                            onClick={() => {
+                              setAccountsMenuOpen(false)
+                              void onActivateProfile(profile.id)
+                            }}
+                          >
+                            <span className="aoAccountsMenuPrimaryContent">
                               <span className="aoAccountsMenuTopline">
-                              <span
-                                className="aoAccountsMenuLabel"
-                                title={officialAccountDisplayName(profile)}
-                              >
-                                {officialAccountDisplayName(profile)}
+                                <span
+                                  className="aoAccountsMenuLabel"
+                                  title={officialAccountDisplayName(profile)}
+                                >
+                                  {officialAccountDisplayName(profile)}
+                                </span>
+                                <span className="aoAccountsMenuTags">
+                                  {profile.plan_label ? (
+                                    <span className="aoAccountsMenuPlanTag">{profile.plan_label}</span>
+                                  ) : null}
+                                  {profile.active ? (
+                                    <span className="aoAccountsMenuCurrentTag">Current</span>
+                                  ) : null}
+                                </span>
                               </span>
-                              <span className="aoAccountsMenuTags">
-                                {profile.plan_label ? (
-                                  <span className="aoAccountsMenuPlanTag">{profile.plan_label}</span>
-                                ) : null}
-                                {profile.active ? (
-                                  <span className="aoAccountsMenuCurrentTag">Current</span>
-                                ) : null}
-                              </span>
-                              </span>
-                            <OfficialAccountQuotaSummary profile={profile} />
-                            <span className="aoAccountsMenuMeta">
-                              Usage updated {fmtWhen(profile.usage_updated_at_unix_ms ?? profile.updated_at_unix_ms)}
+                              <OfficialAccountQuotaSummary profile={profile} />
                             </span>
-                          </span>
-                        </button>
+                          </button>
+                          <div className="aoAccountsMenuRowFooter">
+                            <span className="aoAccountsMenuMeta">
+                              {profile.needs_reauth
+                                ? 'Session expired. Re-auth to refresh this account.'
+                                : `Usage updated ${fmtWhen(profile.usage_updated_at_unix_ms ?? profile.updated_at_unix_ms)}`}
+                            </span>
+                            {profile.needs_reauth ? (
+                              <button
+                                type="button"
+                                className="aoTinyBtn aoAccountsMenuReauth"
+                                onClick={() => {
+                                  setAccountsMenuOpen(false)
+                                  void onReauthProfile(profile.id)
+                                }}
+                                title={`Re-authorize local account ${officialAccountDisplayName(profile)}`}
+                                aria-label={`Re-authorize local account ${officialAccountDisplayName(profile)}`}
+                              >
+                                Re-auth
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
                         <button
                           type="button"
                           className="aoAccountsMenuRemove"

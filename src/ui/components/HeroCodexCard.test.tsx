@@ -62,6 +62,7 @@ describe('HeroCodexCard', () => {
         profilesLoading={false}
         onActivateProfile={async () => {}}
         onRemoveProfile={async () => {}}
+        onReauthProfile={async () => {}}
         onAddAccount={async () => {}}
       />,
     )
@@ -95,6 +96,7 @@ describe('HeroCodexCard', () => {
         profilesLoading={false}
         onActivateProfile={async () => {}}
         onRemoveProfile={async () => {}}
+        onReauthProfile={async () => {}}
         onAddAccount={async () => {}}
         defaultAccountsMenuOpen
       />,
@@ -144,6 +146,7 @@ describe('HeroCodexCard', () => {
         profilesLoading={false}
         onActivateProfile={async () => {}}
         onRemoveProfile={async () => {}}
+        onReauthProfile={async () => {}}
         onAddAccount={async () => {}}
       />,
     )
@@ -195,6 +198,7 @@ describe('HeroCodexCard', () => {
         profilesLoading={false}
         onActivateProfile={async () => {}}
         onRemoveProfile={async () => {}}
+        onReauthProfile={async () => {}}
         onAddAccount={async () => {}}
         defaultAccountsMenuOpen
       />,
@@ -249,6 +253,7 @@ describe('HeroCodexCard', () => {
         profilesLoading={false}
         onActivateProfile={async () => {}}
         onRemoveProfile={async () => {}}
+        onReauthProfile={async () => {}}
         onAddAccount={async () => {}}
         defaultAccountsMenuOpen
       />,
@@ -296,6 +301,7 @@ describe('HeroCodexCard', () => {
         remoteProfileFollowBusy={{}}
         onActivateProfile={async () => {}}
         onRemoveProfile={async () => {}}
+        onReauthProfile={async () => {}}
         onFollowRemoteProfile={async () => {}}
         onAddAccount={async () => {}}
         defaultAccountsMenuOpen
@@ -411,5 +417,45 @@ describe('HeroCodexCard', () => {
     expect(buildRemoteAccountRefreshKey(nextStatus)).toBe(
       buildRemoteAccountRefreshKey(status),
     )
+  })
+
+  it('renders re-auth controls for expired local accounts', () => {
+    const html = renderToStaticMarkup(
+      <HeroCodexCard
+        status={buildStatus()}
+        onLoginLogout={() => {}}
+        onRefresh={() => {}}
+        refreshing={false}
+        onSwapAuthConfig={() => {}}
+        onSwapOptions={() => {}}
+        swapTarget="both"
+        swapTargetWindowsEnabled
+        swapTargetWslEnabled
+        onChangeSwapTarget={() => {}}
+        swapBadgeText=""
+        swapBadgeTitle=""
+        profiles={[
+          {
+            id: 'official_expired',
+            label: 'Expired official account',
+            email: 'expired.demo@example.com',
+            updated_at_unix_ms: Date.now(),
+            active: true,
+            needs_reauth: true,
+          },
+        ]}
+        profilesLoading={false}
+        onActivateProfile={async () => {}}
+        onRemoveProfile={async () => {}}
+        onReauthProfile={async () => {}}
+        onAddAccount={async () => {}}
+        defaultAccountsMenuOpen
+      />,
+    )
+
+    expect(html).toContain('Session expired')
+    expect(html).toContain('Re-auth')
+    expect(html).toContain('Re-auth to refresh this account.')
+    expect(html).toContain('aoAccountsMenuReauth')
   })
 })

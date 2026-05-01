@@ -32,6 +32,7 @@ type Props = {
   remoteCodexAccountFollowBusy: Record<string, boolean>
   onActivateCodexAccountProfile: (profileId: string) => Promise<void>
   onRemoveCodexAccountProfile: (profileId: string) => Promise<void>
+  onReauthCodexAccountProfile: (profileId: string) => Promise<void>
   onFollowRemoteCodexAccountProfile: (sourceNodeId: string, remoteProfileId: string) => Promise<void>
   onRefreshRemoteCodexAccountProfiles: () => Promise<void>
   onAddCodexAccountProfile: () => Promise<void>
@@ -74,6 +75,7 @@ export function DashboardPanel({
   remoteCodexAccountFollowBusy,
   onActivateCodexAccountProfile,
   onRemoveCodexAccountProfile,
+  onReauthCodexAccountProfile,
   onFollowRemoteCodexAccountProfile,
   onRefreshRemoteCodexAccountProfiles,
   onAddCodexAccountProfile,
@@ -148,6 +150,7 @@ export function DashboardPanel({
           remoteProfileFollowBusy={remoteCodexAccountFollowBusy}
           onActivateProfile={onActivateCodexAccountProfile}
           onRemoveProfile={onRemoveCodexAccountProfile}
+          onReauthProfile={onReauthCodexAccountProfile}
           onFollowRemoteProfile={onFollowRemoteCodexAccountProfile}
           onRefreshRemoteProfiles={onRefreshRemoteCodexAccountProfiles}
           onAddAccount={onAddCodexAccountProfile}
