@@ -148,6 +148,11 @@ export function HeroCodexCard({
   }, [accountsMenuOpen])
 
   useEffect(() => {
+    if (accountsMenuOpen) return
+    lastExpiredProfilesAutoRefreshRef.current = ''
+  }, [accountsMenuOpen])
+
+  useEffect(() => {
     if (!accountsMenuOpen || typeof window === 'undefined') return
     const updateMenuHeight = () => {
       const rect = accountsMenuWrapRef.current?.getBoundingClientRect()
