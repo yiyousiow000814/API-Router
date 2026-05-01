@@ -1062,6 +1062,46 @@ describe('ConfigModal', () => {
     expect(compactUpdateStatusLabel(source, 'abc12345ffff')).toBe('Preparing')
   })
 
+  it('treats branch-target remote progress as current when the status carries the target commit sha', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: false,
+      same_version_update_blocked_reason: 'Another update cannot be queued right now.',
+      remote_update_status: {
+        state: 'running',
+        target_ref: 'fix/remote-update-runtime-validation',
+        to_git_sha: 'd3510a5c0f5b479b519e32178bee6797f3c67ad5',
+        current_git_sha: '65b7dc9b1a7d2dd50e690ba7005064bed445c01b',
+        detail: 'Building release binary: Running direct Tauri build via Windows SDK wrapper',
+        progress_percent: 42,
+        started_at_unix_ms: 1775312828000,
+        timeline: [
+          {
+            unix_ms: 1775312829000,
+            phase: 'building_release_binary',
+            label: 'Building',
+            detail: 'Building release binary: Running direct Tauri build via Windows SDK wrapper',
+            source: 'worker',
+            state: 'running',
+          },
+        ],
+      },
+    }
+
+    expect(compactUpdateStatusLabel(source, 'd3510a5c12345678')).toBe('Updating')
+    expect(diagnosticsRemoteUpdateDisplay(source, undefined, 'd3510a5c12345678').label).toBe('Updating')
+  })
+
   it('keeps succeeded remote updates in updated state until version sync flags catch up', () => {
     const config = buildConfig()
     const source = {

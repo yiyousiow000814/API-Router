@@ -120,6 +120,9 @@ export function compactUpdateStatusLabel(
   source: ConfigSource,
   localBuildSha?: string | null,
 ): string {
+  if (source.remote_update_status?.state?.trim() === 'accepted' || source.remote_update_status?.state?.trim() === 'running') {
+    return remoteUpdateLiveStageLabel(source.remote_update_status) ?? 'Updating'
+  }
   const liveRemoteState = remoteUpdateStateLabel(source, localBuildSha)
   if (liveRemoteState) return liveRemoteState
   if (source.kind === 'peer' && source.online === false) return 'Peer offline'
@@ -275,14 +278,35 @@ function normalizedTargetRef(value: string | undefined | null): string {
   return value?.trim().toLowerCase() || ''
 }
 
+function remoteUpdateRelevantRefCandidates(
+  status:
+    | Pick<
+        RemoteUpdateStatusSnapshot,
+        'state' | 'target_ref' | 'to_git_sha' | 'current_git_sha' | 'from_git_sha'
+      >
+    | null
+    | undefined,
+): string[] {
+  if (!status) return []
+  const state = status.state?.trim()
+  const includeCurrentBuildRefs = state !== 'accepted' && state !== 'running'
+  return [
+    normalizedBuildSha(status.to_git_sha),
+    includeCurrentBuildRefs ? normalizedBuildSha(status.current_git_sha) : '',
+    includeCurrentBuildRefs ? normalizedBuildSha(status.from_git_sha) : '',
+    normalizedTargetRef(status.target_ref),
+  ].filter((value) => value.length > 0)
+}
+
 function remoteUpdateTargetMatchesBuild(
   source: ConfigSource,
   buildSha: string | undefined | null,
 ): boolean | null {
   const normalizedBuild = normalizedBuildSha(buildSha)
-  const targetRef = normalizedTargetRef(source.remote_update_status?.target_ref)
-  if (!normalizedBuild || !targetRef) return null
-  return normalizedBuild.startsWith(targetRef) || targetRef.startsWith(normalizedBuild)
+  if (!normalizedBuild) return null
+  const candidates = remoteUpdateRelevantRefCandidates(source.remote_update_status)
+  if (candidates.length === 0) return null
+  return candidates.some((candidate) => normalizedBuild.startsWith(candidate) || candidate.startsWith(normalizedBuild))
 }
 
 export function isRemoteUpdateStatusRelevantToCurrentBuild(
@@ -770,15 +794,19 @@ export function remoteDebugStatusRelevance(
     return { isCurrent: false, reason: 'peer did not return a structured remote update status' }
   }
   const targetRef = normalizedTargetRef(status.target_ref)
-  if (!targetRef) {
+  const relevantRefs = remoteUpdateRelevantRefCandidates(status)
+  if (!targetRef && relevantRefs.length === 0) {
     return { isCurrent: false, reason: 'peer status is missing a target ref' }
   }
   const peerBuildSha = normalizedBuildSha(source.build_identity?.build_git_sha)
   const normalizedLocalBuildSha = normalizedBuildSha(localBuildSha)
   const targetMatchesLocalBuild =
-    !normalizedLocalBuildSha || !targetRef
+    !normalizedLocalBuildSha || relevantRefs.length === 0
       ? null
-      : normalizedLocalBuildSha.startsWith(targetRef) || targetRef.startsWith(normalizedLocalBuildSha)
+      : relevantRefs.some(
+          (candidate) =>
+            normalizedLocalBuildSha.startsWith(candidate) || candidate.startsWith(normalizedLocalBuildSha),
+        )
   if (localBuildSha && targetMatchesLocalBuild === false) {
     return {
       isCurrent: false,
@@ -793,7 +821,9 @@ export function remoteDebugStatusRelevance(
     }
   }
   const targetMatchesPeerBuild =
-    !peerBuildSha || !targetRef ? null : peerBuildSha.startsWith(targetRef) || targetRef.startsWith(peerBuildSha)
+    !peerBuildSha || relevantRefs.length === 0
+      ? null
+      : relevantRefs.some((candidate) => peerBuildSha.startsWith(candidate) || candidate.startsWith(peerBuildSha))
   if (
     terminalState &&
     targetMatchesPeerBuild === false &&
@@ -935,6 +965,15 @@ export function diagnosticsRemoteUpdateDisplay(
   time: string
   timeline: Array<{ unix_ms?: number | null; label?: string | null; detail?: string | null; phase?: string | null }>
 } {
+  const liveState = source.remote_update_status?.state?.trim()
+  if (liveState === 'accepted' || liveState === 'running') {
+    return {
+      label: remoteUpdateStateLabel(source, localBuildSha) ?? (liveState === 'accepted' ? 'Queued' : 'Updating'),
+      detail: remoteUpdateDetailText(source, localBuildSha),
+      time: remoteUpdateTimestampLabel(source, localBuildSha),
+      timeline: remoteUpdateTimelineEntries(source, localBuildSha),
+    }
+  }
   const remoteStatusCurrentForPending = isRemoteUpdateStatusCurrentForPending(source, pendingStage)
   const showPendingRemoteUpdate =
     Boolean(pendingStage) &&
