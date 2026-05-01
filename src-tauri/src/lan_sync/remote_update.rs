@@ -4077,6 +4077,16 @@ mod tests {
     }
 
     #[test]
+    fn build_script_allows_existing_runtime_after_updater_rollback_restart() {
+        let build_script = std::fs::read_to_string("../tools/build/build-root-exe.ps1")
+            .expect("read build script");
+        assert!(build_script.contains(
+            "Wait-ApiRouterRuntimeProcessStarted -StartedProcess $null -AllowExistingProcess"
+        ));
+        assert!(build_script.contains("[switch]$AllowExistingProcess"));
+    }
+
+    #[test]
     fn build_worker_exited_early_status_preserves_original_detail_after_bootstrap() {
         let mut running_status = build_worker_started_status(
             &accepted_status_fixture(),

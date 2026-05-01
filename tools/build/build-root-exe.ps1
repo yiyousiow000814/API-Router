@@ -1554,7 +1554,8 @@ function Wait-ApiRouterRuntimeProcessStarted {
   param(
     [Parameter(Mandatory = $false)]
     [object]$StartedProcess,
-    [Nullable[int]]$TimeoutSeconds = $null
+    [Nullable[int]]$TimeoutSeconds = $null,
+    [switch]$AllowExistingProcess
   )
 
   if ($TimeoutSeconds -eq $null) {
@@ -1570,6 +1571,11 @@ function Wait-ApiRouterRuntimeProcessStarted {
         $startedById = Get-Process -Id $StartedProcess.Id -ErrorAction SilentlyContinue
         if ($null -eq $startedById -or $startedById.HasExited) {
           throw "started API Router process exited before HTTP health check: pid=$($StartedProcess.Id)"
+        }
+      } elseif (-not $AllowExistingProcess) {
+        $currentRuntime = @(Get-ApiRouterRuntimeProcesses | Where-Object { -not $_.HasExited })
+        if ($currentRuntime.Count -gt 0) {
+          throw "existing API Router.exe process is still running before restart: $(Format-ProcessSummary $currentRuntime); $(Get-RuntimePortOwnerDetail)"
         }
       }
       $alive = @(Get-ApiRouterRuntimeProcesses | Where-Object { -not $_.HasExited })
@@ -2114,7 +2120,7 @@ try {
       Write-RemoteUpdateLog ("Runtime validation failed; starting rollback: " + $runtimeValidationError.Exception.Message)
       try {
         Restore-PreviousRuntime
-        Wait-ApiRouterRuntimeProcessStarted -StartedProcess $null
+        Wait-ApiRouterRuntimeProcessStarted -StartedProcess $null -AllowExistingProcess
         Wait-ApiRouterRuntimeHealthy
         Update-RemoteUpdateTimelineStep -Phase 'rolled_back' -Label 'Rollback health check passed' -Detail "Rolled back to $env:API_ROUTER_REMOTE_UPDATE_CURRENT_GIT_SHA" -State 'rolled_back' -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
         $script:BuildResult = 'rolled_back'
