@@ -18,9 +18,10 @@ import {
   remoteDebugStatusRelevance,
   remoteUpdateActionState,
   remoteUpdateDetailText,
-  remoteUpdateRollbackConfirmationText,
   remoteUpdateRollbackActionAvailable,
   remoteDebugReadinessReasonText,
+  remoteDebugPeerReachabilityDiagnosisText,
+  remoteDebugStartupDiagnosisText,
   splitRemoteDebugLogTail,
   shouldShowDiagnosticsRemoteUpdateStatus,
   shouldShowRemoteUpdateMenuDetail,
@@ -1060,6 +1061,46 @@ describe('ConfigModal', () => {
     expect(compactUpdateStatusLabel(source, 'abc12345ffff')).toBe('Preparing')
   })
 
+  it('treats branch-target remote progress as current when the status carries the target commit sha', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: false,
+      same_version_update_blocked_reason: 'Another update cannot be queued right now.',
+      remote_update_status: {
+        state: 'running',
+        target_ref: 'fix/remote-update-runtime-validation',
+        to_git_sha: 'd3510a5c0f5b479b519e32178bee6797f3c67ad5',
+        current_git_sha: '65b7dc9b1a7d2dd50e690ba7005064bed445c01b',
+        detail: 'Building release binary: Running direct Tauri build via Windows SDK wrapper',
+        progress_percent: 42,
+        started_at_unix_ms: 1775312828000,
+        timeline: [
+          {
+            unix_ms: 1775312829000,
+            phase: 'building_release_binary',
+            label: 'Building',
+            detail: 'Building release binary: Running direct Tauri build via Windows SDK wrapper',
+            source: 'worker',
+            state: 'running',
+          },
+        ],
+      },
+    }
+
+    expect(compactUpdateStatusLabel(source, 'd3510a5c12345678')).toBe('Updating')
+    expect(diagnosticsRemoteUpdateDisplay(source, undefined, 'd3510a5c12345678').label).toBe('Updating')
+  })
+
   it('keeps succeeded remote updates in updated state until version sync flags catch up', () => {
     const config = buildConfig()
     const source = {
@@ -1724,6 +1765,120 @@ describe('ConfigModal', () => {
     expect(remoteDebugReadinessReasonText(undefined)).toBe('')
   })
 
+  it('explains when peer app is missing but the updater is still reachable', () => {
+    expect(
+      remoteDebugPeerReachabilityDiagnosisText({
+        ok: true,
+        version: 1,
+        node_id: 'node-b',
+        node_name: 'Desk B',
+        remote_update_readiness: {
+          ready: false,
+          blocked_reason: 'Peer app debug is unavailable',
+        },
+        status_file_exists: false,
+        log_file_exists: false,
+        transport: {
+          app_base_url: 'http://192.168.1.10:4000',
+          app_debug_state: 'request_error',
+          app_debug_detail: 'connection refused',
+          updater_base_url: 'http://192.168.1.10:4001',
+          updater_state: 'ok',
+          updater_detail: 'updater responded',
+        },
+        updater_status: {
+          ok: true,
+          busy: false,
+        },
+        local_build_identity: {
+          app_version: '0.4.0',
+          build_git_sha: 'dfa0f229abcdef1234567890',
+          build_git_short_sha: 'dfa0f229',
+          build_git_commit_unix_ms: 1775482000000,
+        },
+        local_version_sync: {
+          target_ref: 'dfa0f229abcdef1234567890',
+          git_worktree_clean: true,
+          update_to_local_build_allowed: true,
+        },
+      }),
+    ).toBe(
+      'Peer app is not responding at http://192.168.1.10:4000 (request_error: connection refused), but the updater is reachable at http://192.168.1.10:4001. This is a runtime restart/rollback state, not a LAN peer-missing state.',
+    )
+  })
+
+  it('explains when both peer app and updater are unavailable', () => {
+    expect(
+      remoteDebugPeerReachabilityDiagnosisText({
+        ok: true,
+        version: 1,
+        node_id: 'node-b',
+        node_name: 'Desk B',
+        remote_update_readiness: {
+          ready: false,
+        },
+        status_file_exists: false,
+        log_file_exists: false,
+        transport: {
+          app_base_url: 'http://192.168.1.10:4000',
+          app_debug_state: 'request_error',
+          app_debug_detail: 'timed out',
+          updater_base_url: 'http://192.168.1.10:4001',
+          updater_state: 'request_error',
+          updater_detail: 'timed out',
+        },
+        local_build_identity: {
+          app_version: '0.4.0',
+          build_git_sha: 'dfa0f229abcdef1234567890',
+          build_git_short_sha: 'dfa0f229',
+          build_git_commit_unix_ms: 1775482000000,
+        },
+        local_version_sync: {
+          target_ref: 'dfa0f229abcdef1234567890',
+          git_worktree_clean: true,
+          update_to_local_build_allowed: true,
+        },
+      }),
+    ).toBe(
+      'Peer app and updater are both unreachable. That points to a LAN/offline/firewall state, or a remote process crash before the updater could answer.',
+    )
+  })
+
+  it('diagnoses startup stalls from remote update app startup diagnostics', () => {
+    expect(
+      remoteDebugStartupDiagnosisText({
+        ok: true,
+        version: 1,
+        node_id: 'node-b',
+        node_name: 'Desk B',
+        remote_update_readiness: {
+          ready: true,
+        },
+        status_file_exists: true,
+        log_file_exists: true,
+        app_startup_tail: [
+          '{"stage": "build_state_start"}',
+          '{"stage": "build_state_load_config_start"}',
+          '{"stage": "build_state_load_config_ok"}',
+          '{"stage": "build_state_secret_store_start"}',
+          '{"stage": "build_state_secret_store_ok"}',
+          '{"stage": "build_state_open_store_start"}',
+        ].join('\n'),
+        local_build_identity: {
+          app_version: '0.4.0',
+          build_git_sha: 'dfa0f229abcdef1234567890',
+          build_git_short_sha: 'dfa0f229',
+          build_git_commit_unix_ms: 1775482000000,
+        },
+        local_version_sync: {
+          target_ref: 'dfa0f229abcdef1234567890',
+          git_worktree_clean: true,
+          update_to_local_build_allowed: true,
+        },
+      }),
+    ).toContain('opening the local store')
+  })
+
   it('keeps idle update rows visually quiet', () => {
     const config = buildConfig()
     const source = {
@@ -1751,7 +1906,7 @@ describe('ConfigModal', () => {
     ).toBe(false)
   })
 
-  it('exposes rollback as the peer action when the rollback slot is available', () => {
+  it('does not expose rollback when the peer already matches the current build', () => {
     const config = buildConfig()
     const source = {
       ...config.config_source!.sources[0],
@@ -1787,17 +1942,95 @@ describe('ConfigModal', () => {
     }
 
     const actionState = remoteUpdateActionState(source, undefined, 'bad1234567890')
-    expect(remoteUpdateRollbackActionAvailable(source)).toBe(true)
+    expect(remoteUpdateRollbackActionAvailable(source)).toBe(false)
     expect(actionState).toEqual({
-      actionLabel: 'Rollback peer',
-      actionDetail: 'Restore previous build good1234',
+      actionLabel: 'Update peer',
+      actionDetail: 'Sync to this build',
       spinning: false,
     })
-    expect(remoteUpdateMenuActionLabel(source, undefined, 'bad1234567890')).toBe('Rollback peer')
-    expect(shouldShowRemoteUpdateMenuDetail(source, actionState, 'bad1234567890')).toBe(true)
+    expect(remoteUpdateMenuActionLabel(source, undefined, 'bad1234567890')).toBe('Update peer')
+    expect(shouldShowRemoteUpdateMenuDetail(source, actionState, 'bad1234567890')).toBe(false)
   })
 
-  it('keeps rollback available after the local machine moves past the bad peer build', () => {
+  it('renders no action label for a trusted peer that already matches the current build', () => {
+    const config = buildConfig()
+    config.config_source = {
+      mode: 'local',
+      followed_node_id: null,
+      sources: [
+        config.config_source!.sources[0],
+        {
+          kind: 'peer',
+          node_id: 'node-b',
+          node_name: 'Desk B',
+          active: false,
+          trusted: true,
+          online: true,
+          follow_allowed: false,
+          follow_blocked_reason: null,
+          using_count: 1,
+          build_matches_local: true,
+          build_identity: {
+            app_version: '0.4.0',
+            build_git_sha: 'bad1234567890',
+            build_git_short_sha: 'bad12345',
+            build_git_commit_unix_ms: 1775312827000,
+          },
+          version_sync_required: false,
+          version_sync_reason: null,
+          same_version_update_allowed: true,
+          same_version_update_blocked_reason: null,
+          remote_update_status: {
+            state: 'succeeded',
+            target_ref: 'bad1234567890',
+            from_git_sha: 'good1234567890',
+            to_git_sha: 'bad1234567890',
+            current_git_sha: 'bad1234567890',
+            previous_git_sha: 'good1234567890',
+            rollback_available: true,
+            finished_at_unix_ms: 1775312829000,
+            updated_at_unix_ms: 1775312829000,
+          },
+        },
+      ],
+    }
+    const html = renderToStaticMarkup(
+      <ConfigModal
+        open
+        config={config}
+        newProviderName=""
+        newProviderBaseUrl=""
+        newProviderKey=""
+        newProviderKeyStorage="auth_json"
+        nextProviderPlaceholder="provider1"
+        setNewProviderName={() => undefined}
+        setNewProviderBaseUrl={() => undefined}
+        setNewProviderKey={() => undefined}
+        setNewProviderKeyStorage={() => undefined}
+        onAddProvider={() => undefined}
+        onFollowSource={() => undefined}
+        onClearFollowSource={() => undefined}
+        onRequestPair={() => undefined}
+        onApprovePair={() => undefined}
+        onSubmitPairPin={() => undefined}
+        onSyncPeerVersion={() => undefined}
+        onRollbackPeerVersion={() => undefined}
+        remoteUpdatePendingByNode={{}}
+        onOpenGroupManager={() => undefined}
+        onClose={() => undefined}
+        providerListRef={{ current: null }}
+        orderedConfigProviders={['p1']}
+        dragPreviewOrder={null}
+        draggingProvider={null}
+        dragCardHeight={0}
+        renderProviderCard={() => null}
+      />,
+    )
+
+    expect(html).not.toContain('Unavailable')
+  })
+
+  it('shows update peer after the local machine moves past the bad peer build', () => {
     const config = buildConfig()
     const source = {
       ...config.config_source!.sources[0],
@@ -1833,9 +2066,56 @@ describe('ConfigModal', () => {
     }
 
     expect(remoteUpdateRollbackActionAvailable(source)).toBe(true)
-    expect(remoteUpdateMenuActionLabel(source, undefined, 'fix9999999999')).toBe('Rollback peer')
-    expect(remoteUpdateRollbackConfirmationText(source)).toBe(
-      'Rollback Desk B to previous build good1234? This will replace and restart API Router on that peer.',
+    expect(remoteUpdateActionState(source, undefined, 'fix9999999999')).toEqual({
+      actionLabel: 'Update peer',
+      actionDetail: 'Sync to this build',
+      spinning: false,
+    })
+    expect(remoteUpdateMenuActionLabel(source, undefined, 'fix9999999999')).toBe('Update peer')
+  })
+
+  it('prefers update peer over rollback when the peer still needs the current build', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      build_matches_local: false,
+      build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: 'd3510a5c0f5b479b519e32178bee6797f3c67ad5',
+        build_git_short_sha: 'd3510a5c',
+        build_git_commit_unix_ms: 1777648620000,
+      },
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'succeeded',
+        target_ref: 'd3510a5c0f5b479b519e32178bee6797f3c67ad5',
+        from_git_sha: 'ff274d1297fae974d5338f6648228dbb57c538e8',
+        to_git_sha: 'd3510a5c0f5b479b519e32178bee6797f3c67ad5',
+        current_git_sha: 'd3510a5c0f5b479b519e32178bee6797f3c67ad5',
+        previous_git_sha: 'ff274d1297fae974d5338f6648228dbb57c538e8',
+        rollback_available: true,
+        finished_at_unix_ms: 1777648630000,
+        updated_at_unix_ms: 1777648630000,
+      },
+    }
+
+    expect(remoteUpdateActionState(source, undefined, '776357fdc1832ec5c294732725315ca5939f0e48')).toEqual({
+      actionLabel: 'Update peer',
+      actionDetail: 'Sync to this build',
+      spinning: false,
+    })
+    expect(remoteUpdateMenuActionLabel(source, undefined, '776357fdc1832ec5c294732725315ca5939f0e48')).toBe(
+      'Update peer',
     )
   })
 
@@ -1861,7 +2141,7 @@ describe('ConfigModal', () => {
     expect(remoteUpdateMenuActionLabel(source, undefined, 'abc123')).toBe('Offline')
   })
 
-  it('allows rollback for a pending remote update after the peer goes offline', () => {
+  it('keeps queued state visible while a pending remote update refreshes after the peer goes offline', () => {
     const config = buildConfig()
     const source = {
       ...config.config_source!.sources[0],
@@ -1888,11 +2168,11 @@ describe('ConfigModal', () => {
     const actionState = remoteUpdateActionState(source, pendingStage, 'abc123')
     expect(remoteUpdateRollbackActionAvailable(source, pendingStage)).toBe(true)
     expect(actionState).toEqual({
-      actionLabel: 'Rollback peer',
-      actionDetail: 'Restore previous build',
-      spinning: false,
+      actionLabel: 'Queued',
+      actionDetail: 'Peer accepted request. Refreshing remote progress',
+      spinning: true,
     })
-    expect(remoteUpdateMenuActionLabel(source, pendingStage, 'abc123')).toBe('Rollback peer')
+    expect(remoteUpdateMenuActionLabel(source, pendingStage, 'abc123')).toBe('Queued')
   })
 
   it('shows terminal superseded state in dropdown after a superseded update', () => {

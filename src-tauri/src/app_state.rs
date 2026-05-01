@@ -11,12 +11,13 @@ use std::os::windows::process::CommandExt;
 use parking_lot::{Mutex, RwLock};
 
 use crate::orchestrator::config::AppConfig;
-use crate::orchestrator::gateway::{open_store_dir, GatewayState};
+use crate::orchestrator::gateway::{open_store_dir_with_trace, GatewayState};
 use crate::orchestrator::router::RouterState;
 use crate::orchestrator::secrets::SecretStore;
 use crate::orchestrator::store::unix_ms;
 use crate::orchestrator::upstream::UpstreamClient;
 use std::sync::atomic::AtomicU64;
+use std::time::Instant;
 
 const UI_WATCHDOG_UNRESPONSIVE_AFTER_MS: u64 = 6_000;
 const UI_WATCHDOG_SLOW_REFRESH_AFTER_MS: u64 = 2_000;
@@ -1342,17 +1343,65 @@ pub fn load_or_init_config(path: &PathBuf) -> anyhow::Result<AppConfig> {
     Ok(cfg)
 }
 
+fn write_build_state_startup_diag(stage: &str, started: Instant, detail: Option<&str>) {
+    let Some(user_data_dir) = crate::diagnostics::current_user_data_dir() else {
+        return;
+    };
+    let path = user_data_dir.join("app-startup.json");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut payload = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .unwrap_or_else(|| serde_json::json!({ "stages": [] }));
+    let entry = serde_json::json!({
+        "stage": stage,
+        "elapsedMs": started.elapsed().as_millis(),
+        "detail": detail,
+        "updatedAtUnixMs": unix_ms(),
+    });
+    if let Some(stages) = payload
+        .get_mut("stages")
+        .and_then(|value| value.as_array_mut())
+    {
+        stages.push(entry);
+    } else {
+        payload["stages"] = serde_json::json!([entry]);
+    }
+    payload["updatedAtUnixMs"] = serde_json::json!(unix_ms());
+    let _ = std::fs::write(
+        path,
+        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    );
+}
+
 pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<AppState> {
+    let started = Instant::now();
+    write_build_state_startup_diag(
+        "build_state_load_config_start",
+        started,
+        Some(&format!("config_path={}", config_path.display())),
+    );
     let mut cfg = load_or_init_config(&config_path)?;
+    write_build_state_startup_diag("build_state_load_config_ok", started, None);
     let secrets_path = config_path
         .parent()
         .unwrap_or(std::path::Path::new("."))
         .join("secrets.json");
+    write_build_state_startup_diag(
+        "build_state_secret_store_start",
+        started,
+        Some(&format!("secrets_path={}", secrets_path.display())),
+    );
     let secrets = SecretStore::new(secrets_path);
+    write_build_state_startup_diag("build_state_secret_store_ok", started, None);
     // Ensure a local gateway auth token exists so Codex can authenticate to the localhost base_url.
     // This token is not an upstream provider key; it only protects the local gateway.
+    write_build_state_startup_diag("build_state_secrets_ensure_start", started, None);
     let _ = secrets.ensure_gateway_token();
     let _ = secrets.ensure_lan_trust_secret();
+    write_build_state_startup_diag("build_state_secrets_ensure_ok", started, None);
 
     // Normalize: older config.toml may contain `api_key = ""` fields. We keep `api_key` only for
     // one-time migration; new config writes omit empty api_key to avoid confusion.
@@ -1414,12 +1463,23 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         let _ = secrets.ensure_provider_shared_id(provider_name);
     }
 
-    let store = open_store_dir(data_dir.clone())?;
+    write_build_state_startup_diag(
+        "build_state_open_store_start",
+        started,
+        Some(&format!("data_dir={}", data_dir.display())),
+    );
+    let store = open_store_dir_with_trace(data_dir.clone(), |stage, detail| {
+        write_build_state_startup_diag(stage, started, detail.as_deref());
+    })?;
+    write_build_state_startup_diag("build_state_open_store_ok", started, None);
+    write_build_state_startup_diag("build_state_router_start", started, None);
     let router = Arc::new(RouterState::new_with_store(
         &cfg,
         unix_ms(),
         Some(store.clone()),
     ));
+    write_build_state_startup_diag("build_state_router_ok", started, None);
+    write_build_state_startup_diag("build_state_gateway_start", started, None);
     let gateway = GatewayState {
         cfg: Arc::new(RwLock::new(cfg)),
         router,
@@ -1435,6 +1495,7 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
     let lan_node = secrets
         .ensure_lan_node_identity(&crate::lan_sync::default_node_name())
         .map_err(anyhow::Error::msg)?;
+    write_build_state_startup_diag("build_state_gateway_ok", started, None);
     let app_state = AppState {
         diagnostics_dir: crate::diagnostics::app_diagnostics_dir(&config_path, &data_dir),
         config_path,
@@ -1448,14 +1509,18 @@ pub fn build_state(config_path: PathBuf, data_dir: PathBuf) -> anyhow::Result<Ap
         app_state.gateway.cfg.read().listen.port,
         app_state.ui_watchdog.clone(),
     );
+    write_build_state_startup_diag("build_state_updater_daemon_start", started, None);
     #[cfg(not(test))]
     crate::lan_sync::ensure_remote_update_updater_daemon(&app_state.gateway);
+    write_build_state_startup_diag("build_state_updater_daemon_ok", started, None);
+    write_build_state_startup_diag("build_state_post_sync_start", started, None);
     app_state
         .gateway
         .store
         .sync_provider_pricing_configs(&app_state.secrets.list_provider_pricing());
     let _ = crate::lan_sync::rebuild_shared_tracked_spend_views(&app_state);
     let _ = crate::lan_sync::ensure_local_edit_seed_state(&app_state);
+    write_build_state_startup_diag("build_state_post_sync_ok", started, None);
 
     Ok(app_state)
 }
@@ -1799,6 +1864,24 @@ mod tests {
             .providers
             .get(provider_name)
             .is_some_and(|provider| provider.disabled));
+    }
+
+    #[test]
+    fn build_state_writes_startup_diagnostics_for_remote_update_debugging() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let previous = crate::diagnostics::set_test_user_data_dir_override(Some(tmp.path()));
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+
+        let _state = build_state(config_path, data_dir).expect("build state");
+        let text = std::fs::read_to_string(tmp.path().join("app-startup.json"))
+            .expect("startup diagnostics");
+
+        assert!(text.contains("build_state_load_config_start"));
+        assert!(text.contains("build_state_open_store_ok"));
+        assert!(text.contains("build_state_post_sync_ok"));
+        crate::diagnostics::set_test_user_data_dir_override(previous.as_deref());
     }
 
     #[test]

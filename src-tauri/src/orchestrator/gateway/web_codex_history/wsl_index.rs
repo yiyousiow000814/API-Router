@@ -3,7 +3,8 @@ use crate::diagnostics::codex_web_pipeline::{
     append_pipeline_event, elapsed_ms_u64, CodexWebPipelineEvent,
 };
 use crate::orchestrator::gateway::web_codex_home::{
-    linux_path_join, parse_wsl_unc_to_linux_path, web_codex_wsl_linux_home_override,
+    linux_path_join, parse_wsl_unc_to_linux_path, web_codex_wsl_launch_distro,
+    web_codex_wsl_linux_home_override,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -258,6 +259,12 @@ fn run_wsl_history_python(
 ) -> Result<std::process::Output, String> {
     let args = build_wsl_history_python_args(extra);
     let mut cmd = std::process::Command::new("wsl.exe");
+    if let Some(distro) = web_codex_wsl_launch_distro()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        cmd.arg("-d").arg(distro);
+    }
     cmd.args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

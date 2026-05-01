@@ -559,8 +559,24 @@ impl Store {
         [b"codex_account:snapshot", b"official_web:snapshot"]
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn open(path: &std::path::Path) -> Result<Self, sled::Error> {
+        Self::open_with_trace(path, |_, _| {})
+    }
+
+    pub(crate) fn open_with_trace<F>(
+        path: &std::path::Path,
+        mut trace: F,
+    ) -> Result<Self, sled::Error>
+    where
+        F: FnMut(&str, Option<String>),
+    {
+        trace(
+            "store_sled_open_start",
+            Some(format!("path={}", path.display())),
+        );
         let db = sled::open(path)?;
+        trace("store_sled_open_ok", None);
         // Keep the event SQLite file outside the sled directory. Sled maintenance/recovery
         // may swap or recreate the whole sled dir, which would otherwise drop events.sqlite3.
         let is_sled_dir = path.file_name().and_then(|n| n.to_str()) == Some("sled");
@@ -584,6 +600,14 @@ impl Store {
         if is_sled_dir {
             let legacy_path = path.join("events.sqlite3");
             if !events_db_path.exists() && legacy_path.exists() {
+                trace(
+                    "store_legacy_sqlite_move_start",
+                    Some(format!(
+                        "from={} to={}",
+                        legacy_path.display(),
+                        events_db_path.display()
+                    )),
+                );
                 let moved = if std::fs::rename(&legacy_path, &events_db_path).is_ok() {
                     true
                 } else {
@@ -604,31 +628,53 @@ impl Store {
                     // Data is already in the canonical sqlite path; skip legacy merge.
                     legacy_events_db_path = None;
                 }
+                trace("store_legacy_sqlite_move_ok", None);
             }
         }
+        trace(
+            "store_events_sqlite_open_start",
+            Some(format!("path={}", events_db_path.display())),
+        );
         let events_db = rusqlite::Connection::open(&events_db_path)
             .map_err(|e| sled::Error::Unsupported(format!("open events sqlite failed: {e}")))?;
+        trace("store_events_sqlite_open_ok", None);
         let store = Self {
             db,
             events_db_path,
             events_db: Arc::new(Mutex::new(events_db)),
         };
+        trace("store_events_schema_start", None);
         store
-            .ensure_event_sqlite_schema()
+            .ensure_event_sqlite_schema_with_trace(&mut trace)
             .map_err(|e| sled::Error::Unsupported(format!("init events sqlite failed: {e}")))?;
+        trace("store_events_schema_ok", None);
         if let Some(legacy_path) = legacy_events_db_path {
+            trace(
+                "store_legacy_sqlite_merge_check_start",
+                Some(format!("path={}", legacy_path.display())),
+            );
             let already_merged = store.legacy_sqlite_merge_done().map_err(|e| {
                 sled::Error::Unsupported(format!("check legacy sqlite merge state failed: {e}"))
             })?;
+            trace(
+                "store_legacy_sqlite_merge_check_ok",
+                Some(format!("already_merged={already_merged}")),
+            );
             if !already_merged {
+                trace(
+                    "store_legacy_sqlite_merge_start",
+                    Some(format!("path={}", legacy_path.display())),
+                );
                 store
                     .merge_legacy_events_sqlite(&legacy_path)
                     .and_then(|_| store.mark_legacy_sqlite_merge_done())
                     .map_err(|e| {
                         sled::Error::Unsupported(format!("merge legacy events sqlite failed: {e}"))
                     })?;
+                trace("store_legacy_sqlite_merge_ok", None);
             }
         }
+        trace("store_open_ok", None);
         Ok(store)
     }
 
@@ -652,9 +698,15 @@ impl Store {
         std::fs::copy(src, dst).is_ok()
     }
 
-    fn ensure_event_sqlite_schema(&self) -> anyhow::Result<()> {
+    fn ensure_event_sqlite_schema_with_trace<F>(&self, mut trace: F) -> anyhow::Result<()>
+    where
+        F: FnMut(&str, Option<String>),
+    {
         let conn = self.events_db.lock();
+        trace("store_events_schema_pragmas_start", None);
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        trace("store_events_schema_pragmas_ok", None);
+        trace("store_events_schema_ddl_start", None);
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS event_meta(
@@ -672,6 +724,8 @@ impl Store {
             );
             CREATE INDEX IF NOT EXISTS idx_events_unix_ms ON events(unix_ms DESC);
             CREATE INDEX IF NOT EXISTS idx_events_level_unix_ms ON events(level, unix_ms DESC);
+            CREATE INDEX IF NOT EXISTS idx_events_code_provider_unix_ms_id
+              ON events(code, provider, unix_ms ASC, id ASC);
             CREATE TABLE IF NOT EXISTS event_day_counts(
               day_key TEXT PRIMARY KEY,
               day_start_unix_ms INTEGER NOT NULL,
@@ -913,6 +967,8 @@ impl Store {
               ON session_route_assignments(assigned_at_unix_ms DESC);
             ",
         )?;
+        trace("store_events_schema_ddl_ok", None);
+        trace("store_events_schema_version_check_start", None);
         let current_schema: Option<String> = conn
             .query_row(
                 "SELECT value FROM event_meta WHERE key='schema_version'",
@@ -920,7 +976,18 @@ impl Store {
                 |row| row.get(0),
             )
             .optional()?;
+        trace(
+            "store_events_schema_version_check_ok",
+            Some(format!(
+                "current={}",
+                current_schema.as_deref().unwrap_or("<missing>")
+            )),
+        );
         if current_schema.as_deref() != Some(Self::EVENTS_SQLITE_SCHEMA_VERSION) {
+            trace(
+                "store_events_schema_version_reset_start",
+                Some(format!("target={}", Self::EVENTS_SQLITE_SCHEMA_VERSION)),
+            );
             conn.execute("DELETE FROM events", [])?;
             conn.execute("DELETE FROM event_day_counts", [])?;
             conn.execute(
@@ -958,7 +1025,9 @@ impl Store {
                  ON CONFLICT(key) DO UPDATE SET value='0'",
                 [],
             )?;
+            trace("store_events_schema_version_reset_ok", None);
         }
+        trace("store_events_schema_meta_defaults_start", None);
         conn.execute(
             "INSERT INTO event_meta(key, value) VALUES(?1, '0')
              ON CONFLICT(key) DO NOTHING",
@@ -984,14 +1053,29 @@ impl Store {
              ON CONFLICT(key) DO NOTHING",
             [],
         )?;
+        trace("store_events_schema_meta_defaults_ok", None);
+        trace("store_usage_request_columns_start", None);
         Self::ensure_usage_request_columns(&conn)?;
+        trace("store_usage_request_columns_ok", None);
         drop(conn);
+        trace("store_legacy_events_migration_start", None);
         self.migrate_legacy_events_from_sled_if_needed()?;
+        trace("store_legacy_events_migration_ok", None);
+        trace("store_usage_requests_migration_start", None);
         self.migrate_usage_requests_from_sled_if_needed()?;
+        trace("store_usage_requests_migration_ok", None);
+        trace("store_spend_history_migration_start", None);
         self.migrate_spend_history_from_sled_if_needed()?;
+        trace("store_spend_history_migration_ok", None);
+        trace("store_usage_request_daily_backfill_start", None);
         self.backfill_usage_request_daily_index_if_needed()?;
+        trace("store_usage_request_daily_backfill_ok", None);
+        trace("store_runtime_listener_compact_start", None);
         self.compact_runtime_listener_skip_events()?;
+        trace("store_runtime_listener_compact_ok", None);
+        trace("store_event_day_counts_rebuild_start", None);
         self.rebuild_event_day_counts_index_if_needed()?;
+        trace("store_event_day_counts_rebuild_ok", None);
         Ok(())
     }
 
@@ -1076,23 +1160,20 @@ impl Store {
         }
 
         let deleted = conn.execute(
-            "DELETE FROM events
-             WHERE code = 'gateway.runtime_listener_skipped'
-               AND id NOT IN (
-                 SELECT first.id
-                 FROM events first
-                 WHERE first.code = 'gateway.runtime_listener_skipped'
-                   AND first.id = (
-                     SELECT candidate.id
-                     FROM events candidate
-                     WHERE candidate.provider = first.provider
-                       AND candidate.code = first.code
-                       AND strftime('%Y-%m-%d', candidate.unix_ms / 1000, 'unixepoch', 'localtime')
-                         = strftime('%Y-%m-%d', first.unix_ms / 1000, 'unixepoch', 'localtime')
-                     ORDER BY candidate.unix_ms ASC, candidate.id ASC
-                     LIMIT 1
-                   )
-               )",
+            "WITH ranked AS (
+               SELECT
+                 id,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY provider, strftime('%Y-%m-%d', unix_ms / 1000, 'unixepoch', 'localtime')
+                   ORDER BY unix_ms ASC, id ASC
+                 ) AS row_num
+               FROM events
+               WHERE code = 'gateway.runtime_listener_skipped'
+             )
+             DELETE FROM events
+             WHERE id IN (
+               SELECT id FROM ranked WHERE row_num > 1
+             )",
             [],
         )?;
         if deleted > 0 {

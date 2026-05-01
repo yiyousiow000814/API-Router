@@ -18,7 +18,7 @@ function flushAsync() {
 
 describe('useMainContentCallbacks', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    vi.resetAllMocks()
   })
 
   it('shows an error toast when rotate has failed sync targets', async () => {
@@ -140,9 +140,7 @@ describe('useMainContentCallbacks', () => {
     const flashToast = vi.fn()
     const setCodexRefreshing = vi.fn()
     const refreshStatus = vi.fn(async () => {})
-    vi.mocked(invoke)
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce(undefined)
+    vi.mocked(invoke).mockResolvedValueOnce({ ok: true, refreshed: 2, failures: [] })
 
     const callbacks = useMainContentCallbacks({
       status: {
@@ -175,9 +173,64 @@ describe('useMainContentCallbacks', () => {
     await flushAsync()
 
     expect(flashToast).toHaveBeenCalledWith('Refreshing all official accounts...')
+    expect(flashToast).toHaveBeenCalledWith('Official accounts refreshed: 2')
     expect(setCodexRefreshing).toHaveBeenCalledWith(true)
     expect(invoke).toHaveBeenCalledWith('codex_account_refresh')
     expect(invoke).toHaveBeenCalledTimes(1)
+    expect(refreshStatus).toHaveBeenCalled()
+    expect(setCodexRefreshing).toHaveBeenLastCalledWith(false)
+  })
+
+  it('shows partial official account refresh failures from the hero refresh button', async () => {
+    const flashToast = vi.fn()
+    const setCodexRefreshing = vi.fn()
+    const refreshStatus = vi.fn(async () => {})
+    vi.mocked(invoke).mockResolvedValueOnce({
+      ok: false,
+      refreshed: 1,
+      failures: [
+        {
+          profileId: 'profile_2',
+          email: 'yiyousiow1234@gmail.com',
+          error: 'official account rate limits unavailable',
+        },
+      ],
+    })
+
+    const callbacks = useMainContentCallbacks({
+      status: {
+        codex_account: {
+          signed_in: true,
+        },
+      } as any,
+      flashToast,
+      setGatewayModalOpen: vi.fn(),
+      setGatewayTokenReveal: vi.fn(),
+      setGatewayTokenPreview: vi.fn(),
+      setCodexRefreshing,
+      refreshStatus,
+      codexSwapDir1: '',
+      codexSwapDir2: '',
+      codexSwapUseWindows: true,
+      codexSwapUseWsl: true,
+      codexSwapTarget: 'both',
+      providerSwitchStatus: null,
+      setProviderSwitchTarget: vi.fn(async () => {}),
+      setCodexSwapModalOpen: vi.fn(),
+      override: '',
+      setOverride: vi.fn(),
+      overrideDirtyRef: { current: false },
+      applyOverride: vi.fn(async () => true),
+    })
+
+    callbacks.onCodexRefresh()
+    await flushAsync()
+    await flushAsync()
+
+    expect(flashToast).toHaveBeenCalledWith(
+      'Official account refresh partial: 1 updated, 1 unavailable (yiyousiow1234@gmail.com: official account rate limits unavailable)',
+      'error',
+    )
     expect(refreshStatus).toHaveBeenCalled()
     expect(setCodexRefreshing).toHaveBeenLastCalledWith(false)
   })

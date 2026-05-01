@@ -180,6 +180,7 @@ async function main() {
         stdio: "inherit",
         shell: useShell,
         env,
+        windowsHide: true,
       });
       child.on("error", reject);
       child.on("exit", (code, signal) => resolve({ code, signal }));
@@ -192,6 +193,7 @@ async function main() {
         stdio: "inherit",
         shell: true,
         env,
+        windowsHide: true,
       });
       child.on("error", reject);
       child.on("exit", (code, signal) => resolve({ code, signal }));

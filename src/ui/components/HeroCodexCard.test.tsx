@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 
-import { HeroCodexCard } from './HeroCodexCard'
+import { buildRemoteAccountRefreshKey, computeAccountsMenuMaxHeight, HeroCodexCard } from './HeroCodexCard'
 import type { OfficialAccountProfileSummary, Status } from '../types'
 
 function buildStatus(): Status {
@@ -37,6 +37,12 @@ describe('HeroCodexCard', () => {
     },
   ]
 
+  it('sizes the accounts menu from the trigger to the viewport bottom', () => {
+    expect(computeAccountsMenuMaxHeight(560, 96)).toBe(450)
+    expect(computeAccountsMenuMaxHeight(560, 260)).toBe(286)
+    expect(computeAccountsMenuMaxHeight(560, 420)).toBe(220)
+  })
+
   it('shows the 5-hour reset countdown when available', () => {
     const html = renderToStaticMarkup(
       <HeroCodexCard
@@ -56,6 +62,7 @@ describe('HeroCodexCard', () => {
         profilesLoading={false}
         onActivateProfile={async () => {}}
         onRemoveProfile={async () => {}}
+        onReauthProfile={async () => {}}
         onAddAccount={async () => {}}
       />,
     )
@@ -65,10 +72,53 @@ describe('HeroCodexCard', () => {
     expect(html).toContain('Accounts (1)')
   })
 
-  it('uses the selected profile usage for the codex auth hero cards', () => {
+  it('keeps codex account login state actions inside the accounts menu', () => {
+    const signedOutStatus = buildStatus()
+    signedOutStatus.codex_account = {
+      ...signedOutStatus.codex_account,
+      signed_in: false,
+    }
     const html = renderToStaticMarkup(
       <HeroCodexCard
-        status={buildStatus()}
+        status={signedOutStatus}
+        onLoginLogout={() => {}}
+        onRefresh={() => {}}
+        refreshing={false}
+        onSwapAuthConfig={() => {}}
+        onSwapOptions={() => {}}
+        swapTarget="both"
+        swapTargetWindowsEnabled
+        swapTargetWslEnabled
+        onChangeSwapTarget={() => {}}
+        swapBadgeText=""
+        swapBadgeTitle=""
+        profiles={[]}
+        profilesLoading={false}
+        onActivateProfile={async () => {}}
+        onRemoveProfile={async () => {}}
+        onReauthProfile={async () => {}}
+        onAddAccount={async () => {}}
+        defaultAccountsMenuOpen
+      />,
+    )
+
+    expect(html).toContain('Accounts (0)')
+    expect(html).toContain('Add account')
+    expect(html).not.toContain('signed in')
+    expect(html).not.toContain('signed out')
+    expect(html).not.toContain('Log in')
+    expect(html).not.toContain('title="Log out"')
+    expect(html).not.toContain('aria-label="Log out"')
+  })
+
+  it('uses the selected profile usage for the codex auth hero cards', () => {
+    const status = buildStatus()
+    status.codex_account.checked_at_unix_ms = Date.UTC(2026, 4, 1, 8, 0, 0)
+    const profileUpdatedAt = Date.UTC(2026, 3, 24, 2, 11, 36)
+    const usageUpdatedAt = Date.UTC(2026, 4, 1, 4, 32, 25)
+    const html = renderToStaticMarkup(
+      <HeroCodexCard
+        status={status}
         onLoginLogout={() => {}}
         onRefresh={() => {}}
         refreshing={false}
@@ -84,7 +134,8 @@ describe('HeroCodexCard', () => {
           {
             id: 'official_1',
             label: 'Official account 1',
-            updated_at_unix_ms: Date.now(),
+            updated_at_unix_ms: profileUpdatedAt,
+            usage_updated_at_unix_ms: usageUpdatedAt,
             active: true,
             limit_5h_remaining: '64%',
             limit_5h_reset_at: String(Date.now() + 5 * 60 * 60 * 1000),
@@ -95,16 +146,19 @@ describe('HeroCodexCard', () => {
         profilesLoading={false}
         onActivateProfile={async () => {}}
         onRemoveProfile={async () => {}}
+        onReauthProfile={async () => {}}
         onAddAccount={async () => {}}
       />,
     )
 
     expect(html).toContain('64%')
     expect(html).toContain('41%')
+    expect(html).toContain('01-05-2026')
+    expect(html).not.toContain('24-04-2026')
     expect(html).not.toContain('87%')
   })
 
-  it('renders account usage bars and add action inside the official menu', () => {
+  it('renders account usage bars and local logout action inside the official menu', () => {
     const html = renderToStaticMarkup(
       <HeroCodexCard
         status={buildStatus()}
@@ -144,6 +198,7 @@ describe('HeroCodexCard', () => {
         profilesLoading={false}
         onActivateProfile={async () => {}}
         onRemoveProfile={async () => {}}
+        onReauthProfile={async () => {}}
         onAddAccount={async () => {}}
         defaultAccountsMenuOpen
       />,
@@ -164,6 +219,8 @@ describe('HeroCodexCard', () => {
     expect(html).toContain('aoAccountsMenuCurrentTag')
     expect(html).toContain('Current')
     expect(html).not.toContain('>Remove<')
+    expect(html).toContain('title="Log out local account official.account1@example.com"')
+    expect(html).toContain('aria-label="Log out local account official.account1@example.com"')
     expect(html).toContain('Add account')
     expect(html.indexOf('official.account1@example.com')).toBeLessThan(
       html.indexOf('official.account2@example.com'),
@@ -196,6 +253,7 @@ describe('HeroCodexCard', () => {
         profilesLoading={false}
         onActivateProfile={async () => {}}
         onRemoveProfile={async () => {}}
+        onReauthProfile={async () => {}}
         onAddAccount={async () => {}}
         defaultAccountsMenuOpen
       />,
@@ -243,6 +301,7 @@ describe('HeroCodexCard', () => {
         remoteProfileFollowBusy={{}}
         onActivateProfile={async () => {}}
         onRemoveProfile={async () => {}}
+        onReauthProfile={async () => {}}
         onFollowRemoteProfile={async () => {}}
         onAddAccount={async () => {}}
         defaultAccountsMenuOpen
@@ -256,5 +315,147 @@ describe('HeroCodexCard', () => {
     expect(html).toContain('From Yiyou-Laptop')
     expect(html).toContain('Trusted devices')
     expect(html.indexOf('Use')).toBeLessThan(html.indexOf('Add account'))
+  })
+
+  it('changes the remote account refresh key when a trusted account peer appears', () => {
+    const offlineStatus = buildStatus()
+    offlineStatus.lan_sync = {
+      enabled: true,
+      discovery_port: 38455,
+      heartbeat_interval_ms: 2000,
+      peer_stale_after_ms: 20000,
+      local_node: {
+        node_id: 'node-syb',
+        node_name: 'SYB',
+        listen_addr: '192.168.3.137:51385',
+        capabilities: ['official_accounts_v1'],
+        provider_fingerprints: [],
+      },
+      peers: [],
+    }
+    const onlineStatus = buildStatus()
+    onlineStatus.lan_sync = {
+      ...offlineStatus.lan_sync,
+      peers: [
+        {
+          node_id: 'node-desktop',
+          node_name: 'DESKTOP-KK6SA2D',
+          listen_addr: '192.168.3.210:4000',
+          last_heartbeat_unix_ms: 1777572249004,
+          capabilities: ['official_accounts_v1'],
+          provider_fingerprints: [],
+          trusted: true,
+          sync_diagnostics: [
+            {
+              domain: 'official_accounts',
+              status: 'ok',
+              local_contract_version: 1,
+              peer_contract_version: 1,
+              blocked_reason: null,
+            },
+          ],
+          http_probe_state: 'ok',
+        },
+      ],
+    }
+
+    expect(buildRemoteAccountRefreshKey(offlineStatus)).toBe('')
+    expect(buildRemoteAccountRefreshKey(onlineStatus)).toBe(
+      'node-desktop:192.168.3.210:4000:ok:ok:1:1',
+    )
+  })
+
+  it('keeps the remote account refresh key stable across heartbeat churn', () => {
+    const status = buildStatus()
+    status.lan_sync = {
+      enabled: true,
+      discovery_port: 38455,
+      heartbeat_interval_ms: 2000,
+      peer_stale_after_ms: 20000,
+      local_node: {
+        node_id: 'node-syb',
+        node_name: 'SYB',
+        listen_addr: '192.168.3.137:51385',
+        capabilities: ['official_accounts_v1'],
+        provider_fingerprints: [],
+      },
+      peers: [
+        {
+          node_id: 'node-desktop',
+          node_name: 'DESKTOP-KK6SA2D',
+          listen_addr: '192.168.3.210:4000',
+          last_heartbeat_unix_ms: 1,
+          capabilities: ['official_accounts_v1'],
+          provider_fingerprints: [],
+          trusted: true,
+          sync_diagnostics: [
+            {
+              domain: 'official_accounts',
+              status: 'ok',
+              local_contract_version: 1,
+              peer_contract_version: 1,
+            },
+          ],
+          http_probe_state: 'ok',
+        },
+      ],
+    }
+    const lanSync = status.lan_sync
+    expect(lanSync).toBeDefined()
+    const nextStatus: Status = {
+      ...status,
+      lan_sync: {
+        ...lanSync!,
+        peers: lanSync!.peers.map((peer) => ({
+          ...peer,
+          last_heartbeat_unix_ms: 2,
+          heartbeat_age_ms: 100,
+        })),
+      },
+    }
+
+    expect(buildRemoteAccountRefreshKey(nextStatus)).toBe(
+      buildRemoteAccountRefreshKey(status),
+    )
+  })
+
+  it('renders re-auth controls for expired local accounts', () => {
+    const html = renderToStaticMarkup(
+      <HeroCodexCard
+        status={buildStatus()}
+        onLoginLogout={() => {}}
+        onRefresh={() => {}}
+        refreshing={false}
+        onSwapAuthConfig={() => {}}
+        onSwapOptions={() => {}}
+        swapTarget="both"
+        swapTargetWindowsEnabled
+        swapTargetWslEnabled
+        onChangeSwapTarget={() => {}}
+        swapBadgeText=""
+        swapBadgeTitle=""
+        profiles={[
+          {
+            id: 'official_expired',
+            label: 'Expired official account',
+            email: 'expired.demo@example.com',
+            updated_at_unix_ms: Date.now(),
+            active: true,
+            needs_reauth: true,
+          },
+        ]}
+        profilesLoading={false}
+        onActivateProfile={async () => {}}
+        onRemoveProfile={async () => {}}
+        onReauthProfile={async () => {}}
+        onAddAccount={async () => {}}
+        defaultAccountsMenuOpen
+      />,
+    )
+
+    expect(html).toContain('Session expired')
+    expect(html).toContain('Re-auth')
+    expect(html).toContain('Re-auth to refresh this account.')
+    expect(html).toContain('aoAccountsMenuReauth')
   })
 })

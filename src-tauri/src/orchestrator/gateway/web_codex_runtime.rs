@@ -6,6 +6,7 @@ use tokio::process::Command;
 
 use crate::orchestrator::gateway::web_codex_home::{
     parse_workspace_target, web_codex_rpc_home_override_for_target,
+    web_codex_wsl_session_home_for_launch,
 };
 use crate::orchestrator::gateway::web_codex_session_runtime::{
     workspace_runtime_snapshot, workspace_thread_runtime_count, WorkspaceRuntimeSnapshot,
@@ -229,8 +230,11 @@ async fn run_windows_shell_stdout(command: &str) -> Option<String> {
     run_stdout_cmd(cmd).await
 }
 
-async fn run_wsl_shell_stdout(command: &str) -> Option<String> {
+async fn run_wsl_shell_stdout(command: &str, distro: Option<&str>) -> Option<String> {
     let mut cmd = Command::new("wsl.exe");
+    if let Some(distro) = distro.map(str::trim).filter(|value| !value.is_empty()) {
+        cmd.arg("-d").arg(distro);
+    }
     cmd.arg("-e").arg("bash").arg("-lc").arg(command);
     run_stdout_cmd(cmd).await
 }
@@ -331,7 +335,15 @@ async fn detect_windows_codex_runtime() -> DetectedCodexRuntime {
 
 async fn detect_wsl_codex_runtime() -> DetectedCodexRuntime {
     let started = std::time::Instant::now();
-    let output = run_wsl_shell_stdout(wsl_codex_runtime_probe_command()).await;
+    let Some(session_home) = web_codex_wsl_session_home_for_launch() else {
+        log_codex_version_detect_timing("wsl2", started.elapsed().as_millis());
+        return parse_wsl_codex_runtime_probe(None);
+    };
+    let output = run_wsl_shell_stdout(
+        wsl_codex_runtime_probe_command(),
+        session_home.distro.as_deref(),
+    )
+    .await;
     let detected = parse_wsl_codex_runtime_probe(output.as_deref());
     log_codex_version_detect_timing("wsl2", started.elapsed().as_millis());
     detected

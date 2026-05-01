@@ -36,4 +36,19 @@ describe('OfficialAccountQuotaSummary', () => {
 
     expect(html).toContain('No cached limits yet')
   })
+
+  it('renders the expired fallback when re-auth is required', () => {
+    const profile: OfficialAccountProfileSummary = {
+      id: 'official_1',
+      label: 'Official account 1',
+      updated_at_unix_ms: Date.now(),
+      active: true,
+      needs_reauth: true,
+    }
+
+    const html = renderToStaticMarkup(<OfficialAccountQuotaSummary profile={profile} />)
+
+    expect(html).toContain('Session expired')
+    expect(html).toContain('aoAccountsQuotaExpired')
+  })
 })

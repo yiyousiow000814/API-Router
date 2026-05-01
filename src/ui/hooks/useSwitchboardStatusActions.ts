@@ -128,19 +128,15 @@ function scheduleLowPriorityUiTask(task: () => void, delayMs = 200): void {
 
 export async function runGatewaySwitchPreflight(
   target: 'gateway' | 'official' | 'provider',
-  homes: string[],
+  _homes: string[],
   _listenPort: number,
-  isWslHomePath: (home: string) => boolean,
+  _isWslHomePath: (home: string) => boolean,
   _invokeFn: typeof invoke,
   _confirmFn: (msg: string) => boolean,
-  flashToast: (msg: string, kind?: 'info' | 'error') => void,
+  _flashToast: (msg: string, kind?: 'info' | 'error') => void,
 ): Promise<boolean> {
   if (target !== 'gateway') {
     return true
-  }
-  const hasWslTarget = homes.some((home) => isWslHomePath(home))
-  if (hasWslTarget) {
-    flashToast('WSL2 gateway access is now native; no Windows authorization is required.', 'info')
   }
   return true
 }

@@ -20,6 +20,8 @@ export type OfficialAccountProfileSummary = {
   limit_5h_reset_at?: string | null
   limit_weekly_remaining?: string | null
   limit_weekly_reset_at?: string | null
+  access_token_expires_at_unix_ms?: number | null
+  needs_reauth?: boolean
 }
 
 export type RemoteOfficialAccountProfile = {
@@ -215,6 +217,9 @@ export type Status = {
       } | null
       sync_contracts?: Record<string, number>
       provider_fingerprints: string[]
+      heartbeat_age_ms?: number
+      http_probe_state?: string | null
+      http_probe_detail?: string | null
     }
     peers: Array<{
       node_id: string
@@ -279,6 +284,9 @@ export type Status = {
         blocked_reason?: string | null
       }>
       build_matches_local?: boolean
+      heartbeat_age_ms?: number
+      http_probe_state?: string | null
+      http_probe_detail?: string | null
     }>
   }
   shared_quota_owners?: Array<{
@@ -357,6 +365,68 @@ export type LanRemoteUpdateDebugResponse = {
   log_file_exists: boolean
   log_tail_source?: 'file' | 'timeline' | 'none' | string
   log_tail?: string | null
+  shell_log_path?: string | null
+  shell_log_file_exists?: boolean
+  shell_log_tail?: string | null
+  shell_window_summary?: Array<{
+    pid: number
+    visibility: string
+    role: string
+    request_id?: string | null
+    command: string
+  }>
+  system_snapshot?: {
+    captured_at_unix_ms?: number
+    cpu_load_percent?: number | null
+    memory_total_bytes?: number | null
+    memory_available_bytes?: number | null
+    disk_total_bytes?: number | null
+    disk_available_bytes?: number | null
+    gpu_load_percent?: number | null
+    probe_detail?: string[]
+    remote_update_processes?: Array<{
+      pid: number
+      role: string
+      visibility: string
+      working_set_bytes?: number | null
+      command: string
+    }>
+  }
+  transport?: {
+    app_base_url?: string | null
+    app_debug_state?: string
+    app_debug_detail?: string | null
+    updater_base_url?: string | null
+    updater_state?: string | null
+    updater_detail?: string | null
+  }
+  updater_status?: {
+    ok?: boolean
+    busy?: boolean
+    activeOperation?: unknown
+    current?: {
+      gitSha?: string
+      exePath?: string
+      reason?: string | null
+      updatedAtUnixMs?: number
+    } | null
+    previous?: {
+      gitSha?: string
+      exePath?: string
+      reason?: string | null
+      updatedAtUnixMs?: number
+    } | null
+    updaterPath?: string
+  } | null
+  app_startup_path?: string | null
+  app_startup_file_exists?: boolean
+  app_startup_tail?: string | null
+  gateway_bootstrap_path?: string | null
+  gateway_bootstrap_file_exists?: boolean
+  gateway_bootstrap_tail?: string | null
+  gateway_startup_path?: string | null
+  gateway_startup_file_exists?: boolean
+  gateway_startup_tail?: string | null
   worker_bootstrap_observed?: boolean
   worker_script_probe?: {
     path: string
@@ -439,6 +509,8 @@ export type Config = {
       trusted?: boolean
       pair_state?: 'trusted' | 'incoming_request' | 'requested' | 'pin_required' | null
       pair_request_id?: string | null
+      listen_addr?: string | null
+      remote_update_updater_addr?: string | null
       follow_allowed: boolean
       follow_blocked_reason?: string | null
       using_count: number
@@ -452,6 +524,9 @@ export type Config = {
       } | null
       sync_contracts?: Record<string, number>
       build_matches_local?: boolean
+      heartbeat_age_ms?: number
+      http_probe_state?: string | null
+      http_probe_detail?: string | null
       remote_update_status?: {
         state: 'accepted' | 'running' | 'failed' | 'succeeded' | 'rolled_back' | string
         target_ref: string

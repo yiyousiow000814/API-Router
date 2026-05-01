@@ -99,6 +99,10 @@ pub struct OfficialAccountProfileSummary {
     pub limit_weekly_remaining: Option<String>,
     #[serde(default)]
     pub limit_weekly_reset_at: Option<String>,
+    #[serde(default)]
+    pub access_token_expires_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub needs_reauth: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -147,6 +151,25 @@ impl ProviderStateBundle {
             .iter()
             .find_map(|(provider, value)| (value == normalized).then(|| provider.clone()))
     }
+
+    pub fn set_provider_quota_hard_cap(
+        &mut self,
+        provider: &str,
+        hard_cap: ProviderQuotaHardCapConfig,
+    ) {
+        if hard_cap == ProviderQuotaHardCapConfig::default() {
+            self.provider_quota_hard_cap.remove(provider);
+        } else {
+            self.provider_quota_hard_cap.insert(
+                provider.to_string(),
+                ProviderQuotaHardCapOverride {
+                    daily: hard_cap.daily,
+                    weekly: hard_cap.weekly,
+                    monthly: hard_cap.monthly,
+                },
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +189,22 @@ fn unix_ms_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn official_account_access_token_expires_at_unix_ms(auth_json: &serde_json::Value) -> Option<u64> {
+    let token = auth_json
+        .get("tokens")
+        .and_then(|tokens| tokens.get("access_token"))
+        .and_then(|value| value.as_str())?;
+    let payload = token.split('.').nth(1)?;
+    let payload = payload.replace('-', "+").replace('_', "/");
+    let padded = format!("{payload}{}", "=".repeat((4 - payload.len() % 4) % 4));
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(padded)
+        .ok()?;
+    let json = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?;
+    let exp = json.get("exp").and_then(|value| value.as_u64())?;
+    exp.checked_mul(1000)
 }
 
 fn next_official_account_label(
@@ -584,6 +623,11 @@ impl SecretStore {
             limit_5h_reset_at: profile.limit_5h_reset_at.clone(),
             limit_weekly_remaining: profile.limit_weekly_remaining.clone(),
             limit_weekly_reset_at: profile.limit_weekly_reset_at.clone(),
+            access_token_expires_at_unix_ms: official_account_access_token_expires_at_unix_ms(
+                &profile.auth_json,
+            ),
+            needs_reauth: official_account_access_token_expires_at_unix_ms(&profile.auth_json)
+                .is_some_and(|value| value <= unix_ms_now()),
         }
     }
 
@@ -901,10 +945,11 @@ impl SecretStore {
         self.select_official_account_profile(&imported.id)
     }
 
-    pub fn update_official_account_profile_usage(
+    pub fn update_official_account_profile_usage_and_auth(
         &self,
         profile_id: &str,
         usage: &OfficialAccountUsageSnapshot,
+        auth_json: Option<&serde_json::Value>,
     ) -> Result<(), String> {
         let mut data = self.inner.lock();
         merge_official_account_profiles(&mut data);
@@ -912,7 +957,14 @@ impl SecretStore {
             .official_account_profiles
             .get_mut(profile_id)
             .ok_or_else(|| format!("official account profile not found: {profile_id}"))?;
-        profile.usage_updated_at_unix_ms = Some(unix_ms_now());
+        let now = unix_ms_now();
+        if let Some(auth_json) = auth_json {
+            if profile.auth_json != *auth_json {
+                profile.auth_json = auth_json.clone();
+                profile.updated_at_unix_ms = now;
+            }
+        }
+        profile.usage_updated_at_unix_ms = Some(now);
         profile.limit_5h_remaining = usage.limit_5h_remaining.clone();
         profile.limit_5h_reset_at = usage.limit_5h_reset_at.clone();
         profile.limit_weekly_remaining = usage.limit_weekly_remaining.clone();
@@ -959,6 +1011,9 @@ impl SecretStore {
                         .official_account_profiles
                         .get_mut(&active_id)
                         .expect("checked active official profile");
+                    if active_profile.auth_json != *auth_json {
+                        active_profile.auth_json = auth_json.clone();
+                    }
                     active_profile.updated_at_unix_ms = now;
                     if let Some(usage) = usage {
                         active_profile.usage_updated_at_unix_ms = Some(now);
@@ -1009,6 +1064,9 @@ impl SecretStore {
                     .official_account_profiles
                     .get_mut(&existing_id)
                     .expect("checked existing official profile");
+                if existing_profile.auth_json != *auth_json {
+                    existing_profile.auth_json = auth_json.clone();
+                }
                 existing_profile.updated_at_unix_ms = now;
                 if let Some(usage) = usage {
                     existing_profile.usage_updated_at_unix_ms = Some(now);
@@ -1067,6 +1125,11 @@ impl SecretStore {
             limit_5h_reset_at: usage.and_then(|value| value.limit_5h_reset_at.clone()),
             limit_weekly_remaining: usage.and_then(|value| value.limit_weekly_remaining.clone()),
             limit_weekly_reset_at: usage.and_then(|value| value.limit_weekly_reset_at.clone()),
+            access_token_expires_at_unix_ms: official_account_access_token_expires_at_unix_ms(
+                auth_json,
+            ),
+            needs_reauth: official_account_access_token_expires_at_unix_ms(auth_json)
+                .is_some_and(|value| value <= now),
         })
     }
 
@@ -2279,6 +2342,10 @@ mod tests {
         assert_eq!(first.id, refreshed.id);
         let profiles = store.list_official_account_profiles();
         assert_eq!(profiles.len(), 1);
+        assert_eq!(
+            store.active_official_account_profile_auth_json(),
+            Some(refreshed_same_account)
+        );
     }
 
     #[test]

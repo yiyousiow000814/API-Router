@@ -4,6 +4,36 @@ import { fmtResetIn, fmtWhen } from '../utils/format'
 import { officialAccountDisplayName } from '../utils/codexAccountProfiles'
 import { OfficialAccountQuotaSummary } from './OfficialAccountQuotaSummary'
 
+const ACCOUNTS_MENU_VIEWPORT_MARGIN = 14
+const ACCOUNTS_MENU_MAX_HEIGHT = 450
+const ACCOUNTS_MENU_MIN_HEIGHT = 220
+
+export function computeAccountsMenuMaxHeight(viewportHeight: number, triggerBottom: number): number {
+  const availableBelow = Math.floor(viewportHeight - triggerBottom - ACCOUNTS_MENU_VIEWPORT_MARGIN)
+  return Math.max(ACCOUNTS_MENU_MIN_HEIGHT, Math.min(ACCOUNTS_MENU_MAX_HEIGHT, availableBelow))
+}
+
+export function buildRemoteAccountRefreshKey(status: Status): string {
+  const peers = status.lan_sync?.peers ?? []
+  return peers
+    .filter((peer) => peer.trusted && peer.capabilities.includes('official_accounts_v1'))
+    .map((peer) => {
+      const accountSync = peer.sync_diagnostics?.find(
+        (item) => item.domain === 'official_accounts',
+      )
+      return [
+        peer.node_id,
+        peer.listen_addr,
+        peer.http_probe_state ?? '',
+        accountSync?.status ?? '',
+        accountSync?.local_contract_version ?? '',
+        accountSync?.peer_contract_version ?? '',
+      ].join(':')
+    })
+    .sort()
+    .join('|')
+}
+
 type HeroCodexProps = {
   status: Status
   onLoginLogout: () => void
@@ -24,6 +54,7 @@ type HeroCodexProps = {
   remoteProfileFollowBusy?: Record<string, boolean>
   onActivateProfile: (profileId: string) => Promise<void>
   onRemoveProfile: (profileId: string) => Promise<void>
+  onReauthProfile: (profileId: string) => Promise<void>
   onFollowRemoteProfile?: (sourceNodeId: string, remoteProfileId: string) => Promise<void>
   onRefreshRemoteProfiles?: () => Promise<void>
   onAddAccount: () => Promise<void>
@@ -32,7 +63,6 @@ type HeroCodexProps = {
 
 export function HeroCodexCard({
   status,
-  onLoginLogout,
   onRefresh,
   refreshing,
   onSwapAuthConfig,
@@ -50,6 +80,7 @@ export function HeroCodexCard({
   remoteProfileFollowBusy = {},
   onActivateProfile,
   onRemoveProfile,
+  onReauthProfile,
   onFollowRemoteProfile = async () => {},
   onRefreshRemoteProfiles = async () => {},
   onAddAccount,
@@ -57,13 +88,19 @@ export function HeroCodexCard({
 }: HeroCodexProps) {
   const [menuOpen, setMenuOpen] = useState<boolean>(false)
   const [accountsMenuOpen, setAccountsMenuOpen] = useState<boolean>(defaultAccountsMenuOpen)
+  const [accountsMenuMaxHeight, setAccountsMenuMaxHeight] = useState<number>(ACCOUNTS_MENU_MAX_HEIGHT)
+  const lastExpiredProfilesAutoRefreshRef = useRef<string>('')
   const menuWrapRef = useRef<HTMLDivElement | null>(null)
   const accountsMenuWrapRef = useRef<HTMLDivElement | null>(null)
   const swapTargetLabel = swapTarget === 'windows' ? 'Windows' : swapTarget === 'wsl2' ? 'WSL2' : 'Both'
   const availableTargets: Array<'windows' | 'wsl2' | 'both'> = []
   const selectedProfile = profiles.find((profile) => profile.active) ?? null
+  const remoteAccountRefreshKey = buildRemoteAccountRefreshKey(status)
+  const lastRemoteAccountRefreshKeyRef = useRef<string | null>(null)
   const displayedCheckedAt =
-    selectedProfile?.updated_at_unix_ms ?? status.codex_account?.checked_at_unix_ms
+    selectedProfile?.usage_updated_at_unix_ms ??
+    selectedProfile?.updated_at_unix_ms ??
+    status.codex_account?.checked_at_unix_ms
   const displayed5hRemaining =
     selectedProfile?.limit_5h_remaining ?? status.codex_account?.limit_5h_remaining ?? '-'
   const displayed5hResetAt =
@@ -93,6 +130,13 @@ export function HeroCodexCard({
 
   useEffect(() => {
     if (!accountsMenuOpen) return
+    if (lastRemoteAccountRefreshKeyRef.current === remoteAccountRefreshKey) return
+    lastRemoteAccountRefreshKeyRef.current = remoteAccountRefreshKey
+    void onRefreshRemoteProfiles()
+  }, [accountsMenuOpen, onRefreshRemoteProfiles, remoteAccountRefreshKey])
+
+  useEffect(() => {
+    if (!accountsMenuOpen) return
     function onDocMouseDown(e: MouseEvent) {
       const el = accountsMenuWrapRef.current
       if (!el) return
@@ -103,15 +147,48 @@ export function HeroCodexCard({
     return () => document.removeEventListener('mousedown', onDocMouseDown)
   }, [accountsMenuOpen])
 
+  useEffect(() => {
+    if (accountsMenuOpen) return
+    lastExpiredProfilesAutoRefreshRef.current = ''
+  }, [accountsMenuOpen])
+
+  useEffect(() => {
+    if (!accountsMenuOpen || typeof window === 'undefined') return
+    const updateMenuHeight = () => {
+      const rect = accountsMenuWrapRef.current?.getBoundingClientRect()
+      if (!rect) return
+      setAccountsMenuMaxHeight(computeAccountsMenuMaxHeight(window.innerHeight, rect.bottom))
+    }
+    updateMenuHeight()
+    window.addEventListener('resize', updateMenuHeight)
+    window.addEventListener('scroll', updateMenuHeight, true)
+    return () => {
+      window.removeEventListener('resize', updateMenuHeight)
+      window.removeEventListener('scroll', updateMenuHeight, true)
+    }
+  }, [accountsMenuOpen])
+
+  useEffect(() => {
+    if (!accountsMenuOpen || profilesLoading || refreshing) return
+    const expiredSignature = profiles
+      .filter((profile) => profile.needs_reauth)
+      .map((profile) => profile.id)
+      .sort()
+      .join('|')
+    if (!expiredSignature) {
+      lastExpiredProfilesAutoRefreshRef.current = ''
+      return
+    }
+    if (lastExpiredProfilesAutoRefreshRef.current === expiredSignature) return
+    lastExpiredProfilesAutoRefreshRef.current = expiredSignature
+    onRefresh()
+  }, [accountsMenuOpen, onRefresh, profiles, profilesLoading, refreshing])
+
   return (
     <div className="aoCard aoHeroCard aoHeroCodex">
       <div className="aoCardHeader">
         <div className="aoCardTitle">Codex (Auth)</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span className="aoPill">
-            <span className={status.codex_account?.signed_in ? 'aoDot' : 'aoDot aoDotBad'} />
-            <span className="aoPillText">{status.codex_account?.signed_in ? 'signed in' : 'signed out'}</span>
-          </span>
           <button
             className={`aoUsageRefreshBtn aoUsageRefreshBtnMini${refreshing ? ' aoUsageRefreshBtnSpin' : ''}`}
             title="Refresh"
@@ -125,20 +202,6 @@ export function HeroCodexCard({
               <path d="M1 14l5.3 5.3A9 9 0 0 0 20.5 15" />
             </svg>
           </button>
-          {status.codex_account?.signed_in ? (
-            <button
-              className="aoIconBtn aoIconBtnMini aoIconBtnDangerSoft"
-              title="Log out"
-              aria-label="Log out"
-              onClick={onLoginLogout}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M10 17l5-5-5-5" />
-                <path d="M15 12H3" />
-                <path d="M21 3v18" />
-              </svg>
-            </button>
-          ) : null}
         </div>
       </div>
       <div className="aoKvp">
@@ -190,27 +253,17 @@ export function HeroCodexCard({
         style={{
           marginTop: 15,
           width: '100%',
-          justifyContent: status.codex_account?.signed_in ? 'flex-end' : 'space-between',
+          justifyContent: 'flex-end',
         }}
       >
-        {!status.codex_account?.signed_in ? (
-          <button className="aoBtn" onClick={onLoginLogout}>
-            Log in
-          </button>
-        ) : null}
         <div className="aoHeroCodexActionsRow">
-          {profiles.length ? (
             <div className="aoActionsMenuWrap aoHeroCodexAccountsWrap" ref={accountsMenuWrapRef}>
               <button
                 className="aoBtn aoHeroCodexAccountsBtn"
                 type="button"
                 onClick={() => {
                   setAccountsMenuOpen((value) => {
-                    const next = !value
-                    if (next) {
-                      void onRefreshRemoteProfiles()
-                    }
-                    return next
+                    return !value
                   })
                 }}
                 title={profilesLoading ? 'Loading accounts...' : 'Official accounts'}
@@ -218,7 +271,12 @@ export function HeroCodexCard({
                 {`Accounts (${profiles.length})`}
               </button>
               {accountsMenuOpen ? (
-                <div className="aoMenu aoMenuCompact aoMenuCompactOffset aoAccountsMenu" role="menu" aria-label="Official accounts menu">
+                <div
+                  className="aoMenu aoMenuCompact aoMenuCompactOffset aoAccountsMenu"
+                  role="menu"
+                  aria-label="Official accounts menu"
+                  style={{ '--ao-accounts-menu-max-height': `${accountsMenuMaxHeight}px` } as React.CSSProperties}
+                >
                   <div className="aoAccountsMenuHeader">
                     <span className="aoAccountsMenuTitle">Official accounts</span>
                   </div>
@@ -228,43 +286,63 @@ export function HeroCodexCard({
                         key={profile.id}
                         className={`aoAccountsMenuRow${profile.active ? ' aoAccountsMenuRowActive' : ''}`}
                       >
-                        <button
-                          type="button"
-                          className="aoAccountsMenuPrimary"
-                          onClick={() => {
-                            setAccountsMenuOpen(false)
-                            void onActivateProfile(profile.id)
-                          }}
-                        >
-                          <span className="aoAccountsMenuText">
+                        <div className="aoAccountsMenuText">
+                          <button
+                            type="button"
+                            className="aoAccountsMenuPrimary"
+                            onClick={() => {
+                              setAccountsMenuOpen(false)
+                              void onActivateProfile(profile.id)
+                            }}
+                          >
+                            <span className="aoAccountsMenuPrimaryContent">
                               <span className="aoAccountsMenuTopline">
-                              <span
-                                className="aoAccountsMenuLabel"
-                                title={officialAccountDisplayName(profile)}
-                              >
-                                {officialAccountDisplayName(profile)}
+                                <span
+                                  className="aoAccountsMenuLabel"
+                                  title={officialAccountDisplayName(profile)}
+                                >
+                                  {officialAccountDisplayName(profile)}
+                                </span>
+                                <span className="aoAccountsMenuTags">
+                                  {profile.plan_label ? (
+                                    <span className="aoAccountsMenuPlanTag">{profile.plan_label}</span>
+                                  ) : null}
+                                  {profile.active ? (
+                                    <span className="aoAccountsMenuCurrentTag">Current</span>
+                                  ) : null}
+                                </span>
                               </span>
-                              <span className="aoAccountsMenuTags">
-                                {profile.plan_label ? (
-                                  <span className="aoAccountsMenuPlanTag">{profile.plan_label}</span>
-                                ) : null}
-                                {profile.active ? (
-                                  <span className="aoAccountsMenuCurrentTag">Current</span>
-                                ) : null}
-                              </span>
-                              </span>
-                            <OfficialAccountQuotaSummary profile={profile} />
-                            <span className="aoAccountsMenuMeta">
-                              Usage updated {fmtWhen(profile.usage_updated_at_unix_ms ?? profile.updated_at_unix_ms)}
+                              <OfficialAccountQuotaSummary profile={profile} />
                             </span>
-                          </span>
-                        </button>
+                          </button>
+                          <div className="aoAccountsMenuRowFooter">
+                            <span className="aoAccountsMenuMeta">
+                              {profile.needs_reauth
+                                ? 'Session expired. Re-auth to refresh this account.'
+                                : `Usage updated ${fmtWhen(profile.usage_updated_at_unix_ms ?? profile.updated_at_unix_ms)}`}
+                            </span>
+                            {profile.needs_reauth ? (
+                              <button
+                                type="button"
+                                className="aoTinyBtn aoAccountsMenuReauth"
+                                onClick={() => {
+                                  setAccountsMenuOpen(false)
+                                  void onReauthProfile(profile.id)
+                                }}
+                                title={`Re-authorize local account ${officialAccountDisplayName(profile)}`}
+                                aria-label={`Re-authorize local account ${officialAccountDisplayName(profile)}`}
+                              >
+                                Re-auth
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
                         <button
                           type="button"
                           className="aoAccountsMenuRemove"
                           onClick={() => void onRemoveProfile(profile.id)}
-                          title={`Remove ${profile.label}`}
-                          aria-label={`Remove ${profile.label}`}
+                          title={`Log out local account ${officialAccountDisplayName(profile)}`}
+                          aria-label={`Log out local account ${officialAccountDisplayName(profile)}`}
                         >
                           <svg viewBox="0 0 16 16" aria-hidden="true">
                             <path d="M4 4l8 8" />
@@ -351,7 +429,6 @@ export function HeroCodexCard({
                 </div>
               ) : null}
             </div>
-          ) : null}
           <div className="aoActionsMenuWrap" ref={menuWrapRef} style={{ justifyContent: 'flex-start' }}>
             <div className="aoSplitBtn aoSplitBtnPrimary" title={swapBadgeTitle}>
               <button className="aoSplitBtnBtn" onClick={onSwapAuthConfig}>

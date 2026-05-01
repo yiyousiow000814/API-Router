@@ -46,6 +46,11 @@ struct ConfigSourceSnapshot {
     trusted: bool,
     pair_state: Option<String>,
     pair_request_id: Option<String>,
+    listen_addr: Option<String>,
+    remote_update_updater_addr: Option<String>,
+    heartbeat_age_ms: Option<u64>,
+    http_probe_state: Option<String>,
+    http_probe_detail: Option<String>,
     follow_allowed: bool,
     follow_blocked_reason: Option<String>,
     using_count: usize,
@@ -60,6 +65,16 @@ struct ConfigSourceSnapshot {
     version_sync_reason: Option<String>,
     same_version_update_allowed: bool,
     same_version_update_blocked_reason: Option<String>,
+}
+
+fn peer_remote_update_updater_addr(peer: &crate::lan_sync::LanPeerSnapshot) -> Option<String> {
+    let (host, port) = peer.listen_addr.trim().rsplit_once(':')?;
+    let host = host.trim();
+    let listen_port = port.trim().parse::<u16>().ok()?;
+    let updater_port = peer
+        .remote_update_updater_port
+        .or_else(|| crate::lan_sync::remote_update_updater_port(listen_port))?;
+    (!host.is_empty()).then(|| format!("{host}:{updater_port}"))
 }
 
 fn load_lan_remote_update_status_for_config_source(
@@ -87,6 +102,13 @@ fn offline_followed_config_source_snapshot(
         trusted: true,
         pair_state: Some("trusted".to_string()),
         pair_request_id: None,
+        listen_addr: None,
+        remote_update_updater_addr: None,
+        heartbeat_age_ms: None,
+        http_probe_state: Some("offline".to_string()),
+        http_probe_detail: Some(
+            "no recent LAN heartbeat or cached listen address is available".to_string(),
+        ),
         follow_allowed: false,
         follow_blocked_reason: Some("that node is offline; switch back to Local to edit or keep using the last synced config".to_string()),
         using_count: 1,
@@ -376,6 +398,11 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
         trusted: true,
         pair_state: Some("trusted".to_string()),
         pair_request_id: None,
+        listen_addr: lan_snapshot.local_node.listen_addr.clone(),
+        remote_update_updater_addr: None,
+        heartbeat_age_ms: Some(0),
+        http_probe_state: Some("ok".to_string()),
+        http_probe_detail: Some("local runtime is online".to_string()),
         follow_allowed: false,
         follow_blocked_reason: None,
         using_count: local_followers,
@@ -404,6 +431,11 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
             trusted: peer.trusted,
             pair_state: peer.pair_state.clone(),
             pair_request_id: peer.pair_request_id.clone(),
+            listen_addr: Some(peer.listen_addr.clone()),
+            remote_update_updater_addr: peer_remote_update_updater_addr(peer),
+            heartbeat_age_ms: Some(peer.heartbeat_age_ms),
+            http_probe_state: peer.http_probe_state.clone(),
+            http_probe_detail: peer.http_probe_detail.clone(),
             follow_allowed: peer.trusted
                 && !peer
                     .sync_blocked_domains
@@ -467,6 +499,13 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
                 if peer.trusted {
                     peer.pair_state = Some("trusted".to_string());
                 }
+                peer.heartbeat_age_ms = crate::orchestrator::store::unix_ms()
+                    .saturating_sub(peer.last_heartbeat_unix_ms);
+                peer.http_probe_state = Some("stale_heartbeat".to_string());
+                peer.http_probe_detail = Some(format!(
+                    "last heartbeat was {}ms ago; last listen_addr={}",
+                    peer.heartbeat_age_ms, peer.listen_addr
+                ));
                 peer.build_matches_local = peer.build_identity == lan_snapshot.local_node.build_identity;
                 let version_sync_reason = crate::lan_sync::peer_version_sync_reason(&peer);
                 ConfigSourceSnapshot {
@@ -478,6 +517,11 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
                     trusted: peer.trusted,
                     pair_state: peer.pair_state.clone(),
                     pair_request_id: peer.pair_request_id.clone(),
+                    listen_addr: Some(peer.listen_addr.clone()),
+                    remote_update_updater_addr: peer_remote_update_updater_addr(&peer),
+                    heartbeat_age_ms: Some(peer.heartbeat_age_ms),
+                    http_probe_state: peer.http_probe_state.clone(),
+                    http_probe_detail: peer.http_probe_detail.clone(),
                     follow_allowed: false,
                     follow_blocked_reason: Some(
                         "that node was seen recently but is currently offline; wait for it to reappear before following or pairing".to_string(),

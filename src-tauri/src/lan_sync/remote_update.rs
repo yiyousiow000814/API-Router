@@ -96,6 +96,8 @@ pub struct LanRemoteUpdateStatusSnapshot {
     #[serde(default)]
     pub updated_at_unix_ms: u64,
     #[serde(default)]
+    pub shell_cleanup_completed_at_unix_ms: Option<u64>,
+    #[serde(default)]
     pub timeline: Vec<LanRemoteUpdateTimelineEntry>,
 }
 
@@ -136,10 +138,93 @@ pub(crate) struct LanRemoteUpdateDebugResponsePacket {
     #[serde(default)]
     pub shell_log_tail: Option<String>,
     #[serde(default)]
+    pub shell_window_summary: Vec<LanRemoteUpdateShellWindowSummary>,
+    #[serde(default)]
+    pub system_snapshot: LanRemoteUpdateSystemSnapshot,
+    #[serde(default)]
+    pub transport: LanRemoteUpdateTransportSnapshot,
+    #[serde(default)]
+    pub updater_status: Option<serde_json::Value>,
+    #[serde(default)]
+    pub app_startup_path: Option<String>,
+    #[serde(default)]
+    pub app_startup_file_exists: bool,
+    #[serde(default)]
+    pub app_startup_tail: Option<String>,
+    #[serde(default)]
+    pub gateway_bootstrap_path: Option<String>,
+    #[serde(default)]
+    pub gateway_bootstrap_file_exists: bool,
+    #[serde(default)]
+    pub gateway_bootstrap_tail: Option<String>,
+    #[serde(default)]
+    pub gateway_startup_path: Option<String>,
+    #[serde(default)]
+    pub gateway_startup_file_exists: bool,
+    #[serde(default)]
+    pub gateway_startup_tail: Option<String>,
+    #[serde(default)]
     pub worker_bootstrap_observed: bool,
     pub worker_script_probe: Option<LanRemoteUpdateWorkerScriptProbe>,
     pub local_build_identity: LanBuildIdentitySnapshot,
     pub local_version_sync: LanLocalVersionSyncSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct LanRemoteUpdateShellWindowSummary {
+    pub pid: u32,
+    pub visibility: String,
+    pub role: String,
+    pub request_id: Option<String>,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub(crate) struct LanRemoteUpdateSystemSnapshot {
+    #[serde(default)]
+    pub captured_at_unix_ms: u64,
+    #[serde(default)]
+    pub cpu_load_percent: Option<f64>,
+    #[serde(default)]
+    pub memory_total_bytes: Option<u64>,
+    #[serde(default)]
+    pub memory_available_bytes: Option<u64>,
+    #[serde(default)]
+    pub disk_total_bytes: Option<u64>,
+    #[serde(default)]
+    pub disk_available_bytes: Option<u64>,
+    #[serde(default)]
+    pub gpu_load_percent: Option<f64>,
+    #[serde(default)]
+    pub probe_detail: Vec<String>,
+    #[serde(default)]
+    pub remote_update_processes: Vec<LanRemoteUpdateProcessResourceSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct LanRemoteUpdateProcessResourceSummary {
+    pub pid: u32,
+    pub role: String,
+    pub visibility: String,
+    #[serde(default)]
+    pub working_set_bytes: Option<u64>,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct LanRemoteUpdateTransportSnapshot {
+    #[serde(default)]
+    pub app_base_url: Option<String>,
+    #[serde(default)]
+    pub app_debug_state: String,
+    #[serde(default)]
+    pub app_debug_detail: Option<String>,
+    #[serde(default)]
+    pub updater_base_url: Option<String>,
+    #[serde(default)]
+    pub updater_state: Option<String>,
+    #[serde(default)]
+    pub updater_detail: Option<String>,
 }
 
 fn default_remote_update_log_tail_source() -> String {
@@ -275,6 +360,35 @@ fn remote_update_shell_process_is_relevant(
     if evidence
         .cwd
         .is_some_and(|value| value.starts_with(context.repo_root))
+    {
+        return true;
+    }
+    if context.status_path.is_some_and(|path| {
+        evidence
+            .status_env
+            .trim()
+            .eq_ignore_ascii_case(&path.display().to_string())
+    }) {
+        return true;
+    }
+    context.log_path.is_some_and(|path| {
+        evidence
+            .log_env
+            .trim()
+            .eq_ignore_ascii_case(&path.display().to_string())
+    })
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn remote_update_shell_process_should_cleanup(
+    context: &RemoteUpdateShellProcessContext<'_>,
+    evidence: &RemoteUpdateShellProcessEvidence<'_>,
+) -> bool {
+    if evidence.pid == context.worker_pid {
+        return true;
+    }
+    if !context.request_id.trim().is_empty()
+        && evidence.request_id_env.trim() == context.request_id.trim()
     {
         return true;
     }
@@ -517,14 +631,201 @@ fn cleanup_remote_update_worker(worker_pid: Option<u32>) -> Option<String> {
     }
 }
 
+fn join_cleanup_details(details: impl IntoIterator<Item = Option<String>>) -> Option<String> {
+    let joined = details
+        .into_iter()
+        .flatten()
+        .filter(|detail| !detail.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!joined.trim().is_empty()).then_some(joined)
+}
+
+fn remote_update_shell_cleanup_should_run(status: &LanRemoteUpdateStatusSnapshot) -> bool {
+    status.shell_cleanup_completed_at_unix_ms.is_none()
+}
+
+fn remote_update_status_current_sha_matches(
+    status: &LanRemoteUpdateStatusSnapshot,
+    current_target_ref: &str,
+) -> bool {
+    status
+        .current_git_sha
+        .as_deref()
+        .is_some_and(|sha| sha.trim() == current_target_ref)
+}
+
+#[cfg(target_os = "windows")]
+fn cleanup_remote_update_marked_shell_processes(
+    status: &LanRemoteUpdateStatusSnapshot,
+) -> Option<String> {
+    let request_id = status.request_id.as_deref().unwrap_or_default().trim();
+    if request_id.is_empty() && status.worker_pid.unwrap_or_default() == 0 {
+        return None;
+    }
+    let repo_root = match resolve_repo_root_for_self_update() {
+        Ok(value) => value,
+        Err(err) => {
+            return Some(format!(
+                "Skipped stale remote update shell cleanup because repo root could not be resolved: {err}"
+            ))
+        }
+    };
+    let status_path = lan_remote_update_status_path();
+    let log_path = lan_remote_update_log_path();
+    let context = RemoteUpdateShellProcessContext {
+        worker_pid: status.worker_pid.unwrap_or_default(),
+        request_id,
+        repo_root: &repo_root,
+        status_path: status_path.as_deref(),
+        log_path: log_path.as_deref(),
+    };
+    let current_pid = std::process::id();
+    let candidate_pids = crate::platform::windows_loopback_peer::list_process_ids_by_name(&[
+        "powershell.exe",
+        "pwsh.exe",
+        "cmd.exe",
+        "conhost.exe",
+    ]);
+    let mut seen = std::collections::HashSet::new();
+    let mut stopped = Vec::new();
+    let mut already_gone = Vec::new();
+    let mut failed = Vec::new();
+    for pid in candidate_pids {
+        if pid == current_pid || !seen.insert(pid) {
+            continue;
+        }
+        let command_line = crate::platform::windows_loopback_peer::read_process_command_line(pid)
+            .unwrap_or_default();
+        let cwd = crate::platform::windows_loopback_peer::read_process_cwd(pid);
+        let status_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            pid,
+            "API_ROUTER_REMOTE_UPDATE_STATUS_PATH",
+        )
+        .unwrap_or_default();
+        let log_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            pid,
+            "API_ROUTER_REMOTE_UPDATE_LOG_PATH",
+        )
+        .unwrap_or_default();
+        let request_id_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            pid,
+            "API_ROUTER_REMOTE_UPDATE_REQUEST_ID",
+        )
+        .unwrap_or_default();
+        let evidence = RemoteUpdateShellProcessEvidence {
+            pid,
+            command_line: &command_line,
+            cwd: cwd.as_deref(),
+            status_env: &status_env,
+            log_env: &log_env,
+            request_id_env: &request_id_env,
+        };
+        if !remote_update_shell_process_should_cleanup(&context, &evidence) {
+            continue;
+        }
+        match terminate_remote_update_worker(pid) {
+            Ok(Some(true)) => stopped.push(pid),
+            Ok(Some(false)) => already_gone.push(pid),
+            Ok(None) => {}
+            Err(err) => failed.push(format!("PID {pid}: {err}")),
+        }
+    }
+    let mut parts = Vec::new();
+    if !stopped.is_empty() {
+        parts.push(format!(
+            "Stopped stale remote update shell process(es): {}.",
+            stopped
+                .iter()
+                .map(|pid| pid.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !already_gone.is_empty() {
+        parts.push(format!(
+            "Stale remote update shell process(es) already gone: {}.",
+            already_gone
+                .iter()
+                .map(|pid| pid.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !failed.is_empty() {
+        parts.push(format!(
+            "Failed to stop stale remote update shell process(es): {}.",
+            failed.join("; ")
+        ));
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn cleanup_remote_update_marked_shell_processes(
+    _status: &LanRemoteUpdateStatusSnapshot,
+) -> Option<String> {
+    None
+}
+
+fn remote_update_status_has_successful_runtime_health(
+    status: &LanRemoteUpdateStatusSnapshot,
+) -> bool {
+    if !status
+        .progress_percent
+        .is_some_and(|progress| progress >= 100)
+    {
+        return false;
+    }
+    let detail = status
+        .detail
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if detail.contains("api router.exe is running")
+        || detail.contains("runtime health check passed")
+        || detail.contains("returned ok=true")
+    {
+        return true;
+    }
+    status.timeline.iter().any(|entry| {
+        let phase = entry.phase.trim();
+        let label = entry.label.trim().to_ascii_lowercase();
+        let detail = entry
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        phase == "health_check_succeeded"
+            || label == "runtime health check passed"
+            || detail.contains("runtime health check passed")
+            || detail.contains("returned ok=true")
+    })
+}
+
+fn remote_update_worker_should_delay_normalization(
+    status: &LanRemoteUpdateStatusSnapshot,
+    current_target_ref: &str,
+    status_target_ref: &str,
+) -> bool {
+    if !remote_update_worker_is_alive(status.worker_pid) {
+        return false;
+    }
+    !(current_target_ref == status_target_ref
+        && remote_update_status_has_successful_runtime_health(status))
+}
+
 fn terminate_remote_update_worker(pid: u32) -> Result<Option<bool>, String> {
     if pid == 0 {
         return Ok(None);
     }
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let output = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
             .output()
             .map_err(|err| format!("taskkill failed: {err}"))?;
         if output.status.success() {
@@ -577,12 +878,51 @@ fn normalize_remote_update_status(
     let current_target_ref = normalized_local_build_target_ref();
     let status_target_ref = status.target_ref.trim();
     let state = status.state.trim().to_string();
-    if !matches!(state.as_str(), "accepted" | "running" | "failed") {
+    if !matches!(
+        state.as_str(),
+        "accepted" | "running" | "failed" | "superseded" | "succeeded"
+    ) {
         return status;
     }
 
+    let Some(current_target_ref) = current_target_ref.as_deref() else {
+        return status;
+    };
+    if state == "succeeded" && current_target_ref == status_target_ref {
+        if remote_update_shell_cleanup_should_run(&status) {
+            let shell_cleanup_detail = cleanup_remote_update_marked_shell_processes(&status);
+            let finished_at_unix_ms = unix_ms();
+            if let Some(shell_cleanup_detail) = shell_cleanup_detail {
+                status.detail = Some(match status.detail.as_deref() {
+                    Some(detail) if !detail.trim().is_empty() => {
+                        format!("{} {}", detail.trim(), shell_cleanup_detail)
+                    }
+                    _ => shell_cleanup_detail,
+                });
+            }
+            status.shell_cleanup_completed_at_unix_ms = Some(finished_at_unix_ms);
+            status.updated_at_unix_ms = finished_at_unix_ms;
+            let timeline_detail = status.detail.clone();
+            append_remote_update_timeline_entry(
+                &mut status,
+                "cleanup_stale_shell_processes",
+                "Cleaned stale shell processes",
+                timeline_detail,
+                "normalizer",
+                finished_at_unix_ms,
+            );
+            return status;
+        }
+        return status;
+    }
     let now_unix_ms = unix_ms();
-    if remote_update_worker_is_alive(status.worker_pid) {
+    if state != "superseded"
+        && remote_update_worker_should_delay_normalization(
+            &status,
+            current_target_ref,
+            status_target_ref,
+        )
+    {
         return status;
     }
     if state == "accepted" && status.started_at_unix_ms.is_none() {
@@ -593,21 +933,42 @@ fn normalize_remote_update_status(
             return status;
         }
     }
-
-    let Some(current_target_ref) = current_target_ref.as_deref() else {
+    if state == "failed"
+        && current_target_ref != status_target_ref
+        && remote_update_status_current_sha_matches(&status, current_target_ref)
+    {
+        if status.reason_code.is_none()
+            && status
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.to_ascii_lowercase().contains("worktree is dirty"))
+        {
+            status.reason_code = Some("dirty_worktree".to_string());
+            status.updated_at_unix_ms = now_unix_ms;
+        }
         return status;
-    };
+    }
 
-    let worker_cleanup_detail = cleanup_remote_update_worker(status.worker_pid);
+    if state == "superseded" && current_target_ref != status_target_ref {
+        return status;
+    }
+
+    let worker_cleanup_detail = join_cleanup_details([
+        cleanup_remote_update_worker(status.worker_pid),
+        cleanup_remote_update_marked_shell_processes(&status),
+    ]);
     let finished_at_unix_ms = unix_ms();
 
     if current_target_ref == status_target_ref {
         status.state = "succeeded".to_string();
-        status.reason_code = Some(if state == "failed" {
-            "peer_already_matches_target_after_failed_status".to_string()
-        } else {
-            "peer_already_matches_target".to_string()
-        });
+        status.reason_code = Some(
+            match state.as_str() {
+                "failed" => "peer_already_matches_target_after_failed_status",
+                "superseded" => "peer_already_matches_target_after_superseded_status",
+                _ => "peer_already_matches_target",
+            }
+            .to_string(),
+        );
         status.detail = Some(match worker_cleanup_detail {
             Some(detail) => format!(
                 "Current build already matches the queued target; cleared stale remote update status after restart/manual update. {detail}"
@@ -618,6 +979,7 @@ fn normalize_remote_update_status(
         status
             .finished_at_unix_ms
             .get_or_insert(finished_at_unix_ms);
+        status.shell_cleanup_completed_at_unix_ms = Some(finished_at_unix_ms);
         status.updated_at_unix_ms = finished_at_unix_ms;
         let timeline_detail = status.detail.clone();
         append_remote_update_timeline_entry(
@@ -631,8 +993,24 @@ fn normalize_remote_update_status(
         return status;
     }
 
-    let (reason_code, label, detail) = if state == "accepted" && status.started_at_unix_ms.is_none()
-    {
+    let (reason_code, label, detail) = if state == "succeeded" {
+        (
+            "peer_build_changed_after_completed_status",
+            "Completed status replaced",
+            match worker_cleanup_detail {
+                Some(detail) => format!(
+                    "Completed remote update to {} was replaced by current build {}. {detail}",
+                    display_target_ref(status_target_ref),
+                    display_target_ref(current_target_ref),
+                ),
+                None => format!(
+                    "Completed remote update to {} was replaced by current build {}.",
+                    display_target_ref(status_target_ref),
+                    display_target_ref(current_target_ref),
+                ),
+            },
+        )
+    } else if state == "accepted" && status.started_at_unix_ms.is_none() {
         (
             "peer_build_changed_before_start",
             "Status normalized to expired before start",
@@ -666,6 +1044,8 @@ fn normalize_remote_update_status(
     status.state = "superseded".to_string();
     status.reason_code = Some(reason_code.to_string());
     status.detail = Some(detail);
+    status.current_git_sha = Some(current_target_ref.to_string());
+    status.progress_percent = Some(100);
     status
         .finished_at_unix_ms
         .get_or_insert(finished_at_unix_ms);
@@ -686,6 +1066,9 @@ pub(crate) fn load_lan_remote_update_status() -> Option<LanRemoteUpdateStatusSna
     let path = lan_remote_update_status_path()?;
     let bytes = std::fs::read(path).ok()?;
     let status = parse_lan_remote_update_status_bytes(&bytes).ok()?;
+    if !remote_update_status_is_publishable(&status) {
+        return None;
+    }
     let normalized = normalize_remote_update_status(status.clone());
     if normalized != status {
         let _ = write_lan_remote_update_status(&normalized);
@@ -704,6 +1087,15 @@ fn read_remote_update_log_tail(max_bytes: usize) -> Option<String> {
 
 fn read_remote_update_shell_window_log_tail(max_bytes: usize) -> Option<String> {
     let path = remote_update_shell_window_log_path()?;
+    read_optional_log_tail(&path, max_bytes)
+}
+
+fn runtime_startup_diag_path(file_name: &str) -> Option<std::path::PathBuf> {
+    Some(crate::diagnostics::current_user_data_dir()?.join(file_name))
+}
+
+fn runtime_startup_diag_tail(file_name: &str, max_bytes: usize) -> Option<String> {
+    let path = runtime_startup_diag_path(file_name)?;
     read_optional_log_tail(&path, max_bytes)
 }
 
@@ -826,6 +1218,26 @@ fn remote_update_status_blocks_new_request(status: &LanRemoteUpdateStatusSnapsho
     matches!(status.state.as_str(), "accepted" | "running")
 }
 
+fn remote_update_status_is_publishable(status: &LanRemoteUpdateStatusSnapshot) -> bool {
+    status
+        .request_id
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || status
+            .requester_node_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || status
+            .requester_node_name
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || status
+            .worker_script
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || status.worker_pid.is_some()
+}
+
 fn current_remote_update_status_block_reason() -> Option<String> {
     let status = load_lan_remote_update_status()?;
     if !remote_update_status_blocks_new_request(&status) {
@@ -842,6 +1254,480 @@ fn current_remote_update_status_block_reason() -> Option<String> {
     })
 }
 
+#[cfg(target_os = "windows")]
+fn remote_update_active_process_block_reason() -> Option<String> {
+    let repo_root = resolve_repo_root_for_self_update().ok()?;
+    let status_path = lan_remote_update_status_path();
+    let log_path = lan_remote_update_log_path();
+    let current_pid = std::process::id();
+    let process_names = ["powershell.exe", "pwsh.exe", "cmd.exe", "conhost.exe"];
+    let readiness_process_names: Vec<&str> = process_names
+        .into_iter()
+        .filter(|name| remote_update_process_name_can_block_readiness(name))
+        .collect();
+    let candidate_pids =
+        crate::platform::windows_loopback_peer::list_process_ids_by_name(&readiness_process_names);
+    for pid in candidate_pids {
+        if pid == current_pid {
+            continue;
+        }
+        let command_line = crate::platform::windows_loopback_peer::read_process_command_line(pid)
+            .unwrap_or_default();
+        let status_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            pid,
+            "API_ROUTER_REMOTE_UPDATE_STATUS_PATH",
+        )
+        .unwrap_or_default();
+        let log_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            pid,
+            "API_ROUTER_REMOTE_UPDATE_LOG_PATH",
+        )
+        .unwrap_or_default();
+        let request_id_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            pid,
+            "API_ROUTER_REMOTE_UPDATE_REQUEST_ID",
+        )
+        .unwrap_or_default();
+        if !remote_update_active_process_is_marked(
+            &repo_root,
+            status_path.as_deref(),
+            log_path.as_deref(),
+            &command_line,
+            &status_env,
+            &log_env,
+            &request_id_env,
+        ) {
+            continue;
+        }
+        let command_preview = if command_line.trim().is_empty() {
+            "<unavailable>".to_string()
+        } else {
+            command_line.trim().chars().take(180).collect::<String>()
+        };
+        return Some(format!(
+            "This machine is already running remote update process PID {pid}: {command_preview}"
+        ));
+    }
+    None
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn remote_update_process_name_can_block_readiness(name: &str) -> bool {
+    matches!(
+        name.trim().to_ascii_lowercase().as_str(),
+        "powershell.exe" | "pwsh.exe" | "cmd.exe"
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn remote_update_active_process_block_reason() -> Option<String> {
+    None
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn remote_update_active_process_is_marked(
+    repo_root: &std::path::Path,
+    status_path: Option<&std::path::Path>,
+    log_path: Option<&std::path::Path>,
+    command_line: &str,
+    status_env: &str,
+    log_env: &str,
+    request_id_env: &str,
+) -> bool {
+    let command_line_lower = command_line.trim().to_ascii_lowercase();
+    let repo_marker = repo_root.display().to_string().to_ascii_lowercase();
+    if command_line_lower.contains("lan-remote-update.ps1")
+        || command_line_lower.contains("lan-remote-update.sh")
+        || command_line_lower.contains("build-root-exe.ps1")
+        || command_line_lower.contains("build-root-exe.mjs")
+        || (!repo_marker.is_empty()
+            && command_line_lower.contains(&repo_marker)
+            && command_line_lower.contains("api_router_remote_update"))
+    {
+        return true;
+    }
+    if !request_id_env.trim().is_empty() {
+        return true;
+    }
+    if status_path.is_some_and(|path| {
+        status_env
+            .trim()
+            .eq_ignore_ascii_case(&path.display().to_string())
+    }) {
+        return true;
+    }
+    log_path.is_some_and(|path| {
+        log_env
+            .trim()
+            .eq_ignore_ascii_case(&path.display().to_string())
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn current_remote_update_shell_window_summary() -> Vec<LanRemoteUpdateShellWindowSummary> {
+    let repo_root = match resolve_repo_root_for_self_update() {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    let status_path = lan_remote_update_status_path();
+    let log_path = lan_remote_update_log_path();
+    let candidate_pids = crate::platform::windows_loopback_peer::list_process_ids_by_name(&[
+        "powershell.exe",
+        "pwsh.exe",
+        "cmd.exe",
+        "conhost.exe",
+    ]);
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for pid in candidate_pids {
+        if !seen.insert(pid) {
+            continue;
+        }
+        let command_line = crate::platform::windows_loopback_peer::read_process_command_line(pid)
+            .unwrap_or_default();
+        let status_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            pid,
+            "API_ROUTER_REMOTE_UPDATE_STATUS_PATH",
+        )
+        .unwrap_or_default();
+        let log_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            pid,
+            "API_ROUTER_REMOTE_UPDATE_LOG_PATH",
+        )
+        .unwrap_or_default();
+        let request_id_env = crate::platform::windows_loopback_peer::read_process_env_var(
+            pid,
+            "API_ROUTER_REMOTE_UPDATE_REQUEST_ID",
+        )
+        .unwrap_or_default();
+        if !remote_update_active_process_is_marked(
+            &repo_root,
+            status_path.as_deref(),
+            log_path.as_deref(),
+            &command_line,
+            &status_env,
+            &log_env,
+            &request_id_env,
+        ) {
+            continue;
+        }
+        let visible_title = crate::platform::windows_loopback_peer::visible_window_title(pid);
+        let visibility = if visible_title.is_some() {
+            "visible"
+        } else {
+            "hidden_or_no_window"
+        };
+        out.push(LanRemoteUpdateShellWindowSummary {
+            pid,
+            visibility: visibility.to_string(),
+            role: classify_remote_update_shell_command(&command_line).to_string(),
+            request_id: (!request_id_env.trim().is_empty())
+                .then(|| request_id_env.trim().to_string()),
+            command: if command_line.trim().is_empty() {
+                "<unavailable>".to_string()
+            } else {
+                command_line.trim().chars().take(240).collect()
+            },
+        });
+    }
+    out
+}
+
+#[cfg(not(target_os = "windows"))]
+fn current_remote_update_shell_window_summary() -> Vec<LanRemoteUpdateShellWindowSummary> {
+    Vec::new()
+}
+
+#[cfg(target_os = "windows")]
+fn current_remote_update_system_snapshot(
+    shell_windows: &[LanRemoteUpdateShellWindowSummary],
+) -> LanRemoteUpdateSystemSnapshot {
+    let mut snapshot = LanRemoteUpdateSystemSnapshot {
+        captured_at_unix_ms: unix_ms(),
+        ..LanRemoteUpdateSystemSnapshot::default()
+    };
+    snapshot.cpu_load_percent = windows_cpu_load_percent_sample();
+    if snapshot.cpu_load_percent.is_none() {
+        snapshot
+            .probe_detail
+            .push("cpu_load_percent needs one previous debug sample".to_string());
+    }
+    match windows_memory_snapshot() {
+        Some((total, available)) => {
+            snapshot.memory_total_bytes = Some(total);
+            snapshot.memory_available_bytes = Some(available);
+        }
+        None => snapshot
+            .probe_detail
+            .push("memory snapshot unavailable".to_string()),
+    }
+    match windows_disk_snapshot_for_path(&resolve_repo_root_for_self_update().unwrap_or_default()) {
+        Some((total, available)) => {
+            snapshot.disk_total_bytes = Some(total);
+            snapshot.disk_available_bytes = Some(available);
+        }
+        None => snapshot
+            .probe_detail
+            .push("disk snapshot unavailable".to_string()),
+    }
+    snapshot
+        .probe_detail
+        .push("gpu_load_percent unavailable: Windows GPU utilization is not exposed by the low-cost Win32 probes used here".to_string());
+    snapshot.remote_update_processes = shell_windows
+        .iter()
+        .map(|item| LanRemoteUpdateProcessResourceSummary {
+            pid: item.pid,
+            role: item.role.clone(),
+            visibility: item.visibility.clone(),
+            working_set_bytes: windows_process_working_set_bytes(item.pid),
+            command: item.command.clone(),
+        })
+        .collect();
+    snapshot
+}
+
+#[cfg(not(target_os = "windows"))]
+fn current_remote_update_system_snapshot(
+    _shell_windows: &[LanRemoteUpdateShellWindowSummary],
+) -> LanRemoteUpdateSystemSnapshot {
+    LanRemoteUpdateSystemSnapshot {
+        captured_at_unix_ms: unix_ms(),
+        probe_detail: vec!["system snapshot unavailable on this platform".to_string()],
+        ..LanRemoteUpdateSystemSnapshot::default()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_memory_snapshot() -> Option<(u64, u64)> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+
+    let mut status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..unsafe { std::mem::zeroed() }
+    };
+    let ok = unsafe { GlobalMemoryStatusEx(&mut status as *mut MEMORYSTATUSEX) };
+    (ok != 0).then_some((status.ullTotalPhys, status.ullAvailPhys))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_disk_snapshot_for_path(path: &std::path::Path) -> Option<(u64, u64)> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let probe_path = if path.as_os_str().is_empty() {
+        std::env::current_dir().ok()?
+    } else {
+        path.to_path_buf()
+    };
+    let mut wide: Vec<u16> = probe_path.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let mut free_available: u64 = 0;
+    let mut total: u64 = 0;
+    let mut total_free: u64 = 0;
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free_available as *mut u64,
+            &mut total as *mut u64,
+            &mut total_free as *mut u64,
+        )
+    };
+    (ok != 0).then_some((total, free_available))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_process_working_set_bytes(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle == 0 {
+            return None;
+        }
+        let mut counters = PROCESS_MEMORY_COUNTERS {
+            cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            PageFaultCount: 0,
+            PeakWorkingSetSize: 0,
+            WorkingSetSize: 0,
+            QuotaPeakPagedPoolUsage: 0,
+            QuotaPagedPoolUsage: 0,
+            QuotaPeakNonPagedPoolUsage: 0,
+            QuotaNonPagedPoolUsage: 0,
+            PagefileUsage: 0,
+            PeakPagefileUsage: 0,
+        };
+        let ok = GetProcessMemoryInfo(
+            handle,
+            &mut counters as *mut PROCESS_MEMORY_COUNTERS,
+            counters.cb,
+        );
+        let _ = CloseHandle(handle);
+        (ok != 0).then_some(counters.WorkingSetSize as u64)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_cpu_load_percent_sample() -> Option<f64> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::GetSystemTimes;
+
+    static PREVIOUS: OnceLock<std::sync::Mutex<Option<(u64, u64)>>> = OnceLock::new();
+
+    let mut idle = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut kernel = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut user = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let ok = unsafe {
+        GetSystemTimes(
+            &mut idle as *mut FILETIME,
+            &mut kernel as *mut FILETIME,
+            &mut user as *mut FILETIME,
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+    let idle_ticks = filetime_to_u64(idle);
+    let total_ticks = filetime_to_u64(kernel).saturating_add(filetime_to_u64(user));
+    let lock = PREVIOUS.get_or_init(|| std::sync::Mutex::new(None));
+    let mut guard = lock.lock().ok()?;
+    let previous = guard.replace((idle_ticks, total_ticks));
+    let (previous_idle, previous_total) = previous?;
+    let total_delta = total_ticks.saturating_sub(previous_total);
+    if total_delta == 0 {
+        return None;
+    }
+    let idle_delta = idle_ticks.saturating_sub(previous_idle).min(total_delta);
+    Some(((total_delta - idle_delta) as f64 / total_delta as f64 * 100.0).clamp(0.0, 100.0))
+}
+
+#[cfg(target_os = "windows")]
+fn filetime_to_u64(value: windows_sys::Win32::Foundation::FILETIME) -> u64 {
+    ((value.dwHighDateTime as u64) << 32) | value.dwLowDateTime as u64
+}
+
+fn updater_status_git_sha<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    value
+        .get(key)
+        .and_then(|entry| entry.get("gitSha"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|sha| !sha.is_empty())
+}
+
+fn updater_remote_update_status_snapshot(
+    value: &serde_json::Value,
+) -> Option<LanRemoteUpdateStatusSnapshot> {
+    value
+        .get("remoteUpdateStatus")
+        .cloned()
+        .and_then(|status| serde_json::from_value(status).ok())
+}
+
+fn fallback_remote_update_debug_packet(
+    peer: &LanPeerSnapshot,
+    transport: LanRemoteUpdateTransportSnapshot,
+    updater_status: Option<serde_json::Value>,
+) -> LanRemoteUpdateDebugResponsePacket {
+    let mut blocked_parts = vec![format!(
+        "Peer app debug is unavailable{}",
+        transport
+            .app_debug_detail
+            .as_deref()
+            .map(|detail| format!(": {detail}"))
+            .unwrap_or_default()
+    )];
+    if let Some(detail) = transport.updater_detail.as_deref() {
+        blocked_parts.push(format!(
+            "updater {}: {detail}",
+            transport.updater_state.as_deref().unwrap_or("unknown")
+        ));
+    } else if let Some(state) = transport.updater_state.as_deref() {
+        blocked_parts.push(format!("updater {state}"));
+    }
+    let remote_update_status = updater_status
+        .as_ref()
+        .and_then(updater_remote_update_status_snapshot)
+        .or_else(|| peer.remote_update_status.clone());
+    LanRemoteUpdateDebugResponsePacket {
+        ok: true,
+        version: 1,
+        node_id: peer.node_id.clone(),
+        node_name: peer.node_name.clone(),
+        remote_update_readiness: LanRemoteUpdateReadinessSnapshot {
+            ready: false,
+            blocked_reason: Some(blocked_parts.join("; ")),
+            checked_at_unix_ms: unix_ms(),
+        },
+        remote_update_status,
+        status_path: None,
+        status_file_exists: false,
+        log_path: None,
+        log_file_exists: false,
+        log_tail_source: "none".to_string(),
+        log_tail: None,
+        shell_log_path: None,
+        shell_log_file_exists: false,
+        shell_log_tail: None,
+        shell_window_summary: Vec::new(),
+        system_snapshot: LanRemoteUpdateSystemSnapshot {
+            captured_at_unix_ms: unix_ms(),
+            probe_detail: vec![
+                "peer app HTTP debug is unavailable; this packet was synthesized from the local peer cache and updater status".to_string(),
+            ],
+            ..LanRemoteUpdateSystemSnapshot::default()
+        },
+        transport,
+        updater_status,
+        app_startup_path: None,
+        app_startup_file_exists: false,
+        app_startup_tail: None,
+        gateway_bootstrap_path: None,
+        gateway_bootstrap_file_exists: false,
+        gateway_bootstrap_tail: None,
+        gateway_startup_path: None,
+        gateway_startup_file_exists: false,
+        gateway_startup_tail: None,
+        worker_bootstrap_observed: false,
+        worker_script_probe: None,
+        local_build_identity: peer.build_identity.clone(),
+        local_version_sync: LanLocalVersionSyncSnapshot {
+            target_ref: None,
+            git_worktree_clean: false,
+            update_to_local_build_allowed: false,
+            blocked_reason: Some("peer app debug unavailable".to_string()),
+        },
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn classify_remote_update_shell_command(command_line: &str) -> &'static str {
+    let lower = command_line.to_ascii_lowercase();
+    if lower.contains("lan-remote-update.ps1") || lower.contains("lan-remote-update.sh") {
+        "worker"
+    } else if lower.contains("build-root-exe.ps1") || lower.contains("build-root-exe.mjs") {
+        "build"
+    } else if lower.contains("api_router_updater") || lower.contains("api router updater.exe") {
+        "updater"
+    } else if lower.contains("api-router-remote-update-notify") {
+        "notification"
+    } else {
+        "child"
+    }
+}
+
 fn remote_update_request_lock() -> &'static std::sync::Mutex<()> {
     static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| std::sync::Mutex::new(()))
@@ -850,6 +1736,13 @@ fn remote_update_request_lock() -> &'static std::sync::Mutex<()> {
 pub(crate) fn compute_local_remote_update_readiness() -> LanRemoteUpdateReadinessSnapshot {
     let checked_at_unix_ms = unix_ms();
     if let Some(reason) = current_remote_update_status_block_reason() {
+        return LanRemoteUpdateReadinessSnapshot {
+            ready: false,
+            blocked_reason: Some(reason),
+            checked_at_unix_ms,
+        };
+    }
+    if let Some(reason) = remote_update_active_process_block_reason() {
         return LanRemoteUpdateReadinessSnapshot {
             ready: false,
             blocked_reason: Some(reason),
@@ -1725,23 +2618,27 @@ impl LanSyncRuntime {
         let peer = self
             .live_peer_by_node_id(normalized_node_id)
             .or_else(|| {
-                self.recent_peer_by_node_id(normalized_node_id, LAN_PEER_HTTP_GRACE_AFTER_MS)
+                self.recent_peer_by_node_id(
+                    normalized_node_id,
+                    LAN_REMOTE_UPDATE_ROLLBACK_HTTP_GRACE_AFTER_MS,
+                )
             })
             .ok_or_else(|| format!("peer is not reachable on LAN: {normalized_node_id}"))?;
-        let base_url = peer_http_base_url(&peer)
+        let app_base_url = peer_http_base_url(&peer)
             .ok_or_else(|| format!("peer has no valid LAN address: {normalized_node_id}"))?;
         let trust_secret = current_lan_trust_secret(gateway)?;
         let response = lan_sync_http_client()
-            .post(format!("{base_url}/lan-sync/debug/remote-update"))
+            .post(format!("{app_base_url}/lan-sync/debug/remote-update"))
             .header(
                 LAN_SYNC_AUTH_NODE_ID_HEADER,
                 self.local_node.node_id.clone(),
             )
-            .header(LAN_SYNC_AUTH_SECRET_HEADER, trust_secret)
+            .header(LAN_SYNC_AUTH_SECRET_HEADER, trust_secret.clone())
             .json(&LanRemoteUpdateDebugRequestPacket {
                 version: 1,
                 node_id: self.local_node.node_id.clone(),
             })
+            .timeout(remote_update_debug_request_timeout())
             .send()
             .await
             .map_err(|err| {
@@ -1752,8 +2649,22 @@ impl LanSyncRuntime {
                     "request_error",
                     &detail,
                 );
-                format!("LAN remote update debug request failed: {detail}")
-            })?;
+                detail
+            });
+        let response = match response {
+            Ok(response) => response,
+            Err(detail) => {
+                return Ok(self
+                    .fallback_remote_update_debug_from_updater(
+                        &peer,
+                        app_base_url,
+                        "request_error",
+                        Some(format!("LAN remote update debug request failed: {detail}")),
+                        &trust_secret,
+                    )
+                    .await);
+            }
+        };
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
@@ -1775,7 +2686,15 @@ impl LanSyncRuntime {
                     "http_error",
                     &detail,
                 );
-                return Err(detail);
+                return Ok(self
+                    .fallback_remote_update_debug_from_updater(
+                        &peer,
+                        app_base_url,
+                        "http_error",
+                        Some(detail),
+                        &trust_secret,
+                    )
+                    .await);
             }
             let detail = format!("LAN remote update debug http {status}: {body}");
             self.note_http_sync_probe(
@@ -1784,7 +2703,15 @@ impl LanSyncRuntime {
                 "http_error",
                 &detail,
             );
-            return Err(detail);
+            return Ok(self
+                .fallback_remote_update_debug_from_updater(
+                    &peer,
+                    app_base_url,
+                    "http_error",
+                    Some(detail),
+                    &trust_secret,
+                )
+                .await);
         }
         let packet = response
             .json::<LanRemoteUpdateDebugResponsePacket>()
@@ -1797,11 +2724,119 @@ impl LanSyncRuntime {
                     "decode_error",
                     &detail,
                 );
-                format!("LAN remote update debug response decode failed: {detail}")
-            })?;
+                detail
+            });
+        let mut packet = match packet {
+            Ok(packet) => packet,
+            Err(detail) => {
+                return Ok(self
+                    .fallback_remote_update_debug_from_updater(
+                        &peer,
+                        app_base_url,
+                        "decode_error",
+                        Some(format!(
+                            "LAN remote update debug response decode failed: {detail}"
+                        )),
+                        &trust_secret,
+                    )
+                    .await);
+            }
+        };
         let _ =
             self.note_http_sync_probe(&peer, "/lan-sync/debug/remote-update", "ok", "HTTP sync ok");
+        if packet.transport.app_debug_state.trim().is_empty() {
+            packet.transport.app_base_url = Some(app_base_url);
+            packet.transport.app_debug_state = "ok".to_string();
+            packet.transport.app_debug_detail = Some("HTTP sync ok".to_string());
+            packet.transport.updater_base_url = peer_updater_base_url(&peer);
+        }
         Ok(packet)
+    }
+
+    async fn fallback_remote_update_debug_from_updater(
+        &self,
+        peer: &LanPeerSnapshot,
+        app_base_url: String,
+        app_debug_state: &str,
+        app_debug_detail: Option<String>,
+        trust_secret: &str,
+    ) -> LanRemoteUpdateDebugResponsePacket {
+        let updater_base_url = peer_updater_base_url(peer);
+        let (updater_status, updater_state, updater_detail) = self
+            .fetch_peer_updater_status_for_debug(peer, updater_base_url.as_deref(), trust_secret)
+            .await;
+        fallback_remote_update_debug_packet(
+            peer,
+            LanRemoteUpdateTransportSnapshot {
+                app_base_url: Some(app_base_url),
+                app_debug_state: app_debug_state.to_string(),
+                app_debug_detail,
+                updater_base_url,
+                updater_state,
+                updater_detail,
+            },
+            updater_status,
+        )
+    }
+
+    async fn fetch_peer_updater_status_for_debug(
+        &self,
+        peer: &LanPeerSnapshot,
+        updater_base_url: Option<&str>,
+        trust_secret: &str,
+    ) -> (Option<serde_json::Value>, Option<String>, Option<String>) {
+        let Some(base_url) = updater_base_url else {
+            return (
+                None,
+                Some("missing_updater_addr".to_string()),
+                Some("peer has no known updater address".to_string()),
+            );
+        };
+        let response = lan_sync_http_client()
+            .get(format!("{base_url}/status"))
+            .header(
+                LAN_SYNC_AUTH_NODE_ID_HEADER,
+                self.local_node.node_id.clone(),
+            )
+            .header(LAN_SYNC_AUTH_SECRET_HEADER, trust_secret.to_string())
+            .timeout(remote_update_debug_request_timeout())
+            .send()
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(err) => {
+                let detail = format_lan_sync_reqwest_error(&err);
+                self.note_http_sync_probe(peer, "/updater/status", "request_error", &detail);
+                return (None, Some("request_error".to_string()), Some(detail));
+            }
+        };
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            let detail = format!("updater status http {status}: {body}");
+            self.note_http_sync_probe(peer, "/updater/status", "http_error", &detail);
+            return (None, Some("http_error".to_string()), Some(detail));
+        }
+        match response.json::<serde_json::Value>().await {
+            Ok(value) => {
+                let busy = value
+                    .get("busy")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let detail = format!(
+                    "updater status ok; busy={busy}; current={}; previous={}",
+                    updater_status_git_sha(&value, "current").unwrap_or("unknown"),
+                    updater_status_git_sha(&value, "previous").unwrap_or("unknown")
+                );
+                self.note_http_sync_probe(peer, "/updater/status", "ok", &detail);
+                (Some(value), Some("ok".to_string()), Some(detail))
+            }
+            Err(err) => {
+                let detail = format_lan_sync_reqwest_error(&err);
+                self.note_http_sync_probe(peer, "/updater/status", "decode_error", &detail);
+                (None, Some("decode_error".to_string()), Some(detail))
+            }
+        }
     }
 
     pub async fn fetch_peer_diagnostics(
@@ -1905,6 +2940,16 @@ pub(crate) async fn lan_sync_remote_update_http(
         )
             .into_response();
     }
+    if let Some(reason) = remote_update_active_process_block_reason() {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": reason,
+            })),
+        )
+            .into_response();
+    }
     let accepted_at_unix_ms = unix_ms();
     let request_id = format!("ru_{}", uuid::Uuid::new_v4().simple());
     reset_remote_update_log();
@@ -1934,6 +2979,7 @@ pub(crate) async fn lan_sync_remote_update_http(
         started_at_unix_ms: None,
         finished_at_unix_ms: None,
         updated_at_unix_ms: accepted_at_unix_ms,
+        shell_cleanup_completed_at_unix_ms: None,
         timeline: Vec::new(),
     };
     if let Err(err) = write_lan_remote_update_status_with_timeline(
@@ -2048,6 +3094,9 @@ pub(crate) async fn lan_sync_remote_update_debug_http(
     let status_path = lan_remote_update_status_path();
     let log_path = lan_remote_update_log_path();
     let shell_log_path = remote_update_shell_window_log_path();
+    let app_startup_path = runtime_startup_diag_path("app-startup.json");
+    let gateway_bootstrap_path = runtime_startup_diag_path("gateway-bootstrap.json");
+    let gateway_startup_path = runtime_startup_diag_path("gateway-startup.json");
     let remote_update_status = load_lan_remote_update_status();
     let worker_bootstrap_observed = remote_update_status
         .as_ref()
@@ -2055,8 +3104,13 @@ pub(crate) async fn lan_sync_remote_update_debug_http(
     let worker_script_probe = probe_remote_update_worker_script();
     let file_log_tail = read_remote_update_log_tail(6_000);
     let shell_log_tail = read_remote_update_shell_window_log_tail(20_000);
+    let app_startup_tail = runtime_startup_diag_tail("app-startup.json", 12_000);
+    let gateway_bootstrap_tail = runtime_startup_diag_tail("gateway-bootstrap.json", 12_000);
+    let gateway_startup_tail = runtime_startup_diag_tail("gateway-startup.json", 12_000);
     let (log_tail_source, log_tail) =
         select_remote_update_log_tail(remote_update_status.as_ref(), file_log_tail);
+    let shell_window_summary = current_remote_update_shell_window_summary();
+    let system_snapshot = current_remote_update_system_snapshot(&shell_window_summary);
     Json(serde_json::json!(LanRemoteUpdateDebugResponsePacket {
         ok: true,
         version: 1,
@@ -2079,6 +3133,30 @@ pub(crate) async fn lan_sync_remote_update_debug_http(
         shell_log_file_exists: shell_log_path.as_ref().is_some_and(|path| path.is_file()),
         shell_log_path: shell_log_path.map(|path| path.display().to_string()),
         shell_log_tail,
+        shell_window_summary,
+        system_snapshot,
+        transport: LanRemoteUpdateTransportSnapshot {
+            app_base_url: None,
+            app_debug_state: "ok".to_string(),
+            app_debug_detail: Some("peer app debug endpoint responded".to_string()),
+            updater_base_url: None,
+            updater_state: None,
+            updater_detail: None,
+        },
+        updater_status: None,
+        app_startup_file_exists: app_startup_path.as_ref().is_some_and(|path| path.is_file()),
+        app_startup_path: app_startup_path.map(|path| path.display().to_string()),
+        app_startup_tail,
+        gateway_bootstrap_file_exists: gateway_bootstrap_path
+            .as_ref()
+            .is_some_and(|path| path.is_file()),
+        gateway_bootstrap_path: gateway_bootstrap_path.map(|path| path.display().to_string()),
+        gateway_bootstrap_tail,
+        gateway_startup_file_exists: gateway_startup_path
+            .as_ref()
+            .is_some_and(|path| path.is_file()),
+        gateway_startup_path: gateway_startup_path.map(|path| path.display().to_string()),
+        gateway_startup_tail,
         worker_bootstrap_observed,
         worker_script_probe,
         local_build_identity: current_build_identity(),
@@ -2314,6 +3392,7 @@ mod tests {
             started_at_unix_ms: None,
             finished_at_unix_ms: None,
             updated_at_unix_ms: 10,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: Vec::new(),
         }
     }
@@ -2389,6 +3468,60 @@ mod tests {
     }
 
     #[test]
+    fn remote_update_shell_cleanup_requires_request_specific_marker() {
+        let repo_root = std::path::Path::new(r"C:\repo\API-Router");
+        let status_path = repo_root
+            .join("user-data")
+            .join("diagnostics")
+            .join("lan-remote-update-status.json");
+        let log_path = repo_root
+            .join("user-data")
+            .join("diagnostics")
+            .join("lan-remote-update.log");
+        let context = super::RemoteUpdateShellProcessContext {
+            worker_pid: 41,
+            request_id: "ru_test",
+            repo_root,
+            status_path: Some(&status_path),
+            log_path: Some(&log_path),
+        };
+
+        assert!(super::remote_update_shell_process_should_cleanup(
+            &context,
+            &super::RemoteUpdateShellProcessEvidence {
+                pid: 42,
+                command_line: r#"cmd.exe /c npm run build"#,
+                cwd: Some(repo_root),
+                status_env: "",
+                log_env: "",
+                request_id_env: "ru_test",
+            },
+        ));
+        assert!(super::remote_update_shell_process_should_cleanup(
+            &context,
+            &super::RemoteUpdateShellProcessEvidence {
+                pid: 43,
+                command_line: "powershell.exe",
+                cwd: None,
+                status_env: &status_path.display().to_string(),
+                log_env: "",
+                request_id_env: "",
+            },
+        ));
+        assert!(!super::remote_update_shell_process_should_cleanup(
+            &context,
+            &super::RemoteUpdateShellProcessEvidence {
+                pid: 44,
+                command_line: r#"powershell.exe -NoExit -Command cd C:\repo\API-Router"#,
+                cwd: Some(repo_root),
+                status_env: "",
+                log_env: "",
+                request_id_env: "",
+            },
+        ));
+    }
+
+    #[test]
     fn remote_update_shell_process_match_rejects_unrelated_shells() {
         let repo_root = std::path::Path::new(r"C:\repo\API-Router");
         let status_path = repo_root
@@ -2417,6 +3550,100 @@ mod tests {
                 request_id_env: "",
             },
         ));
+    }
+
+    #[test]
+    fn remote_update_active_process_marker_ignores_plain_repo_shells() {
+        let repo_root = std::path::Path::new(r"C:\repo\API-Router");
+        let status_path = repo_root
+            .join("user-data")
+            .join("diagnostics")
+            .join("lan-remote-update-status.json");
+        let log_path = repo_root
+            .join("user-data")
+            .join("diagnostics")
+            .join("lan-remote-update.log");
+        assert!(super::remote_update_active_process_is_marked(
+            repo_root,
+            Some(&status_path),
+            Some(&log_path),
+            r#"powershell.exe -File C:\repo\API-Router\tools\build\build-root-exe.ps1"#,
+            "",
+            "",
+            "",
+        ));
+        assert!(super::remote_update_active_process_is_marked(
+            repo_root,
+            Some(&status_path),
+            Some(&log_path),
+            "powershell.exe",
+            &status_path.display().to_string(),
+            "",
+            "",
+        ));
+        assert!(super::remote_update_active_process_is_marked(
+            repo_root,
+            Some(&status_path),
+            Some(&log_path),
+            "cmd.exe /c npm run build",
+            "",
+            "",
+            "ru_test",
+        ));
+        assert!(!super::remote_update_active_process_is_marked(
+            repo_root,
+            Some(&status_path),
+            Some(&log_path),
+            r#"powershell.exe -NoExit -Command cd C:\repo\API-Router"#,
+            "",
+            "",
+            "",
+        ));
+    }
+
+    #[test]
+    fn remote_update_readiness_process_filter_ignores_console_hosts() {
+        assert!(super::remote_update_process_name_can_block_readiness(
+            "powershell.exe"
+        ));
+        assert!(super::remote_update_process_name_can_block_readiness(
+            "pwsh.exe"
+        ));
+        assert!(super::remote_update_process_name_can_block_readiness(
+            "cmd.exe"
+        ));
+        assert!(!super::remote_update_process_name_can_block_readiness(
+            "conhost.exe"
+        ));
+    }
+
+    #[test]
+    fn remote_update_status_without_request_id_is_not_publishable() {
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "rolled_back".to_string(),
+            target_ref: "c7dff6d1".to_string(),
+            from_git_sha: None,
+            to_git_sha: None,
+            current_git_sha: Some("c7dff6d1".to_string()),
+            previous_git_sha: Some("c7dff6d1".to_string()),
+            progress_percent: Some(100),
+            rollback_available: true,
+            request_id: None,
+            reason_code: None,
+            requester_node_id: None,
+            requester_node_name: None,
+            worker_script: None,
+            worker_pid: None,
+            worker_exit_code: None,
+            detail: Some("Rolled back to c7dff6d1".to_string()),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: None,
+            finished_at_unix_ms: Some(20),
+            updated_at_unix_ms: 20,
+            shell_cleanup_completed_at_unix_ms: None,
+            timeline: Vec::new(),
+        };
+        assert!(!super::remote_update_status_is_publishable(&status));
     }
 
     fn set_remote_update_test_env(root: &std::path::Path) -> RemoteUpdateTestGuard {
@@ -2540,6 +3767,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: true,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         };
 
         assert!(peer_supports_lan_diagnostics(&trusted_peer));
@@ -2582,6 +3812,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: true,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         };
 
         let trusted_node_ids = std::collections::BTreeSet::from([String::from("node-a")]);
@@ -2590,6 +3823,206 @@ mod tests {
 
         let untrusted_peer = trust_peer_snapshot(peer, &std::collections::BTreeSet::new());
         assert!(!untrusted_peer.trusted);
+    }
+
+    #[test]
+    fn fallback_remote_update_debug_packet_identifies_app_down_with_updater_alive() {
+        let peer = super::LanPeerSnapshot {
+            node_id: "node-a".to_string(),
+            node_name: "Node A".to_string(),
+            listen_addr: "192.168.1.10:4000".to_string(),
+            remote_update_updater_port: Some(4001),
+            last_heartbeat_unix_ms: 1,
+            capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::local_version_inventory(),
+            build_identity: super::current_build_identity(),
+            remote_update_readiness: None,
+            remote_update_status: Some(LanRemoteUpdateStatusSnapshot {
+                state: "running".to_string(),
+                target_ref: "main".to_string(),
+                from_git_sha: Some("old".to_string()),
+                to_git_sha: Some("new".to_string()),
+                current_git_sha: Some("old".to_string()),
+                previous_git_sha: None,
+                progress_percent: Some(90),
+                rollback_available: true,
+                request_id: Some("ru_test".to_string()),
+                reason_code: Some("health_check".to_string()),
+                requester_node_id: Some("node-self".to_string()),
+                requester_node_name: Some("self".to_string()),
+                worker_script: None,
+                worker_pid: None,
+                worker_exit_code: None,
+                detail: Some("Checking runtime health".to_string()),
+                accepted_at_unix_ms: 1,
+                started_at_unix_ms: Some(2),
+                finished_at_unix_ms: None,
+                updated_at_unix_ms: 3,
+                shell_cleanup_completed_at_unix_ms: None,
+                timeline: Vec::new(),
+            }),
+            provider_fingerprints: Vec::new(),
+            provider_definitions_revision: String::new(),
+            sync_contracts: super::local_sync_contracts(),
+            followed_source_node_id: None,
+            trusted: true,
+            pair_state: None,
+            pair_request_id: None,
+            sync_blocked_domains: Vec::new(),
+            sync_diagnostics: Vec::new(),
+            build_matches_local: false,
+            heartbeat_age_ms: 30_000,
+            http_probe_state: Some("stale_heartbeat".to_string()),
+            http_probe_detail: Some("last heartbeat was 30000ms ago".to_string()),
+        };
+        let updater_status = serde_json::json!({
+            "ok": true,
+            "busy": false,
+            "current": { "gitSha": "old" },
+            "previous": { "gitSha": "old" }
+        });
+
+        let packet = fallback_remote_update_debug_packet(
+            &peer,
+            LanRemoteUpdateTransportSnapshot {
+                app_base_url: Some("http://192.168.1.10:4000".to_string()),
+                app_debug_state: "request_error".to_string(),
+                app_debug_detail: Some("connection refused".to_string()),
+                updater_base_url: Some("http://192.168.1.10:4001".to_string()),
+                updater_state: Some("ok".to_string()),
+                updater_detail: Some(
+                    "updater status ok; busy=false; current=old; previous=old".to_string(),
+                ),
+            },
+            Some(updater_status),
+        );
+
+        assert!(!packet.remote_update_readiness.ready);
+        assert_eq!(packet.transport.app_debug_state, "request_error");
+        assert_eq!(packet.transport.updater_state.as_deref(), Some("ok"));
+        assert_eq!(
+            packet
+                .updater_status
+                .as_ref()
+                .and_then(|status| updater_status_git_sha(status, "current")),
+            Some("old")
+        );
+        assert_eq!(
+            packet
+                .remote_update_status
+                .as_ref()
+                .map(|status| status.state.as_str()),
+            Some("running")
+        );
+    }
+
+    #[test]
+    fn fallback_remote_update_debug_packet_uses_updater_remote_status_file() {
+        let peer = super::LanPeerSnapshot {
+            node_id: "node-a".to_string(),
+            node_name: "Node A".to_string(),
+            listen_addr: "192.168.1.10:4000".to_string(),
+            remote_update_updater_port: Some(4001),
+            last_heartbeat_unix_ms: 1,
+            capabilities: super::lan_heartbeat_capabilities(),
+            version_inventory: super::local_version_inventory(),
+            build_identity: super::current_build_identity(),
+            remote_update_readiness: None,
+            remote_update_status: Some(LanRemoteUpdateStatusSnapshot {
+                state: "running".to_string(),
+                target_ref: "target123".to_string(),
+                from_git_sha: Some("old".to_string()),
+                to_git_sha: Some("target123".to_string()),
+                current_git_sha: Some("old".to_string()),
+                previous_git_sha: None,
+                progress_percent: Some(78),
+                rollback_available: true,
+                request_id: Some("ru_cached".to_string()),
+                reason_code: None,
+                requester_node_id: Some("node-self".to_string()),
+                requester_node_name: Some("self".to_string()),
+                worker_script: None,
+                worker_pid: None,
+                worker_exit_code: None,
+                detail: Some("cached stale heartbeat status".to_string()),
+                accepted_at_unix_ms: 1,
+                started_at_unix_ms: Some(2),
+                finished_at_unix_ms: None,
+                updated_at_unix_ms: 3,
+                shell_cleanup_completed_at_unix_ms: None,
+                timeline: Vec::new(),
+            }),
+            provider_fingerprints: Vec::new(),
+            provider_definitions_revision: String::new(),
+            sync_contracts: super::local_sync_contracts(),
+            followed_source_node_id: None,
+            trusted: true,
+            pair_state: None,
+            pair_request_id: None,
+            sync_blocked_domains: Vec::new(),
+            sync_diagnostics: Vec::new(),
+            build_matches_local: false,
+            heartbeat_age_ms: 30_000,
+            http_probe_state: Some("stale_heartbeat".to_string()),
+            http_probe_detail: Some("last heartbeat was 30000ms ago".to_string()),
+        };
+        let updater_status = serde_json::json!({
+            "ok": true,
+            "busy": false,
+            "remoteUpdateStatus": {
+                "state": "running",
+                "target_ref": "target123",
+                "from_git_sha": "old",
+                "to_git_sha": "target123",
+                "current_git_sha": "target123",
+                "previous_git_sha": "old",
+                "progress_percent": 94,
+                "rollback_available": true,
+                "request_id": "ru_live",
+                "detail": "Checking runtime health: startup blocked while opening local store",
+                "accepted_at_unix_ms": 10,
+                "started_at_unix_ms": 20,
+                "updated_at_unix_ms": 30,
+                "timeline": [
+                    {
+                        "unix_ms": 30,
+                        "phase": "health_checking",
+                        "label": "Checking runtime health",
+                        "detail": "startup blocked while opening local store",
+                        "source": "build_root_exe",
+                        "state": "running"
+                    }
+                ]
+            }
+        });
+
+        let packet = fallback_remote_update_debug_packet(
+            &peer,
+            LanRemoteUpdateTransportSnapshot {
+                app_base_url: Some("http://192.168.1.10:4000".to_string()),
+                app_debug_state: "request_error".to_string(),
+                app_debug_detail: Some("connection refused".to_string()),
+                updater_base_url: Some("http://192.168.1.10:4001".to_string()),
+                updater_state: Some("ok".to_string()),
+                updater_detail: Some("updater responded".to_string()),
+            },
+            Some(updater_status),
+        );
+
+        let status = packet
+            .remote_update_status
+            .as_ref()
+            .expect("updater remote update status");
+        assert_eq!(status.request_id.as_deref(), Some("ru_live"));
+        assert_eq!(status.progress_percent, Some(94));
+        assert_eq!(
+            status.detail.as_deref(),
+            Some("Checking runtime health: startup blocked while opening local store")
+        );
+        assert_eq!(
+            status.timeline.first().map(|entry| entry.phase.as_str()),
+            Some("health_checking")
+        );
     }
 
     #[test]
@@ -2641,6 +4074,16 @@ mod tests {
             .rollback_peer_for_request("node-remote", &trusted_node_ids)
             .expect_err("expired stale peer must not receive rollback secret");
         assert!(expired_error.contains("not reachable"));
+    }
+
+    #[test]
+    fn build_script_allows_existing_runtime_after_updater_rollback_restart() {
+        let build_script = std::fs::read_to_string("../tools/build/build-root-exe.ps1")
+            .expect("read build script");
+        assert!(build_script.contains(
+            "Wait-ApiRouterRuntimeProcessStarted -StartedProcess $null -AllowExistingProcess"
+        ));
+        assert!(build_script.contains("[switch]$AllowExistingProcess"));
     }
 
     #[test]
@@ -2740,13 +4183,15 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let _guard = set_remote_update_test_env(temp_dir.path());
         let gateway = gateway_state_fixture(temp_dir.path());
+        let target_ref =
+            normalized_local_build_target_ref().unwrap_or_else(|| "9e557ebd".to_string());
 
         let status = LanRemoteUpdateStatusSnapshot {
             state: "succeeded".to_string(),
-            target_ref: "9e557ebd".to_string(),
+            target_ref: target_ref.clone(),
             from_git_sha: Some("6b28b6e".to_string()),
-            to_git_sha: Some("9e557ebd".to_string()),
-            current_git_sha: Some("9e557ebd".to_string()),
+            to_git_sha: Some(target_ref.clone()),
+            current_git_sha: Some(target_ref),
             previous_git_sha: Some("6b28b6e".to_string()),
             progress_percent: Some(100),
             rollback_available: true,
@@ -2762,6 +4207,7 @@ mod tests {
             started_at_unix_ms: Some(20),
             finished_at_unix_ms: Some(30),
             updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: vec![LanRemoteUpdateTimelineEntry {
                 unix_ms: 30,
                 phase: "completed".to_string(),
@@ -2814,6 +4260,7 @@ mod tests {
             started_at_unix_ms: Some(20),
             finished_at_unix_ms: Some(30),
             updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: vec![LanRemoteUpdateTimelineEntry {
                 unix_ms: 30,
                 phase: "completed".to_string(),
@@ -2883,6 +4330,15 @@ mod tests {
         assert!(!parsed.shell_log_file_exists);
         assert_eq!(parsed.shell_log_path, None);
         assert_eq!(parsed.shell_log_tail, None);
+        assert!(!parsed.app_startup_file_exists);
+        assert_eq!(parsed.app_startup_path, None);
+        assert_eq!(parsed.app_startup_tail, None);
+        assert!(!parsed.gateway_bootstrap_file_exists);
+        assert_eq!(parsed.gateway_bootstrap_path, None);
+        assert_eq!(parsed.gateway_bootstrap_tail, None);
+        assert!(!parsed.gateway_startup_file_exists);
+        assert_eq!(parsed.gateway_startup_path, None);
+        assert_eq!(parsed.gateway_startup_tail, None);
         assert_eq!(parsed.remote_update_status, None);
     }
 
@@ -2909,6 +4365,7 @@ mod tests {
             started_at_unix_ms: Some(2),
             finished_at_unix_ms: Some(3),
             updated_at_unix_ms: 4,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: vec![LanRemoteUpdateTimelineEntry {
                 unix_ms: 4,
                 phase: "failed".to_string(),
@@ -2948,6 +4405,7 @@ mod tests {
             started_at_unix_ms: Some(20),
             finished_at_unix_ms: None,
             updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: vec![LanRemoteUpdateTimelineEntry {
                 unix_ms: 30,
                 phase: "build_exe".to_string(),
@@ -3016,6 +4474,13 @@ mod tests {
             .contains("$env:API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH = $buildResultPath"));
         assert!(windows_contents.contains("Hidden process exit_code was <null>"));
         assert!(windows_contents.contains("build result marker reported success"));
+        assert!(windows_contents.contains("$buildResult = Read-RemoteUpdateBuildResult"));
+        assert!(windows_contents.contains("function Format-HiddenProcessArgumentString"));
+        assert!(windows_contents.contains("$startInfo.UseShellExecute = $false"));
+        assert!(windows_contents.contains("$startInfo.CreateNoWindow = $true"));
+        assert!(windows_contents.contains("[System.Diagnostics.Process]::Start($startInfo)"));
+        assert!(!windows_contents.contains("Start-Process -FilePath $FilePath"));
+        assert!(windows_contents.contains("[string]$buildResult.result -eq 'rolled_back'"));
         assert!(windows_contents.contains("-StartHidden"));
         assert!(windows_contents.contains("function Show-RemoteUpdateNotification"));
         assert!(windows_contents.contains("System.Windows.Forms.NotifyIcon"));
@@ -3129,6 +4594,25 @@ mod tests {
         assert!(build_script.contains("function Invoke-BuildCommand"));
         assert!(build_script.contains("[switch]$UseProcessExitCode"));
         assert!(build_script.contains("-UseProcessExitCode"));
+        assert!(build_script.contains("function Enter-BuildMutex"));
+        assert!(build_script.contains("another API Router build/update is already running"));
+        assert!(build_script.contains("function Test-IsRemoteUpdateBuildContext"));
+        assert!(build_script.contains("function Stop-StaleRemoteUpdateBuildProcesses"));
+        assert!(build_script.contains("function Get-StaleRepoBuildProcesses"));
+        assert!(build_script.contains("function Get-ProcessTreeIds"));
+        assert!(build_script.contains("function Invoke-CimProcessQueryWithTimeout"));
+        assert!(build_script.contains("Wait-Job $job -Timeout"));
+        assert!(build_script.contains("Stop-Job $job"));
+        assert!(build_script.contains("Name = 'powershell.exe' OR Name = 'pwsh.exe'"));
+        assert!(build_script.contains("ParentProcessId = $ParentPid"));
+        assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_REQUEST_ID"));
+        assert!(build_script.contains("ParentProcessId"));
+        assert!(build_script.contains("remote update build mutex is still held"));
+        assert!(build_script.contains("Stopping stale remote update build process tree"));
+        assert!(build_script.contains("Stop-Process -Id $processId -Force"));
+        assert!(!build_script
+            .contains("$allProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop)"));
+        assert!(build_script.contains("Exit-BuildMutex"));
         assert!(build_script.contains("CreateNoWindow = [bool]$StartHidden"));
         assert!(build_script.contains("$RemoteUpdateRequiresFreshBuild"));
         assert!(build_script
@@ -3144,7 +4628,12 @@ mod tests {
             "updater binary build must still run after the skip-release branch"
         );
         assert!(build_script.contains("function Get-RemoteUpdateBuildResultPath"));
+        assert!(build_script.contains("function Get-BuildLogPath"));
+        assert!(build_script.contains("root-exe-build.log"));
+        assert!(build_script.contains("root-exe-build-result.json"));
         assert!(build_script.contains("function Write-BuildResultMarker"));
+        assert!(build_script.contains("function Set-RemoteUpdateStatusProperty"));
+        assert!(build_script.contains("Add-Member -InputObject $Status -NotePropertyName"));
         assert!(build_script.contains("function Backup-CurrentRuntimeForRollback"));
         assert!(build_script.contains("function Record-InstalledRuntimeVersion"));
         assert!(build_script.contains("function Restore-PreviousRuntime"));
@@ -3156,21 +4645,41 @@ mod tests {
         assert!(!build_script.contains("if (-not $hadFailure -and -not $NoCopy)"));
         assert!(build_script.contains("function Invoke-UpdaterCommand"));
         assert!(build_script.contains("function Start-UpdaterDaemonForRemoteRollback"));
+        assert!(build_script.contains("function Start-UpdaterDaemonForRemoteRollbackOrDegrade"));
+        assert!(build_script
+            .contains("Remote rollback daemon unavailable; continuing with local rollback only"));
         assert!(build_script.contains("function Wait-UpdaterDaemonReady"));
         assert!(build_script.contains("function Stop-RunningUpdaterDaemon"));
         assert!(build_script.contains("function Install-UpdaterDaemonRuntime"));
+        assert!(build_script.contains("function Get-UpdaterPortOwnerDetail"));
+        assert!(build_script.contains("function Get-UpdaterPortOwnerProcesses"));
+        assert!(build_script.contains("function Get-UpdaterDaemonProcessStateDetail"));
         assert!(build_script.contains("function Test-UpdaterDaemonProcessPath"));
         assert!(build_script.contains("function Get-ProcessExecutablePath"));
+        assert!(build_script.contains("Get-CimInstance Win32_Process"));
+        assert!(build_script.contains("Stopping repo root API Router.exe process(es)"));
         assert!(build_script.contains("function Get-RepoUserDataDir"));
         assert!(build_script.contains("function Get-ConfiguredListenPort"));
         assert!(build_script.contains("function Get-ConfiguredListenHost"));
         assert!(build_script.contains("function Get-ApiRouterRuntimeHealthTimeoutSeconds"));
-        assert!(build_script.contains("return 120"));
+        assert!(build_script.contains("return 600"));
         assert!(build_script.contains("function Get-RemoteUpdateLanSecret"));
+        assert!(build_script.contains("function Get-RepoGitHeadSha"));
+        assert!(build_script.contains("git -C $RepoRoot rev-parse HEAD"));
+        assert!(build_script.contains("function Get-RecordedRuntimeSha"));
+        assert!(build_script.contains("function Select-VersionShaWithoutGitFallback"));
+        assert!(build_script.contains("Get-RecordedRuntimeSha 'current'"));
+        assert!(build_script.contains("function Get-RunningRuntimeGitShaFromStatus"));
+        assert!(build_script.contains("Select-VersionShaWithoutGitFallback -Candidates"));
+        assert!(build_script.contains("[System.IO.File]::AppendAllText"));
+        assert!(build_script.contains("Logging must never break install/rollback"));
+        assert!(build_script.contains("$Sha.Trim() -ine 'unknown'"));
+        assert!(build_script.contains("$Fallback.Trim() -ine 'unknown'"));
         assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_HEALTH_TIMEOUT_SECONDS"));
         assert!(build_script.contains("lan_trust_secret"));
         assert!(build_script.contains("$candidatePath = Get-ProcessExecutablePath $_"));
         assert!(build_script.contains("Ignoring stale updater daemon PID"));
+        assert!(build_script.contains("Stopping stale updater daemon port owner process(es)"));
         assert!(build_script.contains("function Wait-UpdaterDaemonIdle"));
         assert!(build_script.contains("activeOperation"));
         assert!(build_script.contains("refusing to stop it during active rollback"));
@@ -3179,15 +4688,45 @@ mod tests {
         assert!(!build_script.contains("Stop-Process -Name 'API Router'"));
         assert!(!build_script.contains("taskkill.exe /F /IM"));
         assert!(build_script.contains("runtime') 'updater-daemon'"));
+        assert!(build_script.contains("function Get-UpdaterDaemonExePath"));
+        assert!(build_script
+            .contains("return Join-Path (Get-UpdaterDaemonRoot) 'API Router Updater.exe'"));
+        assert!(!build_script.contains("Join-Path (Join-Path (Get-UpdaterDaemonRoot) $toSha)"));
         assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_UPDATER_PORT"));
         assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_LAN_SECRET"));
+        assert!(build_script.contains("Started updater daemon process"));
+        assert!(build_script.contains("Started updater daemon command line"));
+        assert!(build_script.contains("Started updater daemon output logs"));
+        assert!(build_script.contains("function Get-UpdaterDaemonOutputTail"));
+        assert!(build_script.contains("-RedirectStandardOutput"));
+        assert!(build_script.contains("-RedirectStandardError"));
+        assert!(build_script.contains("Updater daemon readiness pending"));
+        assert!(build_script.contains("updater daemon process exited before readiness"));
         assert!(build_script.contains("function Get-LocalHttpHealthProbeHost"));
         assert!(build_script.contains("API_ROUTER_REMOTE_UPDATE_LISTEN_HOST"));
         assert!(build_script.contains("$lowerHost -eq '0.0.0.0'"));
         assert!(build_script.contains("$lowerHost -eq '::'"));
         assert!(build_script.contains("return \"[$hostValue]\""));
         assert!(build_script.contains("function Wait-ApiRouterRuntimeHealthy"));
+        assert!(build_script.contains("function Update-RuntimeHealthWaitStatus"));
+        assert!(build_script.contains("Waiting for runtime health"));
+        assert!(build_script.contains("Get-RuntimeStartupDiagnosisSummary"));
+        assert!(build_script.contains("-Phase 'health_checking'"));
         assert!(build_script.contains("function Wait-ApiRouterRuntimeProcessStarted"));
+        assert!(build_script.contains("function Wait-ApiRouterRuntimeStopped"));
+        assert!(build_script.contains("function Get-ListenPortOwnerProcesses"));
+        assert!(build_script.contains("function Get-RuntimePortOwnerDetail"));
+        assert!(build_script.contains("Get-NetTCPConnection -LocalPort"));
+        assert!(build_script
+            .contains("existing API Router.exe process is still running before restart"));
+        assert!(build_script.contains("function Clear-RuntimeStartupDiagnostics"));
+        assert!(build_script.contains("Cleared stale runtime startup diagnostic"));
+        assert!(build_script.contains("function Format-StartupStageSummary"));
+        assert!(build_script.contains("recent startup stages:"));
+        assert!(build_script.contains("Clear-RuntimeStartupDiagnostics"));
+        assert!(build_script.contains("-RequireNewProcess"));
+        assert!(build_script.contains("repo root API Router.exe did not stop"));
+        assert!(build_script.contains("port $port listeners"));
         assert!(build_script.contains("Start-Process @startOptions"));
         assert!(build_script.contains("PassThru"));
         assert!(build_script.contains("Runtime restart gate passed"));
@@ -3233,8 +4772,29 @@ mod tests {
         assert!(build_script.contains("$UsesArtifactPathOverrides"));
         assert!(!build_script.contains("Restore-PreviousRuntime\r\n          Start-ApiRouter"));
         assert!(!build_script.contains("Restore-PreviousRuntime\n          Start-ApiRouter"));
+        let health_pos = build_script
+            .find("Wait-ApiRouterRuntimeHealthy\n      Record-InstalledRuntimeVersion")
+            .expect("build script waits for runtime health");
+        assert!(health_pos > 0);
         assert!(build_script.contains("Reset-LastExitCode"));
         assert!(build_script.contains("exit 0"));
+
+        let remote_update_worker_script = std::fs::read_to_string(
+            repo_root
+                .join("src-tauri")
+                .join("src")
+                .join("lan_sync")
+                .join("remote_update")
+                .join("lan-remote-update.ps1"),
+        )
+        .expect("read lan-remote-update.ps1");
+        assert!(remote_update_worker_script.contains("$stdoutTask.Wait(5000)"));
+        assert!(remote_update_worker_script.contains("$stderrTask.Wait(5000)"));
+        assert!(remote_update_worker_script
+            .contains("Hidden process output stream did not close after process exit"));
+        assert!(remote_update_worker_script
+            .contains("Write-RemoteUpdateStatus -State 'succeeded' -TargetRef $TargetRef"));
+        assert!(remote_update_worker_script.contains("exit 0"));
 
         let updater_source = std::fs::read_to_string(
             repo_root
@@ -3277,6 +4837,7 @@ mod tests {
             started_at_unix_ms: Some(20),
             finished_at_unix_ms: Some(30),
             updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: vec![LanRemoteUpdateTimelineEntry {
                 unix_ms: 30,
                 phase: "failed".to_string(),
@@ -3296,10 +4857,284 @@ mod tests {
         assert!(normalized.detail.as_deref().is_some_and(
             |detail| detail.contains("Current build already matches the queued target")
         ));
+        assert!(normalized.shell_cleanup_completed_at_unix_ms.is_some());
         assert!(normalized
             .timeline
             .iter()
             .any(|entry| entry.phase == "normalized_succeeded"
                 && entry.label == "Status normalized to succeeded"));
+    }
+
+    #[test]
+    fn completed_shell_cleanup_is_not_repeated_for_succeeded_status() {
+        let Some(target_ref) = normalized_local_build_target_ref() else {
+            return;
+        };
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "succeeded".to_string(),
+            target_ref: target_ref.clone(),
+            from_git_sha: None,
+            to_git_sha: None,
+            current_git_sha: Some(target_ref),
+            previous_git_sha: None,
+            progress_percent: Some(100),
+            rollback_available: false,
+            request_id: Some("ru_done".to_string()),
+            reason_code: None,
+            requester_node_id: None,
+            requester_node_name: None,
+            worker_script: None,
+            worker_pid: Some(123),
+            worker_exit_code: None,
+            detail: Some("done".to_string()),
+            accepted_at_unix_ms: 1,
+            started_at_unix_ms: Some(2),
+            finished_at_unix_ms: Some(3),
+            updated_at_unix_ms: 4,
+            shell_cleanup_completed_at_unix_ms: Some(5),
+            timeline: Vec::new(),
+        };
+
+        assert!(!super::remote_update_shell_cleanup_should_run(&status));
+        assert_eq!(normalize_remote_update_status(status.clone()), status);
+    }
+
+    #[test]
+    fn successful_runtime_health_allows_stuck_worker_status_to_normalize() {
+        let target_ref = "abc123";
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "running".to_string(),
+            target_ref: target_ref.to_string(),
+            from_git_sha: Some("before".to_string()),
+            to_git_sha: Some(target_ref.to_string()),
+            current_git_sha: Some(target_ref.to_string()),
+            previous_git_sha: Some("before".to_string()),
+            progress_percent: Some(100),
+            rollback_available: true,
+            request_id: Some("ru_pipe_stuck".to_string()),
+            reason_code: None,
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some("worker.ps1".to_string()),
+            worker_pid: Some(std::process::id()),
+            worker_exit_code: None,
+            detail: Some("API Router.exe is running".to_string()),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: Some(20),
+            finished_at_unix_ms: None,
+            updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
+            timeline: vec![LanRemoteUpdateTimelineEntry {
+                unix_ms: 30,
+                phase: "health_check_succeeded".to_string(),
+                label: "Runtime health check passed".to_string(),
+                detail: Some("Runtime health check passed: /health returned ok=true.".to_string()),
+                source: "build_root_exe".to_string(),
+                state: "running".to_string(),
+            }],
+        };
+
+        assert!(remote_update_status_has_successful_runtime_health(&status));
+        assert!(!remote_update_worker_should_delay_normalization(
+            &status, target_ref, target_ref
+        ));
+        assert!(remote_update_worker_should_delay_normalization(
+            &status,
+            "different",
+            target_ref
+        ));
+    }
+
+    #[test]
+    fn normalize_remote_update_status_marks_superseded_status_succeeded_when_target_already_matches(
+    ) {
+        let Some(target_ref) = normalized_local_build_target_ref() else {
+            return;
+        };
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "superseded".to_string(),
+            target_ref: target_ref.clone(),
+            from_git_sha: Some("6b28b6e".to_string()),
+            to_git_sha: Some(target_ref.clone()),
+            current_git_sha: Some("6b28b6e".to_string()),
+            previous_git_sha: Some("6b28b6e".to_string()),
+            progress_percent: Some(45),
+            rollback_available: true,
+            request_id: Some("ru_superseded".to_string()),
+            reason_code: Some("peer_build_changed_after_start".to_string()),
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some("worker.ps1".to_string()),
+            worker_pid: None,
+            worker_exit_code: None,
+            detail: Some("Queued remote update stopped after the peer build changed.".to_string()),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: Some(20),
+            finished_at_unix_ms: Some(30),
+            updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
+            timeline: vec![LanRemoteUpdateTimelineEntry {
+                unix_ms: 30,
+                phase: "normalized_superseded".to_string(),
+                label: "Status normalized to replaced after start".to_string(),
+                detail: Some("stopped after the peer build changed".to_string()),
+                source: "normalizer".to_string(),
+                state: "superseded".to_string(),
+            }],
+        };
+
+        let normalized = normalize_remote_update_status(status);
+        assert_eq!(normalized.state, "succeeded");
+        assert_eq!(
+            normalized.reason_code.as_deref(),
+            Some("peer_already_matches_target_after_superseded_status")
+        );
+        assert!(normalized.detail.as_deref().is_some_and(
+            |detail| detail.contains("Current build already matches the queued target")
+        ));
+        assert!(normalized
+            .timeline
+            .iter()
+            .any(|entry| entry.phase == "normalized_succeeded"
+                && entry.label == "Status normalized to succeeded"));
+    }
+
+    #[test]
+    fn normalize_remote_update_status_marks_completed_status_superseded_when_current_build_differs()
+    {
+        let Some(current_ref) = normalized_local_build_target_ref() else {
+            return;
+        };
+        let stale_ref = "stale-completed-target";
+        assert_ne!(current_ref, stale_ref);
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "succeeded".to_string(),
+            target_ref: stale_ref.to_string(),
+            from_git_sha: Some("before".to_string()),
+            to_git_sha: Some(stale_ref.to_string()),
+            current_git_sha: Some(stale_ref.to_string()),
+            previous_git_sha: Some("before".to_string()),
+            progress_percent: Some(100),
+            rollback_available: true,
+            request_id: Some("ru_stale_success".to_string()),
+            reason_code: None,
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some("worker.ps1".to_string()),
+            worker_pid: Some(1234),
+            worker_exit_code: Some(0),
+            detail: Some("Completed: Remote self-update completed successfully.".to_string()),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: Some(20),
+            finished_at_unix_ms: Some(30),
+            updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
+            timeline: vec![LanRemoteUpdateTimelineEntry {
+                unix_ms: 30,
+                phase: "completed".to_string(),
+                label: "Remote update completed".to_string(),
+                detail: Some("Remote self-update completed successfully.".to_string()),
+                source: "worker".to_string(),
+                state: "succeeded".to_string(),
+            }],
+        };
+
+        let normalized = normalize_remote_update_status(status);
+        assert_eq!(normalized.state, "superseded");
+        assert_eq!(
+            normalized.reason_code.as_deref(),
+            Some("peer_build_changed_after_completed_status")
+        );
+        assert!(normalized
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("was replaced by current build")));
+        assert_eq!(
+            normalized.current_git_sha.as_deref(),
+            Some(current_ref.as_str())
+        );
+        assert!(normalized
+            .timeline
+            .iter()
+            .any(|entry| entry.phase == "normalized_superseded"
+                && entry.label == "Completed status replaced"));
+    }
+
+    #[test]
+    fn normalize_remote_update_status_keeps_dirty_worktree_failure_failed() {
+        let Some(current_ref) = normalized_local_build_target_ref() else {
+            return;
+        };
+        let target_ref = "dirty-target-that-does-not-match-current";
+        assert_ne!(current_ref, target_ref);
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "failed".to_string(),
+            target_ref: target_ref.to_string(),
+            from_git_sha: Some(current_ref.clone()),
+            to_git_sha: None,
+            current_git_sha: Some(current_ref.clone()),
+            previous_git_sha: None,
+            progress_percent: Some(10),
+            rollback_available: false,
+            request_id: Some("ru_dirty".to_string()),
+            reason_code: None,
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some("worker.ps1".to_string()),
+            worker_pid: Some(1234),
+            worker_exit_code: Some(1),
+            detail: Some(
+                "Checking git worktree: worktree is dirty; refusing remote self-update."
+                    .to_string(),
+            ),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: Some(20),
+            finished_at_unix_ms: Some(30),
+            updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
+            timeline: vec![LanRemoteUpdateTimelineEntry {
+                unix_ms: 30,
+                phase: "failed".to_string(),
+                label: "Checking git worktree failed".to_string(),
+                detail: Some("worktree is dirty; refusing remote self-update.".to_string()),
+                source: "worker".to_string(),
+                state: "failed".to_string(),
+            }],
+        };
+
+        let normalized = normalize_remote_update_status(status);
+        assert_eq!(normalized.state, "failed");
+        assert_eq!(normalized.reason_code.as_deref(), Some("dirty_worktree"));
+        assert_eq!(
+            normalized.current_git_sha.as_deref(),
+            Some(current_ref.as_str())
+        );
+        assert!(!normalized
+            .timeline
+            .iter()
+            .any(|entry| entry.phase == "normalized_superseded"));
+    }
+
+    #[test]
+    fn remote_update_worker_status_writes_are_request_scoped() {
+        let repo_root = resolve_repo_root_for_self_update().expect("resolve repo root");
+        let worker_script = std::fs::read_to_string(
+            repo_root
+                .join("src-tauri")
+                .join("src")
+                .join("lan_sync")
+                .join("remote_update")
+                .join("lan-remote-update.ps1"),
+        )
+        .expect("read lan-remote-update.ps1");
+
+        assert!(
+            worker_script.contains("$requestId = if ($env:API_ROUTER_REMOTE_UPDATE_REQUEST_ID)")
+        );
+        assert!(!worker_script.contains("$requestId = [string]$existing.request_id"));
+        assert!(worker_script.contains(
+            "Skipping stale status write for request_id=$requestId because current status belongs to request_id=$existingRequestId"
+        ));
+        assert!(worker_script.contains("return"));
     }
 }

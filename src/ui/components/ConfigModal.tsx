@@ -120,6 +120,9 @@ export function compactUpdateStatusLabel(
   source: ConfigSource,
   localBuildSha?: string | null,
 ): string {
+  if (source.remote_update_status?.state?.trim() === 'accepted' || source.remote_update_status?.state?.trim() === 'running') {
+    return remoteUpdateLiveStageLabel(source.remote_update_status) ?? 'Updating'
+  }
   const liveRemoteState = remoteUpdateStateLabel(source, localBuildSha)
   if (liveRemoteState) return liveRemoteState
   if (source.kind === 'peer' && source.online === false) return 'Peer offline'
@@ -275,14 +278,35 @@ function normalizedTargetRef(value: string | undefined | null): string {
   return value?.trim().toLowerCase() || ''
 }
 
+function remoteUpdateRelevantRefCandidates(
+  status:
+    | Pick<
+        RemoteUpdateStatusSnapshot,
+        'state' | 'target_ref' | 'to_git_sha' | 'current_git_sha' | 'from_git_sha'
+      >
+    | null
+    | undefined,
+): string[] {
+  if (!status) return []
+  const state = status.state?.trim()
+  const includeCurrentBuildRefs = state !== 'accepted' && state !== 'running'
+  return [
+    normalizedBuildSha(status.to_git_sha),
+    includeCurrentBuildRefs ? normalizedBuildSha(status.current_git_sha) : '',
+    includeCurrentBuildRefs ? normalizedBuildSha(status.from_git_sha) : '',
+    normalizedTargetRef(status.target_ref),
+  ].filter((value) => value.length > 0)
+}
+
 function remoteUpdateTargetMatchesBuild(
   source: ConfigSource,
   buildSha: string | undefined | null,
 ): boolean | null {
   const normalizedBuild = normalizedBuildSha(buildSha)
-  const targetRef = normalizedTargetRef(source.remote_update_status?.target_ref)
-  if (!normalizedBuild || !targetRef) return null
-  return normalizedBuild.startsWith(targetRef) || targetRef.startsWith(normalizedBuild)
+  if (!normalizedBuild) return null
+  const candidates = remoteUpdateRelevantRefCandidates(source.remote_update_status)
+  if (candidates.length === 0) return null
+  return candidates.some((candidate) => normalizedBuild.startsWith(candidate) || candidate.startsWith(normalizedBuild))
 }
 
 export function isRemoteUpdateStatusRelevantToCurrentBuild(
@@ -353,6 +377,7 @@ export function remoteUpdateRollbackActionAvailable(
   pendingStage?: RemoteUpdatePendingStage,
 ): boolean {
   if (source.kind !== 'peer' || !source.trusted) return false
+  if (source.build_matches_local && !source.version_sync_required) return false
   const status = source.remote_update_status
   if (!status?.rollback_available) return pendingRemoteUpdateRollbackActionAvailable(source, pendingStage)
   const state = status.state?.trim()
@@ -365,12 +390,6 @@ export function remoteUpdateRollbackActionAvailable(
     remoteUpdateStatusHasFreshPeerBuildContext(source) ||
     pendingRemoteUpdateRollbackActionAvailable(source, pendingStage)
   )
-}
-
-function remoteUpdateRollbackDetailText(source: ConfigSource): string {
-  const previousSha = source.remote_update_status?.previous_git_sha?.trim() || ''
-  if (!previousSha) return 'Restore previous build'
-  return `Restore previous build ${previousSha.slice(0, 8)}`
 }
 
 export function remoteUpdateRollbackConfirmationText(source: ConfigSource): string {
@@ -584,6 +603,151 @@ function remoteDebugScriptProbeText(remoteUpdateDebug: LanRemoteUpdateDebugRespo
   return `Worker script probe: ${facts.join(' · ')}`
 }
 
+function formatRemoteDebugBytes(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return 'unknown'
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  let scaled = value
+  let unit = 0
+  while (scaled >= 1024 && unit < units.length - 1) {
+    scaled /= 1024
+    unit += 1
+  }
+  return `${scaled >= 10 || unit === 0 ? scaled.toFixed(0) : scaled.toFixed(1)} ${units[unit]}`
+}
+
+function formatRemoteDebugPercent(value: number | null | undefined): string {
+  return value == null || !Number.isFinite(value) ? 'unknown' : `${value.toFixed(1)}%`
+}
+
+function remoteDebugSystemSnapshotText(
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+): string | null {
+  const snapshot = remoteUpdateDebug?.system_snapshot
+  if (!snapshot) return null
+  const memoryUsed =
+    snapshot.memory_total_bytes != null && snapshot.memory_available_bytes != null
+      ? Math.max(0, snapshot.memory_total_bytes - snapshot.memory_available_bytes)
+      : null
+  const diskUsed =
+    snapshot.disk_total_bytes != null && snapshot.disk_available_bytes != null
+      ? Math.max(0, snapshot.disk_total_bytes - snapshot.disk_available_bytes)
+      : null
+  const lines = [
+    `remote-update-system-snapshot`,
+    `cpu=${formatRemoteDebugPercent(snapshot.cpu_load_percent)} · gpu=${formatRemoteDebugPercent(
+      snapshot.gpu_load_percent,
+    )}`,
+    `memory=${formatRemoteDebugBytes(memoryUsed)} / ${formatRemoteDebugBytes(snapshot.memory_total_bytes)}`,
+    `disk=${formatRemoteDebugBytes(diskUsed)} / ${formatRemoteDebugBytes(snapshot.disk_total_bytes)}`,
+  ]
+  const processLines =
+    snapshot.remote_update_processes
+      ?.map((process) =>
+        [
+          `pid=${process.pid}`,
+          `role=${process.role}`,
+          `visibility=${process.visibility}`,
+          `rss=${formatRemoteDebugBytes(process.working_set_bytes)}`,
+          process.command,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+      )
+      .filter((line) => line.trim().length > 0) ?? []
+  if (processLines.length > 0) {
+    lines.push(`remote-update-processes\n${processLines.join('\n')}`)
+  }
+  const detailLines = snapshot.probe_detail?.filter((line) => line.trim().length > 0) ?? []
+  if (detailLines.length > 0) {
+    lines.push(`probe-detail\n${detailLines.join('\n')}`)
+  }
+  return lines.join('\n')
+}
+
+function remoteDebugTransportText(
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+): string | null {
+  const transport = remoteUpdateDebug?.transport
+  const updater = remoteUpdateDebug?.updater_status
+  if (!transport && !updater) return null
+  const lines = ['remote-update-transport']
+  if (transport) {
+    lines.push(
+      `app=${transport.app_base_url ?? 'unknown'} · state=${transport.app_debug_state || 'unknown'}${
+        transport.app_debug_detail ? ` · ${transport.app_debug_detail}` : ''
+      }`,
+    )
+    lines.push(
+      `updater=${transport.updater_base_url ?? 'unknown'} · state=${transport.updater_state ?? 'unknown'}${
+        transport.updater_detail ? ` · ${transport.updater_detail}` : ''
+      }`,
+    )
+  }
+  if (updater) {
+    lines.push(
+      `updater-status busy=${String(Boolean(updater.busy))} · current=${
+        updater.current?.gitSha ?? 'unknown'
+      } · previous=${updater.previous?.gitSha ?? 'unknown'}`,
+    )
+  }
+  return lines.join('\n')
+}
+
+export function remoteDebugPeerReachabilityDiagnosisText(
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+): string {
+  const transport = remoteUpdateDebug?.transport
+  if (!transport) return ''
+  const appState = (transport.app_debug_state || '').trim()
+  const appDetail = transport.app_debug_detail?.trim()
+  const appUrl = transport.app_base_url ?? 'unknown'
+  const updaterState = transport.updater_state?.trim() ?? ''
+  const updaterDetail = transport.updater_detail?.trim()
+  const updaterUrl = transport.updater_base_url ?? 'unknown'
+  const updaterReachable = updaterState === 'ok' || remoteUpdateDebug?.updater_status?.ok === true
+  const updaterUnavailable =
+    (updaterState.length > 0 && updaterState !== 'ok') || remoteUpdateDebug?.updater_status?.ok === false
+
+  if (!appState || appState === 'ok') return ''
+  const appStateText = appDetail ? `${appState}: ${appDetail}` : appState
+  if (updaterReachable) {
+    return `Peer app is not responding at ${appUrl} (${appStateText}), but the updater is reachable at ${updaterUrl}. This is a runtime restart/rollback state, not a LAN peer-missing state.`
+  }
+  if (updaterUnavailable) {
+    return 'Peer app and updater are both unreachable. That points to a LAN/offline/firewall state, or a remote process crash before the updater could answer.'
+  }
+  const updaterStateText = updaterDetail ? `${updaterState || 'unknown'}: ${updaterDetail}` : updaterState || 'unknown'
+  return `Peer app is not responding at ${appUrl} (${appStateText}); updater state is ${updaterStateText}.`
+}
+
+export function remoteDebugStartupDiagnosisText(
+  remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
+): string {
+  const candidates = [
+    remoteUpdateDebug?.app_startup_tail ?? '',
+    remoteUpdateDebug?.log_tail ?? '',
+  ].filter((value) => value.trim().length > 0)
+  const text = candidates.join('\n')
+  if (!text.trim()) return ''
+  const hasStage = (stage: string) => text.includes(`"stage": "${stage}"`) || text.includes(`stage=${stage}`)
+  if (hasStage('build_state_open_store_start') && !hasStage('build_state_open_store_ok')) {
+    return 'Startup stopped while opening the local store. The runtime reached build_state_open_store_start but never reached build_state_open_store_ok.'
+  }
+  if (hasStage('build_state_secret_store_start') && !hasStage('build_state_secret_store_ok')) {
+    return 'Startup stopped while opening secrets. The runtime reached build_state_secret_store_start but never reached build_state_secret_store_ok.'
+  }
+  if (hasStage('build_state_load_config_start') && !hasStage('build_state_load_config_ok')) {
+    return 'Startup stopped while loading config. The runtime reached build_state_load_config_start but never reached build_state_load_config_ok.'
+  }
+  if (hasStage('build_state_updater_daemon_start') && !hasStage('build_state_updater_daemon_ok')) {
+    return 'Startup stopped while starting the updater daemon. The runtime reached build_state_updater_daemon_start but never reached build_state_updater_daemon_ok.'
+  }
+  if (hasStage('gateway_prepare_enter') && !hasStage('prepare_gateway_listeners')) {
+    return 'Startup stopped while preparing gateway listeners.'
+  }
+  return ''
+}
+
 export function remoteDebugReadinessReasonText(
   remoteUpdateDebug: LanRemoteUpdateDebugResponse | undefined,
 ): string {
@@ -624,15 +788,19 @@ export function remoteDebugStatusRelevance(
     return { isCurrent: false, reason: 'peer did not return a structured remote update status' }
   }
   const targetRef = normalizedTargetRef(status.target_ref)
-  if (!targetRef) {
+  const relevantRefs = remoteUpdateRelevantRefCandidates(status)
+  if (!targetRef && relevantRefs.length === 0) {
     return { isCurrent: false, reason: 'peer status is missing a target ref' }
   }
   const peerBuildSha = normalizedBuildSha(source.build_identity?.build_git_sha)
   const normalizedLocalBuildSha = normalizedBuildSha(localBuildSha)
   const targetMatchesLocalBuild =
-    !normalizedLocalBuildSha || !targetRef
+    !normalizedLocalBuildSha || relevantRefs.length === 0
       ? null
-      : normalizedLocalBuildSha.startsWith(targetRef) || targetRef.startsWith(normalizedLocalBuildSha)
+      : relevantRefs.some(
+          (candidate) =>
+            normalizedLocalBuildSha.startsWith(candidate) || candidate.startsWith(normalizedLocalBuildSha),
+        )
   if (localBuildSha && targetMatchesLocalBuild === false) {
     return {
       isCurrent: false,
@@ -647,7 +815,9 @@ export function remoteDebugStatusRelevance(
     }
   }
   const targetMatchesPeerBuild =
-    !peerBuildSha || !targetRef ? null : peerBuildSha.startsWith(targetRef) || targetRef.startsWith(peerBuildSha)
+    !peerBuildSha || relevantRefs.length === 0
+      ? null
+      : relevantRefs.some((candidate) => peerBuildSha.startsWith(candidate) || candidate.startsWith(peerBuildSha))
   if (
     terminalState &&
     targetMatchesPeerBuild === false &&
@@ -789,6 +959,15 @@ export function diagnosticsRemoteUpdateDisplay(
   time: string
   timeline: Array<{ unix_ms?: number | null; label?: string | null; detail?: string | null; phase?: string | null }>
 } {
+  const liveState = source.remote_update_status?.state?.trim()
+  if (liveState === 'accepted' || liveState === 'running') {
+    return {
+      label: remoteUpdateStateLabel(source, localBuildSha) ?? (liveState === 'accepted' ? 'Queued' : 'Updating'),
+      detail: remoteUpdateDetailText(source, localBuildSha),
+      time: remoteUpdateTimestampLabel(source, localBuildSha),
+      timeline: remoteUpdateTimelineEntries(source, localBuildSha),
+    }
+  }
   const remoteStatusCurrentForPending = isRemoteUpdateStatusCurrentForPending(source, pendingStage)
   const showPendingRemoteUpdate =
     Boolean(pendingStage) &&
@@ -863,13 +1042,11 @@ export function remoteUpdateActionState(
       spinning: true,
     }
   }
-  if (remoteUpdateRollbackActionAvailable(source, pendingStage)) {
-    return {
-      actionLabel: 'Rollback peer',
-      actionDetail: remoteUpdateRollbackDetailText(source),
-      spinning: false,
-    }
-  }
+  const updateActionPreferred =
+    source.kind === 'peer' &&
+    Boolean(source.version_sync_required) &&
+    source.online !== false &&
+    Boolean(source.same_version_update_allowed)
   if (pendingStage?.stage === 'requesting') {
     return {
       actionLabel: 'Sending...',
@@ -920,6 +1097,13 @@ export function remoteUpdateActionState(
       spinning: false,
     }
   }
+  if (updateActionPreferred) {
+    return {
+      actionLabel: 'Update peer',
+      actionDetail: 'Sync to this build',
+      spinning: false,
+    }
+  }
   return {
     actionLabel: source.same_version_update_allowed ? 'Update peer' : 'Update blocked',
     actionDetail: 'Sync to this build',
@@ -933,7 +1117,7 @@ export function remoteUpdateMenuActionLabel(
   localBuildSha?: string | null,
 ): string {
   const actionState = remoteUpdateActionState(source, pendingStage, localBuildSha)
-  if (actionState.spinning || remoteUpdateRollbackActionAvailable(source, pendingStage)) {
+  if (actionState.spinning) {
     return actionState.actionLabel
   }
   if (source.kind === 'peer' && source.online === false) return 'Offline'
@@ -948,7 +1132,6 @@ export function shouldShowRemoteUpdateMenuDetail(
   localBuildSha?: string | null,
 ): boolean {
   if (!actionState?.actionDetail?.trim()) return false
-  if (remoteUpdateRollbackActionAvailable(source)) return true
   if (actionState.spinning) return true
   const remoteState = isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)
     ? source.remote_update_status?.state?.trim()
@@ -957,12 +1140,7 @@ export function shouldShowRemoteUpdateMenuDetail(
 }
 
 export function keepSourceMenuOpenAfterAction(source: ConfigSource): boolean {
-  return (
-    source.kind === 'peer' &&
-    (Boolean(source.version_sync_required) ||
-      (Boolean(source.remote_update_status?.rollback_available) &&
-        source.remote_update_status?.state?.trim() !== 'rolled_back'))
-  )
+  return source.kind === 'peer' && Boolean(source.version_sync_required)
 }
 
 export function formatBuildLabel(buildIdentity: BuildIdentity): string {
@@ -1024,6 +1202,12 @@ export function diagnosticsWhyText(
     const followReason = source.follow_blocked_reason?.trim()
     if (followReason) return followReason
   }
+  const httpProbeState = source.http_probe_state?.trim()
+  const httpProbeDetail = source.http_probe_detail?.trim()
+  if (httpProbeState && httpProbeState !== 'ok' && httpProbeDetail) {
+    const updater = source.remote_update_updater_addr ? ` updater=${source.remote_update_updater_addr}` : ''
+    return `Heartbeat seen ${source.heartbeat_age_ms ?? '?'}ms ago, but HTTP sync is ${httpProbeState}: ${httpProbeDetail}${updater}`
+  }
   return ''
 }
 
@@ -1057,6 +1241,7 @@ export function ConfigModal({
   dragCardHeight,
   renderProviderCard,
 }: Props) {
+  void onRollbackPeerVersion
   const [sourceMenuOpen, setSourceMenuOpen] = useState(false)
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
   const [remoteUpdateDebugByNode, setRemoteUpdateDebugByNode] = useState<Record<string, LanRemoteUpdateDebugResponse>>({})
@@ -1342,12 +1527,9 @@ export function ConfigModal({
                           effectiveSource.kind === 'peer'
                             ? remoteUpdatePendingByNode[effectiveSource.node_id]
                             : undefined
-                        const rollbackActionAvailable =
-                          effectiveSource.kind === 'peer' &&
-                          remoteUpdateRollbackActionAvailable(effectiveSource, versionSyncPendingStage)
                         const remoteUpdateActionVisible =
                           effectiveSource.kind === 'peer' &&
-                          (versionSyncRequired || rollbackActionAvailable || Boolean(versionSyncPendingStage))
+                          (versionSyncRequired || Boolean(versionSyncPendingStage))
                         const versionSyncActionState =
                           remoteUpdateActionVisible && effectiveSource.kind === 'peer'
                             ? remoteUpdateActionState(effectiveSource, versionSyncPendingStage, localBuildSha)
@@ -1358,11 +1540,16 @@ export function ConfigModal({
                           effectiveSource.online !== false &&
                           (!effectiveSource.trusted ||
                             (effectiveSource.trusted && effectiveSource.follow_allowed && !effectiveSource.active))
+                        const sameBuildIdlePeer =
+                          effectiveSource.kind === 'peer' &&
+                          effectiveSource.trusted &&
+                          effectiveSource.build_matches_local === true &&
+                          !effectiveSource.version_sync_required &&
+                          !versionSyncPending
                         const disabled =
                           (effectiveSource.kind === 'peer' &&
                             !pairActionAvailable &&
-                            !versionSyncActionAvailable &&
-                            !rollbackActionAvailable) ||
+                            !versionSyncActionAvailable) ||
                           versionSyncPending
                         const actionLabel =
                           effectiveSource.kind === 'local'
@@ -1373,6 +1560,8 @@ export function ConfigModal({
                               ? remoteUpdateMenuActionLabel(effectiveSource, versionSyncPendingStage, localBuildSha)
                             : effectiveSource.online === false
                               ? 'Offline'
+                              : sameBuildIdlePeer
+                              ? ''
                               : effectiveSource.active
                               ? 'Following'
                               : !source.trusted && pairState === 'incoming_request'
@@ -1446,12 +1635,6 @@ export function ConfigModal({
                                     requestId,
                                   })
                                 }
-                                return
-                              }
-                              if (rollbackActionAvailable) {
-                                if (versionSyncPending) return
-                                if (!window.confirm(remoteUpdateRollbackConfirmationText(effectiveSource))) return
-                                await onRollbackPeerVersion(effectiveSource.node_id)
                                 return
                               }
                               if (versionSyncRequired) {
@@ -1725,7 +1908,43 @@ export function ConfigModal({
                     const remoteUpdateDebugLoading = Boolean(remoteUpdateDebugLoadingByNode[source.node_id])
                     const remoteUpdateDebugError = remoteUpdateDebugErrorByNode[source.node_id] ?? ''
                     const debugReadinessReason = remoteDebugReadinessReasonText(remoteUpdateDebug)
+                    const debugReachabilityDiagnosis =
+                      remoteDebugPeerReachabilityDiagnosisText(remoteUpdateDebug)
+                    const debugStartupDiagnosis = remoteDebugStartupDiagnosisText(remoteUpdateDebug)
                     const debugLogTail = remoteUpdateDebug?.log_tail?.trim() ?? ''
+                    const debugStartupTail = [
+                      remoteUpdateDebug?.shell_window_summary?.length
+                        ? `remote-update-shell-summary\n${remoteUpdateDebug.shell_window_summary
+                            .map((entry) =>
+                              [
+                                `pid=${entry.pid}`,
+                                `role=${entry.role}`,
+                                `visibility=${entry.visibility}`,
+                                entry.request_id ? `request=${entry.request_id}` : '',
+                                entry.command,
+                              ]
+                                .filter(Boolean)
+                                .join(' · '),
+                            )
+                            .join('\n')}`
+                        : '',
+                      remoteDebugTransportText(remoteUpdateDebug) ?? '',
+                      remoteDebugSystemSnapshotText(remoteUpdateDebug) ?? '',
+                      remoteUpdateDebug?.shell_log_tail?.trim()
+                        ? `remote-update-shell.log\n${remoteUpdateDebug.shell_log_tail.trim()}`
+                        : '',
+                      remoteUpdateDebug?.app_startup_tail?.trim()
+                        ? `app-startup.json\n${remoteUpdateDebug.app_startup_tail.trim()}`
+                        : '',
+                      remoteUpdateDebug?.gateway_bootstrap_tail?.trim()
+                        ? `gateway-bootstrap.json\n${remoteUpdateDebug.gateway_bootstrap_tail.trim()}`
+                        : '',
+                      remoteUpdateDebug?.gateway_startup_tail?.trim()
+                        ? `gateway-startup.json\n${remoteUpdateDebug.gateway_startup_tail.trim()}`
+                        : '',
+                    ]
+                      .filter((part) => part.trim().length > 0)
+                      .join('\n\n')
                     const { recent: recentDebugLogTail, older: olderDebugLogTail } =
                       splitRemoteDebugLogTail(debugLogTail)
                     const debugLogRelevance = remoteDebugStatusRelevance(
@@ -1756,7 +1975,9 @@ export function ConfigModal({
                         formattedDebugError,
                         showDebugReadinessReason ? debugReadinessReason : '',
                         remoteUpdateDebug,
-                        debugLogTail,
+                        [debugReachabilityDiagnosis, debugStartupDiagnosis, debugLogTail, debugStartupTail]
+                          .filter(Boolean)
+                          .join('\n'),
                       )
                     return (
                       <div key={source.node_id} className="aoCard aoConfigDiagCard">
@@ -1904,11 +2125,17 @@ export function ConfigModal({
                                     {showDebugReadinessReason ? (
                                       <div className="aoConfigDiagRemoteUpdateDetail">{debugReadinessReason}</div>
                                     ) : null}
+                                    {debugReachabilityDiagnosis ? (
+                                      <div className="aoConfigDiagWhyText">{debugReachabilityDiagnosis}</div>
+                                    ) : null}
                                     {debugBootstrapText ? (
                                       <div className="aoConfigDiagRemoteUpdateDetail">{debugBootstrapText}</div>
                                     ) : null}
                                     {debugScriptProbeText ? (
                                       <div className="aoConfigDiagRemoteUpdateDetail">{debugScriptProbeText}</div>
+                                    ) : null}
+                                    {debugStartupDiagnosis ? (
+                                      <div className="aoConfigDiagWhyText">{debugStartupDiagnosis}</div>
                                     ) : null}
                                     <div className="aoConfigDiagRemoteUpdateDetail">
                                       {remoteDebugStatusRecordText(remoteUpdateDebug)}
@@ -1940,6 +2167,26 @@ export function ConfigModal({
                                     ) : (
                                       <div className="aoConfigDiagRemoteUpdateDetail">{debugLogSummaryText}</div>
                                     )}
+                                    {debugStartupTail ? (
+                                      <details style={{ marginTop: 8 }}>
+                                        <summary className="aoConfigDiagRemoteUpdateDetail">
+                                          Runtime startup diagnostics
+                                        </summary>
+                                        <pre
+                                          className="aoConfigDiagWhyText"
+                                          style={{
+                                            margin: '8px 0 0',
+                                            padding: '10px 12px',
+                                            whiteSpace: 'pre-wrap',
+                                            overflowWrap: 'anywhere',
+                                            background: 'rgba(10, 16, 28, 0.04)',
+                                            borderRadius: 10,
+                                          }}
+                                        >
+                                          {debugStartupTail}
+                                        </pre>
+                                      </details>
+                                    ) : null}
                                   </>
                                 ) : null}
                               </div>

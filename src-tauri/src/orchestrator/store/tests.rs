@@ -454,6 +454,31 @@ mod tests {
     }
 
     #[test]
+    fn runtime_listener_skip_history_compaction_uses_single_pass_sql() {
+        let source = include_str!("../store.rs");
+        let start = source
+            .find("fn compact_runtime_listener_skip_events")
+            .expect("compaction function exists");
+        let end = source[start..]
+            .find("fn backfill_usage_request_daily_index_if_needed")
+            .expect("next store function exists");
+        let compaction_source = &source[start..start + end];
+
+        assert!(
+            compaction_source.contains("ROW_NUMBER() OVER"),
+            "startup compaction must use a single-pass window query"
+        );
+        assert!(
+            !compaction_source.contains("candidate.id"),
+            "startup compaction must not use the old correlated subquery"
+        );
+        assert!(
+            source.contains("idx_events_code_provider_unix_ms_id"),
+            "runtime-listener skip compaction needs a covering events index"
+        );
+    }
+
+    #[test]
     fn runtime_listener_skip_history_compaction_runs_once() {
         let tmp = tempfile::tempdir().unwrap();
         {

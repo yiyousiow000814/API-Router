@@ -108,12 +108,16 @@ const LAN_EDIT_SYNC_LOOP_INTERVAL_MS: u64 = 1_000;
 const LAN_EDIT_SYNC_BATCH_LIMIT: usize = 512;
 const LAN_DEBUG_BATCH_LIMIT: usize = 256;
 const LAN_PACKET_SOFT_LIMIT_BYTES: usize = 8 * 1024;
+const LAN_HEARTBEAT_REMOTE_UPDATE_DETAIL_CHARS: usize = 512;
+const LAN_HEARTBEAT_REMOTE_UPDATE_TIMELINE_ENTRIES: usize = 3;
+const LAN_HEARTBEAT_REMOTE_UPDATE_TIMELINE_DETAIL_CHARS: usize = 256;
 const LAN_SOCKET_RETRY_MS: u64 = 2_000;
 const LAN_PEER_DIAGNOSTICS_LOG_MAX_BYTES: usize = 64 * 1024;
 const LAN_PAIR_REQUEST_TTL_MS: u64 = 5 * 60 * 1000;
 const LAN_PAIR_REQUEST_THROTTLE_MS: u64 = 60 * 1000;
 const LAN_PAIR_APPROVAL_TTL_MS: u64 = 5 * 60 * 1000;
 const LAN_REMOTE_UPDATE_ACCEPTED_STARTUP_GRACE_MS: u64 = 15_000;
+const LAN_REMOTE_UPDATE_DEBUG_HTTP_TIMEOUT_MS: u64 = 4_000;
 const LAN_OFFICIAL_ACCOUNTS_SYNC_HTTP_TIMEOUT_MS: u64 = 2_500;
 const LAN_SYNC_AUTH_NODE_ID_HEADER: &str = "x-api-router-lan-node-id";
 const LAN_SYNC_AUTH_SECRET_HEADER: &str = "x-api-router-lan-secret";
@@ -241,8 +245,46 @@ fn probe_git_worktree_clean(repo_root: &Path) -> Result<bool, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().is_empty())
 }
 
+fn git_output_trimmed(repo_root: &Path, args: &[&str]) -> Result<String, String> {
+    let output = crate::platform::git_exec::new_git_command()
+        .args(args)
+        .current_dir(repo_root)
+        .output()
+        .map_err(|err| format!("git {} failed: {err}", args.join(" ")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            return Err(format!(
+                "git {} exited with {}",
+                args.join(" "),
+                output.status
+            ));
+        }
+        return Err(format!(
+            "git {} exited with {}: {stderr}",
+            args.join(" "),
+            output.status
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn local_version_sync_target_ref_for_repo(repo_root: &Path, build_sha: &str) -> String {
+    let head_sha = git_output_trimmed(repo_root, &["rev-parse", "HEAD"]).unwrap_or_default();
+    if head_sha.eq_ignore_ascii_case(build_sha) {
+        let branch = git_output_trimmed(repo_root, &["branch", "--show-current"])
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if !branch.is_empty() {
+            return branch;
+        }
+    }
+    build_sha.to_string()
+}
+
 fn compute_local_version_sync_snapshot() -> LanLocalVersionSyncSnapshot {
-    let Some(target_ref) = normalized_local_build_target_ref() else {
+    let Some(build_sha) = normalized_local_build_target_ref() else {
         return LanLocalVersionSyncSnapshot {
             target_ref: None,
             git_worktree_clean: false,
@@ -253,9 +295,12 @@ fn compute_local_version_sync_snapshot() -> LanLocalVersionSyncSnapshot {
             ),
         };
     };
-    let git_worktree_clean = match resolve_repo_root_for_self_update() {
-        Ok(repo_root) => probe_git_worktree_clean(&repo_root).unwrap_or_default(),
-        Err(_) => false,
+    let (target_ref, git_worktree_clean) = match resolve_repo_root_for_self_update() {
+        Ok(repo_root) => (
+            local_version_sync_target_ref_for_repo(&repo_root, &build_sha),
+            probe_git_worktree_clean(&repo_root).unwrap_or_default(),
+        ),
+        Err(_) => (build_sha.clone(), false),
     };
     LanLocalVersionSyncSnapshot {
         target_ref: Some(target_ref),
@@ -465,6 +510,9 @@ pub struct LanPeerSnapshot {
     pub sync_blocked_domains: Vec<String>,
     pub sync_diagnostics: Vec<LanSyncDomainDiagnosticSnapshot>,
     pub build_matches_local: bool,
+    pub heartbeat_age_ms: u64,
+    pub http_probe_state: Option<String>,
+    pub http_probe_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -554,6 +602,35 @@ fn lan_peer_snapshot_from_runtime(peer: &LanPeerRuntime) -> LanPeerSnapshot {
         sync_blocked_domains: Vec::new(),
         sync_diagnostics: Vec::new(),
         build_matches_local: false,
+        heartbeat_age_ms: 0,
+        http_probe_state: None,
+        http_probe_detail: None,
+    }
+}
+
+fn enrich_peer_transport_diagnostics(
+    peer: &mut LanPeerSnapshot,
+    now: u64,
+    last_probe: Option<&LanHttpSyncProbeSnapshot>,
+    last_failure: Option<&LanHttpSyncProbeSnapshot>,
+) {
+    peer.heartbeat_age_ms = now.saturating_sub(peer.last_heartbeat_unix_ms);
+    let matching_failure = last_failure.filter(|probe| probe.peer_node_id == peer.node_id);
+    let matching_probe = last_probe.filter(|probe| probe.peer_node_id == peer.node_id);
+    if let Some(failure) = matching_failure {
+        peer.http_probe_state = Some(failure.outcome.clone());
+        peer.http_probe_detail = Some(format!(
+            "{} via {}: {}",
+            failure.route, failure.peer_listen_addr, failure.detail
+        ));
+        return;
+    }
+    if let Some(probe) = matching_probe {
+        peer.http_probe_state = Some(probe.outcome.clone());
+        peer.http_probe_detail = Some(format!(
+            "{} via {}: {}",
+            probe.route, probe.peer_listen_addr, probe.detail
+        ));
     }
 }
 
@@ -1003,10 +1080,18 @@ impl LanSyncRuntime {
         let trusted_node_ids = secrets.trusted_lan_node_ids();
         let inbound_requests = self.inbound_pair_requests.read().clone();
         let outbound_requests = self.outbound_pair_requests.read().clone();
+        let last_http_sync_probe = self.last_http_sync_probe.read().clone();
+        let last_http_sync_failure = self.last_http_sync_failure.read().clone();
         let peers = self
             .collect_live_peers(now)
             .into_iter()
             .map(|mut peer| {
+                enrich_peer_transport_diagnostics(
+                    &mut peer,
+                    now,
+                    last_http_sync_probe.as_ref(),
+                    last_http_sync_failure.as_ref(),
+                );
                 peer.trusted = trusted_node_ids.contains(&peer.node_id);
                 peer.pair_state = peer_pair_state(
                     &peer.node_id,
@@ -1033,8 +1118,8 @@ impl LanSyncRuntime {
                 .last_peer_heartbeat_received_unix_ms
                 .load(Ordering::Relaxed),
             last_peer_heartbeat_source: self.last_peer_heartbeat_source.read().clone(),
-            last_http_sync_probe: self.last_http_sync_probe.read().clone(),
-            last_http_sync_failure: self.last_http_sync_failure.read().clone(),
+            last_http_sync_probe,
+            last_http_sync_failure,
             local_node: LanLocalNodeSnapshot {
                 node_id: self.local_node.node_id.clone(),
                 node_name: self.local_node.node_name.clone(),
@@ -1832,6 +1917,42 @@ fn send_wire_bytes(addr: SocketAddr, bytes: &[u8]) -> Result<(), String> {
         .map_err(|err| format!("lan send failed: {err}"))
 }
 
+fn truncate_chars(value: &mut String, max_chars: usize) {
+    if value.chars().count() <= max_chars {
+        return;
+    }
+    let keep_chars = max_chars.saturating_sub(3).max(1);
+    let truncate_at = value
+        .char_indices()
+        .nth(keep_chars)
+        .map(|(idx, _)| idx)
+        .unwrap_or(value.len());
+    value.truncate(truncate_at);
+    value.push_str("...");
+}
+
+fn compact_remote_update_status_for_heartbeat(
+    status: Option<LanRemoteUpdateStatusSnapshot>,
+) -> Option<LanRemoteUpdateStatusSnapshot> {
+    let mut status = status?;
+    if let Some(detail) = status.detail.as_mut() {
+        truncate_chars(detail, LAN_HEARTBEAT_REMOTE_UPDATE_DETAIL_CHARS);
+    }
+    if status.timeline.len() > LAN_HEARTBEAT_REMOTE_UPDATE_TIMELINE_ENTRIES {
+        let remove_count = status
+            .timeline
+            .len()
+            .saturating_sub(LAN_HEARTBEAT_REMOTE_UPDATE_TIMELINE_ENTRIES);
+        status.timeline.drain(0..remove_count);
+    }
+    for entry in &mut status.timeline {
+        if let Some(detail) = entry.detail.as_mut() {
+            truncate_chars(detail, LAN_HEARTBEAT_REMOTE_UPDATE_TIMELINE_DETAIL_CHARS);
+        }
+    }
+    Some(status)
+}
+
 fn send_wire_packet(addr: SocketAddr, packet: &LanWirePacket) -> Result<(), String> {
     let bytes = serde_json::to_vec(packet).map_err(|err| err.to_string())?;
     if bytes.len() > LAN_PACKET_SOFT_LIMIT_BYTES {
@@ -1942,6 +2063,8 @@ pub struct ProviderDefinitionSnapshotPayload {
     pub usage_login_username: Option<String>,
     #[serde(default)]
     pub usage_login_password: Option<String>,
+    #[serde(default)]
+    pub quota_hard_cap: Option<crate::orchestrator::secrets::ProviderQuotaHardCapConfig>,
 }
 
 fn persist_gateway_config(
@@ -2036,6 +2159,7 @@ fn provider_definition_snapshot_payload(
         usage_token: gateway.secrets.get_usage_token(provider),
         usage_login_username: usage_login.as_ref().map(|value| value.username.clone()),
         usage_login_password: usage_login.as_ref().map(|value| value.password.clone()),
+        quota_hard_cap: Some(gateway.secrets.get_provider_quota_hard_cap(provider)),
     })
 }
 
@@ -2105,6 +2229,13 @@ fn merge_provider_definition_snapshot_payload(
     }
     if let Some(value) = payload_string_field(payload, "usage_login_password") {
         next.usage_login_password = value.filter(|inner| !inner.is_empty());
+    }
+    if let Some(value) = payload.get("quota_hard_cap") {
+        if value.is_null() {
+            next.quota_hard_cap = None;
+        } else if let Ok(hard_cap) = serde_json::from_value(value.clone()) {
+            next.quota_hard_cap = Some(hard_cap);
+        }
     }
     next
 }
@@ -3342,7 +3473,8 @@ fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::Ga
         heartbeat_sequence = heartbeat_sequence.saturating_add(1);
         let remote_update_started_unix_ms = unix_ms();
         let remote_update_readiness = Some(current_local_remote_update_readiness());
-        let remote_update_status = load_lan_remote_update_status();
+        let remote_update_status =
+            compact_remote_update_status_for_heartbeat(load_lan_remote_update_status());
         let remote_update_elapsed_ms = heartbeat_step_elapsed_ms(remote_update_started_unix_ms);
         let sync_contracts_started_unix_ms = unix_ms();
         let sync_contracts = local_sync_contracts();
@@ -4098,6 +4230,10 @@ fn lan_sync_http_client() -> &'static reqwest::Client {
 
 fn official_account_profiles_request_timeout() -> Duration {
     Duration::from_millis(LAN_OFFICIAL_ACCOUNTS_SYNC_HTTP_TIMEOUT_MS)
+}
+
+fn remote_update_debug_request_timeout() -> Duration {
+    Duration::from_millis(LAN_REMOTE_UPDATE_DEBUG_HTTP_TIMEOUT_MS)
 }
 
 fn peer_pair_state(
@@ -4910,6 +5046,7 @@ fn local_provider_definition_sync_items_from_config(
                     usage_token: secrets.get_usage_token(&provider_name),
                     usage_login_username: usage_login.as_ref().map(|value| value.username.clone()),
                     usage_login_password: usage_login.as_ref().map(|value| value.password.clone()),
+                    quota_hard_cap: Some(secrets.get_provider_quota_hard_cap(&provider_name)),
                 })
                 .ok()?,
                 lamport_ts: 0,
@@ -5033,6 +5170,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: true,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         }
     }
 
@@ -5048,6 +5188,46 @@ mod tests {
         assert_eq!(
             local_version_sync_target_ref(&snapshot).expect("target ref should stay usable"),
             "abc123"
+        );
+    }
+
+    #[test]
+    fn local_version_sync_target_ref_for_repo_prefers_current_branch() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let repo = tmp.path();
+        crate::platform::git_exec::new_git_command()
+            .args(["init", "-b", "feature/test"])
+            .current_dir(repo)
+            .output()
+            .expect("git init");
+        std::fs::write(repo.join("README.md"), "test\n").expect("write readme");
+        crate::platform::git_exec::new_git_command()
+            .args(["add", "README.md"])
+            .current_dir(repo)
+            .output()
+            .expect("git add");
+        crate::platform::git_exec::new_git_command()
+            .args([
+                "-c",
+                "user.name=API Router Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "test",
+            ])
+            .current_dir(repo)
+            .output()
+            .expect("git commit");
+        let sha = super::git_output_trimmed(repo, &["rev-parse", "HEAD"]).expect("head sha");
+
+        assert_eq!(
+            super::local_version_sync_target_ref_for_repo(repo, &sha),
+            "feature/test"
+        );
+        assert_eq!(
+            super::local_version_sync_target_ref_for_repo(repo, "deadbeef"),
+            "deadbeef"
         );
     }
 
@@ -5159,6 +5339,7 @@ mod tests {
             started_at_unix_ms: Some(2),
             finished_at_unix_ms: None,
             updated_at_unix_ms: 2,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: Vec::new(),
         })
         .expect("write remote update status");
@@ -5218,6 +5399,7 @@ mod tests {
             started_at_unix_ms: None,
             finished_at_unix_ms: None,
             updated_at_unix_ms: 1,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: Vec::new(),
         })
         .expect("write accepted status");
@@ -5257,12 +5439,14 @@ mod tests {
         let secrets =
             crate::orchestrator::secrets::SecretStore::new(user_data_dir.join("secrets.json"));
         let _guard = set_remote_update_env_for_test(Some(&user_data_dir), None);
+        let target_ref = super::remote_update::normalized_local_build_target_ref()
+            .unwrap_or_else(|| "abc123".to_string());
         let status = LanRemoteUpdateStatusSnapshot {
             state: "succeeded".to_string(),
-            target_ref: "abc123".to_string(),
+            target_ref: target_ref.clone(),
             from_git_sha: Some("from123".to_string()),
-            to_git_sha: Some("abc123".to_string()),
-            current_git_sha: Some("abc123".to_string()),
+            to_git_sha: Some(target_ref.clone()),
+            current_git_sha: Some(target_ref),
             previous_git_sha: Some("from123".to_string()),
             progress_percent: Some(100),
             rollback_available: true,
@@ -5280,6 +5464,7 @@ mod tests {
             started_at_unix_ms: Some(2),
             finished_at_unix_ms: Some(3),
             updated_at_unix_ms: 3,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: Vec::new(),
         };
         super::write_lan_remote_update_status(&status).expect("write remote update status");
@@ -5328,6 +5513,7 @@ mod tests {
             started_at_unix_ms: Some(2),
             finished_at_unix_ms: None,
             updated_at_unix_ms: 3,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: Vec::new(),
         };
         super::write_lan_remote_update_status(&status).expect("write remote update status");
@@ -5425,6 +5611,7 @@ mod tests {
             started_at_unix_ms: Some(2),
             finished_at_unix_ms: Some(4),
             updated_at_unix_ms: 4,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: vec![
                 LanRemoteUpdateTimelineEntry {
                     unix_ms: 2,
@@ -5510,6 +5697,7 @@ mod tests {
             started_at_unix_ms: None,
             finished_at_unix_ms: None,
             updated_at_unix_ms: 1,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: Vec::new(),
         })
         .expect("write accepted status");
@@ -5558,6 +5746,7 @@ mod tests {
             started_at_unix_ms: None,
             finished_at_unix_ms: None,
             updated_at_unix_ms: 1,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: Vec::new(),
         })
         .expect("write accepted status");
@@ -5609,6 +5798,7 @@ mod tests {
             started_at_unix_ms: None,
             finished_at_unix_ms: None,
             updated_at_unix_ms: fresh_unix_ms,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: Vec::new(),
         })
         .expect("write accepted status");
@@ -6196,6 +6386,83 @@ mod tests {
     }
 
     #[test]
+    fn heartbeat_remote_update_status_is_compacted_before_broadcast() {
+        let (_tmp, state) = build_test_state();
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "succeeded".to_string(),
+            target_ref: "f6df7385c5535a975edf6bcf7e1f44284fd801ea".to_string(),
+            from_git_sha: Some("before".to_string()),
+            to_git_sha: Some("f6df7385c5535a975edf6bcf7e1f44284fd801ea".to_string()),
+            current_git_sha: Some("f6df7385c5535a975edf6bcf7e1f44284fd801ea".to_string()),
+            previous_git_sha: Some("before".to_string()),
+            progress_percent: Some(100),
+            rollback_available: true,
+            request_id: Some("ru_done".to_string()),
+            reason_code: None,
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Remote Desk".to_string()),
+            worker_script: Some("worker.ps1".to_string()),
+            worker_pid: Some(123),
+            worker_exit_code: None,
+            detail: Some("x".repeat(24_000)),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: Some(20),
+            finished_at_unix_ms: Some(30),
+            updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: Some(30),
+            timeline: (0..24)
+                .map(|idx| LanRemoteUpdateTimelineEntry {
+                    unix_ms: idx,
+                    phase: format!("phase_{idx}"),
+                    label: format!("Label {idx}"),
+                    detail: Some("y".repeat(2_000)),
+                    source: "worker".to_string(),
+                    state: "running".to_string(),
+                })
+                .collect(),
+        };
+
+        let compact = super::compact_remote_update_status_for_heartbeat(Some(status))
+            .expect("compact status");
+        assert!(compact.detail.as_deref().unwrap_or_default().len() < 600);
+        assert_eq!(
+            compact.timeline.len(),
+            super::LAN_HEARTBEAT_REMOTE_UPDATE_TIMELINE_ENTRIES
+        );
+        assert!(compact.timeline.iter().all(|entry| entry
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .len()
+            < 300));
+
+        let bytes = serialize_wire_packet(
+            &state.gateway,
+            &LanSyncPacket::Heartbeat(Box::new(LanHeartbeatPacket {
+                version: 1,
+                node_id: "node-x".to_string(),
+                node_name: "Desk".to_string(),
+                listen_port: 4000,
+                remote_update_updater_port: Some(4001),
+                sent_at_unix_ms: 1,
+                sequence: 0,
+                sender_previous_gap_ms: None,
+                sender_previous_elapsed_ms: None,
+                capabilities: vec!["heartbeat_v1".to_string()],
+                build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
+                remote_update_status: Some(compact),
+                sync_contracts: std::collections::BTreeMap::new(),
+                provider_fingerprints: vec![],
+                provider_definitions_revision: String::new(),
+                followed_source_node_id: None,
+            })),
+        )
+        .expect("serialize heartbeat");
+        assert!(bytes.len() < super::LAN_PACKET_SOFT_LIMIT_BYTES);
+    }
+
+    #[test]
     fn malformed_protected_packet_nonce_is_rejected_without_panic() {
         let (_tmp, state) = build_test_state();
         let bytes = serde_json::to_vec(&super::LanWirePacket::Protected(
@@ -6564,6 +6831,50 @@ mod tests {
     }
 
     #[test]
+    fn apply_followed_provider_state_uses_remote_quota_hard_cap() {
+        let (_tmp, state) = build_test_state();
+        state
+            .secrets
+            .set_provider_shared_id("provider_1", "shared-remote")
+            .expect("shared id");
+        state
+            .secrets
+            .set_provider_quota_hard_cap_field("provider_1", "daily", true)
+            .expect("seed local hard cap");
+
+        let event = crate::orchestrator::store::LanEditSyncEvent {
+            event_id: "evt-followed-provider-hard-cap".to_string(),
+            node_id: "node-remote".to_string(),
+            node_name: "Remote".to_string(),
+            created_at_unix_ms: crate::orchestrator::store::unix_ms(),
+            lamport_ts: 1,
+            entity_type: "provider_definition".to_string(),
+            entity_id: "shared-remote".to_string(),
+            op: "patch".to_string(),
+            payload: serde_json::json!({
+                "name": "remote-provider",
+                "display_name": "Remote Provider",
+                "base_url": "https://remote.example/v1",
+                "quota_hard_cap": {
+                    "daily": false,
+                    "weekly": true,
+                    "monthly": true
+                }
+            }),
+        };
+        apply_lan_edit_event(&state.gateway, &state.config_path, &event)
+            .expect("seed remote snapshot");
+
+        apply_followed_provider_state(&state.gateway, &state.config_path, "node-remote")
+            .expect("apply followed state");
+
+        let hard_cap = state.secrets.get_provider_quota_hard_cap("remote-provider");
+        assert!(!hard_cap.daily);
+        assert!(hard_cap.weekly);
+        assert!(hard_cap.monthly);
+    }
+
+    #[test]
     fn apply_followed_provider_state_uses_remote_provider_order() {
         let (_tmp, state) = build_test_state();
         let remote_a = crate::orchestrator::store::LanEditSyncEvent {
@@ -6769,6 +7080,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: true,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         };
         assert!(peer_supports_http_sync(&trusted_peer, "edit_sync_v1"));
 
@@ -6832,6 +7146,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: true,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         };
 
         let reason = super::sync_contract_block_reason_for_domain(
@@ -6881,6 +7198,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: true,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         };
 
         let diagnostics = super::sync_domain_diagnostics_for_peer(&peer);
@@ -7045,6 +7365,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: false,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         };
         let shared_provider_id = state
             .secrets
@@ -7294,6 +7617,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: true,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         };
 
         assert_eq!(
@@ -7478,6 +7804,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: true,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         };
         runtime.note_http_sync_probe(
             &peer,
@@ -7530,6 +7859,9 @@ mod tests {
             sync_blocked_domains: Vec::new(),
             sync_diagnostics: Vec::new(),
             build_matches_local: true,
+            heartbeat_age_ms: 0,
+            http_probe_state: None,
+            http_probe_detail: None,
         };
         runtime.note_http_sync_probe(
             &peer,

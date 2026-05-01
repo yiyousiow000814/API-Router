@@ -9,6 +9,12 @@ type RotateGatewayTokenResult = {
   failed_targets?: string[]
 }
 
+type CodexAccountRefreshResult = {
+  ok?: boolean
+  refreshed?: number
+  failures?: Array<{ profileId?: string; label?: string; email?: string; error?: string }>
+}
+
 type Params = {
   status: Status | null
   flashToast: (msg: string, kind?: 'info' | 'error') => void
@@ -124,8 +130,30 @@ export function useMainContentCallbacks(params: Params) {
       flashToast('Refreshing all official accounts...')
       setCodexRefreshing(true)
       try {
-        await invoke('codex_account_refresh')
+        const result = await invoke<CodexAccountRefreshResult>('codex_account_refresh')
         await refreshStatus()
+        const refreshed = result?.refreshed ?? 0
+        const failures = result?.failures ?? []
+        if (result?.ok === false || failures.length > 0) {
+          const detail = failures
+            .slice(0, 2)
+            .map((failure) => {
+              const name = failure.email || failure.label || failure.profileId || 'unknown account'
+              const error = failure.error?.trim() || 'refresh unavailable'
+              return `${name}: ${error}`
+            })
+            .join(' ; ')
+          const summary =
+            refreshed > 0
+              ? `Official account refresh partial: ${refreshed} updated, ${failures.length} unavailable`
+              : `Official account refresh failed: ${failures.length} unavailable`
+          flashToast(
+            `${summary}${detail ? ` (${detail})` : ''}`,
+            'error',
+          )
+        } else {
+          flashToast(`Official accounts refreshed: ${refreshed}`)
+        }
       } catch (e) {
         flashToast(String(e), 'error')
       } finally {

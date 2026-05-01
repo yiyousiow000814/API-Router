@@ -15,6 +15,9 @@ export function OfficialAccountQuotaSummary({
 }) {
   const has5h = Boolean(profile.limit_5h_remaining)
   const hasWeekly = Boolean(profile.limit_weekly_remaining)
+  if (profile.needs_reauth) {
+    return <span className="aoAccountsQuotaFallback aoAccountsQuotaExpired">Session expired</span>
+  }
   if (!has5h && !hasWeekly) {
     return <span className="aoAccountsQuotaFallback">No cached limits yet</span>
   }

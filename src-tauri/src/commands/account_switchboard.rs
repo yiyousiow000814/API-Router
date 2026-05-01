@@ -1,13 +1,24 @@
 #[tauri::command]
 pub(crate) async fn codex_account_login(
     state: tauri::State<'_, app_state::AppState>,
+    profile_id: Option<String>,
 ) -> Result<(), String> {
-    let baseline_auth_json = read_codex_auth_from_app(&state.config_path);
-    let result = codex_app_server::request(
-        "account/login/start",
-        serde_json::json!({ "type": "chatgpt" }),
-    )
-    .await?;
+    let login_target = resolve_codex_account_login_target(
+        &state.config_path,
+        &state.secrets,
+        profile_id.as_deref(),
+    )?;
+    let baseline_auth_json = login_target.baseline_auth_json.clone();
+    if let Some(profile_id) = login_target.profile_id.as_deref() {
+        state.secrets.select_official_account_profile(profile_id)?;
+    }
+    if let Some(runtime_auth_json) = login_target.runtime_auth_json.as_ref() {
+        write_codex_auth_to_app(&state.config_path, runtime_auth_json)?;
+        codex_app_server::refresh_server_in_home(None).await?;
+    }
+    let result =
+        codex_app_server::request("account/login/start", serde_json::json!({ "type": "chatgpt" }))
+            .await?;
     let auth_url = result
         .get("authUrl")
         .and_then(|v| v.as_str())
@@ -25,16 +36,22 @@ pub(crate) async fn codex_account_login(
     let gateway = state.gateway.clone();
     let config_path = state.config_path.clone();
     let secrets = state.secrets.clone();
+    let profile_id = login_target.profile_id.clone();
     tauri::async_runtime::spawn(async move {
         let deadline = unix_ms().saturating_add(120_000);
         loop {
             if unix_ms() >= deadline {
                 break;
             }
-            if let Ok(signed_in) =
-                refresh_codex_account_snapshot(&config_path, &gateway, Some(&secrets)).await
+            if let Ok(signed_in) = refresh_codex_account_login_target_snapshot(
+                &config_path,
+                &gateway,
+                &secrets,
+                profile_id.as_deref(),
+            )
+            .await
             {
-                let current_auth_json = read_codex_auth_from_app(&config_path);
+                let current_auth_json = read_codex_auth_for_login_target(&config_path);
                 if should_finish_codex_account_login_poll(
                     baseline_auth_json.as_ref(),
                     current_auth_json.as_ref(),
@@ -47,6 +64,37 @@ pub(crate) async fn codex_account_login(
         }
     });
     Ok(())
+}
+
+struct CodexAccountLoginTarget {
+    profile_id: Option<String>,
+    baseline_auth_json: Option<Value>,
+    runtime_auth_json: Option<Value>,
+}
+
+fn resolve_codex_account_login_target(
+    config_path: &std::path::Path,
+    secrets: &crate::orchestrator::secrets::SecretStore,
+    profile_id: Option<&str>,
+) -> Result<CodexAccountLoginTarget, String> {
+    let Some(profile_id) = profile_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(CodexAccountLoginTarget {
+            profile_id: None,
+            baseline_auth_json: read_codex_auth_from_app(config_path),
+            runtime_auth_json: None,
+        });
+    };
+
+    let auth_json = secrets.official_account_profile_auth_json(profile_id)?;
+    Ok(CodexAccountLoginTarget {
+        profile_id: Some(profile_id.to_string()),
+        baseline_auth_json: Some(auth_json.clone()),
+        runtime_auth_json: Some(auth_json),
+    })
+}
+
+fn read_codex_auth_for_login_target(config_path: &std::path::Path) -> Option<Value> {
+    read_codex_auth_from_app(config_path)
 }
 
 #[tauri::command]
@@ -385,6 +433,44 @@ async fn refresh_codex_account_snapshot(
     Ok(usage.signed_in)
 }
 
+async fn refresh_codex_account_login_target_snapshot(
+    config_path: &std::path::Path,
+    gateway: &crate::orchestrator::gateway::GatewayState,
+    secrets: &crate::orchestrator::secrets::SecretStore,
+    profile_id: Option<&str>,
+) -> Result<bool, String> {
+    let Some(profile_id) = profile_id else {
+        return refresh_codex_account_snapshot(config_path, gateway, Some(secrets)).await;
+    };
+
+    let auth_json = read_codex_auth_from_app(config_path)
+        .or_else(|| secrets.official_account_profile_auth_json(profile_id).ok())
+        .ok_or_else(|| format!("official account profile not found: {profile_id}"))?;
+    let usage = read_codex_account_usage(None, Some(&auth_json)).await?;
+    let usage_snapshot = crate::orchestrator::secrets::OfficialAccountUsageSnapshot {
+        limit_5h_remaining: usage.limit_5h_remaining.clone(),
+        limit_5h_reset_at: usage.limit_5h_reset_at.clone(),
+        limit_weekly_remaining: usage.limit_weekly_remaining.clone(),
+        limit_weekly_reset_at: usage.limit_weekly_reset_at.clone(),
+    };
+    let refreshed_auth_json = read_codex_auth_from_app(config_path).unwrap_or(auth_json);
+    secrets.update_official_account_profile_usage_and_auth(
+        profile_id,
+        &usage_snapshot,
+        Some(&refreshed_auth_json),
+    )?;
+    if secrets
+        .active_official_account_profile_auth_json()
+        .as_ref()
+        == Some(&refreshed_auth_json)
+    {
+        gateway
+            .store
+            .put_codex_account_snapshot(&codex_account_usage_status_snapshot(&usage));
+    }
+    Ok(usage.signed_in)
+}
+
 fn codex_account_usage_status_snapshot(usage: &CodexAccountUsageRead) -> serde_json::Value {
     serde_json::json!({
       "ok": usage.error.is_empty(),
@@ -438,19 +524,43 @@ async fn refresh_official_account_profiles_usage(
     config_path: &std::path::Path,
     secrets: &crate::orchestrator::secrets::SecretStore,
 ) -> Result<OfficialAccountProfilesRefreshOutcome, String> {
-    let active_profile_id = secrets
-        .list_official_account_profiles()
-        .into_iter()
+    let profile_summaries = secrets.list_official_account_profiles();
+    let active_profile_id = profile_summaries
+        .iter()
         .find(|profile| profile.active)
-        .map(|profile| profile.id);
+        .map(|profile| profile.id.clone());
+    let profile_summary_by_id = profile_summaries
+        .into_iter()
+        .map(|profile| (profile.id.clone(), profile))
+        .collect::<std::collections::BTreeMap<_, _>>();
     let entries = secrets.list_official_account_profile_auth_entries();
     let mut outcome = OfficialAccountProfilesRefreshOutcome::default();
     for entry in entries {
+        let profile_summary = profile_summary_by_id.get(&entry.id);
+        let now_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
+        let mut profile_home: Option<std::path::PathBuf> = None;
         let usage_result = async {
             let home =
                 ensure_official_account_profile_home(config_path, &entry.id, &entry.auth_json)?;
-            read_codex_account_usage(Some(home.to_string_lossy().as_ref()), Some(&entry.auth_json))
-                .await
+            profile_home = Some(home.clone());
+            let home_text = home.to_string_lossy().to_string();
+            if official_account_auth_needs_runtime_refresh(&entry.auth_json, now_unix_ms) {
+                crate::codex_app_server::refresh_server_in_home(Some(home_text.as_str())).await?;
+            }
+            let mut usage =
+                read_codex_account_usage(Some(home_text.as_str()), Some(&entry.auth_json)).await?;
+            if !has_official_account_usage_limits(&usage)
+                && (official_account_auth_needs_runtime_refresh(&entry.auth_json, now_unix_ms)
+                    || !usage.signed_in)
+            {
+                crate::codex_app_server::refresh_server_in_home(Some(home_text.as_str())).await?;
+                usage = read_codex_account_usage(Some(home_text.as_str()), Some(&entry.auth_json))
+                    .await?;
+            }
+            Ok::<CodexAccountUsageRead, String>(usage)
         }
         .await;
         let usage = match usage_result {
@@ -458,16 +568,20 @@ async fn refresh_official_account_profiles_usage(
             Err(error) => {
                 outcome.failures.push(serde_json::json!({
                     "profileId": entry.id,
+                    "label": profile_summary.and_then(|profile| profile.label.clone().into()),
+                    "email": profile_summary.and_then(|profile| profile.email.clone()),
                     "error": error,
                 }));
                 continue;
             }
         };
         if !has_official_account_usage_limits(&usage) {
-            outcome.failures.push(serde_json::json!({
-                "profileId": entry.id,
-                "error": "official account rate limits unavailable",
-            }));
+                outcome.failures.push(serde_json::json!({
+                    "profileId": entry.id,
+                    "label": profile_summary.map(|profile| profile.label.clone()),
+                    "email": profile_summary.and_then(|profile| profile.email.clone()),
+                    "error": "official account rate limits unavailable",
+                }));
             continue;
         }
         let snapshot = crate::orchestrator::secrets::OfficialAccountUsageSnapshot {
@@ -476,9 +590,18 @@ async fn refresh_official_account_profiles_usage(
             limit_weekly_remaining: usage.limit_weekly_remaining.clone(),
             limit_weekly_reset_at: usage.limit_weekly_reset_at.clone(),
         };
-        if let Err(error) = secrets.update_official_account_profile_usage(&entry.id, &snapshot) {
+        let refreshed_auth_json = profile_home
+            .as_deref()
+            .and_then(read_official_account_profile_home_auth);
+        if let Err(error) = secrets.update_official_account_profile_usage_and_auth(
+            &entry.id,
+            &snapshot,
+            refreshed_auth_json.as_ref(),
+        ) {
             outcome.failures.push(serde_json::json!({
                 "profileId": entry.id,
+                "label": profile_summary.map(|profile| profile.label.clone()),
+                "email": profile_summary.and_then(|profile| profile.email.clone()),
                 "error": error,
             }));
             continue;
@@ -517,6 +640,43 @@ fn read_codex_access_token(auth_json: Option<&Value>) -> Option<String> {
         .map(|token| token.to_string())
 }
 
+const OFFICIAL_ACCOUNT_REFRESH_GRACE_MS: u64 = 5 * 60 * 1000;
+const OFFICIAL_ACCOUNT_REFRESH_STALE_AFTER_MS: u64 = 8 * 24 * 60 * 60 * 1000;
+
+fn official_account_access_token_expires_at_unix_ms(auth_json: &Value) -> Option<u64> {
+    let token = auth_json
+        .get("tokens")
+        .and_then(|tokens| tokens.get("access_token"))
+        .and_then(|value| value.as_str())?;
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        payload,
+    )
+    .ok()?;
+    let json = serde_json::from_slice::<Value>(&bytes).ok()?;
+    let exp = json.get("exp").and_then(|value| value.as_u64())?;
+    exp.checked_mul(1000)
+}
+
+fn official_account_last_refresh_unix_ms(auth_json: &Value) -> Option<u64> {
+    let raw = auth_json.get("last_refresh").and_then(|value| value.as_str())?;
+    let parsed = chrono::DateTime::parse_from_rfc3339(raw).ok()?;
+    let millis = parsed.timestamp_millis();
+    u64::try_from(millis).ok()
+}
+
+fn official_account_auth_needs_runtime_refresh(auth_json: &Value, now_unix_ms: u64) -> bool {
+    if official_account_access_token_expires_at_unix_ms(auth_json)
+        .is_some_and(|value| value <= now_unix_ms.saturating_add(OFFICIAL_ACCOUNT_REFRESH_GRACE_MS))
+    {
+        return true;
+    }
+    official_account_last_refresh_unix_ms(auth_json).is_some_and(|value| {
+        now_unix_ms.saturating_sub(value) >= OFFICIAL_ACCOUNT_REFRESH_STALE_AFTER_MS
+    })
+}
+
 fn ensure_official_account_profile_home(
     config_path: &std::path::Path,
     profile_id: &str,
@@ -532,6 +692,12 @@ fn ensure_official_account_profile_home(
     let text = serde_json::to_string_pretty(auth_json).map_err(|e| e.to_string())?;
     std::fs::write(auth_path, text).map_err(|e| e.to_string())?;
     Ok(home)
+}
+
+fn read_official_account_profile_home_auth(home: &std::path::Path) -> Option<Value> {
+    let auth_path = home.join("auth.json");
+    let text = std::fs::read_to_string(auth_path).ok()?;
+    serde_json::from_str::<Value>(&text).ok()
 }
 
 struct CodexAccountUsageRead {
@@ -735,8 +901,30 @@ fn read_codex_access_token_from_app(config_path: &std::path::Path) -> Option<Str
 #[allow(clippy::await_holding_lock)]
 mod account_switchboard_tests {
     use super::*;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use crate::orchestrator::secrets::SecretStore;
     use std::sync::Arc;
+
+    fn test_id_token(email: &str, plan: &str) -> String {
+        let payload = serde_json::json!({
+            "email": email,
+            "chatgpt_plan_type": plan,
+        });
+        let payload_b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            serde_json::to_vec(&payload).expect("payload json"),
+        );
+        format!("header.{payload_b64}.signature")
+    }
+
+    fn test_access_token_with_exp(exp_unix_secs: u64) -> String {
+        let payload = serde_json::json!({ "exp": exp_unix_secs });
+        let payload_b64 = base64::Engine::encode(
+            &URL_SAFE_NO_PAD,
+            serde_json::to_vec(&payload).expect("payload json"),
+        );
+        format!("header.{payload_b64}.signature")
+    }
 
     #[test]
     fn read_codex_access_token_from_app_uses_app_local_codex_home() {
@@ -781,6 +969,63 @@ mod account_switchboard_tests {
             read_codex_access_token_from_app(&config_path).as_deref(),
             Some("chosen-access")
         );
+    }
+
+    #[test]
+    fn official_account_auth_needs_runtime_refresh_when_access_token_is_expired() {
+        let now_unix_ms = 1_800_000_000_000u64;
+        let auth_json = serde_json::json!({
+            "tokens": {
+                "access_token": test_access_token_with_exp((now_unix_ms / 1000).saturating_sub(1))
+            }
+        });
+
+        assert!(official_account_auth_needs_runtime_refresh(
+            &auth_json,
+            now_unix_ms,
+        ));
+    }
+
+    #[test]
+    fn official_account_auth_needs_runtime_refresh_when_last_refresh_is_stale() {
+        let now_unix_ms = 1_800_000_000_000u64;
+        let stale = chrono::DateTime::from_timestamp_millis(
+            (now_unix_ms - OFFICIAL_ACCOUNT_REFRESH_STALE_AFTER_MS - 1_000) as i64,
+        )
+        .expect("timestamp")
+        .to_rfc3339();
+        let auth_json = serde_json::json!({
+            "last_refresh": stale,
+            "tokens": {
+                "access_token": test_access_token_with_exp((now_unix_ms / 1000).saturating_add(86_400))
+            }
+        });
+
+        assert!(official_account_auth_needs_runtime_refresh(
+            &auth_json,
+            now_unix_ms,
+        ));
+    }
+
+    #[test]
+    fn official_account_auth_does_not_refresh_when_recent_and_unexpired() {
+        let now_unix_ms = 1_800_000_000_000u64;
+        let recent = chrono::DateTime::from_timestamp_millis(
+            (now_unix_ms - 60_000) as i64,
+        )
+        .expect("timestamp")
+        .to_rfc3339();
+        let auth_json = serde_json::json!({
+            "last_refresh": recent,
+            "tokens": {
+                "access_token": test_access_token_with_exp((now_unix_ms / 1000).saturating_add(86_400))
+            }
+        });
+
+        assert!(!official_account_auth_needs_runtime_refresh(
+            &auth_json,
+            now_unix_ms,
+        ));
     }
 
     #[test]
@@ -930,6 +1175,65 @@ mod account_switchboard_tests {
         ));
     }
 
+    #[test]
+    fn resolve_codex_account_login_target_materializes_profile_into_runtime_auth() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+        write_codex_auth_to_app(
+            &config_path,
+            &serde_json::json!({
+                "tokens": {
+                    "account_id": "app-acct",
+                    "access_token": "app-token"
+                }
+            }),
+        )
+        .expect("seed app auth");
+
+        let store = SecretStore::new(tmp.path().join("user-data").join("secrets.json"));
+        let profile = store
+            .capture_official_account_profile(
+                &serde_json::json!({
+                    "tokens": {
+                        "account_id": "profile-acct",
+                        "access_token": "profile-token"
+                    }
+                }),
+                Some("Official account 1"),
+                None,
+            )
+            .expect("capture profile");
+
+        let target = resolve_codex_account_login_target(&config_path, &store, Some(&profile.id))
+            .expect("resolve target");
+
+        assert_eq!(target.profile_id.as_deref(), Some(profile.id.as_str()));
+        assert_eq!(
+            target
+                .baseline_auth_json
+                .as_ref()
+                .and_then(|json| json.get("tokens"))
+                .and_then(|tokens| tokens.get("access_token"))
+                .and_then(|value| value.as_str()),
+            Some("profile-token")
+        );
+        assert_eq!(
+            target
+                .runtime_auth_json
+                .as_ref()
+                .and_then(|json| json.get("tokens"))
+                .and_then(|tokens| tokens.get("access_token"))
+                .and_then(|value| value.as_str()),
+            Some("profile-token")
+        );
+        assert_eq!(
+            read_codex_access_token_from_app(&config_path).as_deref(),
+            Some("app-token"),
+            "profile reauth target resolution must not rewrite runtime auth before login starts"
+        );
+    }
+
     #[tokio::test]
     async fn refresh_official_account_profiles_usage_reads_each_profile_in_its_own_home() {
         let _guard = crate::codex_app_server::lock_test_globals();
@@ -1018,6 +1322,71 @@ mod account_switchboard_tests {
         assert_eq!(profiles[1].label, "Official account 2");
         assert_eq!(profiles[1].limit_5h_remaining.as_deref(), Some("64%"));
         assert_eq!(profiles[1].limit_weekly_remaining.as_deref(), Some("41%"));
+
+        crate::codex_app_server::_set_test_request_handler(None).await;
+    }
+
+    #[tokio::test]
+    async fn refresh_official_account_profiles_usage_updates_refreshed_auth_plan_label() {
+        let _guard = crate::codex_app_server::lock_test_globals();
+        crate::codex_app_server::_set_test_request_handler(Some(Arc::new(
+            move |codex_home, method, _params| {
+                let home = codex_home.expect("profile home");
+                match method {
+                    "getAuthStatus" => Ok(serde_json::json!({ "authToken": "token-refreshed" })),
+                    "account/rateLimits/read" => {
+                        let refreshed_auth = serde_json::json!({
+                            "tokens": {
+                                "account_id": "acct-1",
+                                "id_token": test_id_token("user@example.com", "free")
+                            }
+                        });
+                        std::fs::write(
+                            std::path::Path::new(home).join("auth.json"),
+                            serde_json::to_string_pretty(&refreshed_auth)
+                                .expect("serialize refreshed auth"),
+                        )
+                        .expect("write refreshed auth");
+                        Ok(serde_json::json!({
+                            "rateLimits": {
+                                "secondary": {
+                                    "usedPercent": 59.0,
+                                    "windowDurationMins": 10080,
+                                    "resetAt": "222"
+                                }
+                            }
+                        }))
+                    }
+                    _ => Err(format!("unexpected method: {method}")),
+                }
+            },
+        )))
+        .await;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir");
+        let store = SecretStore::new(tmp.path().join("user-data").join("secrets.json"));
+        store
+            .capture_official_account_profile(
+                &serde_json::json!({
+                    "tokens": {
+                        "account_id": "acct-1",
+                        "id_token": test_id_token("user@example.com", "prolite")
+                    }
+                }),
+                Some("Official account 1"),
+                None,
+            )
+            .expect("capture profile");
+
+        refresh_official_account_profiles_usage(&config_path, &store)
+            .await
+            .expect("refresh usage");
+
+        let profiles = store.list_official_account_profiles();
+        assert_eq!(profiles[0].plan_label.as_deref(), Some("Free"));
+        assert_eq!(profiles[0].limit_weekly_remaining.as_deref(), Some("41%"));
 
         crate::codex_app_server::_set_test_request_handler(None).await;
     }

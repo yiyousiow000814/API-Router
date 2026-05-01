@@ -71,6 +71,7 @@ function Write-RemoteUpdateStatus {
     [string]$Detail = '',
     [string]$Phase = '',
     [string]$Label = '',
+    [string]$ReasonCode = '',
     [string]$Source = 'worker',
     [Nullable[Int64]]$StartedAtUnixMs = $null,
     [Nullable[Int64]]$FinishedAtUnixMs = $null
@@ -84,16 +85,21 @@ function Write-RemoteUpdateStatus {
   }
   $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   $acceptedAt = $now
-  $requestId = if ($env:API_ROUTER_REMOTE_UPDATE_REQUEST_ID) { $env:API_ROUTER_REMOTE_UPDATE_REQUEST_ID } else { $null }
+  $requestId = if ($env:API_ROUTER_REMOTE_UPDATE_REQUEST_ID) { [string]$env:API_ROUTER_REMOTE_UPDATE_REQUEST_ID } else { $null }
   $timeline = @()
   if (Test-Path $statusPath) {
     try {
       $existing = Get-Content $statusPath -Raw | ConvertFrom-Json
+      $existingRequestId = if ($existing.request_id) { [string]$existing.request_id } else { $null }
+      if ($existingRequestId -and $requestId -and ($existingRequestId -ne $requestId)) {
+        Write-RemoteUpdateLog "Skipping stale status write for request_id=$requestId because current status belongs to request_id=$existingRequestId"
+        return
+      }
       if ($existing.accepted_at_unix_ms) {
         $acceptedAt = [int64]$existing.accepted_at_unix_ms
       }
-      if ($existing.request_id) {
-        $requestId = [string]$existing.request_id
+      if (-not $requestId -and $existingRequestId) {
+        $requestId = $existingRequestId
       }
       if ($existing.timeline) {
         $timeline = @($existing.timeline)
@@ -138,6 +144,7 @@ function Write-RemoteUpdateStatus {
     progress_percent = if ($env:API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT) { [int]$env:API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT } else { $null }
     rollback_available = ([string]$env:API_ROUTER_REMOTE_UPDATE_ROLLBACK_AVAILABLE -eq '1')
     request_id = $requestId
+    reason_code = if ($ReasonCode) { $ReasonCode } else { $null }
     requester_node_id = if ($env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_ID) { $env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_ID } else { $null }
     requester_node_name = if ($env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_NAME) { $env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_NAME } else { $null }
     worker_script = $PSCommandPath
@@ -403,6 +410,24 @@ function Get-ProcessExitCodeOrNull {
   }
 }
 
+function Format-HiddenProcessArgumentToken([string]$Argument) {
+  if ($null -eq $Argument) { return '' }
+  if ($Argument.Length -eq 0) { return '""' }
+  if ($Argument -notmatch '[\s"]') { return $Argument }
+  return '"' + $Argument.Replace('"', '\"') + '"'
+}
+
+function Format-HiddenProcessArgumentString {
+  param([string[]]$ArgumentList)
+
+  $tokens = @()
+  foreach ($argument in $ArgumentList) {
+    $token = Format-HiddenProcessArgumentToken $argument
+    if ($token) { $tokens += $token }
+  }
+  return ($tokens -join ' ')
+}
+
 function Test-GitRevisionExists {
   param(
     [Parameter(Mandatory = $true)]
@@ -498,18 +523,37 @@ function Invoke-HiddenProcess {
       $env:API_ROUTER_REMOTE_UPDATE_BUILD_RESULT_PATH = $buildResultPath
     }
     Write-RemoteUpdateLog "Invoking hidden process: file=$FilePath args=$($ArgumentList -join ' ')"
-    $process = Start-Process -FilePath $FilePath `
-      -ArgumentList $ArgumentList `
-      -WorkingDirectory $RepoRoot `
-      -NoNewWindow:$false `
-      -WindowStyle Hidden `
-      -RedirectStandardOutput $stdoutPath `
-      -RedirectStandardError $stderrPath `
-      -PassThru
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = Format-HiddenProcessArgumentString -ArgumentList $ArgumentList
+    $startInfo.WorkingDirectory = $RepoRoot
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    Write-RemoteUpdateLog "Hidden process started: pid=$($process.Id); file=$FilePath"
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
     $process.WaitForExit()
     $exitCode = Get-ProcessExitCodeOrNull -Process $process
-    $stdout = if (Test-Path $stdoutPath) { Get-Content -Path $stdoutPath -Raw -ErrorAction SilentlyContinue } else { '' }
-    $stderr = if (Test-Path $stderrPath) { Get-Content -Path $stderrPath -Raw -ErrorAction SilentlyContinue } else { '' }
+    $stdoutClosed = $stdoutTask.Wait(5000)
+    $stderrClosed = $stderrTask.Wait(5000)
+    if (-not $stdoutClosed -or -not $stderrClosed) {
+      Write-RemoteUpdateLog ("Hidden process output stream did not close after process exit: stdout_closed={0}; stderr_closed={1}" -f `
+          $stdoutClosed.ToString().ToLowerInvariant(),
+          $stderrClosed.ToString().ToLowerInvariant())
+    }
+    $stdout = if ($stdoutClosed) { $stdoutTask.Result } else { '' }
+    $stderr = if ($stderrClosed) { $stderrTask.Result } else { '' }
+    if (-not $stdoutClosed) {
+      try { $process.StandardOutput.Dispose() } catch {}
+    }
+    if (-not $stderrClosed) {
+      try { $process.StandardError.Dispose() } catch {}
+    }
+    [System.IO.File]::WriteAllText($stdoutPath, [string]$stdout, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($stderrPath, [string]$stderr, [System.Text.UTF8Encoding]::new($false))
     $combinedOutput = @()
     if ($stdout) { $combinedOutput += $stdout -split "\r?\n" }
     if ($stderr) { $combinedOutput += $stderr -split "\r?\n" }
@@ -651,6 +695,7 @@ Set-RemoteUpdateProgress 100
 $currentStep = 'Completed'
 Write-RemoteUpdateLog 'Remote self-update completed successfully.'
 Write-RemoteUpdateStatus -State 'succeeded' -TargetRef $TargetRef -Detail (Step-Detail $currentStep 'Remote self-update completed successfully.') -Phase 'completed' -Label 'Remote update completed' -StartedAtUnixMs $startedAtUnixMs -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+exit 0
 } catch {
   $message = $_.Exception.Message
   Write-RemoteUpdateLog "$currentStep failed: $message"
@@ -660,10 +705,17 @@ Write-RemoteUpdateStatus -State 'succeeded' -TargetRef $TargetRef -Detail (Step-
       $LASTEXITCODE,
       $_.Exception.GetType().FullName)
   $existingStatus = Read-RemoteUpdateStatus
-  if ($existingStatus -and [string]$existingStatus.state -eq 'rolled_back') {
+  $buildResult = Read-RemoteUpdateBuildResult
+  if ($existingStatus -and [string]$existingStatus.state -eq 'rolled_back' -and $buildResult -and [string]$buildResult.result -eq 'rolled_back') {
     Write-RemoteUpdateLog 'Preserving rolled_back status written by nested build script.'
   } else {
-    Write-RemoteUpdateStatus -State 'failed' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $message) -Phase 'failed' -Label "$currentStep failed" -StartedAtUnixMs $startedAtUnixMs -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+    $reasonCode = 'worker_step_failed'
+    if ($message -match 'worktree is dirty') {
+      $reasonCode = 'dirty_worktree'
+    } elseif ($message -match 'git status failed') {
+      $reasonCode = 'git_status_failed'
+    }
+    Write-RemoteUpdateStatus -State 'failed' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $message) -Phase 'failed' -Label "$currentStep failed" -ReasonCode $reasonCode -StartedAtUnixMs $startedAtUnixMs -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
   }
   throw
 }

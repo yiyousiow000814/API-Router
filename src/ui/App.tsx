@@ -359,8 +359,10 @@ export default function App() {
   const [remoteCodexAccountFollowBusy, setRemoteCodexAccountFollowBusy] =
     useState<Record<string, boolean>>({});
   const pendingOfficialAddAccountRef = useRef<{
+    mode: "add" | "reauth";
     expectedCount: number;
     startedAtUnixMs: number;
+    targetProfileId?: string;
   } | null>(null);
   const [activePage, setActivePage] = useState<TopPage>("dashboard");
   const { runPrimaryRefresh, enqueueBackgroundRefresh } =
@@ -1319,26 +1321,51 @@ export default function App() {
     if (codexAccountProfilesLoading) return;
     const checkedAt = status?.codex_account?.checked_at_unix_ms ?? 0;
     if (checkedAt < pending.startedAtUnixMs) return;
-    pendingOfficialAddAccountRef.current = null;
-    if (codexAccountProfiles.length > pending.expectedCount) {
+    if (
+      pending.mode === "add" &&
+      codexAccountProfiles.length > pending.expectedCount
+    ) {
+      pendingOfficialAddAccountRef.current = null;
       void invoke("codex_account_refresh_async");
       flashToast("Official account added");
       return;
     }
-    if (status?.codex_account?.signed_in) {
+    if (pending.mode === "reauth" && pending.targetProfileId) {
+      const refreshedProfile = codexAccountProfiles.find(
+        (profile) => profile.id === pending.targetProfileId,
+      );
+      if (
+        refreshedProfile &&
+        !refreshedProfile.needs_reauth &&
+        refreshedProfile.updated_at_unix_ms >= pending.startedAtUnixMs
+      ) {
+        pendingOfficialAddAccountRef.current = null;
+        void invoke("codex_account_refresh_async");
+        flashToast("Official account re-authorized");
+        return;
+      }
+    }
+    pendingOfficialAddAccountRef.current = null;
+    if (pending.mode === "add" && status?.codex_account?.signed_in) {
       flashToast(
         "No new official account was added. Browser returned the current official account.",
         "error",
       );
+      return;
+    }
+    if (pending.mode === "reauth") {
+      flashToast(
+        "Official account re-auth did not update this profile. Try again.",
+        "error",
+      );
     }
   }, [
+    codexAccountProfiles,
     codexAccountProfiles.length,
     codexAccountProfilesLoading,
     flashToast,
-    refreshCodexAccountProfiles,
     status?.codex_account?.checked_at_unix_ms,
     status?.codex_account?.signed_in,
-    status?.codex_account,
   ]);
   const onActivateCodexAccountProfile = useCallback(
     async (profileId: string) => {
@@ -1377,19 +1404,55 @@ export default function App() {
           setCodexAccountProfiles((prev) =>
             removeDevPreviewOfficialAccountProfile(prev, profileId),
           );
-          flashToast("Official account removed [TEST]");
+          flashToast("Official account logged out [TEST]");
           return;
         }
         await invoke("codex_account_profile_remove", { profileId });
         await refreshCodexAccountProfiles(status?.codex_account, {
           reason: "profile_remove",
         });
-        flashToast("Official account removed");
+        flashToast("Official account logged out");
       } catch (e) {
         flashToast(String(e), "error");
       }
     },
     [flashToast, isDevPreview, refreshCodexAccountProfiles, status?.codex_account],
+  );
+  const onReauthCodexAccountProfile = useCallback(
+    async (profileId: string) => {
+      try {
+        if (isDevPreview) {
+          setCodexAccountProfiles((prev) =>
+            prev.map((profile) => ({
+              ...profile,
+              active: profile.id === profileId,
+              needs_reauth:
+                profile.id === profileId ? false : profile.needs_reauth,
+            })),
+          );
+          flashToast("Official account re-auth started [TEST]");
+          return;
+        }
+        setCodexAccountProfiles((prev) =>
+          prev.map((profile) => ({
+            ...profile,
+            active: profile.id === profileId,
+          })),
+        );
+        pendingOfficialAddAccountRef.current = {
+          mode: "reauth",
+          expectedCount: codexAccountProfiles.length,
+          startedAtUnixMs: Date.now(),
+          targetProfileId: profileId,
+        };
+        await invoke("codex_account_login", { profileId });
+        flashToast("Re-authenticate this official account in the browser");
+      } catch (e) {
+        pendingOfficialAddAccountRef.current = null;
+        flashToast(String(e), "error");
+      }
+    },
+    [codexAccountProfiles.length, flashToast, isDevPreview],
   );
   const onFollowRemoteCodexAccountProfile = useCallback(
     async (sourceNodeId: string, remoteProfileId: string) => {
@@ -1454,6 +1517,7 @@ export default function App() {
           return;
         }
         pendingOfficialAddAccountRef.current = {
+          mode: "add",
           expectedCount: codexAccountProfiles.length,
           startedAtUnixMs: Date.now(),
         };
@@ -2444,6 +2508,7 @@ export default function App() {
                 remoteCodexAccountFollowBusy={remoteCodexAccountFollowBusy}
                 onActivateCodexAccountProfile={onActivateCodexAccountProfile}
                 onRemoveCodexAccountProfile={onRemoveCodexAccountProfile}
+                onReauthCodexAccountProfile={onReauthCodexAccountProfile}
                 onFollowRemoteCodexAccountProfile={onFollowRemoteCodexAccountProfile}
                 onRefreshRemoteCodexAccountProfiles={refreshRemoteCodexAccountProfiles}
                 onAddCodexAccountProfile={onAddCodexAccountProfile}

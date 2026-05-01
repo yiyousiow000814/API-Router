@@ -1,5 +1,7 @@
 use super::current_unix_secs;
-use crate::orchestrator::gateway::web_codex_home::{default_windows_codex_dir, WorkspaceTarget};
+use crate::orchestrator::gateway::web_codex_home::{
+    default_windows_codex_dir, web_codex_wsl_session_home_for_launch, WorkspaceTarget,
+};
 use crate::orchestrator::gateway::web_codex_rollout_path::session_candidate_should_replace_existing;
 use crate::orchestrator::gateway::web_codex_session_manager::{
     overlay_runtime_thread_item, runtime_thread_payload, CodexSessionManager,
@@ -767,6 +769,10 @@ fn parse_wsl_thread_scan_result(text: &str) -> Result<WslThreadScanResult, Strin
     }
 }
 
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
 fn wsl_thread_scan_script() -> String {
     format!(
         r###"python3 - <<'PY'
@@ -923,7 +929,7 @@ def cache_entry_matches(entry, stat_result):
     cached_mtime_ns = int_or_none(entry.get("mtimeNs"))
     return cached_size == int(stat_result.st_size) and cached_mtime_ns == file_mtime_ns(stat_result)
 
-root = Path.home() / ".codex"
+root = Path(os.environ.get("API_ROUTER_WSL_CODEX_HOME") or (Path.home() / ".codex"))
 sessions_dir = root / "sessions"
 cache_path = root / CACHE_FILE_NAME
 distro = (os.environ.get("WSL_DISTRO_NAME") or "").strip()
@@ -1127,8 +1133,28 @@ async fn fetch_wsl2_threads_from_sessions() -> Result<ThreadFetchResult, String>
             metrics: None,
         });
     }
-    let script = wsl_thread_scan_script();
+    let Some(session_home) = web_codex_wsl_session_home_for_launch() else {
+        return Ok(ThreadFetchResult {
+            items: Vec::new(),
+            metrics: Some(json!({
+                "disabledReason": "wsl-not-configured",
+            })),
+        });
+    };
+    let script = format!(
+        "export API_ROUTER_WSL_CODEX_HOME={};\n{}",
+        shell_single_quote(&session_home.linux_path),
+        wsl_thread_scan_script()
+    );
     let mut cmd = Command::new("wsl.exe");
+    if let Some(distro) = session_home
+        .distro
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        cmd.arg("-d").arg(distro);
+    }
     cmd.arg("-e").arg("bash").arg("-lc").arg(script);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
@@ -1551,11 +1577,12 @@ mod tests {
     use super::{
         build_threads_from_session_dir, clear_history_preview_map_cache_for_test,
         clear_session_file_scan_cache_for_test, collect_jsonl_files,
-        fetch_windows_threads_from_sessions, filter_auxiliary_threads, find_rollout_path_in_items,
-        has_missing_session_rollout_path, merge_items_without_duplicates,
-        overlay_loaded_thread_runtime, parse_history_preview_map, parse_wsl_thread_scan_output,
-        scan_session_file, sort_threads_by_updated_desc, thread_item_should_be_visible,
-        wsl_thread_scan_script, ThreadFilterReason, THREADS_MAX_AGE_SECS,
+        fetch_windows_threads_from_sessions, fetch_wsl2_threads_from_sessions,
+        filter_auxiliary_threads, find_rollout_path_in_items, has_missing_session_rollout_path,
+        merge_items_without_duplicates, overlay_loaded_thread_runtime, parse_history_preview_map,
+        parse_wsl_thread_scan_output, scan_session_file, sort_threads_by_updated_desc,
+        thread_item_should_be_visible, wsl_thread_scan_script, ThreadFilterReason,
+        THREADS_MAX_AGE_SECS,
     };
     use crate::codex_app_server;
     use crate::orchestrator::gateway::web_codex_home::WorkspaceTarget;
@@ -1711,6 +1738,33 @@ mod tests {
         assert!(script.contains("cacheHitCount"));
         assert!(script.contains("parsedFileCount"));
         assert!(script.contains("removedCacheEntryCount"));
+    }
+
+    #[tokio::test]
+    async fn wsl_thread_scan_without_enabled_cli_directory_returns_disabled() {
+        let _test_guard = codex_app_server::lock_test_globals();
+        let app_data = tempfile::tempdir().expect("app data");
+        let _user_data = EnvGuard::set(
+            "API_ROUTER_USER_DATA_DIR",
+            &app_data.path().to_string_lossy(),
+        );
+        let _wsl_home = EnvGuard::set("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", "");
+
+        let result = fetch_wsl2_threads_from_sessions()
+            .await
+            .expect("disabled WSL scan should be a valid empty result");
+
+        assert!(result.items.is_empty());
+        if cfg!(target_os = "windows") {
+            assert_eq!(
+                result
+                    .metrics
+                    .as_ref()
+                    .and_then(|metrics| metrics.get("disabledReason"))
+                    .and_then(Value::as_str),
+                Some("wsl-not-configured")
+            );
+        }
     }
 
     #[test]

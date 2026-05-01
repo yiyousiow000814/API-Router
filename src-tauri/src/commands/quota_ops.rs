@@ -544,6 +544,20 @@ pub(crate) fn set_provider_quota_hard_cap(
     state
         .secrets
         .set_provider_quota_hard_cap(&provider, hard_cap)?;
+    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
+        &state,
+        &provider,
+        serde_json::json!({
+            "quota_hard_cap": hard_cap,
+        }),
+    ) {
+        state.gateway.store.events().emit(
+            &provider,
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
+            &format!("failed to record provider quota hard cap update for LAN sync: {err}"),
+            serde_json::Value::Null,
+        );
+    }
     crate::orchestrator::gateway::clear_web_codex_provider_switchboard_cache();
     state.gateway.store.events().emit(
         &provider,
@@ -572,6 +586,20 @@ pub(crate) fn set_provider_quota_hard_cap_field(
     let hard_cap = state
         .secrets
         .set_provider_quota_hard_cap_field(&provider, normalized_field.as_str(), enabled)?;
+    if let Err(err) = crate::lan_sync::record_provider_definition_patch(
+        &state,
+        &provider,
+        serde_json::json!({
+            "quota_hard_cap": hard_cap,
+        }),
+    ) {
+        state.gateway.store.events().emit(
+            &provider,
+            crate::orchestrator::store::EventCode::LAN_EDIT_SYNC_RECORD_FAILED,
+            &format!("failed to record provider quota hard cap update for LAN sync: {err}"),
+            serde_json::Value::Null,
+        );
+    }
     crate::orchestrator::gateway::clear_web_codex_provider_switchboard_cache();
     state.gateway.store.events().emit(
         &provider,
