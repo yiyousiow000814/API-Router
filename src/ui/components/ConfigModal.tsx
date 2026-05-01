@@ -1116,15 +1116,8 @@ export function remoteUpdateMenuActionLabel(
   pendingStage: RemoteUpdatePendingStage | undefined,
   localBuildSha?: string | null,
 ): string {
-  if (
-    source.build_matches_local &&
-    !source.version_sync_required &&
-    remoteUpdateRollbackActionAvailable(source, pendingStage)
-  ) {
-    return ''
-  }
   const actionState = remoteUpdateActionState(source, pendingStage, localBuildSha)
-  if (actionState.spinning || remoteUpdateRollbackActionAvailable(source, pendingStage)) {
+  if (actionState.spinning) {
     return actionState.actionLabel
   }
   if (source.kind === 'peer' && source.online === false) return 'Offline'
@@ -1248,6 +1241,7 @@ export function ConfigModal({
   dragCardHeight,
   renderProviderCard,
 }: Props) {
+  void onRollbackPeerVersion
   const [sourceMenuOpen, setSourceMenuOpen] = useState(false)
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
   const [remoteUpdateDebugByNode, setRemoteUpdateDebugByNode] = useState<Record<string, LanRemoteUpdateDebugResponse>>({})
@@ -1533,12 +1527,9 @@ export function ConfigModal({
                           effectiveSource.kind === 'peer'
                             ? remoteUpdatePendingByNode[effectiveSource.node_id]
                             : undefined
-                        const rollbackActionAvailable =
-                          effectiveSource.kind === 'peer' &&
-                          remoteUpdateRollbackActionAvailable(effectiveSource, versionSyncPendingStage)
                         const remoteUpdateActionVisible =
                           effectiveSource.kind === 'peer' &&
-                          (versionSyncRequired || rollbackActionAvailable || Boolean(versionSyncPendingStage))
+                          (versionSyncRequired || Boolean(versionSyncPendingStage))
                         const versionSyncActionState =
                           remoteUpdateActionVisible && effectiveSource.kind === 'peer'
                             ? remoteUpdateActionState(effectiveSource, versionSyncPendingStage, localBuildSha)
@@ -1554,13 +1545,11 @@ export function ConfigModal({
                           effectiveSource.trusted &&
                           effectiveSource.build_matches_local === true &&
                           !effectiveSource.version_sync_required &&
-                          !rollbackActionAvailable &&
                           !versionSyncPending
                         const disabled =
                           (effectiveSource.kind === 'peer' &&
                             !pairActionAvailable &&
-                            !versionSyncActionAvailable &&
-                            !rollbackActionAvailable) ||
+                            !versionSyncActionAvailable) ||
                           versionSyncPending
                         const actionLabel =
                           effectiveSource.kind === 'local'
@@ -1646,12 +1635,6 @@ export function ConfigModal({
                                     requestId,
                                   })
                                 }
-                                return
-                              }
-                              if (rollbackActionAvailable) {
-                                if (versionSyncPending) return
-                                if (!window.confirm(remoteUpdateRollbackConfirmationText(effectiveSource))) return
-                                await onRollbackPeerVersion(effectiveSource.node_id)
                                 return
                               }
                               if (versionSyncRequired) {
