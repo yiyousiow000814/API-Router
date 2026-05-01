@@ -188,7 +188,13 @@ describe('useMainContentCallbacks', () => {
     vi.mocked(invoke).mockResolvedValueOnce({
       ok: false,
       refreshed: 1,
-      failures: [{ profileId: 'profile_2', error: 'rate limits unavailable' }],
+      failures: [
+        {
+          profileId: 'profile_2',
+          email: 'yiyousiow1234@gmail.com',
+          error: 'official account rate limits unavailable',
+        },
+      ],
     })
 
     const callbacks = useMainContentCallbacks({
@@ -222,7 +228,7 @@ describe('useMainContentCallbacks', () => {
     await flushAsync()
 
     expect(flashToast).toHaveBeenCalledWith(
-      'Official account refresh incomplete: 1 refreshed, 1 failed (rate limits unavailable)',
+      'Official account refresh partial: 1 updated, 1 unavailable (yiyousiow1234@gmail.com: official account rate limits unavailable)',
       'error',
     )
     expect(refreshStatus).toHaveBeenCalled()

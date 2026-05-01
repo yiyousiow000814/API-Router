@@ -1439,24 +1439,20 @@ export default function App() {
             active: profile.id === profileId,
           })),
         );
-        await invoke<OfficialAccountProfileSummary>(
-          "codex_account_profile_select",
-          { profileId },
-        );
         pendingOfficialAddAccountRef.current = {
           mode: "reauth",
           expectedCount: codexAccountProfiles.length,
           startedAtUnixMs: Date.now(),
           targetProfileId: profileId,
         };
-        await onCodexAddAccount();
+        await invoke("codex_account_login", { profileId });
         flashToast("Re-authenticate this official account in the browser");
       } catch (e) {
         pendingOfficialAddAccountRef.current = null;
         flashToast(String(e), "error");
       }
     },
-    [codexAccountProfiles.length, flashToast, isDevPreview, onCodexAddAccount],
+    [codexAccountProfiles.length, flashToast, isDevPreview],
   );
   const onFollowRemoteCodexAccountProfile = useCallback(
     async (sourceNodeId: string, remoteProfileId: string) => {

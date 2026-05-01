@@ -12,7 +12,7 @@ type RotateGatewayTokenResult = {
 type CodexAccountRefreshResult = {
   ok?: boolean
   refreshed?: number
-  failures?: Array<{ profileId?: string; error?: string }>
+  failures?: Array<{ profileId?: string; label?: string; email?: string; error?: string }>
 }
 
 type Params = {
@@ -136,12 +136,19 @@ export function useMainContentCallbacks(params: Params) {
         const failures = result?.failures ?? []
         if (result?.ok === false || failures.length > 0) {
           const detail = failures
-            .map((failure) => failure.error)
-            .filter(Boolean)
-            .slice(0, 1)
-            .join(': ')
+            .slice(0, 2)
+            .map((failure) => {
+              const name = failure.email || failure.label || failure.profileId || 'unknown account'
+              const error = failure.error?.trim() || 'refresh unavailable'
+              return `${name}: ${error}`
+            })
+            .join(' ; ')
+          const summary =
+            refreshed > 0
+              ? `Official account refresh partial: ${refreshed} updated, ${failures.length} unavailable`
+              : `Official account refresh failed: ${failures.length} unavailable`
           flashToast(
-            `Official account refresh incomplete: ${refreshed} refreshed, ${failures.length} failed${detail ? ` (${detail})` : ''}`,
+            `${summary}${detail ? ` (${detail})` : ''}`,
             'error',
           )
         } else {
