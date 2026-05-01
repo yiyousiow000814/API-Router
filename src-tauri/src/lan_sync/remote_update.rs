@@ -96,6 +96,8 @@ pub struct LanRemoteUpdateStatusSnapshot {
     #[serde(default)]
     pub updated_at_unix_ms: u64,
     #[serde(default)]
+    pub shell_cleanup_completed_at_unix_ms: Option<u64>,
+    #[serde(default)]
     pub timeline: Vec<LanRemoteUpdateTimelineEntry>,
 }
 
@@ -639,6 +641,10 @@ fn join_cleanup_details(details: impl IntoIterator<Item = Option<String>>) -> Op
     (!joined.trim().is_empty()).then_some(joined)
 }
 
+fn remote_update_shell_cleanup_should_run(status: &LanRemoteUpdateStatusSnapshot) -> bool {
+    status.shell_cleanup_completed_at_unix_ms.is_none()
+}
+
 #[cfg(target_os = "windows")]
 fn cleanup_remote_update_marked_shell_processes(
     status: &LanRemoteUpdateStatusSnapshot,
@@ -805,8 +811,11 @@ fn terminate_remote_update_worker(pid: u32) -> Result<Option<bool>, String> {
     }
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let output = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
             .output()
             .map_err(|err| format!("taskkill failed: {err}"))?;
         if output.status.success() {
@@ -870,14 +879,18 @@ fn normalize_remote_update_status(
         return status;
     };
     if state == "succeeded" && current_target_ref == status_target_ref {
-        if let Some(shell_cleanup_detail) = cleanup_remote_update_marked_shell_processes(&status) {
+        if remote_update_shell_cleanup_should_run(&status) {
+            let shell_cleanup_detail = cleanup_remote_update_marked_shell_processes(&status);
             let finished_at_unix_ms = unix_ms();
-            status.detail = Some(match status.detail.as_deref() {
-                Some(detail) if !detail.trim().is_empty() => {
-                    format!("{} {}", detail.trim(), shell_cleanup_detail)
-                }
-                _ => shell_cleanup_detail,
-            });
+            if let Some(shell_cleanup_detail) = shell_cleanup_detail {
+                status.detail = Some(match status.detail.as_deref() {
+                    Some(detail) if !detail.trim().is_empty() => {
+                        format!("{} {}", detail.trim(), shell_cleanup_detail)
+                    }
+                    _ => shell_cleanup_detail,
+                });
+            }
+            status.shell_cleanup_completed_at_unix_ms = Some(finished_at_unix_ms);
             status.updated_at_unix_ms = finished_at_unix_ms;
             let timeline_detail = status.detail.clone();
             append_remote_update_timeline_entry(
@@ -941,6 +954,7 @@ fn normalize_remote_update_status(
         status
             .finished_at_unix_ms
             .get_or_insert(finished_at_unix_ms);
+        status.shell_cleanup_completed_at_unix_ms = Some(finished_at_unix_ms);
         status.updated_at_unix_ms = finished_at_unix_ms;
         let timeline_detail = status.detail.clone();
         append_remote_update_timeline_entry(
@@ -2939,6 +2953,7 @@ pub(crate) async fn lan_sync_remote_update_http(
         started_at_unix_ms: None,
         finished_at_unix_ms: None,
         updated_at_unix_ms: accepted_at_unix_ms,
+        shell_cleanup_completed_at_unix_ms: None,
         timeline: Vec::new(),
     };
     if let Err(err) = write_lan_remote_update_status_with_timeline(
@@ -3351,6 +3366,7 @@ mod tests {
             started_at_unix_ms: None,
             finished_at_unix_ms: None,
             updated_at_unix_ms: 10,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: Vec::new(),
         }
     }
@@ -3598,6 +3614,7 @@ mod tests {
             started_at_unix_ms: None,
             finished_at_unix_ms: Some(20),
             updated_at_unix_ms: 20,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: Vec::new(),
         };
         assert!(!super::remote_update_status_is_publishable(&status));
@@ -3815,6 +3832,7 @@ mod tests {
                 started_at_unix_ms: Some(2),
                 finished_at_unix_ms: None,
                 updated_at_unix_ms: 3,
+                shell_cleanup_completed_at_unix_ms: None,
                 timeline: Vec::new(),
             }),
             provider_fingerprints: Vec::new(),
@@ -3905,6 +3923,7 @@ mod tests {
                 started_at_unix_ms: Some(2),
                 finished_at_unix_ms: None,
                 updated_at_unix_ms: 3,
+                shell_cleanup_completed_at_unix_ms: None,
                 timeline: Vec::new(),
             }),
             provider_fingerprints: Vec::new(),
@@ -4152,6 +4171,7 @@ mod tests {
             started_at_unix_ms: Some(20),
             finished_at_unix_ms: Some(30),
             updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: vec![LanRemoteUpdateTimelineEntry {
                 unix_ms: 30,
                 phase: "completed".to_string(),
@@ -4204,6 +4224,7 @@ mod tests {
             started_at_unix_ms: Some(20),
             finished_at_unix_ms: Some(30),
             updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: vec![LanRemoteUpdateTimelineEntry {
                 unix_ms: 30,
                 phase: "completed".to_string(),
@@ -4308,6 +4329,7 @@ mod tests {
             started_at_unix_ms: Some(2),
             finished_at_unix_ms: Some(3),
             updated_at_unix_ms: 4,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: vec![LanRemoteUpdateTimelineEntry {
                 unix_ms: 4,
                 phase: "failed".to_string(),
@@ -4347,6 +4369,7 @@ mod tests {
             started_at_unix_ms: Some(20),
             finished_at_unix_ms: None,
             updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: vec![LanRemoteUpdateTimelineEntry {
                 unix_ms: 30,
                 phase: "build_exe".to_string(),
@@ -4778,6 +4801,7 @@ mod tests {
             started_at_unix_ms: Some(20),
             finished_at_unix_ms: Some(30),
             updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: vec![LanRemoteUpdateTimelineEntry {
                 unix_ms: 30,
                 phase: "failed".to_string(),
@@ -4797,11 +4821,46 @@ mod tests {
         assert!(normalized.detail.as_deref().is_some_and(
             |detail| detail.contains("Current build already matches the queued target")
         ));
+        assert!(normalized.shell_cleanup_completed_at_unix_ms.is_some());
         assert!(normalized
             .timeline
             .iter()
             .any(|entry| entry.phase == "normalized_succeeded"
                 && entry.label == "Status normalized to succeeded"));
+    }
+
+    #[test]
+    fn completed_shell_cleanup_is_not_repeated_for_succeeded_status() {
+        let Some(target_ref) = normalized_local_build_target_ref() else {
+            return;
+        };
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "succeeded".to_string(),
+            target_ref: target_ref.clone(),
+            from_git_sha: None,
+            to_git_sha: None,
+            current_git_sha: Some(target_ref),
+            previous_git_sha: None,
+            progress_percent: Some(100),
+            rollback_available: false,
+            request_id: Some("ru_done".to_string()),
+            reason_code: None,
+            requester_node_id: None,
+            requester_node_name: None,
+            worker_script: None,
+            worker_pid: Some(123),
+            worker_exit_code: None,
+            detail: Some("done".to_string()),
+            accepted_at_unix_ms: 1,
+            started_at_unix_ms: Some(2),
+            finished_at_unix_ms: Some(3),
+            updated_at_unix_ms: 4,
+            shell_cleanup_completed_at_unix_ms: Some(5),
+            timeline: Vec::new(),
+        };
+
+        assert!(!super::remote_update_shell_cleanup_should_run(&status));
+        assert_eq!(normalize_remote_update_status(status.clone()), status);
     }
 
     #[test]
@@ -4828,6 +4887,7 @@ mod tests {
             started_at_unix_ms: Some(20),
             finished_at_unix_ms: None,
             updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: vec![LanRemoteUpdateTimelineEntry {
                 unix_ms: 30,
                 phase: "health_check_succeeded".to_string(),
@@ -4876,6 +4936,7 @@ mod tests {
             started_at_unix_ms: Some(20),
             finished_at_unix_ms: Some(30),
             updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: vec![LanRemoteUpdateTimelineEntry {
                 unix_ms: 30,
                 phase: "normalized_superseded".to_string(),
@@ -4931,6 +4992,7 @@ mod tests {
             started_at_unix_ms: Some(20),
             finished_at_unix_ms: Some(30),
             updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: vec![LanRemoteUpdateTimelineEntry {
                 unix_ms: 30,
                 phase: "completed".to_string(),

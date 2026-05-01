@@ -108,6 +108,9 @@ const LAN_EDIT_SYNC_LOOP_INTERVAL_MS: u64 = 1_000;
 const LAN_EDIT_SYNC_BATCH_LIMIT: usize = 512;
 const LAN_DEBUG_BATCH_LIMIT: usize = 256;
 const LAN_PACKET_SOFT_LIMIT_BYTES: usize = 8 * 1024;
+const LAN_HEARTBEAT_REMOTE_UPDATE_DETAIL_CHARS: usize = 512;
+const LAN_HEARTBEAT_REMOTE_UPDATE_TIMELINE_ENTRIES: usize = 3;
+const LAN_HEARTBEAT_REMOTE_UPDATE_TIMELINE_DETAIL_CHARS: usize = 256;
 const LAN_SOCKET_RETRY_MS: u64 = 2_000;
 const LAN_PEER_DIAGNOSTICS_LOG_MAX_BYTES: usize = 64 * 1024;
 const LAN_PAIR_REQUEST_TTL_MS: u64 = 5 * 60 * 1000;
@@ -1914,6 +1917,42 @@ fn send_wire_bytes(addr: SocketAddr, bytes: &[u8]) -> Result<(), String> {
         .map_err(|err| format!("lan send failed: {err}"))
 }
 
+fn truncate_chars(value: &mut String, max_chars: usize) {
+    if value.chars().count() <= max_chars {
+        return;
+    }
+    let keep_chars = max_chars.saturating_sub(3).max(1);
+    let truncate_at = value
+        .char_indices()
+        .nth(keep_chars)
+        .map(|(idx, _)| idx)
+        .unwrap_or(value.len());
+    value.truncate(truncate_at);
+    value.push_str("...");
+}
+
+fn compact_remote_update_status_for_heartbeat(
+    status: Option<LanRemoteUpdateStatusSnapshot>,
+) -> Option<LanRemoteUpdateStatusSnapshot> {
+    let mut status = status?;
+    if let Some(detail) = status.detail.as_mut() {
+        truncate_chars(detail, LAN_HEARTBEAT_REMOTE_UPDATE_DETAIL_CHARS);
+    }
+    if status.timeline.len() > LAN_HEARTBEAT_REMOTE_UPDATE_TIMELINE_ENTRIES {
+        let remove_count = status
+            .timeline
+            .len()
+            .saturating_sub(LAN_HEARTBEAT_REMOTE_UPDATE_TIMELINE_ENTRIES);
+        status.timeline.drain(0..remove_count);
+    }
+    for entry in &mut status.timeline {
+        if let Some(detail) = entry.detail.as_mut() {
+            truncate_chars(detail, LAN_HEARTBEAT_REMOTE_UPDATE_TIMELINE_DETAIL_CHARS);
+        }
+    }
+    Some(status)
+}
+
 fn send_wire_packet(addr: SocketAddr, packet: &LanWirePacket) -> Result<(), String> {
     let bytes = serde_json::to_vec(packet).map_err(|err| err.to_string())?;
     if bytes.len() > LAN_PACKET_SOFT_LIMIT_BYTES {
@@ -3424,7 +3463,8 @@ fn run_sender(runtime: LanSyncRuntime, gateway: crate::orchestrator::gateway::Ga
         heartbeat_sequence = heartbeat_sequence.saturating_add(1);
         let remote_update_started_unix_ms = unix_ms();
         let remote_update_readiness = Some(current_local_remote_update_readiness());
-        let remote_update_status = load_lan_remote_update_status();
+        let remote_update_status =
+            compact_remote_update_status_for_heartbeat(load_lan_remote_update_status());
         let remote_update_elapsed_ms = heartbeat_step_elapsed_ms(remote_update_started_unix_ms);
         let sync_contracts_started_unix_ms = unix_ms();
         let sync_contracts = local_sync_contracts();
@@ -5288,6 +5328,7 @@ mod tests {
             started_at_unix_ms: Some(2),
             finished_at_unix_ms: None,
             updated_at_unix_ms: 2,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: Vec::new(),
         })
         .expect("write remote update status");
@@ -5347,6 +5388,7 @@ mod tests {
             started_at_unix_ms: None,
             finished_at_unix_ms: None,
             updated_at_unix_ms: 1,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: Vec::new(),
         })
         .expect("write accepted status");
@@ -5411,6 +5453,7 @@ mod tests {
             started_at_unix_ms: Some(2),
             finished_at_unix_ms: Some(3),
             updated_at_unix_ms: 3,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: Vec::new(),
         };
         super::write_lan_remote_update_status(&status).expect("write remote update status");
@@ -5459,6 +5502,7 @@ mod tests {
             started_at_unix_ms: Some(2),
             finished_at_unix_ms: None,
             updated_at_unix_ms: 3,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: Vec::new(),
         };
         super::write_lan_remote_update_status(&status).expect("write remote update status");
@@ -5556,6 +5600,7 @@ mod tests {
             started_at_unix_ms: Some(2),
             finished_at_unix_ms: Some(4),
             updated_at_unix_ms: 4,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: vec![
                 LanRemoteUpdateTimelineEntry {
                     unix_ms: 2,
@@ -5641,6 +5686,7 @@ mod tests {
             started_at_unix_ms: None,
             finished_at_unix_ms: None,
             updated_at_unix_ms: 1,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: Vec::new(),
         })
         .expect("write accepted status");
@@ -5689,6 +5735,7 @@ mod tests {
             started_at_unix_ms: None,
             finished_at_unix_ms: None,
             updated_at_unix_ms: 1,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: Vec::new(),
         })
         .expect("write accepted status");
@@ -5740,6 +5787,7 @@ mod tests {
             started_at_unix_ms: None,
             finished_at_unix_ms: None,
             updated_at_unix_ms: fresh_unix_ms,
+            shell_cleanup_completed_at_unix_ms: None,
             timeline: Vec::new(),
         })
         .expect("write accepted status");
@@ -6324,6 +6372,83 @@ mod tests {
         assert!(matches!(decoded, Some(LanSyncPacket::Heartbeat(_))));
         let raw = String::from_utf8(bytes).expect("utf8");
         assert!(raw.contains("\"wire_kind\":\"heartbeat\""));
+    }
+
+    #[test]
+    fn heartbeat_remote_update_status_is_compacted_before_broadcast() {
+        let (_tmp, state) = build_test_state();
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "succeeded".to_string(),
+            target_ref: "f6df7385c5535a975edf6bcf7e1f44284fd801ea".to_string(),
+            from_git_sha: Some("before".to_string()),
+            to_git_sha: Some("f6df7385c5535a975edf6bcf7e1f44284fd801ea".to_string()),
+            current_git_sha: Some("f6df7385c5535a975edf6bcf7e1f44284fd801ea".to_string()),
+            previous_git_sha: Some("before".to_string()),
+            progress_percent: Some(100),
+            rollback_available: true,
+            request_id: Some("ru_done".to_string()),
+            reason_code: None,
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Remote Desk".to_string()),
+            worker_script: Some("worker.ps1".to_string()),
+            worker_pid: Some(123),
+            worker_exit_code: None,
+            detail: Some("x".repeat(24_000)),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: Some(20),
+            finished_at_unix_ms: Some(30),
+            updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: Some(30),
+            timeline: (0..24)
+                .map(|idx| LanRemoteUpdateTimelineEntry {
+                    unix_ms: idx,
+                    phase: format!("phase_{idx}"),
+                    label: format!("Label {idx}"),
+                    detail: Some("y".repeat(2_000)),
+                    source: "worker".to_string(),
+                    state: "running".to_string(),
+                })
+                .collect(),
+        };
+
+        let compact = super::compact_remote_update_status_for_heartbeat(Some(status))
+            .expect("compact status");
+        assert!(compact.detail.as_deref().unwrap_or_default().len() < 600);
+        assert_eq!(
+            compact.timeline.len(),
+            super::LAN_HEARTBEAT_REMOTE_UPDATE_TIMELINE_ENTRIES
+        );
+        assert!(compact.timeline.iter().all(|entry| entry
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .len()
+            < 300));
+
+        let bytes = serialize_wire_packet(
+            &state.gateway,
+            &LanSyncPacket::Heartbeat(Box::new(LanHeartbeatPacket {
+                version: 1,
+                node_id: "node-x".to_string(),
+                node_name: "Desk".to_string(),
+                listen_port: 4000,
+                remote_update_updater_port: Some(4001),
+                sent_at_unix_ms: 1,
+                sequence: 0,
+                sender_previous_gap_ms: None,
+                sender_previous_elapsed_ms: None,
+                capabilities: vec!["heartbeat_v1".to_string()],
+                build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
+                remote_update_status: Some(compact),
+                sync_contracts: std::collections::BTreeMap::new(),
+                provider_fingerprints: vec![],
+                provider_definitions_revision: String::new(),
+                followed_source_node_id: None,
+            })),
+        )
+        .expect("serialize heartbeat");
+        assert!(bytes.len() < super::LAN_PACKET_SOFT_LIMIT_BYTES);
     }
 
     #[test]
