@@ -645,6 +645,16 @@ fn remote_update_shell_cleanup_should_run(status: &LanRemoteUpdateStatusSnapshot
     status.shell_cleanup_completed_at_unix_ms.is_none()
 }
 
+fn remote_update_status_current_sha_matches(
+    status: &LanRemoteUpdateStatusSnapshot,
+    current_target_ref: &str,
+) -> bool {
+    status
+        .current_git_sha
+        .as_deref()
+        .is_some_and(|sha| sha.trim() == current_target_ref)
+}
+
 #[cfg(target_os = "windows")]
 fn cleanup_remote_update_marked_shell_processes(
     status: &LanRemoteUpdateStatusSnapshot,
@@ -922,6 +932,21 @@ fn normalize_remote_update_status(
         {
             return status;
         }
+    }
+    if state == "failed"
+        && current_target_ref != status_target_ref
+        && remote_update_status_current_sha_matches(&status, current_target_ref)
+    {
+        if status.reason_code.is_none()
+            && status
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.to_ascii_lowercase().contains("worktree is dirty"))
+        {
+            status.reason_code = Some("dirty_worktree".to_string());
+            status.updated_at_unix_ms = now_unix_ms;
+        }
+        return status;
     }
 
     if state == "superseded" && current_target_ref != status_target_ref {
@@ -5022,6 +5047,61 @@ mod tests {
             .iter()
             .any(|entry| entry.phase == "normalized_superseded"
                 && entry.label == "Completed status replaced"));
+    }
+
+    #[test]
+    fn normalize_remote_update_status_keeps_dirty_worktree_failure_failed() {
+        let Some(current_ref) = normalized_local_build_target_ref() else {
+            return;
+        };
+        let target_ref = "dirty-target-that-does-not-match-current";
+        assert_ne!(current_ref, target_ref);
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "failed".to_string(),
+            target_ref: target_ref.to_string(),
+            from_git_sha: Some(current_ref.clone()),
+            to_git_sha: None,
+            current_git_sha: Some(current_ref.clone()),
+            previous_git_sha: None,
+            progress_percent: Some(10),
+            rollback_available: false,
+            request_id: Some("ru_dirty".to_string()),
+            reason_code: None,
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some("worker.ps1".to_string()),
+            worker_pid: Some(1234),
+            worker_exit_code: Some(1),
+            detail: Some(
+                "Checking git worktree: worktree is dirty; refusing remote self-update."
+                    .to_string(),
+            ),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: Some(20),
+            finished_at_unix_ms: Some(30),
+            updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
+            timeline: vec![LanRemoteUpdateTimelineEntry {
+                unix_ms: 30,
+                phase: "failed".to_string(),
+                label: "Checking git worktree failed".to_string(),
+                detail: Some("worktree is dirty; refusing remote self-update.".to_string()),
+                source: "worker".to_string(),
+                state: "failed".to_string(),
+            }],
+        };
+
+        let normalized = normalize_remote_update_status(status);
+        assert_eq!(normalized.state, "failed");
+        assert_eq!(normalized.reason_code.as_deref(), Some("dirty_worktree"));
+        assert_eq!(
+            normalized.current_git_sha.as_deref(),
+            Some(current_ref.as_str())
+        );
+        assert!(!normalized
+            .timeline
+            .iter()
+            .any(|entry| entry.phase == "normalized_superseded"));
     }
 
     #[test]

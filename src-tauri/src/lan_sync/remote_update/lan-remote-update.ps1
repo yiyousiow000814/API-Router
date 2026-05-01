@@ -71,6 +71,7 @@ function Write-RemoteUpdateStatus {
     [string]$Detail = '',
     [string]$Phase = '',
     [string]$Label = '',
+    [string]$ReasonCode = '',
     [string]$Source = 'worker',
     [Nullable[Int64]]$StartedAtUnixMs = $null,
     [Nullable[Int64]]$FinishedAtUnixMs = $null
@@ -143,6 +144,7 @@ function Write-RemoteUpdateStatus {
     progress_percent = if ($env:API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT) { [int]$env:API_ROUTER_REMOTE_UPDATE_PROGRESS_PERCENT } else { $null }
     rollback_available = ([string]$env:API_ROUTER_REMOTE_UPDATE_ROLLBACK_AVAILABLE -eq '1')
     request_id = $requestId
+    reason_code = if ($ReasonCode) { $ReasonCode } else { $null }
     requester_node_id = if ($env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_ID) { $env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_ID } else { $null }
     requester_node_name = if ($env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_NAME) { $env:API_ROUTER_REMOTE_UPDATE_REQUESTER_NODE_NAME } else { $null }
     worker_script = $PSCommandPath
@@ -707,7 +709,13 @@ exit 0
   if ($existingStatus -and [string]$existingStatus.state -eq 'rolled_back' -and $buildResult -and [string]$buildResult.result -eq 'rolled_back') {
     Write-RemoteUpdateLog 'Preserving rolled_back status written by nested build script.'
   } else {
-    Write-RemoteUpdateStatus -State 'failed' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $message) -Phase 'failed' -Label "$currentStep failed" -StartedAtUnixMs $startedAtUnixMs -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+    $reasonCode = 'worker_step_failed'
+    if ($message -match 'worktree is dirty') {
+      $reasonCode = 'dirty_worktree'
+    } elseif ($message -match 'git status failed') {
+      $reasonCode = 'git_status_failed'
+    }
+    Write-RemoteUpdateStatus -State 'failed' -TargetRef $TargetRef -Detail (Step-Detail $currentStep $message) -Phase 'failed' -Label "$currentStep failed" -ReasonCode $reasonCode -StartedAtUnixMs $startedAtUnixMs -FinishedAtUnixMs ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
   }
   throw
 }
