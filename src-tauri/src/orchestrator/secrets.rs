@@ -147,6 +147,25 @@ impl ProviderStateBundle {
             .iter()
             .find_map(|(provider, value)| (value == normalized).then(|| provider.clone()))
     }
+
+    pub fn set_provider_quota_hard_cap(
+        &mut self,
+        provider: &str,
+        hard_cap: ProviderQuotaHardCapConfig,
+    ) {
+        if hard_cap == ProviderQuotaHardCapConfig::default() {
+            self.provider_quota_hard_cap.remove(provider);
+        } else {
+            self.provider_quota_hard_cap.insert(
+                provider.to_string(),
+                ProviderQuotaHardCapOverride {
+                    daily: hard_cap.daily,
+                    weekly: hard_cap.weekly,
+                    monthly: hard_cap.monthly,
+                },
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -285,6 +285,9 @@ fn build_followed_provider_state(
                     .insert(provider_name.clone(), proxy_pool.clone());
             }
         }
+        if let Some(hard_cap) = payload.quota_hard_cap {
+            next_bundle.set_provider_quota_hard_cap(&provider_name, hard_cap);
+        }
     }
 
     next_cfg.providers = next_providers;

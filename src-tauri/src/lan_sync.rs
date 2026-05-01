@@ -2063,6 +2063,8 @@ pub struct ProviderDefinitionSnapshotPayload {
     pub usage_login_username: Option<String>,
     #[serde(default)]
     pub usage_login_password: Option<String>,
+    #[serde(default)]
+    pub quota_hard_cap: Option<crate::orchestrator::secrets::ProviderQuotaHardCapConfig>,
 }
 
 fn persist_gateway_config(
@@ -2157,6 +2159,7 @@ fn provider_definition_snapshot_payload(
         usage_token: gateway.secrets.get_usage_token(provider),
         usage_login_username: usage_login.as_ref().map(|value| value.username.clone()),
         usage_login_password: usage_login.as_ref().map(|value| value.password.clone()),
+        quota_hard_cap: Some(gateway.secrets.get_provider_quota_hard_cap(provider)),
     })
 }
 
@@ -2226,6 +2229,13 @@ fn merge_provider_definition_snapshot_payload(
     }
     if let Some(value) = payload_string_field(payload, "usage_login_password") {
         next.usage_login_password = value.filter(|inner| !inner.is_empty());
+    }
+    if let Some(value) = payload.get("quota_hard_cap") {
+        if value.is_null() {
+            next.quota_hard_cap = None;
+        } else if let Ok(hard_cap) = serde_json::from_value(value.clone()) {
+            next.quota_hard_cap = Some(hard_cap);
+        }
     }
     next
 }
@@ -5036,6 +5046,7 @@ fn local_provider_definition_sync_items_from_config(
                     usage_token: secrets.get_usage_token(&provider_name),
                     usage_login_username: usage_login.as_ref().map(|value| value.username.clone()),
                     usage_login_password: usage_login.as_ref().map(|value| value.password.clone()),
+                    quota_hard_cap: Some(secrets.get_provider_quota_hard_cap(&provider_name)),
                 })
                 .ok()?,
                 lamport_ts: 0,
@@ -6817,6 +6828,50 @@ mod tests {
         assert_eq!(followed.amount_usd, 0.035);
         assert_eq!(followed.periods.len(), 1);
         assert_eq!(followed.periods[0].api_key_ref, "sk-local");
+    }
+
+    #[test]
+    fn apply_followed_provider_state_uses_remote_quota_hard_cap() {
+        let (_tmp, state) = build_test_state();
+        state
+            .secrets
+            .set_provider_shared_id("provider_1", "shared-remote")
+            .expect("shared id");
+        state
+            .secrets
+            .set_provider_quota_hard_cap_field("provider_1", "daily", true)
+            .expect("seed local hard cap");
+
+        let event = crate::orchestrator::store::LanEditSyncEvent {
+            event_id: "evt-followed-provider-hard-cap".to_string(),
+            node_id: "node-remote".to_string(),
+            node_name: "Remote".to_string(),
+            created_at_unix_ms: crate::orchestrator::store::unix_ms(),
+            lamport_ts: 1,
+            entity_type: "provider_definition".to_string(),
+            entity_id: "shared-remote".to_string(),
+            op: "patch".to_string(),
+            payload: serde_json::json!({
+                "name": "remote-provider",
+                "display_name": "Remote Provider",
+                "base_url": "https://remote.example/v1",
+                "quota_hard_cap": {
+                    "daily": false,
+                    "weekly": true,
+                    "monthly": true
+                }
+            }),
+        };
+        apply_lan_edit_event(&state.gateway, &state.config_path, &event)
+            .expect("seed remote snapshot");
+
+        apply_followed_provider_state(&state.gateway, &state.config_path, "node-remote")
+            .expect("apply followed state");
+
+        let hard_cap = state.secrets.get_provider_quota_hard_cap("remote-provider");
+        assert!(!hard_cap.daily);
+        assert!(hard_cap.weekly);
+        assert!(hard_cap.monthly);
     }
 
     #[test]
