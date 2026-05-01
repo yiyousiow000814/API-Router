@@ -1712,6 +1712,7 @@ fn fallback_remote_update_debug_packet(
     }
 }
 
+#[cfg(target_os = "windows")]
 fn classify_remote_update_shell_command(command_line: &str) -> &'static str {
     let lower = command_line.to_ascii_lowercase();
     if lower.contains("lan-remote-update.ps1") || lower.contains("lan-remote-update.sh") {

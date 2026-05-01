@@ -5,34 +5,31 @@ fn registered_wsl_distribution_override() -> Option<bool> {
         .map(|value| matches!(value.trim(), "1" | "true" | "yes"))
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 pub(crate) fn registered_wsl_distribution_exists() -> bool {
     #[cfg(test)]
     if let Some(value) = registered_wsl_distribution_override() {
         return value;
     }
 
-    use winreg::enums::HKEY_CURRENT_USER;
-    use winreg::RegKey;
+    #[cfg(windows)]
+    {
+        use winreg::enums::HKEY_CURRENT_USER;
+        use winreg::RegKey;
 
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let Ok(lxss) = hkcu.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Lxss") else {
-        return false;
-    };
-    lxss.enum_keys().flatten().any(|key| {
-        lxss.open_subkey(key)
-            .ok()
-            .and_then(|distro| distro.get_value::<String, _>("DistributionName").ok())
-            .is_some_and(|name| !name.trim().is_empty())
-    })
-}
-
-#[cfg(not(windows))]
-pub(crate) fn registered_wsl_distribution_exists() -> bool {
-    #[cfg(test)]
-    if let Some(value) = registered_wsl_distribution_override() {
-        return value;
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let Ok(lxss) = hkcu.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Lxss")
+        else {
+            return false;
+        };
+        lxss.enum_keys().flatten().any(|key| {
+            lxss.open_subkey(key)
+                .ok()
+                .and_then(|distro| distro.get_value::<String, _>("DistributionName").ok())
+                .is_some_and(|name| !name.trim().is_empty())
+        })
     }
 
+    #[cfg(not(windows))]
     false
 }
