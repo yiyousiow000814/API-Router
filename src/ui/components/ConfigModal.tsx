@@ -353,6 +353,7 @@ export function remoteUpdateRollbackActionAvailable(
   pendingStage?: RemoteUpdatePendingStage,
 ): boolean {
   if (source.kind !== 'peer' || !source.trusted) return false
+  if (source.build_matches_local && !source.version_sync_required) return false
   const status = source.remote_update_status
   if (!status?.rollback_available) return pendingRemoteUpdateRollbackActionAvailable(source, pendingStage)
   const state = status.state?.trim()
@@ -1112,8 +1113,7 @@ export function keepSourceMenuOpenAfterAction(source: ConfigSource): boolean {
   return (
     source.kind === 'peer' &&
     (Boolean(source.version_sync_required) ||
-      (Boolean(source.remote_update_status?.rollback_available) &&
-        source.remote_update_status?.state?.trim() !== 'rolled_back'))
+      remoteUpdateRollbackActionAvailable(source))
   )
 }
 

@@ -1867,7 +1867,7 @@ describe('ConfigModal', () => {
     ).toBe(false)
   })
 
-  it('exposes rollback as the peer action when the rollback slot is available', () => {
+  it('does not expose rollback when the peer already matches the current build', () => {
     const config = buildConfig()
     const source = {
       ...config.config_source!.sources[0],
@@ -1903,14 +1903,14 @@ describe('ConfigModal', () => {
     }
 
     const actionState = remoteUpdateActionState(source, undefined, 'bad1234567890')
-    expect(remoteUpdateRollbackActionAvailable(source)).toBe(true)
+    expect(remoteUpdateRollbackActionAvailable(source)).toBe(false)
     expect(actionState).toEqual({
-      actionLabel: 'Rollback peer',
-      actionDetail: 'Restore previous build good1234',
+      actionLabel: 'Update peer',
+      actionDetail: 'Sync to this build',
       spinning: false,
     })
-    expect(remoteUpdateMenuActionLabel(source, undefined, 'bad1234567890')).toBe('')
-    expect(shouldShowRemoteUpdateMenuDetail(source, actionState, 'bad1234567890')).toBe(true)
+    expect(remoteUpdateMenuActionLabel(source, undefined, 'bad1234567890')).toBe('Update peer')
+    expect(shouldShowRemoteUpdateMenuDetail(source, actionState, 'bad1234567890')).toBe(false)
   })
 
   it('keeps rollback available after the local machine moves past the bad peer build', () => {
