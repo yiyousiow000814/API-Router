@@ -1516,6 +1516,13 @@ export function ConfigModal({
                           effectiveSource.online !== false &&
                           (!effectiveSource.trusted ||
                             (effectiveSource.trusted && effectiveSource.follow_allowed && !effectiveSource.active))
+                        const sameBuildIdlePeer =
+                          effectiveSource.kind === 'peer' &&
+                          effectiveSource.trusted &&
+                          effectiveSource.build_matches_local === true &&
+                          !effectiveSource.version_sync_required &&
+                          !rollbackActionAvailable &&
+                          !versionSyncPending
                         const disabled =
                           (effectiveSource.kind === 'peer' &&
                             !pairActionAvailable &&
@@ -1531,6 +1538,8 @@ export function ConfigModal({
                               ? remoteUpdateMenuActionLabel(effectiveSource, versionSyncPendingStage, localBuildSha)
                             : effectiveSource.online === false
                               ? 'Offline'
+                              : sameBuildIdlePeer
+                              ? ''
                               : effectiveSource.active
                               ? 'Following'
                               : !source.trusted && pairState === 'incoming_request'

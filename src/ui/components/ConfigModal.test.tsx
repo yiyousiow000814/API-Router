@@ -1913,6 +1913,84 @@ describe('ConfigModal', () => {
     expect(shouldShowRemoteUpdateMenuDetail(source, actionState, 'bad1234567890')).toBe(false)
   })
 
+  it('renders no action label for a trusted peer that already matches the current build', () => {
+    const config = buildConfig()
+    config.config_source = {
+      mode: 'local',
+      followed_node_id: null,
+      sources: [
+        config.config_source!.sources[0],
+        {
+          kind: 'peer',
+          node_id: 'node-b',
+          node_name: 'Desk B',
+          active: false,
+          trusted: true,
+          online: true,
+          follow_allowed: false,
+          follow_blocked_reason: null,
+          using_count: 1,
+          build_matches_local: true,
+          build_identity: {
+            app_version: '0.4.0',
+            build_git_sha: 'bad1234567890',
+            build_git_short_sha: 'bad12345',
+            build_git_commit_unix_ms: 1775312827000,
+          },
+          version_sync_required: false,
+          version_sync_reason: null,
+          same_version_update_allowed: true,
+          same_version_update_blocked_reason: null,
+          remote_update_status: {
+            state: 'succeeded',
+            target_ref: 'bad1234567890',
+            from_git_sha: 'good1234567890',
+            to_git_sha: 'bad1234567890',
+            current_git_sha: 'bad1234567890',
+            previous_git_sha: 'good1234567890',
+            rollback_available: true,
+            finished_at_unix_ms: 1775312829000,
+            updated_at_unix_ms: 1775312829000,
+          },
+        },
+      ],
+    }
+    const html = renderToStaticMarkup(
+      <ConfigModal
+        open
+        config={config}
+        newProviderName=""
+        newProviderBaseUrl=""
+        newProviderKey=""
+        newProviderKeyStorage="auth_json"
+        nextProviderPlaceholder="provider1"
+        setNewProviderName={() => undefined}
+        setNewProviderBaseUrl={() => undefined}
+        setNewProviderKey={() => undefined}
+        setNewProviderKeyStorage={() => undefined}
+        onAddProvider={() => undefined}
+        onFollowSource={() => undefined}
+        onClearFollowSource={() => undefined}
+        onRequestPair={() => undefined}
+        onApprovePair={() => undefined}
+        onSubmitPairPin={() => undefined}
+        onSyncPeerVersion={() => undefined}
+        onRollbackPeerVersion={() => undefined}
+        remoteUpdatePendingByNode={{}}
+        onOpenGroupManager={() => undefined}
+        onClose={() => undefined}
+        providerListRef={{ current: null }}
+        orderedConfigProviders={['p1']}
+        dragPreviewOrder={null}
+        draggingProvider={null}
+        dragCardHeight={0}
+        renderProviderCard={() => null}
+      />,
+    )
+
+    expect(html).not.toContain('Unavailable')
+  })
+
   it('keeps rollback available after the local machine moves past the bad peer build', () => {
     const config = buildConfig()
     const source = {
