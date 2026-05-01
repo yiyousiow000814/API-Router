@@ -18,7 +18,6 @@ import {
   remoteDebugStatusRelevance,
   remoteUpdateActionState,
   remoteUpdateDetailText,
-  remoteUpdateRollbackConfirmationText,
   remoteUpdateRollbackActionAvailable,
   remoteDebugReadinessReasonText,
   remoteDebugPeerReachabilityDiagnosisText,
@@ -2031,7 +2030,7 @@ describe('ConfigModal', () => {
     expect(html).not.toContain('Unavailable')
   })
 
-  it('keeps rollback available after the local machine moves past the bad peer build', () => {
+  it('shows update peer after the local machine moves past the bad peer build', () => {
     const config = buildConfig()
     const source = {
       ...config.config_source!.sources[0],
@@ -2067,9 +2066,56 @@ describe('ConfigModal', () => {
     }
 
     expect(remoteUpdateRollbackActionAvailable(source)).toBe(true)
-    expect(remoteUpdateMenuActionLabel(source, undefined, 'fix9999999999')).toBe('Rollback peer')
-    expect(remoteUpdateRollbackConfirmationText(source)).toBe(
-      'Rollback Desk B to previous build good1234? This will replace and restart API Router on that peer.',
+    expect(remoteUpdateActionState(source, undefined, 'fix9999999999')).toEqual({
+      actionLabel: 'Update peer',
+      actionDetail: 'Sync to this build',
+      spinning: false,
+    })
+    expect(remoteUpdateMenuActionLabel(source, undefined, 'fix9999999999')).toBe('Update peer')
+  })
+
+  it('prefers update peer over rollback when the peer still needs the current build', () => {
+    const config = buildConfig()
+    const source = {
+      ...config.config_source!.sources[0],
+      kind: 'peer' as const,
+      node_id: 'node-b',
+      node_name: 'Desk B',
+      active: false,
+      trusted: true,
+      follow_allowed: false,
+      using_count: 1,
+      build_matches_local: false,
+      build_identity: {
+        app_version: '0.4.0',
+        build_git_sha: 'd3510a5c0f5b479b519e32178bee6797f3c67ad5',
+        build_git_short_sha: 'd3510a5c',
+        build_git_commit_unix_ms: 1777648620000,
+      },
+      version_sync_required: true,
+      version_sync_reason: 'Desk B requires update.',
+      same_version_update_allowed: true,
+      same_version_update_blocked_reason: null,
+      remote_update_status: {
+        state: 'succeeded',
+        target_ref: 'd3510a5c0f5b479b519e32178bee6797f3c67ad5',
+        from_git_sha: 'ff274d1297fae974d5338f6648228dbb57c538e8',
+        to_git_sha: 'd3510a5c0f5b479b519e32178bee6797f3c67ad5',
+        current_git_sha: 'd3510a5c0f5b479b519e32178bee6797f3c67ad5',
+        previous_git_sha: 'ff274d1297fae974d5338f6648228dbb57c538e8',
+        rollback_available: true,
+        finished_at_unix_ms: 1777648630000,
+        updated_at_unix_ms: 1777648630000,
+      },
+    }
+
+    expect(remoteUpdateActionState(source, undefined, '776357fdc1832ec5c294732725315ca5939f0e48')).toEqual({
+      actionLabel: 'Update peer',
+      actionDetail: 'Sync to this build',
+      spinning: false,
+    })
+    expect(remoteUpdateMenuActionLabel(source, undefined, '776357fdc1832ec5c294732725315ca5939f0e48')).toBe(
+      'Update peer',
     )
   })
 
@@ -2095,7 +2141,7 @@ describe('ConfigModal', () => {
     expect(remoteUpdateMenuActionLabel(source, undefined, 'abc123')).toBe('Offline')
   })
 
-  it('allows rollback for a pending remote update after the peer goes offline', () => {
+  it('keeps queued state visible while a pending remote update refreshes after the peer goes offline', () => {
     const config = buildConfig()
     const source = {
       ...config.config_source!.sources[0],
@@ -2122,11 +2168,11 @@ describe('ConfigModal', () => {
     const actionState = remoteUpdateActionState(source, pendingStage, 'abc123')
     expect(remoteUpdateRollbackActionAvailable(source, pendingStage)).toBe(true)
     expect(actionState).toEqual({
-      actionLabel: 'Rollback peer',
-      actionDetail: 'Restore previous build',
-      spinning: false,
+      actionLabel: 'Queued',
+      actionDetail: 'Peer accepted request. Refreshing remote progress',
+      spinning: true,
     })
-    expect(remoteUpdateMenuActionLabel(source, pendingStage, 'abc123')).toBe('Rollback peer')
+    expect(remoteUpdateMenuActionLabel(source, pendingStage, 'abc123')).toBe('Queued')
   })
 
   it('shows terminal superseded state in dropdown after a superseded update', () => {

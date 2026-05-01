@@ -392,12 +392,6 @@ export function remoteUpdateRollbackActionAvailable(
   )
 }
 
-function remoteUpdateRollbackDetailText(source: ConfigSource): string {
-  const previousSha = source.remote_update_status?.previous_git_sha?.trim() || ''
-  if (!previousSha) return 'Restore previous build'
-  return `Restore previous build ${previousSha.slice(0, 8)}`
-}
-
 export function remoteUpdateRollbackConfirmationText(source: ConfigSource): string {
   const nodeName = source.node_name?.trim() || 'this peer'
   const previousSha = source.remote_update_status?.previous_git_sha?.trim() || ''
@@ -1048,13 +1042,11 @@ export function remoteUpdateActionState(
       spinning: true,
     }
   }
-  if (remoteUpdateRollbackActionAvailable(source, pendingStage)) {
-    return {
-      actionLabel: 'Rollback peer',
-      actionDetail: remoteUpdateRollbackDetailText(source),
-      spinning: false,
-    }
-  }
+  const updateActionPreferred =
+    source.kind === 'peer' &&
+    Boolean(source.version_sync_required) &&
+    source.online !== false &&
+    Boolean(source.same_version_update_allowed)
   if (pendingStage?.stage === 'requesting') {
     return {
       actionLabel: 'Sending...',
@@ -1105,6 +1097,13 @@ export function remoteUpdateActionState(
       spinning: false,
     }
   }
+  if (updateActionPreferred) {
+    return {
+      actionLabel: 'Update peer',
+      actionDetail: 'Sync to this build',
+      spinning: false,
+    }
+  }
   return {
     actionLabel: source.same_version_update_allowed ? 'Update peer' : 'Update blocked',
     actionDetail: 'Sync to this build',
@@ -1140,7 +1139,6 @@ export function shouldShowRemoteUpdateMenuDetail(
   localBuildSha?: string | null,
 ): boolean {
   if (!actionState?.actionDetail?.trim()) return false
-  if (remoteUpdateRollbackActionAvailable(source)) return true
   if (actionState.spinning) return true
   const remoteState = isRemoteUpdateStatusRelevantToCurrentBuild(source, localBuildSha)
     ? source.remote_update_status?.state?.trim()
@@ -1149,11 +1147,7 @@ export function shouldShowRemoteUpdateMenuDetail(
 }
 
 export function keepSourceMenuOpenAfterAction(source: ConfigSource): boolean {
-  return (
-    source.kind === 'peer' &&
-    (Boolean(source.version_sync_required) ||
-      remoteUpdateRollbackActionAvailable(source))
-  )
+  return source.kind === 'peer' && Boolean(source.version_sync_required)
 }
 
 export function formatBuildLabel(buildIdentity: BuildIdentity): string {
