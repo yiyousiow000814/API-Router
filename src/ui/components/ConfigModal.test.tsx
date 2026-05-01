@@ -1909,7 +1909,7 @@ describe('ConfigModal', () => {
       actionDetail: 'Restore previous build good1234',
       spinning: false,
     })
-    expect(remoteUpdateMenuActionLabel(source, undefined, 'bad1234567890')).toBe('Rollback peer')
+    expect(remoteUpdateMenuActionLabel(source, undefined, 'bad1234567890')).toBe('')
     expect(shouldShowRemoteUpdateMenuDetail(source, actionState, 'bad1234567890')).toBe(true)
   })
 

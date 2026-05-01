@@ -1077,6 +1077,13 @@ export function remoteUpdateMenuActionLabel(
   pendingStage: RemoteUpdatePendingStage | undefined,
   localBuildSha?: string | null,
 ): string {
+  if (
+    source.build_matches_local &&
+    !source.version_sync_required &&
+    remoteUpdateRollbackActionAvailable(source, pendingStage)
+  ) {
+    return ''
+  }
   const actionState = remoteUpdateActionState(source, pendingStage, localBuildSha)
   if (actionState.spinning || remoteUpdateRollbackActionAvailable(source, pendingStage)) {
     return actionState.actionLabel
