@@ -110,9 +110,13 @@ describe('HeroCodexCard', () => {
   })
 
   it('uses the selected profile usage for the codex auth hero cards', () => {
+    const status = buildStatus()
+    status.codex_account.checked_at_unix_ms = Date.UTC(2026, 4, 1, 8, 0, 0)
+    const profileUpdatedAt = Date.UTC(2026, 3, 24, 2, 11, 36)
+    const usageUpdatedAt = Date.UTC(2026, 4, 1, 4, 32, 25)
     const html = renderToStaticMarkup(
       <HeroCodexCard
-        status={buildStatus()}
+        status={status}
         onLoginLogout={() => {}}
         onRefresh={() => {}}
         refreshing={false}
@@ -128,7 +132,8 @@ describe('HeroCodexCard', () => {
           {
             id: 'official_1',
             label: 'Official account 1',
-            updated_at_unix_ms: Date.now(),
+            updated_at_unix_ms: profileUpdatedAt,
+            usage_updated_at_unix_ms: usageUpdatedAt,
             active: true,
             limit_5h_remaining: '64%',
             limit_5h_reset_at: String(Date.now() + 5 * 60 * 60 * 1000),
@@ -145,6 +150,8 @@ describe('HeroCodexCard', () => {
 
     expect(html).toContain('64%')
     expect(html).toContain('41%')
+    expect(html).toContain('01-05-2026')
+    expect(html).not.toContain('24-04-2026')
     expect(html).not.toContain('87%')
   })
 

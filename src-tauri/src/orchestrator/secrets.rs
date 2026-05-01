@@ -901,10 +901,11 @@ impl SecretStore {
         self.select_official_account_profile(&imported.id)
     }
 
-    pub fn update_official_account_profile_usage(
+    pub fn update_official_account_profile_usage_and_auth(
         &self,
         profile_id: &str,
         usage: &OfficialAccountUsageSnapshot,
+        auth_json: Option<&serde_json::Value>,
     ) -> Result<(), String> {
         let mut data = self.inner.lock();
         merge_official_account_profiles(&mut data);
@@ -912,7 +913,14 @@ impl SecretStore {
             .official_account_profiles
             .get_mut(profile_id)
             .ok_or_else(|| format!("official account profile not found: {profile_id}"))?;
-        profile.usage_updated_at_unix_ms = Some(unix_ms_now());
+        let now = unix_ms_now();
+        if let Some(auth_json) = auth_json {
+            if profile.auth_json != *auth_json {
+                profile.auth_json = auth_json.clone();
+                profile.updated_at_unix_ms = now;
+            }
+        }
+        profile.usage_updated_at_unix_ms = Some(now);
         profile.limit_5h_remaining = usage.limit_5h_remaining.clone();
         profile.limit_5h_reset_at = usage.limit_5h_reset_at.clone();
         profile.limit_weekly_remaining = usage.limit_weekly_remaining.clone();

@@ -95,7 +95,9 @@ export function HeroCodexCard({
   const remoteAccountRefreshKey = buildRemoteAccountRefreshKey(status)
   const lastRemoteAccountRefreshKeyRef = useRef<string | null>(null)
   const displayedCheckedAt =
-    selectedProfile?.updated_at_unix_ms ?? status.codex_account?.checked_at_unix_ms
+    selectedProfile?.usage_updated_at_unix_ms ??
+    selectedProfile?.updated_at_unix_ms ??
+    status.codex_account?.checked_at_unix_ms
   const displayed5hRemaining =
     selectedProfile?.limit_5h_remaining ?? status.codex_account?.limit_5h_remaining ?? '-'
   const displayed5hResetAt =
