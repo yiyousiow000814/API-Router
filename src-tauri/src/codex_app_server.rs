@@ -138,6 +138,17 @@ fn normalize_optional_field(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+fn local_legacy_rpc_result(method: &str) -> Option<Value> {
+    match method.trim() {
+        "bridge/approvals/list"
+        | "approvals/list"
+        | "bridge/userInput/list"
+        | "userInput/list"
+        | "request_user_input/list" => Some(Value::Array(Vec::new())),
+        _ => None,
+    }
+}
+
 fn replay_notification_state(
     st: &NotificationState,
     since_event_id: u64,
@@ -3221,6 +3232,67 @@ mod tests {
         assert_eq!(result.get("via").and_then(|v| v.as_str()), Some("bridge"));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn legacy_pending_input_methods_resolve_locally_for_native_homes() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+        _set_test_request_handler(Some(std::sync::Arc::new(|_codex_home, method, _params| {
+            Err(format!(
+                "legacy method should not reach native app server: {method}"
+            ))
+        })))
+        .await;
+
+        for method in [
+            "bridge/approvals/list",
+            "approvals/list",
+            "bridge/userInput/list",
+            "userInput/list",
+            "request_user_input/list",
+        ] {
+            let result = request_in_home(
+                Some(r"C:\Users\yiyou\API-Router\user-data\codex-home"),
+                method,
+                serde_json::json!({}),
+            )
+            .await
+            .expect("local legacy result");
+            assert_eq!(result, Value::Array(Vec::new()), "method {method}");
+        }
+
+        _set_test_request_handler(None).await;
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn legacy_pending_input_methods_resolve_locally_for_wsl_homes() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+        crate::codex_wsl_bridge::_set_test_rpc_handler(Some(std::sync::Arc::new(
+            |_, method, _| Err(format!("legacy method should not reach bridge: {method}")),
+        )))
+        .await;
+
+        for method in [
+            "bridge/approvals/list",
+            "approvals/list",
+            "bridge/userInput/list",
+            "userInput/list",
+            "request_user_input/list",
+        ] {
+            let result = request_in_home(
+                Some(r"\\wsl.localhost\Ubuntu\home\me\.codex"),
+                method,
+                serde_json::json!({}),
+            )
+            .await
+            .expect("local legacy result");
+            assert_eq!(result, Value::Array(Vec::new()), "method {method}");
+        }
+
+        crate::codex_wsl_bridge::_set_test_rpc_handler(None).await;
+    }
+
     #[cfg(target_os = "windows")]
     #[tokio::test(flavor = "current_thread")]
     async fn wsl_homes_route_notification_replay_through_bridge_transport() {
@@ -4499,6 +4571,10 @@ pub async fn request_in_home(
     method: &str,
     params: Value,
 ) -> Result<Value, String> {
+    if let Some(result) = local_legacy_rpc_result(method) {
+        return Ok(result);
+    }
+
     #[cfg(test)]
     if let Some(result) = maybe_handle_test_request(codex_home, method, &params).await {
         return result;
