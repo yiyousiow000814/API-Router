@@ -134,6 +134,7 @@ fn daemon_binary_matches_identity(
     file_contains_ascii_marker(daemon_exe_path, app_version)
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn runtime_paths_match(left: &Path, right: &Path) -> bool {
     let left = std::fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
     let right = std::fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
@@ -145,6 +146,7 @@ fn runtime_paths_match(left: &Path, right: &Path) -> bool {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn read_daemon_pid_from_state(state_path: &Path) -> Option<u32> {
     std::fs::read_to_string(state_path)
         .ok()
@@ -170,11 +172,6 @@ fn live_process_executable_path(pid: u32) -> Option<PathBuf> {
     (!path.is_empty()).then_some(PathBuf::from(path))
 }
 
-#[cfg(not(target_os = "windows"))]
-fn live_process_executable_path(_pid: u32) -> Option<PathBuf> {
-    None
-}
-
 #[cfg(target_os = "windows")]
 fn terminate_pid(pid: u32) {
     let _ = std::process::Command::new("taskkill")
@@ -183,9 +180,7 @@ fn terminate_pid(pid: u32) {
         .output();
 }
 
-#[cfg(not(target_os = "windows"))]
-fn terminate_pid(_pid: u32) {}
-
+#[cfg(any(target_os = "windows", test))]
 fn maybe_terminate_stale_daemon_with(
     state_path: &Path,
     daemon_exe_path: &Path,
@@ -214,6 +209,10 @@ fn maybe_terminate_stale_daemon(state_path: &Path, daemon_exe_path: &Path) {
             live_process_executable_path,
             terminate_pid,
         );
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (state_path, daemon_exe_path);
     }
 }
 
