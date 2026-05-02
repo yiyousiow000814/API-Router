@@ -10,6 +10,7 @@ mod lan_sync;
 mod orchestrator;
 mod platform;
 mod provider_switchboard;
+mod shared_tui_runtime;
 mod tailscale_diagnostics;
 
 use tauri::Manager;
@@ -595,6 +596,30 @@ pub fn run() {
             }
             std::env::set_var("API_ROUTER_USER_DATA_DIR", &user_data_dir);
             reset_app_startup_diag();
+            let shared_tui_runtime_started = Instant::now();
+            match crate::shared_tui_runtime::reconcile_shared_tui_runtime(&user_data_dir) {
+                Ok(result) => {
+                    let detail = format!(
+                        "removed_daemon_exe={} removed_state_file={} removed_unsupported_rpc_cache={} wrote_runtime_manifest={}",
+                        result.removed_daemon_exe,
+                        result.removed_state_file,
+                        result.removed_unsupported_rpc_cache,
+                        result.wrote_runtime_manifest,
+                    );
+                    write_app_startup_diag(
+                        "shared_tui_runtime_reconcile",
+                        shared_tui_runtime_started.elapsed().as_millis(),
+                        Some(&detail),
+                    );
+                }
+                Err(err) => {
+                    write_app_startup_diag(
+                        "shared_tui_runtime_reconcile_failed",
+                        shared_tui_runtime_started.elapsed().as_millis(),
+                        Some(&err),
+                    );
+                }
+            }
 
             let build_state_started = Instant::now();
             write_app_startup_diag(
