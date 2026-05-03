@@ -572,7 +572,7 @@ fn write_lan_remote_update_status_with_timeline(
 
 pub(crate) fn display_target_ref(target_ref: &str) -> &str {
     let trimmed = target_ref.trim();
-    if trimmed.len() > 8 && trimmed.chars().all(|ch| ch.is_ascii_hexdigit()) {
+    if trimmed.len() == 40 && trimmed.chars().all(|ch| ch.is_ascii_hexdigit()) {
         &trimmed[..8]
     } else {
         trimmed

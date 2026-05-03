@@ -7542,6 +7542,10 @@ mod tests {
             "b792a683"
         );
         assert_eq!(
+            super::remote_update::display_target_ref("deadbeefcafebabe"),
+            "deadbeefcafebabe"
+        );
+        assert_eq!(
             super::remote_update::display_target_ref("fix/provider-quota-rules"),
             "fix/provider-quota-rules"
         );
