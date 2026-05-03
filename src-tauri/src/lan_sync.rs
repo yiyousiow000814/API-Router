@@ -1085,6 +1085,9 @@ impl LanSyncRuntime {
     ) -> LanSyncStatusSnapshot {
         let now = unix_ms();
         let local_build_identity = current_build_identity();
+        let local_capabilities = lan_heartbeat_capabilities();
+        let local_version_inventory = local_version_inventory();
+        let local_sync_contracts = local_sync_contracts();
         let local_version_sync = current_local_version_sync_snapshot();
         self.prune_pair_state(now);
         let trusted_node_ids = secrets.trusted_lan_node_ids();
@@ -1113,7 +1116,13 @@ impl LanSyncRuntime {
                     peer_pair_request_id(&peer.node_id, &inbound_requests, &outbound_requests);
                 peer.sync_blocked_domains = sync_domains_blocked_for_peer(&peer);
                 peer.sync_diagnostics = sync_domain_diagnostics_for_peer(&peer);
-                peer.build_matches_local = peer.build_identity == local_build_identity;
+                canonicalize_same_build_peer_metadata(
+                    &mut peer,
+                    &local_build_identity,
+                    &local_capabilities,
+                    &local_version_inventory,
+                    &local_sync_contracts,
+                );
                 peer
             })
             .collect();
@@ -1135,12 +1144,12 @@ impl LanSyncRuntime {
                 node_name: self.local_node.node_name.clone(),
                 listen_addr: detect_local_listen_addr(listen_port),
                 remote_update_updater_port: remote_update_updater_port(listen_port),
-                capabilities: lan_heartbeat_capabilities(),
-                version_inventory: local_version_inventory(),
+                capabilities: local_capabilities,
+                version_inventory: local_version_inventory,
                 build_identity: local_build_identity,
                 version_sync: local_version_sync,
                 remote_update_status: load_lan_remote_update_status(),
-                sync_contracts: local_sync_contracts(),
+                sync_contracts: local_sync_contracts,
                 provider_fingerprints: local_provider_fingerprints,
                 provider_definitions_revision: provider_definitions_revision(
                     &local_provider_definition_sync_items_from_config(cfg, secrets),
@@ -4131,6 +4140,24 @@ fn peer_build_matches_local(peer: &LanPeerSnapshot) -> bool {
     peer.build_identity == current_build_identity()
 }
 
+fn canonicalize_same_build_peer_metadata(
+    peer: &mut LanPeerSnapshot,
+    local_build_identity: &LanBuildIdentitySnapshot,
+    local_capabilities: &[String],
+    local_version_inventory: &[String],
+    local_sync_contracts: &std::collections::BTreeMap<String, u32>,
+) {
+    peer.build_matches_local = peer.build_identity == *local_build_identity;
+    if !peer.build_matches_local {
+        return;
+    }
+    peer.capabilities = local_capabilities.to_vec();
+    peer.version_inventory = local_version_inventory.to_vec();
+    peer.sync_contracts = local_sync_contracts.clone();
+    peer.sync_blocked_domains.clear();
+    peer.sync_diagnostics.clear();
+}
+
 fn ensure_peer_sync_contract(
     gateway: &crate::orchestrator::gateway::GatewayState,
     peer: &LanPeerSnapshot,
@@ -5076,15 +5103,16 @@ fn local_provider_definition_sync_items_from_config(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_followed_provider_state, apply_lan_edit_event, deserialize_wire_packet,
-        incoming_event_is_newer, lan_sync_edit_http, lan_sync_provider_definitions_http,
-        lan_sync_remote_update_http, lan_sync_tracked_spend_history_debug_http,
-        lan_sync_usage_http, local_version_sync_target_ref, note_entity_version, peer_is_stale,
-        peer_supports_http_sync, replace_remote_provider_definition_snapshots,
-        restore_local_provider_state, sanitize_node_name, serialize_wire_packet,
-        should_request_immediate_edit_sync, tracked_spend_day_entity_id, LanEditSyncHintPacket,
-        LanEditSyncRequestPacket, LanHeartbeatPacket, LanLocalVersionSyncSnapshot, LanNodeIdentity,
-        LanPeerSnapshot, LanProviderDefinitionSyncItem, LanProviderDefinitionsRequestPacket,
+        apply_followed_provider_state, apply_lan_edit_event, canonicalize_same_build_peer_metadata,
+        deserialize_wire_packet, incoming_event_is_newer, lan_sync_edit_http,
+        lan_sync_provider_definitions_http, lan_sync_remote_update_http,
+        lan_sync_tracked_spend_history_debug_http, lan_sync_usage_http,
+        local_version_sync_target_ref, note_entity_version, peer_is_stale, peer_supports_http_sync,
+        replace_remote_provider_definition_snapshots, restore_local_provider_state,
+        sanitize_node_name, serialize_wire_packet, should_request_immediate_edit_sync,
+        tracked_spend_day_entity_id, LanEditSyncHintPacket, LanEditSyncRequestPacket,
+        LanHeartbeatPacket, LanLocalVersionSyncSnapshot, LanNodeIdentity, LanPeerSnapshot,
+        LanProviderDefinitionSyncItem, LanProviderDefinitionsRequestPacket,
         LanRemoteUpdateDebugRequestPacket, LanRemoteUpdateDebugResponsePacket,
         LanRemoteUpdateReadinessSnapshot, LanRemoteUpdateRequestPacket,
         LanRemoteUpdateStatusSnapshot, LanSyncPacket, LanSyncRuntime,
@@ -7128,6 +7156,44 @@ mod tests {
     }
 
     #[test]
+    fn canonicalize_same_build_peer_metadata_clears_stale_contract_mismatch() {
+        let local_build_identity = super::current_build_identity();
+        let local_capabilities = super::lan_heartbeat_capabilities();
+        let local_sync_contracts = super::local_sync_contracts();
+        let local_version_inventory = super::local_version_inventory();
+
+        let mut peer = test_peer_snapshot();
+        peer.build_matches_local = false;
+        peer.capabilities = vec!["heartbeat_v1".to_string()];
+        peer.version_inventory = vec!["heartbeat_v1".to_string(), "shared_quota_v1".to_string()];
+        peer.sync_contracts =
+            std::collections::BTreeMap::from([(super::SYNC_DOMAIN_SHARED_QUOTA.to_string(), 1)]);
+        peer.sync_blocked_domains = vec![super::SYNC_DOMAIN_SHARED_QUOTA.to_string()];
+        peer.sync_diagnostics = vec![super::LanSyncDomainDiagnosticSnapshot {
+            domain: super::SYNC_DOMAIN_SHARED_QUOTA.to_string(),
+            status: "blocked".to_string(),
+            local_contract_version: 2,
+            peer_contract_version: 1,
+            blocked_reason: Some("shared_quota mismatch".to_string()),
+        }];
+
+        canonicalize_same_build_peer_metadata(
+            &mut peer,
+            &local_build_identity,
+            &local_capabilities,
+            &local_version_inventory,
+            &local_sync_contracts,
+        );
+
+        assert!(peer.build_matches_local);
+        assert_eq!(peer.capabilities, local_capabilities);
+        assert_eq!(peer.version_inventory, local_version_inventory);
+        assert_eq!(peer.sync_contracts, local_sync_contracts);
+        assert!(peer.sync_blocked_domains.is_empty());
+        assert!(peer.sync_diagnostics.is_empty());
+    }
+
+    #[test]
     fn sync_contract_reason_detects_domain_mismatch() {
         let incompatible_peer = super::LanPeerSnapshot {
             node_id: "node-a".to_string(),
@@ -7327,7 +7393,7 @@ mod tests {
                 &super::local_sync_contracts(),
                 super::SYNC_DOMAIN_SHARED_QUOTA
             ),
-            1,
+            2,
             "shared_quota payload shape changed; update samples and bump contract if semantics changed"
         );
         let samples = super::shared_quota_contract_samples();
@@ -7353,7 +7419,7 @@ mod tests {
         assert!(inventory.contains(&"usage_sync_v2".to_string()));
         assert!(inventory.contains(&"usage_requests_v2".to_string()));
         assert!(inventory.contains(&"usage_history_v4".to_string()));
-        assert!(inventory.contains(&"shared_quota_v1".to_string()));
+        assert!(inventory.contains(&"shared_quota_v2".to_string()));
     }
 
     #[test]

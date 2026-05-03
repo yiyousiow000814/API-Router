@@ -129,7 +129,7 @@ const LAN_VERSION_RULES: &[LanVersionRule] = &[
     },
     LanVersionRule {
         name: SYNC_DOMAIN_SHARED_QUOTA,
-        version: 1,
+        version: 2,
         kind: LanVersionKind::SyncContract,
         bump_rule:
             "Bump when shared quota owner selection, quota snapshot payloads, or canonical quota semantics change.",
