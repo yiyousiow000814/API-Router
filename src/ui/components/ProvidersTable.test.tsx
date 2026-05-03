@@ -498,4 +498,74 @@ describe('ProvidersTable', () => {
     expect(html).not.toContain('account summary')
     expect(html).toContain('<span class="aoHint">-</span>')
   })
+
+  it('falls back to total balance when budget windows are hidden', () => {
+    const status = buildStatus()
+    const config: Config = {
+      listen: { host: '127.0.0.1', port: 4000 },
+      routing: {
+        preferred_provider: 'codex-for.me',
+        auto_return_to_preferred: true,
+        preferred_stable_seconds: 30,
+        failure_threshold: 2,
+        cooldown_seconds: 20,
+        request_timeout_seconds: 60,
+      },
+      providers: {
+        'codex-for.me': {
+          display_name: 'codex-for.me',
+          base_url: 'https://api-vip.codex-for.me/v1',
+          has_key: true,
+          quota_hard_cap: {
+            daily: false,
+            weekly: false,
+            monthly: true,
+          },
+        },
+      },
+    }
+    status.providers = {
+      'codex-for.me': {
+        status: 'healthy',
+        consecutive_failures: 0,
+        cooldown_until_unix_ms: 0,
+        last_error: '',
+        last_ok_at_unix_ms: 0,
+        last_fail_at_unix_ms: 0,
+      },
+    }
+    status.quota = {
+      'codex-for.me': {
+        kind: 'budget_info',
+        updated_at_unix_ms: 1234,
+        remaining: 287.61,
+        today_used: null,
+        today_added: null,
+        daily_spent_usd: 26.03,
+        daily_budget_usd: 373.33,
+        weekly_spent_usd: null,
+        weekly_budget_usd: null,
+        monthly_spent_usd: null,
+        monthly_budget_usd: null,
+        package_expires_at_unix_ms: 4_070_908_800_000,
+        last_error: '',
+      },
+    }
+
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['codex-for.me']}
+        config={config}
+        status={status}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
+
+    expect(html).toContain('balance: $287.61')
+    expect(html).not.toContain('daily: $26.03 / $373.33')
+    expect(html).toContain('title="package ends: unlimited"')
+    expect(html).toContain('ends: unlimited')
+  })
 })

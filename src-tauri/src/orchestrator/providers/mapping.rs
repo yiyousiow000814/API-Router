@@ -13,11 +13,31 @@ pub(crate) enum NumericTransform {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NumericFieldSpec {
     pub aliases: &'static [&'static str],
+    pub rules: &'static [NumericRule],
     pub transform: NumericTransform,
     pub treat_zero_as_missing: bool,
     pub default_value: Option<f64>,
     pub requires_any: &'static [&'static str],
     pub skip_if_any: &'static [&'static str],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NumericAggregate {
+    First,
+    Max,
+    Sum,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum NumericRule {
+    Array {
+        pointer: &'static str,
+        item_pointer: &'static str,
+        aggregate: NumericAggregate,
+        filter_pointer: Option<&'static str>,
+        filter_eq: Option<&'static str>,
+        filter_in: &'static [&'static str],
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -165,22 +185,75 @@ fn extract_number(root: &Value, spec: Option<NumericFieldSpec>) -> Option<f64> {
     {
         return None;
     }
-    spec.aliases
+    spec.rules
         .iter()
-        .find_map(|pointer| {
-            let value =
-                json_value_as_f64(value_at_pointer(root, pointer)).map(|value| {
+        .find_map(|rule| extract_number_from_rule(root, rule, spec.transform))
+        .and_then(|value| {
+            if spec.treat_zero_as_missing && value.abs() <= f64::EPSILON {
+                None
+            } else {
+                Some(value)
+            }
+        })
+        .or_else(|| {
+            spec.aliases.iter().find_map(|pointer| {
+                let value = json_value_as_f64(value_at_pointer(root, pointer)).map(|value| {
                     match spec.transform {
                         NumericTransform::None => value,
                         NumericTransform::DivideBy(divisor) => value / divisor,
                     }
                 })?;
-            if spec.treat_zero_as_missing && value.abs() <= f64::EPSILON {
-                return None;
-            }
-            Some(value)
+                if spec.treat_zero_as_missing && value.abs() <= f64::EPSILON {
+                    return None;
+                }
+                Some(value)
+            })
         })
         .or(spec.default_value)
+}
+
+fn extract_number_from_rule(
+    root: &Value,
+    rule: &NumericRule,
+    transform: NumericTransform,
+) -> Option<f64> {
+    match rule {
+        NumericRule::Array {
+            pointer,
+            item_pointer,
+            aggregate,
+            filter_pointer,
+            filter_eq,
+            filter_in,
+        } => {
+            let items = value_at_pointer(root, pointer)?.as_array()?;
+            let mut values = items
+                .iter()
+                .filter(|item| {
+                    mapping_rule_matches_filter(item, *filter_pointer, *filter_eq, filter_in)
+                })
+                .filter_map(|item| {
+                    json_value_as_f64(value_at_pointer(item, item_pointer)).map(|value| {
+                        match transform {
+                            NumericTransform::None => value,
+                            NumericTransform::DivideBy(divisor) => value / divisor,
+                        }
+                    })
+                });
+            match aggregate {
+                NumericAggregate::First => values.next(),
+                NumericAggregate::Max => values.max_by(|left, right| left.total_cmp(right)),
+                NumericAggregate::Sum => {
+                    let mut found = false;
+                    let total = values.fold(0.0_f64, |acc, value| {
+                        found = true;
+                        acc + value
+                    });
+                    found.then_some(total)
+                }
+            }
+        }
+    }
 }
 
 fn pointer_has_mapping_value(root: &Value, pointer: &str) -> bool {
@@ -258,7 +331,7 @@ fn extract_unix_ms_from_rule(root: &Value, rule: &UnixMsRule) -> Option<u64> {
     }
 }
 
-fn unix_ms_rule_matches_filter(
+fn mapping_rule_matches_filter(
     item: &Value,
     filter_pointer: Option<&str>,
     filter_eq: Option<&str>,
@@ -283,6 +356,15 @@ fn unix_ms_rule_matches_filter(
             .any(|candidate| value.eq_ignore_ascii_case(candidate));
     }
     true
+}
+
+fn unix_ms_rule_matches_filter(
+    item: &Value,
+    filter_pointer: Option<&str>,
+    filter_eq: Option<&str>,
+    filter_in: &[&str],
+) -> bool {
+    mapping_rule_matches_filter(item, filter_pointer, filter_eq, filter_in)
 }
 
 fn value_at_pointer<'a>(root: &'a Value, pointer: &str) -> Option<&'a Value> {

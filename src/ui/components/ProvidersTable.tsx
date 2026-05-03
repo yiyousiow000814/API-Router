@@ -2,6 +2,11 @@ import { fmtAmount, fmtPct, fmtUsd, fmtWhen, pctOf } from '../utils/format'
 import type { Config, Status } from '../types'
 
 const mono = 'ui-monospace, "Cascadia Mono", "Consolas", monospace'
+const PRACTICAL_UNLIMITED_EXPIRY_UNIX_MS = Date.UTC(2090, 0, 1)
+
+function isPracticallyUnlimitedExpiry(unixMs: number | null | undefined): boolean {
+  return Number.isFinite(unixMs) && Number(unixMs) >= PRACTICAL_UNLIMITED_EXPIRY_UNIX_MS
+}
 
 export type LastErrorJump = {
   provider: string
@@ -213,6 +218,9 @@ export function ProvidersTable({
                       }
 
                       if (usageLines.length === 0) {
+                        if (q?.remaining != null) {
+                          return <div className="aoUsageLine">balance: ${fmtUsd(q.remaining)}</div>
+                        }
                         return <span className="aoHint">-</span>
                       }
 
@@ -277,19 +285,31 @@ export function ProvidersTable({
                 <td style={{ fontFamily: mono }}>
                   <div>{p}</div>
                   {q?.package_expires_at_unix_ms ? (
-                    <div
-                      className="aoHint"
-                      style={{
-                        marginTop: 2,
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        color: isExpiryUrgent(q.package_expires_at_unix_ms) ? 'rgba(145, 12, 43, 0.92)' : undefined,
-                      }}
-                      title={`package ends: ${fmtWhen(q.package_expires_at_unix_ms)}`}
-                    >
-                      ends: {fmtDateOnly(q.package_expires_at_unix_ms)}
-                    </div>
+                    (() => {
+                      const isUnlimited = isPracticallyUnlimitedExpiry(q.package_expires_at_unix_ms)
+                      return (
+                        <div
+                          className="aoHint"
+                          style={{
+                            marginTop: 2,
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            color:
+                              !isUnlimited && isExpiryUrgent(q.package_expires_at_unix_ms)
+                                ? 'rgba(145, 12, 43, 0.92)'
+                                : undefined,
+                          }}
+                          title={
+                            isUnlimited
+                              ? 'package ends: unlimited'
+                              : `package ends: ${fmtWhen(q.package_expires_at_unix_ms)}`
+                          }
+                        >
+                          ends: {isUnlimited ? 'unlimited' : fmtDateOnly(q.package_expires_at_unix_ms)}
+                        </div>
+                      )
+                    })()
                   ) : null}
                 </td>
                 <td className="aoCellCenter">

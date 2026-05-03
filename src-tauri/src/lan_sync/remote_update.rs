@@ -4087,6 +4087,16 @@ mod tests {
     }
 
     #[test]
+    fn build_script_runtime_restart_wait_budget_covers_observed_remote_update_startup() {
+        let build_script = std::fs::read_to_string("../tools/build/build-root-exe.ps1")
+            .expect("read build script");
+        assert!(
+            build_script.contains("$TimeoutSeconds = 45"),
+            "runtime restart wait budget should cover observed 30s+ startup windows from remote update logs"
+        );
+    }
+
+    #[test]
     fn build_worker_exited_early_status_preserves_original_detail_after_bootstrap() {
         let mut running_status = build_worker_started_status(
             &accepted_status_fixture(),

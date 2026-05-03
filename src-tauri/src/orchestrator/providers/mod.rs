@@ -12,8 +12,9 @@ use super::quota::UsageKind;
 
 pub(crate) use generic::derive_origin;
 pub(crate) use mapping::{
-    map_canonical_usage, CanonicalUsageContext, CanonicalUsageMapping, NumericFieldSpec,
-    NumericTransform, StringFieldSpec, UnixMsAggregate, UnixMsFieldSpec, UnixMsRule,
+    map_canonical_usage, CanonicalUsageContext, CanonicalUsageMapping, NumericAggregate,
+    NumericFieldSpec, NumericRule, NumericTransform, StringFieldSpec, UnixMsAggregate,
+    UnixMsFieldSpec, UnixMsRule,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -330,6 +331,8 @@ struct NumericFieldSpecFile {
     #[serde(default)]
     aliases: Vec<String>,
     #[serde(default)]
+    rules: Vec<NumericRuleFile>,
+    #[serde(default)]
     transform: Option<String>,
     #[serde(default)]
     treat_zero_as_missing: Option<bool>,
@@ -339,6 +342,22 @@ struct NumericFieldSpecFile {
     requires_any: Vec<String>,
     #[serde(default)]
     skip_if_any: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct NumericRuleFile {
+    #[serde(default)]
+    pointer: Option<String>,
+    #[serde(default)]
+    item_pointer: Option<String>,
+    #[serde(default)]
+    aggregate: Option<String>,
+    #[serde(default)]
+    filter_pointer: Option<String>,
+    #[serde(default)]
+    filter_eq: Option<String>,
+    #[serde(default)]
+    filter_in: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -383,6 +402,7 @@ const DEFAULT_DIRECT_USAGE_MAPPING: CanonicalUsageMapping = CanonicalUsageMappin
             "/balance",
             "/quota/daily_remaining",
         ],
+        rules: &[],
         transform: NumericTransform::None,
         treat_zero_as_missing: false,
         default_value: None,
@@ -403,6 +423,7 @@ const DEFAULT_DIRECT_USAGE_MAPPING: CanonicalUsageMapping = CanonicalUsageMappin
             "/daily_usage_usd",
             "/subscription/daily_usage_usd",
         ],
+        rules: &[],
         transform: NumericTransform::None,
         treat_zero_as_missing: false,
         default_value: None,
@@ -417,6 +438,7 @@ const DEFAULT_DIRECT_USAGE_MAPPING: CanonicalUsageMapping = CanonicalUsageMappin
             "/daily_limit_usd",
             "/subscription/daily_limit_usd",
         ],
+        rules: &[],
         transform: NumericTransform::None,
         treat_zero_as_missing: false,
         default_value: None,
@@ -455,6 +477,7 @@ const DEFAULT_BACKEND_BUDGET_MAPPING: CanonicalUsageMapping = CanonicalUsageMapp
     currency_unit: None,
     remaining: Some(NumericFieldSpec {
         aliases: &["/remaining_quota"],
+        rules: &[],
         transform: NumericTransform::None,
         treat_zero_as_missing: false,
         default_value: None,
@@ -465,6 +488,7 @@ const DEFAULT_BACKEND_BUDGET_MAPPING: CanonicalUsageMapping = CanonicalUsageMapp
     today_added: None,
     daily_used: Some(NumericFieldSpec {
         aliases: &["/daily_spent_usd"],
+        rules: &[],
         transform: NumericTransform::None,
         treat_zero_as_missing: false,
         default_value: None,
@@ -473,6 +497,7 @@ const DEFAULT_BACKEND_BUDGET_MAPPING: CanonicalUsageMapping = CanonicalUsageMapp
     }),
     daily_limit: Some(NumericFieldSpec {
         aliases: &["/daily_budget_usd"],
+        rules: &[],
         transform: NumericTransform::None,
         treat_zero_as_missing: false,
         default_value: None,
@@ -481,6 +506,7 @@ const DEFAULT_BACKEND_BUDGET_MAPPING: CanonicalUsageMapping = CanonicalUsageMapp
     }),
     weekly_used: Some(NumericFieldSpec {
         aliases: &["/weekly_spent_usd", "/weekly_spent"],
+        rules: &[],
         transform: NumericTransform::None,
         treat_zero_as_missing: false,
         default_value: None,
@@ -489,6 +515,7 @@ const DEFAULT_BACKEND_BUDGET_MAPPING: CanonicalUsageMapping = CanonicalUsageMapp
     }),
     weekly_limit: Some(NumericFieldSpec {
         aliases: &["/weekly_budget_usd", "/weekly_budget"],
+        rules: &[],
         transform: NumericTransform::None,
         treat_zero_as_missing: false,
         default_value: None,
@@ -497,6 +524,7 @@ const DEFAULT_BACKEND_BUDGET_MAPPING: CanonicalUsageMapping = CanonicalUsageMapp
     }),
     monthly_used: Some(NumericFieldSpec {
         aliases: &["/monthly_spent_usd"],
+        rules: &[],
         transform: NumericTransform::None,
         treat_zero_as_missing: false,
         default_value: None,
@@ -505,6 +533,7 @@ const DEFAULT_BACKEND_BUDGET_MAPPING: CanonicalUsageMapping = CanonicalUsageMapp
     }),
     monthly_limit: Some(NumericFieldSpec {
         aliases: &["/monthly_budget_usd"],
+        rules: &[],
         transform: NumericTransform::None,
         treat_zero_as_missing: false,
         default_value: None,
@@ -966,6 +995,12 @@ fn build_dynamic_mapping(
 fn build_numeric_field_spec(raw: NumericFieldSpecFile) -> Result<NumericFieldSpec, String> {
     Ok(NumericFieldSpec {
         aliases: leak_aliases(raw.aliases)?,
+        rules: leak_numeric_rules(
+            raw.rules
+                .into_iter()
+                .map(build_numeric_rule)
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
         transform: match raw
             .transform
             .unwrap_or_else(|| "none".to_string())
@@ -981,6 +1016,54 @@ fn build_numeric_field_spec(raw: NumericFieldSpecFile) -> Result<NumericFieldSpe
         default_value: raw.default_value,
         requires_any: leak_aliases(raw.requires_any)?,
         skip_if_any: leak_aliases(raw.skip_if_any)?,
+    })
+}
+
+fn build_numeric_rule(raw: NumericRuleFile) -> Result<NumericRule, String> {
+    let pointer = raw
+        .pointer
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "numeric rule pointer cannot be empty".to_string())?;
+    let item_pointer = raw
+        .item_pointer
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "numeric rule item_pointer cannot be empty".to_string())?;
+    let aggregate = match raw
+        .aggregate
+        .unwrap_or_else(|| "first".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "first" => NumericAggregate::First,
+        "max" => NumericAggregate::Max,
+        "sum" => NumericAggregate::Sum,
+        other => return Err(format!("unknown numeric aggregate: {other}")),
+    };
+    let filter_pointer = raw
+        .filter_pointer
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let filter_eq = raw
+        .filter_eq
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let filter_in = raw
+        .filter_in
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    Ok(NumericRule::Array {
+        pointer: Box::leak(pointer.into_boxed_str()),
+        item_pointer: Box::leak(item_pointer.into_boxed_str()),
+        aggregate,
+        filter_pointer: filter_pointer
+            .map(|value| Box::leak(value.into_boxed_str()) as &'static str),
+        filter_eq: filter_eq.map(|value| Box::leak(value.into_boxed_str()) as &'static str),
+        filter_in: leak_aliases(filter_in)?,
     })
 }
 
@@ -1066,6 +1149,13 @@ fn leak_aliases(values: Vec<String>) -> Result<&'static [&'static str], String> 
         .map(|value| Box::leak(value.into_boxed_str()) as &'static str)
         .collect::<Vec<_>>();
     Ok(Box::leak(leaked.into_boxed_slice()))
+}
+
+fn leak_numeric_rules(values: Vec<NumericRule>) -> &'static [NumericRule] {
+    if values.is_empty() {
+        return &[];
+    }
+    Box::leak(values.into_boxed_slice())
 }
 
 fn leak_unix_ms_rules(values: Vec<UnixMsRule>) -> &'static [UnixMsRule] {
@@ -1752,5 +1842,51 @@ explicit_endpoint_url = "{explicit_endpoint_url}"
             usage.is_none(),
             "field-level skip_if_any should prevent unrelated fallback budgets from appearing"
         );
+    }
+
+    #[test]
+    fn dynamic_numeric_mapping_can_sum_array_values_with_filters() {
+        let mapping = build_dynamic_mapping(CanonicalUsageMappingFile {
+            usage_kind: Some("balance_info".to_string()),
+            remaining: Some(NumericFieldSpecFile {
+                rules: vec![NumericRuleFile {
+                    pointer: Some("/data/plan_cards".to_string()),
+                    item_pointer: Some("/balance".to_string()),
+                    aggregate: Some("sum".to_string()),
+                    filter_pointer: Some("/state".to_string()),
+                    filter_in: vec!["active".to_string(), "pending".to_string()],
+                    ..NumericRuleFile::default()
+                }],
+                ..NumericFieldSpecFile::default()
+            }),
+            requires_any: vec!["/data/plan_cards".to_string()],
+            ..CanonicalUsageMappingFile::default()
+        })
+        .expect("dynamic mapping");
+
+        let payload = serde_json::json!({
+            "data": {
+                "plan_cards": [
+                    { "balance": "137.66", "state": "active" },
+                    { "balance": "49.95", "state": "active" },
+                    { "balance": "50.00", "state": "pending" },
+                    { "balance": "50.00", "state": "pending" },
+                    { "balance": "999.00", "state": "expired" }
+                ]
+            }
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            mapping,
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://usage.example".to_string()),
+                effective_usage_source: Some("test".to_string()),
+                updated_at_unix_ms: 123,
+            },
+        )
+        .expect("mapped usage");
+
+        assert_eq!(usage.remaining, Some(287.61));
     }
 }

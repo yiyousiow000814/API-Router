@@ -195,12 +195,54 @@ mod tests {
                             StatusCode::OK,
                             Json(serde_json::json!({
                                 "data": {
-                                    "card_balance": "42.5",
-                                    "card_expire_date": "2027-12-31",
-                                    "card_name": "VIP",
-                                    "card_daily_limit": "200",
+                                    "card_balance": "49.95",
+                                    "card_expire_date": "2099-01-01 00:00:00",
+                                    "card_name": "codex-jfioejg",
+                                    "card_daily_limit": "373.33",
                                     "today_spent_amount": "26.03",
-                                    "card_total_spent_amount": "40.92"
+                                    "card_total_spent_amount": "40.92",
+                                    "plan_cards": [
+                                        {
+                                            "name": "codex-jfioejg",
+                                            "activation_time": "2026-01-01 00:00:00",
+                                            "expiration_time": "2099-01-01 00:00:00",
+                                            "daily_limit": "373.33",
+                                            "balance": "137.66",
+                                            "state": "active"
+                                        },
+                                        {
+                                            "name": "50-ewjofi",
+                                            "activation_time": "2026-05-03 14:44:35",
+                                            "expiration_time": "2056-04-25 14:44:35",
+                                            "daily_limit": "50.00",
+                                            "balance": "49.95",
+                                            "state": "active"
+                                        },
+                                        {
+                                            "name": "50-ewjofi",
+                                            "activation_time": "2026-05-03 14:44:47",
+                                            "expiration_time": "2056-04-25 14:44:47",
+                                            "daily_limit": "50.00",
+                                            "balance": "50.00",
+                                            "state": "pending"
+                                        },
+                                        {
+                                            "name": "50-ewjofi",
+                                            "activation_time": "2026-05-03 14:44:53",
+                                            "expiration_time": "2056-04-25 14:44:53",
+                                            "daily_limit": "50.00",
+                                            "balance": "50.00",
+                                            "state": "pending"
+                                        },
+                                        {
+                                            "name": "ignored-expired-card",
+                                            "activation_time": "2025-01-01 00:00:00",
+                                            "expiration_time": "2025-02-01 00:00:00",
+                                            "daily_limit": "999.00",
+                                            "balance": "999.00",
+                                            "state": "expired"
+                                        }
+                                    ]
                                 }
                             })),
                         )
@@ -1089,12 +1131,12 @@ mod tests {
 
         assert!(snap.last_error.is_empty());
         assert_eq!(snap.kind, UsageKind::BudgetInfo);
-        assert_eq!(snap.remaining, Some(42.5));
-        assert_eq!(snap.daily_budget_usd, Some(200.0));
+        assert_eq!(snap.remaining, Some(287.61));
+        assert_eq!(snap.daily_budget_usd, Some(373.33));
         assert_eq!(snap.daily_spent_usd, Some(26.03));
-        assert_eq!(snap.monthly_spent_usd, Some(40.92));
-        assert_eq!(snap.monthly_budget_usd, Some(83.42));
-        assert_eq!(snap.package_expires_at_unix_ms, Some(1_830_254_400_000));
+        assert_eq!(snap.monthly_spent_usd, None);
+        assert_eq!(snap.monthly_budget_usd, None);
+        assert_eq!(snap.package_expires_at_unix_ms, Some(4_070_908_800_000));
         assert_eq!(snap.effective_usage_base.as_deref(), Some(base.as_str()));
     }
 
@@ -3483,7 +3525,7 @@ mod tests {
         assert_eq!(usage.remaining, Some(42.5));
         assert_eq!(usage.daily_limit, Some(200.0));
         assert_eq!(usage.daily_used, Some(26.03));
-        assert_eq!(usage.monthly_used, Some(40.92));
+        assert_eq!(usage.monthly_used, None);
         assert_eq!(usage.expires_at_unix_ms, Some(1_778_770_049_212));
     }
 

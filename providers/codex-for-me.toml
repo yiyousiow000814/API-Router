@@ -28,6 +28,13 @@ aliases = ["/data/card_name", "/card_name"]
 aliases = ["/data/card_balance", "/data/balance", "/card_balance", "/balance"]
 transform = "none"
 
+[[usage.summary_mapping.remaining.rules]]
+pointer = "/data/plan_cards"
+item_pointer = "/balance"
+aggregate = "sum"
+filter_pointer = "/state"
+filter_in = ["active", "pending"]
+
 [usage.summary_mapping.daily_used]
 aliases = [
   "/data/today_spent_amount",
@@ -51,16 +58,7 @@ aliases = [
 transform = "none"
 
 [usage.summary_mapping.monthly_used]
-aliases = [
-  "/data/card_total_spent_amount",
-  "/data/this_month_total_amount",
-  "/data/total_spent_amount",
-  "/data/monthly_spent_usd",
-  "/card_total_spent_amount",
-  "/this_month_total_amount",
-  "/total_spent_amount",
-  "/monthly_spent_usd",
-]
+aliases = []
 transform = "none"
 
 [usage.summary_mapping.expires_at_unix_ms]
