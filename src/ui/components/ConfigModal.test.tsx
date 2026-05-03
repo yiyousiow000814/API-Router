@@ -2450,8 +2450,8 @@ describe('ConfigModal', () => {
 
   it('formats diagnostics build compare values', () => {
     const commitDate = new Date(1775312828000)
-    const day = String(commitDate.getDate()).padStart(2, '0')
-    const month = String(commitDate.getMonth() + 1).padStart(2, '0')
+    const day = String(commitDate.getDate())
+    const month = String(commitDate.getMonth() + 1)
     const year = commitDate.getFullYear()
     const hours = String(commitDate.getHours()).padStart(2, '0')
     const minutes = String(commitDate.getMinutes()).padStart(2, '0')
@@ -2460,7 +2460,7 @@ describe('ConfigModal', () => {
     const absOffsetMinutes = Math.abs(offsetMinutes)
     const offsetHours = String(Math.floor(absOffsetMinutes / 60)).padStart(2, '0')
     const offsetRemainderMinutes = String(absOffsetMinutes % 60).padStart(2, '0')
-    const expectedCommitDate = `${day}-${month}-${year} ${hours}:${minutes} UTC${sign}${offsetHours}:${offsetRemainderMinutes}`
+    const expectedCommitDate = `${day}/${month}/${year} ${hours}:${minutes} UTC${sign}${offsetHours}:${offsetRemainderMinutes}`
 
     expect(
       formatBuildLabel({

@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Status } from '../types'
+import { formatDateDmy } from '../utils/format'
 import { DashboardEventsSection } from './DashboardEventsSection'
 import './EventLogPanel.css'
 
@@ -63,10 +64,7 @@ function startOfDayMs(unixMs: number): number {
 }
 
 function formatShortDay(unixMs: number): string {
-  return new Date(unixMs).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-  })
+  return formatDateDmy(unixMs)
 }
 
 function startOfMonthMs(unixMs: number): number {
@@ -93,11 +91,7 @@ function dayStartToIso(unixMs: number): string {
 }
 
 function fmtDayMonthYear(unixMs: number): string {
-  const d = new Date(unixMs)
-  const day = String(d.getDate()).padStart(2, '0')
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const y = d.getFullYear()
-  return `${day}-${m}-${y}`
+  return formatDateDmy(unixMs)
 }
 
 function buildSearchText(e: Status['recent_events'][number]): string {

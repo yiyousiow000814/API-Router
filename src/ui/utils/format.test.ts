@@ -1,6 +1,33 @@
 import { describe, expect, it } from 'vitest'
 
-import { fmtAgo } from './format'
+import {
+  formatDateDmy,
+  formatDateTimeDmy12Hour,
+  formatDateTimeDmy24Hour,
+  fmtAgo,
+  fmtWhen,
+} from './format'
+
+describe('format', () => {
+  it('formats plain dates as day/month/year', () => {
+    const unixMs = new Date(2026, 4, 6, 3, 12, 31).getTime()
+
+    expect(formatDateDmy(unixMs)).toBe('6/5/2026')
+  })
+
+  it('formats date times as day/month/year with 24-hour time', () => {
+    const unixMs = new Date(2026, 4, 6, 15, 7, 5).getTime()
+
+    expect(formatDateTimeDmy24Hour(unixMs)).toBe('6/5/2026 15:07:05')
+    expect(fmtWhen(unixMs)).toBe('6/5/2026 15:07:05')
+  })
+
+  it('formats date times as day/month/year with 12-hour time', () => {
+    const unixMs = new Date(2026, 4, 6, 3, 12, 31).getTime()
+
+    expect(formatDateTimeDmy12Hour(unixMs)).toBe('6/5/2026, 3:12:31 AM')
+  })
+})
 
 describe('fmtAgo', () => {
   it('shows just now for very recent timestamps', () => {

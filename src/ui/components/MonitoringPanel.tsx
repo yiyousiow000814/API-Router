@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { Status } from '../types'
+import { formatDateDmy, formatDateTimeDmy12Hour } from '../utils/format'
 import './DashboardPanel.css'
 
 // ---------------------------------------------------------------------------
@@ -259,10 +260,10 @@ function formatWatchdogActivityBucketTimeRange(startUnixMs: number, endUnixMs: n
     start.getDate() === end.getDate()
 
   if (sameDay) {
-    return `${start.toLocaleDateString()} ${start.toLocaleTimeString()} - ${end.toLocaleTimeString()}`
+    return `${formatDateDmy(startUnixMs)} ${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')}:${String(start.getSeconds()).padStart(2, '0')} - ${String(end.getHours()).padStart(2, '0')}:${String(end.getMinutes()).padStart(2, '0')}:${String(end.getSeconds()).padStart(2, '0')}`
   }
 
-  return `${start.toLocaleString()} - ${end.toLocaleString()}`
+  return `${formatDateDmy(startUnixMs)} ${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')}:${String(start.getSeconds()).padStart(2, '0')} - ${formatDateDmy(endUnixMs)} ${String(end.getHours()).padStart(2, '0')}:${String(end.getMinutes()).padStart(2, '0')}:${String(end.getSeconds()).padStart(2, '0')}`
 }
 
 function formatWatchdogActivityBucketDetail(bucket: WatchdogActivityBucket): string {
@@ -771,9 +772,12 @@ function StatusBadge({
   )
 }
 
+export function formatDayMonthYearDateTime(unixMs: number): string {
+  return unixMs ? formatDateTimeDmy12Hour(unixMs) : '—'
+}
+
 function fmtDateTime(unixMs: number): string {
-  if (!unixMs) return '—'
-  return new Date(unixMs).toLocaleString()
+  return formatDayMonthYearDateTime(unixMs)
 }
 
 export function formatIncidentKind(kind: string | null | undefined): string {
