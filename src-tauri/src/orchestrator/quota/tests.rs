@@ -6,6 +6,7 @@ mod tests {
     use crate::orchestrator::router::RouterState;
     use crate::orchestrator::secrets::SecretStore;
     use crate::orchestrator::upstream::UpstreamClient;
+    use crate::orchestrator::quota::SharedQuotaOwnerStatus;
     use parking_lot::RwLock;
     use std::sync::atomic::AtomicU64;
     use std::sync::{Arc, OnceLock};
@@ -195,12 +196,54 @@ mod tests {
                             StatusCode::OK,
                             Json(serde_json::json!({
                                 "data": {
-                                    "card_balance": "42.5",
-                                    "card_expire_date": "2027-12-31",
-                                    "card_name": "VIP",
-                                    "card_daily_limit": "200",
+                                    "card_balance": "49.95",
+                                    "card_expire_date": "2099-01-01 00:00:00",
+                                    "card_name": "codex-jfioejg",
+                                    "card_daily_limit": "373.33",
                                     "today_spent_amount": "26.03",
-                                    "card_total_spent_amount": "40.92"
+                                    "card_total_spent_amount": "40.92",
+                                    "plan_cards": [
+                                        {
+                                            "name": "codex-jfioejg",
+                                            "activation_time": "2026-01-01 00:00:00",
+                                            "expiration_time": "2099-01-01 00:00:00",
+                                            "daily_limit": "373.33",
+                                            "balance": "137.66",
+                                            "state": "active"
+                                        },
+                                        {
+                                            "name": "50-ewjofi",
+                                            "activation_time": "2026-05-03 14:44:35",
+                                            "expiration_time": "2056-04-25 14:44:35",
+                                            "daily_limit": "50.00",
+                                            "balance": "49.95",
+                                            "state": "active"
+                                        },
+                                        {
+                                            "name": "50-ewjofi",
+                                            "activation_time": "2026-05-03 14:44:47",
+                                            "expiration_time": "2056-04-25 14:44:47",
+                                            "daily_limit": "50.00",
+                                            "balance": "50.00",
+                                            "state": "pending"
+                                        },
+                                        {
+                                            "name": "50-ewjofi",
+                                            "activation_time": "2026-05-03 14:44:53",
+                                            "expiration_time": "2056-04-25 14:44:53",
+                                            "daily_limit": "50.00",
+                                            "balance": "50.00",
+                                            "state": "pending"
+                                        },
+                                        {
+                                            "name": "ignored-expired-card",
+                                            "activation_time": "2025-01-01 00:00:00",
+                                            "expiration_time": "2025-02-01 00:00:00",
+                                            "daily_limit": "999.00",
+                                            "balance": "999.00",
+                                            "state": "expired"
+                                        }
+                                    ]
                                 }
                             })),
                         )
@@ -1088,13 +1131,15 @@ mod tests {
         handle.abort();
 
         assert!(snap.last_error.is_empty());
-        assert_eq!(snap.kind, UsageKind::BudgetInfo);
-        assert_eq!(snap.remaining, Some(42.5));
-        assert_eq!(snap.daily_budget_usd, Some(200.0));
-        assert_eq!(snap.daily_spent_usd, Some(26.03));
-        assert_eq!(snap.monthly_spent_usd, Some(40.92));
-        assert_eq!(snap.monthly_budget_usd, Some(83.42));
-        assert_eq!(snap.package_expires_at_unix_ms, Some(1_830_254_400_000));
+        assert_eq!(snap.kind, UsageKind::BalanceInfo);
+        assert_eq!(snap.remaining, Some(187.61));
+        assert_eq!(snap.today_added, Some(423.33));
+        assert_eq!(snap.today_used, Some(26.03));
+        assert_eq!(snap.daily_budget_usd, None);
+        assert_eq!(snap.daily_spent_usd, None);
+        assert_eq!(snap.monthly_spent_usd, None);
+        assert_eq!(snap.monthly_budget_usd, None);
+        assert_eq!(snap.package_expires_at_unix_ms, Some(4_070_908_800_000));
         assert_eq!(snap.effective_usage_base.as_deref(), Some(base.as_str()));
     }
 
@@ -2943,6 +2988,293 @@ mod tests {
         assert!(cleared.daily_spent_usd.is_none());
     }
 
+    #[test]
+    fn reconcile_blocked_shared_quota_snapshots_clears_remote_stale_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://api-vip.codex-for.me/v1".to_string(), secrets);
+
+        let mut previous = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        previous.updated_at_unix_ms = 123;
+        previous.remaining = Some(50.0);
+        previous.daily_budget_usd = Some(573.33);
+        previous.applied_from_node_id = Some("node-remote".to_string());
+        previous.applied_from_node_name = Some("SYB".to_string());
+        st.store
+            .put_quota_snapshot("p1", &previous.to_json())
+            .expect("seed quota snapshot");
+
+        let refreshed = reconcile_blocked_shared_quota_snapshots(
+            &st,
+            Some(&crate::lan_sync::LanSyncStatusSnapshot {
+                enabled: true,
+                discovery_port: 38455,
+                heartbeat_interval_ms: 2000,
+                peer_stale_after_ms: 20_000,
+                last_peer_heartbeat_received_unix_ms: 0,
+                last_peer_heartbeat_source: None,
+                last_http_sync_probe: None,
+                last_http_sync_failure: None,
+                local_node: crate::lan_sync::LanLocalNodeSnapshot {
+                    node_id: "node-local".to_string(),
+                    node_name: "local".to_string(),
+                    listen_addr: Some("127.0.0.1:4000".to_string()),
+                    remote_update_updater_port: None,
+                    capabilities: Vec::new(),
+                    version_inventory: Vec::new(),
+                    build_identity: crate::lan_sync::current_build_identity(),
+                    version_sync: crate::lan_sync::LanLocalVersionSyncSnapshot {
+                        target_ref: None,
+                        git_worktree_clean: true,
+                        update_to_local_build_allowed: true,
+                        blocked_reason: None,
+                    },
+                    remote_update_status: None,
+                    sync_contracts: std::collections::BTreeMap::new(),
+                    provider_fingerprints: Vec::new(),
+                    provider_definitions_revision: String::new(),
+                },
+                peers: vec![crate::lan_sync::LanPeerSnapshot {
+                    node_id: "node-remote".to_string(),
+                    node_name: "SYB".to_string(),
+                    listen_addr: "192.168.1.10:4000".to_string(),
+                    remote_update_updater_port: None,
+                    last_heartbeat_unix_ms: 0,
+                    capabilities: Vec::new(),
+                    version_inventory: Vec::new(),
+                    build_identity: crate::lan_sync::current_build_identity(),
+                    provider_fingerprints: Vec::new(),
+                    provider_definitions_revision: String::new(),
+                    sync_contracts: std::collections::BTreeMap::new(),
+                    followed_source_node_id: None,
+                    trusted: true,
+                    pair_state: Some("trusted".to_string()),
+                    pair_request_id: None,
+                    remote_update_readiness: None,
+                    remote_update_status: None,
+                    sync_blocked_domains: vec![
+                        crate::lan_sync::LAN_SYNC_DOMAIN_SHARED_QUOTA.to_string(),
+                    ],
+                    sync_diagnostics: Vec::new(),
+                    build_matches_local: false,
+                    heartbeat_age_ms: 0,
+                    http_probe_state: None,
+                    http_probe_detail: None,
+                }],
+            }),
+            &[SharedQuotaOwnerStatus {
+                provider: "p1".to_string(),
+                shared_provider_id: "shared-p1".to_string(),
+                shared_provider_fingerprint: "https://api-vip.codex-for.me|99c51bdf89d7be31".to_string(),
+                owner_node_id: "node-remote".to_string(),
+                owner_node_name: "SYB".to_string(),
+                local_is_owner: false,
+                contender_count: 2,
+            }],
+        );
+
+        assert_eq!(refreshed, vec!["p1".to_string()]);
+        let cleared = st
+            .store
+            .get_quota_snapshot("p1")
+            .and_then(|value| quota_snapshot_from_json(&value))
+            .expect("cleared quota snapshot");
+        assert_eq!(cleared.updated_at_unix_ms, 0);
+        assert!(cleared.applied_from_node_id.is_none());
+    }
+
+    #[test]
+    fn reconcile_blocked_shared_quota_snapshots_keeps_snapshot_when_blocked_peer_is_not_owner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://api-vip.codex-for.me/v1".to_string(), secrets);
+
+        let mut previous = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        previous.updated_at_unix_ms = 123;
+        previous.remaining = Some(50.0);
+        previous.daily_budget_usd = Some(573.33);
+        previous.applied_from_node_id = Some("node-remote".to_string());
+        previous.applied_from_node_name = Some("SYB".to_string());
+        st.store
+            .put_quota_snapshot("p1", &previous.to_json())
+            .expect("seed quota snapshot");
+
+        let refreshed = reconcile_blocked_shared_quota_snapshots(
+            &st,
+            Some(&crate::lan_sync::LanSyncStatusSnapshot {
+                enabled: true,
+                discovery_port: 38455,
+                heartbeat_interval_ms: 2000,
+                peer_stale_after_ms: 20_000,
+                last_peer_heartbeat_received_unix_ms: 0,
+                last_peer_heartbeat_source: None,
+                last_http_sync_probe: None,
+                last_http_sync_failure: None,
+                local_node: crate::lan_sync::LanLocalNodeSnapshot {
+                    node_id: "node-local".to_string(),
+                    node_name: "local".to_string(),
+                    listen_addr: Some("127.0.0.1:4000".to_string()),
+                    remote_update_updater_port: None,
+                    capabilities: Vec::new(),
+                    version_inventory: Vec::new(),
+                    build_identity: crate::lan_sync::current_build_identity(),
+                    version_sync: crate::lan_sync::LanLocalVersionSyncSnapshot {
+                        target_ref: None,
+                        git_worktree_clean: true,
+                        update_to_local_build_allowed: true,
+                        blocked_reason: None,
+                    },
+                    remote_update_status: None,
+                    sync_contracts: std::collections::BTreeMap::new(),
+                    provider_fingerprints: Vec::new(),
+                    provider_definitions_revision: String::new(),
+                },
+                peers: vec![crate::lan_sync::LanPeerSnapshot {
+                    node_id: "node-remote".to_string(),
+                    node_name: "SYB".to_string(),
+                    listen_addr: "192.168.1.10:4000".to_string(),
+                    remote_update_updater_port: None,
+                    last_heartbeat_unix_ms: 0,
+                    capabilities: Vec::new(),
+                    version_inventory: Vec::new(),
+                    build_identity: crate::lan_sync::current_build_identity(),
+                    provider_fingerprints: Vec::new(),
+                    provider_definitions_revision: String::new(),
+                    sync_contracts: std::collections::BTreeMap::new(),
+                    followed_source_node_id: None,
+                    trusted: true,
+                    pair_state: Some("trusted".to_string()),
+                    pair_request_id: None,
+                    remote_update_readiness: None,
+                    remote_update_status: None,
+                    sync_blocked_domains: vec![
+                        crate::lan_sync::LAN_SYNC_DOMAIN_SHARED_QUOTA.to_string(),
+                    ],
+                    sync_diagnostics: Vec::new(),
+                    build_matches_local: false,
+                    heartbeat_age_ms: 0,
+                    http_probe_state: None,
+                    http_probe_detail: None,
+                }],
+            }),
+            &[SharedQuotaOwnerStatus {
+                provider: "p1".to_string(),
+                shared_provider_id: "shared-p1".to_string(),
+                shared_provider_fingerprint: "https://api-vip.codex-for.me|99c51bdf89d7be31".to_string(),
+                owner_node_id: "node-local".to_string(),
+                owner_node_name: "local".to_string(),
+                local_is_owner: true,
+                contender_count: 2,
+            }],
+        );
+
+        assert!(refreshed.is_empty());
+        let kept = st
+            .store
+            .get_quota_snapshot("p1")
+            .and_then(|value| quota_snapshot_from_json(&value))
+            .expect("kept quota snapshot");
+        assert_eq!(kept.updated_at_unix_ms, 123);
+        assert_eq!(kept.applied_from_node_id.as_deref(), Some("node-remote"));
+    }
+
+    #[test]
+    fn reconcile_blocked_shared_quota_snapshots_derives_owner_when_status_list_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://api-vip.codex-for.me/v1".to_string(), secrets);
+
+        let mut previous = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        previous.updated_at_unix_ms = 123;
+        previous.remaining = Some(50.0);
+        previous.daily_budget_usd = Some(573.33);
+        previous.applied_from_node_id = Some("node-remote".to_string());
+        previous.applied_from_node_name = Some("SYB".to_string());
+        st.store
+            .put_quota_snapshot("p1", &previous.to_json())
+            .expect("seed quota snapshot");
+
+        let refreshed = reconcile_blocked_shared_quota_snapshots(
+            &st,
+            Some(&crate::lan_sync::LanSyncStatusSnapshot {
+                enabled: true,
+                discovery_port: 38455,
+                heartbeat_interval_ms: 2000,
+                peer_stale_after_ms: 20_000,
+                last_peer_heartbeat_received_unix_ms: 0,
+                last_peer_heartbeat_source: None,
+                last_http_sync_probe: None,
+                last_http_sync_failure: None,
+                local_node: crate::lan_sync::LanLocalNodeSnapshot {
+                    node_id: "node-local".to_string(),
+                    node_name: "local".to_string(),
+                    listen_addr: Some("127.0.0.1:4000".to_string()),
+                    remote_update_updater_port: None,
+                    capabilities: Vec::new(),
+                    version_inventory: vec!["shared_quota_v2".to_string()],
+                    build_identity: crate::lan_sync::current_build_identity(),
+                    version_sync: crate::lan_sync::LanLocalVersionSyncSnapshot {
+                        target_ref: None,
+                        git_worktree_clean: true,
+                        update_to_local_build_allowed: true,
+                        blocked_reason: None,
+                    },
+                    remote_update_status: None,
+                    sync_contracts: std::collections::BTreeMap::from([(
+                        crate::lan_sync::LAN_SYNC_DOMAIN_SHARED_QUOTA.to_string(),
+                        2,
+                    )]),
+                    provider_fingerprints: vec![
+                        "https://api-vip.codex-for.me|anon".to_string(),
+                    ],
+                    provider_definitions_revision: String::new(),
+                },
+                peers: vec![crate::lan_sync::LanPeerSnapshot {
+                    node_id: "node-remote".to_string(),
+                    node_name: "SYB".to_string(),
+                    listen_addr: "192.168.1.10:4000".to_string(),
+                    remote_update_updater_port: None,
+                    last_heartbeat_unix_ms: 0,
+                    capabilities: Vec::new(),
+                    version_inventory: vec!["shared_quota_v2".to_string()],
+                    build_identity: crate::lan_sync::current_build_identity(),
+                    provider_fingerprints: vec![
+                        "https://api-vip.codex-for.me|anon".to_string(),
+                    ],
+                    provider_definitions_revision: String::new(),
+                    sync_contracts: std::collections::BTreeMap::from([(
+                        crate::lan_sync::LAN_SYNC_DOMAIN_SHARED_QUOTA.to_string(),
+                        2,
+                    )]),
+                    followed_source_node_id: None,
+                    trusted: true,
+                    pair_state: Some("trusted".to_string()),
+                    pair_request_id: None,
+                    remote_update_readiness: None,
+                    remote_update_status: None,
+                    sync_blocked_domains: vec![
+                        crate::lan_sync::LAN_SYNC_DOMAIN_SHARED_QUOTA.to_string(),
+                    ],
+                    sync_diagnostics: Vec::new(),
+                    build_matches_local: false,
+                    heartbeat_age_ms: 0,
+                    http_probe_state: None,
+                    http_probe_detail: None,
+                }],
+            }),
+            &[],
+        );
+
+        assert_eq!(refreshed, vec!["p1".to_string()]);
+        let cleared = st
+            .store
+            .get_quota_snapshot("p1")
+            .and_then(|value| quota_snapshot_from_json(&value))
+            .expect("cleared quota snapshot");
+        assert_eq!(cleared.updated_at_unix_ms, 0);
+        assert!(cleared.applied_from_node_id.is_none());
+    }
+
     #[tokio::test]
     async fn manual_refresh_does_not_block_on_long_rate_limit_backoff() {
         let _guard = usage_base_gate_test_lock().lock().await;
@@ -3455,13 +3787,24 @@ mod tests {
                 "plan_cards": [
                     {
                         "name": "Referral VIP Reward",
+                        "daily_limit": "373.33",
+                        "balance": "282.38",
                         "expiration_time": "2026-04-14T22:47:29.21256+08:00",
                         "state": "active"
                     },
                     {
                         "name": "codex-jfioejg",
+                        "daily_limit": "200.00",
+                        "balance": "49.62",
                         "expiration_time": "2026-05-14T22:47:29.21256+08:00",
-                        "state": "pending"
+                        "state": "active"
+                    },
+                    {
+                        "name": "expired-card",
+                        "daily_limit": "999.00",
+                        "balance": "999.00",
+                        "expiration_time": "2026-05-14T22:47:29.21256+08:00",
+                        "state": "expired"
                     }
                 ]
             }
@@ -3480,10 +3823,26 @@ mod tests {
 
         assert_eq!(usage.usage_kind, UsageKind::BudgetInfo);
         assert_eq!(usage.plan_name.as_deref(), Some("VIP"));
-        assert_eq!(usage.remaining, Some(42.5));
-        assert_eq!(usage.daily_limit, Some(200.0));
-        assert_eq!(usage.daily_used, Some(26.03));
-        assert_eq!(usage.monthly_used, Some(40.92));
+        assert_eq!(usage.remaining, Some(332.0));
+        assert!(
+            usage
+                .today_added
+                .map(|value| (value - 573.33).abs() < 0.001)
+                .unwrap_or(false),
+            "expected summed total around 573.33, got {:?}",
+            usage.today_added
+        );
+        assert_eq!(usage.today_used, None);
+        assert!(
+            usage
+                .daily_limit
+                .map(|value| (value - 573.33).abs() < 0.001)
+                .unwrap_or(false),
+            "expected summed daily limit around 573.33, got {:?}",
+            usage.daily_limit
+        );
+        assert_eq!(usage.daily_used, None);
+        assert_eq!(usage.monthly_used, None);
         assert_eq!(usage.expires_at_unix_ms, Some(1_778_770_049_212));
     }
 

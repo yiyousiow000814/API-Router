@@ -225,6 +225,7 @@ export function buildSwitchboardProviderCards(
     const providerCfg = config?.providers?.[name]
     const quota = status?.quota?.[name]
     const kind = (quota?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info' | 'balance_info'
+    const totalOnly = providerCfg?.usage_presentation === 'total_only'
     let usageHeadline = 'No usage data'
     let usageDetail = 'Refresh after first request'
     let usageSub: string | null = null
@@ -241,6 +242,36 @@ export function buildSwitchboardProviderCards(
       usageSub = usedPct == null ? null : `Used ${options.fmtPct(usedPct)}`
       usagePct = remainingPct
     } else if (kind === 'budget_info') {
+      if (totalOnly) {
+        const total = quota?.today_added ?? quota?.daily_budget_usd ?? null
+        const remaining =
+          quota?.remaining ??
+          (total != null && (quota?.today_used ?? quota?.daily_spent_usd) != null
+            ? Math.max(0, total - (quota?.today_used ?? quota?.daily_spent_usd ?? 0))
+            : null)
+        const used =
+          (total != null && remaining != null ? Math.max(0, total - remaining) : null) ??
+          quota?.today_used ??
+          quota?.daily_spent_usd ??
+          null
+        const remainingPct = options.pctOf(remaining ?? null, total)
+        usageHeadline = remainingPct != null ? `Remaining ${options.fmtPct(remainingPct)}` : 'Usage available'
+        usageDetail =
+          used != null && total != null
+            ? `Used $${options.fmtUsd(used)} / $${options.fmtUsd(total)}`
+            : 'Refresh after first request'
+        usageSub = null
+        usagePct = remainingPct
+        return {
+          name,
+          baseUrl: providerCfg?.base_url ?? '',
+          hasKey: Boolean(providerCfg?.has_key),
+          usageHeadline,
+          usageDetail,
+          usageSub,
+          usagePct,
+        }
+      }
       const dailySpent = quota?.daily_spent_usd ?? null
       const dailyBudget = quota?.daily_budget_usd ?? null
       const dailyLeft = dailySpent != null && dailyBudget != null ? Math.max(0, dailyBudget - dailySpent) : null

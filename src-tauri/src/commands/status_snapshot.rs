@@ -807,6 +807,18 @@ pub(crate) fn get_status(
         serde_json::json!(elapsed_ms_since(phase_started_at)),
     );
     status_watchdog.phase("shared_quota_owners");
+    let providers_to_refresh = crate::orchestrator::quota::reconcile_blocked_shared_quota_snapshots(
+        &state.gateway,
+        Some(&lan_sync),
+        &shared_quota_owners,
+    );
+    for provider_name in providers_to_refresh {
+        let gateway = state.gateway.clone();
+        tokio::spawn(async move {
+            crate::orchestrator::quota::clear_usage_refresh_gate_for_provider(&gateway, &provider_name);
+            let _ = crate::orchestrator::quota::refresh_quota_for_provider(&gateway, &provider_name).await;
+        });
+    }
 
     let phase_started_at = std::time::Instant::now();
     let client_sessions = {
@@ -995,6 +1007,10 @@ fn config_revision(state: &app_state::AppState, cfg: &crate::orchestrator::confi
             "group": provider_cfg.group,
             "disabled": provider_cfg.disabled,
             "usage_adapter": provider_cfg.usage_adapter,
+            "usage_presentation": match crate::orchestrator::providers::provider_usage_presentation(provider_cfg) {
+                crate::orchestrator::providers::UsagePresentation::Standard => "standard",
+                crate::orchestrator::providers::UsagePresentation::TotalOnly => "total_only",
+            },
             "usage_base_url": provider_cfg.usage_base_url,
             "shared_provider_id": state.secrets.get_provider_shared_id(provider_name),
             "key_storage": state.secrets.get_provider_key_storage_mode(provider_name),
@@ -1019,6 +1035,10 @@ fn config_revision(state: &app_state::AppState, cfg: &crate::orchestrator::confi
             "group": provider_cfg.group,
             "disabled": provider_cfg.disabled,
             "usage_adapter": provider_cfg.usage_adapter,
+            "usage_presentation": match crate::orchestrator::providers::provider_usage_presentation(provider_cfg) {
+                crate::orchestrator::providers::UsagePresentation::Standard => "standard",
+                crate::orchestrator::providers::UsagePresentation::TotalOnly => "total_only",
+            },
             "usage_base_url": provider_cfg.usage_base_url,
             "shared_provider_id": state.secrets.get_provider_shared_id(provider_name),
             "key_storage": state.secrets.get_provider_key_storage_mode(provider_name),
@@ -4583,6 +4603,75 @@ mod tests {
 
         let after_cfg = state.gateway.cfg.read().clone();
         let after_revision = config_revision(&state, &after_cfg);
+        assert_ne!(before_revision, after_revision);
+    }
+
+    #[test]
+    fn config_revision_changes_when_usage_presentation_definition_changes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let provider_dir = tmp.path().join("providers");
+        std::fs::create_dir_all(&provider_dir).expect("create providers dir");
+
+        let original_cwd = std::env::current_dir().expect("current dir");
+        std::env::set_current_dir(tmp.path()).expect("set current dir");
+        let state = crate::app_state::build_state(
+            tmp.path().join("user-data").join("config.toml"),
+            tmp.path().join("user-data").join("data"),
+        )
+        .expect("build state");
+        let provider_cfg = state
+            .gateway
+            .cfg
+            .read()
+            .providers
+            .values()
+            .find(|provider| !provider.base_url.trim().is_empty())
+            .cloned()
+            .expect("provider config");
+        let host = reqwest::Url::parse(&provider_cfg.base_url)
+            .ok()
+            .and_then(|url| url.host_str().map(|value| value.to_string()))
+            .expect("provider base url host");
+        let provider_path = provider_dir.join("hot_reload.toml");
+        std::fs::write(
+            &provider_path,
+            format!(
+                r#"
+id = "hot_reload_test"
+
+[match]
+base_url_hosts = ["{host}"]
+
+[usage]
+usage_presentation = "standard"
+"#,
+            ),
+        )
+        .expect("write provider definition");
+        crate::orchestrator::providers::refresh_provider_registry_state_for_tests(std::slice::from_ref(&provider_dir));
+        let before_cfg = state.gateway.cfg.read().clone();
+        let before_revision = config_revision(&state, &before_cfg);
+
+        std::fs::write(
+            &provider_path,
+            format!(
+                r#"
+id = "hot_reload_test"
+
+[match]
+base_url_hosts = ["{host}"]
+
+[usage]
+usage_presentation = "total_only"
+"#,
+            ),
+        )
+        .expect("update provider definition");
+        crate::orchestrator::providers::refresh_provider_registry_state_for_tests(std::slice::from_ref(&provider_dir));
+
+        let after_cfg = state.gateway.cfg.read().clone();
+        let after_revision = config_revision(&state, &after_cfg);
+        std::env::set_current_dir(original_cwd).expect("restore current dir");
         assert_ne!(before_revision, after_revision);
     }
 

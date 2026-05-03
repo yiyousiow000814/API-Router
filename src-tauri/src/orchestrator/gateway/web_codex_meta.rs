@@ -472,6 +472,10 @@ fn provider_switchboard_details(st: &GatewayState) -> Vec<Value> {
                 "disabled": provider.disabled,
                 "supports_websockets": provider.supports_websockets,
                 "usage_adapter": &provider.usage_adapter,
+                "usage_presentation": match crate::orchestrator::providers::provider_usage_presentation(provider) {
+                    crate::orchestrator::providers::UsagePresentation::Standard => "standard",
+                    crate::orchestrator::providers::UsagePresentation::TotalOnly => "total_only",
+                },
                 "quota_hard_cap": quota_hard_cap,
                 "manual_pricing_expires_at_unix_ms": manual_pricing_expires_at_unix_ms,
                 "quota": quota_value,
@@ -1097,14 +1101,24 @@ mod tests {
     use super::{
         cached_codex_models_payload, clear_provider_switchboard_cache, codex_models_cache,
         extract_model_and_effort_from_toml, provider_switchboard_cache_key,
-        provider_switchboard_homes_cache, read_persisted_codex_models_payload,
-        resolve_codex_file_path_with_wsl_distro, write_persisted_codex_models_payload,
-        CodexModelsCacheEntry, CodexModelsQuery, ProviderSwitchboardHomesCacheEntry,
-        CODEX_MODELS_CACHE_TTL, PROVIDER_SWITCHBOARD_CACHE_TTL,
+        provider_switchboard_details, provider_switchboard_homes_cache,
+        read_persisted_codex_models_payload, resolve_codex_file_path_with_wsl_distro,
+        write_persisted_codex_models_payload, CodexModelsCacheEntry, CodexModelsQuery,
+        ProviderSwitchboardHomesCacheEntry, CODEX_MODELS_CACHE_TTL, PROVIDER_SWITCHBOARD_CACHE_TTL,
     };
+    use crate::orchestrator::config::AppConfig;
+    use crate::orchestrator::gateway::open_store_dir;
+    use crate::orchestrator::gateway::GatewayState;
+    use crate::orchestrator::router::RouterState;
+    use crate::orchestrator::secrets::SecretStore;
+    use crate::orchestrator::upstream::UpstreamClient;
+    use parking_lot::RwLock;
     use serde_json::json;
+    use std::collections::HashMap;
     #[cfg(target_os = "windows")]
     use std::path::PathBuf;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::Arc;
     use std::time::Instant;
 
     #[test]
@@ -1172,6 +1186,47 @@ model_reasoning_effort = "medium"
             .lock()
             .expect("cache")
             .is_empty());
+    }
+
+    #[test]
+    fn provider_switchboard_details_include_usage_presentation() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let previous = crate::diagnostics::set_test_user_data_dir_override(Some(temp.path()));
+        let store = open_store_dir(temp.path().join("data")).expect("store");
+        let secrets = SecretStore::new(temp.path().join("secrets.json"));
+        let mut cfg = AppConfig::default_config();
+        cfg.routing.preferred_provider = "provider_1".to_string();
+        cfg.providers
+            .get_mut("provider_1")
+            .expect("provider_1")
+            .base_url = "https://api-vip.codex-for.me/v1".to_string();
+        let router = Arc::new(RouterState::new(
+            &cfg,
+            crate::orchestrator::store::unix_ms(),
+        ));
+        let state = GatewayState {
+            cfg: Arc::new(RwLock::new(cfg)),
+            router,
+            store,
+            upstream: UpstreamClient::new(),
+            secrets,
+            last_activity_unix_ms: Arc::new(AtomicU64::new(0)),
+            last_used_by_session: Arc::new(RwLock::new(HashMap::new())),
+            usage_base_speed_cache: Arc::new(RwLock::new(HashMap::new())),
+            prev_id_support_cache: Arc::new(RwLock::new(HashMap::new())),
+            client_sessions: Arc::new(RwLock::new(HashMap::new())),
+        };
+
+        let details = provider_switchboard_details(&state);
+        let provider = details
+            .iter()
+            .find(|entry| entry.get("name") == Some(&json!("provider_1")))
+            .expect("provider details");
+        assert_eq!(
+            provider.get("usage_presentation"),
+            Some(&json!("total_only"))
+        );
+        crate::diagnostics::set_test_user_data_dir_override(previous.as_deref());
     }
 
     #[test]

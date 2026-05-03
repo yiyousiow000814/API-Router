@@ -104,4 +104,65 @@ describe('buildCodexSwapBadge', () => {
 
     expect(cards[0]?.usageDetail).toBe('Daily $5 / $20')
   })
+
+  it('uses total-only presentation for provider cards when configured', () => {
+    const config: Config = {
+      listen: { host: '127.0.0.1', port: 4000 },
+      routing: {
+        preferred_provider: 'codex-for.me',
+        auto_return_to_preferred: true,
+        preferred_stable_seconds: 30,
+        failure_threshold: 3,
+        cooldown_seconds: 30,
+        request_timeout_seconds: 300,
+      },
+      providers: {
+        'codex-for.me': {
+          display_name: 'codex-for.me',
+          base_url: 'https://api-vip.codex-for.me/v1',
+          has_key: true,
+          usage_presentation: 'total_only',
+        },
+      },
+    }
+    const status: Status = {
+      listen: { host: '127.0.0.1', port: 4000 },
+      preferred_provider: 'codex-for.me',
+      manual_override: null,
+      providers: {},
+      metrics: {},
+      recent_events: [],
+      quota: {
+        'codex-for.me': {
+          kind: 'budget_info',
+          updated_at_unix_ms: 1_000,
+          remaining: 542.64,
+          today_used: 30.69,
+          today_added: 573.33,
+          daily_spent_usd: 30.69,
+          daily_budget_usd: 573.33,
+          weekly_spent_usd: null,
+          weekly_budget_usd: null,
+          monthly_spent_usd: 0,
+          monthly_budget_usd: 50,
+          package_expires_at_unix_ms: null,
+          last_error: '',
+          effective_usage_base: 'https://api-vip.codex-for.me',
+        },
+      },
+      ledgers: {},
+      last_activity_unix_ms: 1_000,
+      codex_account: { ok: false },
+    }
+    const cards = buildSwitchboardProviderCards(['codex-for.me'], config, status, {
+      fmtPct: (value) => `${Math.round((value ?? 0) * 100)}%`,
+      fmtAmount: (value) => `${value ?? 0}`,
+      fmtUsd: (value) => `${Number((value ?? 0).toFixed(2))}`,
+      pctOf: (value, total) => (value != null && total ? value / total : null),
+    })
+
+    expect(cards[0]?.usageHeadline).toBe('Remaining 95%')
+    expect(cards[0]?.usageDetail).toBe('Used $30.69 / $573.33')
+    expect(cards[0]?.usageSub).toBeNull()
+  })
 })

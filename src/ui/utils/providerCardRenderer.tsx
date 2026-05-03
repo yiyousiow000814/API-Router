@@ -51,6 +51,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
     const quotaHardCap = p.quota_hard_cap ?? { daily: true, weekly: true, monthly: true }
     const quota = options.status?.quota?.[name]
     const hasBudgetInfo = isBudgetInfoQuota(quota)
+    const hidesBudgetWindows = p.usage_presentation === 'total_only'
     const hardCapPeriods = getVisibleBudgetHardCapPeriods(quota)
     const groupName = (p.group ?? '').trim()
     const activeProviderCount = Object.values(options.config?.providers ?? {}).filter(
@@ -245,7 +246,7 @@ export function createProviderCardRenderer(options: CreateProviderCardRendererOp
                       Usage URL
                     </button>
                   ) : null}
-                  {hasBudgetInfo ? (
+                  {hasBudgetInfo && !hidesBudgetWindows ? (
                     <div className="aoActionsMenuWrap aoProviderCapsMenuWrap">
                       <button
                         type="button"

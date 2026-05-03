@@ -1048,6 +1048,132 @@ pub(crate) fn clear_quota_snapshot(st: &GatewayState, provider_name: &str) {
     let _ = st.store.put_quota_snapshot(provider_name, &snap.to_json());
 }
 
+pub(crate) fn reconcile_blocked_shared_quota_snapshots(
+    st: &GatewayState,
+    lan_sync: Option<&crate::lan_sync::LanSyncStatusSnapshot>,
+    shared_quota_owners: &[SharedQuotaOwnerStatus],
+) -> Vec<String> {
+    let Some(lan_sync) = lan_sync else {
+        return Vec::new();
+    };
+    let blocked_remote_nodes = lan_sync
+        .peers
+        .iter()
+        .filter(|peer| {
+            peer.sync_blocked_domains
+                .iter()
+                .any(|domain| domain == crate::lan_sync::LAN_SYNC_DOMAIN_SHARED_QUOTA)
+        })
+        .map(|peer| peer.node_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if blocked_remote_nodes.is_empty() {
+        return Vec::new();
+    }
+    let blocked_owned_providers = if shared_quota_owners.is_empty() {
+        blocked_owned_providers_from_snapshot(st, lan_sync, &blocked_remote_nodes)
+    } else {
+        shared_quota_owners
+            .iter()
+            .filter(|owner| {
+                !owner.local_is_owner && blocked_remote_nodes.contains(owner.owner_node_id.as_str())
+            })
+            .map(|owner| (owner.provider.clone(), owner.owner_node_id.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    if blocked_owned_providers.is_empty() {
+        return Vec::new();
+    }
+
+    let cfg = st.cfg.read().clone();
+    let mut providers_to_refresh = Vec::new();
+    for provider_name in cfg.providers.keys() {
+        let Some(blocked_owner_node_id) = blocked_owned_providers.get(provider_name) else {
+            continue;
+        };
+        let Some(snapshot) = st
+            .store
+            .get_quota_snapshot(provider_name)
+            .and_then(|value| quota_snapshot_from_json(&value))
+        else {
+            continue;
+        };
+        let Some(applied_from_node_id) = snapshot.applied_from_node_id.as_deref() else {
+            continue;
+        };
+        if applied_from_node_id != blocked_owner_node_id {
+            continue;
+        }
+        clear_quota_snapshot(st, provider_name);
+        providers_to_refresh.push(provider_name.clone());
+    }
+    providers_to_refresh
+}
+
+fn blocked_owned_providers_from_snapshot(
+    st: &GatewayState,
+    lan_sync: &crate::lan_sync::LanSyncStatusSnapshot,
+    blocked_remote_nodes: &std::collections::BTreeSet<&str>,
+) -> std::collections::BTreeMap<String, String> {
+    let cfg = st.cfg.read().clone();
+    let local_contract = lan_sync
+        .local_node
+        .sync_contracts
+        .get(crate::lan_sync::LAN_SYNC_DOMAIN_SHARED_QUOTA)
+        .copied()
+        .unwrap_or_default();
+    let mut out = std::collections::BTreeMap::new();
+    for provider_name in cfg.providers.keys() {
+        let Some(fingerprint) = shared_provider_fingerprint(&cfg, &st.secrets, provider_name)
+        else {
+            continue;
+        };
+        let mut contenders = Vec::new();
+        if lan_sync
+            .local_node
+            .provider_fingerprints
+            .iter()
+            .any(|value| value == &fingerprint)
+        {
+            contenders.push((
+                lan_sync.local_node.node_id.clone(),
+                lan_sync.local_node.node_name.clone(),
+            ));
+        }
+        for peer in &lan_sync.peers {
+            if !peer.trusted {
+                continue;
+            }
+            let peer_contract = peer
+                .sync_contracts
+                .get(crate::lan_sync::LAN_SYNC_DOMAIN_SHARED_QUOTA)
+                .copied()
+                .unwrap_or_default();
+            if peer_contract != local_contract {
+                continue;
+            }
+            if !peer
+                .provider_fingerprints
+                .iter()
+                .any(|value| value == &fingerprint)
+            {
+                continue;
+            }
+            contenders.push((peer.node_id.clone(), peer.node_name.clone()));
+        }
+        contenders.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        contenders.dedup_by(|a, b| a.0 == b.0);
+        let Some((owner_node_id, _owner_node_name)) = contenders.first().cloned() else {
+            continue;
+        };
+        if owner_node_id != lan_sync.local_node.node_id
+            && blocked_remote_nodes.contains(owner_node_id.as_str())
+        {
+            out.insert(provider_name.clone(), owner_node_id);
+        }
+    }
+    out
+}
+
 fn store_quota_snapshot_silent(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
     let _ = st.store.put_quota_snapshot(provider_name, &snap.to_json());
     // Silent propagation writes must not affect per-provider ledgers.

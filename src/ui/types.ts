@@ -470,6 +470,7 @@ export type Config = {
       group?: string | null
       supports_websockets?: boolean
       usage_adapter?: string
+      usage_presentation?: 'standard' | 'total_only'
       usage_base_url?: string | null
       quota_hard_cap?: {
         daily: boolean

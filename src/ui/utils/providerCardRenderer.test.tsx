@@ -212,6 +212,17 @@ describe('provider usage controls rendering', () => {
     expect(html).not.toContain('daily cap')
   })
 
+  it('hides caps controls for total-only usage presentation', () => {
+    const config = buildConfig(null)
+    config.providers.p1 = {
+      ...config.providers.p1,
+      usage_presentation: 'total_only',
+    }
+    const html = renderCardHtml(config, buildStatus())
+    expect(html).not.toContain('Caps')
+    expect(html).not.toContain('aoProviderCapsSummary')
+  })
+
   it('keeps only usage url for packycode hosts', () => {
     const html = renderCardHtml(buildConfig(null, 'https://codex.packycode.com/v1'), buildStatus())
     expect(html).toContain('Email')

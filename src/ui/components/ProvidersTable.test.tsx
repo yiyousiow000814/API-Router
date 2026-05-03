@@ -498,4 +498,214 @@ describe('ProvidersTable', () => {
     expect(html).not.toContain('account summary')
     expect(html).toContain('<span class="aoHint">-</span>')
   })
+
+  it('falls back to total remaining versus total when budget windows are hidden', () => {
+    const status = buildStatus()
+    const config: Config = {
+      listen: { host: '127.0.0.1', port: 4000 },
+      routing: {
+        preferred_provider: 'codex-for.me',
+        auto_return_to_preferred: true,
+        preferred_stable_seconds: 30,
+        failure_threshold: 2,
+        cooldown_seconds: 20,
+        request_timeout_seconds: 60,
+      },
+      providers: {
+        'codex-for.me': {
+          display_name: 'codex-for.me',
+          base_url: 'https://api-vip.codex-for.me/v1',
+          has_key: true,
+          quota_hard_cap: {
+            daily: false,
+            weekly: false,
+            monthly: true,
+          },
+        },
+      },
+    }
+    status.providers = {
+      'codex-for.me': {
+        status: 'healthy',
+        consecutive_failures: 0,
+        cooldown_until_unix_ms: 0,
+        last_error: '',
+        last_ok_at_unix_ms: 0,
+        last_fail_at_unix_ms: 0,
+      },
+    }
+    status.quota = {
+      'codex-for.me': {
+        kind: 'balance_info',
+        updated_at_unix_ms: 1234,
+        remaining: 287.61,
+        today_used: 26.03,
+        today_added: 373.33,
+        daily_spent_usd: 26.03,
+        daily_budget_usd: 373.33,
+        weekly_spent_usd: null,
+        weekly_budget_usd: null,
+        monthly_spent_usd: null,
+        monthly_budget_usd: null,
+        package_expires_at_unix_ms: 4_070_908_800_000,
+        last_error: '',
+      },
+    }
+
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['codex-for.me']}
+        config={config}
+        status={status}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
+
+    expect(html).toContain('total: $287.61 / $373.33')
+    expect(html).not.toContain('daily: $26.03 / $373.33')
+    expect(html).toContain('title="package ends: unlimited"')
+    expect(html).toContain('ends: unlimited')
+  })
+
+  it('forces total-only usage presentation when the provider config requests it', () => {
+    const status = buildStatus()
+    const config: Config = {
+      listen: { host: '127.0.0.1', port: 4000 },
+      routing: {
+        preferred_provider: 'codex-for.me',
+        auto_return_to_preferred: true,
+        preferred_stable_seconds: 30,
+        failure_threshold: 2,
+        cooldown_seconds: 20,
+        request_timeout_seconds: 60,
+      },
+      providers: {
+        'codex-for.me': {
+          display_name: 'codex-for.me',
+          base_url: 'https://api-vip.codex-for.me/v1',
+          has_key: true,
+          usage_presentation: 'total_only',
+          quota_hard_cap: {
+            daily: true,
+            weekly: true,
+            monthly: true,
+          },
+        },
+      },
+    }
+    status.providers = {
+      'codex-for.me': {
+        status: 'healthy',
+        consecutive_failures: 0,
+        cooldown_until_unix_ms: 0,
+        last_error: '',
+        last_ok_at_unix_ms: 0,
+        last_fail_at_unix_ms: 0,
+      },
+    }
+    status.quota = {
+      'codex-for.me': {
+        kind: 'budget_info',
+        updated_at_unix_ms: 1234,
+        remaining: 332,
+        today_used: 29.06,
+        today_added: 573.33,
+        daily_spent_usd: 29.06,
+        daily_budget_usd: 573.33,
+        weekly_spent_usd: null,
+        weekly_budget_usd: null,
+        monthly_spent_usd: 0,
+        monthly_budget_usd: 50,
+        package_expires_at_unix_ms: 4_070_908_800_000,
+        last_error: '',
+      },
+    }
+
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['codex-for.me']}
+        config={config}
+        status={status}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
+
+    expect(html).toContain('used: $241.33 / $573.33')
+    expect(html).not.toContain('daily: $29.06 / $573.33')
+    expect(html).not.toContain('monthly: $0 / $50')
+  })
+
+  it('falls back to canonical total balance when total-only presentation lacks today_added', () => {
+    const status = buildStatus()
+    const config: Config = {
+      listen: { host: '127.0.0.1', port: 4000 },
+      routing: {
+        preferred_provider: 'codex-for.me',
+        auto_return_to_preferred: true,
+        preferred_stable_seconds: 30,
+        failure_threshold: 2,
+        cooldown_seconds: 20,
+        request_timeout_seconds: 60,
+      },
+      providers: {
+        'codex-for.me': {
+          display_name: 'codex-for.me',
+          base_url: 'https://api-vip.codex-for.me/v1',
+          has_key: true,
+          usage_presentation: 'total_only',
+          quota_hard_cap: {
+            daily: true,
+            weekly: true,
+            monthly: true,
+          },
+        },
+      },
+    }
+    status.providers = {
+      'codex-for.me': {
+        status: 'healthy',
+        consecutive_failures: 0,
+        cooldown_until_unix_ms: 0,
+        last_error: '',
+        last_ok_at_unix_ms: 0,
+        last_fail_at_unix_ms: 0,
+      },
+    }
+    status.quota = {
+      'codex-for.me': {
+        kind: 'budget_info',
+        updated_at_unix_ms: 1234,
+        remaining: 50,
+        today_used: null,
+        today_added: null,
+        daily_spent_usd: 29.06,
+        daily_budget_usd: 573.33,
+        weekly_spent_usd: null,
+        weekly_budget_usd: null,
+        monthly_spent_usd: 0,
+        monthly_budget_usd: 50,
+        package_expires_at_unix_ms: 4_070_908_800_000,
+        last_error: '',
+      },
+    }
+
+    const html = renderToStaticMarkup(
+      <ProvidersTable
+        providers={['codex-for.me']}
+        config={config}
+        status={status}
+        refreshingProviders={{}}
+        onRefreshQuota={() => {}}
+        onOpenLastErrorInEventLog={() => {}}
+      />,
+    )
+
+    expect(html).toContain('used: $523.33 / $573.33')
+    expect(html).not.toContain('daily: $29.06 / $573.33')
+    expect(html).not.toContain('monthly: $0 / $50')
+  })
 })

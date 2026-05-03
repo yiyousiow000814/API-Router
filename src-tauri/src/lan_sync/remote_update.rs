@@ -572,7 +572,7 @@ fn write_lan_remote_update_status_with_timeline(
 
 pub(crate) fn display_target_ref(target_ref: &str) -> &str {
     let trimmed = target_ref.trim();
-    if trimmed.len() > 8 {
+    if trimmed.len() == 40 && trimmed.chars().all(|ch| ch.is_ascii_hexdigit()) {
         &trimmed[..8]
     } else {
         trimmed
@@ -653,6 +653,18 @@ fn remote_update_status_current_sha_matches(
         .current_git_sha
         .as_deref()
         .is_some_and(|sha| sha.trim() == current_target_ref)
+}
+
+fn remote_update_status_matches_current_target_ref(
+    status: &LanRemoteUpdateStatusSnapshot,
+    current_target_ref: &str,
+) -> bool {
+    status.target_ref.trim() == current_target_ref
+        || status
+            .to_git_sha
+            .as_deref()
+            .is_some_and(|sha| sha.trim() == current_target_ref)
+        || remote_update_status_current_sha_matches(status, current_target_ref)
 }
 
 #[cfg(target_os = "windows")]
@@ -811,8 +823,13 @@ fn remote_update_worker_should_delay_normalization(
     if !remote_update_worker_is_alive(status.worker_pid) {
         return false;
     }
-    !(current_target_ref == status_target_ref
-        && remote_update_status_has_successful_runtime_health(status))
+    !(remote_update_status_matches_current_target_ref(status, current_target_ref)
+        && remote_update_status_has_successful_runtime_health(status)
+        && (status_target_ref == current_target_ref
+            || status
+                .to_git_sha
+                .as_deref()
+                .is_some_and(|sha| sha.trim() == current_target_ref)))
 }
 
 fn terminate_remote_update_worker(pid: u32) -> Result<Option<bool>, String> {
@@ -888,7 +905,9 @@ fn normalize_remote_update_status(
     let Some(current_target_ref) = current_target_ref.as_deref() else {
         return status;
     };
-    if state == "succeeded" && current_target_ref == status_target_ref {
+    if state == "succeeded"
+        && remote_update_status_matches_current_target_ref(&status, current_target_ref)
+    {
         if remote_update_shell_cleanup_should_run(&status) {
             let shell_cleanup_detail = cleanup_remote_update_marked_shell_processes(&status);
             let finished_at_unix_ms = unix_ms();
@@ -949,7 +968,9 @@ fn normalize_remote_update_status(
         return status;
     }
 
-    if state == "superseded" && current_target_ref != status_target_ref {
+    if state == "superseded"
+        && !remote_update_status_matches_current_target_ref(&status, current_target_ref)
+    {
         return status;
     }
 
@@ -959,7 +980,7 @@ fn normalize_remote_update_status(
     ]);
     let finished_at_unix_ms = unix_ms();
 
-    if current_target_ref == status_target_ref {
+    if remote_update_status_matches_current_target_ref(&status, current_target_ref) {
         status.state = "succeeded".to_string();
         status.reason_code = Some(
             match state.as_str() {
@@ -4087,6 +4108,16 @@ mod tests {
     }
 
     #[test]
+    fn build_script_runtime_restart_wait_budget_covers_observed_remote_update_startup() {
+        let build_script = std::fs::read_to_string("../tools/build/build-root-exe.ps1")
+            .expect("read build script");
+        assert!(
+            build_script.contains("$TimeoutSeconds = 45"),
+            "runtime restart wait budget should cover observed 30s+ startup windows from remote update logs"
+        );
+    }
+
+    #[test]
     fn build_worker_exited_early_status_preserves_original_detail_after_bootstrap() {
         let mut running_status = build_worker_started_status(
             &accepted_status_fixture(),
@@ -4997,6 +5028,58 @@ mod tests {
             .iter()
             .any(|entry| entry.phase == "normalized_succeeded"
                 && entry.label == "Status normalized to succeeded"));
+    }
+
+    #[test]
+    fn normalize_remote_update_status_marks_superseded_status_succeeded_when_resolved_sha_matches()
+    {
+        let Some(target_ref) = normalized_local_build_target_ref() else {
+            return;
+        };
+        let status = LanRemoteUpdateStatusSnapshot {
+            state: "superseded".to_string(),
+            target_ref: "fix/prov".to_string(),
+            from_git_sha: Some("6b28b6e".to_string()),
+            to_git_sha: Some(target_ref.clone()),
+            current_git_sha: Some(target_ref.clone()),
+            previous_git_sha: Some("6b28b6e".to_string()),
+            progress_percent: Some(100),
+            rollback_available: true,
+            request_id: Some("ru_superseded_alias".to_string()),
+            reason_code: Some("peer_build_changed_after_start".to_string()),
+            requester_node_id: Some("node-remote".to_string()),
+            requester_node_name: Some("Desk Remote".to_string()),
+            worker_script: Some("worker.ps1".to_string()),
+            worker_pid: None,
+            worker_exit_code: None,
+            detail: Some(format!(
+                "Completed remote update to fix/prov was replaced by current build {}.",
+                display_target_ref(&target_ref)
+            )),
+            accepted_at_unix_ms: 10,
+            started_at_unix_ms: Some(20),
+            finished_at_unix_ms: Some(30),
+            updated_at_unix_ms: 30,
+            shell_cleanup_completed_at_unix_ms: None,
+            timeline: vec![LanRemoteUpdateTimelineEntry {
+                unix_ms: 30,
+                phase: "normalized_superseded".to_string(),
+                label: "Completed status replaced".to_string(),
+                detail: Some("Completed remote update to fix/prov was replaced.".to_string()),
+                source: "normalizer".to_string(),
+                state: "superseded".to_string(),
+            }],
+        };
+
+        let normalized = normalize_remote_update_status(status);
+        assert_eq!(normalized.state, "succeeded");
+        assert_eq!(
+            normalized.reason_code.as_deref(),
+            Some("peer_already_matches_target_after_superseded_status")
+        );
+        assert!(normalized.detail.as_deref().is_some_and(
+            |detail| detail.contains("Current build already matches the queued target")
+        ));
     }
 
     #[test]

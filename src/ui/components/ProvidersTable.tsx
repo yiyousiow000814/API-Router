@@ -2,6 +2,11 @@ import { fmtAmount, fmtPct, fmtUsd, fmtWhen, pctOf } from '../utils/format'
 import type { Config, Status } from '../types'
 
 const mono = 'ui-monospace, "Cascadia Mono", "Consolas", monospace'
+const PRACTICAL_UNLIMITED_EXPIRY_UNIX_MS = Date.UTC(2090, 0, 1)
+
+function isPracticallyUnlimitedExpiry(unixMs: number | null | undefined): boolean {
+  return Number.isFinite(unixMs) && Number(unixMs) >= PRACTICAL_UNLIMITED_EXPIRY_UNIX_MS
+}
 
 export type LastErrorJump = {
   provider: string
@@ -91,6 +96,8 @@ export function ProvidersTable({
           const q = status.quota?.[p]
           const kind = (q?.kind ?? 'none') as 'none' | 'token_stats' | 'budget_info' | 'balance_info'
           const quotaHardCap = config?.providers?.[p]?.quota_hard_cap ?? { daily: true, weekly: true, monthly: true }
+          const usagePresentation = config?.providers?.[p]?.usage_presentation ?? 'standard'
+          const forceTotalOnly = usagePresentation === 'total_only'
           const isClosed = h.status === 'closed'
           const cooldownActive = !isClosed && h.cooldown_until_unix_ms > Date.now()
           const retryDue = !isClosed && h.status === 'unhealthy' && !cooldownActive
@@ -164,6 +171,21 @@ export function ProvidersTable({
                   <div className="aoUsageText">
                     {(() => {
                       const usageLines: Array<{ key: string; content: string }> = []
+                      const totalBalance = q?.today_added ?? q?.daily_budget_usd ?? null
+                      const usedBalance =
+                        (totalBalance != null && q?.remaining != null ? Math.max(0, totalBalance - q.remaining) : null) ??
+                        q?.today_used ??
+                        q?.daily_spent_usd
+                      if (forceTotalOnly) {
+                        if (usedBalance != null && totalBalance != null) {
+                          return (
+                            <div className="aoUsageLine">
+                              used: ${fmtUsd(usedBalance)} / ${fmtUsd(totalBalance)}
+                            </div>
+                          )
+                        }
+                        return <span className="aoHint">-</span>
+                      }
                       const hasDailySpent = q?.daily_spent_usd != null
                       const hasDailyBudget = q?.daily_budget_usd != null
                       if (quotaHardCap.daily && (hasDailySpent || hasDailyBudget)) {
@@ -213,6 +235,16 @@ export function ProvidersTable({
                       }
 
                       if (usageLines.length === 0) {
+                        if (usedBalance != null && totalBalance != null) {
+                          return (
+                            <div className="aoUsageLine">
+                              used: ${fmtUsd(usedBalance)} / ${fmtUsd(totalBalance)}
+                            </div>
+                          )
+                        }
+                        if (q?.remaining != null) {
+                          return <div className="aoUsageLine">balance: ${fmtUsd(q.remaining)}</div>
+                        }
                         return <span className="aoHint">-</span>
                       }
 
@@ -222,6 +254,33 @@ export function ProvidersTable({
                         </div>
                       ))
                     })()}
+                  </div>
+                  <button
+                    className={`aoUsageRefreshBtn${refreshingProviders[p] ? ' aoUsageRefreshBtnSpin' : ''}`}
+                    title="Refresh usage"
+                    aria-label="Refresh usage"
+                    onClick={() => onRefreshQuota(p)}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M23 4v6h-6" />
+                      <path d="M1 20v-6h6" />
+                      <path d="M3.5 9a9 9 0 0 1 14.1-3.4L23 10" />
+                      <path d="M1 14l5.3 5.3A9 9 0 0 0 20.5 15" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            ) : kind === 'balance_info' ? (
+              <div className="aoUsageMini">
+                <div className="aoUsageSplit">
+                  <div className="aoUsageText">
+                    {q?.remaining != null && q?.today_added != null ? (
+                      <div className="aoUsageLine">
+                        total: ${fmtUsd(q.remaining)} / ${fmtUsd(q.today_added)}
+                      </div>
+                    ) : (
+                      <span className="aoHint">-</span>
+                    )}
                   </div>
                   <button
                     className={`aoUsageRefreshBtn${refreshingProviders[p] ? ' aoUsageRefreshBtnSpin' : ''}`}
@@ -277,19 +336,31 @@ export function ProvidersTable({
                 <td style={{ fontFamily: mono }}>
                   <div>{p}</div>
                   {q?.package_expires_at_unix_ms ? (
-                    <div
-                      className="aoHint"
-                      style={{
-                        marginTop: 2,
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        color: isExpiryUrgent(q.package_expires_at_unix_ms) ? 'rgba(145, 12, 43, 0.92)' : undefined,
-                      }}
-                      title={`package ends: ${fmtWhen(q.package_expires_at_unix_ms)}`}
-                    >
-                      ends: {fmtDateOnly(q.package_expires_at_unix_ms)}
-                    </div>
+                    (() => {
+                      const isUnlimited = isPracticallyUnlimitedExpiry(q.package_expires_at_unix_ms)
+                      return (
+                        <div
+                          className="aoHint"
+                          style={{
+                            marginTop: 2,
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            color:
+                              !isUnlimited && isExpiryUrgent(q.package_expires_at_unix_ms)
+                                ? 'rgba(145, 12, 43, 0.92)'
+                                : undefined,
+                          }}
+                          title={
+                            isUnlimited
+                              ? 'package ends: unlimited'
+                              : `package ends: ${fmtWhen(q.package_expires_at_unix_ms)}`
+                          }
+                        >
+                          ends: {isUnlimited ? 'unlimited' : fmtDateOnly(q.package_expires_at_unix_ms)}
+                        </div>
+                      )
+                    })()
                   ) : null}
                 </td>
                 <td className="aoCellCenter">

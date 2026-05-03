@@ -23,6 +23,7 @@ pub(crate) const SYNC_DOMAIN_USAGE_REQUESTS: &str = "usage_requests";
 pub(crate) const SYNC_DOMAIN_USAGE_HISTORY: &str = "usage_history";
 pub(crate) const SYNC_DOMAIN_PROVIDER_DEFINITIONS: &str = "provider_definitions";
 pub(crate) const SYNC_DOMAIN_SHARED_HEALTH: &str = "shared_health";
+pub(crate) const SYNC_DOMAIN_SHARED_QUOTA: &str = "shared_quota";
 pub(crate) const SYNC_DOMAIN_OFFICIAL_ACCOUNTS: &str = "official_accounts";
 
 const LAN_VERSION_RULES: &[LanVersionRule] = &[
@@ -40,7 +41,7 @@ const LAN_VERSION_RULES: &[LanVersionRule] = &[
     },
     LanVersionRule {
         name: "usage_sync",
-        version: 1,
+        version: 2,
         kind: LanVersionKind::Capability,
         bump_rule:
             "Bump when usage HTTP sync route behavior or request/response expectations change.",
@@ -125,6 +126,13 @@ const LAN_VERSION_RULES: &[LanVersionRule] = &[
         version: 2,
         kind: LanVersionKind::SyncContract,
         bump_rule: "Bump when shared health payloads or selection semantics change.",
+    },
+    LanVersionRule {
+        name: SYNC_DOMAIN_SHARED_QUOTA,
+        version: 2,
+        kind: LanVersionKind::SyncContract,
+        bump_rule:
+            "Bump when shared quota owner selection, quota snapshot payloads, or canonical quota semantics change.",
     },
 ];
 

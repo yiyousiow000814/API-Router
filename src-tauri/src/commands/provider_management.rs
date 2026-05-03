@@ -356,6 +356,10 @@ pub(crate) fn get_config(state: tauri::State<'_, app_state::AppState>) -> serde_
                   "disabled": p.disabled,
                   "supports_websockets": p.supports_websockets,
                   "usage_adapter": p.usage_adapter.clone(),
+                  "usage_presentation": match crate::orchestrator::providers::provider_usage_presentation(p) {
+                    crate::orchestrator::providers::UsagePresentation::Standard => "standard",
+                    crate::orchestrator::providers::UsagePresentation::TotalOnly => "total_only",
+                  },
                   "usage_base_url": p.usage_base_url.clone().map(|value| {
                     crate::orchestrator::quota::normalize_usage_base_url(&p.base_url, &value)
                         .unwrap_or(value)

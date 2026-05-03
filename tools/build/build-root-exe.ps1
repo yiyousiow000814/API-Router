@@ -1559,7 +1559,7 @@ function Wait-ApiRouterRuntimeProcessStarted {
   )
 
   if ($TimeoutSeconds -eq $null) {
-    $TimeoutSeconds = 15
+    $TimeoutSeconds = 45
   }
   $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
   $stableSince = $null
