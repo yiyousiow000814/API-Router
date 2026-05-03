@@ -7536,6 +7536,18 @@ mod tests {
     }
 
     #[test]
+    fn display_target_ref_only_shortens_git_shas() {
+        assert_eq!(
+            super::remote_update::display_target_ref("b792a6833b5a9f466b8c958680f441eb1e5137bc"),
+            "b792a683"
+        );
+        assert_eq!(
+            super::remote_update::display_target_ref("fix/provider-quota-rules"),
+            "fix/provider-quota-rules"
+        );
+    }
+
+    #[test]
     fn apply_followed_provider_state_does_not_touch_app_codex_auth_json() {
         let (_tmp, state) = build_test_state();
         let app_auth_path = state
