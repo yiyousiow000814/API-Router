@@ -81,4 +81,18 @@ describe('buildProviderCapsMenuData', () => {
     expect(data).not.toBeNull()
     expect(data?.periods).toEqual(['daily', 'monthly'])
   })
+
+  it('returns null for total-only usage presentation', () => {
+    const config = buildConfig()
+    config.providers.p1 = {
+      ...config.providers.p1,
+      usage_presentation: 'total_only',
+    }
+    const data = buildProviderCapsMenuData(true, config, buildStatus(), {
+      provider: 'p1',
+      left: 200,
+      top: 100,
+    })
+    expect(data).toBeNull()
+  })
 })

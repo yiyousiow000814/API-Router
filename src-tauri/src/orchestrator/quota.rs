@@ -1048,6 +1048,49 @@ pub(crate) fn clear_quota_snapshot(st: &GatewayState, provider_name: &str) {
     let _ = st.store.put_quota_snapshot(provider_name, &snap.to_json());
 }
 
+pub(crate) fn reconcile_blocked_shared_quota_snapshots(
+    st: &GatewayState,
+    lan_sync: Option<&crate::lan_sync::LanSyncStatusSnapshot>,
+) -> Vec<String> {
+    let Some(lan_sync) = lan_sync else {
+        return Vec::new();
+    };
+    let blocked_remote_nodes = lan_sync
+        .peers
+        .iter()
+        .filter(|peer| {
+            peer.sync_blocked_domains
+                .iter()
+                .any(|domain| domain == crate::lan_sync::LAN_SYNC_DOMAIN_SHARED_QUOTA)
+        })
+        .map(|peer| peer.node_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if blocked_remote_nodes.is_empty() {
+        return Vec::new();
+    }
+
+    let cfg = st.cfg.read().clone();
+    let mut providers_to_refresh = Vec::new();
+    for provider_name in cfg.providers.keys() {
+        let Some(snapshot) = st
+            .store
+            .get_quota_snapshot(provider_name)
+            .and_then(|value| quota_snapshot_from_json(&value))
+        else {
+            continue;
+        };
+        let Some(applied_from_node_id) = snapshot.applied_from_node_id.as_deref() else {
+            continue;
+        };
+        if !blocked_remote_nodes.contains(applied_from_node_id) {
+            continue;
+        }
+        clear_quota_snapshot(st, provider_name);
+        providers_to_refresh.push(provider_name.clone());
+    }
+    providers_to_refresh
+}
+
 fn store_quota_snapshot_silent(st: &GatewayState, provider_name: &str, snap: &QuotaSnapshot) {
     let _ = st.store.put_quota_snapshot(provider_name, &snap.to_json());
     // Silent propagation writes must not affect per-provider ledgers.

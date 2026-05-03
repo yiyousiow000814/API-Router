@@ -79,10 +79,11 @@ use usage_history::{
     refresh_shared_tracked_spend_projection_for_event, tracked_spend_history_day_key_for_debug,
 };
 pub(crate) use versioning::SYNC_DOMAIN_OFFICIAL_ACCOUNTS as LAN_SYNC_DOMAIN_OFFICIAL_ACCOUNTS;
+pub(crate) use versioning::SYNC_DOMAIN_SHARED_QUOTA as LAN_SYNC_DOMAIN_SHARED_QUOTA;
 use versioning::{
     lan_heartbeat_capabilities, local_sync_contracts, local_version_inventory,
     merge_version_inventory, SYNC_DOMAIN_PROVIDER_DEFINITIONS, SYNC_DOMAIN_SHARED_HEALTH,
-    SYNC_DOMAIN_USAGE_HISTORY, SYNC_DOMAIN_USAGE_REQUESTS,
+    SYNC_DOMAIN_SHARED_QUOTA, SYNC_DOMAIN_USAGE_HISTORY, SYNC_DOMAIN_USAGE_REQUESTS,
 };
 
 pub const LAN_DISCOVERY_PORT: u16 = 38455;
@@ -330,7 +331,7 @@ const LAN_EDIT_ENTITY_DOMAIN_REGISTRY: [(&str, &str); 6] = [
         SYNC_DOMAIN_PROVIDER_DEFINITIONS,
     ),
     (LAN_EDIT_ENTITY_PROVIDER_PRICING, SYNC_DOMAIN_USAGE_HISTORY),
-    (LAN_EDIT_ENTITY_QUOTA_SNAPSHOT, SYNC_DOMAIN_USAGE_HISTORY),
+    (LAN_EDIT_ENTITY_QUOTA_SNAPSHOT, SYNC_DOMAIN_SHARED_QUOTA),
     (LAN_EDIT_ENTITY_SPEND_MANUAL_DAY, SYNC_DOMAIN_USAGE_HISTORY),
     (LAN_EDIT_ENTITY_TRACKED_SPEND_DAY, SYNC_DOMAIN_USAGE_HISTORY),
     (
@@ -391,29 +392,6 @@ fn usage_history_contract_samples() -> Vec<(&'static str, Value)> {
             }),
         ),
         (
-            LAN_EDIT_ENTITY_QUOTA_SNAPSHOT,
-            serde_json::json!({
-                "provider_name": "provider_1",
-                "snapshot": {
-                    "kind": "budget_info",
-                    "updated_at_unix_ms": 2222,
-                    "remaining": null,
-                    "today_used": null,
-                    "today_added": null,
-                    "daily_spent_usd": 17.47,
-                    "daily_budget_usd": 200.0,
-                    "weekly_spent_usd": null,
-                    "weekly_budget_usd": null,
-                    "monthly_spent_usd": null,
-                    "monthly_budget_usd": null,
-                    "package_expires_at_unix_ms": null,
-                    "last_error": "",
-                    "effective_usage_base": "https://example.com/v1",
-                    "effective_usage_source": "remote"
-                }
-            }),
-        ),
-        (
             LAN_EDIT_ENTITY_SPEND_MANUAL_DAY,
             serde_json::json!({
                 "provider_name": "provider_1",
@@ -446,6 +424,34 @@ fn usage_history_contract_samples() -> Vec<(&'static str, Value)> {
             }),
         ),
     ]
+}
+
+#[cfg(test)]
+fn shared_quota_contract_samples() -> Vec<(&'static str, Value)> {
+    vec![(
+        LAN_EDIT_ENTITY_QUOTA_SNAPSHOT,
+        serde_json::json!({
+            "provider_name": "provider_1",
+            "schema_version": 2,
+            "snapshot": {
+                "kind": "budget_info",
+                "updated_at_unix_ms": 2222,
+                "remaining": 311.42,
+                "today_used": null,
+                "today_added": 573.33,
+                "daily_spent_usd": 43.17,
+                "daily_budget_usd": 573.33,
+                "weekly_spent_usd": null,
+                "weekly_budget_usd": null,
+                "monthly_spent_usd": 0.0,
+                "monthly_budget_usd": 50.0,
+                "package_expires_at_unix_ms": null,
+                "last_error": "",
+                "effective_usage_base": "https://api-vip.codex-for.me",
+                "effective_usage_source": "login_summary"
+            }
+        }),
+    )]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1044,7 +1050,11 @@ impl LanSyncRuntime {
             if !trusted_node_ids.contains(&peer.node_id) {
                 continue;
             }
-            if sync_contract_mismatch_detail(&peer, SYNC_DOMAIN_SHARED_HEALTH).is_some() {
+            let local_quota_contract =
+                sync_contract_version(&local_sync_contracts(), SYNC_DOMAIN_SHARED_QUOTA);
+            let peer_quota_contract =
+                sync_contract_version(&peer.sync_contracts, SYNC_DOMAIN_SHARED_QUOTA);
+            if local_quota_contract != peer_quota_contract {
                 continue;
             }
             if !peer
@@ -2022,6 +2032,8 @@ struct SpendManualDaySyncPayload {
 struct QuotaSnapshotSyncPayload {
     provider_name: String,
     snapshot: Value,
+    #[serde(default)]
+    schema_version: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2459,6 +2471,7 @@ pub fn ensure_local_edit_seed_state(state: &crate::app_state::AppState) -> Resul
             let snapshot_payload = serde_json::to_value(QuotaSnapshotSyncPayload {
                 provider_name: provider.clone(),
                 snapshot,
+                schema_version: 2,
             })
             .map_err(|err| err.to_string())?;
             seed_edit_event_if_changed(
@@ -2632,6 +2645,7 @@ pub fn record_quota_snapshot_from_gateway(
     let payload = serde_json::to_value(QuotaSnapshotSyncPayload {
         provider_name: provider.to_string(),
         snapshot: snapshot.to_json(),
+        schema_version: 2,
     })
     .map_err(|err| err.to_string())?;
     let _ = record_edit_event(
@@ -3086,6 +3100,9 @@ fn apply_quota_snapshot_event(
 ) -> Result<(), String> {
     let payload: QuotaSnapshotSyncPayload =
         serde_json::from_value(payload.clone()).map_err(|err| err.to_string())?;
+    if payload.schema_version < 2 {
+        return Ok(());
+    }
     let provider_name = resolve_provider_name_for_shared_provider_id(
         gateway,
         shared_provider_id,
@@ -7239,7 +7256,7 @@ mod tests {
             mappings
                 .get(super::LAN_EDIT_ENTITY_QUOTA_SNAPSHOT)
                 .map(String::as_str),
-            Some(super::SYNC_DOMAIN_USAGE_HISTORY)
+            Some(super::SYNC_DOMAIN_SHARED_QUOTA)
         );
         assert_eq!(
             mappings
@@ -7289,7 +7306,7 @@ mod tests {
             "usage_history payload shape changed; update samples and bump contract if semantics changed"
         );
         let samples = super::usage_history_contract_samples();
-        assert_eq!(samples.len(), 5);
+        assert_eq!(samples.len(), 4);
         for (entity_type, payload) in samples {
             assert_eq!(
                 super::lan_edit_entity_sync_domain(entity_type),
@@ -7304,12 +7321,39 @@ mod tests {
     }
 
     #[test]
+    fn shared_quota_contract_samples_match_current_contract_version() {
+        assert_eq!(
+            super::sync_contract_version(
+                &super::local_sync_contracts(),
+                super::SYNC_DOMAIN_SHARED_QUOTA
+            ),
+            1,
+            "shared_quota payload shape changed; update samples and bump contract if semantics changed"
+        );
+        let samples = super::shared_quota_contract_samples();
+        assert_eq!(samples.len(), 1);
+        for (entity_type, payload) in samples {
+            assert_eq!(
+                super::lan_edit_entity_sync_domain(entity_type),
+                Some(super::SYNC_DOMAIN_SHARED_QUOTA),
+                "shared_quota sample entity must stay mapped to shared_quota"
+            );
+            assert!(
+                payload.is_object(),
+                "shared_quota contract sample for {entity_type} must stay object-shaped"
+            );
+        }
+    }
+
+    #[test]
     fn local_version_inventory_exposes_capabilities_and_contracts() {
         let inventory = super::local_version_inventory();
         assert!(inventory.contains(&"heartbeat_v1".to_string()));
         assert!(inventory.contains(&"remote_update_v2".to_string()));
+        assert!(inventory.contains(&"usage_sync_v2".to_string()));
         assert!(inventory.contains(&"usage_requests_v2".to_string()));
         assert!(inventory.contains(&"usage_history_v4".to_string()));
+        assert!(inventory.contains(&"shared_quota_v1".to_string()));
     }
 
     #[test]
@@ -8588,6 +8632,56 @@ mod tests {
     }
 
     #[test]
+    fn quota_owner_for_fingerprint_ignores_peers_with_shared_quota_contract_mismatch() {
+        let runtime = LanSyncRuntime::new(LanNodeIdentity {
+            node_id: "node-b".to_string(),
+            node_name: "self".to_string(),
+        });
+        let now = crate::orchestrator::store::unix_ms();
+        *runtime.local_provider_fingerprints.write() = vec!["fp-1".to_string()];
+        runtime.peers.write().insert(
+            "node-a".to_string(),
+            super::LanPeerRuntime {
+                node_id: "node-a".to_string(),
+                node_name: "peer-a".to_string(),
+                listen_addr: "192.168.1.10:4000".to_string(),
+                remote_update_updater_port: Some(4001),
+                last_heartbeat_unix_ms: now,
+                capabilities: super::lan_heartbeat_capabilities(),
+                version_inventory: super::merge_version_inventory(
+                    &super::lan_heartbeat_capabilities(),
+                    &std::collections::BTreeMap::from([
+                        (super::SYNC_DOMAIN_USAGE_REQUESTS.to_string(), 2),
+                        (super::SYNC_DOMAIN_USAGE_HISTORY.to_string(), 4),
+                        (super::SYNC_DOMAIN_PROVIDER_DEFINITIONS.to_string(), 1),
+                        (super::SYNC_DOMAIN_SHARED_HEALTH.to_string(), 2),
+                    ]),
+                ),
+                build_identity: super::current_build_identity(),
+                remote_update_readiness: None,
+                remote_update_status: None,
+                sync_contracts: std::collections::BTreeMap::from([
+                    (super::SYNC_DOMAIN_USAGE_REQUESTS.to_string(), 2),
+                    (super::SYNC_DOMAIN_USAGE_HISTORY.to_string(), 4),
+                    (super::SYNC_DOMAIN_PROVIDER_DEFINITIONS.to_string(), 1),
+                    (super::SYNC_DOMAIN_SHARED_HEALTH.to_string(), 2),
+                ]),
+                provider_fingerprints: vec!["fp-1".to_string()],
+                provider_definitions_revision: String::new(),
+                followed_source_node_id: None,
+            },
+        );
+
+        let mut trusted_node_ids = std::collections::BTreeSet::new();
+        trusted_node_ids.insert("node-a".to_string());
+        let owner = runtime
+            .quota_owner_for_fingerprint("fp-1", &trusted_node_ids)
+            .expect("quota owner");
+        assert_eq!(owner.owner_node_id, "node-b");
+        assert!(owner.local_is_owner);
+    }
+
+    #[test]
     fn peer_stale_boundary_matches_timeout() {
         assert!(!peer_is_stale(10_000, 10_000 + LAN_PEER_STALE_AFTER_MS));
         assert!(peer_is_stale(10_000, 10_000 + LAN_PEER_STALE_AFTER_MS + 1));
@@ -8947,6 +9041,113 @@ mod tests {
                 .and_then(|value| value.get("last_seen_daily_spent_usd").cloned())
                 .and_then(|value| value.as_f64()),
             Some(17.47)
+        );
+    }
+
+    #[test]
+    fn quota_snapshot_event_rejects_legacy_schema_versions() {
+        let (_tmp, state) = build_test_state();
+        let shared_provider_id = state
+            .secrets
+            .ensure_provider_shared_id("provider_1")
+            .expect("shared id");
+
+        let legacy_quota_event = crate::orchestrator::store::LanEditSyncEvent {
+            event_id: "edit_test_legacy_quota".to_string(),
+            node_id: "node-remote".to_string(),
+            node_name: "remote".to_string(),
+            created_at_unix_ms: 2,
+            lamport_ts: 2,
+            entity_type: "quota_snapshot".to_string(),
+            entity_id: shared_provider_id,
+            op: "replace".to_string(),
+            payload: serde_json::json!({
+                "provider_name": "provider_1",
+                "schema_version": 1,
+                "snapshot": {
+                    "kind": "budget_info",
+                    "updated_at_unix_ms": 2222,
+                    "remaining": 50.0,
+                    "today_used": null,
+                    "today_added": null,
+                    "daily_spent_usd": 17.47,
+                    "daily_budget_usd": 200.0,
+                    "weekly_spent_usd": null,
+                    "weekly_budget_usd": null,
+                    "monthly_spent_usd": 0.0,
+                    "monthly_budget_usd": 50.0,
+                    "package_expires_at_unix_ms": null,
+                    "last_error": "",
+                    "effective_usage_base": "https://example.com/v1",
+                    "effective_usage_source": "remote"
+                }
+            }),
+        };
+
+        apply_lan_edit_event(&state.gateway, &state.config_path, &legacy_quota_event)
+            .expect("apply legacy quota event");
+
+        assert!(
+            state
+                .gateway
+                .store
+                .get_quota_snapshot("provider_1")
+                .is_none(),
+            "legacy quota payloads should be ignored once canonical schema v2 is required"
+        );
+    }
+
+    #[test]
+    fn quota_snapshot_event_applies_schema_v2_payloads() {
+        let (_tmp, state) = build_test_state();
+        let shared_provider_id = state
+            .secrets
+            .ensure_provider_shared_id("provider_1")
+            .expect("shared id");
+
+        let quota_event = crate::orchestrator::store::LanEditSyncEvent {
+            event_id: "edit_test_quota_v2".to_string(),
+            node_id: "node-remote".to_string(),
+            node_name: "remote".to_string(),
+            created_at_unix_ms: 2,
+            lamport_ts: 2,
+            entity_type: "quota_snapshot".to_string(),
+            entity_id: shared_provider_id,
+            op: "replace".to_string(),
+            payload: serde_json::json!({
+                "provider_name": "provider_1",
+                "schema_version": 2,
+                "snapshot": {
+                    "kind": "budget_info",
+                    "updated_at_unix_ms": 2222,
+                    "remaining": 542.64,
+                    "today_used": 30.69,
+                    "today_added": 573.33,
+                    "daily_spent_usd": 30.69,
+                    "daily_budget_usd": 573.33,
+                    "weekly_spent_usd": null,
+                    "weekly_budget_usd": null,
+                    "monthly_spent_usd": 0.0,
+                    "monthly_budget_usd": 50.0,
+                    "package_expires_at_unix_ms": null,
+                    "last_error": "",
+                    "effective_usage_base": "https://example.com/v1",
+                    "effective_usage_source": "remote"
+                }
+            }),
+        };
+
+        apply_lan_edit_event(&state.gateway, &state.config_path, &quota_event)
+            .expect("apply quota v2 event");
+
+        let stored = state
+            .gateway
+            .store
+            .get_quota_snapshot("provider_1")
+            .expect("stored quota");
+        assert_eq!(
+            stored.get("remaining").and_then(serde_json::Value::as_f64),
+            Some(542.64)
         );
     }
 

@@ -22,6 +22,7 @@ export function buildProviderCapsMenuData(
   const provider = config?.providers?.[menu.provider]
   const quota = status?.quota?.[menu.provider]
   if (!provider || !isBudgetInfoQuota(quota)) return null
+  if (provider.usage_presentation === 'total_only') return null
 
   return {
     ...menu,

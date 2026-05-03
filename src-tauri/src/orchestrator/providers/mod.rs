@@ -37,6 +37,12 @@ pub(crate) enum BudgetInfoAuthSource {
     ProviderKey,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UsagePresentation {
+    Standard,
+    TotalOnly,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ProviderQuotaProfile {
     pub refresh_flow: RefreshFlow,
@@ -51,6 +57,7 @@ pub(crate) struct ProviderQuotaProfile {
     pub summary_mapping: Option<&'static CanonicalUsageMapping>,
     pub subscription_login: Option<SubscriptionLoginProfile>,
     pub package_expiry_strategy: PackageExpiryStrategy,
+    pub usage_presentation: UsagePresentation,
 }
 
 impl ProviderQuotaProfile {
@@ -137,6 +144,7 @@ struct ProviderDefinition {
     summary_mapping: Option<&'static CanonicalUsageMapping>,
     subscription_login: Option<SubscriptionLoginProfile>,
     package_expiry_strategy: PackageExpiryStrategy,
+    usage_presentation: UsagePresentation,
     request_prefers_simple_input_list: bool,
 }
 
@@ -282,6 +290,8 @@ struct ProviderUsageFile {
     summary_mapping: Option<CanonicalUsageMappingFile>,
     #[serde(default)]
     subscription_login: Option<SubscriptionLoginFile>,
+    #[serde(default)]
+    usage_presentation: Option<String>,
     #[serde(default)]
     request_prefers_simple_input_list: Option<bool>,
 }
@@ -740,6 +750,13 @@ impl TryFrom<ProviderDefinitionFile> for ProviderDefinition {
         let package_expiry_strategy = parse_package_expiry_strategy(
             value.package_expiry.strategy.as_deref().unwrap_or("none"),
         )?;
+        let usage_presentation = parse_usage_presentation(
+            value
+                .usage
+                .usage_presentation
+                .as_deref()
+                .unwrap_or("standard"),
+        )?;
 
         if value.id.trim().is_empty() {
             return Err("provider definition id cannot be empty".to_string());
@@ -809,6 +826,7 @@ impl TryFrom<ProviderDefinitionFile> for ProviderDefinition {
                 .map(parse_subscription_login_profile)
                 .transpose()?,
             package_expiry_strategy,
+            usage_presentation,
             request_prefers_simple_input_list: value
                 .usage
                 .request_prefers_simple_input_list
@@ -932,6 +950,14 @@ fn parse_package_expiry_strategy(value: &str) -> Result<PackageExpiryStrategy, S
         "none" => Ok(PackageExpiryStrategy::None),
         "backend_users_info" => Ok(PackageExpiryStrategy::BackendUsersInfo),
         other => Err(format!("unknown package expiry strategy: {other}")),
+    }
+}
+
+fn parse_usage_presentation(value: &str) -> Result<UsagePresentation, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "standard" => Ok(UsagePresentation::Standard),
+        "total_only" => Ok(UsagePresentation::TotalOnly),
+        other => Err(format!("unsupported usage_presentation: {other}")),
     }
 }
 
@@ -1333,6 +1359,7 @@ pub(crate) fn resolve_quota_profile(provider: &ProviderConfig) -> ProviderQuotaP
             summary_mapping: definition.summary_mapping,
             subscription_login: definition.subscription_login.clone(),
             package_expiry_strategy: definition.package_expiry_strategy,
+            usage_presentation: definition.usage_presentation,
         };
     }
 
@@ -1349,7 +1376,12 @@ pub(crate) fn resolve_quota_profile(provider: &ProviderConfig) -> ProviderQuotaP
         summary_mapping: None,
         subscription_login: None,
         package_expiry_strategy: PackageExpiryStrategy::None,
+        usage_presentation: UsagePresentation::Standard,
     }
+}
+
+pub(crate) fn provider_usage_presentation(provider: &ProviderConfig) -> UsagePresentation {
+    resolve_quota_profile(provider).usage_presentation
 }
 
 pub(crate) fn provider_supports_usage_login(provider: &ProviderConfig) -> bool {

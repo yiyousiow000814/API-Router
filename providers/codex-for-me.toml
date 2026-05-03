@@ -6,6 +6,7 @@ base_url_host_contains = ["codex-for"]
 [usage]
 refresh_flow = "login_then_summary"
 budget_info_auth_source = "usage_token"
+usage_presentation = "total_only"
 candidate_base_sources = ["explicit_usage_base_url", "origin_from_base_url"]
 fixed_candidate_bases = []
 explicit_endpoint_mode = "none"
@@ -25,7 +26,7 @@ requires_any = [
 aliases = ["/data/card_name", "/card_name"]
 
 [usage.summary_mapping.remaining]
-aliases = ["/data/card_balance", "/data/balance", "/card_balance", "/balance"]
+aliases = []
 transform = "none"
 
 [[usage.summary_mapping.remaining.rules]]
@@ -33,31 +34,53 @@ pointer = "/data/plan_cards"
 item_pointer = "/balance"
 aggregate = "sum"
 filter_pointer = "/state"
-filter_in = ["active", "pending"]
+filter_in = ["active"]
 
-[usage.summary_mapping.daily_used]
-aliases = [
-  "/data/today_spent_amount",
-  "/data/today_total_amount",
-  "/data/daily_spent_usd",
-  "/today_spent_amount",
-  "/today_total_amount",
-  "/daily_spent_usd",
-]
+[usage.summary_mapping.today_used]
+aliases = []
 transform = "none"
+
+[usage.summary_mapping.today_added]
+aliases = []
+transform = "none"
+
+[[usage.summary_mapping.today_added.rules]]
+pointer = "/data/plan_cards"
+item_pointer = "/daily_limit"
+aggregate = "sum"
+filter_pointer = "/state"
+filter_in = ["active"]
+
+[[usage.summary_mapping.today_added.rules]]
+pointer = "/data/plan_cards"
+item_pointer = "/card_daily_limit"
+aggregate = "sum"
+filter_pointer = "/state"
+filter_in = ["active"]
 
 [usage.summary_mapping.daily_limit]
-aliases = [
-  "/data/card_daily_limit",
-  "/data/daily_limit",
-  "/data/daily_budget_usd",
-  "/card_daily_limit",
-  "/daily_limit",
-  "/daily_budget_usd",
-]
+aliases = []
 transform = "none"
 
+[[usage.summary_mapping.daily_limit.rules]]
+pointer = "/data/plan_cards"
+item_pointer = "/daily_limit"
+aggregate = "sum"
+filter_pointer = "/state"
+filter_in = ["active"]
+
+[[usage.summary_mapping.daily_limit.rules]]
+pointer = "/data/plan_cards"
+item_pointer = "/card_daily_limit"
+aggregate = "sum"
+filter_pointer = "/state"
+filter_in = ["active"]
+
 [usage.summary_mapping.monthly_used]
+aliases = []
+transform = "none"
+
+[usage.summary_mapping.monthly_limit]
 aliases = []
 transform = "none"
 
@@ -69,7 +92,7 @@ pointer = "/data/plan_cards"
 item_pointer = "/expiration_time"
 aggregate = "max"
 filter_pointer = "/state"
-filter_in = ["active", "pending"]
+filter_in = ["active"]
 
 [[usage.summary_mapping.expires_at_unix_ms.rules]]
 pointer = "/data/card_expire_date"

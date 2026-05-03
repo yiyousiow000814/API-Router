@@ -105,7 +105,7 @@ export function createComposerUiModule(deps) {
     return new Intl.NumberFormat("en", { maximumFractionDigits: 2 }).format(number);
   }
 
-  function describeProviderUsage(quota, hardCap = null) {
+  function describeProviderUsage(quota, hardCap = null, usagePresentation = "standard") {
     const q = quota && typeof quota === "object" ? quota : {};
     const caps = hardCap && typeof hardCap === "object"
       ? {
@@ -129,6 +129,25 @@ export function createComposerUiModule(deps) {
       };
     }
     if (kind === "budget_info") {
+      if (usagePresentation === "total_only") {
+        const total = readFiniteNumber(q.today_added) ?? readFiniteNumber(q.daily_budget_usd);
+        const used =
+          (total != null && readFiniteNumber(q.remaining) != null
+            ? Math.max(0, total - readFiniteNumber(q.remaining))
+            : null) ??
+          readFiniteNumber(q.today_used) ??
+          readFiniteNumber(q.daily_spent_usd);
+        const usedPct = pctOf(used, total);
+        return {
+          headline: `Used ${fmtPct(usedPct)}`,
+          detail:
+            used != null && total != null
+              ? `Used $${fmtUsd(used)} / $${fmtUsd(total)}`
+              : "Refresh after first request",
+          sub: "",
+          pct: usedPct,
+        };
+      }
       const periods = [
         ["daily", "Daily", readFiniteNumber(q.daily_spent_usd), readFiniteNumber(q.daily_budget_usd)],
         ["weekly", "Weekly", readFiniteNumber(q.weekly_spent_usd), readFiniteNumber(q.weekly_budget_usd)],
@@ -2009,7 +2028,11 @@ export function createComposerUiModule(deps) {
             .map((provider) => {
               const name = String(provider.name || "").trim();
               const displayName = String(provider.display_name || name).trim();
-              const usage = describeProviderUsage(provider.quota, provider.quota_hard_cap);
+              const usage = describeProviderUsage(
+                provider.quota,
+                provider.quota_hard_cap,
+                provider.usage_presentation || "standard",
+              );
               const endsText = formatProviderEndsText(provider);
               const healthStatus = providerHealthStatus(provider);
               const healthTone = providerHealthTone(healthStatus);

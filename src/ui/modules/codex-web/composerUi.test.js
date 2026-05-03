@@ -383,6 +383,76 @@ describe("composerUi", () => {
     expect(html).toContain('title="Unhealthy"');
   });
 
+  it("uses total-only provider usage presentation in provider switchboard cards", () => {
+    const nodes = new Map();
+    for (const id of [
+      "settingsProviderList",
+      "settingsProviderDirectCount",
+    ]) {
+      nodes.set(id, makeNode());
+    }
+    const deps = {
+      state: {
+        activeThreadTokenUsage: null,
+        activeMainTab: "settings",
+        settingsActiveSection: "provider",
+        providerSwitchboardScope: "windows",
+        providerSwitchboardDraftTarget: "provider",
+        providerSwitchboardDraftProvider: "codex-for-me",
+        providerSwitchboardStatus: {
+          ok: true,
+          scope: "windows",
+          mode: "provider",
+          model_provider: "codex-for-me",
+          provider_details: [
+            {
+              name: "codex-for-me",
+              display_name: "codex-for.me",
+              disabled: false,
+              health: { status: "healthy" },
+              quota_hard_cap: { daily: true, weekly: true, monthly: true },
+              usage_presentation: "total_only",
+              quota: {
+                kind: "budget_info",
+                remaining: 542.64,
+                today_used: 30.69,
+                today_added: 573.33,
+                daily_spent_usd: 30.69,
+                daily_budget_usd: 573.33,
+                monthly_spent_usd: 0,
+                monthly_budget_usd: 50,
+              },
+            },
+          ],
+          official_profiles: [],
+        },
+        workspaceAvailability: { wsl2Installed: false },
+        permissionPresetByWorkspace: {},
+      },
+      byId(id) {
+        return nodes.get(id) || null;
+      },
+      readPromptValue() {
+        return "";
+      },
+      clearPromptInput() {},
+      resolveMobilePromptLayout() { return { heightPx: 40, overflowY: "hidden" }; },
+      renderComposerContextLeftInNode() {},
+      updateHeaderUi() {},
+      localStorageRef: { getItem() { return ""; } },
+      documentRef: { querySelector() { return null; }, getElementById() { return null; } },
+      windowRef: { innerHeight: 900, addEventListener() {} },
+    };
+    const { syncSettingsControlsFromMain } = createComposerUiModule(deps);
+
+    syncSettingsControlsFromMain();
+
+    const html = nodes.get("settingsProviderList")?.innerHTML || "";
+    expect(html).toContain("Used 5%");
+    expect(html).toContain("Used $30.69 / $573.33");
+    expect(html).not.toContain("Monthly $0 / $50");
+  });
+
   it("shows the provider workspace switch only when both workspaces are available", () => {
     function renderWithAvailability(workspaceAvailability) {
       const nodes = new Map();
