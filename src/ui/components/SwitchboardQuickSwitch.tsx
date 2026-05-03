@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { OfficialAccountProfileSummary } from '../types'
 import { officialAccountDisplayName } from '../utils/codexAccountProfiles'
+import { formatDateTimeDmy24Hour } from '../utils/format'
 import { OfficialAccountQuotaSummary } from './OfficialAccountQuotaSummary'
 
 type SwitchboardQuickSwitchProps = {
@@ -113,14 +114,7 @@ export function SwitchboardQuickSwitch({
                       </span>
                       <OfficialAccountQuotaSummary profile={profile} />
                       <span className="aoAccountsMenuMeta">
-                        Usage updated {new Date(profile.usage_updated_at_unix_ms ?? profile.updated_at_unix_ms).toLocaleString('en-GB', {
-                          day: '2-digit',
-                          month: '2-digit',
-                          year: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                          hour12: false,
-                        }).replace(',', '')}
+                        Usage updated {formatDateTimeDmy24Hour(profile.usage_updated_at_unix_ms ?? profile.updated_at_unix_ms)}
                       </span>
                     </span>
                   </button>

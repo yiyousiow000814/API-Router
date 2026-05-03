@@ -1,14 +1,47 @@
+function pad2(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+function getDateParts(unixMs: number): Date | null {
+  if (!unixMs) return null
+  const date = new Date(unixMs)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+export function formatDateDmy(unixMs: number): string {
+  const date = getDateParts(unixMs)
+  if (!date) return '-'
+  return `${date.getDate()}/${date.getMonth() + 1}/${date.getFullYear()}`
+}
+
+export function formatDateTimeDmy24Hour(unixMs: number): string {
+  const date = getDateParts(unixMs)
+  if (!date) return '-'
+  return `${formatDateDmy(unixMs)} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`
+}
+
+export function formatDateTimeDmy12Hour(unixMs: number): string {
+  const date = getDateParts(unixMs)
+  if (!date) return '-'
+  const hours24 = date.getHours()
+  const hours12 = hours24 % 12 || 12
+  const meridiem = hours24 >= 12 ? 'PM' : 'AM'
+  return `${formatDateDmy(unixMs)}, ${hours12}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())} ${meridiem}`
+}
+
+export function formatDateTimeDmy24HourWithOffset(unixMs: number): string {
+  const date = getDateParts(unixMs)
+  if (!date) return 'Unknown'
+  const offsetMinutes = -date.getTimezoneOffset()
+  const sign = offsetMinutes >= 0 ? '+' : '-'
+  const absOffsetMinutes = Math.abs(offsetMinutes)
+  const offsetHours = pad2(Math.floor(absOffsetMinutes / 60))
+  const offsetRemainderMinutes = pad2(absOffsetMinutes % 60)
+  return `${formatDateDmy(unixMs)} ${pad2(date.getHours())}:${pad2(date.getMinutes())} UTC${sign}${offsetHours}:${offsetRemainderMinutes}`
+}
+
 export function fmtWhen(unixMs: number): string {
-  if (!unixMs) return '-'
-  const d = new Date(unixMs)
-  // day-month-year, per repo conventions.
-  const dd = String(d.getDate()).padStart(2, '0')
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const yyyy = d.getFullYear()
-  const hh = String(d.getHours()).padStart(2, '0')
-  const min = String(d.getMinutes()).padStart(2, '0')
-  const ss = String(d.getSeconds()).padStart(2, '0')
-  return `${dd}-${mm}-${yyyy} ${hh}:${min}:${ss}`
+  return formatDateTimeDmy24Hour(unixMs)
 }
 
 export function fmtAgo(unixMs: number, nowMs: number = Date.now()): string {

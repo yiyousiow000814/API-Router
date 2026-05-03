@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   hasTauriInvokeAvailable,
+  formatDayMonthYearDateTime,
   formatIncidentKind,
   formatTailscaleProbeEvidence,
   getWebTransportHeroMetaRows,
@@ -48,6 +49,12 @@ describe('MonitoringPanel', () => {
       __TAURI__: { core: { invoke: () => {} } },
     }
     expect(hasTauriInvokeAvailable()).toBe(true)
+  })
+
+  it('formats monitoring timestamps as day/month/year', () => {
+    const unixMs = new Date(2026, 4, 6, 3, 12, 31).getTime()
+
+    expect(formatDayMonthYearDateTime(unixMs)).toBe('6/5/2026, 3:12:31 AM')
   })
 
   it('only fetches peer diagnostics from trusted peers that advertise lan_debug_v2', () => {
