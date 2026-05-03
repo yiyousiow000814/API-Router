@@ -1051,6 +1051,7 @@ pub(crate) fn clear_quota_snapshot(st: &GatewayState, provider_name: &str) {
 pub(crate) fn reconcile_blocked_shared_quota_snapshots(
     st: &GatewayState,
     lan_sync: Option<&crate::lan_sync::LanSyncStatusSnapshot>,
+    shared_quota_owners: &[SharedQuotaOwnerStatus],
 ) -> Vec<String> {
     let Some(lan_sync) = lan_sync else {
         return Vec::new();
@@ -1068,10 +1069,23 @@ pub(crate) fn reconcile_blocked_shared_quota_snapshots(
     if blocked_remote_nodes.is_empty() {
         return Vec::new();
     }
+    let blocked_owned_providers = shared_quota_owners
+        .iter()
+        .filter(|owner| {
+            !owner.local_is_owner && blocked_remote_nodes.contains(owner.owner_node_id.as_str())
+        })
+        .map(|owner| (owner.provider.clone(), owner.owner_node_id.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    if blocked_owned_providers.is_empty() {
+        return Vec::new();
+    }
 
     let cfg = st.cfg.read().clone();
     let mut providers_to_refresh = Vec::new();
     for provider_name in cfg.providers.keys() {
+        let Some(blocked_owner_node_id) = blocked_owned_providers.get(provider_name) else {
+            continue;
+        };
         let Some(snapshot) = st
             .store
             .get_quota_snapshot(provider_name)
@@ -1082,7 +1096,7 @@ pub(crate) fn reconcile_blocked_shared_quota_snapshots(
         let Some(applied_from_node_id) = snapshot.applied_from_node_id.as_deref() else {
             continue;
         };
-        if !blocked_remote_nodes.contains(applied_from_node_id) {
+        if applied_from_node_id != blocked_owner_node_id {
             continue;
         }
         clear_quota_snapshot(st, provider_name);

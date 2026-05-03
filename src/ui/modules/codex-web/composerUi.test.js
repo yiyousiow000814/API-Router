@@ -448,7 +448,7 @@ describe("composerUi", () => {
     syncSettingsControlsFromMain();
 
     const html = nodes.get("settingsProviderList")?.innerHTML || "";
-    expect(html).toContain("Used 5%");
+    expect(html).toContain("Remaining 95%");
     expect(html).toContain("Used $30.69 / $573.33");
     expect(html).not.toContain("Monthly $0 / $50");
   });

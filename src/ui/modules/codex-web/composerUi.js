@@ -131,21 +131,26 @@ export function createComposerUiModule(deps) {
     if (kind === "budget_info") {
       if (usagePresentation === "total_only") {
         const total = readFiniteNumber(q.today_added) ?? readFiniteNumber(q.daily_budget_usd);
+        const remaining =
+          readFiniteNumber(q.remaining) ??
+          (total != null &&
+          (readFiniteNumber(q.today_used) ?? readFiniteNumber(q.daily_spent_usd)) != null
+            ? Math.max(0, total - (readFiniteNumber(q.today_used) ?? readFiniteNumber(q.daily_spent_usd) ?? 0))
+            : null);
         const used =
-          (total != null && readFiniteNumber(q.remaining) != null
-            ? Math.max(0, total - readFiniteNumber(q.remaining))
-            : null) ??
+          (total != null && remaining != null ? Math.max(0, total - remaining) : null) ??
           readFiniteNumber(q.today_used) ??
           readFiniteNumber(q.daily_spent_usd);
+        const remainingPct = pctOf(remaining, total);
         const usedPct = pctOf(used, total);
         return {
-          headline: `Used ${fmtPct(usedPct)}`,
+          headline: `Remaining ${fmtPct(remainingPct)}`,
           detail:
             used != null && total != null
               ? `Used $${fmtUsd(used)} / $${fmtUsd(total)}`
               : "Refresh after first request",
           sub: "",
-          pct: usedPct,
+          pct: remainingPct,
         };
       }
       const periods = [

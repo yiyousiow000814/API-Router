@@ -249,11 +249,16 @@ export function buildSwitchboardProviderCards(
           (total != null && (quota?.today_used ?? quota?.daily_spent_usd) != null
             ? Math.max(0, total - (quota?.today_used ?? quota?.daily_spent_usd ?? 0))
             : null)
+        const used =
+          (total != null && remaining != null ? Math.max(0, total - remaining) : null) ??
+          quota?.today_used ??
+          quota?.daily_spent_usd ??
+          null
         const remainingPct = options.pctOf(remaining ?? null, total)
         usageHeadline = remainingPct != null ? `Remaining ${options.fmtPct(remainingPct)}` : 'Usage available'
         usageDetail =
-          remaining != null && total != null
-            ? `Remaining $${options.fmtUsd(remaining)} / $${options.fmtUsd(total)}`
+          used != null && total != null
+            ? `Used $${options.fmtUsd(used)} / $${options.fmtUsd(total)}`
             : 'Refresh after first request'
         usageSub = null
         usagePct = remainingPct

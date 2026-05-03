@@ -705,6 +705,20 @@ fn refresh_provider_registry_state_for_dirs(
     state.snapshot = snapshot;
 }
 
+#[cfg(test)]
+pub(crate) fn refresh_provider_registry_state_for_tests(dirs: &[PathBuf]) {
+    let snapshot = snapshot_provider_definition_dirs(dirs);
+    let mut state = provider_registry_state()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    refresh_provider_registry_state_for_dirs(
+        &mut state,
+        dirs,
+        crate::orchestrator::store::unix_ms(),
+        Some(snapshot),
+    );
+}
+
 fn load_provider_definition_from_path(
     path: &std::path::Path,
 ) -> Result<ProviderDefinition, String> {

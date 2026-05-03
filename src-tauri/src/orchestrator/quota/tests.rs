@@ -6,6 +6,7 @@ mod tests {
     use crate::orchestrator::router::RouterState;
     use crate::orchestrator::secrets::SecretStore;
     use crate::orchestrator::upstream::UpstreamClient;
+    use crate::orchestrator::quota::SharedQuotaOwnerStatus;
     use parking_lot::RwLock;
     use std::sync::atomic::AtomicU64;
     use std::sync::{Arc, OnceLock};
@@ -3061,6 +3062,15 @@ mod tests {
                     http_probe_detail: None,
                 }],
             }),
+            &[SharedQuotaOwnerStatus {
+                provider: "p1".to_string(),
+                shared_provider_id: "shared-p1".to_string(),
+                shared_provider_fingerprint: "https://api-vip.codex-for.me|99c51bdf89d7be31".to_string(),
+                owner_node_id: "node-remote".to_string(),
+                owner_node_name: "SYB".to_string(),
+                local_is_owner: false,
+                contender_count: 2,
+            }],
         );
 
         assert_eq!(refreshed, vec!["p1".to_string()]);
@@ -3071,6 +3081,101 @@ mod tests {
             .expect("cleared quota snapshot");
         assert_eq!(cleared.updated_at_unix_ms, 0);
         assert!(cleared.applied_from_node_id.is_none());
+    }
+
+    #[test]
+    fn reconcile_blocked_shared_quota_snapshots_keeps_snapshot_when_blocked_peer_is_not_owner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secrets = SecretStore::new(tmp.path().join("secrets.json"));
+        let st = mk_state("https://api-vip.codex-for.me/v1".to_string(), secrets);
+
+        let mut previous = QuotaSnapshot::empty(UsageKind::BudgetInfo);
+        previous.updated_at_unix_ms = 123;
+        previous.remaining = Some(50.0);
+        previous.daily_budget_usd = Some(573.33);
+        previous.applied_from_node_id = Some("node-remote".to_string());
+        previous.applied_from_node_name = Some("SYB".to_string());
+        st.store
+            .put_quota_snapshot("p1", &previous.to_json())
+            .expect("seed quota snapshot");
+
+        let refreshed = reconcile_blocked_shared_quota_snapshots(
+            &st,
+            Some(&crate::lan_sync::LanSyncStatusSnapshot {
+                enabled: true,
+                discovery_port: 38455,
+                heartbeat_interval_ms: 2000,
+                peer_stale_after_ms: 20_000,
+                last_peer_heartbeat_received_unix_ms: 0,
+                last_peer_heartbeat_source: None,
+                last_http_sync_probe: None,
+                last_http_sync_failure: None,
+                local_node: crate::lan_sync::LanLocalNodeSnapshot {
+                    node_id: "node-local".to_string(),
+                    node_name: "local".to_string(),
+                    listen_addr: Some("127.0.0.1:4000".to_string()),
+                    remote_update_updater_port: None,
+                    capabilities: Vec::new(),
+                    version_inventory: Vec::new(),
+                    build_identity: crate::lan_sync::current_build_identity(),
+                    version_sync: crate::lan_sync::LanLocalVersionSyncSnapshot {
+                        target_ref: None,
+                        git_worktree_clean: true,
+                        update_to_local_build_allowed: true,
+                        blocked_reason: None,
+                    },
+                    remote_update_status: None,
+                    sync_contracts: std::collections::BTreeMap::new(),
+                    provider_fingerprints: Vec::new(),
+                    provider_definitions_revision: String::new(),
+                },
+                peers: vec![crate::lan_sync::LanPeerSnapshot {
+                    node_id: "node-remote".to_string(),
+                    node_name: "SYB".to_string(),
+                    listen_addr: "192.168.1.10:4000".to_string(),
+                    remote_update_updater_port: None,
+                    last_heartbeat_unix_ms: 0,
+                    capabilities: Vec::new(),
+                    version_inventory: Vec::new(),
+                    build_identity: crate::lan_sync::current_build_identity(),
+                    provider_fingerprints: Vec::new(),
+                    provider_definitions_revision: String::new(),
+                    sync_contracts: std::collections::BTreeMap::new(),
+                    followed_source_node_id: None,
+                    trusted: true,
+                    pair_state: Some("trusted".to_string()),
+                    pair_request_id: None,
+                    remote_update_readiness: None,
+                    remote_update_status: None,
+                    sync_blocked_domains: vec![
+                        crate::lan_sync::LAN_SYNC_DOMAIN_SHARED_QUOTA.to_string(),
+                    ],
+                    sync_diagnostics: Vec::new(),
+                    build_matches_local: false,
+                    heartbeat_age_ms: 0,
+                    http_probe_state: None,
+                    http_probe_detail: None,
+                }],
+            }),
+            &[SharedQuotaOwnerStatus {
+                provider: "p1".to_string(),
+                shared_provider_id: "shared-p1".to_string(),
+                shared_provider_fingerprint: "https://api-vip.codex-for.me|99c51bdf89d7be31".to_string(),
+                owner_node_id: "node-local".to_string(),
+                owner_node_name: "local".to_string(),
+                local_is_owner: true,
+                contender_count: 2,
+            }],
+        );
+
+        assert!(refreshed.is_empty());
+        let kept = st
+            .store
+            .get_quota_snapshot("p1")
+            .and_then(|value| quota_snapshot_from_json(&value))
+            .expect("kept quota snapshot");
+        assert_eq!(kept.updated_at_unix_ms, 123);
+        assert_eq!(kept.applied_from_node_id.as_deref(), Some("node-remote"));
     }
 
     #[tokio::test]

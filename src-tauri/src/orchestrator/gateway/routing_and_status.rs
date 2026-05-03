@@ -1167,15 +1167,6 @@ async fn status(State(st): State<GatewayState>) -> impl IntoResponse {
     let manual_override = st.router.manual_override.read().clone();
     let lan_sync = crate::lan_sync::gateway_status_snapshot(cfg.listen.port, &cfg, &st.secrets);
     let windows_firewall = crate::platform::windows_firewall::status_snapshot();
-    let providers_to_refresh =
-        crate::orchestrator::quota::reconcile_blocked_shared_quota_snapshots(&st, lan_sync.as_ref());
-    for provider_name in providers_to_refresh {
-        let gateway = st.clone();
-        tokio::spawn(async move {
-            crate::orchestrator::quota::clear_usage_refresh_gate_for_provider(&gateway, &provider_name);
-            let _ = crate::orchestrator::quota::refresh_quota_for_provider(&gateway, &provider_name).await;
-        });
-    }
 
     let recent_events = st
         .store

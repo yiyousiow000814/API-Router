@@ -162,7 +162,7 @@ describe('buildCodexSwapBadge', () => {
     })
 
     expect(cards[0]?.usageHeadline).toBe('Remaining 95%')
-    expect(cards[0]?.usageDetail).toBe('Remaining $542.64 / $573.33')
+    expect(cards[0]?.usageDetail).toBe('Used $30.69 / $573.33')
     expect(cards[0]?.usageSub).toBeNull()
   })
 })
