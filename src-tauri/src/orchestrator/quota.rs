@@ -611,6 +611,8 @@ pub fn provider_runtime_identity(
     usage_token: &Option<String>,
     usage_login: &Option<UsageLoginConfig>,
 ) -> Option<String> {
+    let definition_component =
+        super::providers::provider_definition_identity_component(provider).unwrap_or_default();
     let shared_base = resolve_quota_profile(provider)
         .candidate_bases
         .first()?
@@ -628,9 +630,10 @@ pub fn provider_runtime_identity(
         .map(stable_shared_fingerprint_component)
         .unwrap_or_else(|| "anon".to_string());
     Some(format!(
-        "{}|{}",
+        "{}|{}|{}",
         shared_key.base_key.trim().to_ascii_lowercase(),
-        auth_component
+        auth_component,
+        definition_component
     ))
 }
 

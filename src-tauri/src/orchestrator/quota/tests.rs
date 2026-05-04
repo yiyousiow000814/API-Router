@@ -2550,6 +2550,190 @@ mod tests {
     }
 
     #[test]
+    fn shared_provider_fingerprint_changes_when_provider_definition_mapping_changes() {
+        use crate::orchestrator::providers::refresh_provider_registry_state_for_tests;
+        use std::fs;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let providers_dir = temp.path().join("providers");
+        fs::create_dir_all(&providers_dir).expect("create providers dir");
+        let provider_path = providers_dir.join("codex-for-me.toml");
+
+        let base_definition = |filter_gt: &str| {
+            format!(
+                r#"
+id = "codex-for-me"
+
+[match]
+base_url_host_contains = ["codex-for"]
+
+[usage]
+refresh_flow = "login_then_summary"
+candidate_base_sources = ["origin_from_base_url"]
+
+[usage.summary_mapping]
+usage_kind = "balance_info"
+requires_any = ["/data/plan_cards"]
+
+[usage.summary_mapping.today_added]
+aliases = []
+transform = "none"
+
+[[usage.summary_mapping.today_added.rules]]
+pointer = "/data/plan_cards"
+item_pointer = "/daily_limit"
+aggregate = "sum"
+filter_pointer = "/state"
+filter_in = ["active"]
+filter_numeric_pointer = "/balance"
+filter_gt = {filter_gt}
+"#
+            )
+        };
+
+        fs::write(&provider_path, base_definition("0.0")).expect("write initial definition");
+        refresh_provider_registry_state_for_tests(std::slice::from_ref(&providers_dir));
+
+        let cfg = AppConfig {
+            listen: crate::orchestrator::config::ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 4000,
+            },
+            routing: crate::orchestrator::config::RoutingConfig {
+                preferred_provider: "codex-for.me".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 1,
+                failure_threshold: 1,
+                cooldown_seconds: 600,
+                request_timeout_seconds: 5,
+            },
+            providers: std::collections::BTreeMap::from([(
+                "codex-for.me".to_string(),
+                ProviderConfig {
+                    display_name: "codex-for.me".to_string(),
+                    base_url: "https://api-vip.codex-for.me/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    group: None,
+                    disabled: false,
+                    supports_websockets: false,
+                    api_key: String::new(),
+                },
+            )]),
+            provider_order: vec!["codex-for.me".to_string()],
+        };
+        let secrets = SecretStore::new(temp.path().join("secrets.json"));
+        secrets
+            .set_usage_login("codex-for.me", "user", "pass")
+            .expect("set usage login");
+
+        let initial =
+            shared_provider_fingerprint(&cfg, &secrets, "codex-for.me").expect("initial fingerprint");
+
+        fs::write(&provider_path, base_definition("10.0")).expect("write updated definition");
+        refresh_provider_registry_state_for_tests(&[providers_dir]);
+
+        let updated =
+            shared_provider_fingerprint(&cfg, &secrets, "codex-for.me").expect("updated fingerprint");
+
+        assert_ne!(initial, updated);
+    }
+
+    #[test]
+    fn shared_provider_fingerprint_changes_when_provider_definition_fields_change() {
+        use crate::orchestrator::providers::refresh_provider_registry_state_for_tests;
+        use std::fs;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let providers_dir = temp.path().join("providers");
+        fs::create_dir_all(&providers_dir).expect("create providers dir");
+        let provider_path = providers_dir.join("codex-for-me.toml");
+
+        let base_definition = |refresh_flow: &str| {
+            format!(
+                r#"
+id = "codex-for-me"
+
+[match]
+base_url_host_contains = ["codex-for"]
+
+[usage]
+refresh_flow = "{refresh_flow}"
+candidate_base_sources = ["origin_from_base_url"]
+
+[usage.summary_mapping]
+usage_kind = "balance_info"
+requires_any = ["/data/plan_cards"]
+
+[usage.summary_mapping.remaining]
+aliases = []
+transform = "none"
+
+[[usage.summary_mapping.remaining.rules]]
+pointer = "/data/plan_cards"
+item_pointer = "/balance"
+aggregate = "sum"
+filter_pointer = "/state"
+filter_in = ["active"]
+filter_numeric_pointer = "/balance"
+filter_gt = 0.0
+"#
+            )
+        };
+
+        fs::write(&provider_path, base_definition("login_then_summary")).expect("write initial definition");
+        refresh_provider_registry_state_for_tests(std::slice::from_ref(&providers_dir));
+
+        let cfg = AppConfig {
+            listen: crate::orchestrator::config::ListenConfig {
+                host: "127.0.0.1".to_string(),
+                port: 4000,
+            },
+            routing: crate::orchestrator::config::RoutingConfig {
+                preferred_provider: "codex-for.me".to_string(),
+                session_preferred_providers: std::collections::BTreeMap::new(),
+                route_mode: crate::orchestrator::config::RouteMode::FollowPreferredAuto,
+                auto_return_to_preferred: true,
+                preferred_stable_seconds: 1,
+                failure_threshold: 1,
+                cooldown_seconds: 600,
+                request_timeout_seconds: 5,
+            },
+            providers: std::collections::BTreeMap::from([(
+                "codex-for.me".to_string(),
+                ProviderConfig {
+                    display_name: "codex-for.me".to_string(),
+                    base_url: "https://api-vip.codex-for.me/v1".to_string(),
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    group: None,
+                    disabled: false,
+                    supports_websockets: false,
+                    api_key: String::new(),
+                },
+            )]),
+            provider_order: vec!["codex-for.me".to_string()],
+        };
+        let secrets = SecretStore::new(temp.path().join("secrets.json"));
+        secrets
+            .set_usage_login("codex-for.me", "user", "pass")
+            .expect("set usage login");
+
+        let initial =
+            shared_provider_fingerprint(&cfg, &secrets, "codex-for.me").expect("initial fingerprint");
+
+        fs::write(&provider_path, base_definition("auto")).expect("write updated definition");
+        refresh_provider_registry_state_for_tests(&[providers_dir]);
+
+        let updated =
+            shared_provider_fingerprint(&cfg, &secrets, "codex-for.me").expect("updated fingerprint");
+
+        assert_ne!(initial, updated);
+    }
+
+    #[test]
     fn as_f64_strips_commas_and_percent() {
         let v = serde_json::json!("14,993");
         assert_eq!(as_f64(Some(&v)).unwrap_or(0.0), 14993.0);
@@ -3797,6 +3981,13 @@ mod tests {
                         "daily_limit": "200.00",
                         "balance": "49.62",
                         "expiration_time": "2026-05-14T22:47:29.21256+08:00",
+                        "state": "active"
+                    },
+                    {
+                        "name": "should-not-count",
+                        "daily_limit": "400.00",
+                        "balance": "-0.02",
+                        "expiration_time": "2056-04-25 14:44:35",
                         "state": "active"
                     },
                     {

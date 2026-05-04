@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 
 const IGNORED_DIR_NAMES = new Set([
   '.git',
@@ -80,6 +81,20 @@ export function checkedBuildArtifactPaths(root) {
   }
 }
 
+export function currentGitHeadSha(root) {
+  try {
+    const output = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    })
+    const sha = String(output || '').trim()
+    return sha || null
+  } catch {
+    return null
+  }
+}
+
 export function checkedBuildInputLatestMtimeMs(root) {
   let latest = 0
   for (const rel of CHECKED_BUILD_INPUTS) {
@@ -112,6 +127,7 @@ export function captureCheckedBuildSnapshot(root) {
   const releaseStat = safeStat(releaseExe)
   const rootStat = safeStat(rootExe)
   return {
+    gitHeadSha: currentGitHeadSha(root),
     latestInputMtimeMs: checkedBuildInputLatestMtimeMs(root),
     releaseExeMtimeMs: releaseStat ? releaseStat.mtimeMs : 0,
     rootExeMtimeMs: rootStat ? rootStat.mtimeMs : 0,
@@ -127,8 +143,11 @@ export function isCheckedBuildFresh(root) {
     return { fresh: false, snapshot, stamp: null }
   }
   const fresh =
+    snapshot.gitHeadSha &&
+    Number.isFinite(Number(stamp.latestInputMtimeMs || 0)) &&
     snapshot.releaseExeExists &&
     snapshot.rootExeExists &&
+    String(stamp.gitHeadSha || '').trim() === snapshot.gitHeadSha &&
     Number(stamp.latestInputMtimeMs || 0) >= snapshot.latestInputMtimeMs &&
     Number(stamp.releaseExeMtimeMs || 0) <= snapshot.releaseExeMtimeMs &&
     Number(stamp.rootExeMtimeMs || 0) <= snapshot.rootExeMtimeMs

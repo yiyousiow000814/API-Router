@@ -81,7 +81,7 @@ use usage_history::{
 pub(crate) use versioning::SYNC_DOMAIN_OFFICIAL_ACCOUNTS as LAN_SYNC_DOMAIN_OFFICIAL_ACCOUNTS;
 pub(crate) use versioning::SYNC_DOMAIN_SHARED_QUOTA as LAN_SYNC_DOMAIN_SHARED_QUOTA;
 use versioning::{
-    lan_heartbeat_capabilities, local_sync_contracts, local_version_inventory,
+    capability_label, lan_heartbeat_capabilities, local_sync_contracts, local_version_inventory,
     merge_version_inventory, SYNC_DOMAIN_PROVIDER_DEFINITIONS, SYNC_DOMAIN_SHARED_HEALTH,
     SYNC_DOMAIN_SHARED_QUOTA, SYNC_DOMAIN_USAGE_HISTORY, SYNC_DOMAIN_USAGE_REQUESTS,
 };
@@ -4887,7 +4887,12 @@ fn run_usage_sync_loop(
             ) {
                 continue;
             }
-            if !peer_supports_http_sync(&peer, "usage_sync_v1") {
+            if !peer_supports_http_sync(
+                &peer,
+                capability_label("usage_sync")
+                    .as_deref()
+                    .unwrap_or("usage_sync_v2"),
+            ) {
                 continue;
             }
             loop {
@@ -7298,6 +7303,20 @@ mod tests {
             .blocked_reason
             .as_deref()
             .is_some_and(|value| value.contains("usage_history")));
+    }
+
+    #[test]
+    fn usage_sync_requires_v2_capability() {
+        let mut peer = test_peer_snapshot();
+        peer.capabilities.retain(|cap| cap != "usage_sync_v1");
+        let usage_sync_capability =
+            super::capability_label("usage_sync").expect("usage_sync capability label");
+        assert!(peer
+            .capabilities
+            .iter()
+            .any(|cap| cap == &usage_sync_capability));
+        assert!(peer_supports_http_sync(&peer, &usage_sync_capability));
+        assert!(!peer_supports_http_sync(&peer, "usage_sync_v1"));
     }
 
     #[test]

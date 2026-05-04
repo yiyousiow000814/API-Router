@@ -83,6 +83,8 @@ pub(crate) fn local_diagnostics_snapshot(
     listen_port: u16,
     requested_domains: &[String],
     store: Option<&crate::orchestrator::store::Store>,
+    cfg: Option<&crate::orchestrator::config::AppConfig>,
+    secrets: Option<&crate::orchestrator::secrets::SecretStore>,
 ) -> serde_json::Value {
     let all_domains =
         requested_domains.is_empty() || requested_domains.iter().any(|domain| domain == "all");
@@ -131,6 +133,17 @@ pub(crate) fn local_diagnostics_snapshot(
         domains.insert("events".to_string(), snapshot);
     }
 
+    if requested("lan") {
+        let snapshot = cfg
+            .zip(secrets)
+            .and_then(|(cfg, secrets)| {
+                crate::lan_sync::gateway_status_snapshot(listen_port, cfg, secrets)
+            })
+            .map(|snapshot| serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null))
+            .unwrap_or_else(|| serde_json::json!({ "available": false }));
+        domains.insert("lan".to_string(), snapshot);
+    }
+
     let mut snapshot = serde_json::Value::Object(domains);
     if let Some(live_watchdog) = crate::lan_sync::current_ui_watchdog_live_snapshot(
         listen_port,
@@ -158,8 +171,16 @@ pub async fn lan_sync_diagnostics_http(
     });
     let domains = packet.domains.clone();
     let store = gateway.store.clone();
+    let cfg = gateway.cfg.read().clone();
+    let secrets = gateway.secrets.clone();
     let domains_snapshot = tauri::async_runtime::spawn_blocking(move || {
-        local_diagnostics_snapshot(listen_port, &domains, Some(&store))
+        local_diagnostics_snapshot(
+            listen_port,
+            &domains,
+            Some(&store),
+            Some(&cfg),
+            Some(&secrets),
+        )
     })
     .await
     .unwrap_or_else(|err| {
@@ -1224,6 +1245,8 @@ mod tests {
                 "events".to_string(),
             ],
             Some(&store),
+            None,
+            None,
         );
 
         let domains = snapshot.as_object().expect("snapshot object");
@@ -1241,7 +1264,8 @@ mod tests {
         watchdog.record_backend_status_progress("client_sessions", 1_200);
         crate::lan_sync::register_ui_watchdog_state(4000, watchdog);
 
-        let snapshot = local_diagnostics_snapshot(4000, &["watchdog".to_string()], None);
+        let snapshot =
+            local_diagnostics_snapshot(4000, &["watchdog".to_string()], None, None, None);
 
         let watchdog = snapshot
             .get("watchdog")
@@ -1273,8 +1297,10 @@ mod tests {
         watchdog_5000.record_heartbeat("requests", true, false, false, false, 2_000);
         crate::lan_sync::register_ui_watchdog_state(5000, watchdog_5000);
 
-        let snapshot_4000 = local_diagnostics_snapshot(4000, &["watchdog".to_string()], None);
-        let snapshot_5000 = local_diagnostics_snapshot(5000, &["watchdog".to_string()], None);
+        let snapshot_4000 =
+            local_diagnostics_snapshot(4000, &["watchdog".to_string()], None, None, None);
+        let snapshot_5000 =
+            local_diagnostics_snapshot(5000, &["watchdog".to_string()], None, None, None);
 
         let watchdog_4000 = snapshot_4000
             .get("watchdog")
@@ -1298,6 +1324,44 @@ mod tests {
                 .and_then(|value| value.get("active_page"))
                 .and_then(serde_json::Value::as_str),
             Some("requests")
+        );
+    }
+
+    #[test]
+    fn local_diagnostics_snapshot_includes_lan_status_when_requested() {
+        let runtime = crate::lan_sync::LanSyncRuntime::new(crate::lan_sync::LanNodeIdentity {
+            node_id: "node-self".to_string(),
+            node_name: "self".to_string(),
+        });
+        runtime.seed_test_peer("node-peer", "peer", None);
+        crate::lan_sync::register_gateway_status_runtime(runtime);
+
+        let cfg = crate::orchestrator::config::AppConfig::default_config();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let secrets =
+            crate::orchestrator::secrets::SecretStore::new(tmp.path().join("secrets.json"));
+
+        let snapshot = local_diagnostics_snapshot(
+            4000,
+            &["lan".to_string()],
+            None,
+            Some(&cfg),
+            Some(&secrets),
+        );
+
+        let lan = snapshot
+            .get("lan")
+            .and_then(serde_json::Value::as_object)
+            .expect("lan object");
+        assert_eq!(
+            lan.get("enabled").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            lan.get("peers")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(1)
         );
     }
 
