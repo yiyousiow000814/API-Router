@@ -577,20 +577,26 @@ fn provider_registry_state() -> &'static RwLock<ProviderRegistryState> {
 
 fn load_provider_registry_from_dirs(dirs: &[PathBuf]) -> Vec<ProviderDefinition> {
     let mut out = Vec::new();
+    let mut index_by_id = std::collections::BTreeMap::new();
     for dir in dirs {
         let mut paths = provider_definition_paths_in_dir(dir);
         paths.sort();
         for path in paths {
             match load_provider_definition_from_path(&path) {
-                Ok(definition) => out.push(definition),
+                Ok(definition) => {
+                    let provider_id = definition.id.clone();
+                    if let Some(index) = index_by_id.get(&provider_id).copied() {
+                        out[index] = definition;
+                    } else {
+                        index_by_id.insert(provider_id, out.len());
+                        out.push(definition);
+                    }
+                }
                 Err(err) => eprintln!(
                     "failed to load provider definition {}: {err}",
                     path.display()
                 ),
             }
-        }
-        if !out.is_empty() {
-            break;
         }
     }
     out
@@ -1755,6 +1761,31 @@ explicit_endpoint_url = "{explicit_endpoint_url}"
         assert_eq!(
             state.registry[0].explicit_endpoint_url.as_deref(),
             Some("https://reload.example.com/v1/usage-b")
+        );
+    }
+
+    #[test]
+    fn later_provider_dirs_override_stale_provider_definitions_by_id() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let stale_dir = temp.path().join("stale-providers");
+        let fresh_dir = temp.path().join("fresh-providers");
+        fs::create_dir_all(&stale_dir).expect("create stale providers dir");
+        fs::create_dir_all(&fresh_dir).expect("create fresh providers dir");
+
+        write_test_provider_definition(
+            &stale_dir.join("reload.toml"),
+            "https://reload.example.com/v1/usage-stale",
+        );
+        write_test_provider_definition(
+            &fresh_dir.join("reload.toml"),
+            "https://reload.example.com/v1/usage-fresh",
+        );
+
+        let registry = load_provider_registry_from_dirs(&[stale_dir, fresh_dir]);
+        assert_eq!(registry.len(), 1);
+        assert_eq!(
+            registry[0].explicit_endpoint_url.as_deref(),
+            Some("https://reload.example.com/v1/usage-fresh")
         );
     }
 
