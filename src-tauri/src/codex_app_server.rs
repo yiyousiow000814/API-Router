@@ -311,6 +311,35 @@ fn normalize_home_key(codex_home: Option<&str>) -> Cow<'static, str> {
     }
 }
 
+fn maybe_sync_web_codex_overlay_provider_config(codex_home: Option<&str>) -> Result<(), String> {
+    let Some(home) = codex_home.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    if home.starts_with('/')
+        || home.starts_with("\\\\wsl.localhost\\")
+        || home.starts_with("\\\\wsl$\\")
+    {
+        return Ok(());
+    }
+    let home_path = PathBuf::from(home);
+    let file_name = home_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::trim)
+        .unwrap_or_default();
+    if !file_name.eq_ignore_ascii_case("codex-home") {
+        return Ok(());
+    }
+    let Some(user_data_dir) = home_path.parent() else {
+        return Ok(());
+    };
+    let config_path = user_data_dir.join("config.toml");
+    if !config_path.exists() {
+        return Ok(());
+    }
+    crate::provider_switchboard::sync_app_codex_home_to_current_switchboard_state(&config_path)
+}
+
 fn notification_state_map() -> &'static Mutex<HashMap<String, NotificationState>> {
     NOTIFICATION_STATE.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -2212,6 +2241,7 @@ pub async fn replay_notifications_since_in_home(
 
 pub async fn ensure_server_in_home(codex_home: Option<&str>) -> Result<(), String> {
     ensure_notification_home_state(codex_home).await;
+    maybe_sync_web_codex_overlay_provider_config(codex_home)?;
 
     #[cfg(test)]
     {
@@ -3261,6 +3291,101 @@ mod tests {
         }
 
         _set_test_request_handler(None).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn request_in_home_syncs_stale_web_codex_overlay_before_rpc() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+        let user_profile = tempfile::tempdir().expect("user profile");
+        let app_data = tempfile::tempdir().expect("app data");
+        let official_home = user_profile.path().join(".codex");
+        let overlay_home = app_data.path().join("codex-home");
+        let config_path = app_data.path().join("config.toml");
+        let secrets_path = app_data.path().join("secrets.json");
+        std::fs::create_dir_all(&official_home).expect("official home");
+        std::fs::create_dir_all(&overlay_home).expect("overlay home");
+        std::fs::write(
+            official_home.join("config.toml"),
+            "model_provider = \"openai\"\nmodel = \"gpt-5.3-codex\"\n",
+        )
+        .expect("official config");
+        std::fs::write(official_home.join("auth.json"), "{}\n").expect("official auth");
+        std::fs::write(
+            overlay_home.join("config.toml"),
+            "personality = \"pragmatic\"\n[projects.'C:\\\\Users\\\\yiyou\\\\API-Router']\ntrust_level = \"trusted\"\n",
+        )
+        .expect("stale overlay config");
+        std::fs::write(overlay_home.join("auth.json"), "{}\n").expect("overlay auth");
+
+        let mut cfg = crate::orchestrator::config::AppConfig::default_config();
+        cfg.listen.port = 4321;
+        cfg.providers.insert(
+            "yangfangyu-old".to_string(),
+            crate::orchestrator::config::ProviderConfig {
+                display_name: "Yangfangyu Old".to_string(),
+                base_url: "https://example.test/v1".to_string(),
+                group: None,
+                disabled: false,
+                supports_websockets: true,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+        cfg.provider_order.push("yangfangyu-old".to_string());
+        std::fs::write(
+            &config_path,
+            toml::to_string_pretty(&cfg).expect("config toml"),
+        )
+        .expect("write config");
+
+        let secrets = crate::orchestrator::secrets::SecretStore::new(secrets_path);
+        secrets
+            .set_gateway_token("ao_gateway_token")
+            .expect("set gateway token");
+        std::fs::write(
+            overlay_home.join("provider-switchboard-state.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+              "target": "gateway",
+              "provider": serde_json::Value::Null,
+              "cli_homes": [overlay_home.to_string_lossy().to_string()]
+            }))
+            .expect("state json"),
+        )
+        .expect("write switchboard state");
+
+        unsafe {
+            std::env::set_var("USERPROFILE", user_profile.path());
+            std::env::set_var("API_ROUTER_USER_DATA_DIR", app_data.path());
+            std::env::remove_var("API_ROUTER_WEB_CODEX_CODEX_HOME");
+            std::env::remove_var("CODEX_HOME");
+        }
+
+        _set_test_request_handler(Some(std::sync::Arc::new(
+            |_codex_home, _method, _params| Ok(serde_json::json!({ "ok": true })),
+        )))
+        .await;
+
+        let result = request_in_home(
+            Some(overlay_home.to_string_lossy().as_ref()),
+            "thread/resume",
+            serde_json::json!({ "threadId": "thread-1" }),
+        )
+        .await
+        .expect("request result");
+        assert_eq!(result.get("ok").and_then(Value::as_bool), Some(true));
+
+        let overlay_cfg =
+            std::fs::read_to_string(overlay_home.join("config.toml")).expect("overlay config");
+        assert!(overlay_cfg.contains("model_provider = \"api_router\""));
+        assert!(overlay_cfg.contains("[model_providers.\"yangfangyu-old\"]"));
+
+        _set_test_request_handler(None).await;
+        unsafe {
+            std::env::remove_var("USERPROFILE");
+            std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -4571,6 +4696,7 @@ pub async fn request_in_home(
     method: &str,
     params: Value,
 ) -> Result<Value, String> {
+    maybe_sync_web_codex_overlay_provider_config(codex_home)?;
     if let Some(result) = local_legacy_rpc_result(method) {
         return Ok(result);
     }
