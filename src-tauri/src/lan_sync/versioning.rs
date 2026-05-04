@@ -140,6 +140,13 @@ fn version_label(name: &str, version: u32) -> String {
     format!("{name}_v{version}")
 }
 
+pub(crate) fn capability_label(name: &str) -> Option<String> {
+    LAN_VERSION_RULES
+        .iter()
+        .find(|rule| rule.kind == LanVersionKind::Capability && rule.name == name)
+        .map(|rule| version_label(rule.name, rule.version))
+}
+
 pub(crate) fn lan_heartbeat_capabilities() -> Vec<String> {
     LAN_VERSION_RULES
         .iter()
