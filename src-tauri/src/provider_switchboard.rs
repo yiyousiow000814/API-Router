@@ -472,13 +472,16 @@ fn switch_to_gateway_home_impl(
         GATEWAY_WINDOWS_HOST
     };
     let gateway_base_url = format!("http://{gateway_host}:{listen_port}/v1");
-    let next_cfg = build_direct_provider_cfg(
-        &base_cfg,
-        GATEWAY_MODEL_PROVIDER_ID,
-        &gateway_base_url,
-        false,
-        None,
-    );
+    let alias_providers = runtime
+        .gateway
+        .cfg
+        .read()
+        .providers
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    let next_cfg =
+        build_gateway_provider_cfg_with_aliases(&base_cfg, &gateway_base_url, alias_providers);
     let next_auth = auth_with_openai_key(gateway_token.trim());
     write_swapped_files(runtime.config_path, cli_home, &next_auth, &next_cfg)
 }
@@ -491,7 +494,7 @@ fn is_wsl_unc_home(cli_home: &Path) -> bool {
     s.starts_with("\\\\wsl.localhost\\") || s.starts_with("\\\\wsl$\\")
 }
 
-fn strip_model_provider_line(cfg: &str) -> String {
+pub(crate) fn strip_model_provider_line(cfg: &str) -> String {
     let eol = if cfg.contains("\r\n") { "\r\n" } else { "\n" };
     cfg.lines()
         .filter(|line| {
@@ -600,7 +603,7 @@ fn insert_provider_section_near_top(base_cfg: &str, provider_section: &str) -> S
     lines.join(eol) + eol
 }
 
-fn build_direct_provider_cfg(
+pub(crate) fn build_direct_provider_cfg(
     orig_cfg: &str,
     provider: &str,
     base_url: &str,
@@ -654,6 +657,54 @@ fn build_direct_provider_cfg(
     out
 }
 
+pub(crate) fn build_gateway_provider_cfg_with_aliases(
+    orig_cfg: &str,
+    gateway_base_url: &str,
+    alias_providers: impl IntoIterator<Item = String>,
+) -> String {
+    let mut base = normalize_cfg_for_switchboard_base(orig_cfg);
+    let mut provider_ids = vec![GATEWAY_MODEL_PROVIDER_ID.to_string()];
+    for provider in alias_providers {
+        let trimmed = provider.trim();
+        if trimmed.is_empty()
+            || trimmed.eq_ignore_ascii_case("official")
+            || provider_ids.iter().any(|existing| existing == trimmed)
+        {
+            continue;
+        }
+        provider_ids.push(trimmed.to_string());
+    }
+    let remove_names = provider_ids.iter().map(String::as_str).collect::<Vec<_>>();
+    base = remove_model_provider_sections(&base, &remove_names);
+    let eol = if base.contains("\r\n") { "\r\n" } else { "\n" };
+    let gateway_base_url_esc = escape_toml(gateway_base_url);
+    let mut sections = String::new();
+    for provider in &provider_ids {
+        let provider_esc = escape_toml(provider);
+        sections.push_str(&format!(
+            "[model_providers.\"{provider}\"]{eol}name = \"{provider}\"{eol}base_url = \"{base_url}\"{eol}wire_api = \"responses\"{eol}requires_openai_auth = true{eol}{eol}",
+            provider = provider_esc,
+            base_url = gateway_base_url_esc,
+            eol = eol
+        ));
+    }
+    let base_with_sections = insert_provider_section_near_top(&base, sections.trim_end());
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "model_provider = \"{}\"{}",
+        escape_toml(GATEWAY_MODEL_PROVIDER_ID),
+        eol
+    ));
+    out.push_str(
+        base_with_sections
+            .trim_start_matches(&['\r', '\n'][..])
+            .trim_end(),
+    );
+    out.push_str(eol);
+    out
+}
+
 fn auth_with_openai_key(key: &str) -> serde_json::Value {
     json!({ "OPENAI_API_KEY": key })
 }
@@ -684,7 +735,7 @@ fn write_swapped_files(
     Ok(())
 }
 
-fn provider_key_storage_uses_config(storage_mode: &str) -> bool {
+pub(crate) fn provider_key_storage_uses_config(storage_mode: &str) -> bool {
     storage_mode
         .trim()
         .eq_ignore_ascii_case("config_toml_experimental_bearer_token")
@@ -1136,6 +1187,103 @@ pub(crate) fn sync_gateway_target_for_current_token_on_startup(
     state: &AppState,
 ) -> Result<Vec<String>, String> {
     sync_gateway_target_for_rotated_token_impl(state, None)
+}
+
+pub(crate) fn sync_app_codex_home_to_current_switchboard_state(
+    config_path: &Path,
+) -> Result<(), String> {
+    let Some(sw) = load_switchboard_state_from_config_path(config_path) else {
+        return Ok(());
+    };
+    let cli_home = app_codex_home_from_config_path(config_path);
+    if !cli_home.exists() {
+        return Ok(());
+    }
+
+    let target = sw
+        .get("target")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "provider switchboard target is missing".to_string())?;
+
+    let app_cfg = crate::app_state::load_or_init_config(&config_path.to_path_buf())
+        .map_err(|err| err.to_string())?;
+    let secrets_path = config_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("secrets.json");
+    let secrets = crate::orchestrator::secrets::SecretStore::new(secrets_path);
+    let orig_cfg = read_cfg_base_text(config_path, &cli_home)?;
+
+    match target.to_ascii_lowercase().as_str() {
+        "gateway" => {
+            let gateway_token = secrets.ensure_gateway_token()?;
+            if gateway_token.trim().is_empty() {
+                return Err("Gateway token is empty. Generate it in Dashboard first.".to_string());
+            }
+            let gateway_base_url =
+                format!("http://{}:{}/v1", GATEWAY_WINDOWS_HOST, app_cfg.listen.port);
+            let next_cfg = build_gateway_provider_cfg_with_aliases(
+                &orig_cfg,
+                &gateway_base_url,
+                app_cfg.providers.keys().cloned(),
+            );
+            let next_auth = auth_with_openai_key(gateway_token.trim());
+            write_swapped_files(config_path, &cli_home, &next_auth, &next_cfg)
+        }
+        "provider" => {
+            let provider = sw
+                .get("provider")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "provider is required for target=provider".to_string())?;
+            let provider_cfg = app_cfg
+                .providers
+                .get(provider)
+                .ok_or_else(|| format!("unknown provider: {provider}"))?;
+            let base_url = provider_cfg.base_url.trim();
+            if base_url.is_empty() {
+                return Err(format!("provider base_url is empty: {provider}"));
+            }
+            let key = secrets
+                .get_provider_key(provider)
+                .ok_or_else(|| format!("provider key is missing: {provider}"))?;
+            if key.trim().is_empty() {
+                return Err(format!("provider key is empty: {provider}"));
+            }
+            let storage_mode = secrets.get_provider_key_storage_mode(provider);
+            let use_config_storage = provider_key_storage_uses_config(&storage_mode);
+            let next_cfg = build_direct_provider_cfg(
+                &orig_cfg,
+                provider,
+                base_url,
+                provider_cfg.supports_websockets,
+                use_config_storage.then_some(key.trim()),
+            );
+            let next_auth = if use_config_storage {
+                auth_without_openai_key()
+            } else {
+                auth_with_openai_key(key.trim())
+            };
+            write_swapped_files(config_path, &cli_home, &next_auth, &next_cfg)
+        }
+        "official" => {
+            let auth = secrets
+                .active_official_account_profile_auth_json()
+                .ok_or_else(|| {
+                    "Missing selected official Codex auth profile. Try logging in first."
+                        .to_string()
+                })?;
+            ensure_signed_in(&auth)?;
+            let next_cfg = strip_model_provider_line(&orig_cfg);
+            write_swapped_files(config_path, &cli_home, &auth, &next_cfg)
+        }
+        other => Err(format!(
+            "target must be one of: gateway | official | provider (got {other})"
+        )),
+    }
 }
 
 include!("provider_switchboard/actions.rs");

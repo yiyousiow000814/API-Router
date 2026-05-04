@@ -607,6 +607,11 @@ fn ensure_windows_provider_overlay_files(
         &session_home.join("auth.json"),
         &overlay_home.join("auth.json"),
     )?;
+    if let Some(config_path) = user_data_config_path() {
+        crate::provider_switchboard::sync_app_codex_home_to_current_switchboard_state(
+            &config_path,
+        )?;
+    }
     Ok(())
 }
 
@@ -1024,6 +1029,216 @@ mod tests {
         assert_eq!(
             std::fs::canonicalize(overlay_home.join("sessions")).expect("linked sessions"),
             std::fs::canonicalize(official_home.join("sessions")).expect("official sessions")
+        );
+
+        unsafe {
+            std::env::remove_var("USERPROFILE");
+            std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        }
+    }
+
+    #[test]
+    fn windows_provider_overlay_rewrites_stale_overlay_to_switchboard_target() {
+        let _test_guard = crate::codex_app_server::lock_test_globals();
+        let user_profile = tempfile::tempdir().expect("user profile");
+        let app_data = tempfile::tempdir().expect("app data");
+        let official_home = user_profile.path().join(".codex");
+        let overlay_home = app_data.path().join("codex-home");
+        let config_path = app_data.path().join("config.toml");
+        let secrets_path = app_data.path().join("secrets.json");
+        std::fs::create_dir_all(&official_home).expect("official home");
+        std::fs::create_dir_all(&overlay_home).expect("overlay home");
+        std::fs::write(
+            official_home.join("config.toml"),
+            "model_provider = \"openai\"\nmodel = \"gpt-5.3-codex\"\n",
+        )
+        .expect("official config");
+        std::fs::write(official_home.join("auth.json"), "{}\n").expect("official auth");
+        std::fs::write(
+            overlay_home.join("config.toml"),
+            "personality = \"pragmatic\"\n[projects.'C:\\\\Users\\\\yiyou\\\\API-Router']\ntrust_level = \"trusted\"\n",
+        )
+        .expect("stale overlay config");
+        std::fs::write(overlay_home.join("auth.json"), "{}\n").expect("overlay auth");
+
+        let mut cfg = crate::orchestrator::config::AppConfig::default_config();
+        cfg.listen.port = 4321;
+        cfg.providers.insert(
+            "yangfangyu-old".to_string(),
+            crate::orchestrator::config::ProviderConfig {
+                display_name: "Yangfangyu Old".to_string(),
+                base_url: "https://example.test/v1".to_string(),
+                group: None,
+                disabled: false,
+                supports_websockets: true,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+        cfg.provider_order.push("yangfangyu-old".to_string());
+        std::fs::write(
+            &config_path,
+            toml::to_string_pretty(&cfg).expect("config toml"),
+        )
+        .expect("write config");
+
+        let secrets = crate::orchestrator::secrets::SecretStore::new(secrets_path);
+        secrets
+            .set_provider_key_with_storage_mode("yangfangyu-old", "sk-yangfangyu-old", None)
+            .expect("set provider key");
+
+        let switchboard_state = overlay_home.join("provider-switchboard-state.json");
+        std::fs::write(
+            &switchboard_state,
+            serde_json::to_string_pretty(&serde_json::json!({
+              "target": "provider",
+              "provider": "yangfangyu-old",
+              "cli_homes": [overlay_home.to_string_lossy().to_string()]
+            }))
+            .expect("state json"),
+        )
+        .expect("write switchboard state");
+
+        unsafe {
+            std::env::set_var("USERPROFILE", user_profile.path());
+            std::env::set_var("API_ROUTER_USER_DATA_DIR", app_data.path());
+            std::env::remove_var("API_ROUTER_WEB_CODEX_CODEX_HOME");
+            std::env::remove_var("CODEX_HOME");
+        }
+
+        ensure_web_codex_provider_overlay_ready(WorkspaceTarget::Windows)
+            .expect("provider overlay ready");
+
+        let overlay_cfg =
+            std::fs::read_to_string(overlay_home.join("config.toml")).expect("overlay config");
+        let overlay_auth =
+            std::fs::read_to_string(overlay_home.join("auth.json")).expect("overlay auth");
+
+        assert!(overlay_cfg.contains("model_provider = \"yangfangyu-old\""));
+        assert!(
+            overlay_cfg.contains("[model_providers.\"yangfangyu-old\"]"),
+            "rewritten overlay should include the active provider section"
+        );
+        assert!(
+            overlay_cfg.contains("base_url = \"https://example.test/v1\""),
+            "rewritten overlay should use the current provider base url"
+        );
+        assert!(
+            overlay_cfg.contains("supports_websockets = true"),
+            "rewritten overlay should preserve websocket capability"
+        );
+        assert!(
+            overlay_cfg.contains("personality = \"pragmatic\""),
+            "rewritten overlay should preserve existing non-switchboard settings"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&overlay_auth)
+                .expect("parse overlay auth")
+                .get("OPENAI_API_KEY")
+                .and_then(serde_json::Value::as_str),
+            Some("sk-yangfangyu-old")
+        );
+
+        unsafe {
+            std::env::remove_var("USERPROFILE");
+            std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        }
+    }
+
+    #[test]
+    fn windows_gateway_overlay_keeps_app_provider_aliases_for_existing_threads() {
+        let _test_guard = crate::codex_app_server::lock_test_globals();
+        let user_profile = tempfile::tempdir().expect("user profile");
+        let app_data = tempfile::tempdir().expect("app data");
+        let official_home = user_profile.path().join(".codex");
+        let overlay_home = app_data.path().join("codex-home");
+        let config_path = app_data.path().join("config.toml");
+        let secrets_path = app_data.path().join("secrets.json");
+        std::fs::create_dir_all(&official_home).expect("official home");
+        std::fs::create_dir_all(&overlay_home).expect("overlay home");
+        std::fs::write(
+            official_home.join("config.toml"),
+            "model_provider = \"openai\"\nmodel = \"gpt-5.3-codex\"\n",
+        )
+        .expect("official config");
+        std::fs::write(official_home.join("auth.json"), "{}\n").expect("official auth");
+        std::fs::write(
+            overlay_home.join("config.toml"),
+            "personality = \"pragmatic\"\n[projects.'C:\\\\Users\\\\yiyou\\\\API-Router']\ntrust_level = \"trusted\"\n",
+        )
+        .expect("stale overlay config");
+        std::fs::write(overlay_home.join("auth.json"), "{}\n").expect("overlay auth");
+
+        let mut cfg = crate::orchestrator::config::AppConfig::default_config();
+        cfg.listen.port = 4321;
+        cfg.providers.insert(
+            "yangfangyu-old".to_string(),
+            crate::orchestrator::config::ProviderConfig {
+                display_name: "Yangfangyu Old".to_string(),
+                base_url: "https://example.test/v1".to_string(),
+                group: None,
+                disabled: false,
+                supports_websockets: true,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+        cfg.provider_order.push("yangfangyu-old".to_string());
+        std::fs::write(
+            &config_path,
+            toml::to_string_pretty(&cfg).expect("config toml"),
+        )
+        .expect("write config");
+
+        let secrets = crate::orchestrator::secrets::SecretStore::new(secrets_path);
+        secrets
+            .set_gateway_token("ao_gateway_token")
+            .expect("set gateway token");
+
+        std::fs::write(
+            overlay_home.join("provider-switchboard-state.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+              "target": "gateway",
+              "provider": serde_json::Value::Null,
+              "cli_homes": [overlay_home.to_string_lossy().to_string()]
+            }))
+            .expect("state json"),
+        )
+        .expect("write switchboard state");
+
+        unsafe {
+            std::env::set_var("USERPROFILE", user_profile.path());
+            std::env::set_var("API_ROUTER_USER_DATA_DIR", app_data.path());
+            std::env::remove_var("API_ROUTER_WEB_CODEX_CODEX_HOME");
+            std::env::remove_var("CODEX_HOME");
+        }
+
+        ensure_web_codex_provider_overlay_ready(WorkspaceTarget::Windows)
+            .expect("provider overlay ready");
+
+        let overlay_cfg =
+            std::fs::read_to_string(overlay_home.join("config.toml")).expect("overlay config");
+        let overlay_auth =
+            std::fs::read_to_string(overlay_home.join("auth.json")).expect("overlay auth");
+
+        assert!(overlay_cfg.contains("model_provider = \"api_router\""));
+        assert!(overlay_cfg.contains("[model_providers.\"api_router\"]"));
+        assert!(
+            overlay_cfg.contains("[model_providers.\"yangfangyu-old\"]"),
+            "gateway overlay should keep app provider ids resolvable for existing thread rows"
+        );
+        assert!(
+            overlay_cfg.contains("base_url = \"http://127.0.0.1:4321/v1\""),
+            "gateway overlay aliases should route through the current gateway"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&overlay_auth)
+                .expect("parse overlay auth")
+                .get("OPENAI_API_KEY")
+                .and_then(serde_json::Value::as_str),
+            Some("ao_gateway_token")
         );
 
         unsafe {
