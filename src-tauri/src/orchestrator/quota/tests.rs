@@ -1131,12 +1131,12 @@ mod tests {
         handle.abort();
 
         assert!(snap.last_error.is_empty());
-        assert_eq!(snap.kind, UsageKind::BalanceInfo);
+        assert_eq!(snap.kind, UsageKind::BudgetInfo);
         assert_eq!(snap.remaining, Some(187.61));
         assert_eq!(snap.today_added, Some(423.33));
         assert_eq!(snap.today_used, Some(26.03));
-        assert_eq!(snap.daily_budget_usd, None);
-        assert_eq!(snap.daily_spent_usd, None);
+        assert_eq!(snap.daily_budget_usd, Some(423.33));
+        assert_eq!(snap.daily_spent_usd, Some(26.03));
         assert_eq!(snap.monthly_spent_usd, None);
         assert_eq!(snap.monthly_budget_usd, None);
         assert_eq!(snap.package_expires_at_unix_ms, Some(4_070_908_800_000));
@@ -3832,7 +3832,7 @@ mod tests {
             "expected summed total around 573.33, got {:?}",
             usage.today_added
         );
-        assert_eq!(usage.today_used, None);
+        assert_eq!(usage.today_used, Some(26.03));
         assert!(
             usage
                 .daily_limit
@@ -3841,7 +3841,7 @@ mod tests {
             "expected summed daily limit around 573.33, got {:?}",
             usage.daily_limit
         );
-        assert_eq!(usage.daily_used, None);
+        assert_eq!(usage.daily_used, Some(26.03));
         assert_eq!(usage.monthly_used, None);
         assert_eq!(usage.expires_at_unix_ms, Some(1_778_770_049_212));
     }

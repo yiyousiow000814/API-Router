@@ -37,7 +37,11 @@ filter_pointer = "/state"
 filter_in = ["active"]
 
 [usage.summary_mapping.today_used]
-aliases = []
+aliases = ["/data/today_spent_amount", "/today_spent_amount"]
+transform = "none"
+
+[usage.summary_mapping.daily_used]
+aliases = ["/data/today_spent_amount", "/today_spent_amount"]
 transform = "none"
 
 [usage.summary_mapping.today_added]
