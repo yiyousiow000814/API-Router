@@ -368,6 +368,10 @@ struct NumericRuleFile {
     filter_eq: Option<String>,
     #[serde(default)]
     filter_in: Vec<String>,
+    #[serde(default)]
+    filter_numeric_pointer: Option<String>,
+    #[serde(default)]
+    filter_gt: Option<f64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -398,6 +402,10 @@ struct UnixMsRuleFile {
     filter_eq: Option<String>,
     #[serde(default)]
     filter_in: Vec<String>,
+    #[serde(default)]
+    filter_numeric_pointer: Option<String>,
+    #[serde(default)]
+    filter_gt: Option<f64>,
 }
 
 const DEFAULT_DIRECT_USAGE_MAPPING: CanonicalUsageMapping = CanonicalUsageMapping {
@@ -1102,6 +1110,10 @@ fn build_numeric_rule(raw: NumericRuleFile) -> Result<NumericRule, String> {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>();
+    let filter_numeric_pointer = raw
+        .filter_numeric_pointer
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     Ok(NumericRule::Array {
         pointer: Box::leak(pointer.into_boxed_str()),
         item_pointer: Box::leak(item_pointer.into_boxed_str()),
@@ -1110,6 +1122,9 @@ fn build_numeric_rule(raw: NumericRuleFile) -> Result<NumericRule, String> {
             .map(|value| Box::leak(value.into_boxed_str()) as &'static str),
         filter_eq: filter_eq.map(|value| Box::leak(value.into_boxed_str()) as &'static str),
         filter_in: leak_aliases(filter_in)?,
+        filter_numeric_pointer: filter_numeric_pointer
+            .map(|value| Box::leak(value.into_boxed_str()) as &'static str),
+        filter_gt: raw.filter_gt,
     })
 }
 
@@ -1167,6 +1182,10 @@ fn build_unix_ms_rule(raw: UnixMsRuleFile) -> Result<UnixMsRule, String> {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .collect::<Vec<_>>();
+        let filter_numeric_pointer = raw
+            .filter_numeric_pointer
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
         return Ok(UnixMsRule::Array {
             pointer: Box::leak(pointer.into_boxed_str()),
             item_pointer: Box::leak(item_pointer.into_boxed_str()),
@@ -1175,6 +1194,9 @@ fn build_unix_ms_rule(raw: UnixMsRuleFile) -> Result<UnixMsRule, String> {
                 .map(|value| Box::leak(value.into_boxed_str()) as &'static str),
             filter_eq: filter_eq.map(|value| Box::leak(value.into_boxed_str()) as &'static str),
             filter_in: leak_aliases(filter_in)?,
+            filter_numeric_pointer: filter_numeric_pointer
+                .map(|value| Box::leak(value.into_boxed_str()) as &'static str),
+            filter_gt: raw.filter_gt,
         });
     }
 
@@ -1221,6 +1243,37 @@ fn matched_provider_definition(provider: &ProviderConfig) -> Option<ProviderDefi
         .iter()
         .find(|definition| definition.matches(provider))
         .cloned()
+}
+
+pub(crate) fn provider_definition_identity_component(provider: &ProviderConfig) -> Option<String> {
+    let definition = matched_provider_definition(provider)?;
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in definition.id.trim().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    if let Some(mapping) = definition.summary_mapping {
+        let mapping_repr = format!("{mapping:?}");
+        for byte in mapping_repr.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    if let Some(mapping) = definition.budget_info_mapping {
+        let mapping_repr = format!("{mapping:?}");
+        for byte in mapping_repr.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    if let Some(mapping) = definition.explicit_usage_mapping {
+        let mapping_repr = format!("{mapping:?}");
+        for byte in mapping_repr.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    Some(format!("{hash:016x}"))
 }
 
 fn matched_definition_for_base_url(base_url: &str) -> Option<ProviderDefinition> {
@@ -1932,6 +1985,8 @@ explicit_endpoint_url = "{explicit_endpoint_url}"
                     aggregate: Some("sum".to_string()),
                     filter_pointer: Some("/state".to_string()),
                     filter_in: vec!["active".to_string(), "pending".to_string()],
+                    filter_numeric_pointer: Some("/balance".to_string()),
+                    filter_gt: Some(0.0),
                     ..NumericRuleFile::default()
                 }],
                 ..NumericFieldSpecFile::default()
@@ -1948,6 +2003,7 @@ explicit_endpoint_url = "{explicit_endpoint_url}"
                     { "balance": "49.95", "state": "active" },
                     { "balance": "50.00", "state": "pending" },
                     { "balance": "50.00", "state": "pending" },
+                    { "balance": "-0.02", "state": "active" },
                     { "balance": "999.00", "state": "expired" }
                 ]
             }
@@ -1965,5 +2021,52 @@ explicit_endpoint_url = "{explicit_endpoint_url}"
         .expect("mapped usage");
 
         assert_eq!(usage.remaining, Some(287.61));
+    }
+
+    #[test]
+    fn dynamic_numeric_mapping_ignores_non_positive_balances_when_requested() {
+        let mapping = build_dynamic_mapping(CanonicalUsageMappingFile {
+            usage_kind: Some("balance_info".to_string()),
+            remaining: Some(NumericFieldSpecFile {
+                rules: vec![NumericRuleFile {
+                    pointer: Some("/data/plan_cards".to_string()),
+                    item_pointer: Some("/balance".to_string()),
+                    aggregate: Some("sum".to_string()),
+                    filter_pointer: Some("/state".to_string()),
+                    filter_in: vec!["active".to_string(), "pending".to_string()],
+                    filter_numeric_pointer: Some("/balance".to_string()),
+                    filter_gt: Some(0.0),
+                    ..NumericRuleFile::default()
+                }],
+                ..NumericFieldSpecFile::default()
+            }),
+            requires_any: vec!["/data/plan_cards".to_string()],
+            ..CanonicalUsageMappingFile::default()
+        })
+        .expect("dynamic mapping");
+
+        let payload = serde_json::json!({
+            "data": {
+                "plan_cards": [
+                    { "balance": "137.66", "state": "active" },
+                    { "balance": "-0.02", "state": "active" },
+                    { "balance": "0.00", "state": "pending" },
+                    { "balance": "50.00", "state": "pending" }
+                ]
+            }
+        });
+
+        let usage = map_canonical_usage(
+            &payload,
+            mapping,
+            CanonicalUsageContext {
+                effective_usage_base: Some("https://usage.example".to_string()),
+                effective_usage_source: Some("test".to_string()),
+                updated_at_unix_ms: 123,
+            },
+        )
+        .expect("mapped usage");
+
+        assert_eq!(usage.remaining, Some(187.66));
     }
 }

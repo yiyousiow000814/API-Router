@@ -35,6 +35,8 @@ item_pointer = "/balance"
 aggregate = "sum"
 filter_pointer = "/state"
 filter_in = ["active"]
+filter_numeric_pointer = "/balance"
+filter_gt = 0.0
 
 [usage.summary_mapping.today_used]
 aliases = ["/data/today_spent_amount", "/today_spent_amount"]
@@ -54,6 +56,8 @@ item_pointer = "/daily_limit"
 aggregate = "sum"
 filter_pointer = "/state"
 filter_in = ["active"]
+filter_numeric_pointer = "/balance"
+filter_gt = 0.0
 
 [[usage.summary_mapping.today_added.rules]]
 pointer = "/data/plan_cards"
@@ -61,6 +65,8 @@ item_pointer = "/card_daily_limit"
 aggregate = "sum"
 filter_pointer = "/state"
 filter_in = ["active"]
+filter_numeric_pointer = "/balance"
+filter_gt = 0.0
 
 [usage.summary_mapping.daily_limit]
 aliases = []
@@ -72,6 +78,8 @@ item_pointer = "/daily_limit"
 aggregate = "sum"
 filter_pointer = "/state"
 filter_in = ["active"]
+filter_numeric_pointer = "/balance"
+filter_gt = 0.0
 
 [[usage.summary_mapping.daily_limit.rules]]
 pointer = "/data/plan_cards"
@@ -79,6 +87,8 @@ item_pointer = "/card_daily_limit"
 aggregate = "sum"
 filter_pointer = "/state"
 filter_in = ["active"]
+filter_numeric_pointer = "/balance"
+filter_gt = 0.0
 
 [usage.summary_mapping.monthly_used]
 aliases = []
@@ -97,6 +107,8 @@ item_pointer = "/expiration_time"
 aggregate = "max"
 filter_pointer = "/state"
 filter_in = ["active"]
+filter_numeric_pointer = "/balance"
+filter_gt = 0.0
 
 [[usage.summary_mapping.expires_at_unix_ms.rules]]
 pointer = "/data/card_expire_date"

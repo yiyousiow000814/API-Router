@@ -37,6 +37,8 @@ pub(crate) enum NumericRule {
         filter_pointer: Option<&'static str>,
         filter_eq: Option<&'static str>,
         filter_in: &'static [&'static str],
+        filter_numeric_pointer: Option<&'static str>,
+        filter_gt: Option<f64>,
     },
 }
 
@@ -67,6 +69,8 @@ pub(crate) enum UnixMsRule {
         filter_pointer: Option<&'static str>,
         filter_eq: Option<&'static str>,
         filter_in: &'static [&'static str],
+        filter_numeric_pointer: Option<&'static str>,
+        filter_gt: Option<f64>,
     },
 }
 
@@ -225,12 +229,21 @@ fn extract_number_from_rule(
             filter_pointer,
             filter_eq,
             filter_in,
+            filter_numeric_pointer,
+            filter_gt,
         } => {
             let items = value_at_pointer(root, pointer)?.as_array()?;
             let mut values = items
                 .iter()
                 .filter(|item| {
-                    mapping_rule_matches_filter(item, *filter_pointer, *filter_eq, filter_in)
+                    mapping_rule_matches_filter(
+                        item,
+                        *filter_pointer,
+                        *filter_eq,
+                        filter_in,
+                        *filter_numeric_pointer,
+                        *filter_gt,
+                    )
                 })
                 .filter_map(|item| {
                     json_value_as_f64(value_at_pointer(item, item_pointer)).map(|value| {
@@ -315,12 +328,21 @@ fn extract_unix_ms_from_rule(root: &Value, rule: &UnixMsRule) -> Option<u64> {
             filter_pointer,
             filter_eq,
             filter_in,
+            filter_numeric_pointer,
+            filter_gt,
         } => {
             let items = value_at_pointer(root, pointer)?.as_array()?;
             let mut values = items
                 .iter()
                 .filter(|item| {
-                    unix_ms_rule_matches_filter(item, *filter_pointer, *filter_eq, filter_in)
+                    unix_ms_rule_matches_filter(
+                        item,
+                        *filter_pointer,
+                        *filter_eq,
+                        filter_in,
+                        *filter_numeric_pointer,
+                        *filter_gt,
+                    )
                 })
                 .filter_map(|item| parse_unix_ms_from_value(value_at_pointer(item, item_pointer)));
             match aggregate {
@@ -336,24 +358,39 @@ fn mapping_rule_matches_filter(
     filter_pointer: Option<&str>,
     filter_eq: Option<&str>,
     filter_in: &[&str],
+    filter_numeric_pointer: Option<&str>,
+    filter_gt: Option<f64>,
 ) -> bool {
-    let Some(filter_pointer) = filter_pointer else {
-        return true;
-    };
-    let Some(value) = value_at_pointer(item, filter_pointer)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return false;
-    };
-    if let Some(expected) = filter_eq {
-        return value.eq_ignore_ascii_case(expected);
+    if let Some(filter_pointer) = filter_pointer {
+        let Some(value) = value_at_pointer(item, filter_pointer)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return false;
+        };
+        if let Some(expected) = filter_eq {
+            if !value.eq_ignore_ascii_case(expected) {
+                return false;
+            }
+        }
+        if !filter_in.is_empty()
+            && !filter_in
+                .iter()
+                .any(|candidate| value.eq_ignore_ascii_case(candidate))
+        {
+            return false;
+        }
     }
-    if !filter_in.is_empty() {
-        return filter_in
-            .iter()
-            .any(|candidate| value.eq_ignore_ascii_case(candidate));
+    if let Some(filter_numeric_pointer) = filter_numeric_pointer {
+        let Some(value) = json_value_as_f64(value_at_pointer(item, filter_numeric_pointer)) else {
+            return false;
+        };
+        if let Some(threshold) = filter_gt {
+            if value <= threshold {
+                return false;
+            }
+        }
     }
     true
 }
@@ -363,8 +400,17 @@ fn unix_ms_rule_matches_filter(
     filter_pointer: Option<&str>,
     filter_eq: Option<&str>,
     filter_in: &[&str],
+    filter_numeric_pointer: Option<&str>,
+    filter_gt: Option<f64>,
 ) -> bool {
-    mapping_rule_matches_filter(item, filter_pointer, filter_eq, filter_in)
+    mapping_rule_matches_filter(
+        item,
+        filter_pointer,
+        filter_eq,
+        filter_in,
+        filter_numeric_pointer,
+        filter_gt,
+    )
 }
 
 fn value_at_pointer<'a>(root: &'a Value, pointer: &str) -> Option<&'a Value> {
