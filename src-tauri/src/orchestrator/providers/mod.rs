@@ -1248,30 +1248,10 @@ fn matched_provider_definition(provider: &ProviderConfig) -> Option<ProviderDefi
 pub(crate) fn provider_definition_identity_component(provider: &ProviderConfig) -> Option<String> {
     let definition = matched_provider_definition(provider)?;
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in definition.id.trim().as_bytes() {
+    let identity = format!("{definition:?}");
+    for byte in identity.as_bytes() {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
-    }
-    if let Some(mapping) = definition.summary_mapping {
-        let mapping_repr = format!("{mapping:?}");
-        for byte in mapping_repr.as_bytes() {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-    }
-    if let Some(mapping) = definition.budget_info_mapping {
-        let mapping_repr = format!("{mapping:?}");
-        for byte in mapping_repr.as_bytes() {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-    }
-    if let Some(mapping) = definition.explicit_usage_mapping {
-        let mapping_repr = format!("{mapping:?}");
-        for byte in mapping_repr.as_bytes() {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
     }
     Some(format!("{hash:016x}"))
 }
