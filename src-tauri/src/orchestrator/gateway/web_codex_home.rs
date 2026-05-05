@@ -446,6 +446,42 @@ pub(super) fn web_codex_wsl_linux_home_override() -> Option<String> {
     web_codex_wsl_overlay_home_from_session_home(&session_home.linux_path)
 }
 
+pub(crate) fn web_codex_runtime_auth_homes(config_path: &Path) -> Vec<PathBuf> {
+    let mut homes = Vec::new();
+    if let Some(home) = web_codex_rpc_home_override() {
+        homes.push(PathBuf::from(home));
+    }
+    if let Some(home) = web_codex_wsl_linux_home_override() {
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok((distro, _)) = resolve_wsl_identity() {
+                homes.push(web_codex_runtime_auth_wsl_home(&home, &distro));
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            homes.push(PathBuf::from(home));
+        }
+    }
+    homes.push(
+        config_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("codex-home"),
+    );
+    homes.sort_by_key(|path| path.to_string_lossy().to_string().to_ascii_lowercase());
+    homes.dedup_by(|a, b| {
+        a.to_string_lossy()
+            .eq_ignore_ascii_case(&b.to_string_lossy())
+    });
+    homes
+}
+
+#[cfg(target_os = "windows")]
+fn web_codex_runtime_auth_wsl_home(home: &str, distro: &str) -> PathBuf {
+    linux_path_to_unc(home, distro)
+}
+
 fn backup_path(path: &Path) -> PathBuf {
     let name = path
         .file_name()
@@ -742,6 +778,7 @@ mod tests {
         linux_path_join, linux_path_parent, normalize_wsl_linux_path, parse_workspace_target,
         web_codex_rpc_home_override_for_target, web_codex_session_home_for_target, WorkspaceTarget,
     };
+    use std::path::Path;
 
     #[test]
     fn parses_workspace_target() {
@@ -792,6 +829,30 @@ mod tests {
             std::env::remove_var("API_ROUTER_WEB_CODEX_CODEX_HOME");
             std::env::remove_var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME");
         }
+    }
+
+    #[test]
+    fn runtime_auth_wsl_home_uses_unc_on_windows() {
+        let _test_guard = crate::codex_app_server::lock_test_globals();
+        unsafe {
+            std::env::set_var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME", "/home/test/.codex");
+        }
+        let homes = super::web_codex_runtime_auth_homes(Path::new("C:/tmp/config.json"));
+        unsafe {
+            std::env::remove_var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME");
+        }
+
+        let rendered: Vec<String> = homes
+            .into_iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+
+        #[cfg(target_os = "windows")]
+        assert!(rendered
+            .iter()
+            .any(|path| path == r"\\wsl.localhost\Ubuntu\home\test\.codex"));
+        #[cfg(not(target_os = "windows"))]
+        assert!(rendered.iter().any(|path| path == "/home/test/.codex"));
     }
 
     #[test]

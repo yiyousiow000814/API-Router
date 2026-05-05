@@ -184,13 +184,12 @@ function findLatestMaterializedPendingUserIndex(messages, pendingUser, options =
   const baselineUserCount = Math.max(0, Number(options.baselineUserCount || 0));
   const historyUserCount = Math.max(0, Number(options.historyUserCount || 0));
   if (historyUserCount <= baselineUserCount) return -1;
-  let lastAssistantIndex = -1;
+  let seenAuthoritativeUser = 0;
   for (let index = 0; index < items.length; index += 1) {
-    if (String(items[index]?.role || "").trim() === "assistant") lastAssistantIndex = index;
-  }
-  for (let index = Math.max(0, lastAssistantIndex + 1); index < items.length; index += 1) {
     const entry = items[index];
     if (String(entry?.role || "").trim() !== "user") continue;
+    seenAuthoritativeUser += 1;
+    if (seenAuthoritativeUser <= baselineUserCount) continue;
     if (String(entry?.text || "") !== pendingText) continue;
     return index;
   }
@@ -340,6 +339,59 @@ function pendingUserLacksAuthoritativeHistory(thread, state = {}, parseUserMessa
   if (!threadId || !pendingThreadId || pendingThreadId !== threadId) return false;
   if (!pendingUser || pendingAssistant) return false;
   return latestTurnContainsPendingUserEcho(thread, state, parseUserMessageParts) !== true;
+}
+
+function turnContainsPendingUserEcho(turn, pendingUser, parseUserMessageParts) {
+  const items = Array.isArray(turn?.items) ? turn.items : [];
+  const pendingText = String(pendingUser || "").trim();
+  if (!pendingText) return false;
+  for (const item of items) {
+    if (String(item?.type || "").trim() !== "userMessage") continue;
+    const parsed = parseUserMessageParts(item);
+    if (String(parsed?.text || "").trim() === pendingText) return true;
+  }
+  return false;
+}
+
+function turnContainsVisibleFinalAssistant(turn) {
+  const items = Array.isArray(turn?.items) ? turn.items : [];
+  for (const item of items) {
+    const type = String(item?.type || "").trim();
+    if (!type) continue;
+    if (type === "assistantMessage" && isVisibleAssistantHistoryPhase(item?.phase)) return true;
+    if (type === "message" && String(item?.role || "").trim() === "assistant" && isVisibleAssistantHistoryPhase(item?.phase)) {
+      return true;
+    }
+    if (type === "agentMessage" && String(item?.phase || "").trim().toLowerCase() === "final_answer") {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasCompletedAuthoritativePendingTurn(thread, state = {}, parseUserMessageParts) {
+  const threadId = String(thread?.id || state.activeThreadId || "").trim();
+  const pendingThreadId = String(state.activeThreadPendingTurnThreadId || "").trim();
+  if (!threadId || !pendingThreadId || pendingThreadId !== threadId) return false;
+  if (thread?.page?.incomplete === true) return false;
+  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+  if (!turns.length) return false;
+  const pendingTurnId = String(state.activeThreadPendingTurnId || "").trim();
+  const pendingUser = String(state.activeThreadPendingUserMessage || "").trim();
+  if (pendingTurnId) {
+    const matchingTurn = turns.find((turn) => String(turn?.id || "").trim() === pendingTurnId);
+    if (!matchingTurn) return false;
+    if (pendingUser && !turnContainsPendingUserEcho(matchingTurn, pendingUser, parseUserMessageParts)) {
+      return false;
+    }
+    return turnContainsVisibleFinalAssistant(matchingTurn);
+  }
+  const baselineTurnCount = Math.max(0, Number(state.activeThreadPendingTurnBaselineTurnCount || 0));
+  for (const turn of turns.slice(baselineTurnCount)) {
+    if (pendingUser && !turnContainsPendingUserEcho(turn, pendingUser, parseUserMessageParts)) continue;
+    if (turnContainsVisibleFinalAssistant(turn)) return true;
+  }
+  return false;
 }
 
 function shouldPreservePendingUserAcrossTerminalHistory(thread, state = {}, parseUserMessageParts) {
@@ -552,6 +604,14 @@ function syncPendingTurnStateFromIncompleteHistory(thread, state = {}, parseUser
       pendingTurnId &&
       (pendingUser || pendingAssistant)
     ) {
+      if (hasCompletedAuthoritativePendingTurn(thread, state, parseUserMessageParts)) {
+        setPendingTurnRunning(state, threadId, false, {
+          reason: "history.sync:complete_materialized_pending_turn",
+        });
+        resetPendingTurnRuntime(state, {
+          reason: "history.sync:complete_materialized_pending_turn",
+        });
+      }
       return;
     }
     if (
