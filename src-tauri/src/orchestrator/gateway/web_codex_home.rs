@@ -452,7 +452,16 @@ pub(crate) fn web_codex_runtime_auth_homes(config_path: &Path) -> Vec<PathBuf> {
         homes.push(PathBuf::from(home));
     }
     if let Some(home) = web_codex_wsl_linux_home_override() {
-        homes.push(PathBuf::from(home));
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok((distro, _)) = resolve_wsl_identity() {
+                homes.push(web_codex_runtime_auth_wsl_home(&home, &distro));
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            homes.push(PathBuf::from(home));
+        }
     }
     homes.push(
         config_path
@@ -466,6 +475,16 @@ pub(crate) fn web_codex_runtime_auth_homes(config_path: &Path) -> Vec<PathBuf> {
             .eq_ignore_ascii_case(&b.to_string_lossy())
     });
     homes
+}
+
+#[cfg(target_os = "windows")]
+fn web_codex_runtime_auth_wsl_home(home: &str, distro: &str) -> PathBuf {
+    linux_path_to_unc(home, distro)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn web_codex_runtime_auth_wsl_home(home: &str, _distro: &str) -> PathBuf {
+    PathBuf::from(home)
 }
 
 fn backup_path(path: &Path) -> PathBuf {
@@ -813,6 +832,23 @@ mod tests {
         unsafe {
             std::env::remove_var("API_ROUTER_WEB_CODEX_CODEX_HOME");
             std::env::remove_var("API_ROUTER_WEB_CODEX_WSL_CODEX_HOME");
+        }
+    }
+
+    #[test]
+    fn runtime_auth_wsl_home_uses_unc_on_windows() {
+        #[cfg(target_os = "windows")]
+        {
+            let unc = super::web_codex_runtime_auth_wsl_home("/home/test/.codex", "Ubuntu");
+            assert_eq!(
+                unc.to_string_lossy(),
+                r"\\wsl.localhost\Ubuntu\home\test\.codex"
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let local = super::web_codex_runtime_auth_wsl_home("/home/test/.codex", "Ubuntu");
+            assert_eq!(local.to_string_lossy(), "/home/test/.codex");
         }
     }
 

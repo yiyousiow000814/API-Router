@@ -156,6 +156,7 @@ function Get-StaleRepoBuildProcesses {
     if ([string]::IsNullOrWhiteSpace($commandLine)) { continue }
     $lowerCommandLine = $commandLine.ToLowerInvariant()
     if (-not $lowerCommandLine.Contains('build-root-exe.ps1')) { continue }
+    if (-not $lowerCommandLine.Contains('-starthidden')) { continue }
     if (
       -not (Test-CommandLineContainsPath -CommandLine $commandLine -Path $buildScriptPath) -and
       -not (Test-CommandLineContainsPath -CommandLine $commandLine -Path $RepoRoot)
@@ -268,6 +269,11 @@ function Test-ShouldHoldBuildMutexForRecoveryProbe {
   return ([string]$env:API_ROUTER_BUILD_MUTEX_RECOVERY_PROBE).Trim() -eq '1'
 }
 
+function Test-ShouldRecoverStaleBuildProcesses {
+  if (Test-IsRemoteUpdateBuildContext) { return $true }
+  return $StartHidden
+}
+
 function Enter-BuildMutex {
   $name = Get-BuildMutexName
   $script:BuildMutex = [System.Threading.Mutex]::new($false, $name)
@@ -280,18 +286,20 @@ function Enter-BuildMutex {
     return
   }
 
-  $isRemoteUpdate = Test-IsRemoteUpdateBuildContext
-  if ($isRemoteUpdate) {
+  $isRecoveryBuild = Test-ShouldRecoverStaleBuildProcesses
+  if ($isRecoveryBuild) {
     Write-RemoteUpdateLog "Build mutex is busy; inspecting stale remote update build processes for repo root $RepoRoot"
   } else {
     Write-Host "Build mutex is busy; inspecting stale local build processes for repo root $RepoRoot"
   }
 
-  $null = Stop-StaleBuildProcesses
+  if ($isRecoveryBuild) {
+    $null = Stop-StaleBuildProcesses
+  }
   $deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
   while ([DateTimeOffset]::UtcNow -lt $deadline) {
     if (Wait-BuildMutex -TimeoutMilliseconds 1000) {
-      if ($isRemoteUpdate) {
+      if ($isRecoveryBuild) {
         Write-RemoteUpdateLog "Build mutex acquired after stale process cleanup"
       } else {
         Write-Host "Build mutex acquired after stale process cleanup"
@@ -302,8 +310,8 @@ function Enter-BuildMutex {
 
   $script:BuildMutex.Dispose()
   $script:BuildMutex = $null
-  $null = Stop-StaleBuildProcesses
-  if ($isRemoteUpdate) {
+  if ($isRecoveryBuild) {
+    $null = Stop-StaleBuildProcesses
     throw "remote update build mutex is still held after stale process cleanup for repo root $RepoRoot"
   }
   throw "another API Router build/update is already running for repo root $RepoRoot"
