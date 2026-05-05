@@ -52,7 +52,8 @@ mod tests {
         let gateway_cfg_edited = "model = \"gpt-5.4\"\n[notice]\nhide_full_access_warning = true\n";
         std::fs::write(cli_cfg_path(&cli_home), gateway_cfg_edited).unwrap();
 
-        let out = read_cfg_base_text(&config_path, &cli_home).expect("read base");
+        let out = read_cfg_base_text(&config_path, &cli_home, std::iter::empty::<&str>())
+            .expect("read base");
         assert!(out.contains("model = \"gpt-5.4\""));
 
         // The base file is refreshed to match the latest gateway edits.
@@ -77,7 +78,8 @@ mod tests {
         std::fs::create_dir_all(&cli_home).unwrap();
         std::fs::write(cli_cfg_path(&cli_home), "model = \"gpt-5.2\"\n").unwrap();
 
-        let out = read_cfg_base_text(&config_path, &cli_home).expect("read base");
+        let out = read_cfg_base_text(&config_path, &cli_home, std::iter::empty::<&str>())
+            .expect("read base");
 
         assert!(out.contains("model = \"gpt-5.2\""));
         let restored_auth = read_json(&cli_auth_path(&cli_home)).expect("restored cli auth");
@@ -509,7 +511,9 @@ mod tests {
         assert!(restored_cfg.contains("model = \"gpt-5.2\""));
 
         // Switching again should use the preserved base (with the user edit).
-        let base_read = read_cfg_base_text(&config_path, &cli_home).expect("base read");
+        let base_read =
+            read_cfg_base_text(&config_path, &cli_home, std::iter::empty::<&str>())
+                .expect("base read");
         assert!(base_read.contains("model = \"gpt-5.3-codex\""));
         assert!(!base_read.contains("model_provider ="));
     }
@@ -1190,5 +1194,198 @@ mod tests {
 
         let auth = resolve_selected_official_auth(&state).expect("resolve selected auth");
         assert_eq!(auth, second_auth);
+    }
+
+    #[test]
+    fn sync_app_codex_home_official_target_persists_explicit_profile_selection() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+        let cli_home = app_codex_home_from_config_path(&config_path);
+        std::fs::create_dir_all(&cli_home).expect("cli home");
+        std::fs::write(cli_cfg_path(&cli_home), "model = \"gpt-5.3-codex\"\n").expect("cfg");
+        std::fs::write(cli_auth_path(&cli_home), "{}\n").expect("auth");
+
+        let first_auth = json!({
+            "tokens": {
+                "account_id": "acct-1",
+                "access_token": "token-1",
+                "refresh_token": "refresh-1"
+            }
+        });
+        let second_auth = json!({
+            "tokens": {
+                "account_id": "acct-2",
+                "access_token": "token-2",
+                "refresh_token": "refresh-2"
+            }
+        });
+        let first = state
+            .secrets
+            .capture_official_account_profile(&first_auth, Some("Official account 1"), None)
+            .expect("capture first");
+        let second = state
+            .secrets
+            .capture_official_account_profile(&second_auth, Some("Official account 2"), None)
+            .expect("capture second");
+        state
+            .secrets
+            .select_official_account_profile(&first.id)
+            .expect("select first");
+
+        let runtime = ProviderSwitchboardRuntime::from_app_state(&state);
+        set_target_for_runtime_with_official_auth(
+            &runtime,
+            vec![cli_home.to_string_lossy().to_string()],
+            "official".to_string(),
+            None,
+            Some(second_auth.clone()),
+            Some(second.id.clone()),
+        )
+        .expect("switch official");
+
+        let saved_state =
+            read_json(&switchboard_state_path_from_config_path(&config_path)).expect("state json");
+        assert_eq!(
+            saved_state
+                .get("official_profile_id")
+                .and_then(|value| value.as_str()),
+            Some(second.id.as_str())
+        );
+
+        sync_app_codex_home_to_current_switchboard_state(&config_path).expect("sync overlay");
+
+        let runtime_auth = read_json(&cli_auth_path(&cli_home)).expect("runtime auth");
+        assert_eq!(runtime_auth, second_auth);
+        assert_ne!(runtime_auth, first_auth);
+    }
+
+    #[test]
+    fn sync_app_codex_home_official_target_removes_gateway_alias_sections() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let state = crate::app_state::build_state(config_path.clone(), data_dir).expect("state");
+        let cli_home = app_codex_home_from_config_path(&config_path);
+        std::fs::create_dir_all(&cli_home).expect("cli home");
+
+        {
+            let mut cfg = state.gateway.cfg.write();
+            cfg.providers.insert(
+                "yangfangyu-old".to_string(),
+                crate::orchestrator::config::ProviderConfig {
+                    display_name: "Yangfangyu Old".to_string(),
+                    base_url: "https://example.test/v1".to_string(),
+                    group: None,
+                    disabled: false,
+                    supports_websockets: true,
+                    usage_adapter: String::new(),
+                    usage_base_url: None,
+                    api_key: String::new(),
+                },
+            );
+            cfg.provider_order.push("yangfangyu-old".to_string());
+        }
+        std::fs::write(
+            &config_path,
+            toml::to_string_pretty(&state.gateway.cfg.read().clone()).expect("config toml"),
+        )
+        .expect("write config");
+
+        state
+            .secrets
+            .set_gateway_token("ao_gateway_token")
+            .expect("gateway token");
+        let official_auth = json!({
+            "tokens": {
+                "account_id": "acct-2",
+                "access_token": "token-2",
+                "refresh_token": "refresh-2"
+            }
+        });
+        let official_profile = state
+            .secrets
+            .capture_official_account_profile(&official_auth, Some("Official account 2"), None)
+            .expect("capture official");
+        state
+            .secrets
+            .select_official_account_profile(&official_profile.id)
+            .expect("select official");
+
+        let gateway_cfg = build_gateway_provider_cfg_with_aliases(
+            "personality = \"pragmatic\"\n",
+            "http://127.0.0.1:4321/v1",
+            vec!["yangfangyu-old".to_string()],
+        );
+        std::fs::write(cli_cfg_path(&cli_home), gateway_cfg).expect("gateway cfg");
+        std::fs::write(
+            cli_auth_path(&cli_home),
+            serde_json::to_string_pretty(&json!({"OPENAI_API_KEY":"ao_gateway_token"}))
+                .expect("gateway auth json"),
+        )
+        .expect("gateway auth");
+
+        write_json(
+            &switchboard_state_path_from_config_path(&config_path),
+            &json!({
+                "target": "official",
+                "provider": serde_json::Value::Null,
+                "official_profile_id": official_profile.id,
+                "cli_homes": [cli_home.to_string_lossy().to_string()]
+            }),
+        )
+        .expect("switchboard state");
+
+        sync_app_codex_home_to_current_switchboard_state(&config_path).expect("sync overlay");
+
+        let synced_cfg = read_text(&cli_cfg_path(&cli_home)).expect("synced cfg");
+        assert!(!synced_cfg.contains("[model_providers.\"api_router\"]"));
+        assert!(!synced_cfg.contains("[model_providers.\"yangfangyu-old\"]"));
+        assert!(!synced_cfg.contains("model_provider ="));
+        assert!(synced_cfg.contains("personality = \"pragmatic\""));
+    }
+
+    #[test]
+    fn write_swapped_files_if_changed_skips_rewrite_when_runtime_files_match() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("user-data").join("config.toml");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+
+        let cli_home = tmp.path().join("cli-home");
+        std::fs::create_dir_all(&cli_home).unwrap();
+        let auth = json!({"OPENAI_API_KEY":"sk-same"});
+        let cfg = "model_provider = \"api_router\"\nmodel = \"gpt-5.3-codex\"\n";
+        write_json(&cli_auth_path(&cli_home), &auth).expect("write auth");
+        write_text(&cli_cfg_path(&cli_home), cfg).expect("write cfg");
+
+        let auth_before = std::fs::metadata(cli_auth_path(&cli_home))
+            .expect("auth metadata")
+            .modified()
+            .expect("auth modified");
+        let cfg_before = std::fs::metadata(cli_cfg_path(&cli_home))
+            .expect("cfg metadata")
+            .modified()
+            .expect("cfg modified");
+
+        let changed =
+            write_swapped_files_if_changed(&config_path, &cli_home, &auth, cfg).expect("sync");
+
+        let auth_after = std::fs::metadata(cli_auth_path(&cli_home))
+            .expect("auth metadata")
+            .modified()
+            .expect("auth modified");
+        let cfg_after = std::fs::metadata(cli_cfg_path(&cli_home))
+            .expect("cfg metadata")
+            .modified()
+            .expect("cfg modified");
+
+        assert!(!changed);
+        assert_eq!(auth_before, auth_after);
+        assert_eq!(cfg_before, cfg_after);
     }
 }

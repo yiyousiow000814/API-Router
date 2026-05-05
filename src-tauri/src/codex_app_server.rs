@@ -3388,6 +3388,124 @@ mod tests {
         }
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn request_in_home_does_not_rewrite_overlay_when_already_synced() {
+        let _guard = lock_tests();
+        _clear_notifications_for_test().await;
+        let user_profile = tempfile::tempdir().expect("user profile");
+        let app_data = tempfile::tempdir().expect("app data");
+        let official_home = user_profile.path().join(".codex");
+        let overlay_home = app_data.path().join("codex-home");
+        let config_path = app_data.path().join("config.toml");
+        let secrets_path = app_data.path().join("secrets.json");
+        std::fs::create_dir_all(&official_home).expect("official home");
+        std::fs::create_dir_all(&overlay_home).expect("overlay home");
+        std::fs::write(
+            official_home.join("config.toml"),
+            "model_provider = \"openai\"\nmodel = \"gpt-5.3-codex\"\n",
+        )
+        .expect("official config");
+        std::fs::write(official_home.join("auth.json"), "{}\n").expect("official auth");
+        std::fs::write(
+            overlay_home.join("config.toml"),
+            "personality = \"pragmatic\"\n[projects.'C:\\\\Users\\\\yiyou\\\\API-Router']\ntrust_level = \"trusted\"\n",
+        )
+        .expect("stale overlay config");
+        std::fs::write(overlay_home.join("auth.json"), "{}\n").expect("overlay auth");
+
+        let mut cfg = crate::orchestrator::config::AppConfig::default_config();
+        cfg.listen.port = 4321;
+        cfg.providers.insert(
+            "yangfangyu-old".to_string(),
+            crate::orchestrator::config::ProviderConfig {
+                display_name: "Yangfangyu Old".to_string(),
+                base_url: "https://example.test/v1".to_string(),
+                group: None,
+                disabled: false,
+                supports_websockets: true,
+                usage_adapter: String::new(),
+                usage_base_url: None,
+                api_key: String::new(),
+            },
+        );
+        cfg.provider_order.push("yangfangyu-old".to_string());
+        std::fs::write(
+            &config_path,
+            toml::to_string_pretty(&cfg).expect("config toml"),
+        )
+        .expect("write config");
+
+        let secrets = crate::orchestrator::secrets::SecretStore::new(secrets_path);
+        secrets
+            .set_gateway_token("ao_gateway_token")
+            .expect("set gateway token");
+        std::fs::write(
+            overlay_home.join("provider-switchboard-state.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+              "target": "gateway",
+              "provider": serde_json::Value::Null,
+              "cli_homes": [overlay_home.to_string_lossy().to_string()]
+            }))
+            .expect("state json"),
+        )
+        .expect("write switchboard state");
+
+        unsafe {
+            std::env::set_var("USERPROFILE", user_profile.path());
+            std::env::set_var("API_ROUTER_USER_DATA_DIR", app_data.path());
+            std::env::remove_var("API_ROUTER_WEB_CODEX_CODEX_HOME");
+            std::env::remove_var("CODEX_HOME");
+        }
+
+        _set_test_request_handler(Some(std::sync::Arc::new(
+            |_codex_home, _method, _params| Ok(serde_json::json!({ "ok": true })),
+        )))
+        .await;
+
+        request_in_home(
+            Some(overlay_home.to_string_lossy().as_ref()),
+            "thread/resume",
+            serde_json::json!({ "threadId": "thread-1" }),
+        )
+        .await
+        .expect("first request");
+
+        let auth_before = std::fs::metadata(overlay_home.join("auth.json"))
+            .expect("auth metadata")
+            .modified()
+            .expect("auth modified");
+        let cfg_before = std::fs::metadata(overlay_home.join("config.toml"))
+            .expect("cfg metadata")
+            .modified()
+            .expect("cfg modified");
+
+        request_in_home(
+            Some(overlay_home.to_string_lossy().as_ref()),
+            "thread/read",
+            serde_json::json!({ "threadId": "thread-1" }),
+        )
+        .await
+        .expect("second request");
+
+        let auth_after = std::fs::metadata(overlay_home.join("auth.json"))
+            .expect("auth metadata")
+            .modified()
+            .expect("auth modified");
+        let cfg_after = std::fs::metadata(overlay_home.join("config.toml"))
+            .expect("cfg metadata")
+            .modified()
+            .expect("cfg modified");
+
+        assert_eq!(auth_before, auth_after);
+        assert_eq!(cfg_before, cfg_after);
+
+        _set_test_request_handler(None).await;
+        unsafe {
+            std::env::remove_var("USERPROFILE");
+            std::env::remove_var("API_ROUTER_USER_DATA_DIR");
+        }
+    }
+
     #[cfg(target_os = "windows")]
     #[tokio::test(flavor = "current_thread")]
     async fn legacy_pending_input_methods_resolve_locally_for_wsl_homes() {

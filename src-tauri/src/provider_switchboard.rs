@@ -254,10 +254,12 @@ fn save_switchboard_state_to_config_path(
     homes: &[PathBuf],
     target: &str,
     provider: Option<&str>,
+    official_profile_id: Option<&str>,
 ) -> Result<(), String> {
     let v = json!({
       "target": target,
       "provider": provider,
+      "official_profile_id": official_profile_id,
       "cli_homes": homes.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>()
     });
     write_json(&switchboard_state_path_from_config_path(config_path), &v)
@@ -379,12 +381,37 @@ fn restore_home_original(config_path: &Path, cli_home: &Path) -> Result<(), Stri
 }
 
 fn normalize_cfg_for_switchboard_base(cfg: &str) -> String {
+    normalize_cfg_for_switchboard_base_with_provider_ids(cfg, std::iter::empty::<&str>())
+}
+
+fn normalize_cfg_for_switchboard_base_with_provider_ids<'a>(
+    cfg: &str,
+    switchboard_provider_ids: impl IntoIterator<Item = &'a str>,
+) -> String {
     // Keep user edits, but drop switchboard-owned provider wiring so we can rebuild
     // the next mode from the latest effective config.
     let mut base = strip_model_provider_line(cfg);
+    let mut removable_provider_ids = vec![GATEWAY_MODEL_PROVIDER_ID.to_string()];
     if let Some(active_provider) = model_provider_id(cfg) {
-        base = remove_model_provider_sections(&base, &[active_provider.as_str()]);
+        removable_provider_ids.push(active_provider);
     }
+    for provider_id in switchboard_provider_ids {
+        let trimmed = provider_id.trim();
+        if trimmed.is_empty()
+            || trimmed.eq_ignore_ascii_case("official")
+            || removable_provider_ids
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(trimmed))
+        {
+            continue;
+        }
+        removable_provider_ids.push(trimmed.to_string());
+    }
+    let removable_provider_ids = removable_provider_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    base = remove_model_provider_sections(&base, &removable_provider_ids);
     // Prevent accumulating blank lines due to repeatedly inserting/removing model_provider.
     // We only trim leading empty lines; comments at the top should remain intact.
     while base.starts_with("\r\n") {
@@ -396,17 +423,35 @@ fn normalize_cfg_for_switchboard_base(cfg: &str) -> String {
     base
 }
 
-fn read_cfg_base_text(config_path: &Path, cli_home: &Path) -> Result<String, String> {
+fn read_cfg_base_text<'a>(
+    config_path: &Path,
+    cli_home: &Path,
+    switchboard_provider_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<String, String> {
     let app_auth = load_app_auth_if_signed_in(config_path);
     ensure_cli_files_exist(cli_home, app_auth.as_ref())?;
+    let switchboard_provider_ids = switchboard_provider_ids
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
     let state = home_swap_state(cli_home)?;
     if state == "original" {
-        if let Some(base_txt) = load_switchboard_base_cfg(config_path, cli_home) {
+        if let Some(base_txt_raw) = load_switchboard_base_cfg(config_path, cli_home) {
+            let base_txt = normalize_cfg_for_switchboard_base_with_provider_ids(
+                &base_txt_raw,
+                switchboard_provider_ids.iter().map(String::as_str),
+            );
+            if base_txt != base_txt_raw {
+                save_switchboard_base_cfg(config_path, cli_home, &base_txt)?;
+            }
             if let Some(baseline_gateway_norm) =
                 load_switchboard_base_gateway_norm_cfg(config_path, cli_home)
             {
                 let current = read_text(&cli_cfg_path(cli_home))?;
-                let current_norm = normalize_cfg_for_switchboard_base(&current);
+                let current_norm = normalize_cfg_for_switchboard_base_with_provider_ids(
+                    &current,
+                    switchboard_provider_ids.iter().map(String::as_str),
+                );
                 if current_norm != baseline_gateway_norm {
                     // The user edited the gateway config after we restored it. Prefer the latest
                     // gateway config and refresh the saved base to match.
@@ -418,7 +463,10 @@ fn read_cfg_base_text(config_path: &Path, cli_home: &Path) -> Result<String, Str
                 // Base exists but meta is missing/corrupted. Prefer the current gateway config so we
                 // don't silently override user edits with a potentially stale saved base.
                 let current = read_text(&cli_cfg_path(cli_home))?;
-                let current_norm = normalize_cfg_for_switchboard_base(&current);
+                let current_norm = normalize_cfg_for_switchboard_base_with_provider_ids(
+                    &current,
+                    switchboard_provider_ids.iter().map(String::as_str),
+                );
                 save_switchboard_base_cfg(config_path, cli_home, &current_norm)?;
                 save_switchboard_base_meta(config_path, cli_home, &current_norm)?;
                 return Ok(current_norm);
@@ -427,7 +475,10 @@ fn read_cfg_base_text(config_path: &Path, cli_home: &Path) -> Result<String, Str
         }
     }
     let current = read_text(&cli_cfg_path(cli_home))?;
-    Ok(normalize_cfg_for_switchboard_base(&current))
+    Ok(normalize_cfg_for_switchboard_base_with_provider_ids(
+        &current,
+        switchboard_provider_ids.iter().map(String::as_str),
+    ))
 }
 
 fn switch_to_gateway_home_impl(
@@ -439,7 +490,17 @@ fn switch_to_gateway_home_impl(
         return Err("Gateway token is empty. Generate it in Dashboard first.".to_string());
     }
 
-    let base_cfg = read_cfg_base_text(runtime.config_path, cli_home)?;
+    let base_cfg = read_cfg_base_text(
+        runtime.config_path,
+        cli_home,
+        runtime
+            .gateway
+            .cfg
+            .read()
+            .providers
+            .keys()
+            .map(String::as_str),
+    )?;
     if let Err(e) = save_switchboard_base_cfg(runtime.config_path, cli_home, &base_cfg) {
         runtime.gateway.store.events().emit(
             "codex",
@@ -733,6 +794,21 @@ fn write_swapped_files(
         return Err(e);
     }
     Ok(())
+}
+
+fn write_swapped_files_if_changed(
+    config_path: &Path,
+    cli_home: &Path,
+    next_auth: &serde_json::Value,
+    next_cfg_text: &str,
+) -> Result<bool, String> {
+    let auth_matches = read_json(&cli_auth_path(cli_home)).ok().as_ref() == Some(next_auth);
+    let cfg_matches = read_text(&cli_cfg_path(cli_home)).ok().as_deref() == Some(next_cfg_text);
+    if auth_matches && cfg_matches {
+        return Ok(false);
+    }
+    write_swapped_files(config_path, cli_home, next_auth, next_cfg_text)?;
+    Ok(true)
 }
 
 pub(crate) fn provider_key_storage_uses_config(storage_mode: &str) -> bool {
@@ -1065,7 +1141,11 @@ fn sync_active_provider_target_for_key_impl(
         if mode != "provider" || mp.as_deref() != Some(provider) {
             continue;
         }
-        let orig_cfg = read_cfg_base_text(&state.config_path, h)?;
+        let orig_cfg = read_cfg_base_text(
+            &state.config_path,
+            h,
+            app_cfg.providers.keys().map(String::as_str),
+        )?;
         let next_cfg = build_direct_provider_cfg(
             &orig_cfg,
             provider,
@@ -1118,6 +1198,7 @@ fn sync_gateway_target_for_rotated_token_impl(
                 &override_homes,
                 "gateway",
                 None,
+                None,
             ) {
                 state.gateway.store.events().emit(
                     "codex",
@@ -1137,8 +1218,13 @@ fn sync_gateway_target_for_rotated_token_impl(
     } else {
         let homes = augment_gateway_sync_homes(resolve_cli_homes(state_homes)?);
         if homes.len() > 1 {
-            let _ =
-                save_switchboard_state_to_config_path(&state.config_path, &homes, "gateway", None);
+            let _ = save_switchboard_state_to_config_path(
+                &state.config_path,
+                &homes,
+                "gateway",
+                None,
+                None,
+            );
         }
         homes
     };
@@ -1192,12 +1278,19 @@ pub(crate) fn sync_gateway_target_for_current_token_on_startup(
 pub(crate) fn sync_app_codex_home_to_current_switchboard_state(
     config_path: &Path,
 ) -> Result<(), String> {
+    let _ = sync_app_codex_home_to_current_switchboard_state_changed(config_path)?;
+    Ok(())
+}
+
+fn sync_app_codex_home_to_current_switchboard_state_changed(
+    config_path: &Path,
+) -> Result<bool, String> {
     let Some(sw) = load_switchboard_state_from_config_path(config_path) else {
-        return Ok(());
+        return Ok(false);
     };
     let cli_home = app_codex_home_from_config_path(config_path);
     if !cli_home.exists() {
-        return Ok(());
+        return Ok(false);
     }
 
     let target = sw
@@ -1214,7 +1307,11 @@ pub(crate) fn sync_app_codex_home_to_current_switchboard_state(
         .unwrap_or(Path::new("."))
         .join("secrets.json");
     let secrets = crate::orchestrator::secrets::SecretStore::new(secrets_path);
-    let orig_cfg = read_cfg_base_text(config_path, &cli_home)?;
+    let orig_cfg = read_cfg_base_text(
+        config_path,
+        &cli_home,
+        app_cfg.providers.keys().map(String::as_str),
+    )?;
 
     match target.to_ascii_lowercase().as_str() {
         "gateway" => {
@@ -1230,7 +1327,7 @@ pub(crate) fn sync_app_codex_home_to_current_switchboard_state(
                 app_cfg.providers.keys().cloned(),
             );
             let next_auth = auth_with_openai_key(gateway_token.trim());
-            write_swapped_files(config_path, &cli_home, &next_auth, &next_cfg)
+            write_swapped_files_if_changed(config_path, &cli_home, &next_auth, &next_cfg)
         }
         "provider" => {
             let provider = sw
@@ -1267,18 +1364,31 @@ pub(crate) fn sync_app_codex_home_to_current_switchboard_state(
             } else {
                 auth_with_openai_key(key.trim())
             };
-            write_swapped_files(config_path, &cli_home, &next_auth, &next_cfg)
+            write_swapped_files_if_changed(config_path, &cli_home, &next_auth, &next_cfg)
         }
         "official" => {
-            let auth = secrets
-                .active_official_account_profile_auth_json()
-                .ok_or_else(|| {
-                    "Missing selected official Codex auth profile. Try logging in first."
-                        .to_string()
-                })?;
+            let auth = if let Some(profile_id) = sw
+                .get("official_profile_id")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                secrets
+                    .official_account_profile_auth_json(profile_id)
+                    .map_err(|err| {
+                        format!("failed to read official account profile `{profile_id}`: {err}")
+                    })?
+            } else {
+                secrets
+                    .active_official_account_profile_auth_json()
+                    .ok_or_else(|| {
+                        "Missing selected official Codex auth profile. Try logging in first."
+                            .to_string()
+                    })?
+            };
             ensure_signed_in(&auth)?;
             let next_cfg = strip_model_provider_line(&orig_cfg);
-            write_swapped_files(config_path, &cli_home, &auth, &next_cfg)
+            write_swapped_files_if_changed(config_path, &cli_home, &auth, &next_cfg)
         }
         other => Err(format!(
             "target must be one of: gateway | official | provider (got {other})"

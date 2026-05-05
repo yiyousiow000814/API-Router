@@ -63,7 +63,11 @@ fn on_provider_renamed_impl(state: &AppState, old: &str, new: &str) -> Result<()
         if mode != "provider" || mp.as_deref() != Some(old) {
             continue;
         }
-        let orig_cfg = read_cfg_base_text(&state.config_path, h)?;
+        let orig_cfg = read_cfg_base_text(
+            &state.config_path,
+            h,
+            app_cfg.providers.keys().map(String::as_str),
+        )?;
         let storage_mode = state.secrets.get_provider_key_storage_mode(new);
         let use_config_storage = provider_key_storage_uses_config(&storage_mode);
         let next_cfg = build_direct_provider_cfg(
@@ -108,7 +112,7 @@ pub fn set_target_for_runtime(
     target: String,
     provider: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    set_target_for_runtime_with_official_auth(runtime, cli_homes, target, provider, None)
+    set_target_for_runtime_with_official_auth(runtime, cli_homes, target, provider, None, None)
 }
 
 pub fn set_target_for_runtime_with_official_auth(
@@ -117,9 +121,15 @@ pub fn set_target_for_runtime_with_official_auth(
     target: String,
     provider: Option<String>,
     official_auth_override: Option<serde_json::Value>,
+    official_profile_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let homes = resolve_cli_homes(cli_homes)?;
     let target = target.trim().to_ascii_lowercase();
+    let official_profile_id = official_profile_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
 
     let app_cfg = runtime.gateway.cfg.read().clone();
     let app_auth = if target == "official" {
@@ -175,7 +185,11 @@ pub fn set_target_for_runtime_with_official_auth(
         let res = match target.as_str() {
             "gateway" => switch_to_gateway_home_impl(runtime, h),
             "official" => (|| {
-                let orig_cfg = read_cfg_base_text(runtime.config_path, h)?;
+                let orig_cfg = read_cfg_base_text(
+                    runtime.config_path,
+                    h,
+                    app_cfg.providers.keys().map(String::as_str),
+                )?;
                 let next_cfg = strip_model_provider_line(&orig_cfg);
                 let auth = app_auth.as_ref().ok_or_else(|| {
                     "Missing app Codex auth.json. Try logging in first.".to_string()
@@ -194,7 +208,11 @@ pub fn set_target_for_runtime_with_official_auth(
                 let key = direct_key
                     .as_deref()
                     .ok_or_else(|| "provider key is missing".to_string())?;
-                let orig_cfg = read_cfg_base_text(runtime.config_path, h)?;
+                let orig_cfg = read_cfg_base_text(
+                    runtime.config_path,
+                    h,
+                    app_cfg.providers.keys().map(String::as_str),
+                )?;
                 let storage_mode = runtime.secrets.get_provider_key_storage_mode(name);
                 let use_config_storage = provider_key_storage_uses_config(&storage_mode);
                 let next_cfg = build_direct_provider_cfg(
@@ -228,8 +246,13 @@ pub fn set_target_for_runtime_with_official_auth(
     // If we can't persist the state (disk full / permission issues), the switch still
     // took effect; we log an event so the user can troubleshoot, and future key-sync
     // may not work until state can be saved.
-    if let Err(e) =
-        save_switchboard_state_to_config_path(runtime.config_path, &homes, &target, provider_name.as_deref())
+    if let Err(e) = save_switchboard_state_to_config_path(
+        runtime.config_path,
+        &homes,
+        &target,
+        provider_name.as_deref(),
+        official_profile_id.as_deref(),
+    )
     {
         runtime.gateway.store.events().emit(
             "codex",
@@ -238,6 +261,7 @@ pub fn set_target_for_runtime_with_official_auth(
             json!({
               "target": target,
               "provider": provider_name,
+              "official_profile_id": official_profile_id,
               "cli_homes": homes.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
               "updated_at_unix_ms": unix_ms()
             }),
@@ -251,6 +275,7 @@ pub fn set_target_for_runtime_with_official_auth(
         json!({
           "target": target,
           "provider": provider_name,
+          "official_profile_id": official_profile_id,
           "cli_homes": homes.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
           "updated_at_unix_ms": unix_ms()
         }),

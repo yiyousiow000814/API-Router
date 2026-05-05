@@ -722,6 +722,7 @@ pub(super) async fn codex_provider_switchboard_set(
         target,
         req.provider,
         official_auth,
+        req.official_profile_id,
     ) {
         Ok(value) => {
             clear_provider_switchboard_cache();
