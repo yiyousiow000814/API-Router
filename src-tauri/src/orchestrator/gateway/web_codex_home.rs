@@ -482,11 +482,6 @@ fn web_codex_runtime_auth_wsl_home(home: &str, distro: &str) -> PathBuf {
     linux_path_to_unc(home, distro)
 }
 
-#[cfg(not(target_os = "windows"))]
-fn web_codex_runtime_auth_wsl_home(home: &str, _distro: &str) -> PathBuf {
-    PathBuf::from(home)
-}
-
 fn backup_path(path: &Path) -> PathBuf {
     let name = path
         .file_name()
