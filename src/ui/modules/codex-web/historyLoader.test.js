@@ -4657,6 +4657,119 @@ Implement this plan?
     ).toBe(true);
   });
 
+  it("settles a pending running turn from complete authoritative history even when no live turn completion event arrived", async () => {
+    const state = {
+      activeThreadId: "thread-1",
+      activeThreadRenderSig: "",
+      activeThreadMessages: [
+        { role: "user", text: "older", kind: "" },
+        { role: "assistant", text: "older reply", kind: "" },
+      ],
+      activeThreadWorkspace: "wsl2",
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnId: "turn-2",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingTurnBaselineTurnCount: 1,
+      activeThreadPendingTurnBaselineUserCount: 1,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+      activeThreadStarted: true,
+      activeThreadHistoryHasMore: false,
+      historyWindowEnabled: false,
+      historyWindowThreadId: "",
+      historyAllMessages: [],
+      chatShouldStickToBottom: false,
+      liveDebugEvents: [],
+      activeThreadCommentaryCurrent: null,
+      activeThreadCommentaryArchive: [],
+      activeThreadCommentaryArchiveVisible: false,
+      activeThreadCommentaryArchiveExpanded: false,
+    };
+    const module = createHistoryLoaderModule({
+      state,
+      byId() { return null; },
+      api: async () => ({}),
+      nextFrame: async () => {},
+      waitMs: async () => {},
+      windowRef: {},
+      documentRef: { createDocumentFragment() { return { appendChild() {} }; } },
+      performanceRef: { now: () => 0 },
+      setTimeoutRef(callback) {
+        callback();
+        return 1;
+      },
+      HISTORY_WINDOW_THRESHOLD: 99,
+      normalizeThreadTokenUsage(value) { return value ?? null; },
+      renderComposerContextLeft() {},
+      detectThreadWorkspaceTarget() { return "wsl2"; },
+      parseUserMessageParts(item) {
+        return {
+          text: Array.isArray(item?.content) ? String(item.content[0]?.text || "") : "",
+          images: [],
+        };
+      },
+      isBootstrapAgentsPrompt() { return false; },
+      normalizeThreadItemText: normalizeThreadItemTextImpl,
+      normalizeType(value) { return String(value || "").trim().toLowerCase(); },
+      stripCodexImageBlocks(value) { return String(value || ""); },
+      hideWelcomeCard() {},
+      showWelcomeCard() {},
+      updateHeaderUi() {},
+      updateScrollToBottomBtn() {},
+      scheduleChatLiveFollow() {},
+      scrollChatToBottom() {},
+      scrollToBottomReliable() {},
+      canStartChatLiveFollow() { return false; },
+      renderMessageBody() { return ""; },
+      addChat() {},
+      buildMsgNode() { return { nodeType: 1 }; },
+      clearChatMessages() {},
+      showTransientThinkingMessage() {},
+      clearTransientThinkingMessages() {},
+      showTransientToolMessage() {},
+      clearTransientToolMessages() {},
+      clearRuntimeState() {},
+      renderCommentaryArchive() {},
+      syncRuntimeStateFromHistory() {},
+      syncEventSubscription() {},
+      clearLiveThreadConnectionStatus() {},
+    });
+
+    await module.applyThreadToChat({
+      id: "thread-1",
+      workspace: "wsl2",
+      status: { type: "completed" },
+      page: { incomplete: false },
+      turns: [
+        {
+          id: "turn-1",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "older" }] },
+            { type: "assistantMessage", phase: "final_answer", text: "older reply" },
+          ],
+        },
+        {
+          id: "turn-2",
+          items: [
+            { type: "userMessage", content: [{ type: "input_text", text: "hi" }] },
+            { type: "assistantMessage", phase: "final_answer", text: "你好，直接说任务。" },
+          ],
+        },
+      ],
+    });
+
+    expect(state.activeThreadPendingTurnThreadId).toBe("");
+    expect(state.activeThreadPendingTurnId).toBe("");
+    expect(state.activeThreadPendingTurnRunning).toBe(false);
+    expect(state.activeThreadPendingUserMessage).toBe("");
+    expect(state.activeThreadPendingAssistantMessage).toBe("");
+    expect(
+      state.liveDebugEvents.some(
+        (event) => event?.kind === "pending.runtime:reset" && event?.reason === "history.sync:complete_materialized_pending_turn"
+      )
+    ).toBe(true);
+  });
+
   it("stops a reconnecting pending turn once systemError history can materialize the terminal error", async () => {
     const state = {
       activeThreadId: "thread-1",
