@@ -184,13 +184,12 @@ function findLatestMaterializedPendingUserIndex(messages, pendingUser, options =
   const baselineUserCount = Math.max(0, Number(options.baselineUserCount || 0));
   const historyUserCount = Math.max(0, Number(options.historyUserCount || 0));
   if (historyUserCount <= baselineUserCount) return -1;
-  let lastAssistantIndex = -1;
+  let seenAuthoritativeUser = 0;
   for (let index = 0; index < items.length; index += 1) {
-    if (String(items[index]?.role || "").trim() === "assistant") lastAssistantIndex = index;
-  }
-  for (let index = Math.max(0, lastAssistantIndex + 1); index < items.length; index += 1) {
     const entry = items[index];
     if (String(entry?.role || "").trim() !== "user") continue;
+    seenAuthoritativeUser += 1;
+    if (seenAuthoritativeUser <= baselineUserCount) continue;
     if (String(entry?.text || "") !== pendingText) continue;
     return index;
   }

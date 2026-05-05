@@ -2410,6 +2410,35 @@ Implement this plan?
     expect(state.activeThreadPendingAssistantMessage).toBe("");
   });
 
+  it("does not append a duplicate pending user when authoritative history already contains the latest user echo before the latest assistant reply", () => {
+    const state = {
+      activeThreadPendingTurnThreadId: "thread-1",
+      activeThreadPendingTurnRunning: true,
+      activeThreadPendingUserMessage: "hi",
+      activeThreadPendingAssistantMessage: "",
+    };
+
+    expect(
+      mergePendingLiveMessages(
+        [
+          { role: "assistant", text: "older reply", kind: "" },
+          { role: "user", text: "hi", kind: "" },
+          { role: "assistant", text: "你好，发任务。", kind: "" },
+        ],
+        state,
+        "thread-1",
+        { historyIncomplete: true }
+      )
+    ).toEqual([
+      { role: "assistant", text: "older reply", kind: "" },
+      { role: "user", text: "hi", kind: "" },
+      { role: "assistant", text: "你好，发任务。", kind: "" },
+    ]);
+    expect(state.activeThreadPendingTurnThreadId).toBe("thread-1");
+    expect(state.activeThreadPendingUserMessage).toBe("hi");
+    expect(state.activeThreadPendingAssistantMessage).toBe("");
+  });
+
   it("does not treat an identical prompt from the baseline turn as a materialized pending user", () => {
     const state = {
       activeThreadPendingTurnThreadId: "thread-1",
