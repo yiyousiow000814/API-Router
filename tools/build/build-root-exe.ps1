@@ -60,6 +60,7 @@ $script:BuildMutex = $null
 $script:BuildMutexHeld = $false
 $script:UpdaterDaemonStdoutPath = $null
 $script:UpdaterDaemonStderrPath = $null
+$script:HoldBuildMutexForRecoveryProbe = $false
 
 function Get-BuildMutexName {
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($RepoRoot.ToLowerInvariant())
@@ -155,7 +156,6 @@ function Get-StaleRepoBuildProcesses {
     if ([string]::IsNullOrWhiteSpace($commandLine)) { continue }
     $lowerCommandLine = $commandLine.ToLowerInvariant()
     if (-not $lowerCommandLine.Contains('build-root-exe.ps1')) { continue }
-    if (-not $lowerCommandLine.Contains('-starthidden')) { continue }
     if (
       -not (Test-CommandLineContainsPath -CommandLine $commandLine -Path $buildScriptPath) -and
       -not (Test-CommandLineContainsPath -CommandLine $commandLine -Path $RepoRoot)
@@ -209,26 +209,41 @@ function Get-ProcessTreeIds {
   return @($orderedChildren + $RootPid)
 }
 
-function Stop-StaleRemoteUpdateBuildProcesses {
-  if (-not (Test-IsRemoteUpdateBuildContext)) { return $false }
-
+function Stop-StaleBuildProcesses {
   $staleProcesses = @(Get-StaleRepoBuildProcesses)
   if ($staleProcesses.Count -eq 0) {
-    Write-RemoteUpdateLog "Build mutex is busy, but no stale same-repo hidden build-root-exe.ps1 process was found"
+    if (Test-IsRemoteUpdateBuildContext) {
+      Write-RemoteUpdateLog "Build mutex is busy, but no stale same-repo build-root-exe.ps1 process was found"
+    } else {
+      Write-Host "Build mutex is busy, but no stale same-repo build-root-exe.ps1 process was found"
+    }
     return $false
   }
 
   foreach ($staleProcess in $staleProcesses) {
     $rootPid = [int]$staleProcess.ProcessId
     $treeIds = @(Get-ProcessTreeIds -RootPid $rootPid)
-    Write-RemoteUpdateLog "Stopping stale remote update build process tree: root_pid=$rootPid; pids=$($treeIds -join ',')"
+    $message = "Stopping stale build process tree: root_pid=$rootPid; pids=$($treeIds -join ',')"
+    if (Test-IsRemoteUpdateBuildContext) {
+      Write-RemoteUpdateLog $message
+    } else {
+      Write-Host $message
+    }
     foreach ($processId in $treeIds) {
       if ([int]$processId -eq [int]$PID) { continue }
       try {
         Stop-Process -Id $processId -Force -ErrorAction Stop
-        Write-RemoteUpdateLog "Stopped stale remote update build process PID $processId"
+        if (Test-IsRemoteUpdateBuildContext) {
+          Write-RemoteUpdateLog "Stopped stale build process PID $processId"
+        } else {
+          Write-Host "Stopped stale build process PID $processId"
+        }
       } catch {
-        Write-RemoteUpdateLog "Failed to stop stale remote update build process PID ${processId}: $($_.Exception.Message)"
+        if (Test-IsRemoteUpdateBuildContext) {
+          Write-RemoteUpdateLog "Failed to stop stale build process PID ${processId}: $($_.Exception.Message)"
+        } else {
+          Write-Host "Failed to stop stale build process PID ${processId}: $($_.Exception.Message)"
+        }
       }
     }
   }
@@ -248,30 +263,49 @@ function Wait-BuildMutex {
   }
 }
 
+function Test-ShouldHoldBuildMutexForRecoveryProbe {
+  if (-not $TestProfile) { return $false }
+  return ([string]$env:API_ROUTER_BUILD_MUTEX_RECOVERY_PROBE).Trim() -eq '1'
+}
+
 function Enter-BuildMutex {
   $name = Get-BuildMutexName
   $script:BuildMutex = [System.Threading.Mutex]::new($false, $name)
   if (Wait-BuildMutex -TimeoutMilliseconds 0) {
+    if (Test-ShouldHoldBuildMutexForRecoveryProbe) {
+      Write-Host "Holding build mutex for recovery probe"
+      $script:HoldBuildMutexForRecoveryProbe = $true
+      Start-Sleep -Seconds 30
+    }
     return
   }
 
-  if (Test-IsRemoteUpdateBuildContext) {
+  $isRemoteUpdate = Test-IsRemoteUpdateBuildContext
+  if ($isRemoteUpdate) {
     Write-RemoteUpdateLog "Build mutex is busy; inspecting stale remote update build processes for repo root $RepoRoot"
-    $null = Stop-StaleRemoteUpdateBuildProcesses
-    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(15)
-    while ([DateTimeOffset]::UtcNow -lt $deadline) {
-      if (Wait-BuildMutex -TimeoutMilliseconds 1000) {
+  } else {
+    Write-Host "Build mutex is busy; inspecting stale local build processes for repo root $RepoRoot"
+  }
+
+  $null = Stop-StaleBuildProcesses
+  $deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
+  while ([DateTimeOffset]::UtcNow -lt $deadline) {
+    if (Wait-BuildMutex -TimeoutMilliseconds 1000) {
+      if ($isRemoteUpdate) {
         Write-RemoteUpdateLog "Build mutex acquired after stale process cleanup"
-        return
+      } else {
+        Write-Host "Build mutex acquired after stale process cleanup"
       }
+      return
     }
-    $script:BuildMutex.Dispose()
-    $script:BuildMutex = $null
-    throw "remote update build mutex is still held after stale process cleanup for repo root $RepoRoot"
   }
 
   $script:BuildMutex.Dispose()
   $script:BuildMutex = $null
+  $null = Stop-StaleBuildProcesses
+  if ($isRemoteUpdate) {
+    throw "remote update build mutex is still held after stale process cleanup for repo root $RepoRoot"
+  }
   throw "another API Router build/update is already running for repo root $RepoRoot"
 }
 
@@ -2017,6 +2051,10 @@ $script:CurrentBuildStepLabel = ''
 $script:CurrentBuildStepDetail = ''
 $script:RuntimeRollbackCandidate = $false
 Enter-BuildMutex
+if ($script:HoldBuildMutexForRecoveryProbe) {
+  Exit-BuildMutex
+  exit 0
+}
 try {
   $buildStartedAtUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   # Keep the outer checks explicit so remote-update diagnostics can point at the first
@@ -2146,7 +2184,12 @@ try {
         -Label 'Restarting API Router' `
         -Detail ("Restarting API Router: " + $runtimeValidationError.Exception.Message) `
         -State 'running'
-      Write-Warning ("API Router restart after build failed: " + $runtimeValidationError.Exception.Message)
+      if ($runtimeValidationError.Exception.Message -match 'API Router already running') {
+        Write-RemoteUpdateLog "API Router restart skipped because it is already running."
+      } else {
+        $hadFailure = $true
+        Write-Warning ("API Router restart after build failed: " + $runtimeValidationError.Exception.Message)
+      }
     }
   }
   try {
@@ -2157,7 +2200,7 @@ try {
   }
 }
 
-if ($hadFailure) {
+if ($hadFailure -and $script:BuildResult -eq 'failed') {
   exit 1
 }
 

@@ -480,7 +480,8 @@ fn switch_to_gateway_home_impl(
         None,
     );
     let next_auth = auth_with_openai_key(gateway_token.trim());
-    write_swapped_files(runtime.config_path, cli_home, &next_auth, &next_cfg)
+    write_swapped_files(runtime.config_path, cli_home, &next_auth, &next_cfg)?;
+    sync_web_codex_runtime_auth(runtime.config_path, cli_home, &next_auth)
 }
 
 fn is_wsl_unc_home(cli_home: &Path) -> bool {
@@ -662,6 +663,15 @@ fn auth_without_openai_key() -> serde_json::Value {
     json!({})
 }
 
+fn web_codex_runtime_auth_home_candidates(config_path: &Path, cli_home: &Path) -> Vec<PathBuf> {
+    let mut homes =
+        crate::orchestrator::gateway::web_codex_home::web_codex_runtime_auth_homes(config_path);
+    homes.push(cli_home.to_path_buf());
+    homes.sort_by_key(|path| dedup_key(path));
+    homes.dedup_by(|a, b| dedup_key(a) == dedup_key(b));
+    homes
+}
+
 fn write_swapped_files(
     config_path: &Path,
     cli_home: &Path,
@@ -680,6 +690,27 @@ fn write_swapped_files(
         let _ = write_bytes(&auth_path, &cur_auth);
         let _ = write_bytes(&cfg_path, &cur_cfg);
         return Err(e);
+    }
+    Ok(())
+}
+
+fn sync_web_codex_runtime_auth(
+    config_path: &Path,
+    cli_home: &Path,
+    next_auth: &serde_json::Value,
+) -> Result<(), String> {
+    let auth_text = serde_json::to_string_pretty(next_auth).map_err(|e| e.to_string())?;
+    for home in web_codex_runtime_auth_home_candidates(config_path, cli_home) {
+        let auth_path = home.join("auth.json");
+        if let Some(parent) = auth_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&auth_path, &auth_text).map_err(|e| {
+            format!(
+                "write web codex runtime auth failed for {}: {e}",
+                auth_path.display()
+            )
+        })?;
     }
     Ok(())
 }
@@ -1028,6 +1059,7 @@ fn sync_active_provider_target_for_key_impl(
             auth_with_openai_key(key.trim())
         };
         write_swapped_files(&state.config_path, h, &next_auth, &next_cfg)?;
+        sync_web_codex_runtime_auth(&state.config_path, h, &next_auth)?;
     }
 
     Ok(())

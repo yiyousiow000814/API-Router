@@ -446,6 +446,28 @@ pub(super) fn web_codex_wsl_linux_home_override() -> Option<String> {
     web_codex_wsl_overlay_home_from_session_home(&session_home.linux_path)
 }
 
+pub(crate) fn web_codex_runtime_auth_homes(config_path: &Path) -> Vec<PathBuf> {
+    let mut homes = Vec::new();
+    if let Some(home) = web_codex_rpc_home_override() {
+        homes.push(PathBuf::from(home));
+    }
+    if let Some(home) = web_codex_wsl_linux_home_override() {
+        homes.push(PathBuf::from(home));
+    }
+    homes.push(
+        config_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("codex-home"),
+    );
+    homes.sort_by_key(|path| path.to_string_lossy().to_string().to_ascii_lowercase());
+    homes.dedup_by(|a, b| {
+        a.to_string_lossy()
+            .eq_ignore_ascii_case(&b.to_string_lossy())
+    });
+    homes
+}
+
 fn backup_path(path: &Path) -> PathBuf {
     let name = path
         .file_name()
