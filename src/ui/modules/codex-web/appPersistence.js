@@ -285,10 +285,25 @@ export function createAppPersistenceModule(deps) {
     const box = byId("attachmentPills");
     if (!box) return;
     box.innerHTML = "";
-    for (const file of files) {
+    const items = Array.isArray(files) ? files : [];
+    box.toggleAttribute("hidden", items.length === 0);
+    box.setAttribute("aria-live", "polite");
+    box.setAttribute("aria-label", items.length ? `${items.length} attachment ready` : "No attachments");
+    for (const file of items) {
       const node = documentRef.createElement("span");
-      node.className = "pill mono";
-      node.textContent = truncateLabel(file?.name || file?.fileName || "attachment");
+      const kind = String(file?.kind || file?.type || "").trim().toLowerCase().startsWith("image")
+        ? "IMG"
+        : "FILE";
+      const kindNode = documentRef.createElement("span");
+      kindNode.className = "attachmentPillKind";
+      kindNode.textContent = kind;
+      const nameNode = documentRef.createElement("span");
+      nameNode.className = "attachmentPillName";
+      nameNode.textContent = truncateLabel(file?.name || file?.fileName || "attachment");
+      node.className = "pill attachmentPill mono";
+      node.title = `${kind} ${file?.name || file?.fileName || "attachment"}`;
+      node.appendChild(kindNode);
+      node.appendChild(nameNode);
       box.appendChild(node);
     }
   }

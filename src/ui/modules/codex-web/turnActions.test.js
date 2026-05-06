@@ -244,6 +244,86 @@ describe("turnActions", () => {
     expect(apiCalls).toEqual([]);
   });
 
+  it("shows uploaded attachments and refreshes mobile composer metrics", async () => {
+    const renderedPills = [];
+    let mobileComposerUpdates = 0;
+    const state = { activeThreadId: "thread-1", pendingAttachments: [] };
+    const module = createTurnActionsModule({
+      state,
+      byId: () => null,
+      api: async (path, options) => {
+        expect(path).toBe("/codex/attachments/upload");
+        expect(options.body).toMatchObject({
+          threadId: "thread-1",
+          fileName: "screen.png",
+          mimeType: "image/png",
+          kind: "image",
+        });
+        return {
+          ok: true,
+          kind: "image",
+          fileName: "screen.png",
+          mimeType: "image/png",
+          path: "C:\\uploads\\screen.png",
+        };
+      },
+      wsSend: () => false,
+      wsCall: async () => ({}),
+      nextReqId: () => "req-1",
+      connectWs: () => {},
+      syncEventSubscription: () => {},
+      getPromptValue: () => "",
+      getWorkspaceTarget: () => "windows",
+      getStartCwdForWorkspace: () => "",
+      waitPendingThreadResume: async () => {},
+      updateHeaderUi: () => {},
+      addChat: () => {},
+      clearChatMessages: () => {},
+      hideWelcomeCard: () => {},
+      showWelcomeCard: () => {},
+      clearPromptValue: () => {},
+      renderComposerContextLeft: () => {},
+      scrollToBottomReliable: () => {},
+      scheduleChatLiveFollow: () => {},
+      createAssistantStreamingMessage: () => ({}),
+      appendStreamingDelta: () => {},
+      finalizeAssistantMessage: () => {},
+      normalizeTextPayload: (value) => value,
+      maybeNotifyTurnDone: () => {},
+      renderAttachmentPills: (items) => renderedPills.push(items),
+      refreshThreads: async () => {},
+      refreshHosts: async () => {},
+      refreshPending: async () => {},
+      updateMobileComposerState: () => {
+        mobileComposerUpdates += 1;
+      },
+      setStatus: () => {},
+      setActiveThread: () => {},
+      setMainTab: () => {},
+      setMobileTab: () => {},
+      setChatOpening: () => {},
+      blockInSandbox: () => false,
+    });
+
+    await module.uploadAttachment({
+      name: "screen.png",
+      type: "image/png",
+      size: 1024,
+      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+    });
+
+    expect(state.pendingAttachments).toEqual([
+      {
+        kind: "image",
+        fileName: "screen.png",
+        mimeType: "image/png",
+        path: "C:\\uploads\\screen.png",
+      },
+    ]);
+    expect(renderedPills.at(-1)).toEqual(state.pendingAttachments);
+    expect(mobileComposerUpdates).toBe(1);
+  });
+
   it("sends pending attachments even when the prompt is empty", async () => {
     const apiCalls = [];
     const chatCalls = [];

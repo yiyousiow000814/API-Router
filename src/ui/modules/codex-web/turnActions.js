@@ -1392,6 +1392,7 @@ export function createTurnActionsModule(deps) {
     clearPromptValue();
     state.pendingAttachments = [];
     renderAttachmentPills([]);
+    updateMobileComposerState();
     if (options.fromQueuedTurn === true && preservedDraftValue) {
       const input = byId("mobilePromptInput");
       if (input) input.value = preservedDraftValue;
@@ -1409,6 +1410,7 @@ export function createTurnActionsModule(deps) {
     } catch (error) {
       state.pendingAttachments = turnAttachments;
       renderAttachmentPills(state.pendingAttachments);
+      updateMobileComposerState();
       rollbackOptimisticPendingTurn(prompt, {
         restorePrompt: options.fromQueuedTurn !== true,
       });
@@ -1486,6 +1488,7 @@ export function createTurnActionsModule(deps) {
       uploaded,
     ];
     renderAttachmentPills(state.pendingAttachments);
+    updateMobileComposerState();
     setStatus(`Attachment uploaded: ${data.fileName || file.name}`);
   }
 

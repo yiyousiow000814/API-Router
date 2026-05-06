@@ -50,6 +50,64 @@ describe("appPersistence", () => {
     ).toBe(true);
   });
 
+  it("renders visible attachment pills with kind and file name", () => {
+    const children = [];
+    const box = {
+      innerHTML: "",
+      attrs: {},
+      hidden: false,
+      appendChild(node) {
+        children.push(node);
+      },
+      setAttribute(key, value) {
+        this.attrs[key] = value;
+      },
+      toggleAttribute(key, force) {
+        this[key] = !!force;
+      },
+    };
+    const createElement = (tagName) => ({
+      tagName,
+      className: "",
+      textContent: "",
+      title: "",
+      children: [],
+      appendChild(node) {
+        this.children.push(node);
+      },
+    });
+    const module = createAppPersistenceModule({
+      state: {},
+      byId: (id) => (id === "attachmentPills" ? box : null),
+      api: async () => ({}),
+      setStatus: () => {},
+      updateWorkspaceAvailability: () => {},
+      getEmbeddedToken: () => "",
+      ensureArrayItems: (value) => (Array.isArray(value) ? value : []),
+      normalizeModelOption: (item) => item,
+      pickLatestModelId: () => "",
+      buildThreadRenderSig: () => "",
+      sortThreadsByNewest: (items) => items,
+      isThreadListActuallyVisible: () => false,
+      MODELS_CACHE_KEY: "models",
+      CODEX_VERSION_CACHE_KEY: "versions",
+      THREADS_CACHE_KEY: "threads",
+      REASONING_EFFORT_KEY: "effort",
+      localStorageRef: { getItem() { return ""; }, setItem() {} },
+      documentRef: { createElement },
+    });
+
+    module.renderAttachmentPills([{ kind: "image", fileName: "screen.png" }]);
+
+    expect(box.hidden).toBe(false);
+    expect(box.attrs["aria-live"]).toBe("polite");
+    expect(box.attrs["aria-label"]).toBe("1 attachment ready");
+    expect(children).toHaveLength(1);
+    expect(children[0].className).toContain("attachmentPill");
+    expect(children[0].children[0].textContent).toBe("IMG");
+    expect(children[0].children[1].textContent).toBe("screen.png");
+  });
+
   it("restores version info from local cache without calling the API", () => {
     const apiCalls = [];
     const availabilityUpdates = [];

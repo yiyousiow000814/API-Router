@@ -5314,6 +5314,33 @@
       color: #3d4b65;
       background: rgba(255, 255, 255, 0.9);
     }
+    .attachmentPill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      max-width: min(100%, 260px);
+      border-color: rgba(40, 199, 217, 0.42);
+      background: rgba(230, 252, 255, 0.92);
+      color: #18364a;
+      box-shadow: 0 5px 14px rgba(13, 18, 32, 0.08);
+    }
+    .attachmentPillKind {
+      flex: 0 0 auto;
+      border-radius: 999px;
+      padding: 1px 5px;
+      background: rgba(40, 199, 217, 0.18);
+      color: #096173;
+      font-size: 10px;
+      line-height: 1.4;
+      font-weight: 700;
+    }
+    .attachmentPillName {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .sectionTitle {
       font-size: 11px;
       letter-spacing: .06em;
@@ -6192,9 +6219,14 @@
       #chatEmpty {
         display: none;
       }
-      .composer .row.wrap,
-      #attachmentPills {
+      .composer .row.wrap {
         display: none;
+      }
+      #attachmentPills {
+        display: flex;
+        max-height: 76px;
+        overflow-y: auto;
+        scrollbar-width: thin;
       }
       .mobileComposerRow { display: flex; align-items: flex-end; gap: 8px; }
       .composerActionRail { height: 40px; }
